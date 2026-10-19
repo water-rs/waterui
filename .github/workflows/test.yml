@@ -304,7 +304,8 @@ jobs:
       # The feature combination Hydrolysis's own CI swept (#1428): the
       # all-features pass above covers the superset, but a feature interaction
       # that only this set compiles — webview-system stays off because its
-      # WKWebView bridge exists on macOS alone — would regress invisibly
+      # WKWebView bridge exists on macOS alone, where the `macos-lint`
+      # composite's host leg carries it — would regress invisibly
       # otherwise. The bare check is the other half of that contract: call
       # sites a feature gates out rot under every enabled leg.
       #
@@ -371,6 +372,7 @@ jobs:
         with:
           messages: ${{ env.CARGO_MESSAGES }}
       - name: Save Cargo sources
+        id: save-sources
         if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.cargo-sources.outputs.cache-hit != 'true' }}
         uses: ./.github/actions/cargo-sources
         with:
@@ -379,6 +381,7 @@ jobs:
           limit-bytes: ${{ vars.ACTIONS_CACHE_LIMIT_BYTES }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Lint target cache headroom
+        id: lint-headroom
         if: steps.writer.outputs.sweep == 'true'
         uses: ./.github/actions/cache-headroom
         with:
@@ -387,7 +390,7 @@ jobs:
           limit-bytes: ${{ vars.ACTIONS_CACHE_LIMIT_BYTES }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Save lint target cache
-        if: steps.writer.outputs.sweep == 'true'
+        if: steps.writer.outputs.sweep == 'true' && steps.lint-headroom.outputs.fits == 'true'
         uses: actions/cache/save@v4
         with:
           path: target
@@ -395,9 +398,10 @@ jobs:
       # Ref-scoped family prefixes only: pull-request caches, other
       # families, and other refs are never touched. It refuses to retire
       # anything unless both primary keys exist, so a save that did not
-      # land can never leave pull requests without an archive.
+      # land can never leave pull requests without an archive. A save the
+      # headroom check skipped (no room) keeps the old generations too.
       - name: Retire superseded cache generations
-        if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+        if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.save-sources.outputs.saved != 'false' && steps.lint-headroom.outputs.fits != 'false' }}
         uses: ./.github/actions/retire-cargo-caches
         with:
           families: cargo-sources-${{ runner.os }}-,lint-target-${{ runner.os }}-${{ runner.arch }}-
@@ -458,15 +462,16 @@ jobs:
       # lints; only the workspace crate is named here. Hydrolysis's `web`
       # feature is its browser runner — it used to be linted for wasm32 in the
       # hydrolysis repository's own CI and moved in with the tree (#1428).
-      # Its web video bridge needs `video` as well, so the pass enables both
-      # (#2799).
+      # Its web video bridge needs `video` as well (#2799), and
+      # `webview-system` is the `<iframe>` bridge — the only leg that can
+      # lint it (water-rs/waterui#1795).
       - name: Lint the wasm32-only paths
         run: |
           cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
             -p waterui-media \
             -- -D warnings
           cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
-            -p hydrolysis --features web,video \
+            -p hydrolysis --features web,video,webview-system \
             -- -D warnings
           # The bare build is a separate gate: every feature off selects a
           # third of the backend's `cfg(feature)` surface that `web` never

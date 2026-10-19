@@ -145,10 +145,11 @@ impl Item {
 pub struct InnerProgram {
     pub viewport: kurbo::Rect,
     pub offset: kurbo::Vec2,
-    /// The overscroll stretch the scrolled content draws with, in the
-    /// viewport's space — the identity at rest. It never reaches the clip:
+    /// The overscroll stretch direction the scrolled content draws with —
+    /// HWUI's `mStretchDirection`, warped by its stretch shader in the
+    /// viewport's frame — or `None` at rest. It never reaches the clip:
     /// the content stretches inside the unchanged viewport.
-    pub stretch: kurbo::Affine,
+    pub stretch: Option<kurbo::Vec2>,
     pub items: Vec<Item>,
 }
 
@@ -382,8 +383,11 @@ impl ProgramBuilder {
             .scopes
             .pop()
             .expect("hydrolysis program: close_scope without an open scope");
-        // Runs record in the node's space; a scope layer placed by a
-        // transform draws them in its own.
+        // Items record in the node's space; a scope layer placed by a
+        // transform draws them in its own. A member left unconverted mounts
+        // under the scope layer with the node's space still in its
+        // transform — the scope transform would reach it twice
+        // (water-rs/waterui#2894).
         if scope.origin != kurbo::Affine::IDENTITY {
             let into_scope = scope.origin.inverse();
             for item in &mut scope.items {
@@ -394,6 +398,7 @@ impl ProgramBuilder {
                         *run = moved;
                     }
                     Item::Live(live) => live.transform = into_scope * live.transform,
+                    Item::Chrome(chrome) => chrome.transform = into_scope * chrome.transform,
                     _ => {}
                 }
             }
@@ -408,13 +413,13 @@ impl ProgramBuilder {
     }
 
     /// Opens the scroll node's `inner` list: until [`Self::end_inner`],
-    /// items land under the clipped, scrolled inner layer, stretched by
-    /// `stretch`.
+    /// items land under the clipped, scrolled inner layer, stretched in
+    /// the `stretch` direction.
     pub(crate) fn begin_inner(
         &mut self,
         viewport: kurbo::Rect,
         offset: kurbo::Vec2,
-        stretch: kurbo::Affine,
+        stretch: Option<kurbo::Vec2>,
         anchor: Rc<Placement>,
     ) {
         assert!(

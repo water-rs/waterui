@@ -1785,7 +1785,7 @@ pub fn render_list_parts(
         );
         let viewport_placement = renderer.current_placement();
         viewport_placement.set_content_offset(-offset);
-        let stretch = renderer.scroll_stretch(&handle, surface_viewport);
+        let stretch = renderer.scroll_stretch(&handle);
         renderer.program().begin_inner(
             surface_viewport,
             offset,

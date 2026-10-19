@@ -1,4 +1,4 @@
-use super::edge_stretch::{ScrollStretch, linear_stretch};
+use super::edge_stretch::{ScrollStretch, shown_stretch};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -2275,11 +2275,12 @@ impl HydrolysisRenderer {
         if let Some(target) = self.hit_test.active_pointer_target.take()
             && target.bounds.contains(point)
         {
-            let action_changed = (target.action.borrow_mut())(self, point, env);
-            if action_changed {
-                SemanticCore::mark_owner(&target.owner, Dirty::LAYOUT);
-            }
-            changed |= action_changed;
+            // The action's verdict is "the tap landed", not a layout
+            // input: whatever it writes marks its own readers through the
+            // signal guards, so an ordinary activation marks nothing and
+            // counts nothing toward this release's `changed`
+            // (water-rs/waterui#2941).
+            let _ = (target.action.borrow_mut())(self, point, env);
         }
         let drop_changed = self.finish_active_drag(point, env);
         changed |= drop_changed;
@@ -2730,32 +2731,41 @@ impl SemanticCore {
             let owner = owner.or_else(|| node.and_then(|node| self.live_node_owner(node)));
             let owner = owner
                 .unwrap_or_else(|| panic!("hydrolysis renderer: focused key {key:?} has no owner"));
-            arrived_live = self.show_live_focus(&key, visible);
-            if !arrived_live {
-                Self::mark_owner(&owner, Dirty::LAYOUT);
+            let arrived_dirty = self.focus_dirty(&key, visible);
+            arrived_live = arrived_dirty.is_none();
+            if let Some(bits) = arrived_dirty {
+                Self::mark_owner(&owner, bits);
             }
             self.hit_test.keyboard_focus_owner = owner;
         }
         // Focus that stayed on its key changed only visibility: the arriving
         // end above already handled the owner.
-        let left_live = previous_focus
+        let left_dirty = previous_focus
             .filter(|key| self.hit_test.keyboard_focus.as_ref() != Some(key))
-            .map_or(arrived_live, |key| self.show_live_focus(&key, false));
-        if !left_live {
-            Self::mark_owner(&left_owner, Dirty::LAYOUT);
+            .map(|key| self.focus_dirty(&key, false));
+        let left_live = left_dirty.as_ref().map_or(arrived_live, Option::is_none);
+        if let Some(Some(bits)) = left_dirty {
+            Self::mark_owner(&left_owner, bits);
+        } else if !left_live {
+            Self::mark_owner(&left_owner, Dirty::PAINT);
         }
     }
 
-    /// Shows or hides focus on `key`'s engine-realized chrome; `false` when
-    /// its chrome is not engine-realized and its owner must re-render.
-    fn show_live_focus(&self, key: &InteractionKey, visible: bool) -> bool {
+    /// Shows or hides focus on `key`'s engine-realized chrome and answers
+    /// `None`; otherwise answers the mark the chrome's owner takes — the
+    /// widget's declared `repaint` kind, `PAINT` when it registers no
+    /// interaction handles: a recorded focus indicator repaints the owner's
+    /// content and never moves its geometry (water-rs/waterui#2940).
+    fn focus_dirty(&self, key: &InteractionKey, visible: bool) -> Option<Dirty> {
         self.hit_test
             .interaction
             .handles_for_key(key)
-            .filter(|handles| handles.repaint().is_none())
-            .is_some_and(|handles| {
-                handles.set_focus_visible(visible);
-                true
+            .map_or(Some(Dirty::PAINT), |handles| {
+                let bits = handles.repaint();
+                if bits.is_none() {
+                    handles.set_focus_visible(visible);
+                }
+                bits
             })
     }
 
@@ -2866,10 +2876,25 @@ impl SemanticCore {
         self.mark_focus_owners(previous_focus, visible, node);
         #[cfg(not(feature = "accessibility"))]
         self.mark_focus_owners(previous_focus, visible);
-        // The transition itself is window bookkeeping — same split as
-        // `set_focused_text_input_key`: the key's owner takes the focus
-        // visuals, the context takes the deadline and binding writes.
-        self.context_mark_layout();
+        // The transition itself is bookkeeping, not geometry: the two
+        // owners carry the focus visuals (or their live chrome takes them
+        // as operands), the `.focused` bindings mark their own readers, and
+        // an accessibility focus move publishes as a focus-only tree update
+        // — none of it is a layout input, so nothing here may mark layout
+        // (water-rs/waterui#2940). When a quiet publish cannot describe the
+        // move (modal scope, un-emitted node) the root takes a paint mark —
+        // the a11y emit is window-level record state, still not geometry.
+        #[cfg(feature = "accessibility")]
+        if node_changed
+            && !self.publish_accessibility_focus(node.unwrap_or(ACCESSIBILITY_ROOT_NODE_ID))
+        {
+            self.context_mark_paint();
+        }
+        // The frame this transition needs is armed by the caller's
+        // `changed` result — input dispatch, the accessibility-action path
+        // and the emit pass's own flush all schedule one — so a move whose
+        // only visible change rides live chrome operands raises no mark
+        // and still reaches the next present.
         true
     }
 
@@ -3463,16 +3488,19 @@ impl SemanticCore {
             return false;
         };
         let point = target.bounds.center();
-        let action_changed = (target.action.borrow_mut())(self, point, env);
+        // The action's verdict is "the activation landed", not a layout
+        // input — the same verdict the pointer release path gives the
+        // tap's action: whatever it writes marks its own readers through
+        // the signal guards, so an ordinary activation changes nothing and
+        // counts nothing toward this release's `changed`
+        // (water-rs/waterui#2941).
+        let _ = (target.action.borrow_mut())(self, point, env);
         let clear = self
             .hit_test
             .interaction
             .clear_all_presses(self.frame_instant());
-        if action_changed {
-            Self::mark_owner(&target.owner, Dirty::LAYOUT);
-        }
         self.hit_test.interaction.mark_press_clear(&clear);
-        true
+        clear.visual_changed || clear.chrome_changed
     }
 
     /// A synthetic focus-out release — winit resends every held key as
@@ -5078,15 +5106,14 @@ impl SemanticCore {
             .map_or(kurbo::Vec2::ZERO, ScrollStretch::vector)
     }
 
-    /// The render-time stretch of the scroll view `handle` over its
-    /// `viewport`: the transform its content layer composes with, in the
-    /// viewport's space — the identity while nothing stretches it.
+    /// The stretch direction the scroll view `handle` draws its content
+    /// with — HWUI's `mStretchDirection` — or `None` while nothing visibly
+    /// stretches it.
     pub(crate) fn scroll_stretch(
         &self,
         handle: &crate::scroll::ScrollHandle,
-        viewport: kurbo::Rect,
-    ) -> kurbo::Affine {
-        linear_stretch(self.touch_stretch(handle.cache_key()), viewport)
+    ) -> Option<kurbo::Vec2> {
+        shown_stretch(self.touch_stretch(handle.cache_key()))
     }
 
     /// Advances every running scroll motion to `now`; returns whether a

@@ -276,7 +276,7 @@ pub async fn stage_hydrolysis_resources(
     platform: TargetPlatform,
     theme: HydrolysisPreviewTheme,
     symbols: &ArtifactSymbols,
-) -> Result<()> {
+) -> Result<PathBuf> {
     let resources_dir = project
         .backend_path::<HydrolysisBackend>()
         .join("resources");
@@ -293,13 +293,16 @@ pub async fn stage_hydrolysis_resources(
     font_declarations.extend(theme.font_declarations());
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
-    if resolved_fonts.is_empty() {
-        return Ok(());
+    if !resolved_fonts.is_empty() {
+        let fonts_dest = resources_dir.join("fonts");
+        assets::copy_fonts(&resolved_fonts, &fonts_dest).await?;
     }
 
-    let fonts_dest = resources_dir.join("fonts");
-    assets::copy_fonts(&resolved_fonts, &fonts_dest).await?;
-    Ok(())
+    // The staged `waterui_assets` root — what `WATERUI_ASSETS_ROOT` must name
+    // for a launcher that runs the binary somewhere `resources/` does not sit
+    // beside the executable (the MCP child runs out of the shared Cargo
+    // profile directory).
+    Ok(resources_dir.join(assets::ASSET_ROOT_DIR))
 }
 
 pub async fn write_preview_bindings(

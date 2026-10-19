@@ -903,27 +903,24 @@ impl Planes {
                                 .root
                                 .child(c"cherenkov frame")
                                 .map_err(|e| RenderError::Render(e.to_string()))?;
+                            // The fallible work precedes the bookkeeping:
+                            // a `set_frame` error leaves `promoted`
+                            // describing the last applied transaction.
+                            set_frame(&mut transaction, &surface, promotion.frame, dup_fence)?;
                             promotion.frame.lease();
-                            let plane = slot.insert(Plane {
+                            slot.insert(Plane {
                                 surface,
                                 frame: promotion.frame.clone(),
                                 generation: promotion.generation,
                                 shown: None,
-                            });
-                            set_frame(
-                                &mut transaction,
-                                &plane.surface,
-                                promotion.frame,
-                                dup_fence,
-                            )?;
-                            plane
+                            })
                         }
                     };
                     if plane.generation != promotion.generation {
+                        set_frame(&mut transaction, &plane.surface, promotion.frame, dup_fence)?;
                         promotion.frame.lease();
                         plane.generation = promotion.generation;
                         let previous = std::mem::replace(&mut plane.frame, promotion.frame.clone());
-                        set_frame(&mut transaction, &plane.surface, promotion.frame, dup_fence)?;
                         pending.push(Pending {
                             surface: plane.surface.as_ptr(),
                             what: Replaced::Frame(previous),

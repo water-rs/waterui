@@ -413,6 +413,72 @@ fn a_member_binds_clip_transform_shader_and_uniforms() {
     );
 }
 
+/// A member recorded inside a transformed scope draws in the scope layer's
+/// space: `close_scope` re-expresses the member's transform through
+/// `origin.inverse()`, the same conversion runs and live items get —
+/// otherwise the member mounts under the scope layer with the node's space
+/// still in its transform and the scope transform reaches it twice
+/// (water-rs/waterui#2894).
+#[test]
+fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
+    use crate::renderer::FrameSignals;
+    use crate::renderer::mount::program::Item;
+    use crate::renderer::mount::{
+        NodeCell, Placement, PlacementClock, ProgramBuilder, ScopeKey, ScopeProps,
+    };
+
+    let draw = chrome_draw(GLASS, GLASS_SHADER, Vec::new());
+    let material = cherenkov_record::Content::record_layered(
+        &cherenkov_record::LayoutSize::new(),
+        cherenkov_record::MaterialScope::SOLO,
+        |recorder| {
+            recorder.backdrop_material(
+                draw.shape.clone(),
+                draw.shader,
+                draw.capture,
+                draw.effect.clone(),
+            );
+        },
+    )
+    .runs
+    .into_iter()
+    .next()
+    .expect("the layered record carries the one material")
+    .material;
+
+    let clock = PlacementClock::new();
+    let mut builder = ProgramBuilder::new(NodeCell::new(
+        FrameSignals::new(std::time::Instant::now()),
+        Placement::new(&clock),
+    ));
+    builder.open_scope(
+        ScopeKey {
+            role: "transition",
+            item: 0,
+        },
+        ScopeProps {
+            transform: Affine::translate((30.0, 40.0)),
+            clip: None,
+            alpha: 1.0,
+        },
+        Placement::new(&clock),
+    );
+    builder.push_chrome(material, Affine::translate((5.0, 6.0)), true);
+    builder.close_scope();
+    let program = builder.finish();
+    let [Item::Scope { items, .. }] = program.items.as_slice() else {
+        panic!("the record is the one scope")
+    };
+    let [Item::Chrome(chrome)] = items.as_slice() else {
+        panic!("the scope holds the one member")
+    };
+    assert_eq!(
+        chrome.transform,
+        Affine::translate((-25.0, -34.0)),
+        "the member's transform is in the scope layer's space — the scope transform applies once"
+    );
+}
+
 /// A re-flush of the same program rebinds the recorded terms onto the same
 /// member layer and the same group — no new layer, group or capture.
 #[test]

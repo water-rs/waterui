@@ -341,6 +341,27 @@ fn visit_draw(p: &mut Prepared, d: &Draw, blobs: &Blobs) -> Result<(), BenchErro
     Ok(())
 }
 
+/// The filtrate filter a scene's
+/// [`LayerFilter::OverscrollStretch`](cherenkov_scene::LayerFilter::OverscrollStretch)
+/// names: its frame's coefficients, extent and stretch in `f32`.
+#[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "scene filter parameters use f64; filtrate parameters use f32"
+)]
+#[must_use]
+pub fn overscroll_stretch(
+    frame: Affine,
+    size: kurbo::Size,
+    stretch: kurbo::Vec2,
+) -> filtrate::filters::OverscrollStretch<f32> {
+    filtrate::filters::OverscrollStretch {
+        frame: frame.as_coeffs().map(|value| value as f32),
+        size: [size.width as f32, size.height as f32],
+        stretch: [stretch.x as f32, stretch.y as f32],
+    }
+}
+
 /// The `Paint::Image` inside a draw's paint, when any.
 #[must_use]
 pub fn image_paint(paint: &Paint) -> Option<&ImagePaint> {

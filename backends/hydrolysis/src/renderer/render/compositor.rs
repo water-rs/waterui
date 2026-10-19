@@ -69,14 +69,15 @@ impl<'a> HydrolysisRenderTarget<'a> {
     /// [`HydrolysisRenderTarget`] describes, with the device-creation chain
     /// taken from `device_loss`'s context.
     fn into_frame_target(self) -> FrameRenderTarget<'a> {
-        let context = self.device_loss.gpu_context();
+        let device_loss = self.device_loss;
+        let context = device_loss.gpu_context();
         FrameRenderTarget {
             adapter: self.adapter,
             device: self.device,
             queue: self.queue,
-            device_loss: self.device_loss,
+            device_loss: device_loss.clone(),
             gpu_context_id: context.context_id,
-            shared_device: context.shared_device,
+            shared_device: context.shared_device.clone(),
             display_scale: 1.0,
             width: self.width,
             height: self.height,

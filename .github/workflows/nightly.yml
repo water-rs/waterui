@@ -290,6 +290,17 @@ jobs:
   # in the runner's session. The Android
   # leg on Ubuntu stops at packaging — `water run` needs a device — and
   # packages both the debug and the release APK (#2290).
+  #
+  # The legs double as the nightly's cold-compile measurement, which is why
+  # they stay cold: no Actions cache reaches the fresh user, and no compiler
+  # wrapper (`WATERUI_DISABLE_SCCACHE=1`, `RUSTC_WRAPPER` unset) reaches a
+  # build. Each leg times its phases — CLI install, `doctor --fix`,
+  # `create`, the cold `water build` (the first compile of the app graph,
+  # into an empty per-user `~/.water` target dir, verified before it
+  # starts), `water package`, and `water run` to 'Application started' —
+  # and `WATER_CARGO_TIMINGS=1` makes every CLI-driven cargo build write a
+  # `--timings` report. `cli-e2e-metrics` turns the per-leg records into the
+  # step summary and the `ci-metrics` history.
   cli-e2e:
     name: CLI fresh user / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -316,6 +327,8 @@ jobs:
             backend: hydrolysis
 
     env:
+      # Cold build, no compile wrapper (see the setup-rust step).
+      RUSTC_WRAPPER: ""
       E2E_USER: watere2e
       E2E_PLATFORM: ${{ matrix.platform }}
       E2E_BACKEND: ${{ matrix.backend }}
@@ -328,13 +341,29 @@ jobs:
       - name: Setup Rust (CLI build host)
         uses: ./.github/actions/setup-rust
         with:
-          shared-key: cli-e2e-${{ runner.os }}
-          # One writer per OS cache key: the schedule.
-          save-if: ${{ github.event_name == 'schedule' }}
+          # e2e lanes build fully cold — part of what they measure is cold
+          # compile time — so this job restores and saves no Actions cache.
+          # The rust-cache it used to carry held ~3.2 GB of the 10 GiB quota
+          # across the three OS keys for one build a day.
+          cache: "false"
 
+      # Timed for the cold-compile record (see `cli-e2e-metrics`). A
+      # `--path` install builds in the workspace's `target/`, so the
+      # `--timings` report lands in `target/cargo-timings/`; a `target/`
+      # that already exists before the install means a restored cache made
+      # the number warm, and the record says so.
       - name: Install the CLI under test
         shell: bash
-        run: cargo install --locked --path cli
+        run: |
+          set -euo pipefail
+          metrics="$RUNNER_TEMP/e2e-metrics"
+          mkdir -p "$metrics/cargo-timings/cli-install"
+          if [ -d target ]; then cold=false; else cold=true; fi
+          echo "cli_install_cold=$cold" >> "$metrics/flags.txt"
+          start=$SECONDS
+          cargo install --locked --path cli --timings
+          printf 'cli_install\t%s\n' "$((SECONDS - start))" >> "$metrics/timings.tsv"
+          cp target/cargo-timings/cargo-timing-*.html "$metrics/cargo-timings/cli-install/" 2>/dev/null || true
 
       # `shaderloom` — reached through the scaffolded hydrolysis app's normal
       # dependency graph — compiles WGSL to DXIL through `dxc`, which the
@@ -345,6 +374,8 @@ jobs:
       - name: Install DirectX Shader Compiler
         if: runner.os == 'Windows'
         uses: ./.github/actions/install-dxc
+        with:
+          cache: "false"
 
       # The fresh user's password is generated per run: a literal in this
       # file would print in every step's environment block of the public
@@ -491,6 +522,27 @@ jobs:
           cd "$HOME"
           fail() { echo "::error::$*"; exit 1; }
           phase() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*"; }
+          # Cold-compile record (see `cli-e2e-metrics`): each phase that
+          # succeeds appends `<metric>\t<seconds>` to timings.tsv. The
+          # numbers must stay cold, so no compiler wrapper reaches a build:
+          # the CLI would otherwise route every build through the `sccache`
+          # that `doctor --fix` installs.
+          export WATERUI_DISABLE_SCCACHE=1
+          unset RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER
+          record() { printf '%s\t%s\n' "$1" "$2" >> "$HOME/e2e-logs/timings.tsv"; }
+          # Copy the `cargo --timings` reports (`WATER_CARGO_TIMINGS=1`) a
+          # phase produced into e2e-logs/cargo-timings/<phase>/; each report
+          # file is timestamped, so one already collected is skipped.
+          collect_timings() {
+            local dest="$HOME/e2e-logs/cargo-timings/$1" report name
+            mkdir -p "$dest"
+            find "$HOME/.water" "$HOME/e2eapp" -type f -name 'cargo-timing-*.html' 2>/dev/null |
+              while IFS= read -r report; do
+                name=$(basename "$report")
+                [ -n "$(find "$HOME/e2e-logs/cargo-timings" -name "$name" -print -quit)" ] \
+                  || cp "$report" "$dest/"
+              done
+          }
 
           phase "water --version"
           water --version 2>&1 | tee e2e-logs/version.log || fail "water --version failed"
@@ -503,10 +555,12 @@ jobs:
 
           # The auto-repair loop (three passes, non-interactive auto-install).
           phase "water doctor --fix"
+          start=$SECONDS
           water doctor --fix 2>&1 | tee e2e-logs/doctor-fix.log
           if grep -q 'Failed to install' e2e-logs/doctor-fix.log; then
             fail "doctor --fix reported failed installs"
           fi
+          record doctor_fix "$((SECONDS - start))"
 
           # Post-fix report. Informational: legitimately unfixable items (no
           # Android device, no AVD) may remain missing.
@@ -521,9 +575,11 @@ jobs:
           git config --global --add safe.directory '*'
 
           phase "water create e2eapp"
+          start=$SECONDS
           water create e2eapp --waterui-path "$WATERUI_SRC" \
             2>&1 | tee e2e-logs/create-app.log || fail "water create failed"
           [ -f e2eapp/Water.toml ] || fail "e2eapp scaffold has no Water.toml"
+          record create "$((SECONDS - start))"
 
           if [ "$E2E_PLATFORM" = "android" ]; then
             # Outside a project doctor leaves the Android group optional, so
@@ -532,35 +588,63 @@ jobs:
             # targets the toolchain check wants.
             export PATH="$JAVA_HOME/bin:$PATH"
             phase "water doctor --fix (Android project)"
+            start=$SECONDS
             (cd e2eapp && water doctor --fix 2>&1 | tee ../e2e-logs/doctor-fix-android.log)
             if grep -q 'Failed to install' e2e-logs/doctor-fix-android.log; then
               fail "doctor --fix reported failed installs in the Android project"
             fi
+            record doctor_fix_android "$((SECONDS - start))"
           fi
-          phase "water build e2eapp"
+          # The cold build: the first compile of the app's graph on this
+          # account. Every Water build compiles into the per-user
+          # `~/.water/build_cache/target`, so on a brand-new user it must
+          # hold no compiled unit yet — checked here, and recorded, rather
+          # than assumed.
+          (cd e2eapp && rustc -vV) > e2e-logs/rustc-vV.log 2>&1 || true
+          if find "$HOME/.water" -type d -name .fingerprint 2>/dev/null | grep -q .; then
+            echo "::warning::the build cache already holds compiled units before the cold build"
+            echo "cold_build_verified=false" >> e2e-logs/flags.txt
+          else
+            echo "cold_build_verified=true" >> e2e-logs/flags.txt
+          fi
+          export WATER_CARGO_TIMINGS=1
+          phase "water build e2eapp (cold)"
+          start=$SECONDS
           (cd e2eapp && water build --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --yes \
             2>&1 | tee ../e2e-logs/build-app.log) || fail "water build failed"
+          record cold_build "$((SECONDS - start))"
+          collect_timings build
           if [ "$E2E_PLATFORM" = "android" ]; then
             # Both APK profiles: debug signs with the generated debug
             # keystore, release goes unsigned — a fresh project carries no
             # [signing.android] config.
             phase "water package e2eapp (debug)"
+            start=$SECONDS
             (cd e2eapp && water package --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --arch arm64 --debug --yes \
               2>&1 | tee ../e2e-logs/package-debug.log) || fail "water package (debug) failed"
             grep -q 'Packaged at' e2e-logs/package-debug.log \
               || fail "water package produced no artifact line"
+            record package_debug "$((SECONDS - start))"
+            collect_timings package-debug
             phase "water package e2eapp (release, unsigned)"
+            start=$SECONDS
             (cd e2eapp && water package --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --arch arm64 --release --unsigned --yes \
               2>&1 | tee ../e2e-logs/package-release.log) || fail "water package (release) failed"
             grep -q 'Packaged at' e2e-logs/package-release.log \
               || fail "water package produced no artifact line"
+            record package_release "$((SECONDS - start))"
+            collect_timings package-release
           else
             phase "water package e2eapp"
+            start=$SECONDS
             (cd e2eapp && water package --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --yes \
               2>&1 | tee ../e2e-logs/package-app.log) || fail "water package failed"
             grep -q 'Packaged at' e2e-logs/package-app.log \
               || fail "water package produced no artifact line"
+            record package "$((SECONDS - start))"
+            collect_timings package
           fi
+          unset WATER_CARGO_TIMINGS
 
           # `water preview` compiles a crate the CLI generates from its own
           # templates against the framework the project resolves, which no
@@ -630,6 +714,29 @@ jobs:
           Set-Location $env:USERPROFILE
           function Fail($msg) { Write-Output "::error::$msg"; exit 1 }
           function Phase($msg) { Write-Output "[$(Get-Date -Format o)] $msg" }
+          # Cold-compile record (see `cli-e2e-metrics` and the Unix script):
+          # each phase that succeeds appends `<metric>\t<seconds>`, and no
+          # compiler wrapper may reach a build — the CLI would otherwise
+          # route every build through the sccache `doctor --fix` installs.
+          $env:WATERUI_DISABLE_SCCACHE = "1"
+          Remove-Item Env:RUSTC_WRAPPER, Env:CARGO_BUILD_RUSTC_WRAPPER -ErrorAction SilentlyContinue
+          function Record($metric, $since) {
+            $secs = [int]((Get-Date) - $since).TotalSeconds
+            Add-Content "$logs\timings.tsv" "$metric`t$secs"
+          }
+          # Copy the `cargo --timings` reports a phase produced into
+          # e2e-logs\cargo-timings\<phase>; reports are timestamped, so one
+          # already collected is skipped.
+          function Collect-Timings($phaseName) {
+            $dest = "$logs\cargo-timings\$phaseName"
+            New-Item -ItemType Directory -Force $dest | Out-Null
+            $seen = @(Get-ChildItem "$logs\cargo-timings" -Recurse -File -ErrorAction SilentlyContinue |
+              ForEach-Object Name)
+            Get-ChildItem "$env:USERPROFILE\.water", "$env:USERPROFILE\e2eapp" -Recurse -File `
+              -Filter 'cargo-timing-*.html' -ErrorAction SilentlyContinue |
+              Where-Object { $seen -notcontains $_.Name } |
+              ForEach-Object { Copy-Item $_.FullName $dest }
+          }
 
           Phase "water --version"
           water --version 2>&1 | Tee-Object "$logs\version.log"
@@ -642,10 +749,12 @@ jobs:
           }
 
           Phase "water doctor --fix"
+          $t0 = Get-Date
           water doctor --fix 2>&1 | Tee-Object "$logs\doctor-fix.log"
           if (Select-String "$logs\doctor-fix.log" -Pattern 'Failed to install' -Quiet) {
             Fail "doctor --fix reported failed installs"
           }
+          Record doctor_fix $t0
 
           Phase "water doctor (post-fix)"
           water doctor 2>&1 | Tee-Object "$logs\doctor-after.log"
@@ -656,16 +765,32 @@ jobs:
           # read the submodule pins `water create` resolves through.
           git config --global --add safe.directory '*'
           Phase "water create e2eapp"
+          $t0 = Get-Date
           water create e2eapp --waterui-path $wateruiSrc 2>&1 |
             Tee-Object "$logs\create-app.log"
           if ($LASTEXITCODE -or -not (Test-Path "e2eapp\Water.toml")) { Fail "water create failed" }
+          Record create $t0
 
           Push-Location e2eapp
-          Phase "water build e2eapp"
+          # The cold build: the per-user `~/.water` build cache must hold no
+          # compiled unit yet — checked and recorded, not assumed.
+          rustc -vV 2>&1 | Set-Content "$logs\rustc-vV.log"
+          if (Get-ChildItem "$env:USERPROFILE\.water" -Recurse -Directory -Filter .fingerprint -ErrorAction SilentlyContinue | Select-Object -First 1) {
+            Write-Output "::warning::the build cache already holds compiled units before the cold build"
+            Add-Content "$logs\flags.txt" "cold_build_verified=false"
+          } else {
+            Add-Content "$logs\flags.txt" "cold_build_verified=true"
+          }
+          $env:WATER_CARGO_TIMINGS = "1"
+          Phase "water build e2eapp (cold)"
+          $t0 = Get-Date
           water build --platform $env:E2E_PLATFORM --backend $env:E2E_BACKEND 2>&1 |
             Tee-Object "$logs\build-app.log"
           if ($LASTEXITCODE) { Pop-Location; Fail "water build failed" }
+          Record cold_build $t0
+          Collect-Timings build
           Phase "water package e2eapp"
+          $t0 = Get-Date
           water package --platform $env:E2E_PLATFORM --backend $env:E2E_BACKEND 2>&1 |
             Tee-Object "$logs\package-app.log"
           $pkgExit = $LASTEXITCODE
@@ -674,6 +799,8 @@ jobs:
           if (-not (Select-String "$logs\package-app.log" -Pattern 'Packaged at' -Quiet)) {
             Fail "water package produced no artifact line"
           }
+          Record package $t0
+          Collect-Timings package
 
           Phase "water run e2eapp"
           # windows-latest has no GPU: the only surface-compatible adapter is
@@ -687,9 +814,12 @@ jobs:
             -RedirectStandardOutput "$logs\run-play.out" -RedirectStandardError "$logs\run-play.err"
           $runStart = Get-Date
           $started = $false
-          # A fresh user pays a cold build of the whole graph here; the
-          # macOS leg has measured over 20 minutes for it, so the budget is
-          # an hour and the notice line below records the real number.
+          # The cold build above already populated this user's target
+          # directory, so the run measures what is left on top of it — the
+          # launch plus anything the run still compiles or links (the
+          # `cargo-timings\run` report shows which). The hour-long budget
+          # stays: a run that unexpectedly rebuilds the graph must still be
+          # measured, not cut off.
           $deadline = (Get-Date).AddMinutes(60)
           # The run's own output lands in the redirect files; echo new lines
           # as they appear so this phase is visible in the job log instead of
@@ -720,12 +850,14 @@ jobs:
           # passing launch; give it a short grace window before teardown.
           if ($started) {
             $runElapsed = [int]((Get-Date) - $runStart).TotalSeconds
-            Write-Output "::notice::cold water run reached 'Application started' in ${runElapsed}s"
-            Set-Content "$logs\run-play-time.log" "cold water run to 'Application started': ${runElapsed}s"
+            Write-Output "::notice::water run (after the cold build) reached 'Application started' in ${runElapsed}s"
+            Set-Content "$logs\run-play-time.log" "water run (after the cold build) to 'Application started': ${runElapsed}s"
+            Add-Content "$logs\timings.tsv" "launch`t$runElapsed"
             Start-Sleep -Seconds 10
           }
           taskkill /T /F /PID $p.Id 2>$null | Out-Null
           Get-Process e2eapp -ErrorAction SilentlyContinue | Stop-Process -Force
+          Collect-Timings run
           if (-not $started) {
             Write-Output "---- run-play.out (tail) ----"
             Get-Content "$logs\run-play.out" -Tail 60 -ErrorAction SilentlyContinue
@@ -787,16 +919,45 @@ jobs:
             "$(id -un) allow read,write,execute,delete,append,delete_child,file_inherit,directory_inherit" \
             "/Users/$E2E_USER/e2eapp" "/Users/$E2E_USER/e2e-logs"
           cd "/Users/$E2E_USER/e2eapp" || exit 1
+          # The console user has its own `~/.water` build cache, empty on
+          # this runner, so a bare `water run` here would cold-compile the
+          # whole graph again and report it as launch time. Build first, as
+          # this user and timed (`console_build`), so the run measures the
+          # launch plus whatever it still adds on top (the Xcode app shell,
+          # the final link). Same cold-ness rules as the fresh user: no
+          # compiler wrapper.
+          export WATERUI_DISABLE_SCCACHE=1 WATER_CARGO_TIMINGS=1
+          unset RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER
+          metrics="$RUNNER_TEMP/e2e-metrics"
+          collect_timings() {
+            local dest="$metrics/cargo-timings/$1" report name
+            mkdir -p "$dest"
+            find "$HOME/.water" -type f -name 'cargo-timing-*.html' 2>/dev/null |
+              while IFS= read -r report; do
+                name=$(basename "$report")
+                [ -n "$(find "$metrics/cargo-timings" -name "$name" -print -quit)" ] \
+                  || cp "$report" "$dest/"
+              done
+          }
+          echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] water build e2eapp (console user)"
+          build_start=$SECONDS
+          if water build --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --yes \
+              2>&1 | tee "$RUNNER_TEMP/console-build.log"; then
+            printf 'console_build\t%s\n' "$((SECONDS - build_start))" >> "$metrics/timings.tsv"
+          else
+            echo "::warning::console-user water build failed; water run below compiles instead"
+          fi
+          collect_timings console-build
+          cp "$RUNNER_TEMP/console-build.log" "/Users/$E2E_USER/e2e-logs/console-build.log" || true
           echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] water run e2eapp"
           water run --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" \
             > "$RUNNER_TEMP/run-play.log" 2>&1 &
           run_pid=$!
           run_start=$SECONDS
           started=1
-          # Stream new log lines as they land so a long cold compile is
-          # visible in the job log instead of a silence. The budget is an
-          # hour: a fresh user pays a cold build of the whole graph here and
-          # the macOS leg has measured over 20 minutes for it.
+          # Stream new log lines as they land so the phase is visible in the
+          # job log instead of a silence. The budget stays an hour: a run
+          # that unexpectedly rebuilds the graph must still be measured.
           seen=0
           for _ in $(seq 1 900); do
             if [ -f "$RUNNER_TEMP/run-play.log" ]; then
@@ -814,9 +975,10 @@ jobs:
           done
           if [ "$started" -eq 0 ]; then
             run_elapsed=$((SECONDS - run_start))
-            echo "::notice::cold water run reached 'Application started' in ${run_elapsed}s"
-            echo "cold water run to 'Application started': ${run_elapsed}s" \
+            echo "::notice::water run (after the build) reached 'Application started' in ${run_elapsed}s"
+            echo "water run (after the build) to 'Application started': ${run_elapsed}s" \
               > "$RUNNER_TEMP/run-play-time.log"
+            printf 'launch\t%s\n' "$run_elapsed" >> "$metrics/timings.tsv"
             sleep 10
             grep -q 'Application crashed\|Application exited' "$RUNNER_TEMP/run-play.log" \
               && { echo "::error::water run launched but the app died within the grace window"; started=2; }
@@ -826,6 +988,7 @@ jobs:
           # collected and the failure annotated.
           kill "$run_pid" 2>/dev/null || true; sleep 2; kill -9 "$run_pid" 2>/dev/null || true
           pkill -f 'e2eapp' 2>/dev/null || true
+          collect_timings run
           cp "$RUNNER_TEMP/run-play.log" "/Users/$E2E_USER/e2e-logs/run-play.log" || true
           cp "$RUNNER_TEMP/run-play-time.log" "/Users/$E2E_USER/e2e-logs/run-play-time.log" \
             2>/dev/null || true
@@ -848,6 +1011,11 @@ jobs:
             bash -s <<'SCRIPT'
           set -uo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
+          # Same cold-ness rules as the build script: no compiler wrapper. The
+          # run's own `--timings` report shows anything it still compiles on
+          # top of the cold build.
+          export WATERUI_DISABLE_SCCACHE=1 WATER_CARGO_TIMINGS=1
+          unset RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER
           cd "$HOME/e2eapp"
           # `--yes` answers the GTK4 experimental-backend confirmation, and the
           # backend must be named: the project default on Linux is hydrolysis.
@@ -858,10 +1026,9 @@ jobs:
           run_pid=$!
           run_start=$SECONDS
           started=1
-          # Stream new log lines as they land so a long cold compile is
-          # visible in the job log instead of a silence. The budget is an
-          # hour: a fresh user pays a cold build of the whole graph here and
-          # the macOS leg has measured over 20 minutes for it.
+          # Stream new log lines as they land so the phase is visible in the
+          # job log instead of a silence. The budget stays an hour: a run
+          # that unexpectedly rebuilds the graph must still be measured.
           seen=0
           for _ in $(seq 1 900); do
             if [ -f "$HOME/e2e-logs/run-play.log" ]; then
@@ -879,15 +1046,23 @@ jobs:
           done
           if [ "$started" -eq 0 ]; then
             run_elapsed=$((SECONDS - run_start))
-            echo "::notice::cold water run reached 'Application started' in ${run_elapsed}s"
-            echo "cold water run to 'Application started': ${run_elapsed}s" \
+            echo "::notice::water run (after the cold build) reached 'Application started' in ${run_elapsed}s"
+            echo "water run (after the cold build) to 'Application started': ${run_elapsed}s" \
               > "$HOME/e2e-logs/run-play-time.log"
+            printf 'launch\t%s\n' "$run_elapsed" >> "$HOME/e2e-logs/timings.tsv"
             sleep 10
             grep -q 'Application crashed\|Application exited' "$HOME/e2e-logs/run-play.log" \
               && { echo "::error::water run launched but the app died within the grace window"; started=2; }
           fi
           kill "$run_pid" 2>/dev/null; sleep 2; kill -9 "$run_pid" 2>/dev/null
           pkill -f 'water run' 2>/dev/null; pkill -f 'e2eapp' 2>/dev/null; pkill Xvfb 2>/dev/null
+          mkdir -p "$HOME/e2e-logs/cargo-timings/run"
+          find "$HOME/.water" -type f -name 'cargo-timing-*.html' 2>/dev/null |
+            while IFS= read -r report; do
+              name=$(basename "$report")
+              [ -n "$(find "$HOME/e2e-logs/cargo-timings" -name "$name" -print -quit)" ] \
+                || cp "$report" "$HOME/e2e-logs/cargo-timings/run/"
+            done
           if [ "$started" -ne 0 ]; then
             tail -30 "$HOME/e2e-logs/run-play.log" 2>/dev/null || true
           fi
@@ -913,12 +1088,140 @@ jobs:
           Copy-Item "C:\Users\$env:E2E_USER\e2e-logs" "$env:RUNNER_TEMP\e2e-logs" `
             -Recurse -Force -ErrorAction SilentlyContinue
 
+      # One JSON record per leg for `cli-e2e-metrics`: the fresh user's
+      # timings.tsv plus what the runner account timed (the CLI install, the
+      # macOS console-user build and launch), the coldness checks, the fresh
+      # user's rustc and the runner image. A failed leg still records the
+      # phases it finished.
+      - name: Record cold-compile timings
+        if: always()
+        shell: bash
+        env:
+          LEG_STATUS: ${{ job.status }}
+          RUNS_ON: ${{ matrix.os }}
+        run: |
+          logs="$RUNNER_TEMP/e2e-logs"
+          metrics="$RUNNER_TEMP/e2e-metrics"
+          mkdir -p "$logs/cargo-timings" "$RUNNER_TEMP/e2e-record"
+          if [ -d "$metrics" ]; then
+            cat "$metrics/timings.tsv" >> "$logs/timings.tsv" 2>/dev/null || true
+            cat "$metrics/flags.txt" >> "$logs/flags.txt" 2>/dev/null || true
+            cp -R "$metrics/cargo-timings/." "$logs/cargo-timings/" 2>/dev/null || true
+          fi
+          # `python3` on the Windows image can resolve to the Store alias stub.
+          if [ "$RUNNER_OS" = "Windows" ]; then py=python; else py=python3; fi
+          "$py" .github/scripts/cli_e2e_metrics.py record \
+            --platform "$E2E_PLATFORM" --runner "$RUNS_ON" --status "$LEG_STATUS" \
+            --timings "$logs/timings.tsv" --rustc "$logs/rustc-vV.log" --flags "$logs/flags.txt" \
+            --out "$logs/timings.json"
+          cp "$logs/timings.json" "$RUNNER_TEMP/e2e-record/$E2E_PLATFORM.json"
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: cli-e2e-${{ matrix.platform }}-logs
           path: ${{ runner.temp }}/e2e-logs
           if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cli-e2e-metrics-${{ matrix.platform }}
+          path: ${{ runner.temp }}/e2e-record
+          if-no-files-found: ignore
+
+  # The nightly's cold-compile record: one table per `cli-e2e` platform in
+  # the run's step summary (tonight, delta against the previous stored
+  # night, 7- and 30-night medians), and on `dev` the night appended to the
+  # orphan `ci-metrics` branch (`cli-e2e/history.jsonl`, flattened into
+  # `cli-e2e/history.csv`). A branch in this repository needs no secret
+  # beyond this job's own token, notifies nobody, and keeps the history
+  # diffable and readable with plain git. Pushes made with GITHUB_TOKEN
+  # trigger no workflow. Not a dependency of `promote` or `report`: a metrics
+  # hiccup must never block certification, so publishing is best-effort.
+  cli-e2e-metrics:
+    name: CLI cold-compile metrics
+    needs: [cli-e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      HISTORY_BRANCH: ci-metrics
+      HISTORY_URL: ${{ github.server_url }}/${{ github.repository }}/blob/ci-metrics/cli-e2e/history.csv
+      ARTIFACTS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: cli-e2e-metrics-*
+          path: ${{ runner.temp }}/records
+          merge-multiple: true
+      - name: Step summary
+        shell: bash
+        run: |
+          set -uo pipefail
+          history="$RUNNER_TEMP/history.jsonl"
+          # No branch yet (the first night) or no file: an empty history.
+          if ! { git fetch --quiet --depth=1 origin "$HISTORY_BRANCH" 2>/dev/null &&
+                 git show FETCH_HEAD:cli-e2e/history.jsonl > "$history" 2>/dev/null; }; then
+            : > "$history"
+          fi
+          python3 .github/scripts/cli_e2e_metrics.py summarize \
+            --records "$RUNNER_TEMP/records" --history "$history" \
+            --history-url "$HISTORY_URL" --artifacts-url "$ARTIFACTS_URL" \
+            >> "$GITHUB_STEP_SUMMARY"
+      # Built with plumbing on a private index so the checkout's own tree and
+      # index are never touched; a rejected push (another writer got there
+      # first) refetches and rebuilds on the new tip.
+      - name: Append the night to the ci-metrics branch
+        if: github.ref == 'refs/heads/dev'
+        continue-on-error: true
+        shell: bash
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          if ! ls "$RUNNER_TEMP"/records/*.json >/dev/null 2>&1; then
+            echo "No leg records; nothing to store."
+            exit 0
+          fi
+          export GIT_INDEX_FILE="$RUNNER_TEMP/ci-metrics.index"
+          for attempt in 1 2 3; do
+            out="$RUNNER_TEMP/history-out"
+            rm -rf "$out" "$GIT_INDEX_FILE"
+            history="$RUNNER_TEMP/history.jsonl"
+            parent=""
+            if git fetch --quiet --depth=1 origin "$HISTORY_BRANCH" 2>/dev/null; then
+              parent=$(git rev-parse FETCH_HEAD)
+              git show "$parent:cli-e2e/history.jsonl" > "$history" 2>/dev/null || : > "$history"
+              git read-tree "$parent"
+            else
+              : > "$history"
+            fi
+            python3 .github/scripts/cli_e2e_metrics.py summarize \
+              --records "$RUNNER_TEMP/records" --history "$history" --out-dir "$out" > /dev/null
+            for file in history.jsonl history.csv README.md; do
+              blob=$(git hash-object -w "$out/$file")
+              git update-index --add --cacheinfo "100644,$blob,cli-e2e/$file"
+            done
+            tree=$(git write-tree)
+            commit=$(git commit-tree "$tree" ${parent:+-p "$parent"} \
+              -m "cli-e2e metrics: run ${GITHUB_RUN_ID} (${GITHUB_SHA:0:12})")
+            if git push --quiet origin "$commit:refs/heads/$HISTORY_BRANCH"; then
+              echo "Stored as $commit on $HISTORY_BRANCH"
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt); retrying on the new tip."
+            sleep $((attempt * 5))
+          done
+          echo "::warning::could not append tonight's metrics to $HISTORY_BRANCH"
+          exit 1
 
   test-report:
     name: Test Report

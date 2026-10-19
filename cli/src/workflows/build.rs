@@ -347,6 +347,28 @@ pub fn configure_generated_crate_compilation(command: &mut Command) {
     command.env("CARGO_INCREMENTAL", "0");
 }
 
+/// The environment variable that asks every Cargo build the CLI drives to
+/// write a `--timings` HTML report.
+///
+/// Cargo has no config key or environment variable for `--timings` (an
+/// unknown `build.timings` key is silently ignored), so a caller that wants
+/// the report for the builds behind `water build`/`water package`/`water run`
+/// has no other way to reach the flag. The nightly fresh-user e2e sets it to
+/// record where a cold app build spends its time; reports land in the
+/// target directory's `cargo-timings/`.
+pub const CARGO_TIMINGS_ENV: &str = "WATER_CARGO_TIMINGS";
+
+/// Whether [`CARGO_TIMINGS_ENV`] is set to a truthy value (`1`, `true`,
+/// `yes`, `on`, case-insensitive) in `host`'s environment.
+fn cargo_timings_requested(host: &crate::toolchain::Host) -> bool {
+    host.env(CARGO_TIMINGS_ENV).is_some_and(|value| {
+        matches!(
+            value.to_string_lossy().trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 /// Prepend the managed tool directories (`~/.water/tools/<name>/<version>`)
 /// to the build's `PATH` so build scripts resolve a pinned `dxc`, JDK, and
 /// friends by name — the user never edits `PATH`. A no-op when nothing is
@@ -2283,6 +2305,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
             .args(cargo_target.cargo_args(crate_type_override))
             .args(["--target", self.triple.to_string().as_str()])
             .args(framework.then_some("--locked"))
+            .args(cargo_timings_requested(&self.host).then_some("--timings"))
             .current_dir(&self.path);
 
         // A managed crate builds outside the project, so Cargo's config
@@ -3705,6 +3728,33 @@ mod tests {
         executable_suffix, lib_extension_for_triple, reported_shared_runtime,
         resolve_dxc_runtime_in, resolve_rust_standard_library_in,
     };
+
+    #[test]
+    fn cargo_timings_follow_the_truthy_environment_switch() {
+        let cases = [
+            (Some("1"), true),
+            (Some("true"), true),
+            (Some(" YES "), true),
+            (Some("on"), true),
+            (Some("0"), false),
+            (Some("false"), false),
+            (Some(""), false),
+            (None, false),
+        ];
+        for (value, expected) in cases {
+            let vars: Vec<(&str, &str)> = value
+                .map(|value| (super::CARGO_TIMINGS_ENV, value))
+                .into_iter()
+                .collect();
+            let host = crate::toolchain::Host::new(Vec::<std::path::PathBuf>::new(), vars);
+            assert_eq!(
+                super::cargo_timings_requested(&host),
+                expected,
+                "{}={value:?}",
+                super::CARGO_TIMINGS_ENV
+            );
+        }
+    }
 
     fn shared_runtime_artifact_json(
         manifest: &std::path::Path,
@@ -5495,6 +5545,20 @@ mod tests {
     /// The project resolves the framework from a local checkout — the pinned
     /// revision by default, or `WATERUI_PATH` to exercise a working tree — so
     /// the test builds the same `waterui` commit the crate's git deps pin.
+    /// Turns on the facade's `assets` feature on the `waterui` entry of
+    /// `dependencies`, when that table has one.
+    fn opt_in_assets(dependencies: &mut toml_edit::Item) {
+        let Some(waterui) = dependencies
+            .as_table_like_mut()
+            .and_then(|table| table.get_mut("waterui"))
+        else {
+            return;
+        };
+        let mut features = toml_edit::Array::new();
+        features.push("assets");
+        waterui["features"] = toml_edit::value(features);
+    }
+
     #[test]
     #[ignore = "builds a release app against the enclosing workspace"]
     fn release_build_stages_include_bundle_mounts() {
@@ -5535,6 +5599,23 @@ mod tests {
             let mut source = std::fs::read_to_string(&lib_rs).expect("lib.rs");
             source.push_str("\nwaterui::include_bundle!(\"bundle\", as = media);\n");
             std::fs::write(&lib_rs, source).expect("write lib.rs");
+
+            // `include_bundle!` is the facade's `assets` feature, which a
+            // plain scaffold intentionally leaves off — the fixture opts in
+            // the way an author does: `features = ["assets"]` on every
+            // `waterui` dependency the generated manifest carries (#1637).
+            let manifest_path = root.join("Cargo.toml");
+            let mut manifest = std::fs::read_to_string(&manifest_path)
+                .expect("read Cargo.toml")
+                .parse::<toml_edit::DocumentMut>()
+                .expect("the generated Cargo.toml parses");
+            opt_in_assets(&mut manifest["dependencies"]);
+            if let Some(target) = manifest["target"].as_table_mut() {
+                for (_, section) in target.iter_mut() {
+                    opt_in_assets(&mut section["dependencies"]);
+                }
+            }
+            std::fs::write(&manifest_path, manifest.to_string()).expect("write Cargo.toml");
 
             crate::backend::reinit_backend::<crate::hydrolysis::backend::HydrolysisBackend>(
                 &project,
