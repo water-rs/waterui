@@ -1,4 +1,4 @@
-//! Accessibility settings on a view: role, label, value, state, frame.
+//! Accessibility settings on a view: role, label, value, state.
 //!
 //! The platform trees (`UIAccessibility` and `NSAccessibility`) agree on the
 //! concepts and disagree on the plumbing, so this module keeps one typed
@@ -8,12 +8,7 @@
 //!
 //! # Safety
 //!
-//! The attribute setters are safe property calls on the view. The frame
-//! provider projects a live rect through each platform's own query hook —
-//! `accessibilityFrameBlock` on `UIKit`, an `accessibilityFrame` override on
-//! `AppKit`, installed on the view's own (cocoa-ui-owned) class — so the
-//! reported frame is computed when assistive technology asks for it, not
-//! stored stale.
+//! No unsafe code; every setter is a safe property call on the view.
 
 /// What a view is, for assistive technologies.
 ///
@@ -93,65 +88,6 @@ pub enum Checked {
     Checked,
     /// Neither checked nor unchecked.
     Mixed,
-}
-
-/// The accessibility frame `view` should report, in `view`'s own
-/// coordinate space.
-///
-/// [`set_frame_provider`] projects it to the screen space the platform
-/// API reports. `None` falls back to the view's own frame — the answer
-/// `NSView`/`UIView` gives without a provider.
-pub type FrameProvider = std::rc::Rc<dyn Fn(&crate::PlatformView) -> Option<crate::Rect>>;
-
-/// Detaches the provider [`set_frame_provider`] installed.
-///
-/// The view then reports its own frame again. `AppKit` keeps the
-/// class-level override installed — a provider-less instance dispatches
-/// to the class's original implementation, which is exactly what it
-/// answered before.
-#[derive(Debug)]
-#[must_use = "the provider stays installed only while the guard lives"]
-pub struct FrameProviderGuard {
-    inner: imp::GuardState,
-}
-
-impl Drop for FrameProviderGuard {
-    fn drop(&mut self) {
-        imp::detach(&mut self.inner);
-    }
-}
-
-/// Installs `provider` as `view`'s accessibility-frame source.
-///
-/// The frame is asked for — not stored: the provider runs when assistive
-/// technology reads the frame, so the reported rect tracks the view's
-/// live geometry (scroll, window moves, ancestor layout) instead of
-/// going stale the moment either moves. `view` keeps its own frame
-/// either way: the provider only rewrites what the accessibility APIs
-/// report.
-///
-/// The caller owns the geometry. This is a projection hook, not a source
-/// of truth: the rect it is fed should be the view's resolved response
-/// rectangle as its layout engine positioned it — never a rect inferred
-/// from a descendant's bounds or a re-measured size the backend centered
-/// itself.
-///
-/// One provider per view. The registry keys providers by the view's
-/// address, so the returned guard must be dropped before the view is
-/// released — a leaked guard leaves the address registered for whatever
-/// view is allocated at it next.
-///
-/// # Panics
-///
-/// Panics when `view` already has a frame provider installed, and when
-/// called off the main thread.
-pub fn set_frame_provider(
-    view: &crate::PlatformView,
-    provider: impl Fn(&crate::PlatformView) -> Option<crate::Rect> + 'static,
-) -> FrameProviderGuard {
-    FrameProviderGuard {
-        inner: imp::attach(view, std::rc::Rc::new(provider)),
-    }
 }
 
 #[cfg(target_os = "ios")]
@@ -347,67 +283,6 @@ mod imp {
             mtm,
         );
     }
-
-    /// The installed provider: the block `UIKit` copied into the property,
-    /// plus the view it was installed on — needed to clear the property
-    /// when the guard drops.
-    pub struct GuardState {
-        view: objc2::rc::Weak<UIView>,
-        _block: block2::RcBlock<dyn Fn() -> objc2_core_foundation::CGRect>,
-    }
-
-    impl core::fmt::Debug for GuardState {
-        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-            f.debug_struct("GuardState").finish_non_exhaustive()
-        }
-    }
-
-    /// Installs `provider` as `view`'s `accessibilityFrameBlock`: `UIKit`
-    /// calls the block every time the frame is read, so the answer tracks
-    /// the view's live geometry. `None` from the provider reports the
-    /// view's own frame — the same conversion `UIKit`'s default performs.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `view` already carries an accessibility-frame block,
-    /// and when called off the main thread.
-    pub fn attach(view: &UIView, provider: super::FrameProvider) -> GuardState {
-        let mtm = objc2::MainThreadMarker::from(view);
-        assert!(
-            view.accessibilityFrameBlock(mtm).is_null(),
-            "the view already has an accessibility frame block installed"
-        );
-        let weak = objc2::rc::Weak::new(view);
-        let block = block2::RcBlock::new(move || -> objc2_core_foundation::CGRect {
-            let Some(view) = weak.load() else {
-                return objc2_core_foundation::CGRect::ZERO;
-            };
-            let rect = provider(&view).unwrap_or_else(|| crate::view::bounds(&view));
-            // `UIAccessibilityConvertFrameToScreenCoordinates` converts a
-            // rect in `view`'s coordinate space to screen coordinates.
-            objc2_ui_kit::UIAccessibilityConvertFrameToScreenCoordinates(rect.into(), &view)
-        });
-        // SAFETY: `setAccessibilityFrameBlock:` copies the block into the
-        // view's property; `RcBlock::as_ptr` lends it a valid one.
-        unsafe { view.setAccessibilityFrameBlock(block2::RcBlock::as_ptr(&block), mtm) };
-        GuardState {
-            view: objc2::rc::Weak::new(view),
-            _block: block,
-        }
-    }
-
-    /// Clears the property the block was copied into, returning the view
-    /// to its own reported frame.
-    pub fn detach(state: &mut GuardState) {
-        let Some(view) = state.view.load() else {
-            return;
-        };
-        let mtm = objc2::MainThreadMarker::from(&*view);
-        // SAFETY: clearing the property releases the copied block.
-        unsafe {
-            view.setAccessibilityFrameBlock(core::ptr::null_mut(), mtm);
-        }
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -419,7 +294,7 @@ mod imp {
         NSAccessibilityLinkRole, NSAccessibilityListRole, NSAccessibilityMenuBarRole,
         NSAccessibilityMenuItemRole, NSAccessibilityMenuRole, NSAccessibilityProgressIndicatorRole,
         NSAccessibilityRadioButtonRole, NSAccessibilityRole, NSAccessibilitySliderRole,
-        NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole, NSView,
+        NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole,
     };
     use objc2_foundation::{NSArray, NSNumber, NSString};
 
@@ -544,206 +419,6 @@ mod imp {
         }
         let busy_label = NSString::from_str("Busy");
         element.setAccessibilityHelp(if busy { Some(&*busy_label) } else { None });
-    }
-
-    /// The provider registered for a view, keyed by its address.
-    type Registry = std::collections::HashMap<usize, super::FrameProvider>;
-
-    /// The `accessibilityFrame` implementation each overridden class
-    /// answered with before the override landed — the dispatch target
-    /// for every provider-less instance of that class, keyed by the
-    /// class's address.
-    ///
-    /// `PROVIDERS` is thread-local because a provider is an `Rc` only ever
-    /// consulted on the main thread; `ORIGINALS` is shared because an
-    /// `accessibilityFrame` read is not guaranteed to arrive on the main
-    /// thread, and a miss there must still reach the class's recorded
-    /// implementation rather than answer a zero rect.
-    static ORIGINALS: std::sync::LazyLock<
-        std::sync::Mutex<std::collections::HashMap<usize, objc2::runtime::Imp>>,
-    > = std::sync::LazyLock::new(|| {
-        std::sync::Mutex::new(std::collections::HashMap::new())
-    });
-
-    std::thread_local! {
-        /// Live frame providers. `AppKit` gives a view no frame hook of
-        /// its own — `accessibilityFrame` is a stored property on
-        /// `NSAccessibilityElement` but a *computed* accessor on
-        /// `NSView` — so the only way a view answers with live geometry
-        /// is for the method to consult a registry keyed by the
-        /// instance's address. Providers attach on the main thread and a
-        /// read on another thread finds this thread's empty map, so it
-        /// falls through to the recorded original — the provider path is
-        /// a main-thread contract.
-        static PROVIDERS: core::cell::RefCell<Registry> =
-            core::cell::RefCell::new(std::collections::HashMap::new());
-    }
-
-    /// The `accessibilityFrame` implementation installed on classes a
-    /// provider was attached to. A provider's answer wins; an instance
-    /// with none dispatches to the implementation the class answered with
-    /// before the override — which `ORIGINALS` recorded, since the method
-    /// is usually inherited rather than the class's own.
-    ///
-    /// # Safety
-    ///
-    /// Installed through `class_replaceMethod` only under the
-    /// `accessibilityFrame` selector and the type encoding the runtime
-    /// already associates with it — same signature, same contract. The
-    /// function only ever runs as that method: `this` is a live `NSView`
-    /// (providers attach to `PlatformView` subclasses only) and `_cmd` is
-    /// the `accessibilityFrame` selector.
-    unsafe extern "C-unwind" fn accessibility_frame(
-        this: *mut objc2::runtime::AnyObject,
-        cmd: objc2::runtime::Sel,
-    ) -> objc2_foundation::NSRect {
-        crate::callback::guarded("accessibility frame provider", || {
-            let provider = PROVIDERS.with(|map| map.borrow().get(&(this as usize)).cloned());
-            if let Some(provider) = provider {
-                // SAFETY: per the function's safety note, `this` is a live
-                // `NSView`.
-                let view: &NSView = unsafe { &*(this.cast::<NSView>()) };
-                if let Some(rect) = provider(view) {
-                    // `NSAccessibilityFrameInView` converts a rect in
-                    // `view`'s coordinate space to screen coordinates.
-                    return objc2_app_kit::NSAccessibilityFrameInView(view, rect.into());
-                }
-            }
-            // The override is inherited: an instance of a subclass of an
-            // overridden class reaches this IMP too, and its class has no
-            // entry of its own. Walk the chain to the nearest class the
-            // override landed on — its recorded implementation is exactly
-            // what this instance would have dispatched to.
-            // SAFETY: `this` is a live object per the function's safety
-            // note, so `class()` reads a live isa.
-            let mut class = unsafe { (*this).class() };
-            let original = loop {
-                let found = ORIGINALS
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get(&(core::ptr::from_ref::<objc2::runtime::AnyClass>(class) as usize))
-                    .copied();
-                if let Some(imp) = found {
-                    break Some(imp);
-                }
-                let Some(superclass) = class.superclass() else {
-                    break None;
-                };
-                class = superclass;
-            };
-            original.map_or(objc2_foundation::NSRect::ZERO, |imp| {
-                // SAFETY: `imp` is the `accessibilityFrame` implementation
-                // this instance's class dispatched to before the override —
-                // same signature, still the inherited answer for
-                // provider-less instances.
-                let imp: unsafe extern "C-unwind" fn(
-                    *mut objc2::runtime::AnyObject,
-                    objc2::runtime::Sel,
-                ) -> objc2_foundation::NSRect = unsafe { core::mem::transmute(imp) };
-                // SAFETY: the call targets the method's own receiver and
-                // selector, which the transmuted signature expects.
-                unsafe { imp(this, cmd) }
-            })
-        })
-    }
-
-    /// The guard's key into [`PROVIDERS`]: the view's address, plus the
-    /// main-thread marker that keeps the guard on the thread the provider
-    /// is registered on — a detach anywhere else would silently miss it.
-    #[derive(Debug)]
-    pub struct GuardState {
-        key: usize,
-        _mtm: objc2::MainThreadMarker,
-    }
-
-    /// Installs `provider` as `view`'s `accessibilityFrame` source: the
-    /// class override lands once, the per-instance registration is what
-    /// the override consults.
-    ///
-    /// # Panics
-    ///
-    /// Panics when a provider is already installed on `view`, and when
-    /// called off the main thread.
-    pub fn attach(view: &NSView, provider: super::FrameProvider) -> GuardState {
-        let mtm = objc2::MainThreadMarker::from(view);
-        ensure_override(view);
-        let key = core::ptr::from_ref::<NSView>(view) as usize;
-        PROVIDERS.with(|map| {
-            let mut map = map.borrow_mut();
-            assert!(
-                !map.contains_key(&key),
-                "the view already has a frame provider installed"
-            );
-            map.insert(key, provider);
-        });
-        GuardState { key, _mtm: mtm }
-    }
-
-    /// Replaces `view`'s class's `accessibilityFrame` with the dispatching
-    /// implementation, recording what the class answered before. Only the
-    /// concrete class is touched: `class_replaceMethod` adds the method to
-    /// the class itself when the selector is inherited, so siblings and
-    /// superclasses keep their own implementation.
-    fn ensure_override(view: &NSView) {
-        let class = view.class();
-        let class_ptr = core::ptr::from_ref::<objc2::runtime::AnyClass>(class);
-        let key = class_ptr as usize;
-        if ORIGINALS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(&key)
-        {
-            return;
-        }
-        let sel = objc2::sel!(accessibilityFrame);
-        let method = class
-            .instance_method(sel)
-            .expect("NSObject implements accessibilityFrame");
-        let original = method.implementation();
-        // When `class` already inherits the override from an ancestor —
-        // the resolved IMP is ours — no replacement is needed: the
-        // inherited IMP consults `PROVIDERS` for this instance's address,
-        // and its no-provider walk reaches the ancestor's original. Adding
-        // a method here would only record our own IMP as the "original"
-        // and recurse.
-        if original as usize == accessibility_frame as *const () as usize {
-            return;
-        }
-        // SAFETY: `method_getTypeEncoding` reads a live method's encoding —
-        // the signature `accessibility_frame` is registered under, keeping
-        // the ABI identical to the method it replaces.
-        let types = unsafe { objc2::ffi::method_getTypeEncoding(method) };
-        // SAFETY: `class` is a live class object — the concrete class of
-        // `view`, a cocoa-ui-defined `NSView` subclass — and the IMP has
-        // the signature the selector and encoding declare. The transmute
-        // only widens the typed pointer to the runtime's untyped `Imp`.
-        let imp: objc2::runtime::Imp = unsafe {
-            core::mem::transmute::<
-                unsafe extern "C-unwind" fn(
-                    *mut objc2::runtime::AnyObject,
-                    objc2::runtime::Sel,
-                ) -> objc2_foundation::NSRect,
-                objc2::runtime::Imp,
-            >(accessibility_frame)
-        };
-        // SAFETY: `class` is the live class object resolved above, `sel`
-        // and `types` describe `accessibilityFrame` exactly, and `imp`
-        // carries that signature — the replacement is ABI-identical.
-        unsafe {
-            objc2::ffi::class_replaceMethod(class_ptr.cast_mut(), sel, imp, types);
-        }
-        ORIGINALS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key, original);
-    }
-
-    /// Drops `view`'s provider; its class keeps the override, whose
-    /// no-provider path is what the class answered all along.
-    pub fn detach(state: &mut GuardState) {
-        PROVIDERS.with(|map| {
-            map.borrow_mut().remove(&state.key);
-        });
     }
 }
 

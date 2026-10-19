@@ -17,8 +17,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSDragOperation, NSDraggingInfo, NSEvent, NSScreen, NSTrackingArea, NSTrackingAreaOptions,
-    NSView,
+    NSAccessibilityFrameInView, NSDragOperation, NSDraggingInfo, NSEvent, NSScreen, NSTrackingArea,
+    NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{NSArray, NSEdgeInsets, NSObjectProtocol, NSPoint, NSRect, NSSize};
 
@@ -90,6 +90,10 @@ pub struct HostViewIvars {
     accessibility_press: RefCell<Option<AccessibilityPressHandler>>,
     /// `viewDidChangeBackingProperties` subscribers — backing-scale changes.
     backing_changed: RefCell<Option<WindowHandler>>,
+    /// Whether `accessibilityFrame` reports the union of the direct
+    /// children's frames — the extent a labelled layout container resolves
+    /// to — instead of the view's own frame (water-rs/waterui#1482).
+    reports_content_extent: Cell<bool>,
     /// Whether the view's own content is laid out against its bounds — the
     /// answer to "does this view manage its own safe area".
     manages_safe_area: std::cell::Cell<bool>,
@@ -139,6 +143,7 @@ impl fmt::Debug for HostViewIvars {
             .field("pointer_inside", &self.pointer_inside.get())
             .field("tracking_area", &self.tracking_area.borrow().is_some())
             .field("key", &self.key.borrow().is_some())
+            .field("reports_content_extent", &self.reports_content_extent.get())
             .field("right_mouse", &self.right_mouse.borrow().is_some())
             .field(
                 "accessibility_press",
@@ -560,6 +565,18 @@ define_class!(
             })
         }
 
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> NSRect {
+            guarded("HostView accessibilityFrame", || {
+                if !self.ivars().reports_content_extent.get() {
+                    // SAFETY: see the module safety note.
+                    return unsafe { msg_send![super(self), accessibilityFrame] };
+                }
+                NSAccessibilityFrameInView(self, self.content_extent())
+            })
+        }
+
         // SAFETY: see the module safety note. The override above puts
         // `AXPress` on every host that is an accessibility element; the
         // action is allowed only while a press handler is installed, so a
@@ -715,6 +732,32 @@ impl HostView {
         self.ivars()
             .accessibility_press
             .replace(Some(Rc::new(handler)));
+    }
+
+    /// Whether `accessibilityFrame` reports the union of the direct
+    /// children's frames — the extent this container resolved its content
+    /// to — instead of the view's own frame. A labelled layout container
+    /// (`Frame`, `vstack`, …) is assigned the whole region but places its
+    /// content in the resolved box, so a label on it announces the
+    /// children's extent, not the assignment (water-rs/waterui#1482).
+    /// Computed live on every read; nothing is stored.
+    pub fn set_reports_content_extent(&self, reports: bool) {
+        self.ivars().reports_content_extent.set(reports);
+    }
+
+    /// The union of the direct, non-hidden subviews' frames — in this
+    /// view's coordinate space — or the view's own bounds when it has
+    /// none.
+    fn content_extent(&self) -> NSRect {
+        let mut extent: Option<NSRect> = None;
+        for subview in &self.subviews() {
+            if subview.isHidden() {
+                continue;
+            }
+            let frame = subview.frame();
+            extent = Some(extent.map_or(frame, |u| union(u, frame)));
+        }
+        extent.unwrap_or_else(|| self.bounds())
     }
 
     /// Lets `handler` answer the view's intrinsic measurements,
@@ -962,4 +1005,11 @@ impl HostView {
         } = self.safeAreaInsets();
         EdgeInsets::new(top, left, bottom, right)
     }
+}
+
+/// The smallest rect containing `a` and `b`.
+fn union(a: NSRect, b: NSRect) -> NSRect {
+    let min = NSPoint::new(a.min().x.min(b.min().x), a.min().y.min(b.min().y));
+    let max = NSPoint::new(a.max().x.max(b.max().x), a.max().y.max(b.max().y));
+    NSRect::new(min, NSSize::new(max.x - min.x, max.y - min.y))
 }
