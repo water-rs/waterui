@@ -37,14 +37,14 @@ use std::sync::{Arc, Mutex};
 
 use block2::RcBlock;
 use dispatch2::{DispatchData, DispatchQoS, DispatchQueue, GlobalQueueIdentifier, MainThreadBound};
-use objc2::Message;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
+use objc2::{ClassType, Message};
 use objc2_core_foundation::{CFRetained, CGAffineTransform};
 use objc2_core_graphics::{
     CGBitmapContextCreate, CGContext, CGImageAlphaInfo, CGImageByteOrderInfo, CGImageComponentInfo,
 };
-use objc2_foundation::NSString;
+use objc2_foundation::{NSObjectProtocol, NSString};
 use objc2_metal::{
     MTLBlendFactor, MTLBlendOperation, MTLBlitCommandEncoder, MTLBuffer, MTLClearColor,
     MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue, MTLDevice,
@@ -54,7 +54,7 @@ use objc2_metal::{
     MTLSamplerDescriptor, MTLSamplerMinMagFilter, MTLSamplerState, MTLScissorRect, MTLSize,
     MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
 };
-use objc2_quartz_core::{CALayer, CATransaction};
+use objc2_quartz_core::{CALayer, CAMetalLayer, CATransaction};
 
 use crate::PlatformView;
 use crate::core_animation::flush_transaction;
@@ -1524,6 +1524,60 @@ pub fn collect_capturables(root: &PlatformView, f: &mut impl FnMut(&Rc<dyn Captu
     walk_capturables(root, &mut |_, surface| f(surface));
 }
 
+/// Whether `view`'s subtree holds a `CAMetalLayer` that the capture walk
+/// did not resolve to a [`CapturableSurface`]. `renderInContext`
+/// composites a Metal layer as nothing — `MKMapView` is the known case
+/// (#2104) — so its pixels would vanish from the raster without a
+/// signal. The walk stops at resolved surfaces because a surface view's
+/// own Metal layer renders through its producer; each subview's layer
+/// tree is scanned under that subview, so the layer scan prunes at
+/// subview roots.
+fn has_unresolved_metal_layer(view: &PlatformView) -> bool {
+    if resolve_capturable(view).is_some() {
+        return false;
+    }
+    let mut subview_layers = Vec::new();
+    for subview in crate::view::subviews(view) {
+        // A hidden or fully transparent view renders nothing under
+        // `renderInContext` — the layers in its subtree are absent by
+        // design, not unresolved, and the scan skips the branch whole
+        // (the layer-level check covers layers hidden without a view).
+        if crate::view::is_hidden(&subview) || crate::view::alpha(&subview) <= 0.0 {
+            continue;
+        }
+        if let Some(layer) = crate::layer::layer_of(&subview) {
+            subview_layers.push(layer);
+        }
+        if has_unresolved_metal_layer(&subview) {
+            return true;
+        }
+    }
+    crate::layer::layer_of(view).is_some_and(|layer| metal_in_layer_tree(&layer, &subview_layers))
+}
+
+/// Whether `layer` or a descendant sublayer is a `CAMetalLayer`; roots in
+/// `pruned` — the layers owned by subviews — cut the descent. A hidden or
+/// fully transparent layer renders nothing under `renderInContext`, so a
+/// Metal layer inside one is absent by design, not unresolved.
+fn metal_in_layer_tree(layer: &CALayer, pruned: &[Retained<CALayer>]) -> bool {
+    if layer.isHidden() || layer.opacity() <= 0.0 {
+        return false;
+    }
+    if layer.isKindOfClass(CAMetalLayer::class()) {
+        return true;
+    }
+    // SAFETY: `layer` is a live layer on the main thread.
+    let Some(sublayers) = (unsafe { layer.sublayers() }) else {
+        return false;
+    };
+    sublayers.iter().any(|sublayer| {
+        pruned
+            .iter()
+            .all(|root| Retained::as_ptr(root) != Retained::as_ptr(&sublayer))
+            && metal_in_layer_tree(&sublayer, pruned)
+    })
+}
+
 /// Captures `content`'s subtree into Metal textures. Main-thread only;
 /// created once per effect view and shut down before the view drops.
 pub struct ViewCapture {
@@ -1580,7 +1634,16 @@ impl ViewCapture {
         completion: impl Fn(Result<(), CaptureError>) + Send + 'static,
     ) {
         let mtm = objc2::MainThreadMarker::new().expect("capture runs on the main thread");
-        let (preparation, specs) = self.prepare(target, generation);
+        let (preparation, specs) = match self.prepare(target, generation) {
+            Ok(prepared) => prepared,
+            // A capture that cannot rasterize the subtree reports on the
+            // main thread it was asked on — never a frame that silently
+            // lacks the unrasterizable layers.
+            Err(error) => {
+                completion(Err(error));
+                return;
+            }
+        };
 
         // The raster pass lands its pixels in the leased frame's shared
         // buffer, not `target` — and it is synchronous: no GPU fence
@@ -1643,7 +1706,7 @@ impl ViewCapture {
         &self,
         target: &ProtocolObject<dyn MTLTexture>,
         generation: u64,
-    ) -> (Preparation, Vec<SurfaceSpec>) {
+    ) -> Result<(Preparation, Vec<SurfaceSpec>), CaptureError> {
         let content = &*self.content;
         let was_hidden = crate::view::is_hidden(content);
 
@@ -1687,6 +1750,14 @@ impl ViewCapture {
             // is un-hidden or a hidden view may have deferred it, and
             // everything collected after it sees the laid-out tree.
             crate::view::prepare_for_capture(content);
+            // A native Metal layer the walk cannot resolve — `MKMapView`
+            // (#2104) — rasterizes to nothing under `renderInContext`.
+            // Fail the capture here, after layout so the mounted tree is
+            // final and before any surface mutation, rather than hand
+            // back a frame missing those pixels.
+            if has_unresolved_metal_layer(content) {
+                return Err(CaptureError::Failed(Arc::new(UnresolvedMetalLayer)));
+            }
             let layer = crate::view::layer(content).expect("a capture view must be layer-backed");
             let geometry = CaptureGeometry::new(
                 crate::view::bounds(content),
@@ -1742,7 +1813,7 @@ impl ViewCapture {
             flush_transaction();
             (preparation, specs)
         };
-        (preparation, specs)
+        Ok((preparation, specs))
     }
 
     /// Restores the captured content's hidden state — a plain model
@@ -2033,6 +2104,28 @@ impl fmt::Display for CompositionFailed {
 
 impl std::error::Error for CompositionFailed {}
 
+/// The captured subtree holds a native `CAMetalLayer` that no
+/// [`CapturableSurface`] claimed — `renderInContext` draws it as
+/// nothing, so its pixels never reach the frame.
+///
+/// `MKMapView` is the known producer (#2104); capturing real map content
+/// needs a `MapKit` channel such as `MKMapSnapshotter` or a
+/// capture-resolvable surface, which is a design decision this type makes
+/// visible instead of silently omitting the layer.
+#[derive(Debug)]
+pub struct UnresolvedMetalLayer;
+
+impl fmt::Display for UnresolvedMetalLayer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(
+            "the captured subtree contains a native Metal layer that no \
+             capturable surface claimed; renderInContext cannot draw it",
+        )
+    }
+}
+
+impl std::error::Error for UnresolvedMetalLayer {}
+
 /// The capture outcome a composition command buffer's final `status`
 /// answers. Only a completed buffer landed its pixels; any other status is
 /// a failed capture carrying that status and `error`, never a deferral —
@@ -2081,10 +2174,79 @@ mod tests {
 
     use super::{
         CaptureError, CompositeRegion, CompositionFailed, CompositorState, DeviceResources,
-        FenceBatch, NativeRenderer, SurfaceSpec, composition_outcome,
+        FenceBatch, NativeRenderer, SurfaceSpec, UnresolvedMetalLayer, composition_outcome,
+        metal_in_layer_tree,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+
+    /// The unresolved-Metal-layer scan finds a `CAMetalLayer` anywhere in
+    /// a layer tree — including through subclassing and nesting — and a
+    /// pruned root (the layer a resolved surface view owns, or any
+    /// subview's own layer, which the view-level walk scans separately)
+    /// cuts the descent so nothing under it counts twice (#2104).
+    #[test]
+    fn a_metal_layer_is_detected_unless_it_is_a_pruned_root() {
+        use objc2_quartz_core::{CALayer, CAMetalLayer};
+        let metal = CAMetalLayer::new();
+        let host = CALayer::new();
+        host.addSublayer(&metal);
+        assert!(metal_in_layer_tree(&host, &[]));
+        assert!(metal_in_layer_tree(&metal, &[]));
+        // Pruning at the subview's layer hides the Metal root and
+        // anything nested under it — the resolved surface's own case.
+        let nested = CALayer::new();
+        nested.addSublayer(&metal);
+        let outer = CALayer::new();
+        outer.addSublayer(&nested);
+        assert!(!metal_in_layer_tree(&outer, std::slice::from_ref(&nested)));
+        // ...but an unpruned sibling holding a Metal layer is still
+        // found, and pruning it too leaves a clean tree.
+        let beside = CALayer::new();
+        beside.addSublayer(&metal);
+        outer.addSublayer(&beside);
+        assert!(metal_in_layer_tree(&outer, std::slice::from_ref(&nested)));
+        let both = [nested, beside];
+        assert!(!metal_in_layer_tree(&outer, &both));
+    }
+
+    /// A `CAMetalLayer` inside a hidden or fully transparent subtree
+    /// renders nothing under `renderInContext` — its absence is correct,
+    /// so the scan must not fail the capture over it (#2104).
+    #[test]
+    fn an_invisible_metal_layer_is_not_unresolved() {
+        use objc2_quartz_core::{CALayer, CAMetalLayer};
+        // A hidden Metal root is invisible on its own.
+        let hidden = CAMetalLayer::new();
+        hidden.setHidden(true);
+        assert!(!metal_in_layer_tree(&hidden, &[]));
+        // ...and so is a visible Metal layer under a hidden or
+        // fully-transparent ancestor.
+        let metal = CAMetalLayer::new();
+        let veiled = CALayer::new();
+        veiled.addSublayer(&metal);
+        veiled.setHidden(true);
+        assert!(!metal_in_layer_tree(&veiled, &[]));
+        veiled.setHidden(false);
+        veiled.setOpacity(0.0);
+        assert!(!metal_in_layer_tree(&veiled, &[]));
+        // Restoring visibility flags it again — the gate is visibility,
+        // not the layer type.
+        veiled.setOpacity(1.0);
+        assert!(metal_in_layer_tree(&veiled, &[]));
+    }
+
+    /// The failure type stays downcastable through `CaptureError::Failed`.
+    #[test]
+    fn an_unresolved_metal_layer_is_a_typed_failure() {
+        let CaptureError::Failed(inner) = CaptureError::Failed(Arc::new(UnresolvedMetalLayer))
+        else {
+            panic!("the failure carries its typed error")
+        };
+        inner
+            .downcast_ref::<UnresolvedMetalLayer>()
+            .expect("the failure is an UnresolvedMetalLayer");
+    }
 
     /// A composition command buffer's final status alone decides the
     /// capture: a completed buffer lands, and every other status fails the
