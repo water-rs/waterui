@@ -2731,32 +2731,41 @@ impl SemanticCore {
             let owner = owner.or_else(|| node.and_then(|node| self.live_node_owner(node)));
             let owner = owner
                 .unwrap_or_else(|| panic!("hydrolysis renderer: focused key {key:?} has no owner"));
-            arrived_live = self.show_live_focus(&key, visible);
-            if !arrived_live {
-                Self::mark_owner(&owner, Dirty::LAYOUT);
+            let arrived_dirty = self.focus_dirty(&key, visible);
+            arrived_live = arrived_dirty.is_none();
+            if let Some(bits) = arrived_dirty {
+                Self::mark_owner(&owner, bits);
             }
             self.hit_test.keyboard_focus_owner = owner;
         }
         // Focus that stayed on its key changed only visibility: the arriving
         // end above already handled the owner.
-        let left_live = previous_focus
+        let left_dirty = previous_focus
             .filter(|key| self.hit_test.keyboard_focus.as_ref() != Some(key))
-            .map_or(arrived_live, |key| self.show_live_focus(&key, false));
-        if !left_live {
-            Self::mark_owner(&left_owner, Dirty::LAYOUT);
+            .map(|key| self.focus_dirty(&key, false));
+        let left_live = left_dirty.as_ref().map_or(arrived_live, Option::is_none);
+        if let Some(Some(bits)) = left_dirty {
+            Self::mark_owner(&left_owner, bits);
+        } else if !left_live {
+            Self::mark_owner(&left_owner, Dirty::PAINT);
         }
     }
 
-    /// Shows or hides focus on `key`'s engine-realized chrome; `false` when
-    /// its chrome is not engine-realized and its owner must re-render.
-    fn show_live_focus(&self, key: &InteractionKey, visible: bool) -> bool {
+    /// Shows or hides focus on `key`'s engine-realized chrome and answers
+    /// `None`; otherwise answers the mark the chrome's owner takes — the
+    /// widget's declared `repaint` kind, `PAINT` when it registers no
+    /// interaction handles: a recorded focus indicator repaints the owner's
+    /// content and never moves its geometry (water-rs/waterui#2940).
+    fn focus_dirty(&self, key: &InteractionKey, visible: bool) -> Option<Dirty> {
         self.hit_test
             .interaction
             .handles_for_key(key)
-            .filter(|handles| handles.repaint().is_none())
-            .is_some_and(|handles| {
-                handles.set_focus_visible(visible);
-                true
+            .map_or(Some(Dirty::PAINT), |handles| {
+                let bits = handles.repaint();
+                if bits.is_none() {
+                    handles.set_focus_visible(visible);
+                }
+                bits
             })
     }
 
@@ -2867,10 +2876,25 @@ impl SemanticCore {
         self.mark_focus_owners(previous_focus, visible, node);
         #[cfg(not(feature = "accessibility"))]
         self.mark_focus_owners(previous_focus, visible);
-        // The transition itself is window bookkeeping — same split as
-        // `set_focused_text_input_key`: the key's owner takes the focus
-        // visuals, the context takes the deadline and binding writes.
-        self.context_mark_layout();
+        // The transition itself is bookkeeping, not geometry: the two
+        // owners carry the focus visuals (or their live chrome takes them
+        // as operands), the `.focused` bindings mark their own readers, and
+        // an accessibility focus move publishes as a focus-only tree update
+        // — none of it is a layout input, so nothing here may mark layout
+        // (water-rs/waterui#2940). When a quiet publish cannot describe the
+        // move (modal scope, un-emitted node) the root takes a paint mark —
+        // the a11y emit is window-level record state, still not geometry.
+        #[cfg(feature = "accessibility")]
+        if node_changed
+            && !self.publish_accessibility_focus(node.unwrap_or(ACCESSIBILITY_ROOT_NODE_ID))
+        {
+            self.context_mark_paint();
+        }
+        // The frame this transition needs is armed by the caller's
+        // `changed` result — input dispatch, the accessibility-action path
+        // and the emit pass's own flush all schedule one — so a move whose
+        // only visible change rides live chrome operands raises no mark
+        // and still reaches the next present.
         true
     }
 
