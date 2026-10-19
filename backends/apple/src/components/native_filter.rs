@@ -921,15 +921,6 @@ struct NativeFilterOwner {
     external_redraw: RefCell<Option<Rc<dyn Fn()>>>,
     /// Subscription guards — dropping them cancels the watches.
     guards: RefCell<Vec<WatchGuard>>,
-    /// A frame of this surface reached its presentation channel —
-    /// `finish_capture`'s settled `Ok` is this leaf's only output path.
-    presented: Cell<bool>,
-    /// A settled terminal failure — the first presented frame can never
-    /// land.
-    failed: Cell<bool>,
-    /// First-paint waiters armed through `register_ready_waiter`,
-    /// drained on the next settled render.
-    ready_waiters: RefCell<Vec<std::task::Waker>>,
 }
 
 impl std::fmt::Debug for NativeFilterOwner {
@@ -1691,34 +1682,30 @@ impl CapturableSurface for NativeFilterCapturable {
         });
     }
 
-    /// This leaf's only output path is the external render: a settled
-    /// `Ok` from `finish_capture` is the frame's presentation receipt.
+    /// The external render is an offscreen capture — no frame of this
+    /// surface ever reaches the screen, so it never answers readiness.
     fn has_presented_frame(&self) -> bool {
-        self.owner.upgrade().is_some_and(|o| o.presented.get())
+        false
     }
 
-    /// A mounted native filter that has neither presented nor failed
-    /// participates in its window's first-paint readiness.
+    /// Not a first-paint participant: the filter's on-screen output is
+    /// Core Animation compositing `CALayer.filters` over the content
+    /// subviews — any GPU content inside participates through its own
+    /// surface, and an offscreen capture never presents.
     fn participates_in_first_paint(&self) -> bool {
-        self.owner
-            .upgrade()
-            .is_some_and(|o| !o.presented.get() && !o.failed.get())
+        false
     }
 
-    /// Wakes after the next settled successful render — `finish_capture`
-    /// drains the list; a dropped leaf wakes now so the wait never hangs.
+    /// No presentation ever arrives — a waiter armed on one would hang,
+    /// so it wakes immediately.
     fn register_ready_waiter(&self, waker: std::task::Waker) {
-        let Some(owner) = self.owner.upgrade() else {
-            waker.wake();
-            return;
-        };
-        owner.ready_waiters.borrow_mut().push(waker);
+        waker.wake();
     }
 
-    /// A dropped leaf or a settled `Failed` — the first frame can never
-    /// land.
+    /// Nothing presents, so nothing can be waiting on a frame that can
+    /// never land.
     fn presentation_failed(&self) -> bool {
-        self.owner.upgrade().is_none_or(|o| o.failed.get())
+        false
     }
 }
 
@@ -1730,25 +1717,12 @@ impl CapturableSurface for NativeFilterCapturable {
 fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMarker) {
     let work_inner = work.get(mtm);
     macro_rules! settle {
-        ($result:expr) => {{
-            let result = $result;
-            if let Some(owner) = work_inner.owner.upgrade() {
-                match &result {
-                    Ok(()) => {
-                        owner.presented.set(true);
-                        for waiter in owner.ready_waiters.borrow_mut().drain(..) {
-                            waiter.wake();
-                        }
-                    }
-                    Err(CaptureError::Failed(_)) => owner.failed.set(true),
-                    Err(CaptureError::Deferred) => {}
-                }
-            }
+        ($result:expr) => {
             if let Some(completion) = work_inner.completion.borrow_mut().take() {
-                completion(result);
+                completion($result);
             }
             return;
-        }};
+        };
     }
     let Some(owner) = work_inner.owner.upgrade() else {
         settle!(Err(CaptureError::Deferred));
@@ -2053,9 +2027,6 @@ pub fn mount(
         external_count: Cell::new(0),
         external_redraw: RefCell::new(None),
         guards: RefCell::new(Vec::new()),
-        presented: Cell::new(false),
-        failed: Cell::new(false),
-        ready_waiters: RefCell::new(Vec::new()),
     });
 
     // Initial input values — through the layer key path, the only legal
