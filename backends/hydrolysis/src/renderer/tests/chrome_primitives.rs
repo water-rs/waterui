@@ -237,7 +237,9 @@ fn press_focus_move_needs_no_tree_pass() {
     let work = result.profile.counters.frame_work;
 
     assert!(
-        the_chrome(&runtime).state().contains(InteractionState::PRESSED),
+        the_chrome(&runtime)
+            .state()
+            .contains(InteractionState::PRESSED),
         "the press landed on the live chrome"
     );
     assert_eq!(

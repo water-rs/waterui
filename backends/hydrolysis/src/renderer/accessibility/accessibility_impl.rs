@@ -1248,8 +1248,8 @@ impl SemanticCore {
             return true;
         }
         let emitted = &self.accessibility.nodes;
-        let focus_is_emitted = focus == ACCESSIBILITY_ROOT_NODE_ID
-            || emitted.iter().any(|(id, _)| *id == focus);
+        let focus_is_emitted =
+            focus == ACCESSIBILITY_ROOT_NODE_ID || emitted.iter().any(|(id, _)| *id == focus);
         let modal_open = emitted.iter().any(|(_, node)| node.is_modal());
         if emitted.is_empty() || !focus_is_emitted || modal_open {
             return false;

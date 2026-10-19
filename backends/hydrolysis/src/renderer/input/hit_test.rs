@@ -2742,9 +2742,7 @@ impl SemanticCore {
         let left_dirty = previous_focus
             .filter(|key| self.hit_test.keyboard_focus.as_ref() != Some(key))
             .map(|key| self.focus_dirty(&key, false));
-        let left_live = left_dirty
-            .as_ref()
-            .map_or(arrived_live, Option::is_none);
+        let left_live = left_dirty.as_ref().map_or(arrived_live, Option::is_none);
         if let Some(Some(bits)) = left_dirty {
             Self::mark_owner(&left_owner, bits);
         } else if !left_live {
@@ -2887,9 +2885,7 @@ impl SemanticCore {
         // the a11y emit is window-level record state, still not geometry.
         #[cfg(feature = "accessibility")]
         if node_changed
-            && !self.publish_accessibility_focus(
-                node.unwrap_or(ACCESSIBILITY_ROOT_NODE_ID),
-            )
+            && !self.publish_accessibility_focus(node.unwrap_or(ACCESSIBILITY_ROOT_NODE_ID))
         {
             self.context_mark_paint();
         }
