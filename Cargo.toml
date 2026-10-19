@@ -124,6 +124,14 @@ scaffold-packages = [
     "waterui-gtk",
     "waterui-winui",
 ]
+# Third-party crates the facade re-exports into its public API, mapped to
+# the facade path the re-export answers at. A project that also depends on
+# one of these directly must resolve the same package the framework does:
+# a second copy in the graph means the types the two sides share stop
+# matching, and cargo reports the split as hundreds of type errors that
+# never name a version. The `water` CLI fails on that divergence before it
+# reaches the compiler.
+reexported-dependencies = { anyhow = "waterui::Error", bytemuck = "waterui::graphics::bytemuck", cherenkov = "waterui::graphics::cherenkov", cherenkov-cpu = "waterui::graphics::cherenkov_cpu", cherenkov-gpu = "waterui::graphics::cherenkov_gpu", cherenkov-record = "waterui::graphics::draw", color = "waterui::graphics::Color", executor-core = "waterui::task", filtrate = "waterui::graphics::filtrate", filtrate-core = "waterui::media::Filter", keyboard-types = "waterui::graphics::input", nami = "waterui::reactive", nami-core = "waterui::reactive", native-executor = "waterui::task", pastey = "waterui::pastey", serde = "waterui::webview::serde", serde_json = "waterui::webview::serde_json", suiteki = "waterui::Str", tracing = "waterui::log", url = "waterui::media::Url", waterkit-haptic = "waterui::Intensity", wgpu = "waterui::graphics::wgpu" }
 
 [lib]
 path = "facade.rs"
