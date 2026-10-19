@@ -552,18 +552,6 @@ impl Outline {
 }
 
 impl OutlineRef<'_> {
-    /// Constant-time content size, before stroke expansion or device encoding.
-    pub fn elements(self) -> usize {
-        match self {
-            Self::Fill { elements, .. } => elements.len(),
-            Self::Stroke {
-                shape: ShapeData::Path { elements, .. },
-                ..
-            } => elements.len(),
-            Self::Stroke { .. } => 0,
-        }
-    }
-
     /// Semantic identity at the tolerance used to construct the outline.
     pub fn content(self, tolerance: f64) -> u64 {
         match self {
@@ -667,6 +655,8 @@ pub enum Op {
         rule: FillRule,
         /// The outline builder.
         outline: Outline,
+        /// Whether the source has enough elements to consider GPU coverage.
+        gpu_candidate: bool,
         /// The resolved paint (identity local space — device pixels).
         paint: ResolvedPaint,
     },
@@ -860,6 +850,7 @@ impl Lowerer<'_> {
             ops.push(Op::Path {
                 local: ambient,
                 rule: *rule,
+                gpu_candidate: elements.len() >= path::GPU_ROUTE_MIN_ELEMENTS,
                 outline: source.map_or_else(
                     || Outline::Fill {
                         elements: Arc::clone(elements),
@@ -950,6 +941,8 @@ impl Lowerer<'_> {
             ops.push(Op::Path {
                 local: ambient,
                 rule: FillRule::NonZero,
+                gpu_candidate: matches!(shape, ShapeData::Path { elements, .. }
+                    if elements.len() >= path::GPU_ROUTE_MIN_ELEMENTS),
                 outline: source.map_or_else(
                     || Outline::Stroke {
                         shape: shape.clone(),

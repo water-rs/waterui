@@ -121,6 +121,7 @@ struct Pipes {
     bin: wgpu::ComputePipeline,
     fragment_bins: wgpu::ComputePipeline,
     link_groups: wgpu::ComputePipeline,
+    prefix_tiles: wgpu::ComputePipeline,
     prefix: wgpu::ComputePipeline,
     integrate_edges: wgpu::ComputePipeline,
     integrate: wgpu::ComputePipeline,
@@ -298,14 +299,15 @@ impl GpuCoverage {
             + to64(bound.segments) * 16
             + to64(bound.bins) * 12
             + to64(bound.fragments) * 40
-            + to64(bound.fragments.div_ceil(64)) * 192
+            + to64(bound.fragments.div_ceil(64)) * 64
             + to64(strips) * 12
             + to64(rows) * 4
             + to64(bound.texels.div_ceil(4) + bound.cell_cap) * 4
             + to64(bound.instance_cap) * u64::from(INSTANCE_VEC4S) * 16
             + u64::from(ARGS_WORDS) * 4
             + (PATH_WORDS as u64) * 4
-            + to64(strips) * (1 + to64(bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize))) * 8;
+            + to64(strips) * (1 + to64(bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize))) * 8
+            + to64(strips * bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize)) * 16;
         let previous_tokens = self.fragment_total.min(self.cov_total) * 6;
         let next_tokens = fragment_total.min(cov_total) * 6;
         self.bound_bytes += path_bytes
@@ -468,7 +470,8 @@ impl GpuCoverage {
             }
         }
         let strip_total = u32::try_from(self.work.len()).expect("coverage capacity fits u32");
-        for (index, path) in self.paths.iter().enumerate() {
+        for (index, path) in self.paths.iter_mut().enumerate() {
+            path[32] = u32::try_from(self.work.len()).expect("work count fits u32") - strip_total;
             let tiles = path[17].div_ceil(CLASSIFY_WIDTH) * path[18].div_ceil(4);
             for tile in 0..tiles {
                 self.work
@@ -476,8 +479,6 @@ impl GpuCoverage {
             }
         }
         let tile_total = u32::try_from(self.work.len()).expect("work count fits u32") - strip_total;
-        let radix_masks =
-            self.row_total + u32::try_from(self.work.len()).expect("work count fits u32") * 2;
         let bin_base = 0;
         let fragment_base = bin_base + self.bin_total * 3;
         let sort_a = fragment_base + self.fragment_total * 8;
@@ -500,7 +501,7 @@ impl GpuCoverage {
             CLASSIFY_WIDTH,
             self.cov_total,
             bin_base,
-            self.bin_total,
+            sort_b,
             fragment_base,
             self.fragment_total,
             sort_a,
@@ -508,20 +509,18 @@ impl GpuCoverage {
             histogram,
             groups,
             tokens,
-            radix_masks,
+            0,
             0,
             self.texel_words,
         ];
-        let cov_words = u64::from(token_end.max(histogram_end));
+        let cov_words = u64::from(token_end.max(histogram_end).max(sort_b + tile_total * 4));
         let scratch_bytes = cov_words * 4;
         let limits = device.limits();
         let limit = limits
             .max_storage_buffer_binding_size
             .min(limits.max_buffer_size);
         let work_header_bytes = u64::from(4 + self.row_total) * 4;
-        let work_bytes = work_header_bytes
-            + self.work.len() as u64 * 8
-            + u64::from(self.fragment_total.div_ceil(WORKGROUP)) * 32 * 4;
+        let work_bytes = work_header_bytes + self.work.len() as u64 * 8;
         let sizes = [
             scratch_bytes,
             u64::from(self.element_total) * 48,
@@ -793,6 +792,8 @@ impl GpuCoverage {
                 pass.set_bind_group(0, &bind, &[0]);
                 pass.set_pipeline(&pipes.link_groups);
                 pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 12);
+                pass.set_pipeline(&pipes.prefix_tiles);
+                dispatch(&mut pass, tile_total);
                 pass.set_pipeline(&pipes.prefix);
                 dispatch(&mut pass, strip_total);
                 pass.set_pipeline(&pipes.integrate_edges);
@@ -893,6 +894,7 @@ impl GpuCoverage {
             bin: make("bin"),
             fragment_bins: make("fragment_bins"),
             link_groups: make("link_groups"),
+            prefix_tiles: make("prefix_tiles"),
             prefix: make("prefix"),
             integrate_edges: make("integrate_edges"),
             integrate: make("integrate"),

@@ -4068,6 +4068,13 @@ impl<'a> Lowering<'a> {
         // GPU emissions are frame-local and never enter this cache.
         if self.has_compute
             && self.coverage_route == path::CoverageRoute::Automatic
+            && matches!(
+                op,
+                Op::Path {
+                    gpu_candidate: true,
+                    ..
+                }
+            )
             && self.automatic_gpu_leaf(op, source, &mut storage.gpu_paths, index)?
         {
             cache.valid = false;
@@ -4087,6 +4094,7 @@ impl<'a> Lowering<'a> {
         clippy::cast_sign_loss,
         reason = "surface sizes fit u32"
     )]
+    #[inline(never)]
     fn automatic_gpu_leaf(
         &mut self,
         op: &Op,
@@ -4099,14 +4107,12 @@ impl<'a> Lowering<'a> {
             rule,
             outline,
             paint,
+            ..
         } = op
         else {
             return Ok(false);
         };
         let outline = outline.get(source);
-        if outline.elements() < path::GPU_ROUTE_MIN_ELEMENTS {
-            return Ok(false);
-        }
         let raster = self.transform * *local;
         let tolerance = path::FLATTEN / path::sigma_max(raster).max(1e-12);
         let content = outline.content(tolerance);
@@ -4542,6 +4548,7 @@ impl<'a> Lowering<'a> {
                 rule,
                 outline,
                 paint,
+                ..
             } => {
                 self.transform *= *local;
                 match outline.get(source) {
@@ -6001,6 +6008,7 @@ mod tests {
             let op = Op::Path {
                 local: Affine::IDENTITY,
                 rule: FillRule::NonZero,
+                gpu_candidate: elements.len() >= path::GPU_ROUTE_MIN_ELEMENTS,
                 outline: super::super::prepared::Outline::Fill {
                     content: path::hash_elements(&elements, FillRule::NonZero as u64),
                     elements: elements.into(),

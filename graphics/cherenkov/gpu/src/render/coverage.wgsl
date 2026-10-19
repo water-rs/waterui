@@ -57,7 +57,7 @@ struct GpuPath {
     affine: vec4<f32>,
     translate: vec2<f32>,
     surface: vec2<f32>,
-    bound_x: f32,
+    tile_base: u32,
     bound_y: f32,
     rect_x: f32,
     rect_y: f32,
@@ -77,7 +77,7 @@ struct Params {
     classify_width: u32,
     grid_total: u32,
     bin_base: u32,
-    bin_cap: u32,
+    tile_prefix: u32,
     fragment_base: u32,
     fragment_cap: u32,
     sort_a: u32,
@@ -85,7 +85,7 @@ struct Params {
     histogram: u32,
     groups: u32,
     tokens: u32,
-    radix_masks: u32,
+    reserved: u32,
     radix_pass: u32,
     texel_words: u32,
 }
@@ -458,7 +458,7 @@ fn prepare_dispatch(@builtin(local_invocation_index) lane: u32) {
         work.fragments = fragments;
         count = fragments;
     }
-    if lane == 2u { count = ((fragments + 16383u) / 16384u) * 16u; }
+    if lane == 2u { count = ((fragments + 16383u) / 16384u) * 16u * 64u; }
     let groups = (count + 63u) / 64u;
     let base = params.path_count * 13u + lane * 3u;
     args[base] = min(groups, 256u);
@@ -466,64 +466,94 @@ fn prepare_dispatch(@builtin(local_invocation_index) lane: u32) {
     args[base + 2u] = 1u;
 }
 
+var<workgroup> radix_masks: array<atomic<u32>, 32>;
+
 // Each lane contributes one bit to its digit's mask. The masks are local
 // to a workgroup's range; completed masks become ordinary scatter input.
 @compute @workgroup_size(64)
 fn radix_count(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
     let i = invocation(gid);
     let group = i / 64u;
-    let masks = params.radix_masks + group * 32u;
-    if lane < 32u && group * 64u < fragment_count() { atomicStore(&work.words[masks + lane], 0u); }
-    storageBarrier();
+    if lane < 32u { atomicStore(&radix_masks[lane], 0u); }
+    workgroupBarrier();
     if i < fragment_count() {
         let input = select(params.sort_a, params.sort_b, (params.radix_pass & 1u) != 0u);
         let digit = (coverage[input + i * 2u] >> (params.radix_pass * 4u)) & 15u;
-        atomicOr(&work.words[masks + digit * 2u + lane / 32u], 1u << (lane % 32u));
+        atomicOr(&radix_masks[digit * 2u + lane / 32u], 1u << (lane % 32u));
     }
-    storageBarrier();
+    workgroupBarrier();
     if lane < 16u && group * 64u < fragment_count() {
-        let low = atomicLoad(&work.words[masks + lane * 2u]);
-        let high = atomicLoad(&work.words[masks + lane * 2u + 1u]);
+        let low = atomicLoad(&radix_masks[lane * 2u]);
+        let high = atomicLoad(&radix_masks[lane * 2u + 1u]);
         coverage[params.histogram + group * 16u + lane] = countOneBits(low) + countOneBits(high);
         let output = params.groups + group * 64u + lane * 2u;
         coverage[output] = low;
         coverage[output + 1u] = high;
     }
 }
+var<workgroup> radix_sums: array<u32, 64>;
+
 @compute @workgroup_size(64)
-fn radix_scan_blocks(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn radix_scan_blocks(@builtin(workgroup_id) gid: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
     let groups = (fragment_count() + 63u) / 64u;
     let blocks = (groups + 255u) / 256u;
-    let i = invocation(gid);
-    if i >= blocks * 16u { return; }
+    let i = gid.x + gid.y * 256u;
     let digit = i % 16u;
     let block = i / 16u;
-    var sum = 0u;
-    for (var group = block * 256u; group < min((block + 1u) * 256u, groups); group += 1u) {
-        let index = params.histogram + group * 16u + digit;
-        let count = coverage[index];
-        coverage[index] = sum;
-        sum += count;
+    var counts = vec4<u32>(0u);
+    for (var j = 0u; j < 4u; j += 1u) {
+        let group = block * 256u + lane * 4u + j;
+        if group < groups {
+            counts[j] = coverage[params.histogram + group * 16u + digit];
+        }
     }
-    coverage[params.groups + params.fragment_cap + 32u + i] = sum;
+    radix_sums[lane] = counts.x + counts.y + counts.z + counts.w;
+    workgroupBarrier();
+    for (var offset = 1u; offset < 64u; offset *= 2u) {
+        var previous = 0u;
+        if lane >= offset { previous = radix_sums[lane - offset]; }
+        workgroupBarrier();
+        radix_sums[lane] += previous;
+        workgroupBarrier();
+    }
+    var sum = 0u;
+    if lane > 0u { sum = radix_sums[lane - 1u]; }
+    for (var j = 0u; j < 4u; j += 1u) {
+        let group = block * 256u + lane * 4u + j;
+        if group < groups {
+            coverage[params.histogram + group * 16u + digit] = sum;
+        }
+        sum += counts[j];
+    }
+    if lane == 63u && block < blocks {
+        coverage[params.groups + params.fragment_cap + 32u + i] = sum;
+    }
 }
+var<workgroup> radix_totals: array<u32, 16>;
+
 @compute @workgroup_size(64)
-fn radix_prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let digit = invocation(gid);
-    if digit >= 16u { return; }
+fn radix_prefix(@builtin(local_invocation_index) digit: u32) {
     let blocks = (fragment_count() + 16383u) / 16384u;
     let base = params.groups + params.fragment_cap + 32u;
-    var sum = 0u;
-    for (var block = 0u; block < blocks; block += 1u) {
-        let index = base + block * 16u + digit;
-        let count = coverage[index];
-        coverage[index] = sum;
-        sum += count;
+    if digit < 16u {
+        var sum = 0u;
+        for (var block = 0u; block < blocks; block += 1u) {
+            let index = base + block * 16u + digit;
+            let count = coverage[index];
+            coverage[index] = sum;
+            sum += count;
+        }
+        radix_totals[digit] = sum;
     }
-    // Masks, block prefixes and bucket totals occupy disjoint ranges in
-    // the group arena. The extra 32 words separate the final partial group
-    // from prefixes; F>=3 implies F+16*ceil(F/16384)+16<=16F.
-    coverage[base + blocks * 16u + digit] = sum;
+    workgroupBarrier();
+    if digit < 16u {
+        var start = 0u;
+        for (var previous = 0u; previous < digit; previous += 1u) {
+            start += radix_totals[previous];
+        }
+        // Bucket starts are shared by every fragment in the scatter.
+        coverage[base + blocks * 16u + digit] = start;
+    }
 }
 @compute @workgroup_size(64)
 fn radix_scatter(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
@@ -547,10 +577,7 @@ fn radix_scatter(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_i
     if lane >= 32u { rank = countOneBits(low) + countOneBits(high & preceding); }
     let blocks = (fragment_count() + 16383u) / 16384u;
     let base = params.groups + params.fragment_cap + 32u;
-    var bucket_start = 0u;
-    for (var previous = 0u; previous < digit; previous += 1u) {
-        bucket_start += coverage[base + blocks * 16u + previous];
-    }
+    let bucket_start = coverage[base + blocks * 16u + digit];
     let block_start = coverage[base + (i / 16384u) * 16u + digit];
     let dst = bucket_start + block_start + coverage[histogram + digit] + rank;
     coverage[output + dst * 2u] = key;
@@ -585,6 +612,9 @@ fn link_groups(@builtin(global_invocation_id) gid: vec3<u32>) {
         let node = sort_node(end);
         let base = params.fragment_base + (node - 1u) * 8u;
         let row = coverage[base + 6u];
+        // The frame memory bound leaves room for the two row bits.
+        // Retain the group address for integration instead of searching again.
+        coverage[base + 6u] = (group << 2u) | row;
         let previous = coverage[group + 4u + row];
         coverage[group + 4u + row] = node;
         coverage[base + 4u] = previous;
@@ -599,9 +629,39 @@ fn link_groups(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
-// One invocation per four-row strip carries winding across the strip's
-// linked groups. Sorted boundary columns let winding skip arbitrarily wide
-// interiors without allocating or touching their pixels.
+// Local winding scans run in parallel across column tiles. Their four
+// totals occupy the radix workspace until integration consumes the carries.
+@compute @workgroup_size(64)
+fn prefix_tiles(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = invocation(gid);
+    if i >= params.tile_total { return; }
+    let w = work_item(params.strip_total + i);
+    let pi = w.x;
+    let tiles = (paths[pi].grid_w + params.classify_width - 1u) / params.classify_width;
+    let strip = w.y / tiles;
+    let x = (w.y % tiles) * params.classify_width;
+    let rect = grid_rect(pi);
+    var winding = vec4<u32>(0u);
+    if strip * 4u < u32(rect.w) && x < u32(rect.z) {
+        let key0 = paths[pi].grid_base + strip * paths[pi].grid_w;
+        let limit = lower_bound(key0 + min(x + params.classify_width, u32(rect.z)));
+        var current = lower_bound(key0 + x);
+        while current < limit {
+            let group = group_address(current);
+            for (var r = 0u; r < 4u; r += 1u) {
+                coverage[group + 8u + r] = winding[r];
+                winding[r] += coverage[group + 12u + r];
+                coverage[group + 12u + r] = winding[r];
+            }
+            current = coverage[group];
+        }
+    }
+    for (var r = 0u; r < 4u; r += 1u) {
+        coverage[params.tile_prefix + i * 4u + r] = winding[r];
+    }
+}
+
+// Only the short scan across tile totals remains serial per strip.
 @compute @workgroup_size(64)
 fn prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = invocation(gid);
@@ -611,22 +671,28 @@ fn prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
     let rect = grid_rect(pi);
     let sy = w.y * 4u;
     if sy >= u32(rect.w) { return; }
-    let key0 = paths[pi].grid_base + w.y * paths[pi].grid_w;
-    let limit = lower_bound(key0 + u32(rect.z));
-    var current = lower_bound(key0);
+    let tiles = (paths[pi].grid_w + params.classify_width - 1u) / params.classify_width;
+    let base = paths[pi].tile_base + w.y * tiles;
     var winding = vec4<u32>(0u);
     for (var r = 0u; r < min(4u, u32(rect.w) - sy); r += 1u) {
         winding[r] = atomicLoad(&work.words[paths[pi].row_base + sy + r]);
     }
-    while current < limit {
-        let group = group_address(current);
+    for (var tile = 0u; tile < tiles; tile += 1u) {
+        let offset = params.tile_prefix + (base + tile) * 4u;
         for (var r = 0u; r < 4u; r += 1u) {
-            coverage[group + 8u + r] = winding[r];
-            winding[r] += coverage[group + 12u + r];
-            coverage[group + 12u + r] = winding[r];
+            let delta = coverage[offset + r];
+            coverage[offset + r] = winding[r];
+            winding[r] += delta;
         }
-        current = coverage[group];
     }
+}
+
+fn tile_carry(pi: u32, key: u32, row: u32) -> u32 {
+    let local = key - paths[pi].grid_base;
+    let tiles = (paths[pi].grid_w + params.classify_width - 1u) / params.classify_width;
+    let tile = paths[pi].tile_base + (local / paths[pi].grid_w) * tiles
+        + (local % paths[pi].grid_w) / params.classify_width;
+    return coverage[params.tile_prefix + tile * 4u + row];
 }
 
 fn path_for_key(key: u32) -> u32 {
@@ -649,11 +715,13 @@ fn integrate_edges(@builtin(global_invocation_id) gid: vec3<u32>) {
     if key == 0xffffffffu { return; }
     let node = sort_node(i);
     let base = params.fragment_base + (node - 1u) * 8u;
-    let row = coverage[base + 6u];
-    let group = group_address(lower_bound(key));
+    let location = coverage[base + 6u];
+    let row = location & 3u;
+    let group = location >> 2u;
     let head = coverage[group + 4u + row];
-    let seed = bitcast<i32>(coverage[group + 8u + row]);
-    let value = edge_area(node, head, seed, paths[path_for_key(key)].rule);
+    let pi = path_for_key(key);
+    let seed = bitcast<i32>(coverage[group + 8u + row] + tile_carry(pi, key, row));
+    let value = edge_area(node, head, seed, paths[pi].rule);
     coverage[base + 7u] = bitcast<u32>(value);
 }
 
@@ -671,7 +739,9 @@ fn integrate(@builtin(global_invocation_id) gid: vec3<u32>) {
     let next = coverage[group];
     for (var row = 0u; row < 4u; row += 1u) {
         let head = coverage[group + 4u + row];
-        let seed = bitcast<i32>(coverage[group + 8u + row]);
+        let carry = tile_carry(pi, key, row);
+        let seed = bitcast<i32>(coverage[group + 8u + row] + carry);
+        coverage[group + 12u + row] += carry;
         var value = inside(seed, paths[pi].rule);
         if head != 0u {
             value = left_area(head, seed, paths[pi].rule);
