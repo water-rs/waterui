@@ -112,6 +112,7 @@ fn trials() -> Vec<Trial> {
                 Ok(())
             }),
         ]);
+        tests.extend(list_ax::trials());
         tests.extend(gesture_ax::trials());
         #[cfg(feature = "gpu_surface")]
         {
@@ -8338,6 +8339,170 @@ mod webview {
                 &controller,
             ),
         );
+    }
+}
+
+/// `AppKit` accessibility coverage for the list — regression tests for
+/// water-rs/waterui#1489. The table vends an `NSTableRow` proxy for every
+/// row, and an unrealized row's cell child materializes the row when an
+/// assistive client asks it for children, so the rows the table exposes
+/// through the generic tree must stay bounded to the realized ones.
+#[cfg(target_os = "macos")]
+mod list_ax {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_app_kit::{NSAccessibilityChildrenAttribute, NSTableView};
+    use objc2_foundation::{NSArray, NSIndexSet};
+    use waterui::component::list::ListItem;
+    use waterui::layout::scroll::ScrollController;
+    use waterui_apple::native_test_support::{row_item, row_list};
+
+    use super::{AttachedWindow, Retained, leaf, mtm, trial_each};
+
+    /// `examples/edge_list`'s row count — the list the issue's tree walk
+    /// timed out on.
+    const ROWS: usize = 200_000;
+
+    /// The slack the table's non-row children take: `AppKit` adds a column
+    /// element and, where present, header chrome beside the rows.
+    const NON_ROW_CHILDREN: usize = 16;
+
+    /// The rows the table has materialized so far — `rowViewAtRow:` with
+    /// `makeIfNecessary:NO` reads the realized set without touching it.
+    fn realized_rows(table: &NSTableView) -> usize {
+        (0..table.numberOfRows())
+            .filter(|row| table.rowViewAtRow_makeIfNecessary(*row, false).is_some())
+            .count()
+    }
+
+    /// The row elements `accessibilityRows` answers.
+    fn ax_rows(table: &NSTableView) -> Retained<NSArray> {
+        // SAFETY: the query answers an object array.
+        let rows: Option<Retained<NSArray>> = unsafe { msg_send![table, accessibilityRows] };
+        rows.unwrap_or_else(|| NSArray::from_retained_slice(&[]))
+    }
+
+    /// The elements `accessibilityChildren` answers.
+    fn ax_children(table: &NSTableView) -> Retained<NSArray> {
+        // SAFETY: the query answers an object array.
+        let children: Option<Retained<NSArray>> =
+            unsafe { msg_send![table, accessibilityChildren] };
+        children.unwrap_or_else(|| NSArray::from_retained_slice(&[]))
+    }
+
+    /// The elements `accessibilitySelectedRows` answers.
+    fn ax_selected_rows(table: &NSTableView) -> Retained<NSArray> {
+        // SAFETY: the query answers an object array.
+        let rows: Option<Retained<NSArray>> =
+            unsafe { msg_send![table, accessibilitySelectedRows] };
+        rows.unwrap_or_else(|| NSArray::from_retained_slice(&[]))
+    }
+
+    /// A laid-out 200k-row list, its leaf and window alive but never
+    /// ordered in.
+    struct Fixture {
+        table: Retained<NSTableView>,
+        _leaf: waterui_apple::contract::NativeLeaf,
+        _window: AttachedWindow,
+    }
+
+    fn mounted() -> Fixture {
+        let controller = ScrollController::new(0usize);
+        let (leaf, surface) = row_list(vec![row_item as fn() -> ListItem; ROWS], &controller);
+        let window = leaf::attach(mtm(), leaf.view());
+        leaf.view().setNeedsLayout(true);
+        leaf.view().layoutSubtreeIfNeeded();
+        Fixture {
+            table: surface.table_view(),
+            _leaf: leaf,
+            _window: window,
+        }
+    }
+
+    /// A laid-out 200k-row list must expose only realized rows through the
+    /// generic children tree, and walking the exposed elements must
+    /// materialize nothing: before the fix the walk reached every row's
+    /// cell mock, which realized its row — O(rows) materialization.
+    fn a_large_list_walk_materializes_no_rows() {
+        let fixture = mounted();
+        let table = &*fixture.table;
+        assert_eq!(table.numberOfRows(), ROWS.cast_signed());
+        let realized = realized_rows(table);
+        assert!(
+            realized < ROWS / 10,
+            "a freshly laid-out list must virtualize, not realize all {ROWS} rows"
+        );
+
+        let rows = ax_rows(table);
+        assert_eq!(
+            rows.count(),
+            realized,
+            "accessibilityRows must expose only the realized rows"
+        );
+        let children = ax_children(table);
+        assert!(
+            children.count() <= realized + NON_ROW_CHILDREN,
+            "accessibilityChildren must expose only realized rows and the table's chrome"
+        );
+
+        // The walk an assistive client performs: each exposed element's
+        // children. No cell mock for an unrealized row can be reached, so
+        // the realized set must not grow.
+        for element in &children {
+            // SAFETY: the generic attribute getter answers an object.
+            let _: Option<Retained<AnyObject>> = unsafe {
+                msg_send![&*element, accessibilityAttributeValue: NSAccessibilityChildrenAttribute]
+            };
+        }
+        assert_eq!(
+            realized_rows(table),
+            realized,
+            "walking the exposed children must not materialize more rows"
+        );
+    }
+
+    /// A selected-but-unrealized row stays in the row model —
+    /// `accessibilityRows` and `accessibilitySelectedRows` — without
+    /// joining the walkable children.
+    fn a_selected_row_stays_reachable_without_joining_the_walk() {
+        let fixture = mounted();
+        let table = &*fixture.table;
+        let selected = 150_000usize;
+        table
+            .selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(selected), false);
+
+        let realized = realized_rows(table);
+        let rows = ax_rows(table);
+        assert_eq!(
+            rows.count(),
+            realized + 1,
+            "the selected row must stay in the row model"
+        );
+        let selected_rows = ax_selected_rows(table);
+        assert_eq!(
+            selected_rows.count(),
+            1,
+            "the unrealized selection must remain reportable"
+        );
+        let children = ax_children(table);
+        assert!(
+            children.count() <= realized + NON_ROW_CHILDREN,
+            "the generic children must not gain the unrealized selected row"
+        );
+    }
+
+    /// The `list_ax::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        trial_each(vec![
+            (
+                "list_ax::a_large_list_walk_materializes_no_rows".to_owned(),
+                Box::new(a_large_list_walk_materializes_no_rows),
+            ),
+            (
+                "list_ax::a_selected_row_stays_reachable_without_joining_the_walk".to_owned(),
+                Box::new(a_selected_row_stays_reachable_without_joining_the_walk),
+            ),
+        ])
     }
 }
 
