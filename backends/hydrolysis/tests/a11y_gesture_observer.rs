@@ -133,3 +133,38 @@ fn bare_tap_observer_claims_an_activatable_node_on_offscreen_mount() {
         "the claim collapses onto the text's node — no separate label remains"
     );
 }
+
+/// A bare tap inside an `a11y_hidden` subtree synthesizes no claim: the
+/// hidden view is a pointer target only, so it neither publishes a node nor
+/// takes keyboard focus ahead of the visible controls — a dialog's scrim
+/// beside its card's buttons.
+#[test]
+fn hidden_bare_tap_claims_no_node_on_offscreen_mount() {
+    let mut app = mount_rendered(
+        Environment::new(),
+        || text("T").on_tap(|| {}).a11y_hidden(true),
+        320,
+        200,
+    );
+    app.settle();
+    assert!(
+        !node_exists(app.tree(), AccessibilityRole_::Button, "T"),
+        "a hidden tap must not synthesize a button claim"
+    );
+}
+
+/// The semantic walk drops the hidden tap's claim the same way.
+#[test]
+fn hidden_bare_tap_claims_no_node_on_semantic_mount() {
+    let mut app = support::mount_semantic(
+        Environment::new(),
+        || text("T").on_tap(|| {}).a11y_hidden(true),
+        320,
+        200,
+    );
+    app.settle();
+    assert!(
+        !node_exists(app.tree(), AccessibilityRole_::Button, "T"),
+        "a hidden tap must not synthesize a button claim"
+    );
+}

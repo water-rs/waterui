@@ -406,8 +406,15 @@ impl HydrolysisRenderer {
         let mut claim_env: Option<Environment> = None;
         #[cfg(feature = "accessibility")]
         let mut claim_synthesized = false;
+        // A hidden subtree publishes nothing — not even the claim a bare tap
+        // would synthesize, which would otherwise take focus ahead of the
+        // visible controls (a dialog's pointer-only scrim).
         #[cfg(feature = "accessibility")]
-        if matches!(effect.gesture, Gesture::Tap(_)) {
+        if matches!(effect.gesture, Gesture::Tap(_))
+            && !env
+                .get::<AccessibilityHidden>()
+                .is_some_and(AccessibilityHidden::is_hidden)
+        {
             let has_role = env.get::<AccessibilityRole>().is_some();
             let has_scope = env.get::<ScopedAccessibilitySemantics>().is_some();
             if !renderer.accessibility_scope_is_claimed(env) && (has_role || !has_scope) {
@@ -695,6 +702,13 @@ impl HydrolysisRenderer {
         let disabled = env
             .get::<waterui_core::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
+        // A hidden subtree publishes nothing, the claim included.
+        if env
+            .get::<AccessibilityHidden>()
+            .is_some_and(AccessibilityHidden::is_hidden)
+        {
+            return None;
+        }
         let has_role = env.get::<AccessibilityRole>().is_some();
         let has_scope = env.get::<ScopedAccessibilitySemantics>().is_some();
         if !renderer.accessibility_scope_is_claimed(env) && (has_role || !has_scope) {
