@@ -234,8 +234,7 @@ const fn debug_host() -> IpAddr {
 
 /// What the launched CLI's captured output looks like in a diagnostic:
 /// the same bytes with the session token scrubbed, because a tool that
-/// echoes its own arguments would otherwise print the credential it was
-/// called with.
+/// reports the credential it was handed would otherwise print it.
 fn redacted_child_output(output: &[u8], token: &str) -> String {
     String::from_utf8_lossy(output).replace(token, "[redacted]")
 }
@@ -415,7 +414,7 @@ impl InspectorRuntime {
             tracing::warn!(
                 target: "waterui::inspector",
                 inspector_addr = %endpoint.addr,
-                "Could not find the `water` CLI; attach with `water inspector --target <addr> --token <token>`, or point WATERUI_CLI at the binary"
+                "Could not find the `water` CLI; attach with `WATERUI_INSPECTOR_TOKEN=<token> water inspector --target <addr>`, or point WATERUI_CLI at the binary"
             );
             return;
         };
@@ -425,8 +424,10 @@ impl InspectorRuntime {
             .arg("inspector")
             .arg("--target")
             .arg(endpoint.addr.to_string())
-            .arg("--token")
-            .arg(&endpoint.token);
+            // The credential travels in the child's environment: the CLI
+            // accepts no `--token`, because argv is readable by every
+            // process on the machine.
+            .env("WATERUI_INSPECTOR_TOKEN", &endpoint.token);
 
         // The CLI builds the inspector against the project it is inspecting, and
         // reads that project from its working directory. A launched application
