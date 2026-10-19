@@ -2624,7 +2624,11 @@ fn package_at_manifest<'a>(
     metadata
         .packages
         .iter()
-        .find(|package| package.manifest_path.as_std_path() == application_manifest)
+        .find(|package| {
+            // Cargo may report the manifest under a verbatim `\\?\`-prefixed
+            // spelling where `application_manifest` carries the ordinary one.
+            dunce::simplified(package.manifest_path.as_std_path()) == application_manifest
+        })
         .ok_or_else(|| {
             eyre::eyre!(
                 "Cargo metadata omitted the application package at {}",

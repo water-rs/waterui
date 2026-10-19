@@ -114,6 +114,7 @@ fn trials() -> Vec<Trial> {
         ]);
         tests.extend(list_ax::trials());
         tests.extend(gesture_ax::trials());
+        tests.extend(a11y_extent::trials());
         #[cfg(feature = "gpu_surface")]
         {
             tests.extend(gpu_surface::trials());
@@ -8590,6 +8591,141 @@ mod gesture_ax {
             (
                 "gesture_ax::a_long_press_gesture_keeps_the_default_press_answer".to_owned(),
                 Box::new(a_long_press_gesture_keeps_the_default_press_answer),
+            ),
+        ])
+    }
+}
+
+/// `AppKit` accessibility coverage for the labelled-container frame —
+/// water-rs/waterui#1482: a labelled layout container announces the
+/// region its content resolved to, not the frame its parent assigned it.
+#[cfg(target_os = "macos")]
+mod a11y_extent {
+    use cocoa_ui::PlatformView;
+    use cocoa_ui::objc2::runtime::ProtocolObject;
+    use cocoa_ui::objc2_app_kit::{NSAccessibility, NSAccessibilityFrameInView};
+    use cocoa_ui::objc2_foundation::{NSRect, NSSize};
+    use waterui::ViewExt as _;
+    use waterui::prelude::text;
+    use waterui_backend_core::AnyView;
+
+    use super::{HostView, leaf, mtm, resolve, trial_each};
+
+    /// The frame an assistive client reads for `view`.
+    fn ax_frame(view: &PlatformView) -> NSRect {
+        ProtocolObject::<dyn NSAccessibility>::from_ref(view).accessibilityFrame()
+    }
+
+    /// `view`'s own bounds reported in the screen space
+    /// `accessibilityFrame` answers.
+    fn own_frame(view: &PlatformView) -> NSRect {
+        NSAccessibilityFrameInView(view, view.bounds())
+    }
+
+    /// #1482: a `view.size(8, 8).a11y_label("Sized")` under the window's
+    /// `Overlay` is assigned the whole window while its content is placed
+    /// in the resolved 8×8 — the labelled element must report the placed
+    /// region, not the window.
+    fn a_labelled_container_reports_its_content_extent() {
+        let leaf = resolve::render(
+            AnyView::new(AnyView::new(text("x")).size(8.0, 8.0))
+                .size(8.0, 8.0)
+                .a11y_label("Sized"),
+        );
+        let view = leaf.view();
+        let _window = leaf::attach(mtm(), view);
+        view.setNeedsLayout(true);
+        view.layoutSubtreeIfNeeded();
+
+        let content = view
+            .subviews()
+            .iter()
+            .next()
+            .expect("the frame container mounts its content as a subview");
+        let reported = ax_frame(view);
+        assert_eq!(
+            reported.size,
+            NSSize::new(8.0, 8.0),
+            "the labelled element reports the resolved 8x8, not the window"
+        );
+        assert_eq!(
+            reported,
+            NSAccessibilityFrameInView(view, content.frame()),
+            "the reported frame is where the content was placed"
+        );
+        assert_ne!(
+            reported,
+            own_frame(view),
+            "the reported frame is not the assigned bounds"
+        );
+    }
+
+    /// A labelled leaf that is no `HostView` keeps reporting its own
+    /// frame — the flag never lands on it.
+    fn a_labelled_plain_leaf_keeps_its_own_frame() {
+        let on = waterui::reactive::binding(false);
+        let leaf = resolve::render(
+            waterui::component::toggle::Toggle::new("Wi-Fi", &on).a11y_label("Plain"),
+        );
+        let view = leaf.view();
+        assert!(
+            view.downcast_ref::<HostView>().is_none(),
+            "a switch leaf is no host view"
+        );
+        let _window = leaf::attach(mtm(), view);
+        view.setNeedsLayout(true);
+        view.layoutSubtreeIfNeeded();
+        assert_eq!(ax_frame(view), own_frame(view));
+    }
+
+    /// A host view without the flag reports what `NSView` reports; with
+    /// the flag it reports the union of its non-hidden children — or its
+    /// own bounds when it has none.
+    fn a_host_view_reports_content_extent_only_when_marked() {
+        let mtm = mtm();
+        let host = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        let _window = leaf::attach(mtm, &host);
+        assert_eq!(
+            ax_frame(&host),
+            own_frame(&host),
+            "an unmarked host reports `super`'s frame"
+        );
+
+        host.set_reports_content_extent(true);
+        assert_eq!(
+            ax_frame(&host),
+            own_frame(&host),
+            "with no children the extent falls back to the view's bounds"
+        );
+
+        let child = HostView::new(mtm, cocoa_ui::Rect::new(10.0, 20.0, 30.0, 40.0));
+        let hidden = HostView::new(mtm, cocoa_ui::Rect::new(100.0, 100.0, 50.0, 50.0));
+        cocoa_ui::view::set_hidden(&hidden, true);
+        host.set_layout_handler(|_| {});
+        cocoa_ui::view::add_subview(&host, &hidden);
+        cocoa_ui::view::add_subview(&host, &child);
+        let expected = NSAccessibilityFrameInView(&host, child.frame());
+        assert_eq!(
+            ax_frame(&host),
+            expected,
+            "the extent is the union of the non-hidden children's frames"
+        );
+    }
+
+    /// The `a11y_extent::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        trial_each(vec![
+            (
+                "a11y_extent::a_labelled_container_reports_its_content_extent".to_owned(),
+                Box::new(a_labelled_container_reports_its_content_extent),
+            ),
+            (
+                "a11y_extent::a_labelled_plain_leaf_keeps_its_own_frame".to_owned(),
+                Box::new(a_labelled_plain_leaf_keeps_its_own_frame),
+            ),
+            (
+                "a11y_extent::a_host_view_reports_content_extent_only_when_marked".to_owned(),
+                Box::new(a_host_view_reports_content_extent_only_when_marked),
             ),
         ])
     }
