@@ -5,10 +5,10 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use cocoa_ui::objc2::rc::Retained;
-use cocoa_ui::objc2::runtime::Bool;
-use cocoa_ui::objc2::{MainThreadMarker, MainThreadOnly, msg_send, sel};
+use cocoa_ui::objc2::runtime::{AnyObject, Bool, Sel};
+use cocoa_ui::objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, msg_send, sel};
 use cocoa_ui::objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use cocoa_ui::objc2_ui_kit::{UIView, UIWindow};
+use cocoa_ui::objc2_ui_kit::{UIGestureRecognizerState, UIPanGestureRecognizer, UIView, UIWindow};
 use cocoa_ui::uikit::input_view::InputView;
 use cocoa_ui::uikit::{HostView, Label};
 use cocoa_ui::{PlatformView, Rect};
@@ -51,6 +51,10 @@ pub fn trials() -> Vec<Trial> {
         case!(
             "uikit::input_view",
             the_text_input_selectors_register_under_uikits_names
+        ),
+        case!(
+            "uikit::input_view",
+            indirect_scroll_input_arrives_as_surface_scroll_events
         ),
         case!(
             "uikit::menu_panel",
@@ -273,6 +277,216 @@ fn the_text_input_selectors_register_under_uikits_names() {
             "CocoaUiInputView must respond to {}",
             selector.name().to_string_lossy(),
         );
+    }
+}
+
+/// The ivars of a [`SeededPan`].
+#[derive(Debug)]
+struct SeededPanIvars {
+    /// What `translationInView:` reports — `UIKit` only answers a real
+    /// recognizer's translation while it tracks input, so the seeded
+    /// subclass answers from this cell.
+    translation: Cell<CGPoint>,
+    /// What `locationInView:` reports.
+    location: Cell<CGPoint>,
+    /// What `state` reports.
+    state: Cell<UIGestureRecognizerState>,
+}
+
+cocoa_ui::objc2::define_class!(
+    // SAFETY: `UIPanGestureRecognizer` permits subclassing for input the
+    // process itself generates; every override below answers a seeded
+    // value from ivars instead of touching `UIKit` internals.
+    #[unsafe(super(UIPanGestureRecognizer))]
+    #[name = "CocoaUiNativeTestSeededPan"]
+    #[thread_kind = cocoa_ui::objc2::MainThreadOnly]
+    #[ivars = SeededPanIvars]
+    /// A `UIPanGestureRecognizer` whose translation, location and state
+    /// come from cells — a headless process cannot make `UIKit` report
+    /// scroll input to a recognizer, and a stock recognizer answers zero
+    /// translation while untracking.
+    struct SeededPan;
+
+    impl SeededPan {
+        // SAFETY: `translationInView:`'s signature; the view argument is
+        // ignored — the seeded value is already in the probe view's frame.
+        #[unsafe(method(translationInView:))]
+        fn translation_in_view(&self, _view: Option<&UIView>) -> CGPoint {
+            self.ivars().translation.get()
+        }
+
+        // SAFETY: `setTranslation:inView:`'s signature; the scroll path
+        // resets the delta by writing zero here.
+        #[unsafe(method(setTranslation:inView:))]
+        fn set_translation_in_view(&self, translation: CGPoint, _view: Option<&UIView>) {
+            self.ivars().translation.set(translation);
+        }
+
+        // SAFETY: `locationInView:`'s signature.
+        #[unsafe(method(locationInView:))]
+        fn location_in_view(&self, _view: Option<&UIView>) -> CGPoint {
+            self.ivars().location.get()
+        }
+
+        // SAFETY: `state`'s signature.
+        #[unsafe(method(state))]
+        fn state(&self) -> UIGestureRecognizerState {
+            self.ivars().state.get()
+        }
+    }
+);
+
+impl SeededPan {
+    /// A pan recognizer seeded with `location`, zero translation and the
+    /// `Changed` state.
+    fn new(mtm: MainThreadMarker, location: CGPoint) -> Retained<Self> {
+        let ivars = SeededPanIvars {
+            translation: Cell::new(CGPoint::ZERO),
+            location: Cell::new(location),
+            state: Cell::new(UIGestureRecognizerState::Changed),
+        };
+        let this = Self::alloc(mtm).set_ivars(ivars);
+        // SAFETY: `initWithTarget:action:` accepts a null target/action
+        // pair; nothing dispatches to it.
+        unsafe {
+            msg_send![
+                super(this),
+                initWithTarget: std::ptr::null::<AnyObject>(),
+                action: Option::<Sel>::None
+            ]
+        }
+    }
+}
+
+/// GPU-surface scroll input on `UIKit` (#2068): indirect scrolling
+/// reaches a view as `UIPanGestureRecognizer`s — a trackpad glide through
+/// the `Continuous` scroll type, a wheel notch through `Discrete` — and
+/// each must land as a `SurfaceEvent::Scroll` with the pan's incremental
+/// translation negated into the W3C content-motion sign, its unit by
+/// scroll type, and `finished` per gesture kind. A finger drag is
+/// pointer input, not a scroll: both recognizers take zero touches.
+#[allow(clippy::too_many_lines)] // The wiring check plus the three scroll probes it verifies.
+fn indirect_scroll_input_arrives_as_surface_scroll_events() {
+    use std::cell::RefCell;
+
+    use cocoa_ui::input::{ScrollUnit, SurfaceEvent};
+    use cocoa_ui::objc2_ui_kit::{UIPanGestureRecognizer, UIScrollTypeMask};
+
+    let mtm = marker();
+    let view = InputView::new(mtm);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    view.set_event_handler({
+        let events = Rc::clone(&events);
+        move |event| events.borrow_mut().push(event)
+    });
+
+    // The wiring: one pan recognizer per indirect scroll type, no
+    // touches, no touch cancellation — a drag stays pointer input.
+    let recognizers = view.gestureRecognizers().unwrap_or_default();
+    let pans: Vec<Retained<UIPanGestureRecognizer>> = recognizers
+        .into_iter()
+        .filter_map(|recognizer| recognizer.downcast::<UIPanGestureRecognizer>().ok())
+        .collect();
+    let pan_for = |mask| {
+        pans.iter()
+            .find(|pan| pan.allowedScrollTypesMask() == mask)
+            .unwrap_or_else(|| panic!("no pan recognizer admits {mask:?}"))
+    };
+    for pan in [
+        pan_for(UIScrollTypeMask::Continuous),
+        pan_for(UIScrollTypeMask::Discrete),
+    ] {
+        assert_eq!(
+            pan.maximumNumberOfTouches(),
+            0,
+            "a scroll recognizer took touches — a finger drag would scroll"
+        );
+        assert!(!pan.cancelsTouchesInView());
+    }
+
+    // A seeded recognizer carries the translation the action reads;
+    // driving the probe is the same path `scrollContinuous:` takes when
+    // `UIKit` reports a glide.
+    let gesture = SeededPan::new(mtm, CGPoint::new(40.0, 24.0));
+    let this: &UIView = &view;
+    gesture.setTranslation_inView(CGPoint::new(12.0, -30.0), Some(this));
+    view.scroll_probe_for_test(&gesture, ScrollUnit::Pixel);
+
+    // The action consumes the incremental translation: the delta a
+    // recognizer reports is since its own last callback.
+    assert_eq!(gesture.translationInView(Some(this)), CGPoint::ZERO);
+    {
+        let events = events.borrow();
+        let [event] = events.as_slice() else {
+            panic!("expected one scroll event, got {}", events.len());
+        };
+        let SurfaceEvent::Scroll {
+            position,
+            delta_x,
+            delta_y,
+            unit,
+            finished,
+        } = event
+        else {
+            panic!("expected a scroll event, got {event:?}");
+        };
+        assert_eq!((position.x, position.y), (40.0, 24.0));
+        // A pan's translation counts pointer motion — positive right and
+        // down; `delta_x`/`delta_y` count content motion — positive left
+        // and up.
+        assert_eq!((*delta_x, *delta_y), (-12.0, 30.0));
+        assert_eq!(*unit, ScrollUnit::Pixel);
+        assert!(
+            !finished,
+            "a mid-gesture callback marked the scroll finished"
+        );
+    }
+
+    // The gesture's terminal callback carries `finished`.
+    gesture.setTranslation_inView(CGPoint::new(4.0, 0.0), Some(this));
+    gesture.ivars().state.set(UIGestureRecognizerState::Ended);
+    view.scroll_probe_for_test(&gesture, ScrollUnit::Pixel);
+    {
+        let events = events.borrow();
+        let [.., event] = events.as_slice() else {
+            panic!("expected a second scroll event, got {}", events.len());
+        };
+        let SurfaceEvent::Scroll {
+            delta_x,
+            unit,
+            finished,
+            ..
+        } = event
+        else {
+            panic!("expected a scroll event, got {event:?}");
+        };
+        assert_eq!(*delta_x, -4.0);
+        assert_eq!(*unit, ScrollUnit::Pixel);
+        assert!(*finished, "a glide's end did not mark the scroll finished");
+    }
+
+    // A wheel notch is complete on its own: `Line` units, `finished` on
+    // every callback — even mid-`Changed`.
+    gesture.ivars().state.set(UIGestureRecognizerState::Changed);
+    gesture.setTranslation_inView(CGPoint::new(0.0, 5.0), Some(this));
+    view.scroll_probe_for_test(&gesture, ScrollUnit::Line);
+    {
+        let events = events.borrow();
+        let [.., event] = events.as_slice() else {
+            panic!("expected a third scroll event, got {}", events.len());
+        };
+        let SurfaceEvent::Scroll {
+            delta_y,
+            unit,
+            finished,
+            ..
+        } = event
+        else {
+            panic!("expected a scroll event, got {event:?}");
+        };
+        assert_eq!(*delta_y, -5.0);
+        assert_eq!(*unit, ScrollUnit::Line);
+        assert!(*finished, "a wheel notch is a complete scroll on its own");
     }
 }
 
