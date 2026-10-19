@@ -35,12 +35,12 @@ regex = { version = "1.13.1", default-features = false, features = ["std", "unic
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.4", default-features = false, features = ["wasm_js"] }
 
-# The native file dialog exists on desktop/mobile but not on bare embedded
-# (espidf) or wasm; the file-picker form field is target-gated accordingly. It
+# The native file dialog exists on desktop/mobile but not on wasm; the
+# file-picker form field is target-gated accordingly. It
 # also hands back `std::path::PathBuf`, so it is `std`-gated as well — without
 # that, `--no-default-features` named `std` from a `no_std` crate and did not
 # compile at all.
-[target.'cfg(not(any(target_os = "espidf", target_arch = "wasm32")))'.dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 waterkit-dialog = { workspace = true, optional = true }
 
 [features]
