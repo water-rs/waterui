@@ -63,7 +63,7 @@ impl Lowering<'_, '_> {
         let placement = Affine::translate((px as f64, py as f64))
             * self.transform
             * Affine::translate(shadow.offset);
-        let edges = flatten_edges(placement * path, FLATTEN_TOL);
+        let edges = flatten_edges(placement * path, FLATTEN_TOL, false);
         let (edges, rule) = resolve_edges(edges, rule);
         // Every parallel pass installs on the renderer's pool: the
         // closures capture only the bound locals — `Send` inputs — never

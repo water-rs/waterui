@@ -624,8 +624,81 @@ fn corner_coverage(a: vec2<f32>, v1: vec2<f32>, v2: vec2<f32>, scale: f32) -> f3
     return clamp(abs(sum) * 0.5, 0.0, 1.0);
 }
 
-// Coverage of the shape `s` at local point `p`, `m` mapping local to device.
-fn shape_coverage(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_quadratic: bool) -> f32 {
+// Exact area of the unit device pixel inside the half-planes
+// `p[i].x + dot(p[i].yz, u) <= 0`, `u` the device offset from the pixel
+// centre: each `x` the signed outside-positive distance at the centre in
+// its own local units, `yz` the distance's device-space gradient in local
+// units per device pixel. Sutherland–Hodgman clips the pixel square by
+// every plane in turn, so where a draw edge and a clip edge coincide the
+// two planes describe the same boundary and the joint coverage is the
+// single edge's — not the product of two half-covered ramps that
+// multiplying the shapes' separate coverages produces (#2933). Each clip
+// adds at most one vertex to the convex square: six planes need ten.
+alias JointPlanes = array<vec3<f32>, 6>;
+
+fn planes_coverage(planes: JointPlanes, count: u32) -> f32 {
+    var poly: array<vec2<f32>, 10>;
+    poly[0] = vec2<f32>(-0.5, -0.5);
+    poly[1] = vec2<f32>(0.5, -0.5);
+    poly[2] = vec2<f32>(0.5, 0.5);
+    poly[3] = vec2<f32>(-0.5, 0.5);
+    var n = 4u;
+    for (var k = 0u; k < count; k = k + 1u) {
+        let pl = planes[k];
+        var clipped: array<vec2<f32>, 10>;
+        var m = 0u;
+        var previous = poly[n - 1u];
+        var previous_distance = pl.x + dot(pl.yz, previous);
+        for (var i = 0u; i < n; i = i + 1u) {
+            let p = poly[i];
+            let distance = pl.x + dot(pl.yz, p);
+            if (distance <= 0.0) != (previous_distance <= 0.0) {
+                let t = clamp(previous_distance / (previous_distance - distance), 0.0, 1.0);
+                clipped[m] = previous + t * (p - previous);
+                m = m + 1u;
+            }
+            if distance <= 0.0 {
+                clipped[m] = p;
+                m = m + 1u;
+            }
+            previous = p;
+            previous_distance = distance;
+        }
+        if m < 3u {
+            return 0.0;
+        }
+        for (var i = 0u; i < m; i = i + 1u) {
+            poly[i] = clipped[i];
+        }
+        n = m;
+    }
+    var twice = 0.0;
+    var previous = poly[n - 1u];
+    for (var i = 0u; i < n; i = i + 1u) {
+        let p = poly[i];
+        twice = twice + previous.x * p.y - previous.y * p.x;
+        previous = p;
+    }
+    return clamp(abs(twice) * 0.5, 0.0, 1.0);
+}
+
+// A shape's boundary at the pixel as up to two half-planes in the
+// `planes_coverage` form: both faces at a sharp-corner pixel, the SDF's
+// tangent plane everywhere else. The gradient is J^-T times the local
+// one — `device_grad_vec(m, g) / det`, signed so a mirroring keeps the
+// outward side — which `coverage_dir`'s magnitude-only use never sees.
+struct ShapePlanes {
+    n: u32,
+    p: array<vec3<f32>, 2>,
+}
+
+struct ShapeEval {
+    cov: f32,
+    planes: ShapePlanes,
+}
+
+fn shape_eval(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_quadratic: bool) -> ShapeEval {
+    var out: ShapeEval;
     let sample = sdf_sample(s, p, specialize_quadratic);
     let g = sample.gradient;
     // A sharp corner inside this pixel: the exact area inside both
@@ -643,6 +716,7 @@ fn shape_coverage(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_qua
     let rx = max(r, 0.0);
     let ry = rx * s.aspect;
     let a = abs(p) - s.half;
+    let det = m[0].x * m[0].w - m[0].y * m[0].z;
     if rx <= 0.0 || ry <= 0.0 {
         let scale = device_grad_scale(m);
         let v1 = device_grad_vec(m, vec2<f32>(sgn.x, 0.0));
@@ -650,18 +724,96 @@ fn shape_coverage(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_qua
         let h1 = 0.5 * scale * (abs(v1.x) + abs(v1.y));
         let h2 = 0.5 * scale * (abs(v2.x) + abs(v2.y));
         if abs(a.x) < h1 && abs(a.y) < h2 {
-            return corner_coverage(a, v1, v2, scale);
+            out.cov = corner_coverage(a, v1, v2, scale);
+            out.planes.n = 2u;
+            out.planes.p[0] = vec3<f32>(a.x, v1 / det);
+            out.planes.p[1] = vec3<f32>(a.y, v2 / det);
+            return out;
         }
     }
-    return coverage_dir(
+    out.cov = coverage_dir(
         sample.distance,
         device_grad_vec(m, g.xy),
         device_grad_scale(m),
         g.w > 0.0,
         g.z,
     );
+    out.planes.n = 1u;
+    out.planes.p[0] = vec3<f32>(sample.distance, device_grad_vec(m, g.xy) / det);
+    return out;
 }
 
+// Coverage of the shape `s` at local point `p`, `m` mapping local to device.
+fn shape_coverage(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_quadratic: bool) -> f32 {
+    return shape_eval(s, p, m, specialize_quadratic).cov;
+}
+
+// The clip's boundary half-planes at the fragment, in the
+// `planes_coverage` form: `clip_inv` is device → clip-local, so J^-T is
+// its own transpose — the same mapping `clip_mask_coverage` applies to
+// the SDF gradient.
+fn clip_planes(in: VsOut) -> ShapePlanes {
+    var out: ShapePlanes;
+    let i = in.instance;
+    let s = instances[i].clip;
+    let ci = instances[i].clip_inv;
+    let pc = apply(ci, in.device);
+    let sample = sdf_sample(s, pc, false);
+    let g = sample.gradient;
+    let sgn = select(vec2<f32>(-1.0), vec2<f32>(1.0), pc >= vec2<f32>(0.0));
+    let right = pc.x > 0.0;
+    let bottom = pc.y > 0.0;
+    let r = select(
+        select(s.radii.x, s.radii.w, bottom),
+        select(s.radii.y, s.radii.z, bottom),
+        right,
+    );
+    let rx = max(r, 0.0);
+    let ry = rx * s.aspect;
+    let a = abs(pc) - s.half;
+    if rx <= 0.0 || ry <= 0.0 {
+        let v1 = vec2<f32>(ci[0].x * sgn.x, ci[0].z * sgn.x);
+        let v2 = vec2<f32>(ci[0].y * sgn.y, ci[0].w * sgn.y);
+        let h1 = 0.5 * (abs(v1.x) + abs(v1.y));
+        let h2 = 0.5 * (abs(v2.x) + abs(v2.y));
+        if abs(a.x) < h1 && abs(a.y) < h2 {
+            out.n = 2u;
+            out.p[0] = vec3<f32>(a.x, v1);
+            out.p[1] = vec3<f32>(a.y, v2);
+            return out;
+        }
+    }
+    out.n = 1u;
+    out.p[0] = vec3<f32>(
+        sample.distance,
+        vec2<f32>(ci[0].x * g.x + ci[0].y * g.y, ci[0].z * g.x + ci[0].w * g.y),
+    );
+    return out;
+}
+
+
+// The clip's atlas-or-texture mask texel at the fragment, or 1 where the
+// clip carries no mask. The mask stays a coverage product: a raster cell
+// has no signed-distance boundary a half-plane could intersect.
+fn mask_coverage(in: VsOut) -> f32 {
+    let i = in.instance;
+    let flags = (in.meta_.w >> 24u) & 0xffu;
+    if (flags & FLAG_HAS_MASK) == 0u {
+        return 1.0;
+    }
+    // Mask texel for this device pixel; texels outside the cell
+    // contribute zero coverage.
+    let mp = floor(in.device) - in.params.zw;
+    let msize = vec2<f32>(instances[i].clip.aspect, instances[i].clip.exponent);
+    let inside = all(mp >= vec2<f32>(0.0)) && all(mp < msize);
+    var m: f32;
+    if (flags & FLAG_MASK_TEXTURE) != 0u {
+        m = textureLoad(mask_tex, vec2<i32>(mp), 0).r;
+    } else {
+        m = textureLoad(atlas, vec2<i32>(mp) + vec2<i32>(instances[i].uv.zw), 0).r;
+    }
+    return select(0.0, m, inside);
+}
 
 // Coverage of the instance's clip shape and mask at `in.device`: the
 // geometric clip SDF times the atlas-or-texture mask texel, matching
@@ -679,20 +831,7 @@ fn clip_mask_coverage(in: VsOut) -> f32 {
         let dg = vec2<f32>(ci[0].x * g.x + ci[0].y * g.y, ci[0].z * g.x + ci[0].w * g.y);
         cov = coverage_dir(sample.distance, dg, 1.0, g.w > 0.0, g.z);
     }
-    if (flags & FLAG_HAS_MASK) != 0u {
-        // Mask texel for this device pixel; texels outside the cell
-        // contribute zero coverage.
-        let mp = floor(in.device) - in.params.zw;
-        let msize = vec2<f32>(instances[i].clip.aspect, instances[i].clip.exponent);
-        let inside = all(mp >= vec2<f32>(0.0)) && all(mp < msize);
-        var m: f32;
-        if (flags & FLAG_MASK_TEXTURE) != 0u {
-            m = textureLoad(mask_tex, vec2<i32>(mp), 0).r;
-        } else {
-            m = textureLoad(atlas, vec2<i32>(mp) + vec2<i32>(instances[i].uv.zw), 0).r;
-        }
-        cov *= select(0.0, m, inside);
-    }
+    cov *= mask_coverage(in);
     return cov;
 }
 

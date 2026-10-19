@@ -959,11 +959,36 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
     let m = array<vec4<f32>, 2>(in.affine0, in.affine1);
     let flags = (in.meta_.w >> 24u) & 0xffu;
     var cov: f32;
+    // Where the draw coverage is a signed-distance evaluation, its
+    // boundary half-planes join the clip's and the joint draw∩clip pixel
+    // area replaces the coverage product (#2933). Coverages without a
+    // signed-distance edge — path cells, the shadow kernel — keep the
+    // product.
+    var planes: JointPlanes;
+    var nplanes = 0u;
+    var joint = true;
     switch in.meta_.x {
         case KIND_STROKE_OFFSET: {
-            cov = shape_coverage(s, in.local, m, false);
+            let outer = shape_eval(s, in.local, m, false);
+            cov = outer.cov;
+            planes[nplanes] = outer.planes.p[0];
+            nplanes += 1u;
+            if outer.planes.n == 2u {
+                planes[nplanes] = outer.planes.p[1];
+                nplanes += 1u;
+            }
             if (flags & FLAG_HAS_INNER) != 0u {
-                cov -= shape_coverage(instances[i].inner, in.local, m, false);
+                let inner = shape_eval(instances[i].inner, in.local, m, false);
+                cov -= inner.cov;
+                // Outside the inner shape. A corner's outside is a union
+                // of half-planes — not the intersection a polygon clip
+                // expresses — so only a single-plane inner joins.
+                if inner.planes.n == 1u {
+                    planes[nplanes] = -inner.planes.p[0];
+                    nplanes += 1u;
+                } else {
+                    joint = false;
+                }
             }
         }
         case KIND_STROKE_DIST: {
@@ -976,27 +1001,56 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
             let hw = in.params.x;
             cov = coverage_dir(d - hw, v, scale, ramp, select(g.z + hw, 0.0, g.z <= 0.0))
                 - coverage_dir(d + hw, v, scale, ramp, select(max(g.z - hw, 0.0), 0.0, g.z <= 0.0));
+            let det = m[0].x * m[0].w - m[0].y * m[0].z;
+            let dv = v / det;
+            planes[0] = vec3<f32>(d - hw, dv);
+            planes[1] = vec3<f32>(-d - hw, -dv);
+            nplanes = 2u;
         }
         case KIND_SHADOW: {
             let sigma = in.params.x;
             if sigma < 0.25 {
-                cov = shape_coverage(s, in.local, m, false);
+                let se = shape_eval(s, in.local, m, false);
+                cov = se.cov;
+                planes[nplanes] = se.planes.p[0];
+                nplanes += 1u;
+                if se.planes.n == 2u {
+                    planes[nplanes] = se.planes.p[1];
+                    nplanes += 1u;
+                }
             } else {
                 cov = shadow(s, in.local, sigma);
+                joint = false;
             }
         }
         case KIND_GLYPH: {
             let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(cell_texel_origin(in.cell.zw, in.meta_.w));
             cov = path_cell_coverage(texel, in.cell.zw, in.shape_a.xy, in.meta_.w);
+            joint = false;
         }
         case KIND_SPAN: {
             cov = 1.0;
         }
         default: {
-            cov = shape_coverage(s, in.local, m, false);
+            let de = shape_eval(s, in.local, m, false);
+            cov = de.cov;
+            planes[nplanes] = de.planes.p[0];
+            nplanes += 1u;
+            if de.planes.n == 2u {
+                planes[nplanes] = de.planes.p[1];
+                nplanes += 1u;
+            }
         }
     }
-    cov *= clip_mask_coverage(in);
+    if joint && (flags & FLAG_HAS_CLIP) != 0u {
+        let cp = clip_planes(in);
+        for (var k = 0u; k < cp.n; k = k + 1u) {
+            planes[nplanes + k] = cp.p[k];
+        }
+        cov = planes_coverage(planes, nplanes + cp.n) * mask_coverage(in);
+    } else {
+        cov *= clip_mask_coverage(in);
+    }
     // union-stub
     if in.meta_.y == PAINT_BACKDROP && (flags & FLAG_UNION) != 0u {
         // A union member's instance clip carries the ancestors only; the

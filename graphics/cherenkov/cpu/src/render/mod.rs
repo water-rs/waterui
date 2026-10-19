@@ -18,6 +18,7 @@ pub use image::CpuImage;
 #[cfg(not(any(test, feature = "testing")))]
 use image::CpuImage;
 use std::sync::Arc;
+mod intersect;
 mod lower;
 mod paint;
 mod prepared;

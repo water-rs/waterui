@@ -595,7 +595,7 @@ impl Buffers {
 const SHADOW_N: usize = 16;
 
 /// A directed edge in device space.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Edge {
     /// Start point.
     pub x0: f32,
@@ -862,22 +862,31 @@ fn corner_inset(r: f32, dy: f32) -> f32 {
     r - (r * r - dd * dd).max(0.0).sqrt()
 }
 
-/// The clip coverage of `(px, py)`: 1/0 for the rect fast path, the mask
-/// sample otherwise.
+/// Whether `(px, py)` is inside a clip rect: 1/0 for the fast path and
+/// the geometry clip's binary factor alike.
 #[expect(
     clippy::cast_sign_loss,
     reason = "clip rect edges are clamped non-negative before indexing"
 )]
+fn inside_clip_rect(r: &IRect, px: usize, py: usize) -> f32 {
+    f32::from(
+        px >= (r.x0.max(0) as usize)
+            && px < (r.x1.max(0) as usize)
+            && py >= (r.y0.max(0) as usize)
+            && py < (r.y1.max(0) as usize),
+    )
+}
+
+/// The clip coverage of `(px, py)`: 1/0 for the rect fast path, the
+/// sampled intersection coverage times the rect factor for a geometry
+/// clip.
 fn clip_cov(clip: Option<&ClipRef>, w: usize, px: usize, py: usize) -> f32 {
     match clip.map(std::convert::AsRef::as_ref) {
         None => 1.0,
-        Some(ClipMask::Rect(r)) => f32::from(
-            px >= (r.x0.max(0) as usize)
-                && px < (r.x1.max(0) as usize)
-                && py >= (r.y0.max(0) as usize)
-                && py < (r.y1.max(0) as usize),
-        ),
-        Some(ClipMask::Cover(mask)) => mask[py * w + px],
+        Some(ClipMask::Rect(r)) => inside_clip_rect(r, px, py),
+        Some(ClipMask::Geometry { coverage, rect, .. }) => {
+            coverage[py * w + px] * rect.map_or(1.0, |r| inside_clip_rect(&r, px, py))
+        }
     }
 }
 
@@ -3168,18 +3177,16 @@ impl Band<'_> {
         let half = [rbox[2], rbox[3]];
         let sigma = sigma_eff;
         let inv_sqrt2_sigma = 1.0 / (sigma * std::f32::consts::SQRT_2);
-        // Rect-clip rows touch only `cx_lo..cx_hi`; a coverage clip stays
-        // a per-pixel sample.
-        let (cx_lo, cx_hi, clip_mask) = match clip.map(AsRef::as_ref) {
+        // Rect-clip rows touch only `cx_lo..cx_hi`; a geometry clip stays
+        // a per-pixel `clip_cov` sample.
+        let (cx_lo, cx_hi) = match clip.map(AsRef::as_ref) {
             Some(ClipMask::Rect(r)) => (
                 usize::try_from(r.x0).unwrap_or(0).clamp(x_lo, x_hi),
                 usize::try_from(r.x1).unwrap_or(0).clamp(x_lo, x_hi),
-                None,
             ),
-            Some(ClipMask::Cover(mask)) => (x_lo, x_hi, Some(mask.as_slice())),
-            None => (x_lo, x_hi, None),
+            _ => (x_lo, x_hi),
         };
-        if cx_lo >= cx_hi && clip_mask.is_none() {
+        if cx_lo >= cx_hi {
             return;
         }
         // The 16 y-quadrature samples and their `gaussian*step` weights
@@ -3278,7 +3285,7 @@ impl Band<'_> {
                     if cov <= 0.0 {
                         continue;
                     }
-                    let cc = clip_mask.map_or(1.0, |m| m[py_i * self.w + x]);
+                    let cc = clip_cov(clip, self.w, x, py_i);
                     if cc <= 0.0 {
                         continue;
                     }
@@ -3310,7 +3317,7 @@ impl Band<'_> {
                             continue;
                         }
                         let x = x + j;
-                        let cc = clip_mask.map_or(1.0, |m| m[py_i * self.w + x]);
+                        let cc = clip_cov(clip, self.w, x, py_i);
                         if cc <= 0.0 {
                             continue;
                         }
@@ -3322,7 +3329,7 @@ impl Band<'_> {
             };
             edge(&mut *dst, cx_lo, x_in_lo);
             for x in x_in_lo..x_in_hi {
-                let cc = clip_mask.map_or(1.0, |m| m[py_i * self.w + x]);
+                let cc = clip_cov(clip, self.w, x, py_i);
                 if cc <= 0.0 {
                     continue;
                 }
@@ -3934,7 +3941,11 @@ mod tests {
                                                     _ => 0.5,
                                                 };
                                             }
-                                            Some(Arc::new(ClipMask::Cover(cells)))
+                                            Some(Arc::new(ClipMask::Geometry {
+                                                operands: Vec::new().into(),
+                                                coverage: cells.into(),
+                                                rect: None,
+                                            }))
                                         }
                                         // A rect covering the whole run.
                                         3 => Some(Arc::new(ClipMask::Rect(IRect {

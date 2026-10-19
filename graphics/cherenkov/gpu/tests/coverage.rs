@@ -310,3 +310,52 @@ fn a_sharp_corner_inside_a_pixel_gets_its_exact_area() -> Result<(), Box<dyn std
     Ok(())
 }
 }
+
+split_test! {
+/// A draw edge coincident with a clip edge carries the shared edge's
+/// coverage once — the joint pixel area, not the product of the two
+/// half-covered ramps a per-shape coverage multiply produces
+/// (water-rs/waterui#2933, the corpus `filter-overscroll-stretch-rotated-p3`
+/// geometry). The band lies inside the rotated clip and shares two edges
+/// with it, so clipped and unclipped renders must agree everywhere.
+fn a_draw_edge_coincident_with_the_clip_edge_covers_once() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::kurbo::Affine;
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let transform = Affine::translate((16.0, 14.0)) * Affine::rotate(0.4);
+    let clip = Rect::new(8.0, 4.0, 24.0, 28.0);
+    let band = Rect::new(8.0, 12.0, 24.0, 16.0);
+    let render = |clipped: bool| -> Result<Vec<[f32; 4]>, Box<dyn std::error::Error>> {
+        let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|c| {
+                c.transform(transform, |c| {
+                    if clipped {
+                        c.clip(clip, |c| {
+                            c.fill(band, WorkingColor::WHITE);
+                        });
+                    } else {
+                        c.fill(band, WorkingColor::WHITE);
+                    }
+                });
+            }));
+        });
+        wait!(engine.render(cherenkov::FrameTime::now()))?;
+        Ok(wait!(surface.readback())?.pixels)
+    };
+    let unclipped = render(false)?;
+    let clipped = render(true)?;
+    let mut worst = 0.0_f32;
+    let mut at = (0usize, 0usize);
+    for (i, (u, c)) in unclipped.iter().zip(&clipped).enumerate() {
+        let d = (c[3] - u[3]).abs();
+        if d > worst {
+            worst = d;
+            at = (i % 32, i / 32);
+        }
+    }
+    assert!(worst < 1e-3, "clipped != unclipped by {worst} at {at:?}");
+    Ok(())
+}
+}
