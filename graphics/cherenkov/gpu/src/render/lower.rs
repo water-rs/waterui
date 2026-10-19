@@ -7,7 +7,7 @@ use std::ops::Range;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::MAX_PASS_INSTANCES;
-use super::prepared::{ClipShape, Op, PaintData, ResolvedPaint, box_shape};
+use super::prepared::{ClipShape, Op, OutlineRef, PaintData, ResolvedPaint, box_shape};
 use cherenkov::kurbo::{self, Affine, BezPath, PathEl, Point, Rect, Vec2};
 use cherenkov::{FillRule, GlyphRun, ShapeData, WorkingColor};
 
@@ -4544,15 +4544,25 @@ impl<'a> Lowering<'a> {
                 paint,
             } => {
                 self.transform *= *local;
-                let outline = outline.get(source);
-                let tolerance = path::FLATTEN / path::sigma_max(self.transform).max(1e-12);
-                self.path(
-                    outline.content(tolerance),
-                    *rule,
-                    || outline.build(tolerance),
-                    paint,
-                    glyphs,
-                )?;
+                match outline.get(source) {
+                    OutlineRef::Fill { elements, content } => self.path(
+                        content,
+                        *rule,
+                        || BezPath::from_vec(elements.to_vec()),
+                        paint,
+                        glyphs,
+                    )?,
+                    outline @ OutlineRef::Stroke { .. } => {
+                        let tolerance = path::FLATTEN / path::sigma_max(self.transform).max(1e-12);
+                        self.path(
+                            outline.content(tolerance),
+                            *rule,
+                            || outline.build(tolerance),
+                            paint,
+                            glyphs,
+                        )?;
+                    }
+                }
             }
             Op::Glyphs { local, run, paint } => {
                 self.transform *= *local;
