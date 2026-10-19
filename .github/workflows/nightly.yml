@@ -329,6 +329,11 @@ jobs:
         uses: ./.github/actions/setup-rust
         with:
           shared-key: cli-e2e-${{ runner.os }}
+          # Registry and git sources only: the `target` of a release+LTO
+          # `cargo install` held ~3.2 GB of the 10 GiB quota across the
+          # three OS keys for one build a day, outside the headroom
+          # discipline every other writer follows.
+          cache-targets: "false"
           # One writer per OS cache key: the schedule.
           save-if: ${{ github.event_name == 'schedule' }}
 

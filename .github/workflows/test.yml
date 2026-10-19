@@ -371,6 +371,7 @@ jobs:
         with:
           messages: ${{ env.CARGO_MESSAGES }}
       - name: Save Cargo sources
+        id: save-sources
         if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.cargo-sources.outputs.cache-hit != 'true' }}
         uses: ./.github/actions/cargo-sources
         with:
@@ -379,6 +380,7 @@ jobs:
           limit-bytes: ${{ vars.ACTIONS_CACHE_LIMIT_BYTES }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Lint target cache headroom
+        id: lint-headroom
         if: steps.writer.outputs.sweep == 'true'
         uses: ./.github/actions/cache-headroom
         with:
@@ -387,7 +389,7 @@ jobs:
           limit-bytes: ${{ vars.ACTIONS_CACHE_LIMIT_BYTES }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Save lint target cache
-        if: steps.writer.outputs.sweep == 'true'
+        if: steps.writer.outputs.sweep == 'true' && steps.lint-headroom.outputs.fits == 'true'
         uses: actions/cache/save@v4
         with:
           path: target
@@ -395,9 +397,10 @@ jobs:
       # Ref-scoped family prefixes only: pull-request caches, other
       # families, and other refs are never touched. It refuses to retire
       # anything unless both primary keys exist, so a save that did not
-      # land can never leave pull requests without an archive.
+      # land can never leave pull requests without an archive. A save the
+      # headroom check skipped (no room) keeps the old generations too.
       - name: Retire superseded cache generations
-        if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+        if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.save-sources.outputs.saved != 'false' && steps.lint-headroom.outputs.fits != 'false' }}
         uses: ./.github/actions/retire-cargo-caches
         with:
           families: cargo-sources-${{ runner.os }}-,lint-target-${{ runner.os }}-${{ runner.arch }}-
