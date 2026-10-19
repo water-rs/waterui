@@ -587,6 +587,16 @@ impl BackdropGroupState {
 }
 
 impl SurfaceState {
+    fn lowering_bytes(&self) -> u64 {
+        self.anchor_scratch.heap_bytes()
+            + self.raster_scratch.heap_bytes()
+            + self
+                .layers
+                .values()
+                .map(ContentData::gpu_input_bytes)
+                .sum::<u64>()
+    }
+
     /// Engine part `n`'s texture: `target` for part 0.
     fn part(&self, n: u32) -> (&wgpu::TextureView, &wgpu::Texture) {
         match n {
@@ -4227,9 +4237,7 @@ impl Renderer for GpuRenderer {
             + self
                 .surfaces
                 .values()
-                .map(|surface| {
-                    surface.anchor_scratch.heap_bytes() + surface.raster_scratch.heap_bytes()
-                })
+                .map(SurfaceState::lowering_bytes)
                 .sum::<u64>()
             + self
                 .surfaces

@@ -16,6 +16,7 @@ use cherenkov::RenderError;
 use kurbo::Affine;
 use rustc_hash::FxHashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::Arc;
 
 use crate::render::instance::Instance;
 use crate::render::path::{GpuElement, GpuPath};
@@ -50,6 +51,8 @@ pub struct GpuCoverage {
     paths: Vec<[u32; PATH_WORDS]>,
     /// Compute input elements, all paths concatenated.
     elements: Vec<GpuElement>,
+    element_sources: Vec<Arc<[GpuElement]>>,
+    element_total: u32,
     /// Work list: `(path, row)` entries then `(path, strip)` entries —
     /// `work_strip_off` words in.
     work: Vec<[u32; 2]>,
@@ -142,6 +145,8 @@ impl GpuCoverage {
         Self {
             paths: Vec::new(),
             elements: Vec::new(),
+            element_sources: Vec::new(),
+            element_total: 0,
             work: Vec::new(),
             args_bases: Vec::new(),
             inst_total: 0,
@@ -174,6 +179,8 @@ impl GpuCoverage {
         self.cache_epoch += 1;
         self.paths.clear();
         self.elements.clear();
+        self.element_sources.clear();
+        self.element_total = 0;
         self.work.clear();
         self.args_bases.clear();
         self.inst_total = 0;
@@ -209,6 +216,7 @@ impl GpuCoverage {
     pub fn cpu_bytes(&self) -> u64 {
         (self.paths.capacity() * std::mem::size_of::<[u32; PATH_WORDS]>()
             + self.elements.capacity() * std::mem::size_of::<GpuElement>()
+            + self.element_sources.capacity() * std::mem::size_of::<Arc<[GpuElement]>>()
             + self.work.capacity() * std::mem::size_of::<[u32; 2]>()
             + self.args_bases.capacity() * std::mem::size_of::<u32>()
             + self.cache.capacity() * std::mem::size_of::<(u64, CachedCoverage)>()
@@ -265,7 +273,9 @@ impl GpuCoverage {
         template: &Instance,
         prepared: &GpuPath,
     ) -> Result<u32, RenderError> {
-        let GpuPath { elements, bound } = prepared;
+        let GpuPath {
+            elements, bound, ..
+        } = prepared;
         // Decision R2: the bound sizes everything, so over the cap is a
         // fail, not a resize.
         let rows = bound.grid_h;
@@ -306,7 +316,7 @@ impl GpuCoverage {
             ));
         }
         let path_i = u32::try_from(self.paths.len()).expect("path count fits u32");
-        let elem_base = u32::try_from(self.elements.len()).expect("elements fit u32");
+        let elem_base = self.element_total;
         let args_base =
             u32::try_from(self.args_bases.len()).expect("coverage capacity fits u32") * ARGS_WORDS;
         let inst_base = self.inst_total;
@@ -350,11 +360,8 @@ impl GpuCoverage {
 
         self.hash_path(content, bound.clipped, &words);
         self.paths.push(words);
-        self.elements
-            .extend(elements.iter().copied().map(|mut element| {
-                element.head[2] = path_i;
-                element
-            }));
+        self.element_total += u32::try_from(elements.len()).expect("elements fit u32");
+        self.element_sources.push(Arc::clone(elements));
         self.args_bases.push(args_base);
         self.inst_total += u32::try_from(bound.instance_cap).expect("instances");
         self.seg_total += u32::try_from(bound.segments).expect("segments");
@@ -478,7 +485,7 @@ impl GpuCoverage {
         let token_counter =
             tokens + (self.fragment_total.min(self.cov_total) * 2 + strip_total) * 3;
         let params: [u32; PARAMS_WORDS] = [
-            u32::try_from(self.elements.len()).expect("coverage capacity fits u32"),
+            self.element_total,
             self.row_total,
             strip_total,
             u32::try_from(self.paths.len()).expect("coverage capacity fits u32"),
@@ -507,7 +514,7 @@ impl GpuCoverage {
             .min(limits.max_buffer_size);
         let sizes = [
             scratch_bytes,
-            self.elements.len() as u64 * 48,
+            u64::from(self.element_total) * 48,
             self.paths.len() as u64 * PATH_WORDS as u64 * 4,
             u64::from(self.seg_total) * 16,
             u64::from(ARGS_WORDS) * 4 * self.paths.len() as u64 + 48,
@@ -535,7 +542,7 @@ impl GpuCoverage {
                 device,
                 previous.map(|b| &b.elements),
                 "cov elements",
-                (self.elements.len() as u64).max(1) * (std::mem::size_of::<GpuElement>() as u64),
+                u64::from(self.element_total).max(1) * (std::mem::size_of::<GpuElement>() as u64),
                 storage,
             ),
             paths: sized_buffer(
@@ -638,6 +645,14 @@ impl GpuCoverage {
             );
         }
         if cached.is_none() {
+            for (index, source) in self.element_sources.iter().enumerate() {
+                let path_i = u32::try_from(index).expect("path index");
+                self.elements
+                    .extend(source.iter().copied().map(|mut element| {
+                        element.head[2] = path_i;
+                        element
+                    }));
+            }
             queue.write_buffer(&buffers.elements, 0, bytemuck::cast_slice(&self.elements));
             queue.write_buffer(&buffers.work, 0, bytemuck::cast_slice(&self.work));
         }
@@ -952,10 +967,8 @@ mod tests {
             )
         }
         let small = rectangle(1024).bound;
-        let crate::render::path::GpuPath {
-            elements,
-            bound: large,
-        } = rectangle(4096);
+        let large_path = rectangle(4096);
+        let large = large_path.bound;
         assert!(large.fragments <= 4 * small.fragments);
         assert!(large.texels <= 4 * small.texels);
         assert!(large.cell_cap <= 4 * small.cell_cap);
@@ -967,17 +980,11 @@ mod tests {
                 Affine::IDENTITY,
                 (4096, 4096),
                 &Instance::new(0),
-                &GpuPath {
-                    elements,
-                    bound: large,
-                },
+                &large_path,
             )
             .expect("sparse 4096-square capacity");
         assert!(frame.bound_bytes < GPU_COV_MAX_BYTES);
-        let crate::render::path::GpuPath {
-            elements,
-            bound: huge,
-        } = rectangle(1_000_000);
+        let huge_path = rectangle(1_000_000);
         let before = frame.paths.len();
         assert!(
             frame
@@ -987,10 +994,7 @@ mod tests {
                     Affine::IDENTITY,
                     (1_000_000, 1_000_000),
                     &Instance::new(0),
-                    &GpuPath {
-                        elements,
-                        bound: huge
-                    }
+                    &huge_path
                 )
                 .is_err()
         );

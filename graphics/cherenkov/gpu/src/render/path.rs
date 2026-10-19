@@ -3,6 +3,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use cherenkov::{FillRule, ShapeData};
 use kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape as _, Vec2};
@@ -408,9 +409,11 @@ pub struct GpuElement {
 }
 
 /// A compute path and the capacity bound derived from those same elements.
+#[derive(Clone)]
 pub struct GpuPath {
     /// Local curve records consumed by the flatten kernel.
-    pub elements: Vec<GpuElement>,
+    pub elements: Arc<[GpuElement]>,
+    hull: Rect,
     /// Device-space capacity and work estimates for these records.
     pub bound: GpuBound,
 }
@@ -569,13 +572,7 @@ impl GpuEncode {
 /// the device transform `raster`, and computes the R2 bound over their
 /// device bounding boxes. Returns the element records (their `path` and
 /// `slot` fields zeroed — the caller stamps them) and the bound.
-#[expect(clippy::cast_possible_truncation, reason = "device coords are f32")]
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "grid dimensions are clamped nonnegative"
-)]
 pub fn prepare_gpu(elements: &[PathEl], raster: Affine, surface: (f64, f64)) -> GpuPath {
-    let clip = Rect::new(0.0, 0.0, surface.0, surface.1);
     let mut hull = Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN);
     let mut state = GpuEncode {
         out: Vec::new(),
@@ -613,44 +610,60 @@ pub fn prepare_gpu(elements: &[PathEl], raster: Affine, surface: (f64, f64)) -> 
         let (p0, s) = (state.last, state.start);
         state.push(&mut hull, 0, p0, p0, s);
     }
-    let (out, mut bound) = (state.out, state.bound);
-    // The bound raster grid: the hull inflated by a pixel and clipped to
-    // the surface, floored and ceiled like the sweep's rect.
-    let inflated = hull.inflate(1.0, 1.0);
-    let r = inflated.intersect(clip);
-    let w = (r.x1.ceil() - r.x0.floor()).max(0.0) as usize;
-    let h = (r.y1.ceil() - r.y0.floor()).max(0.0) as usize;
-    bound.rect = [
-        r.x0.floor() as f32,
-        r.y0.floor() as f32,
-        r.x1.ceil() as f32,
-        r.y1.ceil() as f32,
-    ];
-    bound.grid_w = w;
-    bound.grid_h = h;
-    // Partial columns, absorbed gaps (<=8) and demoted full runs (<8)
-    // need at most 16 columns per touched boundary column. Four rows
-    // per strip; the retained large full interval is implicit.
-    bound.texels = if w <= 32 && h <= 32 {
-        w * h
-    } else {
-        (bound.fragments * 64).min(w * h)
-    };
-    bound.empty = w == 0 || h == 0;
-    bound.clipped = r != inflated;
-    // Cells are column-disjoint inside their strip, so the strip count
-    // times the grid width is the grid-side cap; spans obey the same
-    // bound. The element bound may be tighter.
-    let strip_cap = h.div_ceil(STRIP_H) * w;
-    bound.cell_cap = bound
-        .fragments
-        .min(strip_cap)
-        .max(usize::from(w <= 32 && h <= 32));
-    // Spans and cells share the same output range and never overlap.
-    bound.instance_cap = (bound.cell_cap * 2 + h.div_ceil(STRIP_H)).min(strip_cap);
+    let (out, bound) = (state.out, state.bound);
     GpuPath {
-        elements: out,
+        elements: out.into(),
         bound,
+        hull,
+    }
+    .translated(Vec2::ZERO, surface)
+}
+
+impl GpuPath {
+    /// Reposition encoded geometry without rebuilding its local curves.
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn translated(&self, offset: Vec2, surface: (f64, f64)) -> Self {
+        let clip = Rect::new(0.0, 0.0, surface.0, surface.1);
+        let mut bound = self.bound;
+        // The bound raster grid: the hull inflated by a pixel and clipped to
+        // the surface, floored and ceiled like the sweep's rect.
+        let inflated = (self.hull + offset).inflate(1.0, 1.0);
+        let r = inflated.intersect(clip);
+        let w = (r.x1.ceil() - r.x0.floor()).max(0.0) as usize;
+        let h = (r.y1.ceil() - r.y0.floor()).max(0.0) as usize;
+        bound.rect = [
+            r.x0.floor() as f32,
+            r.y0.floor() as f32,
+            r.x1.ceil() as f32,
+            r.y1.ceil() as f32,
+        ];
+        bound.grid_w = w;
+        bound.grid_h = h;
+        // Partial columns, absorbed gaps (<=8) and demoted full runs (<8)
+        // need at most 16 columns per touched boundary column. Four rows
+        // per strip; the retained large full interval is implicit.
+        bound.texels = if w <= 32 && h <= 32 {
+            w * h
+        } else {
+            (bound.fragments * 64).min(w * h)
+        };
+        bound.empty = w == 0 || h == 0;
+        bound.clipped = r != inflated;
+        // Cells are column-disjoint inside their strip, so the strip count
+        // times the grid width is the grid-side cap; spans obey the same
+        // bound. The element bound may be tighter.
+        let strip_cap = h.div_ceil(STRIP_H) * w;
+        bound.cell_cap = bound
+            .fragments
+            .min(strip_cap)
+            .max(usize::from(w <= 32 && h <= 32));
+        // Spans and cells share the same output range and never overlap.
+        bound.instance_cap = (bound.cell_cap * 2 + h.div_ceil(STRIP_H)).min(strip_cap);
+        Self {
+            elements: Arc::clone(&self.elements),
+            bound,
+            hull: (self.hull + offset),
+        }
     }
 }
 

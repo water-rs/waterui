@@ -631,7 +631,18 @@ impl ContentData {
         // clear them too or orphaned entries outlive every compaction
         // check (#119).
         self.storage.refs.clear();
+        self.storage.gpu_paths.clear();
         previous
+    }
+
+    pub fn gpu_input_bytes(&self) -> u64 {
+        (self.storage.gpu_paths.capacity() * std::mem::size_of::<(usize, PreparedGpu)>()
+            + self
+                .storage
+                .gpu_paths
+                .values()
+                .map(|entry| entry.path.elements.len() * std::mem::size_of::<path::GpuElement>())
+                .sum::<usize>()) as u64
     }
 
     pub fn into_picture(self) -> cherenkov::Picture {
@@ -676,6 +687,7 @@ impl ContentData {
 /// A layer's device data. Leaf ranges remain independent for dirty updates.
 #[derive(Default)]
 pub struct EmissionStorage {
+    gpu_paths: FxHashMap<usize, PreparedGpu>,
     templates: Vec<InstanceTemplate>,
     covers: Vec<Cover>,
     pub(crate) instances: Vec<RetainedInstance>,
@@ -683,6 +695,13 @@ pub struct EmissionStorage {
     /// `(shelf slot, band epoch)` atlas references every retained
     /// emission samples, addressed by `Emission::refs` ranges.
     pub(crate) refs: Vec<(u32, u64)>,
+}
+
+struct PreparedGpu {
+    content: u64,
+    linear: [u64; 4],
+    local_bounds: Rect,
+    path: path::GpuPath,
 }
 
 impl EmissionStorage {
@@ -712,6 +731,7 @@ impl EmissionStorage {
             return;
         }
         let mut storage = Self {
+            gpu_paths: std::mem::take(&mut self.gpu_paths),
             templates: Vec::with_capacity(templates),
             covers: Vec::with_capacity(covers),
             instances: Vec::with_capacity(instances),
@@ -3979,7 +3999,7 @@ impl<'a> Lowering<'a> {
                 Op::End => unreachable!("paired scopes consume their ends"),
                 op => {
                     changed |= self.leaf(
-                        op,
+                        (i, op),
                         ops.get(i + 1),
                         &mut emissions[i],
                         storage,
@@ -4005,13 +4025,14 @@ impl<'a> Lowering<'a> {
     /// clipped instances' shader variant.
     fn leaf(
         &mut self,
-        op: &Op,
+        indexed: (usize, &Op),
         next: Option<&Op>,
         cache: &mut Realization<Emission>,
         storage: &mut EmissionStorage,
         glyphs: &GlyphContext<'_>,
         source: &cherenkov::DisplayList,
     ) -> Result<bool, RenderError> {
+        let (index, op) = indexed;
         if self.has_compute
             && self.coverage_route == path::CoverageRoute::Gpu
             && matches!(op, Op::Path { .. })
@@ -4047,7 +4068,7 @@ impl<'a> Lowering<'a> {
         // GPU emissions are frame-local and never enter this cache.
         if self.has_compute
             && self.coverage_route == path::CoverageRoute::Automatic
-            && self.automatic_gpu_leaf(op, source)?
+            && self.automatic_gpu_leaf(op, source, &mut storage.gpu_paths, index)?
         {
             cache.valid = false;
             return Ok(true);
@@ -4070,6 +4091,8 @@ impl<'a> Lowering<'a> {
         &mut self,
         op: &Op,
         source: &cherenkov::DisplayList,
+        cached: &mut FxHashMap<usize, PreparedGpu>,
+        index: usize,
     ) -> Result<bool, RenderError> {
         let Op::Path {
             local,
@@ -4086,26 +4109,63 @@ impl<'a> Lowering<'a> {
         }
         let raster = self.transform * *local;
         let tolerance = path::FLATTEN / path::sigma_max(raster).max(1e-12);
-        let local_path = outline.build(tolerance);
-        let prepared = path::prepare_gpu(
-            local_path.elements(),
-            raster,
-            (f64::from(self.width), f64::from(self.height)),
-        );
+        let content = outline.content(tolerance);
+        let coefficients = raster.as_coeffs();
+        let linear = [
+            coefficients[0],
+            coefficients[1],
+            coefficients[2],
+            coefficients[3],
+        ];
+        let linear_bits = linear.map(f64::to_bits);
+        if cached
+            .get(&index)
+            .is_none_or(|entry| entry.content != content || entry.linear != linear_bits)
+        {
+            let local_path = outline.build(tolerance);
+            cached.insert(
+                index,
+                PreparedGpu {
+                    content,
+                    linear: linear_bits,
+                    local_bounds: kurbo::Shape::bounding_box(&local_path),
+                    path: path::prepare_gpu(
+                        local_path.elements(),
+                        Affine::new([linear[0], linear[1], linear[2], linear[3], 0.0, 0.0]),
+                        (f64::from(self.width), f64::from(self.height)),
+                    ),
+                },
+            );
+        }
+        let prepared = cached
+            .get(&index)
+            .expect("prepared GPU geometry")
+            .path
+            .translated(
+                Vec2::new(coefficients[4], coefficients[5]),
+                (f64::from(self.width), f64::from(self.height)),
+            );
         if !prepared.prefers_gpu() {
             return Ok(false);
         }
         let shader_data = match paint {
-            ResolvedPaint::Shader(shader) => {
-                Some(self.shader_paint(shader, kurbo::Shape::bounding_box(&local_path), raster)?)
-            }
+            ResolvedPaint::Shader(shader) => Some(
+                self.shader_paint(
+                    shader,
+                    cached
+                        .get(&index)
+                        .expect("prepared GPU geometry")
+                        .local_bounds,
+                    raster,
+                )?,
+            ),
             _ => None,
         };
         self.set_image(None);
         let transform = self.transform;
         self.transform = raster;
         self.emit_gpu_path(
-            outline.content(tolerance),
+            content,
             *rule,
             prepared,
             paint,
@@ -5955,7 +6015,7 @@ mod tests {
                 lowering.begin_pass(Target::Part(0), None);
                 lowering
                     .leaf(
-                        &op,
+                        (0, &op),
                         None,
                         &mut cache,
                         &mut storage,
