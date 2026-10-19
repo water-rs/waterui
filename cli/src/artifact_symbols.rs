@@ -380,17 +380,8 @@ mod tests {
             package: Package,
             workspace: toml::Table,
             dependencies: std::collections::BTreeMap<&'static str, Dependency>,
-            patch: Patch,
+            patch: toml::Table,
             profile: Profile,
-        }
-        #[derive(serde::Serialize)]
-        struct Patch {
-            #[serde(rename = "crates-io")]
-            crates_io: std::collections::BTreeMap<&'static str, PathSource>,
-        }
-        #[derive(serde::Serialize)]
-        struct PathSource {
-            path: String,
         }
         #[derive(serde::Serialize)]
         struct Package {
@@ -419,9 +410,25 @@ mod tests {
         }
 
         let checkout = crate::pinned_framework::checkout();
-        let at = |member: &str| PathSource {
-            path: checkout.join(member).to_string_lossy().into_owned(),
-        };
+        // The `[patch]` table the local-checkout resolver computes for the
+        // pinned framework — its root `[patch.crates-io]` plus every
+        // framework member — so the fixture tracks the selected revision's
+        // dependency graph instead of a hand-maintained list that drifts
+        // stale (#1638). An extracted crate the facade links from crates.io
+        // (e.g. `waterui-image`) otherwise resolves registry copies of
+        // framework crates, and every `View` becomes a different type on
+        // either side.
+        let members = crate::project_model::framework::checkout_member_packages(&checkout)
+            .expect("the checkout's workspace members resolve");
+        let patches = crate::project_model::templates::local_framework_patches(
+            &checkout, &checkout, &members,
+        )
+        .expect("the framework patch set resolves");
+        let patch = toml::Value::try_from(&patches)
+            .expect("the patch set serializes")
+            .as_table()
+            .expect("a patch set is a table")
+            .clone();
         // The lean facade: `include_web!` expands against `waterui::webview`
         // and `waterui::Bundle`, nothing else of the framework is needed.
         let manifest = Manifest {
@@ -434,27 +441,13 @@ mod tests {
             dependencies: std::iter::once((
                 "waterui",
                 Dependency {
-                    path: at("").path,
+                    path: checkout.to_string_lossy().into_owned(),
                     default_features: false,
                     features: vec!["webview", "assets"],
                 },
             ))
             .collect(),
-            // The extracted `waterui-image` the facade links from crates.io
-            // depends on the registry copies of these crates; without the
-            // redirect the graph carries two of each and every `View` is a
-            // different type on either side.
-            patch: Patch {
-                crates_io: [
-                    ("waterui-core", "core"),
-                    ("waterui-graphics", "components/visual/graphics"),
-                    ("waterui-layout", "components/foundation/layout"),
-                    ("waterui-macros", "macros"),
-                ]
-                .into_iter()
-                .map(|(name, member)| (name, at(member)))
-                .collect(),
-            },
+            patch,
             profile: Profile {
                 dev: DevProfile { debug: 0 },
             },

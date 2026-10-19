@@ -359,6 +359,23 @@ jobs:
             target/distrib/waterui-cli-installer.sh
             target/distrib/waterui-cli-installer.ps1
 
+      # The documented installer URL needs a location that names the CLI
+      # release line: this repository's `releases/latest` can be the
+      # framework's, and the archived water-rs/cli repository receives no
+      # new releases. `cli-latest` is a permanent release this step keeps
+      # carrying the newest CLI installers — `make_latest: false` keeps it
+      # from ever becoming the repository's latest release, and axoupdater's
+      # release listing drops it because `cli-latest` is not a version tag.
+      - name: Republish the installers under cli-latest
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cli-latest
+          name: water CLI installer (latest)
+          make_latest: false
+          files: |
+            target/distrib/waterui-cli-installer.sh
+            target/distrib/waterui-cli-installer.ps1
+
       - name: Checkout Homebrew tap
         uses: actions/checkout@v4
         with:

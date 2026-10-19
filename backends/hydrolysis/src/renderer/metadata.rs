@@ -7,6 +7,29 @@ use super::*;
 use crate::renderer::frame::ScopeClip;
 use waterui_graphics::draw::Draw as _;
 
+/// The claim a tap gesture registered for the wrapped view: the node it
+/// stands for, the environment it was registered under — carrying the naming
+/// scope the claim drains — and whether the claim synthesized that scope
+/// itself.
+///
+/// A synthesized claim is the gesture's own representative for content that
+/// named nothing (a bare `.on_tap` over `text("T")`, water-rs/waterui#1070):
+/// the wrapped node takes the gesture's actions and activation in the
+/// post-walk single-child collapse. An explicit `a11y_role` claim is the
+/// element the author declared, so it never collapses.
+#[cfg(feature = "accessibility")]
+pub(super) struct GestureA11yClaim {
+    /// The registered claim node.
+    pub(super) node_id: AccessibilityNodeId,
+    /// The environment the node was registered under — the view's own scope
+    /// when it carried one, otherwise the claim's synthesized scope.
+    pub(super) env: Environment,
+    /// Whether the claim's naming scope was synthesized for a bare tap
+    /// (`true`) or came from the view's own accessibility metadata
+    /// (`false`).
+    pub(super) synthesized: bool,
+}
+
 impl HydrolysisRenderer {
     /// Apply a clip-shape prop on the recording node's own frame layer (§A.1):
     /// the wrapper's `frame` carries the clip, not a `("clip", 0)` scope layer.
@@ -380,13 +403,34 @@ impl HydrolysisRenderer {
         #[cfg(feature = "accessibility")]
         let mut claimed_naming_node = None;
         #[cfg(feature = "accessibility")]
+        let mut claim_env: Option<Environment> = None;
+        #[cfg(feature = "accessibility")]
+        let mut claim_synthesized = false;
+        #[cfg(feature = "accessibility")]
         if matches!(effect.gesture, Gesture::Tap(_)) {
-            if env.get::<AccessibilityRole>().is_some()
-                && !renderer.accessibility_scope_is_claimed(env)
-            {
+            let has_role = env.get::<AccessibilityRole>().is_some();
+            let has_scope = env.get::<ScopedAccessibilitySemantics>().is_some();
+            if !renderer.accessibility_scope_is_claimed(env) && (has_role || !has_scope) {
+                // A tap with no naming scope to claim is the wrapped view's
+                // own representative: it synthesizes `Button`'s role and a
+                // fresh `ScopedAccessibilitySemantics` so the activation it
+                // publishes is reachable the way a `Button`'s is — a bare
+                // `.on_tap` used to serialize identically to plain text
+                // (water-rs/waterui#1070).
+                let env_for_claim = if has_scope {
+                    env.clone()
+                } else {
+                    let mut env_for_claim = env.clone();
+                    // An explicit role wins the synthesized default.
+                    if !has_role {
+                        env_for_claim.insert(AccessibilityRole::Button);
+                    }
+                    env_for_claim.insert(ScopedAccessibilitySemantics::new());
+                    env_for_claim
+                };
                 let mut node = AccessibilityNode::new(
                     crate::renderer::SemanticCore::resolve_accessibility_role(
-                        env,
+                        &env_for_claim,
                         AccessibilityNodeRole::Button,
                     ),
                 );
@@ -414,8 +458,16 @@ impl HydrolysisRenderer {
                         action: Self::tap_accessibility_activation(env, &effect.action),
                     })
                 };
-                claimed_naming_node =
-                    renderer.register_accessibility_node(node, bounds, env, action_target);
+                claim_synthesized = !has_scope;
+                claimed_naming_node = renderer.register_accessibility_node(
+                    node,
+                    bounds,
+                    &env_for_claim,
+                    action_target,
+                );
+                if claimed_naming_node.is_some() {
+                    claim_env = Some(env_for_claim);
+                }
             } else if !disabled && let Some(scope) = env.get::<ScopedAccessibilitySemantics>() {
                 // The scope names this view's representative — registering a
                 // second node would emit a silenced duplicate — so the tap
@@ -440,13 +492,26 @@ impl HydrolysisRenderer {
         // A gesture node that claimed the naming scope represents the wrapped
         // view: its content walks under the same shielded environment a naming
         // container hands its children, so a leaf cannot repeat the claim's
-        // role and label as a second node.
+        // role and label as a second node. A *synthesized* claim drops the
+        // name-from-contents marker instead — the wrapped content keeps its
+        // own nodes and the claim collapses onto a lone one after the drain,
+        // so the action lands on the node the gesture wraps rather than on a
+        // swallowed composite (water-rs/waterui#1070).
         #[cfg(feature = "accessibility")]
-        let content_env = if claimed_naming_node.is_some() {
-            accessibility_container_child_environment(env).unwrap_or_else(|| env.clone())
-        } else {
-            env.clone()
-        };
+        let content_env = claim_env.as_ref().map_or_else(
+            || env.clone(),
+            |claim_env| {
+                accessibility_container_child_environment(claim_env).map_or_else(
+                    || claim_env.clone(),
+                    |mut content_env| {
+                        if claim_synthesized {
+                            content_env.remove::<AccessibilityNameFromContents>();
+                        }
+                        content_env
+                    },
+                )
+            },
+        );
         #[cfg(feature = "accessibility")]
         let content_env = &content_env;
         #[cfg(not(feature = "accessibility"))]
@@ -473,7 +538,19 @@ impl HydrolysisRenderer {
                 env,
                 disabled,
             );
+            // The claim parents the wrapped content's nodes for the walk, the
+            // way a naming container's node parents its children's — without
+            // it the content registers beside the claim and the synthesized
+            // claim's single-child collapse has nothing to merge into.
+            #[cfg(feature = "accessibility")]
+            if let Some(node_id) = claimed_naming_node {
+                renderer.push_accessibility_parent(node_id);
+            }
             Self::render_gesture_content(renderer, env, content_env, scope_claimed, render_content);
+            #[cfg(feature = "accessibility")]
+            if claimed_naming_node.is_some() {
+                renderer.pop_accessibility_parent();
+            }
             #[cfg(feature = "accessibility")]
             if let Some(node_id) = claimed_naming_node {
                 // The node advertises `Focus`; without this link Tab can land
@@ -481,7 +558,10 @@ impl HydrolysisRenderer {
                 // sees the key — FOCUSED would never reach
                 // `.interaction_state` reports or the focus ring.
                 renderer.register_accessibility_focus_link(&interaction_key, node_id);
-                renderer.drain_claim_scope(node_id, env);
+                renderer.drain_claim_scope(node_id, claim_env.as_ref().unwrap_or(env));
+                if claim_synthesized {
+                    renderer.collapse_synthesized_claim(node_id);
+                }
             }
 
             let state = renderer.reported_interaction_state(&interaction_key);
@@ -540,10 +620,21 @@ impl HydrolysisRenderer {
                     layered_action,
                 )));
         }
-        Self::render_gesture_content(renderer, env, content_env, scope_claimed, render_content);
         #[cfg(feature = "accessibility")]
         if let Some(node_id) = claimed_naming_node {
-            renderer.drain_claim_scope(node_id, env);
+            renderer.push_accessibility_parent(node_id);
+        }
+        Self::render_gesture_content(renderer, env, content_env, scope_claimed, render_content);
+        #[cfg(feature = "accessibility")]
+        if claimed_naming_node.is_some() {
+            renderer.pop_accessibility_parent();
+        }
+        #[cfg(feature = "accessibility")]
+        if let Some(node_id) = claimed_naming_node {
+            renderer.drain_claim_scope(node_id, claim_env.as_ref().unwrap_or(env));
+            if claim_synthesized {
+                renderer.collapse_synthesized_claim(node_id);
+            }
         }
     }
 
@@ -576,28 +667,54 @@ impl HydrolysisRenderer {
     }
 
     /// The semantic counterpart of [`Self::apply_gesture_observer`]: the tap's
-    /// own accessibility node — role, label, `Click` → [`AccessibilityActionTarget::Activate`],
+    /// accessibility node — role, label, `Click` → [`AccessibilityActionTarget::Activate`],
     /// or `disabled` — with no bounds, no pointer or gesture targets, and no
-    /// interaction state layer. Returns the node when the gesture claimed the
-    /// naming scope; the caller then walks the content under the shielded
-    /// environment and drains the claim's scope onto it.
+    /// interaction state layer.
+    ///
+    /// A tap claims a node when the environment names the wrapped view (an
+    /// explicit `a11y_role` carries its own naming scope) *or* names nothing
+    /// at all: a bare `.on_tap` sits in no naming scope, so the claim
+    /// synthesizes `Button`'s role and a fresh [`ScopedAccessibilitySemantics`]
+    /// — without one, a tappable `text("T")` published no action and its tree
+    /// was identical to plain text's (water-rs/waterui#1070). The claim
+    /// drains its scope after the content walk like any other claimer; a
+    /// synthesized claim additionally collapses onto a lone wrapped node, so
+    /// the wrapped element itself carries the action.
+    ///
+    /// When a scope exists that the tap did not claim, the activation is
+    /// delegated to the scope's representative instead, and `None` returns.
     #[cfg(feature = "accessibility")]
     pub(super) fn emit_gesture_observer_accessibility(
         renderer: &mut SemanticCore,
         env: &Environment,
         effect: &GestureObserverEffect,
-    ) -> Option<AccessibilityNodeId> {
-        let disabled = env
-            .get::<waterui_core::interaction::Disabled>()
-            .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
+    ) -> Option<GestureA11yClaim> {
         if !matches!(effect.gesture, Gesture::Tap(_)) {
             return None;
         }
-        if env.get::<AccessibilityRole>().is_some() && !renderer.accessibility_scope_is_claimed(env)
-        {
+        let disabled = env
+            .get::<waterui_core::interaction::Disabled>()
+            .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
+        let has_role = env.get::<AccessibilityRole>().is_some();
+        let has_scope = env.get::<ScopedAccessibilitySemantics>().is_some();
+        if !renderer.accessibility_scope_is_claimed(env) && (has_role || !has_scope) {
+            // The claim's env is what the content walk and the scope drain
+            // resolve against: the view's own scope when it carries one, a
+            // synthesized scope-plus-Button-role for a bare tap.
+            let (claim_env, synthesized) = if has_scope {
+                (env.clone(), false)
+            } else {
+                let mut claim_env = env.clone();
+                // An explicit role wins the synthesized default.
+                if !has_role {
+                    claim_env.insert(AccessibilityRole::Button);
+                }
+                claim_env.insert(ScopedAccessibilitySemantics::new());
+                (claim_env, true)
+            };
             let mut node =
                 AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
-                    env,
+                    &claim_env,
                     AccessibilityNodeRole::Button,
                 ));
             if let Some(label) =
@@ -618,7 +735,13 @@ impl HydrolysisRenderer {
                     action: Self::tap_accessibility_activation(env, &effect.action),
                 })
             };
-            return renderer.register_accessibility_node_semantic(node, env, action_target);
+            return renderer
+                .register_accessibility_node_semantic(node, &claim_env, action_target)
+                .map(|node_id| GestureA11yClaim {
+                    node_id,
+                    env: claim_env,
+                    synthesized,
+                });
         }
         if !disabled && let Some(scope) = env.get::<ScopedAccessibilitySemantics>() {
             // Claimed or not, the scope's representative drains the donation

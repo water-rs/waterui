@@ -316,6 +316,8 @@ jobs:
             backend: hydrolysis
 
     env:
+      # Cold build, no compile wrapper (see the setup-rust step).
+      RUSTC_WRAPPER: ""
       E2E_USER: watere2e
       E2E_PLATFORM: ${{ matrix.platform }}
       E2E_BACKEND: ${{ matrix.backend }}
@@ -328,9 +330,11 @@ jobs:
       - name: Setup Rust (CLI build host)
         uses: ./.github/actions/setup-rust
         with:
-          shared-key: cli-e2e-${{ runner.os }}
-          # One writer per OS cache key: the schedule.
-          save-if: ${{ github.event_name == 'schedule' }}
+          # e2e lanes build fully cold — part of what they measure is cold
+          # compile time — so this job restores and saves no Actions cache.
+          # The rust-cache it used to carry held ~3.2 GB of the 10 GiB quota
+          # across the three OS keys for one build a day.
+          cache: "false"
 
       - name: Install the CLI under test
         shell: bash
@@ -345,6 +349,8 @@ jobs:
       - name: Install DirectX Shader Compiler
         if: runner.os == 'Windows'
         uses: ./.github/actions/install-dxc
+        with:
+          cache: "false"
 
       # The fresh user's password is generated per run: a literal in this
       # file would print in every step's environment block of the public

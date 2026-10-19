@@ -44,9 +44,12 @@ object NativeBridge {
      * `nativePlatformViewFocus` reported whether a mounted platform-view
      * child held UI focus; 15 = the focus report reads through the frame —
      * [HydrolysisSession.onNativePlatformViewFocus] replaces the pushed
-     * native, which left with it.
+     * native, which left with it; 16 = `onNativeFatalError` leaves the
+     * table — a lost GPU device is recreated instead of ending the
+     * session, and a recreation that exhausts its loss budget already
+     * reaches the host as the frame call's `IllegalStateException`.
      */
-    private const val SCHEMA: Int = 15
+    private const val SCHEMA: Int = 16
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0

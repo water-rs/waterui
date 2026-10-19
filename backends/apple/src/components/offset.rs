@@ -77,6 +77,31 @@ fn apply_transform(state: &OffsetState, host: &PlatformView) {
     view::invalidate_captured_rendering(host);
 }
 
+/// `UIKit`: position the content in the untransformed space, then re-apply
+/// the translation. `center` is a `frame` property, and reading or writing
+/// `frame` while `transform` is not the identity is undefined
+/// (`UIView.transform`) — the autoresizing-mask constraints `UIKit`
+/// synthesizes for a translated view resolve the transformed frame, which
+/// is how a re-centering pass can absorb part of the translation and land
+/// the content short of its offset.
+#[cfg(target_os = "ios")]
+fn position_content(state: &OffsetState, host: &PlatformView) {
+    let bounds = view::bounds(host);
+    view::set_transform(
+        state.child.view(),
+        cocoa_ui::objc2_core_graphics::CGAffineTransformMakeTranslation(0.0, 0.0),
+    );
+    view::set_bounds(
+        state.child.view(),
+        Rect::new(0.0, 0.0, bounds.size.width, bounds.size.height),
+    );
+    view::set_center(
+        state.child.view(),
+        Point::new(bounds.size.width / 2.0, bounds.size.height / 2.0),
+    );
+    apply_transform(state, host);
+}
+
 /// The wrapper's layout face: the content's answers everywhere.
 struct OffsetSubView {
     /// The leaf's state.
@@ -116,6 +141,15 @@ pub fn install(dispatcher: &mut Dispatcher) {
         cocoa_ui::layer::ensure_layer(&host);
         let mounted = ctx.render(metadata.content).mount(&host);
         crate::primary_content::forward(&host, mounted.view());
+        #[cfg(target_os = "ios")]
+        // This wrapper drives the content's bounds and center itself on
+        // every layout pass and moves it visually with `transform`. Letting
+        // `UIKit` translate the autoresizing mask into frame-pinning
+        // constraints makes the transform participate in constraint
+        // solving — the pinned frame absorbs part of the translation and
+        // the content lands short of its declared offset.
+        view::set_translates_autoresizing(mounted.view(), false);
+        #[cfg(target_os = "macos")]
         view::set_translates_autoresizing(mounted.view(), true);
 
         let state = Rc::new(RefCell::new(OffsetState {
@@ -131,22 +165,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
             move |host_view| {
                 let state = state.borrow();
                 #[cfg(target_os = "ios")]
-                let bounds = view::bounds(host_view);
-                #[cfg(target_os = "ios")]
-                {
-                    view::set_bounds(
-                        state.child.view(),
-                        Rect::new(0.0, 0.0, bounds.size.width, bounds.size.height),
-                    );
-                    view::set_center(
-                        state.child.view(),
-                        Point::new(bounds.size.width / 2.0, bounds.size.height / 2.0),
-                    );
-                }
+                position_content(&state, host_view);
                 #[cfg(target_os = "macos")]
-                {
-                    apply_transform(&state, host_view);
-                }
+                apply_transform(&state, host_view);
             }
         });
 
