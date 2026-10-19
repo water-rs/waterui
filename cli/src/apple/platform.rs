@@ -977,7 +977,7 @@ pub async fn package_apple(
     // The shared-runtime development linkage ships `libwaterui_dylib` and the
     // Rust standard library inside the bundle's Frameworks directory; a
     // statically linked package carries neither.
-    let shared_runtime = if options.uses_shared_rust_runtime() {
+    let shared_runtime = if options.uses_shared_rust_runtime(&triple) {
         let bin_built = BuiltTarget {
             features: built.features.clone(),
             profile_dir: built.profile_dir.clone(),

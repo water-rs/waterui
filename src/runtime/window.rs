@@ -38,6 +38,7 @@ use waterui_layout::{Point, Rect, Size};
 
 pub use super::window_close::CloseReply;
 use super::window_close::{CloseRequest, Question};
+use super::window_focus::FocusRequest;
 
 use crate::app::{application_identifier, application_name};
 #[cfg(feature = "snackbar")]
@@ -218,6 +219,10 @@ pub struct Window {
     /// shared by `Rc` with [`WindowHandle`] and armed by the backend when the
     /// window is realized.
     close_request: CloseRequest,
+    /// The focus machine [`WindowHandle::focus`] files into, shared by
+    /// `Rc` with [`WindowHandle`] and armed by the backend when the window
+    /// is realized.
+    focus_request: FocusRequest,
 }
 
 /// A window's own icon: straight-alpha sRGB RGBA8 pixels and their size.
@@ -762,6 +767,7 @@ impl Window {
             resize_increments: None,
             icon: Binding::container(None),
             close_request,
+            focus_request: FocusRequest::new(),
         }
     }
 
@@ -1033,6 +1039,15 @@ impl Window {
         self.close_request.arm(env, self.closable);
     }
 
+    /// Arms focus requests with `hook` — the platform call
+    /// [`WindowHandle::focus`] dispatches into. A backend calls it when it
+    /// realizes the window; a platform that cannot activate a mapped window
+    /// leaves the machine unarmed and the call panics.
+    #[doc(hidden)]
+    pub fn arm_focus_requests(&self, hook: impl FnMut() + 'static) {
+        self.focus_request.arm(hook);
+    }
+
     /// Files a user close request — the one entry point a backend calls when
     /// the platform asks to close the window. `env` is the environment the
     /// window renders under; the call arms the machine with it, so the
@@ -1064,6 +1079,7 @@ impl Window {
             background: self.background.clone(),
             icon: self.icon.clone(),
             close_request: self.close_request.clone(),
+            focus_request: self.focus_request.clone(),
         }
     }
 
@@ -1166,6 +1182,7 @@ pub struct WindowHandle {
     background: Binding<WindowBackground>,
     icon: Binding<Option<WindowIcon>>,
     close_request: CloseRequest,
+    focus_request: FocusRequest,
 }
 
 impl WindowHandle {
@@ -1206,6 +1223,35 @@ impl WindowHandle {
     /// Restore the window to its normal state.
     pub fn restore(&self) {
         self.state.set(WindowState::Normal);
+    }
+
+    /// Bring the window in front and give it keyboard focus — the classic
+    /// "show me the existing settings window" request.
+    ///
+    /// Platform behaviour:
+    ///
+    /// - **macOS:** a miniaturized window deminiaturizes first, then
+    ///   `makeKeyAndOrderFront:` and `NSApp.activate()` — the cooperative
+    ///   activation macOS 14 introduced, which the system may still
+    ///   decline.
+    /// - **iOS:** `makeKeyAndVisible` — the window becomes its scene's
+    ///   key window.
+    /// - **Hydrolysis/winit:** `focus_window` — X11
+    ///   `_NET_ACTIVE_WINDOW` and Windows `SetForegroundWindow` behind
+    ///   it; the window manager may still decline, and on Wayland an
+    ///   activation token is required, which only exists when the request
+    ///   follows a user gesture — otherwise the request is best-effort.
+    /// - **Headless/semantic runners:** unarmed; the call panics.
+    ///
+    /// A handle that outlived its window's teardown files into nothing:
+    /// the request is a no-op.
+    ///
+    /// # Panics
+    ///
+    /// When the window has not been realized yet, and on the platforms
+    /// with no mapped-window activation — headless and semantic runners.
+    pub fn focus(&self) {
+        self.focus_request.request();
     }
 
     /// Ask the platform to draw the user's attention to the window, until

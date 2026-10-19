@@ -40,7 +40,8 @@ pub fn main() {
     });
 
     run(
-        App::new_with_windows([window], Environment::new()),
+        |env| App::new_with_windows([window], env),
+        Environment::new(),
         hydrolysis::testing::TestStyle::new(),
     );
 }

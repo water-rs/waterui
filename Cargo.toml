@@ -124,6 +124,14 @@ scaffold-packages = [
     "waterui-gtk",
     "waterui-winui",
 ]
+# Third-party crates the facade re-exports into its public API, mapped to
+# the facade path the re-export answers at. A project that also depends on
+# one of these directly must resolve the same package the framework does:
+# a second copy in the graph means the types the two sides share stop
+# matching, and cargo reports the split as hundreds of type errors that
+# never name a version. The `water` CLI fails on that divergence before it
+# reaches the compiler.
+reexported-dependencies = { anyhow = "waterui::Error", bytemuck = "waterui::graphics::bytemuck", cherenkov = "waterui::graphics::cherenkov", cherenkov-cpu = "waterui::graphics::cherenkov_cpu", cherenkov-gpu = "waterui::graphics::cherenkov_gpu", cherenkov-record = "waterui::graphics::draw", color = "waterui::graphics::Color", executor-core = "waterui::task", filtrate = "waterui::graphics::filtrate", filtrate-core = "waterui::media::Filter", keyboard-types = "waterui::graphics::input", nami = "waterui::reactive", nami-core = "waterui::reactive", native-executor = "waterui::task", pastey = "waterui::pastey", serde = "waterui::webview::serde", serde_json = "waterui::webview::serde_json", suiteki = "waterui::Str", tracing = "waterui::log", url = "waterui::media::Url", waterkit-haptic = "waterui::Intensity", wgpu = "waterui::graphics::wgpu" }
 
 [lib]
 path = "facade.rs"
@@ -132,7 +140,7 @@ path = "facade.rs"
 version = "0.5.1"
 edition = "2024"
 authors = ["Lexo Liu"]
-rust-version = "1.95"
+rust-version = "1.99"
 license = "Apache-2.0 OR MIT"
 readme = "README.md"
 repository = "https://github.com/water-rs/waterui"
@@ -213,7 +221,8 @@ nami-core = "0.5"
 # The 2D engine WaterUI's self-drawn content records and renders through
 # (water-rs/hydrolysis#205, water-rs/waterui#1449): recording, resource
 # registration, the layer tree and GPU content. The whole `cherenkov` family
-# lives in this repository under `graphics/` — path members, not crates.io.
+# lives in this repository under `graphics/` and publishes from here on its
+# own line under `cherenkov-*` tags.
 cherenkov = { version = "0.0.0", path = "graphics/cherenkov" }
 cherenkov-cpu = { version = "0.0.0", path = "graphics/cherenkov/cpu" }
 cherenkov-gpu = { version = "0.0.0", path = "graphics/cherenkov/gpu" }
@@ -569,6 +578,8 @@ lto = "thin"
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
+# Evaluate SIMD exponential constants at compile time until wide releases the fix.
+wide = { git = "https://github.com/lexoliu/wide", branch = "perf/f32x4-exp-const" }
 # Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
 # those to its own copies or the graph carries two of each and every `View`
@@ -621,9 +632,9 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "d
 block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae859d1ee8e8cb5eef6a516471f1578d26b96" }
 
 # The `cherenkov`/`filtrate` families live in this repository under
-# `graphics/` (water-rs/waterui#1449). Components pinned from sibling
-# repositories declare them as crates.io requirements — `cherenkov` is
-# unpublished and `filtrate`'s published release is an older API — so the
+# `graphics/` (water-rs/waterui#1449) and publish from here. Components
+# pinned from sibling repositories declare them as crates.io requirements —
+# the published `filtrate` release predates the in-tree API — so the
 # requirements resolve to the in-tree sources instead. Every filtrate in the
 # graph must come from one source: a filter type built on the published
 # crate is a different type from one built in-tree.
@@ -703,3 +714,22 @@ waterui-math = { git = "https://github.com/water-rs/math", branch = "dev" }
 # `dev` implements 0.5's (water-rs/suiteki#29). Drop once a release carries
 # it.
 suiteki = { git = "https://github.com/water-rs/suiteki", branch = "dev" }
+# `homedir` (via axoupdater) and `clipboard-rs` (via waterkit-clipboard) pin
+# `windows` 0.61 and 0.59 — both inside gpu-allocator's `>=0.58, <=0.62`
+# range, so any relock can settle gpu-allocator on a different `windows`
+# than wgpu-hal's and split the ID3D12 types at the dx12 boundary
+# (#2797). The forks' `windows-0.62-signed` branch carries only the
+# `windows = "0.62"` requirement bump (homedir also renames
+# `Error::from_win32` to `from_thread`); drop the pins once releases admit
+# 0.62.
+homedir = { git = "https://github.com/water-rs/homedir", branch = "windows-0.62-signed" }
+clipboard-rs = { git = "https://github.com/water-rs/clipboard-rs", branch = "windows-0.62-signed" }
+# tree-sitter-md 0.5.3's wasm32 build compiles tree-sitter-language's
+# `wasm/unsupported/tree-sitter-0.26` shims, which #error against the
+# tree-sitter 0.27 this workspace carries — the grammar needs its build
+# adapted to 0.27, proposed upstream as
+# tree-sitter-grammars/tree-sitter-markdown#265 and unreleased. The patch
+# is that PR's branch on our own fork, so `markdown`/`flow-markdown` build
+# for the web (water-rs/waterui#1349). Drop it once a `tree-sitter-md`
+# release includes the fix.
+tree-sitter-md = { git = "https://github.com/lexoliu/tree-sitter-markdown", branch = "wasm-tree-sitter-0.27" }

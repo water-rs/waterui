@@ -43,6 +43,7 @@ gpu = [
     "dep:pollster",
     "dep:shaderloom",
     "dep:event-listener",
+    "dep:wgpu-external-frame",
 ]
 # Offscreen rendering through `Engine<Raster>`: pictures rasterised for hosts
 # whose image views take bitmaps.
@@ -85,6 +86,12 @@ event-listener = { version = "5", optional = true }
 # artifacts require (`shaderloom::required_features`).
 shaderloom = { workspace = true, optional = true, features = ["runtime"] }
 
+# `ahardware_buffer::request_device` opens the shared Android device with the
+# hardware-buffer import extensions and the `samplerYcbcrConversion` feature a
+# camera or decoder frame's zero-copy import needs (water-rs/waterui#1902);
+# wgpu never requests them on its own.
+[target.'cfg(target_os = "android")'.dependencies]
+wgpu-external-frame = { workspace = true, optional = true }
 # `GpuContent` is `Send` because natively a frame's content renders on the
 # render thread. wasm32 without atomics has one thread, and there wgpu marks
 # its WebGPU handles `!Send` unless this feature is on; it has no effect on a

@@ -19,8 +19,9 @@ use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_cl
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSMutableSet, NSObject, NSObjectProtocol};
 use objc2_ui_kit::{
-    UIEdgeInsets, UIEvent, UIGestureRecognizerState, UIHoverGestureRecognizer, UIPress,
-    UIPressesEvent, UITraitDisplayScale, UITraitEnvironment, UIView,
+    UIAccessibilityConvertFrameToScreenCoordinates, UIEdgeInsets, UIEvent,
+    UIGestureRecognizerState, UIHoverGestureRecognizer, UIPress, UIPressesEvent,
+    UITraitDisplayScale, UITraitEnvironment, UIView,
 };
 
 use super::trait_change::{TraitChangeObservation, register_trait_change};
@@ -28,6 +29,7 @@ use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Edges, MeasureProposal, Point, Rect, Size};
 use crate::keys::{self, KeyEvent};
 use crate::pointer::{PointerEvent, PointerEvents};
+use crate::visibility::VisibilityEmitter;
 
 /// What a [`HostView`]'s hit-test handler decides for a point.
 #[derive(Debug, Clone)]
@@ -101,10 +103,18 @@ pub struct HostViewIvars {
     /// target stays alive and a replacement can detach it.
     hover_recognizer: RefCell<Option<Retained<UIHoverGestureRecognizer>>>,
     key: RefCell<Option<KeyHandler>>,
+    /// The instance-owned visibility event: fires when this view's hidden,
+    /// alpha, frame, bounds, window or superview state changes so
+    /// subscribed descendants re-check presentation visibility.
+    emitter: VisibilityEmitter,
     /// The capturable surface the mounted leaf stored on this view.
     capturable: crate::capture::CapturableSlot,
     /// The display-scale registration serving backing-scale subscribers.
     backing_changed: RefCell<Option<TraitChangeObservation>>,
+    /// Whether `accessibilityFrame` reports the union of the direct
+    /// children's frames — the extent a labelled layout container resolves
+    /// to — instead of the view's own frame (water-rs/waterui#1482).
+    reports_content_extent: Cell<bool>,
 }
 
 impl fmt::Debug for HostViewIvars {
@@ -139,6 +149,7 @@ impl fmt::Debug for HostViewIvars {
             )
             .field("key", &self.key.borrow().is_some())
             .field("backing_changed", &self.backing_changed.borrow().is_some())
+            .field("reports_content_extent", &self.reports_content_extent.get())
             .finish_non_exhaustive()
     }
 }
@@ -261,6 +272,7 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self);
                 }
+                self.ivars().emitter.emit();
             });
         }
 
@@ -274,6 +286,27 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self);
                 }
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setHidden:))]
+        fn set_hidden_override(&self, hidden: bool) {
+            guarded("HostView setHidden:", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), setHidden: hidden] };
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setAlpha:))]
+        fn set_alpha_override(&self, alpha: f64) {
+            guarded("HostView setAlpha:", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), setAlpha: alpha] };
+                self.ivars().emitter.emit();
             });
         }
 
@@ -377,6 +410,7 @@ define_class!(
                 {
                     crate::uikit::keyboard::mark_region_readers(self);
                 }
+                self.ivars().emitter.emit();
             });
         }
 
@@ -387,7 +421,23 @@ define_class!(
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), setBounds: bounds] };
                 self.report_size();
+                self.ivars().emitter.emit();
             });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> CGRect {
+            guarded("HostView accessibilityFrame", || {
+                if !self.ivars().reports_content_extent.get() {
+                    // SAFETY: see the module safety note.
+                    return unsafe { msg_send![super(self), accessibilityFrame] };
+                }
+                UIAccessibilityConvertFrameToScreenCoordinates(
+                    self.content_extent(),
+                    self,
+                )
+            })
         }
 
         // SAFETY: see the module safety note.
@@ -602,6 +652,12 @@ impl HostView {
         self.ivars().superview.replace(Some(Rc::new(handler)));
     }
 
+    /// The visibility event this view fires — see
+    /// [`VisibilityEmitter`](crate::visibility::VisibilityEmitter).
+    pub fn visibility_emitter(&self) -> &VisibilityEmitter {
+        &self.ivars().emitter
+    }
+
     /// Lets `handler` answer the view's intrinsic measurements,
     /// `sizeThatFits` and `intrinsicContentSize`, for a layout container.
     pub fn set_measure_handler(&self, handler: impl Fn(&Self, MeasureProposal) -> Size + 'static) {
@@ -745,6 +801,33 @@ impl HostView {
     }
 
     /// Moves and resizes the view to `frame`, in its superview's coordinates.
+    /// Whether `accessibilityFrame` reports the union of the direct
+    /// children's frames — the extent this container resolved its content
+    /// to — instead of the view's own frame. A labelled layout container
+    /// (`Frame`, `vstack`, …) is assigned the whole region but places its
+    /// content in the resolved box, so a label on it announces the
+    /// children's extent, not the assignment (water-rs/waterui#1482).
+    /// Computed live on every read; nothing is stored.
+    pub fn set_reports_content_extent(&self, reports: bool) {
+        self.ivars().reports_content_extent.set(reports);
+    }
+
+    /// The union of the direct, non-hidden subviews' frames — in this
+    /// view's coordinate space — or the view's own bounds when it has
+    /// none.
+    fn content_extent(&self) -> CGRect {
+        let mut extent: Option<CGRect> = None;
+        for subview in &self.subviews() {
+            if subview.isHidden() {
+                continue;
+            }
+            let frame = subview.frame();
+            extent = Some(extent.map_or(frame, |u| union(u, frame)));
+        }
+        extent.unwrap_or_else(|| self.bounds())
+    }
+
+    /// Moves the view to `frame`, in its superview's coordinates.
     pub fn set_frame(&self, frame: Rect) {
         self.setFrame(frame.into());
     }
@@ -860,4 +943,11 @@ pub fn window_root(mtm: MainThreadMarker) -> Retained<HostView> {
             ..HostViewIvars::default()
         },
     )
+}
+
+/// The smallest rect containing `a` and `b`.
+fn union(a: CGRect, b: CGRect) -> CGRect {
+    let min = CGPoint::new(a.min().x.min(b.min().x), a.min().y.min(b.min().y));
+    let max = CGPoint::new(a.max().x.max(b.max().x), a.max().y.max(b.max().y));
+    CGRect::new(min, CGSize::new(max.x - min.x, max.y - min.y))
 }

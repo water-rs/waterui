@@ -45,6 +45,16 @@ are retired and unsupported. Apple support is ARM64-only: macOS
 targets, and explicit requests for them must fail with a clear unsupported-target
 error. This does not remove x86 support from other supported operating systems.
 
+### Support tiers
+
+- **Tier 1** — tested on real devices: macOS, iOS, Android.
+- **Tier 2** — built and tested in CI, with failures fixed promptly: Windows,
+  Linux. Windows does not support dynamic linking; development builds link
+  statically.
+- **Tier 3** — experimental: the GTK, WinUI and TUI backends.
+
+ESP32 is not supported; water-rs/waterui#3060 tracks bringing it back.
+
 ## Framework Design Principles
 
 These are constraints on every WaterUI feature, refactor, and review — not just the current task scope. They override convenience and they are not optional.

@@ -599,13 +599,25 @@ impl NativeOs {
 
     /// The `NativeOs` this CLI build runs on — the OS `Triple::host()`
     /// names.
-    const fn running_host() -> Self {
+    pub(crate) const fn running_host() -> Self {
         if cfg!(target_os = "macos") {
             Self::MacOs
         } else if cfg!(target_os = "windows") {
             Self::Windows
         } else {
             Self::Linux
+        }
+    }
+
+    /// The `TargetPlatform` a desktop build on this OS produces — what a
+    /// run targeting the machine itself resolves to. Anything else the
+    /// machine builds is a target it is not.
+    #[must_use]
+    pub(crate) const fn target_platform(self) -> TargetPlatform {
+        match self {
+            Self::MacOs => TargetPlatform::MacOS,
+            Self::Linux => TargetPlatform::Linux,
+            Self::Windows => TargetPlatform::Windows,
         }
     }
 }
@@ -884,10 +896,15 @@ impl PackageOptions {
         self.debug
     }
 
-    /// Whether the package must embed the shared `WaterUI` Rust runtime.
+    /// Whether the package must embed the shared `WaterUI` Rust runtime for
+    /// `triple`.
+    ///
+    /// A development package asks for the shared runtime, but a target that
+    /// has no shared-runtime linkage — every `*-windows-*` triple
+    /// (water-rs/waterui#3049) — ships no runtime to embed.
     #[must_use]
-    pub const fn uses_shared_rust_runtime(&self) -> bool {
-        self.shared_rust_runtime
+    pub fn uses_shared_rust_runtime(&self, triple: &Triple) -> bool {
+        self.shared_rust_runtime && crate::build::RustLinkage::supports_shared_runtime(triple)
     }
 
     /// Whether web mounts are dev-server-served and skipped during staging.
@@ -1003,16 +1020,17 @@ mod package_options_tests {
 
     #[test]
     fn development_embeds_shared_runtime_and_packaging_does_not() {
+        let shared_runtime_triple = super::TargetPlatform::MacOS.triple();
         let development = PackageOptions::development();
         assert!(development.is_debug());
         assert!(!development.is_distribution());
-        assert!(development.uses_shared_rust_runtime());
+        assert!(development.uses_shared_rust_runtime(&shared_runtime_triple));
 
         for options in [
             PackageOptions::packaging(super::PackageAudience::Development, true),
             PackageOptions::packaging(super::PackageAudience::Distribution, false),
         ] {
-            assert!(!options.uses_shared_rust_runtime());
+            assert!(!options.uses_shared_rust_runtime(&shared_runtime_triple));
         }
     }
 }

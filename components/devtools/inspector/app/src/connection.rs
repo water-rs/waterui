@@ -5,8 +5,9 @@
 //! changes made in the UI arrive over a channel, so the task never has to poll
 //! the UI state and the UI never has to know about sockets.
 
+use std::future::Future;
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_lite::io::BufReader;
 use smol::net::TcpStream;
@@ -21,14 +22,35 @@ use crate::model::{Connection, Model};
 /// How long to wait before reconnecting after a failure.
 const RETRY_DELAY: Duration = Duration::from_secs(1);
 
+/// How long the target has to accept a connection and answer the handshake.
+///
+/// A target that never answers used to leave the inspector waiting with no
+/// explanation (water-rs/waterui#2230): Android suspends a cached
+/// application, so its socket stays accepted and the `Hello` sits unread in
+/// the backlog forever. The wait is bounded instead, and the retry loop
+/// shows what failed and against which endpoint. The bound covers a cold
+/// target that is slow to reply, not one that will never reply.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Where to connect and with what credential.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct Target {
     /// Endpoint published by the target application.
     pub addr: SocketAddr,
     /// One-time session token.
     pub token: String,
+}
+
+// The token is a credential: it travels in the `Hello`, never in
+// diagnostics.
+impl std::fmt::Debug for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Target")
+            .field("addr", &self.addr)
+            .field("token", &"[redacted]")
+            .finish()
+    }
 }
 
 impl Target {
@@ -72,7 +94,7 @@ pub async fn run(model: Model, target: Target, subscriptions: SubscriptionReceiv
         model.connection.set(Connection::Connecting);
         model.reset_stream();
 
-        if let Err(error) = session(&model, &target, &subscriptions).await {
+        if let Err(error) = session(&model, &target, &subscriptions, HANDSHAKE_TIMEOUT).await {
             model.connection.set(Connection::Failed(Str::from(error)));
         }
         smol::Timer::after(RETRY_DELAY).await;
@@ -88,29 +110,44 @@ async fn session(
     model: &Model,
     target: &Target,
     subscriptions: &SubscriptionReceiver,
+    handshake_timeout: Duration,
 ) -> Result<(), String> {
-    let stream = TcpStream::connect(target.addr)
-        .await
-        .map_err(|error| format!("connect failed: {error}"))?;
+    // One deadline for the whole handshake — connect, Hello and the
+    // Welcome share it, so a target that stalls at each step is bounded
+    // by `handshake_timeout` once, not three times.
+    let deadline = Instant::now() + handshake_timeout;
+    let stream = within(
+        target.addr,
+        "connecting to",
+        deadline,
+        TcpStream::connect(target.addr),
+    )
+    .await?
+    .map_err(|error| format!("connect to {} failed: {error}", target.addr))?;
     let _ = stream.set_nodelay(true);
 
     let mut writer = stream.clone();
-    write_frame(
-        &mut writer,
-        &InspectorClientMessage::Hello {
-            token: target.token.clone(),
-            protocol: protocol_info(),
-            channels: model.subscribed.snapshot(),
-        },
-    )
-    .await
-    .map_err(|error| format!("handshake failed: {error}"))?;
+    let hello = InspectorClientMessage::Hello {
+        token: target.token.clone(),
+        protocol: protocol_info(),
+        channels: model.subscribed.snapshot(),
+    };
+    within(target.addr, "sending the handshake to", deadline, async {
+        write_frame(&mut writer, &hello).await
+    })
+    .await?
+    .map_err(|error| format!("handshake with {} failed: {error}", target.addr))?;
 
     let mut reader = BufReader::new(stream);
-    match read_frame::<_, InspectorServerMessage>(&mut reader)
-        .await
-        .map_err(|error| format!("handshake failed: {error}"))?
-    {
+    let reply = within(
+        target.addr,
+        "waiting for the handshake reply from",
+        deadline,
+        read_frame::<_, InspectorServerMessage>(&mut reader),
+    )
+    .await?
+    .map_err(|error| format!("handshake with {} failed: {error}", target.addr))?;
+    match reply {
         InspectorServerMessage::Welcome {
             target: info,
             available,
@@ -153,6 +190,27 @@ async fn session(
     }
 }
 
+/// Await `work`, giving up at `deadline` with an error that
+/// names what was being attempted and the endpoint it was attempted
+/// against — the only two facts a developer needs to tell a wrong address
+/// from a target that is not answering.
+async fn within<T>(
+    addr: SocketAddr,
+    what: &str,
+    deadline: Instant,
+    work: impl Future<Output = T>,
+) -> Result<T, String> {
+    futures_lite::future::or(async { Ok(work.await) }, async {
+        smol::Timer::at(deadline).await;
+        Err(format!(
+            "{what} {addr} timed out. The application may be suspended — \
+             Android freezes an application that is not in the foreground — or nothing is \
+             listening there."
+        ))
+    })
+    .await
+}
+
 enum Step {
     Event(std::io::Result<InspectorServerMessage>),
     Subscribe(Option<ChannelSet>),
@@ -191,5 +249,88 @@ fn apply(model: &Model, message: InspectorServerMessage) -> Option<String> {
             None
         }
         InspectorServerMessage::Error { message } => Some(message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::time::Duration;
+
+    use smol::net::TcpListener;
+    use waterui_inspector_protocol::InspectorClientMessage;
+    use waterui_inspector_protocol::transport::read_frame;
+
+    use super::{Target, session, subscription_channel};
+    use crate::model::Model;
+
+    /// A target that accepts the connection, reads the `Hello` and never
+    /// answers — what an Android application looks like once the system
+    /// has frozen it. The handshake must end by itself, say where it was
+    /// waiting, and take the socket down with it: the server observing an
+    /// EOF proves the losing side's stream really dropped.
+    #[test]
+    fn a_handshake_with_no_reply_fails_naming_the_endpoint() {
+        smol::block_on(async {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .await
+                .expect("bind a silent target");
+            let addr: SocketAddr = listener.local_addr().expect("the listener's address");
+
+            // The server accepts, reads the `Hello`, then waits on the
+            // next frame — the client timing out closes its socket,
+            // which the server sees as the stream ending.
+            let server = async move {
+                let (stream, _peer) = listener.accept().await.expect("accept the connection");
+                let mut stream = futures_lite::io::BufReader::new(stream);
+                let hello: InspectorClientMessage =
+                    read_frame(&mut stream).await.expect("the Hello arrives");
+                assert!(
+                    matches!(hello, InspectorClientMessage::Hello { .. }),
+                    "{hello:?}"
+                );
+                // Whatever the handshake's deadline does to the client,
+                // it ends the socket here.
+                read_frame::<_, InspectorClientMessage>(&mut stream).await
+            };
+
+            let (_sender, receiver) = subscription_channel();
+            let model = Model::new();
+            let target = Target {
+                addr,
+                token: String::from("token"),
+            };
+            let session = session(&model, &target, &receiver, Duration::from_millis(200));
+
+            let both = futures_lite::future::zip(session, server);
+            // If neither side finishes the test is itself wedged — bound
+            // the whole arrangement, not just the client.
+            let (error, observed) = futures_lite::future::or(both, async {
+                smol::Timer::after(Duration::from_secs(2)).await;
+                panic!("the silent-handshake test did not settle inside 2s");
+            })
+            .await;
+
+            let error = error.expect_err("a target that never answers cannot complete a handshake");
+            assert!(error.contains(&addr.to_string()), "{error}");
+            assert!(error.contains("timed out"), "{error}");
+            assert!(
+                observed.is_err(),
+                "the socket must end, not hang: {observed:?}"
+            );
+        });
+    }
+
+    /// The token is a credential: `Debug` names the endpoint without
+    /// spelling the secret.
+    #[test]
+    fn the_target_debug_never_shows_the_token() {
+        let target = Target {
+            addr: "127.0.0.1:23106".parse().expect("a valid address"),
+            token: String::from("s3cret-target-token"),
+        };
+        let rendered = format!("{target:?}");
+        assert!(!rendered.contains("s3cret-target-token"), "{rendered}");
+        assert!(rendered.contains("23106"), "{rendered}");
     }
 }

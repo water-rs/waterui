@@ -222,6 +222,18 @@ impl Application {
         self.app.setActivationPolicy(policy.native())
     }
 
+    /// Asks the system to make this the active application — the
+    /// cooperative `activate` macOS 14 introduced.
+    ///
+    /// Unlike the deprecated `activateIgnoringOtherApps:`, the system may
+    /// still decline the request: the app activates when it may, not
+    /// because it asked. Callers treat it as best-effort — activation
+    /// lands before the window that motivated it becomes key, but neither
+    /// is guaranteed.
+    pub fn activate(&self) {
+        self.app.activate();
+    }
+
     /// Makes `menu` the menu bar: each of its items is one top-level menu,
     /// and the first is the application menu.
     pub fn set_main_menu(&self, menu: &Menu) {
