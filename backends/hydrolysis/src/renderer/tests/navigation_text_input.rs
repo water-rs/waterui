@@ -146,7 +146,11 @@ fn a_field_on_a_pushed_navigation_page_receives_typed_text() {
     open_compose(&mut runtime, &mut clock);
 
     assert!(
-        !runtime.renderer().text_editing.text_input_targets.is_empty(),
+        !runtime
+            .renderer()
+            .text_editing
+            .text_input_targets
+            .is_empty(),
         "the pushed page's field registers a text-input target"
     );
     press_text_input(&mut runtime, 0);
@@ -156,7 +160,11 @@ fn a_field_on_a_pushed_navigation_page_receives_typed_text() {
         "pressing the pushed page's field must focus it"
     );
 
-    key(&mut runtime, KeyCode::Character("h".into()), KeyState::Pressed);
+    key(
+        &mut runtime,
+        KeyCode::Character("h".into()),
+        KeyState::Pressed,
+    );
     key(
         &mut runtime,
         KeyCode::Character("h".into()),
@@ -237,7 +245,11 @@ fn a_resize_between_focus_and_typing_keeps_the_pushed_page_field_editable() {
     });
     pump_for(&mut runtime, &mut clock, 4 * FRAME);
 
-    key(&mut runtime, KeyCode::Character("h".into()), KeyState::Pressed);
+    key(
+        &mut runtime,
+        KeyCode::Character("h".into()),
+        KeyState::Pressed,
+    );
     key(
         &mut runtime,
         KeyCode::Character("h".into()),
