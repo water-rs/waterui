@@ -229,18 +229,23 @@ impl HydrolysisRenderer {
         (&mut self.core.state, run)
     }
 
-    /// The per-frame work counters of the last rendered pump.
-    /// `HydroState::counters` is private to `crate::renderer`, so callers
-    /// outside the renderer reach it through here.
-    #[must_use]
-    pub const fn frame_work_counters(&self) -> FrameWorkCounters {
-        self.core.state.counters
-    }
-
     /// Mutable access for the runner's host-side wakeup and submission
     /// sites (the ones that happen outside a renderer method).
     pub const fn frame_work_counters_mut(&mut self) -> &mut FrameWorkCounters {
         &mut self.core.state.counters
+    }
+
+    /// Reads this frame's work counters and opens the next frame's count.
+    /// The frame pump snapshots its own work when the frame's profile is
+    /// finalized; everything counted afterwards — the next frame's input
+    /// handling, scheduling drains and host wakes included — accumulates
+    /// toward the frame it produces, so an idle or operand-only frame
+    /// reports its own work rather than the last scene build's leftovers
+    /// (water-rs/waterui#2907).
+    pub fn take_frame_work_counters(&mut self) -> FrameWorkCounters {
+        let counters = self.core.state.counters;
+        self.core.state.counters.reset_frame();
+        counters
     }
 
     /// Drops the recorded scene and the hit-test state derived from it.
@@ -248,11 +253,16 @@ impl HydrolysisRenderer {
     /// The hit registries are retained: clearing them would lose what the
     /// kept nodes own — materialization rebuilds the flat lists, so only
     /// the gesture engine's per-frame target list drains here.
+    ///
+    /// The frame-work counters are deliberately untouched: they roll at
+    /// every presented frame's boundary
+    /// ([`Self::take_frame_work_counters`]), not per scene reset — a
+    /// refresh flush resets the scene mid-frame while the counters are
+    /// still collecting that frame's work.
     pub fn reset_scene(&mut self) {
         self.gesture_engine.clear_targets();
         self.text_editing.text_input_targets.clear();
         self.state.measurement.reset_counters();
-        self.state.counters.reset_frame();
         #[cfg(feature = "accessibility")]
         self.accessibility.reset_scene();
     }
@@ -419,6 +429,20 @@ impl HydrolysisRenderer {
                 self.scene_mut().draw_picture(ctx.local, above);
             }
         }
+    }
+
+    /// Lists `source` at this point of the recording node's program as a
+    /// live item drawn in `ctx`'s record space (water-rs/waterui#1433). The
+    /// mount records the source into its own layer the first time a commit
+    /// lists it and keeps that recording while later records list the same
+    /// source, so what changes afterwards reaches the engine only through
+    /// the source's live operands.
+    pub(crate) fn push_live(
+        &mut self,
+        ctx: RenderContext,
+        source: &Rc<dyn crate::renderer::chrome::LiveSource>,
+    ) {
+        self.program().push_live(Rc::clone(source), ctx.local);
     }
 
     /// Records `core`'s node into its own program (§C): the parent's list

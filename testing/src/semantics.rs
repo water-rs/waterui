@@ -272,6 +272,7 @@ pub struct NodeSnapshot {
     pub(crate) label: Option<String>,
     pub(crate) identifier: Option<String>,
     pub(crate) value: Option<String>,
+    pub(crate) placeholder: Option<String>,
     pub(crate) bounds: Option<NodeBounds>,
     pub(crate) enabled: bool,
     pub(crate) selected: bool,
@@ -315,6 +316,17 @@ impl NodeSnapshot {
     #[must_use]
     pub fn value(&self) -> Option<&str> {
         self.value.as_deref()
+    }
+
+    /// Returns the placeholder text the node publishes, if any.
+    ///
+    /// A `TextField` prompt reaches the tree as the node's placeholder — the
+    /// `aria-placeholder` semantic — so an empty field still announces what it
+    /// expects. It is separate from the value: the field's own text stays in
+    /// [`Self::value`].
+    #[must_use]
+    pub fn placeholder(&self) -> Option<&str> {
+        self.placeholder.as_deref()
     }
 
     /// Returns whether the node is enabled.
@@ -433,6 +445,7 @@ impl NodeSnapshot {
             label: node.label().map(ToOwned::to_owned),
             identifier: node.author_id().map(ToOwned::to_owned),
             value,
+            placeholder: node.placeholder().map(ToOwned::to_owned),
             bounds: node.bounds().map(accesskit_rect_to_node_bounds),
             enabled: !node.is_disabled(),
             selected: node.is_selected().unwrap_or(false),

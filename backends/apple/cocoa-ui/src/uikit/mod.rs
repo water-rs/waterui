@@ -78,7 +78,7 @@ pub use application::{
     ApplicationHandlers, MenuBuilder, WindowScene, request_main_menu_rebuild, run,
 };
 pub use badge::BadgeView;
-pub use button::Button;
+pub use button::{Button, CocoaUiButton};
 pub use calendar_view::CalendarView;
 pub use color_view::ColorView;
 pub use colors::UiColor;
@@ -106,7 +106,7 @@ pub use menu::{elements, menu, menu_with_identifier};
 pub use navigation::{
     BarButton, LargeTitle, NavBar, NavContentController, NavPage, NavSearch, NavigationController,
     SearchBarPlacement, SearchUpdater, bar_item, bar_item_accessibility_label, first_button,
-    first_control, image_bar_item,
+    first_control, image_bar_item, mirror_enabled, title_bar_item,
 };
 pub use search_bar::SearchBar;
 pub use split::{ColumnWidth, SplitColumnController, SplitController};

@@ -89,14 +89,40 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
         }
     }
 
+    /**
+     * Runs a frame transaction immediately rather than waiting for the next
+     * vsync. An IME insets `onProgress` fires inside the frame's own
+     * traversal — before the draw that moves the IME window commits — so a
+     * buffer rendered now is composited in *that* frame alongside the
+     * keyboard's synced position. Posting instead would render at the next
+     * vsync and leave content one frame behind the keyboard (§7.1's
+     * frame-by-frame keyboard-motion rule, water-rs/waterui#1913). A
+     * pending vsync callback stays queued: its transaction runs then and
+     * reports its own outcome.
+     */
+    fun pumpNow(cause: String) {
+        if (stopped) return
+        pump(cause)
+    }
+
     override fun doFrame(vsyncNanos: Long) {
         posted = false
         deadlinePosted = false
         val cause = wakeCause ?: "external"
         wakeCause = null
+        pump(cause)
+    }
+
+    /**
+     * One frame transaction and its outcome handling — the path both the
+     * vsync callback ([doFrame]) and an in-traversal pump ([pumpNow])
+     * share. `vsyncNanos` is advisory only; the native side clocks the
+     * transaction itself.
+     */
+    private fun pump(cause: String) {
         val outcome =
             session.withNativePtr(NativeBridge::nativeOnFrame.name) { ptr ->
-                NativeBridge.nativeOnFrame(ptr, vsyncNanos)
+                NativeBridge.nativeOnFrame(ptr, System.nanoTime())
             }
         // The frame can end the session: a teardown requested inside it ran
         // as the frame returned and stopped this scheduler.

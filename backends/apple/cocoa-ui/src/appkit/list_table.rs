@@ -2,11 +2,13 @@
 //! data source and delegate are the scroll view itself.
 //!
 //! [`TableView`] is the leaf surface a list renders into. The wrapped
-//! [`NSTableView`] (`table_view()`) holds a single `content` column and
+//! [`InnerTable`] (`table_view()`) holds a single `content` column and
 //! answers the `NSTableViewDataSource`/`NSTableViewDelegate` callbacks by
 //! forwarding to the [`TableSource`] the consumer installs; the scroll view
 //! owns the scroll chrome (vertical scroller, autohide, top content inset)
-//! and is flipped so document space is top-left origin.
+//! and is flipped so document space is top-left origin. `InnerTable` also
+//! bounds the accessibility rows it vends to realized or selected rows so
+//! an assistive tree walk cannot materialize every row of a large list.
 //!
 //! [`TableRowView`] is the `NSTableRowView` that draws a hairline separator
 //! under a row when its consumer installs a separator handler, and answers
@@ -37,10 +39,10 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 
 use objc2::rc::Retained;
-use objc2::runtime::Bool;
-use objc2::runtime::ProtocolObject;
+use objc2::runtime::{AnyObject, Bool, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
+    NSAccessibilityIndexAttribute, NSAccessibilityRoleAttribute, NSAccessibilityRowRole,
     NSBezelStyle, NSButton, NSColor, NSControlTextEditingDelegate, NSDragOperation, NSDraggingInfo,
     NSFont, NSLayoutConstraint, NSPasteboardItem, NSPasteboardType, NSPasteboardWriting,
     NSRectFill, NSScrollView, NSTableColumn, NSTableRowView, NSTableView,
@@ -179,6 +181,133 @@ impl TableViewIvars {
     fn source(&self) -> Option<Rc<dyn TableSource>> {
         self.source.borrow().as_ref().cloned()
     }
+}
+
+/// The per-instance state [`InnerTable`] stores — none: the accessibility
+/// overrides read `NSTableView`'s own realized-row and selection state.
+pub struct InnerTableIvars {}
+
+define_class!(
+    // SAFETY: `NSTableView`'s designated initializer is `initWithFrame:`,
+    // which `InnerTable::new` calls, and the class does not implement `Drop`.
+    #[unsafe(super(NSTableView))]
+    #[name = "CocoaUiListInnerTable"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = InnerTableIvars]
+    /// The `NSTableView` a [`TableView`] wraps.
+    ///
+    /// `AppKit` vends an `NSTableRow` accessibility proxy for every row in
+    /// the table, realized or not, and an unrealized row's cell child
+    /// materializes the row when an assistive client asks that child for
+    /// children — the mock resolves through
+    /// `viewAtColumn:row:makeIfNecessary:YES`. On a 200,000-row list a
+    /// bounded accessibility walk then realizes every row and times out
+    /// (water-rs/waterui#1489). The overrides bound the rows they vend:
+    /// the generic children queries keep only realized rows, so a tree
+    /// walk cannot reach an unrealized row's cell; `accessibilityRows`
+    /// keeps realized and selected rows so the row model and selection
+    /// remain readable; and `accessibilitySelectedRows` is left alone
+    /// because `AppKit` builds its proxies independently — a selected row
+    /// stays reportable without being walkable.
+    pub struct InnerTable;
+
+    unsafe impl NSObjectProtocol for InnerTable {}
+
+    impl InnerTable {
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(accessibilityRows))]
+        fn accessibility_rows_override(&self) -> Option<Retained<NSArray>> {
+            // SAFETY: `super` answers the table's own row proxies.
+            let rows: Option<Retained<NSArray>> =
+                unsafe { msg_send![super(self), accessibilityRows] };
+            rows.map(|rows| self.exposed_elements(&rows, true))
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(accessibilityChildren))]
+        fn accessibility_children_override(&self) -> Option<Retained<NSArray>> {
+            // SAFETY: `super` answers the table's own children.
+            let children: Option<Retained<NSArray>> =
+                unsafe { msg_send![super(self), accessibilityChildren] };
+            children.map(|children| self.exposed_elements(&children, false))
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(accessibilityChildrenInNavigationOrder))]
+        fn accessibility_children_in_navigation_order_override(
+            &self,
+        ) -> Option<Retained<NSArray>> {
+            // SAFETY: `super` answers the table's own children.
+            let children: Option<Retained<NSArray>> = unsafe {
+                msg_send![super(self), accessibilityChildrenInNavigationOrder]
+            };
+            children.map(|children| self.exposed_elements(&children, false))
+        }
+    }
+);
+
+impl InnerTable {
+    /// Creates the wrapped table; `TableView::new` wires the column, data
+    /// source and delegate.
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(InnerTableIvars {});
+        // SAFETY: `initWithFrame:` is `NSTableView`'s designated initializer.
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+
+    /// `elements` minus the `AXRow` elements for rows an assistive walk
+    /// must not reach, because reaching an unrealized row's cell child
+    /// would materialize it. `keep_selected` retains selected-but-unrealized
+    /// rows: the row model keeps selection reachable, while the generic
+    /// children list — what a recursive tree walk descends — does not.
+    fn exposed_elements(&self, elements: &NSArray, keep_selected: bool) -> Retained<NSArray> {
+        let exposed: Vec<Retained<AnyObject>> = elements
+            .to_vec()
+            .into_iter()
+            .filter(|element| {
+                row_index(element).is_none_or(|row| self.exposes_row(row, keep_selected))
+            })
+            .collect();
+        NSArray::from_retained_slice(&exposed)
+    }
+
+    /// Whether `row` stays visible to assistive clients: a realized row is
+    /// already materialized, and — under `keep_selected` — a selected row
+    /// remains reachable so selection can be read and moved.
+    fn exposes_row(&self, row: NSInteger, keep_selected: bool) -> bool {
+        row >= 0
+            && row < self.numberOfRows()
+            && (self.rowViewAtRow_makeIfNecessary(row, false).is_some()
+                || (keep_selected && self.isRowSelected(row)))
+    }
+}
+
+/// The row index an accessibility element proxies, or `None` when the
+/// element is not an `AXRow` (a column element, a header, a scroller).
+fn row_index(element: &AnyObject) -> Option<NSInteger> {
+    // SAFETY: `accessibilityAttributeValue:` is the informal `NSObject`
+    // category's generic attribute getter and answers `nil` for attributes
+    // the element does not vend. `NSTableRow` proxies implement the legacy
+    // attribute getters, not the modern `accessibilityRole` /
+    // `accessibilityIndex` selectors, so the attributes are queried
+    // directly.
+    let role: Option<Retained<AnyObject>> =
+        unsafe { msg_send![element, accessibilityAttributeValue: NSAccessibilityRoleAttribute] };
+    let is_row = role
+        .and_then(|role| role.downcast::<NSString>().ok())
+        // SAFETY: the role attribute constant is a plain `NSString` static.
+        .is_some_and(|role| role.isEqualToString(unsafe { NSAccessibilityRowRole }));
+    if !is_row {
+        return None;
+    }
+    // SAFETY: the same generic getter, for the row's index attribute.
+    let index: Option<Retained<AnyObject>> =
+        unsafe { msg_send![element, accessibilityAttributeValue: NSAccessibilityIndexAttribute] };
+    index.and_then(|index| {
+        // SAFETY: the index attribute is vended as an `NSNumber`.
+        let index: NSInteger = unsafe { msg_send![&*index, integerValue] };
+        (index >= 0).then_some(index)
+    })
 }
 
 define_class!(
@@ -399,7 +528,7 @@ impl TableView {
             &this.ivars().flight,
         ));
 
-        let table = NSTableView::new(mtm);
+        let table = InnerTable::new(mtm);
         let column = NSTableColumn::initWithIdentifier(
             NSTableColumn::alloc(mtm),
             &NSString::from_str(COLUMN_IDENTIFIER),
@@ -428,7 +557,7 @@ impl TableView {
             bottom: 0.0,
             right: 0.0,
         });
-        this.ivars().table.replace(Some(table));
+        this.ivars().table.replace(Some(table.into_super()));
         this.ivars()
             .live_scroll
             .replace(this.ivars().flight.watch_user_scroll(&this, mtm));
@@ -559,10 +688,26 @@ define_class!(
     impl TableRowView {
         /// Selection emphasis follows the window's key state: the table
         /// never takes first responder (clicks go to the row content), yet
-        /// a selected row in a key window shows the accent highlight.
+        /// a selected row in a key window shows the accent highlight — but
+        /// never in a source-list table, whose sidebar selection is the
+        /// unemphasised pill the platform draws for a list that cannot
+        /// take focus.
         #[unsafe(method(isEmphasized))]
         fn is_emphasized(&self) -> bool {
-            self.window().is_some_and(|window| window.isKeyWindow())
+            // SAFETY: see the module safety note — the row view walks only
+            // live `NSView` ancestors.
+            let mut ancestor = unsafe { self.superview() };
+            let source_list = loop {
+                let Some(view) = ancestor else {
+                    break false;
+                };
+                if let Some(table) = view.downcast_ref::<NSTableView>() {
+                    break table.style() == NSTableViewStyle::SourceList;
+                }
+                // SAFETY: see the module safety note.
+                ancestor = unsafe { view.superview() };
+            };
+            !source_list && self.window().is_some_and(|window| window.isKeyWindow())
         }
 
         /// Keeps `AppKit`'s row fill, then paints the hairline inside the

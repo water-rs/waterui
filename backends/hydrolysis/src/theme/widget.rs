@@ -48,6 +48,37 @@ impl ButtonMetrics {
     }
 }
 
+/// What Hydrolysis asks a theme's button hooks for: the button's style, its
+/// control size and whether its label resolved to an icon-only
+/// presentation.
+///
+/// Parameters travel by name, so a new one does not break a theme that
+/// reads the others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ButtonSpec {
+    /// The button's style.
+    pub style: ButtonStyle,
+    /// The button's control size.
+    pub size: ControlSize,
+    /// Whether the label resolved to `IconOnly`: the bounds are the theme's
+    /// touch target, and the chrome is the icon-button container centred
+    /// inside them.
+    pub icon_only: bool,
+}
+
+impl ButtonSpec {
+    /// The spec of a `style` button of `size`.
+    #[must_use]
+    pub const fn new(style: ButtonStyle, size: ControlSize, icon_only: bool) -> Self {
+        Self {
+            style,
+            size,
+            icon_only,
+        }
+    }
+}
+
 /// Backend-neutral presentation for a semantic interactive surface whose visual
 /// chrome is composed by its content view.
 ///
@@ -1332,6 +1363,19 @@ pub trait WidgetTheme {
     /// views with this alpha.
     fn disabled_content_alpha(&self) -> f32 {
         0.38
+    }
+    /// The button's chrome as engine-provided primitives.
+    ///
+    /// `Some` hands the button's container, interaction tint, press feedback
+    /// and focus indicator to Hydrolysis, which records them once and
+    /// animates hover, press and focus as live operands; the renderer then
+    /// does not call [`Self::draw_button_chrome`] or
+    /// [`Self::draw_button_state_layer`] for the button. `None`, the
+    /// default, keeps those draw hooks. A button inside an
+    /// [`InteractionStyle`] or a floating scope keeps the presentation that
+    /// scope supplies.
+    fn button_chrome(&self, _spec: ButtonSpec) -> Option<super::Chrome> {
+        None
     }
     /// Draw button chrome for a style. `state` carries the disabled flag so
     /// themes can render the inactive container. `icon_only` marks a button

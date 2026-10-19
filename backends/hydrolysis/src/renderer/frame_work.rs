@@ -37,6 +37,12 @@ pub struct FrameWorkCounters {
     /// flush, theme widget render). The engine calls these content
     /// recordings, and a steady frame drives the count to zero.
     pub(crate) recorded_view_contents: u64,
+    /// Live items recorded into their layers this frame — a widget part's
+    /// engine-realized chrome among them. Each is recorded once, when a
+    /// commit first lists it; the interaction changes that follow move its
+    /// live operands and record nothing. Also counted in
+    /// `recorded_view_contents`.
+    pub(crate) live_recordings: u64,
     /// Retained engine layer mounts this frame.
     pub(crate) layer_creations: u64,
     /// Retained engine layer removals this frame.
@@ -70,6 +76,24 @@ impl FrameWorkCounters {
         *self = Self::default();
     }
 
+    /// Adds another span's counts into this one — for a frame whose work is
+    /// snapshotted in pieces (the render pump's own snapshot plus a capture
+    /// readback drained after it).
+    pub const fn accumulate(&mut self, other: Self) {
+        self.semantic_builds += other.semantic_builds;
+        self.structural_patches += other.structural_patches;
+        self.measure_calls += other.measure_calls;
+        self.layout_calls += other.layout_calls;
+        self.recorded_view_contents += other.recorded_view_contents;
+        self.live_recordings += other.live_recordings;
+        self.layer_creations += other.layer_creations;
+        self.layer_removals += other.layer_removals;
+        self.font_registrations += other.font_registrations;
+        self.image_registrations += other.image_registrations;
+        self.gpu_submissions += other.gpu_submissions;
+        self.host_wakeups += other.host_wakeups;
+    }
+
     /// Serializes the counters into a metrics map for frame-profile output.
     pub fn record_into(&self, metrics: &mut std::collections::BTreeMap<&'static str, u64>) {
         metrics.extend([
@@ -78,6 +102,7 @@ impl FrameWorkCounters {
             ("measure_calls", self.measure_calls),
             ("layout_calls", self.layout_calls),
             ("recorded_view_contents", self.recorded_view_contents),
+            ("live_recordings", self.live_recordings),
             ("layer_creations", self.layer_creations),
             ("layer_removals", self.layer_removals),
             ("font_registrations", self.font_registrations),

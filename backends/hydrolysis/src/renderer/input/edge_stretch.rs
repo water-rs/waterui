@@ -7,13 +7,17 @@
 //!
 //! The scroll offset never leaves the extents: the effect only stretches
 //! the rendered content toward the edge it is pulled from. The stretch is
-//! HWUI's `StretchEffect::makeLinearStretch`
-//! (`frameworks/base/libs/hwui/effects/StretchEffect.h`) — the uniform
-//! scale HWUI draws under `StretchEffectBehavior::UniformScale`
-//! (`libs/hwui/Properties.h`, `setIsHighEndGfx`) — anchored at the
-//! stretched edge of the viewport, applied to the scroll view's content
-//! layer at render time, so layout and hit-testing never see it, as on
-//! Android, where `RenderNode#stretch` is a draw-time property.
+//! HWUI's stretch shader (`frameworks/base/libs/hwui/effects/StretchEffect.cpp`,
+//! `stretchShader`), the edge-weighted warp HWUI draws under its default
+//! `StretchEffectBehavior::ShaderHWUI` (`libs/hwui/Properties.h`): the
+//! scroll view's inner layer carries filtrate's `OverscrollStretch` in the
+//! viewport's frame while [`shown_stretch`] is not empty. It applies at
+//! render time, so layout and hit-testing never see it, as on Android,
+//! where `RenderNode#stretch` is a draw-time property.
+//!
+//! HWUI's other rendering, `UniformScale` (`StretchEffect::makeLinearStretch`),
+//! is a device-class choice — `Properties::setIsHighEndGfx(false)` — not a
+//! case of the stretch itself, so it has no counterpart here.
 //!
 //! The constants are [`EdgeStretch`]'s, each cited there.
 
@@ -382,8 +386,9 @@ impl AxisStretch {
     }
 }
 
-/// A scroll view's stretch on both axes, carried by the touch gesture and
-/// the fling that owns the scroll view's offset.
+/// A scroll view's stretch on both axes, carried by the touch drag that
+/// holds the scroll view and then by its `ScrollMotion`, which outlives the
+/// fling that owns the offset.
 #[derive(Debug, Clone)]
 pub(super) struct ScrollStretch {
     pub(super) config: EdgeStretch,
@@ -400,11 +405,29 @@ impl ScrollStretch {
         }
     }
 
-    /// A touch down holds every unfinished edge where it is.
+    /// A touch down holds every unfinished edge where it is, and stops the
+    /// fling that was to reach an edge — its absorb never comes.
     pub(super) fn catch(&mut self) {
+        self.cancel_impacts();
         for axis in [&mut self.x, &mut self.y] {
             axis.leading.catch();
             axis.trailing.catch();
+        }
+    }
+
+    /// The fling that was to reach an edge stopped short of it: drops the
+    /// absorbs it armed.
+    pub(super) const fn cancel_impacts(&mut self) {
+        self.x.impact = None;
+        self.y.impact = None;
+    }
+
+    /// `endDrag`'s `onRelease` on every edge, with no fling: a held edge
+    /// relaxes from rest.
+    pub(super) fn release(&mut self, now: Instant) {
+        for axis in [&mut self.x, &mut self.y] {
+            axis.leading.on_release(now);
+            axis.trailing.on_release(now);
         }
     }
 
@@ -431,29 +454,12 @@ impl ScrollStretch {
     }
 }
 
-/// `StretchEffect::makeLinearStretch` over `viewport`: a scale of `1 +
-/// |s|` per axis anchored at the edge the stretch pulls from — the leading
-/// edge for a positive intensity, the trailing one for a negative — or the
-/// identity when the stretch is empty (`StretchEffect::isEmpty`).
-pub(super) fn linear_stretch(vector: kurbo::Vec2, viewport: kurbo::Rect) -> kurbo::Affine {
-    if vector.x.abs() <= NON_ZERO_EPSILON && vector.y.abs() <= NON_ZERO_EPSILON {
-        return kurbo::Affine::IDENTITY;
-    }
-    let pivot = kurbo::Vec2::new(
-        if vector.x > 0.0 {
-            viewport.x0
-        } else {
-            viewport.x1
-        },
-        if vector.y > 0.0 {
-            viewport.y0
-        } else {
-            viewport.y1
-        },
-    );
-    kurbo::Affine::translate(pivot)
-        * kurbo::Affine::scale_non_uniform(1.0 + vector.x.abs(), 1.0 + vector.y.abs())
-        * kurbo::Affine::translate(-pivot)
+/// The stretch direction HWUI draws for `vector`, or `None` when the
+/// stretch is empty (`StretchEffect::isEmpty`: both intensities within
+/// `NON_ZERO_EPSILON` of zero) — HWUI then neither composes the node as a
+/// layer (`StretchEffect::requiresLayer`) nor runs the shader.
+pub(super) fn shown_stretch(vector: kurbo::Vec2) -> Option<kurbo::Vec2> {
+    (vector.x.abs() > NON_ZERO_EPSILON || vector.y.abs() > NON_ZERO_EPSILON).then_some(vector)
 }
 
 #[cfg(test)]
@@ -548,35 +554,20 @@ mod tests {
         assert!(!axis.is_active());
     }
 
-    /// `makeLinearStretch`: `1 + |s|` anchored at the pulled edge.
+    /// `StretchEffect::isEmpty`: a stretch within `NON_ZERO_EPSILON` of
+    /// zero on both axes draws nothing; past it on either axis, the vector
+    /// reaches the shader whole.
     #[test]
-    fn the_stretch_scales_the_content_from_the_pulled_edge() {
-        let viewport = kurbo::Rect::new(0.0, 100.0, 400.0, 700.0);
-        let top = linear_stretch(kurbo::Vec2::new(0.0, 0.016_119_335_902_422_205), viewport);
-        let pinned = top * kurbo::Point::new(50.0, 100.0);
-        close(pinned.y, 100.0, "the top edge stays");
-        close(pinned.x, 50.0, "x is untouched");
-        close(
-            (top * kurbo::Point::new(0.0, 700.0)).y,
-            600.0f64.mul_add(1.016_119_335_902_422, 100.0),
-            "the far edge moves out",
-        );
-        let bottom = linear_stretch(kurbo::Vec2::new(0.0, -0.01), viewport);
-        close(
-            (bottom * kurbo::Point::new(0.0, 700.0)).y,
-            700.0,
-            "the bottom edge stays",
-        );
-        close(
-            (bottom * kurbo::Point::new(0.0, 100.0)).y,
-            600.0f64.mul_add(-1.01, 700.0),
-            "top moves up",
-        );
+    fn a_stretch_under_hwuis_epsilon_draws_nothing() {
         assert_eq!(
-            linear_stretch(kurbo::Vec2::new(0.000_01, -0.000_02), viewport),
-            kurbo::Affine::IDENTITY,
+            shown_stretch(kurbo::Vec2::new(0.000_01, -0.000_04)),
+            None,
             "under NON_ZERO_EPSILON the stretch is empty"
         );
+        let shown = kurbo::Vec2::new(0.000_01, -0.000_05);
+        assert_eq!(shown_stretch(shown), Some(shown));
+        let top = kurbo::Vec2::new(0.0, 0.016_119_335_902_422_205);
+        assert_eq!(shown_stretch(top), Some(top));
     }
 
     /// `onRelease` from a 0.2 pull, stepped by `updateSpring` every 16 ms:

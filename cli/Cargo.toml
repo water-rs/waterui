@@ -115,7 +115,7 @@ sysinfo = { version = "0.39", default-features = false, features = ["system"] } 
 # ZIP archive extraction. Every archive the CLI reads or writes — Android SDK
 # packages, browser runtimes, asset catalogs — is stored or deflated, so the
 # bzip2/lzma/zstd/xz/ppmd/AES codecs `default` also pulls are never reached.
-zip = { version = "8.6", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
 # Gzipped-tar extraction for managed tools whose upstream releases ship
 # `.tar.gz` (sccache on Linux and macOS).
 flate2 = "1"
@@ -133,6 +133,8 @@ remove_dir_all = "1.0"
 # cannot ship until versions carrying those APIs publish.
 waterui-assets-core = { workspace = true, features = ["remote"] }
 waterui-assets-planner = { workspace = true, features = ["font-declarations"] }
+# `ArtifactSymbols` walks the `.wmeta` metadata directory's records.
+waterui-meta.workspace = true
 waterui-preview-protocol.workspace = true
 waterui-inspector-protocol.workspace = true
 waterui-mcp-protocol.workspace = true
@@ -221,6 +223,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Console",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
 ] }
 
 [target.'cfg(not(target_vendor = "apple"))'.dependencies]

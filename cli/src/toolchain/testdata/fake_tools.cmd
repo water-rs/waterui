@@ -21,10 +21,18 @@ rem builtins, so the restricted PATH is still honored.
 setlocal EnableDelayedExpansion
 set "tool=%~n0"
 
+rem Rust's std::process::Command quotes an argument on Windows when it
+rem contains spaces or cmd metacharacters, so %* arrives with literal '"'
+rem characters (e.g. `git fetch -q "--depth=1" "origin"`). The substring
+rem dispatch below and the invocation log both match on the dequoted copy.
+set "raw_args=%*"
+set "args_dequoted=%raw_args:"=%"
+
 rem WATERUI_FAKE_LOG names a file every fake invocation appends itself to -
 rem `<tool> <args>` one per line - the seam tests use to assert which tools
-rem ran and with which arguments.
-if defined WATERUI_FAKE_LOG echo %tool% %*>> "%WATERUI_FAKE_LOG%"
+rem ran and with which arguments. The dequoted spelling is what the .sh
+rem sees in "$@", so the log line reads identically on both platforms.
+if defined WATERUI_FAKE_LOG echo %tool% !args_dequoted!>> "%WATERUI_FAKE_LOG%"
 
 rem Defaults matching the .sh `${VAR:-default}` expansions; a declared value
 rem always wins.
@@ -101,6 +109,10 @@ if /i "%tool%"=="meson" goto :simple_version
 if /i "%tool%"=="sccache" goto :sccache
 if /i "%tool%"=="git" goto :git
 if /i "%tool%"=="wasm-pack" goto :wasm_pack
+if /i "%tool%"=="bun" goto :pm
+if /i "%tool%"=="npm" goto :pm
+if /i "%tool%"=="pnpm" goto :pm
+if /i "%tool%"=="yarn" goto :pm
 if /i "%tool%"=="spirv-opt" goto :simple_version
 if /i "%tool%"=="sh" goto :simple_version
 if /i "%tool%"=="bash" goto :simple_version
@@ -147,7 +159,7 @@ for %%a in (%*) do (
     set "git_prev=%%~a"
 )
 if "%~1"=="--version" (echo git version 2.43.0 & exit /b 0)
-set "git_args=%*"
+set "git_args=!args_dequoted!"
 call :contains git_args "rev-parse --is-shallow-repository"
 if %errorlevel%==0 (call :respond GIT_SHALLOW & exit /b !errorlevel!)
 call :contains git_args "rev-parse --verify refs/remotes/origin/dev"
@@ -189,10 +201,10 @@ set "state_targets=%HOME%\.fake-rustup-targets"
 set "state_components=%HOME%\.fake-rustup-components"
 if defined RUSTUP_HOME (set "rustup_home=%RUSTUP_HOME%") else (set "rustup_home=%HOME%\.rustup")
 if not defined WATERUI_FAKE_RUSTC_HOST set "WATERUI_FAKE_RUSTC_HOST=x86_64-unknown-fake"
-if "%*"=="show active-toolchain" goto :rustup_active_toolchain
-set "args=%*"
+if "!args_dequoted!"=="show active-toolchain" goto :rustup_active_toolchain
+set "args=!args_dequoted!"
 if not defined args exit /b 2
-for %%a in (%*) do set "last_arg=%%a"
+for %%a in (%*) do set "last_arg=%%~a"
 rem Prefix matches below mirror the .sh globs: `rustup <verb> ...` qualified
 rem with `--toolchain <name>` must match the same branch as the bare form.
 if "!args:~0,17!"=="toolchain install" goto :rustup_install
@@ -340,7 +352,7 @@ rem by copying this dispatcher under the crate's name.
 set "krate="
 for %%a in (%*) do (
     if not defined krate (
-        set "arg=%%a"
+        set "arg=%%~a"
         if not "!arg:~0,1!"=="-" if not /i "%%a"=="install" if not /i "%%a"=="binstall" set "krate=%%a"
     )
 )
@@ -348,7 +360,7 @@ if defined krate if not exist "%~dp0!krate!.cmd" copy /y "%~f0" "%~dp0!krate!.cm
 exit /b 0
 
 :xcodebuild
-set "args=%*"
+set "args=!args_dequoted!"
 call :contains args version && (echo Xcode %WATERUI_FAKE_XCODE_VERSION% & echo Build version 16F6 & exit /b 0)
 exit /b 0
 
@@ -357,17 +369,17 @@ if "%1"=="-p" (call :respond_or_empty XCODE_SELECT_DEVELOPER_DIR & exit /b 0)
 exit /b 0
 
 :xcrun
-set "args=%*"
+set "args=!args_dequoted!"
 call :contains args --show-sdk-path && (call :respond XCRUN_SDK_PATH & exit /b !errorlevel!)
-if "%*"=="simctl list --json" (call :respond XCRUN_SIMCTL_DEVICES & exit /b !errorlevel!)
-if "%*"=="simctl delete unavailable" exit /b 0
+if "!args_dequoted!"=="simctl list --json" (call :respond XCRUN_SIMCTL_DEVICES & exit /b !errorlevel!)
+if "!args_dequoted!"=="simctl delete unavailable" exit /b 0
 if "!args:~0,14!"=="simctl create " exit /b 0
 exit /b 1
 
 :sdkmanager
 rem Unlike the .sh these branches return without draining stdin - see the
 rem header note for the cmd limitation.
-set "args=%*"
+set "args=!args_dequoted!"
 call :contains args --licenses && exit /b 0
 call :contains args --install && exit /b 0
 call :contains args --list && (call :respond_or_empty SDKMANAGER_LIST & exit /b 0)
@@ -375,16 +387,16 @@ call :contains args --version && (echo 5.0 & exit /b 0)
 exit /b 0
 
 :adb
-if "%*"=="version" (echo Android Debug Bridge version 1.0.41 & echo Version %WATERUI_FAKE_ADB_VERSION% & exit /b 0)
-if "%*"=="devices -l" (echo List of devices attached & call :respond_or_empty ADB_DEVICES & exit /b 0)
-if "%*"=="start-server" (if defined WATERUI_FAKE_ADB_START_SERVER_STATUS (exit /b %WATERUI_FAKE_ADB_START_SERVER_STATUS%) else (exit /b 0))
-set "args=%*"
+if "!args_dequoted!"=="version" (echo Android Debug Bridge version 1.0.41 & echo Version %WATERUI_FAKE_ADB_VERSION% & exit /b 0)
+if "!args_dequoted!"=="devices -l" (echo List of devices attached & call :respond_or_empty ADB_DEVICES & exit /b 0)
+if "!args_dequoted!"=="start-server" (if defined WATERUI_FAKE_ADB_START_SERVER_STATUS (exit /b %WATERUI_FAKE_ADB_START_SERVER_STATUS%) else (exit /b 0))
+set "args=!args_dequoted!"
 call :contains args "emu avd name" && (call :respond_or_empty ADB_EMU_AVD_NAME & exit /b 0)
 call :contains args getprop && (call :respond_or_empty ADB_GETPROP & exit /b 0)
 exit /b 0
 
 :emulator
-set "args=%*"
+set "args=!args_dequoted!"
 call :contains args -list-avds && (call :respond_or_empty EMULATOR_AVDS & exit /b 0)
 exit /b 0
 
@@ -428,6 +440,22 @@ if defined wp_out (
 exit /b 0
 
 :simple_version
+rem The tools dispatched here print a version banner on --version/-version/-v,
+rem like the .sh's `printf '%s 1.0.0 (waterui-test)\n' "$tool"`.
+if "%~1"=="--version" (echo %tool% 1.0.0 ^(waterui-test^) & exit /b 0)
+if "%~1"=="-version" (echo %tool% 1.0.0 ^(waterui-test^) & exit /b 0)
+if "%~1"=="-v" (echo %tool% 1.0.0 ^(waterui-test^) & exit /b 0)
+exit /b 0
+
+rem bun|npm|pnpm|yarn: `<pm> run <script>` prints the staged
+rem <tool>_run_<script> response and exits with WATERUI_FAKE_PM_EXIT, like
+rem the .sh. Every other invocation succeeds silently.
+:pm
+if "%~1"=="run" (
+    if exist "%WATERUI_FAKE_RESPONSES%\%tool%_run_%~2" type "%WATERUI_FAKE_RESPONSES%\%tool%_run_%~2"
+    if defined WATERUI_FAKE_PM_EXIT (exit /b %WATERUI_FAKE_PM_EXIT%) else (exit /b 0)
+)
+exit /b 0
 
 :vswhere
 call :respond_or_empty VSWHERE
@@ -472,11 +500,11 @@ exit /b %errorlevel%
 rem cmd tokenizes %1-%9 on '=', so `--atleast-version=4.14 gtk4` arrives as
 rem three tokens and %2 is the version, not the module. Match the raw %*
 rem string and take the module as the last argument, like the .sh's $2.
-if "%1"=="--version" (echo 1.8.1 & exit /b 0)
-if "%1"=="--exists" (
+if "%~1"=="--version" (echo 1.8.1 & exit /b 0)
+if "%~1"=="--exists" (
     call :module_exists "%~2" & exit /b !errorlevel!
 )
-set "args=%*"
+set "args=!args_dequoted!"
 call :contains args "--atleast-version=" && (
     call :last_arg %*
     call :module_exists "!last_arg!" || exit /b 1

@@ -15,6 +15,7 @@ use executor_core::async_task::{self, AsyncTask, Runnable};
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod anchored_overlay;
 mod animation_slots;
+mod chrome_primitives;
 mod chrome_safe_area;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod context_menu_occlusion;
@@ -60,8 +61,10 @@ mod mid_flush_subview;
 pub mod mirror;
 mod navigation_back;
 mod navigation_layers;
+mod navigation_text_input;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod nested_menu_dispatch;
+mod opacity_binding;
 mod perf_full_rebuild;
 mod perf_scroll;
 #[cfg(not(target_arch = "wasm32"))]
@@ -2320,7 +2323,7 @@ fn interaction_state_does_not_migrate_between_semantic_identities() {
     renderer
         .hit_test
         .interaction
-        .begin_press(&slot, Point::new(20.0, 20.0), at);
+        .begin_press(&slot, Point::new(20.0, 20.0), None, at);
     renderer.finish_rebuild_frame();
 
     renderer.begin_rebuild_frame();
@@ -2349,7 +2352,7 @@ fn began_press_samples_a_visible_press_layer_after_fade_in() {
     renderer
         .hit_test
         .interaction
-        .begin_press(&slot, Point::new(20.0, 20.0), at);
+        .begin_press(&slot, Point::new(20.0, 20.0), None, at);
     renderer.finish_rebuild_frame();
 
     // Advance past the press fade-in (105ms in MinimalTestTheme) and re-bind:
@@ -2421,7 +2424,7 @@ fn press_progress_animates_while_pressed_and_back_on_release() {
     renderer
         .hit_test
         .interaction
-        .begin_press(&slot, Point::new(20.0, 20.0), pressed_at);
+        .begin_press(&slot, Point::new(20.0, 20.0), None, pressed_at);
 
     renderer.begin_rebuild_frame();
     let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
@@ -2813,6 +2816,11 @@ pub struct MinimalTestTheme {
     /// The `InputFieldMetrics` this theme reports; `None` answers the fixture
     /// defaults `input_field_metrics` carries below.
     input_metrics: Option<InputFieldMetrics>,
+    /// The engine-provided chrome `button_chrome` hands out.
+    button_chrome: Option<crate::theme::Chrome>,
+    /// How many `draw_button_chrome` and `draw_button_state_layer` calls
+    /// the theme received.
+    button_chrome_draws: Rc<std::cell::Cell<usize>>,
 }
 
 impl MinimalTestTheme {
@@ -2822,6 +2830,19 @@ impl MinimalTestTheme {
     pub fn with_input_metrics(mut self, metrics: InputFieldMetrics) -> Self {
         self.input_metrics = Some(metrics);
         self
+    }
+
+    /// Hands out `chrome` from `button_chrome`, so buttons realize it with
+    /// live operands.
+    #[must_use]
+    pub fn with_button_chrome(mut self, chrome: crate::theme::Chrome) -> Self {
+        self.button_chrome = Some(chrome);
+        self
+    }
+
+    /// The count of `draw_button_chrome` and `draw_button_state_layer` calls.
+    pub fn button_chrome_draws(&self) -> Rc<std::cell::Cell<usize>> {
+        Rc::clone(&self.button_chrome_draws)
     }
 }
 
@@ -2922,6 +2943,10 @@ impl WidgetTheme for MinimalTestTheme {
         ButtonMetrics::new(0.0, 0.0, 41.0, 43.0)
     }
 
+    fn button_chrome(&self, _spec: crate::theme::ButtonSpec) -> Option<crate::theme::Chrome> {
+        self.button_chrome.clone()
+    }
+
     fn draw_button_chrome(
         &self,
         _draw: &mut Recorder,
@@ -2930,6 +2955,20 @@ impl WidgetTheme for MinimalTestTheme {
         _icon_only: bool,
         _state: WidgetInteractionState,
     ) {
+        self.button_chrome_draws
+            .set(self.button_chrome_draws.get() + 1);
+    }
+
+    fn draw_button_state_layer(
+        &self,
+        _draw: &mut Recorder,
+        _bounds: Rect,
+        _style: ButtonStyle,
+        _icon_only: bool,
+        _state: WidgetInteractionState,
+    ) {
+        self.button_chrome_draws
+            .set(self.button_chrome_draws.get() + 1);
     }
 
     /// Fills `registry` with the test's shader sources and capture

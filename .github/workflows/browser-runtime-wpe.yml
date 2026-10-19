@@ -8,13 +8,26 @@ name: WPE Runtime
 # the dev gate or the nightly critical path: it runs on demand, and on a
 # `browser-wpe-runtime/v*` tag push, which is how a built runtime is
 # published. A tag run ends by attaching the packaged runtime zips and the
-# generated artifact manifest to a GitHub Release on that tag.
+# generated artifact manifest to a GitHub Release on that tag. A dispatch
+# with `release_tag` set publishes to that existing tag instead — the
+# republish path for a tag run that failed before its release was created
+# (re-running a tag rebuilds the tagged commit, so the failed commit's
+# defects would ship again, #2422).
 
 permissions:
   contents: read
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: >-
+          Existing browser-wpe-runtime/v* tag to publish the built runtime to;
+          empty builds artifacts only. Use this when a tag's release run
+          failed before publishing — re-running the tag builds the tagged
+          commit, so a republish must come from newer code.
+        required: false
+        type: string
   push:
     tags: ["browser-wpe-runtime/v*"]
     branches: [dev]
@@ -31,7 +44,9 @@ on:
       - .github/workflows/browser-runtime-wpe.yml
 
 concurrency:
-  group: browser-runtime-wpe-${{ github.ref }}
+  # A dispatch that republishes an existing tag must not be cancelled by the
+  # next dev push's prefix build sharing its group.
+  group: browser-runtime-wpe-${{ github.ref }}-${{ inputs.release_tag }}
   cancel-in-progress: true
 
 env:
@@ -161,18 +176,39 @@ jobs:
 
   # Two matrix legs feed one release, so publishing waits on both rather than
   # letting each attach half a manifest — the same reason the deleted
-  # build-cli.yml made release-browser-runtime a separate job. Dispatch runs
-  # stop at the artifacts above; only a tag gets a release.
+  # build-cli.yml made release-browser-runtime a separate job. A run gets a
+  # release only when it has a real tag to attach to: a tag push's own tag,
+  # or a dispatch that names an existing browser-wpe-runtime/v* tag (the
+  # republish path for a release run that failed before publishing, #2422).
+  # A dispatch with no tag still stops at the artifacts above.
   publish:
     name: Publish WPE runtime
     needs: runtime
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || inputs.release_tag != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve the release tag
+        id: tag
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-${GITHUB_REF_NAME}}"
+          case "$tag" in
+            browser-wpe-runtime/v*) ;;
+            *) echo "::error::runtime releases attach only to browser-wpe-runtime/v* tags, got '$tag'"; exit 1 ;;
+          esac
+          # The tag must already exist: a dispatch republish ships assets for
+          # a tag someone cut, never mints one.
+          git ls-remote --exit-code --tags origin "refs/tags/${tag}" > /dev/null \
+            || { echo "::error::tag '${tag}' does not exist on the remote; cut it first, then republish"; exit 1; }
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Download browser runtime artifacts
         uses: actions/download-artifact@v4
@@ -183,7 +219,7 @@ jobs:
 
       - name: Generate browser runtime manifest
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
           BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
@@ -196,8 +232,8 @@ jobs:
       - name: Upload assets to release
         uses: softprops/action-gh-release@v2.3.2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
           make_latest: "false"
           fail_on_unmatched_files: true
           files: |

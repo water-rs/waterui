@@ -69,14 +69,15 @@ impl<'a> HydrolysisRenderTarget<'a> {
     /// [`HydrolysisRenderTarget`] describes, with the device-creation chain
     /// taken from `device_loss`'s context.
     fn into_frame_target(self) -> FrameRenderTarget<'a> {
-        let context = self.device_loss.gpu_context();
+        let device_loss = self.device_loss;
+        let context = device_loss.gpu_context();
         FrameRenderTarget {
             adapter: self.adapter,
             device: self.device,
             queue: self.queue,
-            device_loss: self.device_loss,
+            device_loss: device_loss.clone(),
             gpu_context_id: context.context_id,
-            shared_device: context.shared_device,
+            shared_device: context.shared_device.clone(),
             display_scale: 1.0,
             width: self.width,
             height: self.height,
@@ -433,7 +434,8 @@ impl HydrolysisRenderer {
         self.core.clear_commit_marks();
         let taken = window.mount.take_stats();
         self.last_mount_stats = mount::layers::census(&roots, taken);
-        self.state.counters.recorded_view_contents += taken.installs;
+        self.state.counters.recorded_view_contents += taken.installs + taken.live_records;
+        self.state.counters.live_recordings += taken.live_records;
         self.state.counters.layer_creations += taken.created;
         self.state.counters.layer_removals += taken.removed;
         let (fonts, images) = window.state.resources.take_registration_stats();

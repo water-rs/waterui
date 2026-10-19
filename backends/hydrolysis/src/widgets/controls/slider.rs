@@ -82,6 +82,15 @@ impl SliderRenderState {
         self.min_value_label.ensure_built(renderer, env);
         self.max_value_label.ensure_built(renderer, env);
     }
+
+    /// Consume the label sub-views' layout-dirty marks: their measured sizes
+    /// feed the slider's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+            | self.min_value_label.take_layout_dirty_if_built()
+            | self.max_value_label.take_layout_dirty_if_built()
+    }
 }
 
 impl HydroNativeView for Native<SliderConfig> {
