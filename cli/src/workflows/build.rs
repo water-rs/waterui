@@ -328,6 +328,68 @@ pub enum RustLinkage {
     SharedRuntime,
 }
 
+impl RustLinkage {
+    /// The linkages a build for `triple` can produce.
+    ///
+    /// `Static` links everywhere; the shared `waterui-dylib` runtime needs a
+    /// dynamic-image format that can carry the framework's exports. PE's
+    /// export table caps at 65,535 entries, so `*-windows-*` targets have
+    /// `Static` as their only linkage — the split into a chain of layer
+    /// images that stayed under the limit was dropped, unverifiable without
+    /// a Windows device (water-rs/waterui#3049).
+    #[must_use]
+    pub const fn supported_on(triple: &Triple) -> &'static [Self] {
+        match triple.operating_system {
+            OperatingSystem::Windows => &[Self::Static],
+            _ => &[Self::SharedRuntime, Self::Static],
+        }
+    }
+
+    /// Whether `triple` supports the shared-runtime linkage, and therefore
+    /// `waterui/dynamic_linking`.
+    #[must_use]
+    pub fn supports_shared_runtime(triple: &Triple) -> bool {
+        Self::supported_on(triple).contains(&Self::SharedRuntime)
+    }
+}
+
+/// Fail a build whose resolved graph enables `waterui/dynamic_linking` on a
+/// target with no shared-runtime linkage.
+///
+/// [`BuildOptions::with_supported_linkage`] resolves the requested linkage to
+/// [`RustLinkage::Static`] on such a target before this runs, so a resolved
+/// `dynamic_linking` is always the project's own request — the `dev` feature
+/// [`RustBuild::with_linkage`] turns on is never enabled there. Failing here
+/// names the request instead of compiling a runtime the target cannot load.
+///
+/// # Errors
+/// Returns an error when the managed crate's lock cannot be seeded, its
+/// graph cannot be resolved, or it enables `waterui/dynamic_linking`.
+pub(crate) async fn reject_unsupported_dynamic_linking(
+    project: &Project,
+    build_manifest: &Path,
+    triple: &Triple,
+) -> eyre::Result<()> {
+    if RustLinkage::supports_shared_runtime(triple) {
+        return Ok(());
+    }
+    crate::assets::seed_managed_crate_lock(project, build_manifest).await?;
+    if crate::assets::package_feature_enabled(
+        project,
+        build_manifest,
+        "waterui",
+        "dynamic_linking",
+        triple,
+    )
+    .await?
+    {
+        bail!(
+            "dynamic linking (`waterui/dynamic_linking`) is not supported on Windows; remove it from the Windows build"
+        );
+    }
+    Ok(())
+}
+
 /// Configure a Cargo invocation that compiles one of `WaterUI`'s generated crates.
 ///
 /// Incremental compilation is off for every one of these builds, unconditionally.
@@ -1212,6 +1274,25 @@ impl BuildOptions {
             key != "CARGO_PROFILE_RELEASE_PANIC" && key != "CARGO_PROFILE_RELEASE_LTO"
         });
         self
+    }
+
+    /// Narrow the requested linkage to what `triple` supports.
+    ///
+    /// [`development`](Self::development) requests the shared runtime for
+    /// rebuild speed, but a `*-windows-*` target has only the static linkage
+    /// (water-rs/waterui#3049), so the request resolves the way
+    /// [`with_static_runtime`](Self::with_static_runtime) resolves it.
+    /// Platform build entry points call this once, against the target the
+    /// build produces, so every downstream read of [`linkage`](Self::linkage)
+    /// — the target directory, `with_linkage`, feature selection — sees a
+    /// linkage the target can actually link.
+    #[must_use]
+    pub fn with_supported_linkage(self, triple: &Triple) -> Self {
+        if RustLinkage::supports_shared_runtime(triple) {
+            self
+        } else {
+            self.with_static_runtime()
+        }
     }
 
     /// Create options for a self-contained package build.
@@ -4031,6 +4112,110 @@ mod tests {
                 "packaging {profile:?} must ship the declared profile"
             );
         }
+    }
+
+    #[test]
+    fn windows_targets_have_only_the_static_linkage() {
+        let windows = triple("x86_64-pc-windows-msvc");
+        assert_eq!(RustLinkage::supported_on(&windows), [RustLinkage::Static]);
+        assert!(!RustLinkage::supports_shared_runtime(&windows));
+
+        // A development request narrows to static — and drops the
+        // shared-runtime panic/LTO profile overrides with it.
+        let options =
+            BuildOptions::development(BuildProfile::Profiling).with_supported_linkage(&windows);
+        assert_eq!(options.linkage(), RustLinkage::Static);
+        assert!(!options.cargo_envs().iter().any(|(key, _)| {
+            key == "CARGO_PROFILE_RELEASE_PANIC" || key == "CARGO_PROFILE_RELEASE_LTO"
+        }));
+
+        // A target with a shared runtime keeps the development request.
+        let linux = triple("x86_64-unknown-linux-gnu");
+        assert_eq!(
+            RustLinkage::supported_on(&linux),
+            [RustLinkage::SharedRuntime, RustLinkage::Static]
+        );
+        assert_eq!(
+            BuildOptions::development(BuildProfile::Debug)
+                .with_supported_linkage(&linux)
+                .linkage(),
+            RustLinkage::SharedRuntime
+        );
+    }
+
+    /// A crate fixture: `Cargo.toml` carrying `extra` plus an empty
+    /// `src/lib.rs`; returns the manifest path.
+    fn write_crate(dir: &Path, name: &str, extra: &str) -> PathBuf {
+        std::fs::create_dir_all(dir.join("src")).expect("crate src dir");
+        let manifest = dir.join("Cargo.toml");
+        std::fs::write(
+            &manifest,
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n{extra}"
+            ),
+        )
+        .expect("crate manifest");
+        std::fs::write(dir.join("src/lib.rs"), "").expect("crate source");
+        manifest
+    }
+
+    /// A Windows build fails when the resolved graph enables
+    /// `waterui/dynamic_linking` — the feature has no linkage to resolve
+    /// against there (water-rs/waterui#3049).
+    #[test]
+    fn windows_rejects_a_project_enabling_dynamic_linking() {
+        smol::block_on(async {
+            let directory = tempdir().expect("temp project");
+            write_crate(
+                &directory.path().join("waterui"),
+                "waterui",
+                "[features]\ndynamic_linking = []\n",
+            );
+            let backend_manifest = write_crate(
+                &directory.path().join("backend"),
+                "app-backend",
+                "[dependencies]\nwaterui = { path = \"../waterui\", features = [\"dynamic_linking\"] }\n\n[workspace]\n",
+            );
+
+            // The project the check resolves through, the way the assets
+            // tests' fixtures open one.
+            std::fs::write(
+                directory.path().join("Water.toml"),
+                "[package]\nname = \"fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n",
+            )
+            .expect("Water.toml");
+            std::fs::write(
+                directory.path().join("Cargo.toml"),
+                "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            )
+            .expect("Cargo.toml");
+            std::fs::create_dir_all(directory.path().join("src")).expect("src dir");
+            std::fs::write(directory.path().join("src/lib.rs"), "").expect("src lib");
+            let project = crate::project::Project::open(
+                &crate::toolchain::testing::real_toolchain_host(directory.path()),
+                directory.path(),
+                crate::project::ManagedBackends::NONE,
+            )
+            .await
+            .expect("fixture project opens");
+
+            let windows = triple("x86_64-pc-windows-msvc");
+            let error =
+                super::reject_unsupported_dynamic_linking(&project, &backend_manifest, &windows)
+                    .await
+                    .expect_err("a resolved dynamic_linking must fail on Windows");
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("waterui/dynamic_linking") && message.contains("Windows"),
+                "{message}"
+            );
+
+            // A target with a shared runtime never reaches the graph check.
+            let linux = triple("x86_64-unknown-linux-gnu");
+            super::reject_unsupported_dynamic_linking(&project, &backend_manifest, &linux)
+                .await
+                .expect("Linux keeps dynamic linking available");
+        });
     }
 
     #[test]
