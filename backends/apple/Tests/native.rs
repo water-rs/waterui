@@ -7613,9 +7613,10 @@ mod list_scroll {
 #[cfg(target_os = "ios")]
 mod navigation {
     use cocoa_ui::objc2_ui_kit::{
-        UIBarButtonItem, UINavigationController, UIView, UIViewController,
+        UIBarButtonItem, UIMutableTraits, UINavigationController, UISplitViewController,
+        UISplitViewControllerColumn, UIUserInterfaceSizeClass, UIView, UIViewController,
     };
-    use cocoa_ui::uikit::view_controller::owning_controller;
+    use cocoa_ui::uikit::view_controller::{enclosing_controller, owning_controller};
     use cocoa_ui::uikit::{NavContentController, NavPage};
     use cocoa_ui::{PlatformView, Retained, view};
     use waterui::Str;
@@ -7624,8 +7625,8 @@ mod navigation {
     use waterui::component::{ButtonStyle, button};
     use waterui::icon::SystemIcon;
     use waterui::navigation::{
-        NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
-        NavigationView, ToolbarItemIcon,
+        NavigationSplitView, NavigationStack, NavigationToolbar, NavigationToolbarItem,
+        NavigationToolbarPlacement, NavigationView, ToolbarItemIcon,
     };
     use waterui::prelude::text;
     use waterui::reactive::binding;
@@ -7715,7 +7716,128 @@ mod navigation {
                     Ok(())
                 },
             ),
+            libtest_mimic::Trial::test(
+                "navigation::a_split_detail_column_carries_navigation_item_chrome",
+                || {
+                    a_split_detail_column_carries_navigation_item_chrome();
+                    Ok(())
+                },
+            ),
         ]
+    }
+
+    /// The `UISplitViewController` a leaf's subtree lives under.
+    fn split_controller_in(view: &PlatformView) -> Option<Retained<UISplitViewController>> {
+        if let Some(controller) = enclosing_controller(view)
+            && let Ok(split) = controller.downcast()
+        {
+            return Some(split);
+        }
+        for sub in view::subviews(view) {
+            if let Some(found) = split_controller_in(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// A `NavigationSplitView` detail column is a stack-driven
+    /// `UINavigationController`: the page's chrome lands on
+    /// `navigationItem` — the `searchable` controller attaches, the
+    /// action's symbol is a real bar image, the large-title gate is open —
+    /// and `hidesBackButton` stays off, so a collapse onto compact pushes
+    /// the page with the platform's own back affordance. The bare
+    /// `NavContentController` column it replaces left the page drawing a
+    /// standalone in-content bar: no back button, a stacked search field,
+    /// an inline title and a hosted action drawn as an empty capsule
+    /// (water-rs/waterui#2717).
+    fn a_split_detail_column_carries_navigation_item_chrome() {
+        let selection = binding(Some(0_i32));
+        let query = binding(Str::default());
+        let leaf = resolve::render(NavigationSplitView::new(
+            &selection,
+            || text("sidebar"),
+            move |_id: i32| {
+                let mut item = NavigationToolbarItem::new(
+                    NavigationToolbarPlacement::PrimaryAction,
+                    button("").style(ButtonStyle::Plain),
+                );
+                item.icon = Some(ToolbarItemIcon::System(SystemIcon::new("plus")));
+                NavigationView::new("Today", text("detail"))
+                    .searchable(&query, "Search reminders")
+                    .navigation_toolbar(NavigationToolbar::new(vec![item]))
+            },
+        ));
+        let window = crate::leaf::attach(mtm(), leaf.view());
+        window.makeKeyAndVisible();
+        let split =
+            split_controller_in(leaf.view()).expect("the leaf mounts a UISplitViewController");
+        let detail_nav = split
+            .viewControllerForColumn(UISplitViewControllerColumn::Secondary)
+            .and_then(|controller| controller.downcast::<UINavigationController>().ok())
+            .expect("the detail column is a UINavigationController");
+        assert!(
+            detail_nav.navigationBar().prefersLargeTitles(),
+            "the column's bar leaves the large-title gate open"
+        );
+        let page = detail_nav
+            .topViewController()
+            .expect("the column stack has a root page");
+        let item = page.navigationItem();
+        assert!(
+            !item.hidesBackButton(),
+            "the column's root keeps the back affordance for the compact push"
+        );
+        assert!(
+            item.searchController().is_some(),
+            "the searchable field attaches as the item's search controller"
+        );
+        let trailing = item
+            .rightBarButtonItems()
+            .expect("the primary action is a bar item")
+            .objectAtIndex(0);
+        assert!(
+            trailing.image().is_some() && trailing.customView().is_none(),
+            "the action's symbol is the bar item's image, not a hosted view"
+        );
+
+        // Compact traits collapse the split: `UIKit` pushes the detail
+        // column's top page onto the sidebar's nav stack, where the
+        // platform's back button carries the return to the list.
+        split
+            .traitOverrides()
+            .setHorizontalSizeClass(UIUserInterfaceSizeClass::Compact);
+        let collapsed = pump_main_until(MAIN_QUEUE_DEADLINE, || split.isCollapsed());
+        assert!(collapsed, "compact traits collapse the split");
+        let sidebar_nav = split
+            .viewControllerForColumn(UISplitViewControllerColumn::Primary)
+            .and_then(|controller| controller.downcast::<UINavigationController>().ok())
+            .expect("the sidebar column stays a nav controller");
+        let pushed = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            sidebar_nav.viewControllers().count() == 2
+        });
+        assert!(
+            pushed,
+            "the collapsed split pushes the detail column onto the compact stack"
+        );
+        let top = sidebar_nav.topViewController().expect("a pushed column");
+        assert!(
+            core::ptr::eq(
+                Retained::as_ptr(&top).cast::<u8>(),
+                Retained::as_ptr(&detail_nav).cast::<u8>(),
+            ),
+            "the pushed column is the detail's own navigation stack"
+        );
+        assert!(
+            !top.navigationItem().hidesBackButton(),
+            "the pushed detail keeps the platform back button"
+        );
+        let bar_shown =
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !sidebar_nav.isNavigationBarHidden());
+        assert!(
+            bar_shown,
+            "the pushed column unhides the compact stack's bar for the back button"
+        );
     }
 
     /// The bar item's title as a plain string.
