@@ -2,12 +2,12 @@
 //!
 //! This module provides infrastructure for the `water preview` command:
 //!
-//! - [`apple`]: the in-process Apple preview binary (`AppKit` on macOS,
+//! - `apple`: the in-process Apple preview binary (`AppKit` on macOS,
 //!   `UIKit` through Mac Catalyst for `--platform ios`)
-//! - [`hydrolysis`]: the desktop Hydrolysis preview binary, and
+//! - `hydrolysis`: the desktop Hydrolysis preview binary, and
 //!   `hydrolysis_android`: the Android preview host's instrumentation
 //! - [`protocol`]: the `waterui_preview_*` export symbol naming
-//! - [`run`]: the `WATERUI_PREVIEW_RUN_CONFIG` channel every generated
+//! - `run`: the `WATERUI_PREVIEW_RUN_CONFIG` channel every generated
 //!   preview binary reads
 //! - [`request`]: Preview argument resolution shared by `water preview` and
 //!   the `water mcp` `preview` tool
