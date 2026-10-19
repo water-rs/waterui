@@ -37,7 +37,7 @@ use std::sync::{Arc, Mutex};
 
 use block2::RcBlock;
 use dispatch2::{DispatchQoS, DispatchQueue, GlobalQueueIdentifier, MainThreadBound};
-use objc2::Message;
+use objc2::{ClassType, Message};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_core_foundation::{CFRetained, CGAffineTransform};
@@ -1534,6 +1534,13 @@ fn has_unresolved_metal_layer(view: &PlatformView) -> bool {
     }
     let mut subview_layers = Vec::new();
     for subview in crate::view::subviews(view) {
+        // A hidden or fully transparent view renders nothing under
+        // `renderInContext` — the layers in its subtree are absent by
+        // design, not unresolved, and the scan skips the branch whole
+        // (the layer-level check covers layers hidden without a view).
+        if crate::view::is_hidden(&subview) || crate::view::alpha(&subview) <= 0.0 {
+            continue;
+        }
         if let Some(layer) = crate::layer::layer_of(&subview) {
             subview_layers.push(layer);
         }
@@ -1546,9 +1553,13 @@ fn has_unresolved_metal_layer(view: &PlatformView) -> bool {
 }
 
 /// Whether `layer` or a descendant sublayer is a `CAMetalLayer`; roots in
-/// `pruned` — the layers owned by subviews — cut the descent.
+/// `pruned` — the layers owned by subviews — cut the descent. A hidden or
+/// fully transparent layer renders nothing under `renderInContext`, so a
+/// Metal layer inside one is absent by design, not unresolved.
 fn metal_in_layer_tree(layer: &CALayer, pruned: &[Retained<CALayer>]) -> bool {
-    use objc2::ClassType;
+    if layer.isHidden() || layer.opacity() <= 0.0 {
+        return false;
+    }
     if layer.isKindOfClass(CAMetalLayer::class()) {
         return true;
     }
@@ -2190,6 +2201,32 @@ mod tests {
         assert!(metal_in_layer_tree(&outer, std::slice::from_ref(&nested)));
         let both = [nested, beside];
         assert!(!metal_in_layer_tree(&outer, &both));
+    }
+
+    /// A `CAMetalLayer` inside a hidden or fully transparent subtree
+    /// renders nothing under `renderInContext` — its absence is correct,
+    /// so the scan must not fail the capture over it (#2104).
+    #[test]
+    fn an_invisible_metal_layer_is_not_unresolved() {
+        use objc2_quartz_core::{CALayer, CAMetalLayer};
+        // A hidden Metal root is invisible on its own.
+        let hidden = CAMetalLayer::new();
+        hidden.setHidden(true);
+        assert!(!metal_in_layer_tree(&hidden, &[]));
+        // ...and so is a visible Metal layer under a hidden or
+        // fully-transparent ancestor.
+        let metal = CAMetalLayer::new();
+        let veiled = CALayer::new();
+        veiled.addSublayer(&metal);
+        veiled.setHidden(true);
+        assert!(!metal_in_layer_tree(&veiled, &[]));
+        veiled.setHidden(false);
+        veiled.setOpacity(0.0);
+        assert!(!metal_in_layer_tree(&veiled, &[]));
+        // Restoring visibility flags it again — the gate is visibility,
+        // not the layer type.
+        veiled.setOpacity(1.0);
+        assert!(metal_in_layer_tree(&veiled, &[]));
     }
 
     /// The failure type stays downcastable through `CaptureError::Failed`.
