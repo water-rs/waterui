@@ -90,9 +90,9 @@ permissions:
 # value is the complete report. The group is keyed by ref because a group
 # holds one running and one pending run — with a single global group a
 # dispatch on a topic branch queued behind the dev nightly, and the next
-# dispatch cancelled it (run 35281834319). Branch runs share the
-# `cargo-sources` registry archive read-only — no job here saves a cache,
-# so ref runs can never race a writer.
+# dispatch cancelled it (run 35281834319). No job here restores or saves
+# an Actions cache (see the cold-build note under `env`), so ref runs can
+# never race a writer.
 concurrency:
   group: apple-e2e-${{ github.ref }}
   cancel-in-progress: false
@@ -104,6 +104,10 @@ env:
   RUSTC_WRAPPER: ""
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # e2e lanes build fully cold: some of what they measure is cold compile
+  # time, so no job in this suite restores or saves any Actions cache (no
+  # rust-cache, `cargo-sources`, install-tool or apt archive) and none runs
+  # a compile wrapper (sccache, stow). Caching is for the everyday gates.
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   SHARD_TOTAL: 8
@@ -153,14 +157,6 @@ jobs:
           toolchain: stable
           cache: "false"
 
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes (source packages are toolchain-independent). No save and no
-      # `target` cache in this suite: a nightly compile must never evict
-      # the PR gate's compile cache from the shared 10 GB quota.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
-
       - name: Build the water CLI
         env:
           # The CLI's own target directory lives with its checkout in the
@@ -181,10 +177,9 @@ jobs:
   # capture shards the bundles as one tarball per group — the shards used to
   # each pay the same ~32-minute cold release build, sixteen times a night
   # for identical artifacts (#218), and the serial leg still packaged for
-  # ~90 of the run's ~102 minutes (#252). The legs share the
-  # `cargo-sources` archive read-only, so every leg still saves its source
-  # downloads and the matrix keeps its independent shard parallelism — no
-  # leg is a cache writer. A package failure fails here with the
+  # ~90 of the run's ~102 minutes (#252). Every leg builds cold (no
+  # Actions cache, see `env`) and the matrix keeps its independent shard
+  # parallelism. A package failure fails here with the
   # example's log tail, and the shards never start.
   build-ios:
     name: build-ios-${{ matrix.group.i }}
@@ -224,14 +219,6 @@ jobs:
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
-
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache (the old per-leg
-      # `~/.water/build_cache/target` writer is gone): a heavy leg must
-      # never evict the gate's compile cache.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
@@ -327,14 +314,6 @@ jobs:
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
-
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache (the old per-leg
-      # `~/.water/build_cache/target` writer is gone): a heavy leg must
-      # never evict the gate's compile cache.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
@@ -633,15 +612,11 @@ jobs:
           toolchain: stable
           targets: aarch64-apple-darwin
           cache: "false"
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache in this suite.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
-      - uses: ./.github/actions/install-tool
+      # install-action directly, not the cached install-tool wrapper: this
+      # suite keeps no Actions cache.
+      - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.145
-          path: ~/.cargo/bin/cargo-nextest*
       # cocoa-ui joins this same invocation: standalone Cocoa host
       # nextest/doc coverage transfers 1:1 onto the backend's graph.
       # `native-test` is waterui-apple's feature and forwards to
@@ -706,13 +681,6 @@ jobs:
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
-
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache (the old per-leg
-      # `~/.water/build_cache/target` writer is gone).
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
@@ -936,12 +904,6 @@ jobs:
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
-
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
