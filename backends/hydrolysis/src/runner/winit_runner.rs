@@ -720,9 +720,6 @@ pub fn run(
     let _ = env.get_or_insert_with::<MenuShortcutRegistry, _>(MenuShortcutRegistry::default);
     crate::theme::install_theme_tokens(&mut env, Some(&style));
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
-    env.insert(waterui_core::ViewRenderer::new(
-        crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
-    ));
     // The application's fonts, discovered once. Every window's renderer is
     // seeded from this collection, and a self-drawn component that typesets
     // text itself reads it out of the environment instead of enumerating the
@@ -775,6 +772,17 @@ pub fn run(
     );
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     super::menu_bar::register_menu_bar(&menu_bar, &env);
+    // The capture service mounts its subtree under a snapshot of the
+    // assembled environment — the theme tokens, hooks and font collection a
+    // window's subtree resolves — so it must be installed last
+    // (water-rs/waterui#2703).
+    env.insert(waterui_core::ViewRenderer::new(
+        crate::view_renderer::HydrolysisViewRenderer::new(
+            Rc::clone(&theme),
+            env.clone(),
+            FontFamilyResolution::Lenient,
+        ),
+    ));
     let mut runner = WinitRunner {
         env,
         theme,

@@ -724,9 +724,13 @@ jobs:
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
           echo "WATER_BIN=${{ github.workspace }}/cli-bin/bin/water" >> "$GITHUB_ENV"
 
-      - uses: taiki-e/install-action@v2
+      # Pinned to the same nextest the test lanes install: an unpinned spec
+      # made the version the run got depend on when the CDN answered, and a
+      # transient 5xx during the resolution was fatal (#1116).
+      - uses: ./.github/actions/install-tool
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest@0.9.145
+          path: ~/.cargo/bin/cargo-nextest*
 
       # The lane owns its simulator end to end: it resolves a concrete
       # device type and the newest iOS runtime out of the runner image's

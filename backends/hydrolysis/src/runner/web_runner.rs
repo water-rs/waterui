@@ -470,9 +470,6 @@ pub fn run(app: App, style: impl crate::Style) {
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         crate::theme::install_theme_tokens(&mut env, Some(&style));
         let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
-        ));
 
         // The application's fonts are fetched while the GPU adapter and device
         // are requested; neither waits on the other. The window's renderer is
@@ -507,6 +504,17 @@ pub fn run(app: App, style: impl crate::Style) {
         // backgrounds reach under the browser and system chrome around it.
         env.insert(crate::platform::WindowSafeArea(platform.safe_area()));
         fonts.collection().clone().install(&mut env);
+        // The capture service mounts its subtree under a snapshot of the
+        // assembled environment — the theme tokens, hooks and font
+        // collection a window's subtree resolves — so it must be installed
+        // last (water-rs/waterui#2703).
+        env.insert(waterui_core::ViewRenderer::new(
+            crate::view_renderer::HydrolysisViewRenderer::new(
+                Rc::clone(&theme),
+                env.clone(),
+                FontFamilyResolution::Lenient,
+            ),
+        ));
         let mut renderer = HydrolysisRenderer::with_engine(
             theme,
             SessionTextEngine::from_collection(fonts.collection(), FontFamilyResolution::Lenient),

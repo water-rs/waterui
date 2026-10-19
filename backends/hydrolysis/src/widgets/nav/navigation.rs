@@ -203,6 +203,28 @@ impl NavigationViewRenderState {
             .node()
             .expect("Hydrolysis navigation view content is prebuilt with the view")
     }
+
+    /// Consume the bar/content sub-views' layout-dirty marks: their measured
+    /// sizes feed the navigation view's, so an enclosing retained sub-view
+    /// must see them (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        let mut dirty = self.title.take_layout_dirty_if_built()
+            | self.subtitle.take_layout_dirty_if_built()
+            | self.content.take_layout_dirty_if_built();
+        for item in self
+            .principal
+            .iter_mut()
+            .chain(&mut self.leading)
+            .chain(&mut self.trailing)
+            .chain(&mut self.bottom)
+        {
+            dirty |= item.take_layout_dirty_if_built();
+        }
+        if let Some(search_field) = &mut self.search_field {
+            dirty |= search_field.take_layout_dirty_if_built();
+        }
+        dirty
+    }
 }
 
 impl HydroNativeView for Native<NavigationView> {
@@ -1040,6 +1062,21 @@ impl NavigationSplitRenderState {
     const fn is_three_column(&self) -> bool {
         self.content_builder.is_some()
     }
+
+    /// Consume the column sub-views' layout-dirty marks: their measured
+    /// sizes feed the split's, so an enclosing retained sub-view must see
+    /// them (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        let mut dirty = self.primary.take_layout_dirty_if_built()
+            | self.placeholder.take_layout_dirty_if_built();
+        if let Some((_, _, subview)) = self.content.as_mut() {
+            dirty |= subview.take_layout_dirty_if_built();
+        }
+        if let Some((_, _, subview)) = self.detail.as_mut() {
+            dirty |= subview.take_layout_dirty_if_built();
+        }
+        dirty
+    }
 }
 
 impl HydroNativeView for Native<NavigationSplitLayout> {
@@ -1795,6 +1832,17 @@ impl NavigationStackRenderState {
         self.background
             .clone()
             .expect("Hydrolysis navigation background must be resolved before rendering")
+    }
+
+    /// Consume the root page's layout-dirty marks: its measured size feeds
+    /// the stack's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957). Pushed pages' marks are consumed by their
+    /// own record pass — the stack's slot places them at its full size
+    /// either way.
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.root
+            .as_mut()
+            .is_some_and(crate::renderer::navigation_state::StackPage::take_layout_dirty_if_built)
     }
 }
 

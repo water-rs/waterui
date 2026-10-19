@@ -23,7 +23,7 @@
 //! re-dispatching the same screen from the `View` tree costs ~15ms.
 
 macro_rules! impl_widget_behavior {
-    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)? $(; surface: $surface:ident)? $(; page: $page:path)?) => {
+    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; dirty: $dirty:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)? $(; surface: $surface:ident)? $(; page: $page:path)?) => {
         impl WidgetBehavior for RefCell<$state> {
             $(fn priority(&self) -> i32 { $priority })?
 
@@ -49,6 +49,10 @@ macro_rules! impl_widget_behavior {
             ) -> ViewDimensions {
                 ($measure)(&self.borrow(), proposal, state, env, theme)
             }
+
+            $(fn take_layout_dirty(&self) -> bool {
+                self.borrow_mut().$dirty()
+            })?
 
             $(fn prepare(&self, renderer: &mut HydrolysisRenderer, env: &Environment) {
                 self.borrow_mut().$prepare(renderer, env);

@@ -42,6 +42,13 @@ impl BadgeRenderState {
     ) {
         self.content.ensure_built(renderer, env);
     }
+
+    /// Consume the content sub-view's layout-dirty marks: its measured size
+    /// feeds the badge's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.content.take_layout_dirty_if_built()
+    }
 }
 
 fn badge_content_size(
