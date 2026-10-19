@@ -479,6 +479,133 @@ fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
     );
 }
 
+/// A scope nested inside a transformed scope mounts correctly without
+/// `close_scope` touching it. `open_scope` callers supply
+/// `props.transform` in the *enclosing* scope's space (the contract
+/// `open_scope_with` documents — unlike `Run`/`Live`/`Chrome` items,
+/// which record in the node's space), and `props.clip` in the scope's
+/// own space, so the nested `Item::Scope` is already re-expressed at
+/// open time. The assertions mount the way `lower_scope` does — the
+/// inner layer's transform applied under the outer layer — and the
+/// composed result must land the content at its recorded position, each
+/// transform applied once.
+#[test]
+fn a_nested_scope_mounts_with_each_transform_applied_once() {
+    use crate::renderer::FrameSignals;
+    use crate::renderer::mount::program::Item;
+    use crate::renderer::mount::{
+        NodeCell, Placement, PlacementClock, ProgramBuilder, ScopeKey, ScopeProps,
+    };
+
+    let draw = chrome_draw(GLASS, GLASS_SHADER, Vec::new());
+    let material = cherenkov_record::Content::record_layered(
+        &cherenkov_record::LayoutSize::new(),
+        cherenkov_record::MaterialScope::SOLO,
+        |recorder| {
+            recorder.backdrop_material(
+                draw.shape.clone(),
+                draw.shader,
+                draw.capture,
+                draw.effect.clone(),
+            );
+        },
+    )
+    .runs
+    .into_iter()
+    .next()
+    .expect("the layered record carries the one material")
+    .material;
+
+    let outer = Affine::translate((30.0, 40.0));
+    let inner = Affine::translate((5.0, 6.0));
+    let recorded = Affine::translate((2.0, 3.0));
+    // What `open_scope_with` stores: the clip converted into the scope's
+    // own space at open time.
+    let clip = ShapeData::Rect(kurbo::Rect::new(0.0, 0.0, 10.0, 10.0));
+
+    let clock = PlacementClock::new();
+    let mut builder = ProgramBuilder::new(NodeCell::new(
+        FrameSignals::new(std::time::Instant::now()),
+        Placement::new(&clock),
+    ));
+    builder.open_scope(
+        ScopeKey {
+            role: "outer",
+            item: 0,
+        },
+        ScopeProps {
+            transform: outer,
+            clip: None,
+            alpha: 1.0,
+        },
+        Placement::new(&clock),
+    );
+    builder.open_scope(
+        ScopeKey {
+            role: "inner",
+            item: 1,
+        },
+        ScopeProps {
+            transform: inner,
+            clip: Some(clip.clone()),
+            alpha: 1.0,
+        },
+        Placement::new(&clock),
+    );
+    builder.push_chrome(material, recorded, true);
+    builder.close_scope();
+    builder.close_scope();
+    let program = builder.finish();
+
+    let [
+        Item::Scope {
+            props: outer_props,
+            items,
+            ..
+        },
+    ] = program.items.as_slice()
+    else {
+        panic!("the record is the one outer scope")
+    };
+    assert_eq!(outer_props.transform, outer);
+    let [
+        Item::Scope {
+            props: inner_props,
+            items,
+            ..
+        },
+    ] = items.as_slice()
+    else {
+        panic!("the outer scope holds the one inner scope")
+    };
+    assert_eq!(
+        inner_props.transform, inner,
+        "the nested scope's transform is already in the enclosing scope's space —          converting it through `into_scope` would apply the outer transform twice"
+    );
+    assert_eq!(
+        inner_props.clip.as_ref(),
+        Some(&clip),
+        "the nested scope's clip is already in its own space"
+    );
+    let [Item::Chrome(chrome)] = items.as_slice() else {
+        panic!("the inner scope holds the one member")
+    };
+    // The inner `close_scope` converted the member by the composed
+    // origin's inverse, (outer * inner)^-1.
+    assert_eq!(
+        chrome.transform,
+        (outer * inner).inverse() * recorded,
+        "items inside the nested scope land in the inner layer's space"
+    );
+    // Mounted: the inner layer's transform applies under the outer
+    // layer — every transform applied exactly once.
+    assert_eq!(
+        outer * inner_props.transform * chrome.transform,
+        recorded,
+        "the composed mount lands the member at its recorded position"
+    );
+}
+
 /// A re-flush of the same program rebinds the recorded terms onto the same
 /// member layer and the same group — no new layer, group or capture.
 #[test]
