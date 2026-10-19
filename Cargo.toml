@@ -703,3 +703,12 @@ waterui-math = { git = "https://github.com/water-rs/math", branch = "dev" }
 # `dev` implements 0.5's (water-rs/suiteki#29). Drop once a release carries
 # it.
 suiteki = { git = "https://github.com/water-rs/suiteki", branch = "dev" }
+# tree-sitter-md 0.5.3's wasm32 build compiles tree-sitter-language's
+# `wasm/unsupported/tree-sitter-0.26` shims, which #error against the
+# tree-sitter 0.27 this workspace carries — the grammar needs its build
+# adapted to 0.27, proposed upstream as
+# tree-sitter-grammars/tree-sitter-markdown#265 and unreleased. The patch
+# is that PR's branch on our own fork, so `markdown`/`flow-markdown` build
+# for the web (water-rs/waterui#1349). Drop it once a `tree-sitter-md`
+# release includes the fix.
+tree-sitter-md = { git = "https://github.com/lexoliu/tree-sitter-markdown", branch = "wasm-tree-sitter-0.27" }
