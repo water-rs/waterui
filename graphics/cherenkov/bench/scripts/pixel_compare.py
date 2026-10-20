@@ -7,14 +7,15 @@ Pixel-class device.
   pixel_compare.py run     --base B --head H --scene DIR... --out O
                            --engine E --workers N --cpus LIST --cluster-khz POLICY=KHZ...
   pixel_compare.py analyze O
+  pixel_compare.py quiet-limit O...
 
 `run` pushes both binaries and the scene directories, then measures every
 scene in rounds of base/head pairs: `base head` then `head base`, alternating,
 so neither arm always runs first. Each invocation is one `measure` process:
 `--rate 120 --energy --cpu 7`, the warmup and measured frame counts given, and
 `--native W×H` (width `--width`, the scene's own aspect) for scenes under a
-`perf/` directory. Every completed report is kept; nothing is retried or
-dropped.
+`perf/` directory. Every completed report is kept and nothing is dropped;
+only the quiet gate below reruns an invocation.
 
 A GPU's busy time at a given workload scales with its clock, and the default
 GPU governor picks the clock from recent utilization: a fresh process, a
@@ -65,6 +66,19 @@ Controls, checked for every invocation and recorded with it:
 - after: pinned policy ranges and CPU frequency residency over the workload,
   followed by restoration of every original property and sysfs value.
 
+Other processes take CPU time from a run's frames, most of all when the
+workers hold every CPU. The device supervisor therefore snapshots every
+process's cumulative CPU time (`/proc/PID/stat`) and the uptime just before
+it starts the workload and just after it reaps it, so the snapshots cost the
+frames nothing. Each run records the other processes' CPU per second of that
+window and the processes that used the most (`quiet` in `runs.jsonl`). With
+`--quiet-limit MS_PER_S`, a run above the limit is rerun as `RUN_ID-rN`: the
+loud run and its report stay on disk, are logged as rejected and reported by
+`analyze`, which decides on the accepted runs. A slot still loud after
+`--quiet-attempts` runs stops the collection. `quiet-limit O...` derives the
+limit from collections of quiet runs: their median plus three robust
+standard deviations (1.4826 × the median absolute deviation).
+
 A failed control marks the invocation invalid and stops the collection:
 `analyze` reports a scene with an invalid invocation as `invalid`, never as
 a pass, and the raw report stays on disk.
@@ -104,7 +118,8 @@ thread's message handoff and the frame's work outside the three phases.
 
 `analyze` needs from a collection only `plan.json` (`scenes`, `rounds`,
 `frames`, `warmup`, `metrics`, `engine`, `clocks`), `control.json`
-(`completed`), `runs.jsonl` and the reports, so a collector for another
+(`completed`), `runs.jsonl` (each row's `rejected` and `quiet`) and the
+reports, so a collector for another
 device can write the same layout and be judged by the same rule.
 """
 
@@ -177,6 +192,9 @@ CONTROL = "control.json"
 RUNS = "runs.jsonl"
 RATE_HZ = 120
 BOOTSTRAP_RESAMPLES = 2000
+# How far above the quiet runs' median, in robust standard deviations, the
+# other processes' CPU of a run may lie before it is rerun.
+QUIET_SIGMAS = 3
 # The GPU engine's measuring CPU.
 CPU = 7
 # CoolingDevice types of `android.os.CoolingDevice`: CPU and GPU.
@@ -226,6 +244,100 @@ def cpu_list(text: str) -> list[int]:
         low, _, high = part.partition("-")
         cpus.update(range(int(low), int(high or low) + 1))
     return sorted(cpus)
+
+
+class Process(typing.NamedTuple):
+    """One line of `/proc/PID/stat`: its parent, its name, the CPU ticks it
+    spent itself and the ticks its reaped children spent."""
+    pid: int
+    ppid: int
+    comm: str
+    own: int
+    children: int
+
+
+def processes(text: str) -> dict[tuple[int, int], Process]:
+    """Every process of a `cat /proc/[0-9]*/stat`, keyed by pid and start
+    time so that a reused pid is a different process."""
+    out = {}
+    for line in text.splitlines():
+        head, _, rest = line.rpartition(")")
+        pid, _, comm = head.partition(" (")
+        fields = rest.split()
+        utime, stime, cutime, cstime = map(int, fields[11:15])
+        out[int(pid), int(fields[19])] = Process(int(pid), int(fields[1]), comm,
+                                                 utime + stime, cutime + cstime)
+    return out
+
+
+def uptime(text: str) -> float:
+    """Uptime seconds from a `cat /proc/uptime /proc/stat`; the per-CPU
+    counters after it are kept as raw evidence only."""
+    return float(text.split(maxsplit=1)[0])
+
+
+def outside_cpu(directory: Path, tick_hz: int) -> dict[str, Any]:
+    """What ran beside the workload over its supervised window, from the
+    supervisor's before and after snapshots.
+
+    The workload starts after the first snapshot and is reaped by the
+    supervisor before the second, so its CPU time is in neither: it lands in
+    the supervisor's reaped-children counter, which is reported as the
+    workload's and never counted as other. The supervisor's own time (its
+    temperature polling) is counted as other: it runs beside every frame.
+    Its other children (`sleep`, the snapshot `cat`) are excluded.
+
+    Other processes' CPU is the change of their own and reaped-children time;
+    a process born in the window counts whole. A process that exits in the
+    window disappears, and its whole lifetime then reaches an ancestor's
+    reaped-children time, so its time before the window is taken back there.
+    The gate's quantity is that total per second of the window."""
+    supervisor = int((directory / "supervisor-pid").read_text())
+    before, after = ({key: proc for key, proc in
+                      processes((directory / f"processes-{moment}").read_text()).items()
+                      if proc.ppid != supervisor}
+                     for moment in ("before", "after"))
+    window = (uptime((directory / "system-after").read_text())
+              - uptime((directory / "system-before").read_text()))
+    # A process that exited in the window carries its time before the window
+    # into the reaped-children time of its nearest ancestor still alive. A
+    # parent that does not wait for its children (kthreadd, a SIGCHLD-ignoring
+    # daemon) receives nothing, so that ancestor's children delta bounds what
+    # is taken back from it, and an exit's time inside the window is then
+    # unknown and counts as none.
+    alive = {proc.pid: key for key, proc in after.items() if key in before}
+    by_pid = {proc.pid: proc for proc in before.values()}
+    earlier: dict[tuple[int, int], int] = {}
+    for key, proc in before.items():
+        if key in after:
+            continue
+        parent = proc.ppid
+        while parent not in alive and parent in by_pid:
+            parent = by_pid[parent].ppid
+        if parent in alive:
+            earlier[alive[parent]] = earlier.get(alive[parent], 0) + proc.own + proc.children
+    other: dict[tuple[int, int], int] = {}
+    workload = 0
+    for key, proc in after.items():
+        if key not in before:
+            other[key] = proc.own + proc.children
+            continue
+        own = proc.own - before[key].own
+        children = proc.children - before[key].children
+        if proc.pid == supervisor:
+            workload, other[key] = children, own
+        else:
+            other[key] = own + max(0, children - earlier.get(key, 0))
+    names = {key: proc.comm for key, proc in (before | after).items()}
+    total = sum(other.values()) / tick_hz
+    return {
+        "window_seconds": window,
+        "other_cpu_seconds": total,
+        "other_ms_per_s": total * 1000 / window,
+        "workload_cpu_seconds": workload / tick_hz,
+        "top": [[names[key], key[0], ticks / tick_hz] for key, ticks in
+                sorted(other.items(), key=lambda item: -item[1])[:8] if ticks > 0],
+    }
 
 
 class Clocks:
@@ -402,6 +514,7 @@ class Session:
         self.remote = f"/data/local/tmp/pixel-compare-{self.out.name}"
         self.performance = PerformanceControls(self.device, self.clocks, self.pinned, args.battery_c)
         self.device_runs: dict[str, dict[str, Any]] = {}
+        self.tick_hz = int(self.device.adb("shell", "getconf CLK_TCK"))
 
     def policy_of(self, cpu: int) -> str:
         return self.device.root(f"readlink -f /sys/devices/system/cpu/cpu{cpu}/cpufreq").strip(
@@ -449,6 +562,8 @@ class Session:
             "metrics": metrics, "policies": policies,
             "clocks": "governor" if self.pinned is None else self.pinned,
             "battery_c": args.battery_c, "serial": args.serial,
+            "tick_hz": self.tick_hz, "quiet_limit_ms_per_s": args.quiet_limit,
+            "quiet_attempts": args.quiet_attempts,
             "script_sha256": sha256(Path(__file__)),
             "supervisor_sha256": sha256(Path(__file__).with_name("pixel_run.sh")),
             "physical_temperature_limits": self.performance.sensors,
@@ -569,17 +684,30 @@ class Session:
                 for pair in range(self.args.rounds):
                     order = ("base", "head") if pair % 2 == 0 else ("head", "base")
                     for side in order:
-                        self.invocation(scene, pair, side)
+                        self.quiet_invocation(scene, pair, side)
             control["completed"] = True
         finally:
             self.device.root(f"rm -r {self.remote}")
             control["restored"] = self.clocks.state()
             save(self.out / CONTROL, control)
 
-    def invocation(self, scene: dict[str, Any], pair: int, side: str) -> None:
+    def quiet_invocation(self, scene: dict[str, Any], pair: int, side: str) -> None:
+        """Measures one invocation until other processes stayed within
+        `--quiet-limit` over its window. A run beyond it is kept, logged as
+        rejected and measured again; a run still beyond it after
+        `--quiet-attempts` stops the collection."""
+        for attempt in range(self.args.quiet_attempts):
+            run_id = f"{scene['name']}-p{pair}-{side}" + (f"-r{attempt}" if attempt else "")
+            if not self.invocation(scene, pair, side, run_id, attempt):
+                return
+        raise ControlError(f"{scene['name']}-p{pair}-{side}: other processes exceeded "
+                           f"{self.args.quiet_limit} ms/s in {self.args.quiet_attempts} attempts")
+
+    def invocation(self, scene: dict[str, Any], pair: int, side: str, run_id: str,
+                   attempt: int) -> bool:
         """Measures one invocation between its controls and logs it; a
-        failed control stops the collection."""
-        run_id = f"{scene['name']}-p{pair}-{side}"
+        failed control stops the collection. Returns whether the quiet gate
+        rejected the run."""
         before = self.snapshot()
         local = self.measure(scene, side, run_id)
         directory = self.out / f"{run_id}-control"
@@ -610,15 +738,20 @@ class Session:
                 other = {k: v for k, v in residency.get(name, {}).items() if k != khz and v}
                 if other:
                     failures.append(f"{name} left {khz} kHz: {other}")
+        quiet = outside_cpu(directory, self.tick_hz)
+        limit = self.args.quiet_limit
+        rejected = limit is not None and quiet["other_ms_per_s"] > limit
         record = {"scene": scene["name"], "pair": pair, "side": side, "run_id": run_id,
-                  "report_sha256": sha256(local), "before": before, "after": after,
-                  "failures": failures}
+                  "attempt": attempt, "report_sha256": sha256(local), "before": before,
+                  "after": after, "quiet": quiet, "rejected": rejected, "failures": failures}
         with (self.out / RUNS).open("a") as stream:
             stream.write(json.dumps(record) + "\n")
-        print("RUN", run_id, "invalid: " + "; ".join(failures) if failures else "valid",
-              flush=True)
+        state = "invalid: " + "; ".join(failures) if failures else "valid"
+        print("RUN", run_id, state, f"other {quiet['other_ms_per_s']:.1f} ms/s",
+              "rejected, rerun" if rejected else "", flush=True)
         if failures:
             raise ControlError(f"{run_id}: {'; '.join(failures)}")
+        return rejected
 
 
 
@@ -690,8 +823,13 @@ def analyze(out: Path, limit_percent: float, budget_ms: float) -> dict[str, Any]
     result: dict[str, Any] = {"plan": plan, "completed": control["completed"], "scenes": {}}
     for scene in plan["scenes"]:
         name = scene["name"]
-        rows = [r for r in runs if r["scene"] == name]
-        entry: dict[str, Any] = {"runs": len(rows)}
+        rows = [r for r in runs if r["scene"] == name and not r["rejected"]]
+        entry: dict[str, Any] = {
+            "runs": len(rows),
+            "rejected_runs": [{"run_id": r["run_id"], "other_ms_per_s": r["quiet"]["other_ms_per_s"],
+                               "top": r["quiet"]["top"]}
+                              for r in runs if r["scene"] == name and r["rejected"]],
+            "other_ms_per_s": {r["run_id"]: r["quiet"]["other_ms_per_s"] for r in rows}}
         expected = 2 * plan["rounds"]
         invalid = [r["run_id"] for r in rows if r["failures"]]
         if invalid or len(rows) != expected:
@@ -739,6 +877,27 @@ def analyze(out: Path, limit_percent: float, budget_ms: float) -> dict[str, Any]
     return result
 
 
+def quiet_limit(collections: list[Path]) -> dict[str, Any]:
+    """The `--quiet-limit` the runs of `collections` support: the median of
+    their other-process CPU per second plus `QUIET_SIGMAS` robust standard
+    deviations (1.4826 × the median absolute deviation), so a run of the
+    background these runs saw passes and a burst beyond it does not. Each
+    run is re-read from its raw snapshots."""
+    rates = {}
+    for out in collections:
+        plan = json.loads((out / PLAN).read_text())
+        for line in (out / RUNS).read_text().splitlines():
+            row = json.loads(line)
+            if row["failures"]:
+                continue
+            rates[f"{out.name}/{row['run_id']}"] = outside_cpu(
+                out / f"{row['run_id']}-control", plan["tick_hz"])["other_ms_per_s"]
+    median = statistics.median(rates.values())
+    sigma = 1.4826 * statistics.median(abs(r - median) for r in rates.values())
+    return {"runs": rates, "median_ms_per_s": median, "robust_sigma_ms_per_s": sigma,
+            "limit_ms_per_s": median + QUIET_SIGMAS * sigma}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -765,6 +924,10 @@ def main() -> None:
     run.add_argument("--width", type=int, default=1280)
     run.add_argument("--run-seconds", type=int, default=300)
     run.add_argument("--battery-c", type=float, default=45.0)
+    run.add_argument("--quiet-limit", type=float, metavar="MS_PER_S")
+    run.add_argument("--quiet-attempts", type=int, default=3)
+    limit = commands.add_parser("quiet-limit")
+    limit.add_argument("collections", type=Path, nargs="+")
     report = commands.add_parser("analyze")
     report.add_argument("out", type=Path)
     report.add_argument("--limit-percent", type=float, default=2.0)
@@ -794,10 +957,20 @@ def main() -> None:
         if shutil.which("adb") is None:
             parser.error("adb is not on PATH")
         Session(args).run()
+    elif args.command == "quiet-limit":
+        derived = quiet_limit(args.collections)
+        for run_id, rate in sorted(derived["runs"].items(), key=lambda item: item[1]):
+            print(f"{run_id}: {rate:.1f} ms/s")
+        print(f"median {derived['median_ms_per_s']:.1f} ms/s, robust sigma "
+              f"{derived['robust_sigma_ms_per_s']:.1f} ms/s: --quiet-limit "
+              f"{derived['limit_ms_per_s']:.0f}")
     else:
         result = analyze(args.out, args.limit_percent, args.budget_ms)
         save(args.out / "analysis.json", result)
         for name, entry in result["scenes"].items():
+            for rejected in entry["rejected_runs"]:
+                print(f"{name}: {rejected['run_id']} rejected and rerun, other processes "
+                      f"{rejected['other_ms_per_s']:.1f} ms/s")
             if "metrics" not in entry:
                 print(f"{name}: {entry['verdict']}")
                 continue

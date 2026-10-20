@@ -106,6 +106,7 @@ def collection(out, scenes, rounds=4, frames=40, cycles=None, cpu=None):
                 save(report, {'warmup_frames': 10, 'samples': samples})
                 rows.append({'scene': name, 'pair': pair, 'side': side, 'run_id': run_id,
                              'report_sha256': hashlib.sha256(report.read_bytes()).hexdigest(),
+                             'quiet': {'other_ms_per_s': 100.0, 'top': []}, 'rejected': False,
                              'failures': []})
     (out / pixel_compare.RUNS).write_text(''.join(json.dumps(r) + '\n' for r in rows))
 
@@ -202,11 +203,122 @@ class Analyze(unittest.TestCase):
             for value in (p50, p99, worst):
                 self.assertAlmostEqual(value, 0.1, delta=1e-9)
 
+    def test_a_rejected_run_is_reported_and_left_out_of_the_decision(self):
+        # The rejected first attempt of p0-head ran 30% slow; its rerun is
+        # the slot's run, so identical arms still pass.
+        with tempfile.TemporaryDirectory() as dir:
+            out = pathlib.Path(dir)
+            collection(out, {'full': [(4.0, 4.0)] * 4})
+            slow = out / 'full-p0-head.json'
+            rerun = out / 'full-p0-head-r1.json'
+            slow.rename(rerun)
+            pixel_compare.save(slow, {'warmup_frames': 10,
+                                      'samples': [{'gpu_seconds': 0.0052}] * 40})
+            rows = [json.loads(line) for line in (out / pixel_compare.RUNS).read_text().splitlines()]
+            for row in rows:
+                if row['run_id'] == 'full-p0-head':
+                    row['run_id'] = 'full-p0-head-r1'
+            rows.insert(0, {'scene': 'full', 'pair': 0, 'side': 'head', 'run_id': 'full-p0-head',
+                            'report_sha256': hashlib.sha256(slow.read_bytes()).hexdigest(),
+                            'quiet': {'other_ms_per_s': 400.0, 'top': [['dex2oat64', 812, 3.1]]},
+                            'rejected': True, 'failures': []})
+            (out / pixel_compare.RUNS).write_text(''.join(json.dumps(r) + '\n' for r in rows))
+            entry = pixel_compare.analyze(out, LIMIT, 1000 / pixel_compare.RATE_HZ)['scenes']['full']
+        self.assertEqual(entry['verdict'], 'pass')
+        self.assertEqual(entry['runs'], 8)
+        self.assertEqual([r['run_id'] for r in entry['rejected_runs']], ['full-p0-head'])
+        self.assertEqual(entry['rejected_runs'][0]['other_ms_per_s'], 400.0)
+        self.assertNotIn('full-p0-head', entry['other_ms_per_s'])
+
     def test_a_frame_without_the_shade_phase_is_an_error(self):
         sample = cpu_sample(10.0, 0.5)
         sample['phases'] = sample['phases'][:2]
         with self.assertRaises(SystemExit):
             pixel_compare.METRICS['shade'][1](sample)
+
+
+def stat(pid, comm, ppid, own, children=0, start=1000):
+    """A `/proc/PID/stat` line: `own` ticks as utime (with stime 0) and
+    `children` as cutime (with cstime 0)."""
+    return (f'{pid} ({comm}) S {ppid} {pid} {pid} 0 -1 4194560 0 0 0 0 {own} 0 {children} 0 '
+            f'20 0 1 0 {start} 0 0 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 7 0 0 0 0 0\n')
+
+
+def proc_stat(uptime):
+    """`cat /proc/uptime /proc/stat` on a one-CPU device."""
+    return f'{uptime} 1.00\ncpu  0 0 0 0 0 0 0 0 0 0\ncpu0 0 0 0 0 0 0 0 0 0 0\nintr 0\n'
+
+
+class OutsideCpu(unittest.TestCase):
+    """The quiet gate's accounting of what ran beside the workload. The
+    supervisor is pid 50; its workload, its `sleep` and its snapshot `cat`
+    are its children."""
+
+    def measure(self, before, after, seconds=10.0):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp)
+            (path / 'supervisor-pid').write_text('50\n')
+            (path / 'processes-before').write_text(''.join(before))
+            (path / 'processes-after').write_text(''.join(after))
+            (path / 'system-before').write_text(proc_stat(100.0))
+            (path / 'system-after').write_text(proc_stat(100.0 + seconds))
+            return pixel_compare.outside_cpu(path, 100)
+
+    def test_other_processes_count_and_the_workload_does_not(self):
+        quiet = self.measure(
+            [stat(1, 'init', 0, 500, 900), stat(50, 'sh', 40, 10, 5), stat(51, 'cat', 50, 1),
+             stat(300, 'system_server', 1, 7000)],
+            # The workload's 900 ticks reached the supervisor's children
+            # counter; it polled for 20 ticks itself. A `sleep` child shows.
+            [stat(1, 'init', 0, 500, 900), stat(50, 'sh', 40, 30, 905),
+             stat(60, 'sleep', 50, 0), stat(300, 'system_server', 1, 7080)])
+        self.assertAlmostEqual(quiet['workload_cpu_seconds'], 9.0)
+        self.assertAlmostEqual(quiet['other_cpu_seconds'], 1.0)
+        self.assertAlmostEqual(quiet['other_ms_per_s'], 100.0)
+        self.assertEqual([name for name, *_ in quiet['top']], ['system_server', 'sh'])
+
+    def test_a_process_born_in_the_window_counts_whole(self):
+        quiet = self.measure([stat(50, 'sh', 40, 0)],
+                             [stat(50, 'sh', 40, 0), stat(70, 'dex2oat64', 1, 300, 20)])
+        self.assertAlmostEqual(quiet['other_cpu_seconds'], 3.2)
+        self.assertEqual(quiet['top'], [['dex2oat64', 70, 3.2]])
+
+    def test_an_exit_counts_only_its_time_inside_the_window(self):
+        # 80 exits after 30 ticks in the window; its 1000-tick lifetime
+        # reaches 1's children counter.
+        quiet = self.measure(
+            [stat(1, 'init', 0, 0, 0), stat(50, 'sh', 40, 0), stat(80, 'logd', 1, 970)],
+            [stat(1, 'init', 0, 0, 1000), stat(50, 'sh', 40, 0)])
+        self.assertAlmostEqual(quiet['other_cpu_seconds'], 0.3)
+
+    def test_an_exit_no_parent_waits_for_takes_nothing_back(self):
+        # A kworker exits: kthreadd never accumulates it, so the exit's time
+        # inside the window is unknown and nothing goes negative.
+        quiet = self.measure(
+            [stat(2, 'kthreadd', 0, 0, 0), stat(50, 'sh', 40, 0),
+             stat(81, 'kworker/7:0-events', 2, 67), stat(300, 'system_server', 1, 10)],
+            [stat(2, 'kthreadd', 0, 0, 0), stat(50, 'sh', 40, 0),
+             stat(300, 'system_server', 1, 30)])
+        self.assertAlmostEqual(quiet['other_cpu_seconds'], 0.2)
+
+    def test_an_exit_under_an_exited_parent_reaches_the_living_ancestor(self):
+        # 82 forks 83; both exit in the window and init reaps both lifetimes.
+        quiet = self.measure(
+            [stat(1, 'init', 0, 0, 0), stat(50, 'sh', 40, 0),
+             stat(82, 'dumpstate', 1, 100), stat(83, 'dumpsys', 82, 40)],
+            [stat(1, 'init', 0, 0, 100 + 10 + 40 + 5), stat(50, 'sh', 40, 0)])
+        self.assertAlmostEqual(quiet['other_cpu_seconds'], 0.15)
+
+    def test_a_reused_pid_is_a_different_process(self):
+        quiet = self.measure(
+            [stat(1, 'init', 0, 0, 0), stat(50, 'sh', 40, 0), stat(90, 'old', 1, 400, start=10)],
+            [stat(1, 'init', 0, 0, 400), stat(50, 'sh', 40, 0), stat(90, 'new', 1, 50, start=20)])
+        self.assertAlmostEqual(quiet['other_cpu_seconds'], 0.5)
+
+    def test_a_name_with_spaces_and_parentheses_parses(self):
+        procs = pixel_compare.processes(stat(7, 'kworker/u16:2 (x) y', 2, 42, 3))
+        self.assertEqual(procs[7, 1000],
+                         pixel_compare.Process(7, 2, 'kworker/u16:2 (x) y', 42, 3))
 
 
 class CpuList(unittest.TestCase):

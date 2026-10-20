@@ -184,6 +184,16 @@ record_clocks() {
 }
 record_clocks before || exit 1
 
+# Every process's cumulative CPU time and every CPU's tick counters, taken
+# outside the workload's lifetime so they cost its frames nothing. A process
+# that exits while `cat` walks the glob makes it fail; the rest is kept.
+snapshot_processes() {
+    cat /proc/uptime /proc/stat > "$out/system-$1" || return 1
+    cat /proc/[0-9]*/stat > "$out/processes-$1" 2>/dev/null
+    [ -s "$out/processes-$1" ]
+}
+snapshot_processes before || exit 1
+
 # A separate process group allows cleanup to stop exactly this workload tree.
 setsid "$@" &
 worker=$!
@@ -201,5 +211,6 @@ done
 wait "$worker"
 result=$?
 worker=
+snapshot_processes after || exit 1
 record_clocks after || exit 1
 exit "$result"
