@@ -105,12 +105,28 @@ fn capture_environment() -> Environment {
 
 impl Capture {
     fn start(view: AnyView, content_deadline: Duration) -> Self {
+        Self::start_under(
+            view,
+            content_deadline,
+            capture_environment(),
+            FontFamilyResolution::Lenient,
+        )
+    }
+
+    /// `start` under a caller-assembled environment and family-resolution
+    /// mode — the knobs a test over the capture's text engine varies.
+    fn start_under(
+        view: AnyView,
+        content_deadline: Duration,
+        env: Environment,
+        family_resolution: FontFamilyResolution,
+    ) -> Self {
         let executor = HeadlessMainThreadExecutor::thread_shared();
         let _ = executor_core::try_init_local_executor(executor.clone());
         let renderer = HydrolysisViewRenderer::new(
             Rc::new(MinimalTestTheme::default()),
-            capture_environment(),
-            FontFamilyResolution::Lenient,
+            env,
+            family_resolution,
         );
         let result: Rc<RefCell<Option<Result<RenderResult, RenderError>>>> = Rc::default();
         executor_core::spawn_local({
@@ -227,4 +243,55 @@ fn a_capture_reports_a_failed_load() {
         core::error::Error::source(&error).map(ToString::to_string),
         Some("decode failed".into())
     );
+}
+
+/// water-rs/waterui#1963: the capture's text engine shapes against the
+/// [`FontCollection`] the mounted environment carries — the collection the
+/// runner built from the app's resources — so a family registered only
+/// into it resolves in a capture exactly as it would in a window. Under
+/// [`FontFamilyResolution::Strict`] a named family the collection does not
+/// carry fails the shape naming it, so a capture built on a fresh system
+/// context — the defect, which never saw the registration — panics where
+/// the installed collection resolves.
+#[test]
+fn a_capture_shapes_against_the_environments_font_collection() {
+    use waterui::prelude::text;
+    use waterui_text::font::{Body, Font};
+
+    // A family no host carries: a fixture face registered into the
+    // collection under a synthetic name, in a collection that cannot fall
+    // back on system discovery — the name resolves only through this one.
+    const CAPTURE_FAMILY: &str = "HydrolysisCaptureOnlyFamily";
+    let mut font_cx = parley::FontContext {
+        collection: parley::fontique::Collection::new(parley::fontique::CollectionOptions {
+            system_fonts: false,
+            ..parley::fontique::CollectionOptions::default()
+        }),
+        source_cache: parley::fontique::SourceCache::default(),
+    };
+    let registered = font_cx.collection.register_fonts(
+        parley::fontique::Blob::new(std::sync::Arc::new(
+            crate::text::fonts::installed_font_bytes("Pacifico").to_vec(),
+        )),
+        Some(parley::fontique::FontInfoOverride {
+            family_name: Some(CAPTURE_FAMILY),
+            ..parley::fontique::FontInfoOverride::default()
+        }),
+    );
+    assert!(
+        !registered.is_empty(),
+        "the fixture face failed to register into the capture's collection"
+    );
+    let mut env = crate::renderer::tests::pumped_test_environment();
+    waterui_text::FontCollection::new(font_cx).install(&mut env);
+
+    let capture = Capture::start_under(
+        AnyView::new(text("glyphs").font(Font::new(Body).family(CAPTURE_FAMILY))),
+        Duration::from_secs(30),
+        env,
+        FontFamilyResolution::Strict,
+    );
+    capture
+        .finish()
+        .expect("a family registered into the environment's collection resolves under Strict");
 }
