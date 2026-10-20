@@ -257,10 +257,7 @@ fn bounds(
                 else {
                     continue;
                 };
-                (
-                    *local * Affine::scale(f64::from(*size)),
-                    decoded.em,
-                )
+                (*local * Affine::scale(f64::from(*size)), decoded.em)
             }
             Op::BeginShadow { parameters, .. } => {
                 let margin = 6.0_f64.mul_add(parameters.sigma, parameters.spread.max(0.0));

@@ -4529,8 +4529,7 @@ impl<'a> Lowering<'a> {
             strike,
             glyph: glyph_id,
         };
-        let (em, width, height, sampling_flags) = if let Some(bitmap) = glyphs.bitmaps.get(&key)
-        {
+        let (em, width, height, sampling_flags) = if let Some(bitmap) = glyphs.bitmaps.get(&key) {
             let image = &bitmap.image;
             (bitmap.em, image.width, image.height, image.sampling_flags)
         } else if let Some(found) = self.pending.iter().find_map(|raster| {
