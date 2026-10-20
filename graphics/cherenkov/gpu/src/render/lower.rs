@@ -4206,7 +4206,6 @@ impl<'a> Lowering<'a> {
         let transform = self.transform;
         self.transform = raster;
         self.emit_gpu_path(
-            content,
             *rule,
             prepared,
             paint,
@@ -4952,7 +4951,6 @@ impl<'a> Lowering<'a> {
         // from the CPU atlas, so it decides before the hit checks.
         if self.has_compute && self.coverage_route == path::CoverageRoute::Gpu {
             self.path_gpu(
-                content,
                 rule,
                 &shader_path.unwrap_or_else(|| make.take().expect("path factory")()),
                 paint,
@@ -5075,11 +5073,11 @@ impl<'a> Lowering<'a> {
     /// The GPU coverage route of issue #2543: the path's curve elements
     /// go into a pending compute record untouched by the CPU — the
     /// coverage kernels flatten, bin and classify them on device and
-    /// write the same span/cell emission the CPU route's `replay` would,
-    /// into the instance buffer's tail behind indirect arguments.
+    /// write compact geometry records into the path's coverage-arena
+    /// block, which the draw's anchor joins in the vertex stage
+    /// (water-rs/waterui#3081).
     fn path_gpu(
         &mut self,
-        content: u64,
         rule: FillRule,
         local: &BezPath,
         paint: &ResolvedPaint,
@@ -5091,13 +5089,12 @@ impl<'a> Lowering<'a> {
             self.transform,
             (f64::from(surface.0), f64::from(surface.1)),
         );
-        self.emit_gpu_path(content, rule, prepared, paint, shader_data, surface);
+        self.emit_gpu_path(rule, prepared, paint, shader_data, surface);
     }
 
     /// Consume the same encoded path whose bounds the route selector inspected.
     fn emit_gpu_path(
         &mut self,
-        content: u64,
         rule: FillRule,
         prepared: path::GpuPath,
         paint: &ResolvedPaint,
@@ -5123,14 +5120,11 @@ impl<'a> Lowering<'a> {
         if let Some(open) = &mut self.frame.open {
             open.seg_start = anchor + 1;
         }
-        let template = Box::new(template);
         let pending = u32::try_from(self.pending.len()).expect("pending count fits u32");
         self.pending.push(PendingRaster::GpuPath {
-            content,
             rule: rule as u32,
             raster: self.transform,
             surface,
-            template,
             path: prepared,
         });
         self.push_gpu_range(pending);

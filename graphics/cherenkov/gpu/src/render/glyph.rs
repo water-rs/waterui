@@ -2220,13 +2220,13 @@ pub enum PendingRaster {
         upload: super::image_storage::Upload<'static>,
     },
     /// A path routed to the GPU coverage kernels (issue #2543, decision
-    /// S3): the lowering recorded its curve elements, fill rule, device
-    /// transform and template instance — the CPU never flattened it and
-    /// nothing is rasterized or stored in the atlas. The record joins
-    /// the frame's compute input at apply time.
+    /// S3): the lowering recorded its curve elements, fill rule and
+    /// device transform — the CPU never flattened it and nothing is
+    /// rasterized or stored in the atlas. The record joins the frame's
+    /// compute input at apply time; the anchor instance in the frame's
+    /// instance array supplies the drawing state the vertex stage
+    /// joins to each emitted geometry record (water-rs/waterui#3081).
     GpuPath {
-        /// Geometry identity, including stroke tolerance.
-        content: u64,
         /// `FillRule` as the kernel's `rule` field (0 non-zero,
         /// 1 even-odd).
         rule: u32,
@@ -2234,9 +2234,6 @@ pub enum PendingRaster {
         raster: kurbo::Affine,
         /// The target surface size the grid bounds clip to.
         surface: (u32, u32),
-        /// The instance template `classify` copies per emitted span or
-        /// cell — the same bytes `replay` would stamp.
-        template: Box<crate::render::instance::Instance>,
         /// Encoded geometry and its storage bounds.
         path: crate::render::path::GpuPath,
     },

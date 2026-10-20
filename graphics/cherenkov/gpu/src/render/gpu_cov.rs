@@ -1,34 +1,36 @@
 //! The GPU coverage compute route of issue #2543, decision S2: one set
 //! of dispatches in the frame's own encoder, ahead of its raster
-//! passes, in the same submission, without readback or a fence. Retained
-//! geometric coverage is replayed with the current frame's drawing state.
+//! passes, in the same submission, without readback or a fence.
 //!
 //! The lowering leaves each routed path's curve elements, fill rule,
-//! transform and template instance in a [`PendingRaster::GpuPath`]
+//! transform and an anchor instance in a [`PendingRaster::GpuPath`]
 //! record. `apply_pending` joins them into this frame context, which
-//! accumulates the per-path dispatch records and the decision-R2 bound
-//! they size from. The first encoded surface writes the compute input
-//! and records flattening, strip binning, boundary sorting, winding prefix,
-//! local area integration, classification and indirect argument emission; and the draw loops read each path's indirect arguments
-//! from `args`.
+//! allocates one block in the coverage arena per path and accumulates
+//! the per-path dispatch records and the decision-R2 bound they size
+//! from. The kernels write only geometry: each block carries a count
+//! word, the emitted 32-byte geometry records and the packed R8 texels.
+//! The cell-buffer vertex stage joins each record to the draw's anchor
+//! instance (water-rs/waterui#3081); the draw loops read each draw's
+//! indirect arguments from `draws`, whose count words arrive through
+//! 4-byte buffer copies.
 
 use cherenkov::RenderError;
 use kurbo::Affine;
-use rustc_hash::FxHashMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use crate::render::instance::Instance;
 use crate::render::path::{GpuElement, GpuPath};
 
 /// u32 words of one `GpuPath` record on the device.
-const PATH_WORDS: usize = 108;
+const PATH_WORDS: usize = 40;
 /// u32 words of `Params`.
 const PARAMS_WORDS: usize = 20;
-/// u32 words of indirect arguments per path: `draw_indirect` (4) +
+/// u32 words of indirect arguments per GPU draw: `draw_indirect` (4) +
 /// `draw_indexed_indirect` (5) + `draw_indirect` (4) = 13.
 pub const ARGS_WORDS: u32 = 13;
-/// Byte offset of a path's opaque-phase `draw_indirect` record.
+/// u32 words of dispatch-domain arguments in `args`.
+const DISPATCH_ARGS_WORDS: u64 = 12;
+/// Byte offset of a draw's opaque-phase `draw_indirect` record.
 pub const ARGS_OPAQUE: u32 = 0;
 /// Byte offset of its partial-phase `draw_indexed_indirect` record.
 pub const ARGS_PARTIAL: u32 = 16;
@@ -41,78 +43,115 @@ const CLASSIFY_WIDTH: u32 = 128;
 /// size: a bound over it is an explicit `Unsupported`, never a retry.
 const GPU_COV_MAX_BYTES: u64 = 256 << 20;
 
-/// Instance vec4 count; `emit_instance` strides by it.
-const INSTANCE_VEC4S: u32 = 17;
+/// u32 words of one geometry record in the arena: the device bounds
+/// vec4 plus `(texel offset, width, interior, kind)`.
+const GEOMETRY_WORDS: u32 = 8;
+/// u32 words of one block's header: the emitted instance count and pad.
+const BLOCK_HEADER_WORDS: u32 = 4;
 
-/// The dispatch context of one frame's GPU-routed paths. Built at
-/// `apply_pending`, finalized once the frame's instance total is known,
-/// dispatched once on the first encoded surface.
-pub struct GpuCoverage {
-    /// `GpuPath` record words, in apply order.
-    paths: Vec<[u32; PATH_WORDS]>,
-    /// Compute input elements, all paths concatenated.
-    elements: Vec<GpuElement>,
-    element_sources: Vec<Arc<[GpuElement]>>,
-    element_total: u32,
-    /// `(path, strip)` items uploaded after atomic counters and row windings.
-    work: Vec<[u32; 2]>,
-    /// Per-path byte offset into `args`, apply order.
-    args_bases: Vec<u32>,
-    /// Instance slots reserved for kernel emission, all paths.
-    inst_total: u32,
-    /// Segments across all paths.
-    seg_total: u32,
-    /// Logical strip/column key range across paths; no dense allocation.
-    cov_total: u32,
-    bin_total: u32,
-    fragment_total: u32,
-    /// R8 texel words across all paths.
-    texel_words: u32,
-    /// Row winding counters across all paths.
-    row_total: u32,
-    /// The R2 bound's accumulated byte size — the cap's denominator.
-    bound_bytes: u64,
-    /// GPU buffer bytes currently held — `Engine::memory()` reports it.
-    bytes: u64,
-    /// Where the path records' emission begins in the instance buffer.
-    inst_origin: u32,
-    /// The dispatch went into some surface's encoder already.
-    dispatched: bool,
-    // Device objects, created on the first dispatch that needs them.
-    layout: Option<wgpu::BindGroupLayout>,
-    args_layout: Option<wgpu::BindGroupLayout>,
-    pipes: Option<Pipes>,
-    buffers: Option<Buffers>,
-    identity: DefaultHasher,
-    cache: FxHashMap<u64, CachedCoverage>,
-    cache_bytes: u64,
-    cache_epoch: u64,
+/// One GPU draw of the frame: the arena block its geometry and texels
+/// occupy. `base` is 8-word aligned so the draw's `first_instance`
+/// encodes the geometry slot base (water-rs/waterui#3081).
+#[derive(Clone, Copy)]
+struct Draw {
+    /// First word of the block — the count word's address.
+    base: u32,
+    /// First texel word of the block, arena-absolute.
+    texel_base: u32,
 }
 
-/// Only geometric output survives: drawing state is supplied again on replay.
-#[derive(Clone)]
-struct CachedCoverage {
-    geometry: wgpu::Buffer,
-    texels: wgpu::Buffer,
-    translations: Vec<[f32; 2]>,
-    last_used: u64,
+/// The retained coverage arena: one storage buffer whose per-entry
+/// blocks carry a count header, the emitted geometry records and the
+/// packed R8 texels. Blocks are appended through a bump frontier; a
+/// frame's blocks die at the next `begin_frame` until entry retention
+/// lands — every frame regenerates, and the failed-commit rollback is
+/// the same reset.
+struct CoverageArena {
+    buffer: Option<wgpu::Buffer>,
+    /// Words `buffer` holds.
+    words: u32,
+    /// Bump frontier, always 8-word aligned.
+    tail: u32,
+    /// Bumped on every buffer replacement so `bind0` is rebuilt.
+    generation: u64,
 }
 
-impl CachedCoverage {
-    fn bytes(&self) -> u64 {
-        self.geometry.size() + self.texels.size()
+impl CoverageArena {
+    const fn new() -> Self {
+        Self {
+            buffer: None,
+            words: 0,
+            tail: 0,
+            generation: 0,
+        }
+    }
+
+    /// The arena's buffer, once the first frame with GPU draws sized it.
+    const fn buffer(&self) -> Option<&wgpu::Buffer> {
+        self.buffer.as_ref()
+    }
+
+    /// Words the frame's allocations ask for — the buffer requirement.
+    const fn required_words(&self) -> u32 {
+        self.tail
+    }
+
+    /// Allocate `geometry_slots` geometry records and `texels` texel
+    /// words: an 8-word-aligned block whose header feeds the per-draw
+    /// count copies.
+    const fn alloc(&mut self, geometry_slots: u32, texels: u32) -> Draw {
+        let words = (BLOCK_HEADER_WORDS + geometry_slots * GEOMETRY_WORDS + texels)
+            .next_multiple_of(GEOMETRY_WORDS);
+        let base = self.tail;
+        self.tail += words;
+        Draw {
+            base,
+            texel_base: base + BLOCK_HEADER_WORDS + geometry_slots * GEOMETRY_WORDS,
+        }
+    }
+
+    /// The next frame's allocations start over: no block survives,
+    /// since nothing yet retains one.
+    const fn begin_frame(&mut self) {
+        self.tail = 0;
+    }
+
+    /// Grow the buffer to the frame's requirement, doubling to keep
+    /// growth amortized. There are no live blocks to copy into the new
+    /// buffer: retained blocks' compaction copies arrive with entry
+    /// retention, where this is also the rebuild point.
+    fn ensure(&mut self, device: &wgpu::Device) -> bool {
+        if u64::from(self.tail) * 4 <= u64::from(self.words) * 4 {
+            return false;
+        }
+        let size = (u64::from(self.tail) * 4)
+            .max(u64::from(self.words) * 8)
+            .max(64);
+        self.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("coverage arena"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        self.words = u32::try_from(size / 4).expect("arena words fit u32");
+        self.generation += 1;
+        true
+    }
+
+    fn trim(&mut self) {
+        self.buffer = None;
+        self.words = 0;
+        self.tail = 0;
+        self.generation += 1;
     }
 }
-
-const COVERAGE_CACHE_BYTES: u64 = 64 << 20;
 
 /// Pipelines for the sparse boundary coverage stages.
 struct Pipes {
     prepare_dispatch: wgpu::ComputePipeline,
     prepare_cells: wgpu::ComputePipeline,
-    store_cache: wgpu::ComputePipeline,
-    replay_cache: wgpu::ComputePipeline,
-    replay_texels: wgpu::ComputePipeline,
     radix_count: wgpu::ComputePipeline,
     radix_scan_blocks: wgpu::ComputePipeline,
     radix_prefix: wgpu::ComputePipeline,
@@ -127,10 +166,10 @@ struct Pipes {
     integrate: wgpu::ComputePipeline,
     classify: wgpu::ComputePipeline,
     fill_cells: wgpu::ComputePipeline,
-    emit_args: wgpu::ComputePipeline,
+    emit_counts: wgpu::ComputePipeline,
 }
 
-/// The frame's coverage buffers, sized exactly by the R2 bound.
+/// The frame's coverage scratch buffers, sized exactly by the R2 bound.
 struct Buffers {
     params: wgpu::Buffer,
     elements: wgpu::Buffer,
@@ -141,70 +180,108 @@ struct Buffers {
     work: wgpu::Buffer,
 }
 
+/// The dispatch context of one frame's GPU-routed paths. Built at
+/// `apply_pending`, finalized once every surface's draw records are
+/// written, encoded once on the first encoded surface.
+pub struct GpuCoverage {
+    /// `GpuPath` record words, in apply order.
+    paths: Vec<[u32; PATH_WORDS]>,
+    /// Compute input elements, all paths concatenated.
+    elements: Vec<GpuElement>,
+    element_sources: Vec<Arc<[GpuElement]>>,
+    element_total: u32,
+    /// `(path, strip)` items uploaded after atomic counters and row windings.
+    work: Vec<[u32; 2]>,
+    /// One GPU draw per applied `GpuPath`, in apply order.
+    draws: Vec<Draw>,
+    /// CPU words of the frame's `draws` buffer: `ARGS_WORDS` per draw,
+    /// the three count words supplied by the prologue's copies.
+    draw_args: Vec<u32>,
+    /// The per-draw indirect records: `INDIRECT | COPY_DST`.
+    draws_buffer: Option<wgpu::Buffer>,
+    /// Segments across all paths.
+    seg_total: u32,
+    /// Logical strip/column key range across paths; no dense allocation.
+    cov_total: u32,
+    bin_total: u32,
+    fragment_total: u32,
+    /// Row winding counters across all paths.
+    row_total: u32,
+    /// The R2 bound's accumulated byte size — the cap's denominator.
+    bound_bytes: u64,
+    /// GPU buffer bytes currently held — `Engine::memory()` reports it.
+    bytes: u64,
+    /// The coverage arena: geometry records and texels, one block per draw.
+    arena: CoverageArena,
+    /// The prologue went into some surface's encoder already.
+    encoded: bool,
+    // Device objects, created on the first dispatch that needs them.
+    layout: Option<wgpu::BindGroupLayout>,
+    args_layout: Option<wgpu::BindGroupLayout>,
+    pipes: Option<Pipes>,
+    buffers: Option<Buffers>,
+}
+
 impl GpuCoverage {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             paths: Vec::new(),
             elements: Vec::new(),
             element_sources: Vec::new(),
             element_total: 0,
             work: Vec::new(),
-            args_bases: Vec::new(),
-            inst_total: 0,
+            draws: Vec::new(),
+            draw_args: Vec::new(),
+            draws_buffer: None,
             seg_total: 0,
             cov_total: 0,
             bin_total: 0,
             fragment_total: 0,
-            texel_words: 0,
             row_total: 0,
             bound_bytes: 0,
             bytes: 0,
-            inst_origin: 0,
-            dispatched: false,
+            arena: CoverageArena::new(),
+            encoded: false,
             layout: None,
             args_layout: None,
             pipes: None,
             buffers: None,
-            identity: DefaultHasher::new(),
-            cache: FxHashMap::default(),
-            cache_bytes: 0,
-            cache_epoch: 0,
         }
     }
 
     /// A frame's apply starts over: the pending records of a planned
     /// frame are committed from scratch (`pending.clear()` precedes
-    /// the lowers that produce them, `mod.rs` commit flow).
+    /// the lowers that produce them, `mod.rs` commit flow). Blocks the
+    /// previous attempt allocated die with it — a failed or retried
+    /// commit never leaks them into the next frame's draws.
     pub fn begin_frame(&mut self) {
-        self.identity = DefaultHasher::new();
-        self.cache_epoch += 1;
         self.paths.clear();
         self.elements.clear();
         self.element_sources.clear();
         self.element_total = 0;
         self.work.clear();
-        self.args_bases.clear();
-        self.inst_total = 0;
+        self.draws.clear();
+        self.draw_args.clear();
         self.seg_total = 0;
         self.cov_total = 0;
         self.bin_total = 0;
         self.fragment_total = 0;
-        self.texel_words = 0;
         self.row_total = 0;
         self.bound_bytes = 0;
-        self.inst_origin = 0;
-        self.dispatched = false;
+        self.arena.begin_frame();
+        self.encoded = false;
     }
 
-    /// Whether the frame carries routed paths — the dispatch and the
-    /// instance-tail reservation gate on it.
-    pub const fn active(&self) -> bool {
-        !self.paths.is_empty()
+    /// Whether the frame carries GPU draws — the prologue and the
+    /// arena sizing gate on it.
+    pub const fn has_draws(&self) -> bool {
+        !self.draws.is_empty()
     }
 
-    /// Whether the first dirty surface still needs to encode this frame's work.
-    pub const fn needs_dispatch(&self) -> bool {
-        self.active() && !self.dispatched
+    /// Whether the frame's draws still need the coverage prologue
+    /// recorded on the first encoded surface.
+    pub const fn needs_prologue(&self) -> bool {
+        self.has_draws() && !self.encoded
     }
 
     /// GPU buffer bytes held — the `Engine::memory()` contribution of
@@ -213,50 +290,41 @@ impl GpuCoverage {
         self.bytes
     }
 
-    /// Retained host input/work-list allocation capacities.
-    pub fn cpu_bytes(&self) -> u64 {
+    /// Retained host input/draw-list allocation capacities.
+    pub const fn cpu_bytes(&self) -> u64 {
         (self.paths.capacity() * std::mem::size_of::<[u32; PATH_WORDS]>()
             + self.elements.capacity() * std::mem::size_of::<GpuElement>()
             + self.element_sources.capacity() * std::mem::size_of::<Arc<[GpuElement]>>()
             + self.work.capacity() * std::mem::size_of::<[u32; 2]>()
-            + self.args_bases.capacity() * std::mem::size_of::<u32>()
-            + self.cache.capacity() * std::mem::size_of::<(u64, CachedCoverage)>()
-            + self
-                .cache
-                .values()
-                .map(|entry| entry.translations.capacity() * std::mem::size_of::<[f32; 2]>())
-                .sum::<usize>()) as u64
+            + self.draws.capacity() * std::mem::size_of::<Draw>()
+            + self.draw_args.capacity() * std::mem::size_of::<u32>()) as u64
     }
 
-    /// Instance slots the kernels may emit into the buffer tail.
-    pub const fn inst_total(&self) -> u32 {
-        self.inst_total
+    /// The coverage arena's buffer, once `ensure` has sized it —
+    /// `ENGINE_GROUP0` binding 4.
+    pub const fn arena(&self) -> Option<&wgpu::Buffer> {
+        self.arena.buffer()
     }
 
-    /// Where kernel emission begins — `set_inst_origin`'s value.
-    pub const fn inst_origin(&self) -> u32 {
-        self.inst_origin
+    /// Bumped whenever the arena's buffer is replaced or dropped.
+    pub const fn arena_generation(&self) -> u64 {
+        self.arena.generation
     }
 
-    /// R8 texel words the classifier may write — sizes `cell_texels`.
-    pub const fn texel_words(&self) -> u32 {
-        self.texel_words
+    /// The per-draw indirect-argument buffer — valid after `ensure`.
+    pub const fn draws_buffer(&self) -> &wgpu::Buffer {
+        self.draws_buffer.as_ref().expect("draws buffer")
     }
 
-    /// The indirect-argument buffer — valid after `dispatch`.
-    pub const fn args_buffer(&self) -> &wgpu::Buffer {
-        &self.buffers.as_ref().expect("coverage buffers").args
-    }
-
-    /// Byte offset of `path`'s three indirect argument records —
+    /// Byte offset of `draw`'s three indirect argument records —
     /// `ARGS_OPAQUE`/`ARGS_PARTIAL`/`ARGS_NORMAL` further in.
-    pub fn args_base(&self, path: u32) -> u64 {
-        u64::from(self.args_bases[usize::try_from(path).expect("path index")]) * 4
+    pub fn draw_base(draw: u32) -> u64 {
+        u64::from(draw) * u64::from(ARGS_WORDS) * 4
     }
 
     /// Join one applied `GpuPath` record into the frame input, as the
-    /// path's compute index. The bound converts to absolute buffer
-    /// bases; the R2 cap rejects over it.
+    /// path's draw index. The bound sizes an arena block for the
+    /// path's geometry and texels; the R2 cap rejects over it.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "device coordinates are f32"
@@ -267,11 +335,9 @@ impl GpuCoverage {
     )]
     pub fn push(
         &mut self,
-        content: u64,
         rule: u32,
         raster: Affine,
         surface: (u32, u32),
-        template: &Instance,
         prepared: &GpuPath,
     ) -> Result<u32, RenderError> {
         let GpuPath {
@@ -303,7 +369,8 @@ impl GpuCoverage {
             + to64(strips) * 12
             + to64(rows) * 4
             + to64(bound.texels.div_ceil(4) + bound.cell_cap) * 4
-            + to64(bound.instance_cap) * u64::from(INSTANCE_VEC4S) * 16
+            + to64(bound.instance_cap) * u64::from(GEOMETRY_WORDS) * 4
+            + 16
             + u64::from(ARGS_WORDS) * 4
             + (PATH_WORDS as u64) * 4
             + to64(strips) * (1 + to64(bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize))) * 8
@@ -319,11 +386,11 @@ impl GpuCoverage {
         }
         let path_i = u32::try_from(self.paths.len()).expect("path count fits u32");
         let elem_base = self.element_total;
-        let args_base =
-            u32::try_from(self.args_bases.len()).expect("coverage capacity fits u32") * ARGS_WORDS;
-        let inst_base = self.inst_total;
+        let geometry_slots = u32::try_from(bound.instance_cap).expect("instance cap fits u32");
+        let texels =
+            u32::try_from(bound.texels.div_ceil(4) + bound.cell_cap).expect("texel words fit u32");
+        let draw = self.arena.alloc(geometry_slots, texels);
         let grid_base = self.cov_total;
-        let texel_base = self.texel_words;
         let [xx, yx, xy, yy, tx, ty] = raster.as_coeffs();
         let mut words = [0u32; PATH_WORDS];
         // atom[0..3]: bbox ordered-bits +inf/-inf seeds (the kernel's
@@ -338,15 +405,14 @@ impl GpuCoverage {
         words[10] = self.seg_total;
         words[11] = u32::try_from(bound.segments).expect("segments fit u32");
         words[12] = grid_base;
-        words[13] = texel_base;
-        words[14] = inst_base;
-        words[15] = args_base;
+        words[13] = draw.texel_base;
+        words[14] = draw.base + BLOCK_HEADER_WORDS;
         words[16] = rule;
         words[17] = u32::try_from(bound.grid_w).expect("grid fits u32");
         words[18] = u32::try_from(bound.grid_h).expect("grid fits u32");
-        words[19] = u32::try_from(bound.instance_cap).expect("instance cap fits u32");
+        words[19] = geometry_slots;
         words[21] = self.row_total;
-        words[20] = u32::try_from(bound.cell_cap).expect("cell cap fits u32");
+        words[20] = texels;
         // affine = (a, c, b, d); translate = (e, f)
         words[24] = (xx as f32).to_bits();
         words[25] = (xy as f32).to_bits();
@@ -356,107 +422,142 @@ impl GpuCoverage {
         words[29] = (ty as f32).to_bits();
         words[30] = (surface.0 as f32).to_bits();
         words[31] = (surface.1 as f32).to_bits();
-        // The template instance's 17 vec4s, bitcast verbatim.
-        let template_words: &[u32] = bytemuck::cast_slice(std::slice::from_ref(template));
-        words[40..40 + 68].copy_from_slice(&template_words[..68]);
 
-        self.hash_path(content, bound.clipped, &words);
         self.paths.push(words);
         self.element_total += u32::try_from(elements.len()).expect("elements fit u32");
         self.element_sources.push(Arc::clone(elements));
-        self.args_bases.push(args_base);
-        self.inst_total += u32::try_from(bound.instance_cap).expect("instances");
+        self.draws.push(draw);
         self.seg_total += u32::try_from(bound.segments).expect("segments");
         self.bin_total += u32::try_from(bound.bins).expect("bins");
         self.fragment_total = fragment_total;
         self.cov_total = cov_total;
-        self.texel_words +=
-            u32::try_from(bound.texels.div_ceil(4) + bound.cell_cap).expect("texel words");
         self.row_total += u32::try_from(rows).expect("rows");
 
         Ok(path_i)
     }
 
-    fn hash_path(&mut self, content: u64, clipped: bool, words: &[u32; PATH_WORDS]) {
-        content.hash(&mut self.identity);
-        clipped.hash(&mut self.identity);
-        let mut geometry = *words;
-        if !clipped {
-            for word in &mut geometry[28..30] {
-                let value = f32::from_bits(*word);
-                *word = (value - value.floor()).to_bits();
-            }
+    /// Write `index`'s indirect records and stamp the anchor's per-draw
+    /// slots once its global instance index is known: the draw's shift
+    /// goes in `shape.half` and the block's texel base word in `uv.x`,
+    /// which the cell-buffer vertex stage joins into every emitted
+    /// instance. The count words arrive through the prologue's copies.
+    pub fn write_draw(&mut self, index: u32, anchor_global: u32, anchor: &mut Instance) {
+        let draw = self.draws[index as usize];
+        anchor.shape.half = [0.0, 0.0];
+        anchor.uv[0] = f32::from_bits(draw.texel_base);
+        anchor.uv[1] = 0.0;
+        let first_vertex = (anchor_global + 1) * 8;
+        let first_instance = draw.base / 8;
+        let base = usize::try_from(index).expect("draw index") * ARGS_WORDS as usize;
+        if self.draw_args.len() < base + ARGS_WORDS as usize {
+            self.draw_args.resize(base + ARGS_WORDS as usize, 0);
         }
-        geometry[8..40].hash(&mut self.identity);
+        self.draw_args[base..base + ARGS_WORDS as usize].copy_from_slice(&[
+            // opaque: draw_indirect(8, n, first_vertex, first_instance)
+            8,
+            0,
+            first_vertex,
+            first_instance,
+            // partial: draw_indexed_indirect(6, n, 0, base_vertex, first_instance)
+            6,
+            0,
+            0,
+            first_vertex,
+            first_instance,
+            // normal: draw_indirect(6, n, first_vertex, first_instance)
+            6,
+            0,
+            first_vertex,
+            first_instance,
+        ]);
     }
 
-    pub fn trim(&mut self) {
-        self.buffers = None;
-        self.bytes = 0;
-        self.cache.clear();
-        self.cache.shrink_to_fit();
-        self.cache_bytes = 0;
-    }
-
-    /// Apply final mask patches, paint offsets and painter depth after
-    /// surface placement. The anchor itself is never drawn.
-    pub fn set_template(&mut self, index: u32, template: &Instance, surface_base: u32) {
-        let mut template = *template;
-        template.params[0] = f32::from_bits(template.params[0].to_bits() + surface_base);
-        let words: &[u32] = bytemuck::cast_slice(std::slice::from_ref(&template));
-        self.paths[index as usize][40..108].copy_from_slice(words);
-    }
-
-    /// Finalize bases once the frame's CPU instance total is known —
-    /// `inst_origin` is where kernel emission begins.
-    pub const fn set_inst_origin(&mut self, inst_origin: u32) {
-        self.inst_origin = inst_origin;
-    }
-
-    /// Reject device limits before allocating the generated raster output.
+    /// Reject device limits before allocating the generated coverage.
     pub fn validate_output_sizes(&self, limits: &wgpu::Limits) -> Result<(), RenderError> {
-        let instances = (u64::from(self.inst_origin) + u64::from(self.inst_total)) * 272;
-        let texels = u64::from(self.texel_words) * 4;
         let limit = limits
             .max_storage_buffer_binding_size
             .min(limits.max_buffer_size);
-        if instances > limit || texels > limit {
+        if u64::from(self.arena.required_words()) * 4 > limit {
             return Err(RenderError::Unsupported(
                 "GPU coverage output exceeds device buffer limit",
             ));
         }
-        // Raster attributes represent the word offset as f32; every integer
-        // address must be exact. The frame cap normally imposes a tighter bound.
-        if self.texel_words > 1 << 24 {
-            return Err(RenderError::Unsupported(
-                "GPU coverage texel address exceeds exact f32 range",
-            ));
+        Ok(())
+    }
+
+    /// Size the arena and the draws buffer to the frame's blocks.
+    /// Returns true when the arena buffer moved and `bind0` is stale.
+    pub fn ensure(&mut self, device: &wgpu::Device) -> bool {
+        self.draws_buffer = Some(sized_buffer(
+            device,
+            self.draws_buffer.as_ref(),
+            "gpu draws",
+            (self.draws.len() as u64).max(1) * u64::from(ARGS_WORDS) * 4,
+            wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+        ));
+        self.arena.ensure(device)
+    }
+
+    pub fn trim(&mut self) {
+        self.buffers = None;
+        self.draws_buffer = None;
+        self.bytes = 0;
+        self.arena.trim();
+    }
+
+    /// Record the frame's coverage prologue on the encoder — the miss
+    /// dispatch that fills each draw's block, then one 4-byte copy per
+    /// phase record feeding the count words `emit_counts` wrote.
+    /// Idempotent per frame.
+    pub fn record_prologue(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        delivery: crate::render::shaders::ShaderDelivery,
+        timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
+    ) -> Result<(), RenderError> {
+        if self.encoded || !self.has_draws() {
+            return Ok(());
+        }
+        self.encoded = true;
+        self.dispatch(device, queue, encoder, delivery, timestamp_writes)?;
+        let arena = self.arena.buffer().expect("coverage arena sized").clone();
+        let draws_buffer = self.draws_buffer.clone().expect("draws buffer");
+        queue.write_buffer(&draws_buffer, 0, bytemuck::cast_slice(&self.draw_args));
+        // Each phase's instance count is the block's count word,
+        // finalized only once `emit_counts` ran.
+        for (index, draw) in self.draws.iter().enumerate() {
+            let count_word = u64::from(draw.base) * 4;
+            let record = index as u64 * u64::from(ARGS_WORDS) * 4;
+            for offset in [4, u64::from(ARGS_PARTIAL) + 4, u64::from(ARGS_NORMAL) + 4] {
+                encoder.copy_buffer_to_buffer(
+                    &arena,
+                    count_word,
+                    &draws_buffer,
+                    record + offset,
+                    4,
+                );
+            }
         }
         Ok(())
     }
 
     /// Record the dispatch set on the encoder — coverage clearing,
     /// then the sparse coverage kernels, batching every routed path of the frame
-    /// (decision S2). Idempotent per frame.
+    /// (decision S2).
     #[expect(
         clippy::too_many_lines,
-        clippy::too_many_arguments,
         reason = "one ordered compute dispatch sequence and its output resources"
     )]
-    pub fn dispatch(
+    fn dispatch(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        instances: &wgpu::Buffer,
-        cell_texels: &wgpu::Buffer,
         delivery: crate::render::shaders::ShaderDelivery,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) -> Result<(), RenderError> {
-        if self.dispatched || !self.active() {
-            return Ok(());
-        }
-        self.dispatched = true;
         self.ensure_pipes(device, delivery);
 
         for (index, path) in self.paths.iter().enumerate() {
@@ -504,7 +605,6 @@ impl GpuCoverage {
             self.row_total,
             strip_total,
             u32::try_from(self.paths.len()).expect("coverage capacity fits u32"),
-            self.inst_origin,
             tile_total,
             CLASSIFY_WIDTH,
             self.cov_total,
@@ -519,7 +619,8 @@ impl GpuCoverage {
             tokens,
             sorted,
             0,
-            self.texel_words,
+            0,
+            0,
         ];
         let cov_words = u64::from(
             token_end
@@ -538,7 +639,7 @@ impl GpuCoverage {
             u64::from(self.element_total) * 48,
             self.paths.len() as u64 * PATH_WORDS as u64 * 4,
             u64::from(self.seg_total) * 16,
-            u64::from(ARGS_WORDS) * 4 * self.paths.len() as u64 + 48,
+            DISPATCH_ARGS_WORDS * 4,
             work_bytes,
         ];
         if sizes.into_iter().any(|size| size > limit) {
@@ -590,7 +691,7 @@ impl GpuCoverage {
                 device,
                 previous.map(|b| &b.args),
                 "cov args",
-                u64::from(ARGS_WORDS) * 4 * (self.paths.len() as u64).max(1) + 48,
+                DISPATCH_ARGS_WORDS * 4,
                 storage | wgpu::BufferUsages::INDIRECT,
             ),
             work: sized_buffer(
@@ -607,78 +708,33 @@ impl GpuCoverage {
             + buffers.segments.size()
             + buffers.coverage.size()
             + buffers.args.size()
-            + buffers.work.size();
+            + buffers.work.size()
+            + self.arena.buffer().map_or(0, wgpu::Buffer::size)
+            + self.draws_buffer.as_ref().map_or(0, wgpu::Buffer::size);
 
-        let key = self.identity.finish();
-        let cached = self.cache.get_mut(&key).map(|entry| {
-            entry.last_used = self.cache_epoch;
-            entry.clone()
-        });
-        if let Some(entry) = &cached {
-            for (path, old) in self.paths.iter_mut().zip(&entry.translations) {
-                path[22] = (f32::from_bits(path[28]) - old[0]).to_bits();
-                path[23] = (f32::from_bits(path[29]) - old[1]).to_bits();
-            }
-        }
-        let geometry_bytes = self.paths.len() as u64 * 16 + u64::from(self.inst_total) * 32;
-        let texel_bytes = u64::from(self.texel_words) * 4;
-        let candidate = if cached.is_none() && geometry_bytes + texel_bytes <= COVERAGE_CACHE_BYTES
-        {
-            while self.cache_bytes + geometry_bytes + texel_bytes > COVERAGE_CACHE_BYTES {
-                let oldest = *self
-                    .cache
-                    .iter()
-                    .min_by_key(|(_, entry)| entry.last_used)
-                    .expect("cache is nonempty")
-                    .0;
-                self.cache_bytes -= self.cache.remove(&oldest).expect("oldest entry").bytes();
-            }
-            let entry = CachedCoverage {
-                geometry: sized_buffer(
-                    device,
-                    None,
-                    "cached coverage geometry",
-                    geometry_bytes,
-                    storage,
-                ),
-                texels: sized_buffer(device, None, "cached coverage texels", texel_bytes, storage),
-                translations: self
-                    .paths
-                    .iter()
-                    .map(|path| [f32::from_bits(path[28]), f32::from_bits(path[29])])
-                    .collect(),
-                last_used: self.cache_epoch,
-            };
-            encoder.clear_buffer(&entry.geometry, 0, Some(self.paths.len() as u64 * 16));
-            Some(entry)
-        } else {
-            None
-        };
         for radix_pass in 0..radix_pass_count {
             let mut block = params;
-            block[18] = radix_pass;
+            block[17] = radix_pass;
             queue.write_buffer(
                 &buffers.params,
                 u64::from(radix_pass) * 256,
                 bytemuck::cast_slice(&block),
             );
         }
-        if cached.is_none() {
-            for (index, source) in self.element_sources.iter().enumerate() {
-                let path_i = u32::try_from(index).expect("path index");
-                self.elements
-                    .extend(source.iter().copied().map(|mut element| {
-                        element.head[2] = path_i;
-                        element
-                    }));
-            }
-            queue.write_buffer(&buffers.elements, 0, bytemuck::cast_slice(&self.elements));
-            queue.write_buffer(
-                &buffers.work,
-                work_header_bytes,
-                bytemuck::cast_slice(&self.work),
-            );
+        for (index, source) in self.element_sources.iter().enumerate() {
+            let path_i = u32::try_from(index).expect("path index");
+            self.elements
+                .extend(source.iter().copied().map(|mut element| {
+                    element.head[2] = path_i;
+                    element
+                }));
         }
+        queue.write_buffer(&buffers.elements, 0, bytemuck::cast_slice(&self.elements));
+        queue.write_buffer(
+            &buffers.work,
+            work_header_bytes,
+            bytemuck::cast_slice(&self.work),
+        );
         queue.write_buffer(
             &buffers.paths,
             0,
@@ -686,6 +742,7 @@ impl GpuCoverage {
         );
         encoder.clear_buffer(&buffers.work, 0, Some(work_header_bytes));
 
+        let arena = self.arena.buffer().expect("coverage arena sized");
         let layout = self.layout.as_ref().expect("coverage layout");
         let entries = [
             wgpu::BindGroupEntry {
@@ -714,18 +771,14 @@ impl GpuCoverage {
             },
             wgpu::BindGroupEntry {
                 binding: 5,
-                resource: cell_texels.as_entire_binding(),
+                resource: arena.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 6,
-                resource: instances.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 7,
                 resource: buffers.work.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
-                binding: 8,
+                binding: 7,
                 resource: buffers.args.as_entire_binding(),
             },
         ];
@@ -734,7 +787,7 @@ impl GpuCoverage {
             layout,
             entries: &entries
                 .iter()
-                .filter(|entry| entry.binding != 8)
+                .filter(|entry| entry.binding != 7)
                 .cloned()
                 .collect::<Vec<_>>(),
         });
@@ -742,20 +795,6 @@ impl GpuCoverage {
             label: Some("gpu coverage argument writes"),
             layout: self.args_layout.as_ref().expect("coverage argument layout"),
             entries: &entries,
-        });
-        let cache_bind = cached.as_ref().or(candidate.as_ref()).map(|entry| {
-            let mut cached_entries = entries.clone();
-            cached_entries[3].resource = entry.geometry.as_entire_binding();
-            cached_entries[4].resource = entry.texels.as_entire_binding();
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("cached coverage"),
-                layout,
-                entries: &cached_entries
-                    .iter()
-                    .filter(|entry| entry.binding != 8)
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            })
         });
         let pipes = self.pipes.as_ref().expect("coverage pipelines");
         {
@@ -767,76 +806,56 @@ impl GpuCoverage {
                 let groups = n.div_ceil(WORKGROUP);
                 pass.dispatch_workgroups(groups.min(256), groups.div_ceil(256), 1);
             };
-            if cached.is_some() {
-                pass.set_bind_group(0, cache_bind.as_ref().expect("cache binding"), &[0]);
-                pass.set_pipeline(&pipes.replay_cache);
-                dispatch(&mut pass, self.inst_total);
-                pass.set_pipeline(&pipes.replay_texels);
-                dispatch(&mut pass, self.texel_words);
-            } else {
-                pass.set_bind_group(0, &bind, &[0]);
-                pass.set_pipeline(&pipes.flatten);
-                dispatch(&mut pass, params[0]);
-                pass.set_pipeline(&pipes.bin);
-                dispatch(&mut pass, params[0]);
-                let dispatch_base = self.paths.len() as u64 * u64::from(ARGS_WORDS) * 4;
-                pass.set_bind_group(0, &args_bind, &[0]);
-                pass.set_pipeline(&pipes.prepare_dispatch);
-                pass.dispatch_workgroups(1, 1, 1);
-                pass.set_bind_group(0, &bind, &[0]);
-                pass.set_pipeline(&pipes.fragment_bins);
-                pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base);
-                pass.set_bind_group(0, &args_bind, &[0]);
-                pass.set_pipeline(&pipes.prepare_dispatch);
-                pass.dispatch_workgroups(1, 1, 1);
-                for radix_pass in 0..radix_pass_count {
-                    pass.set_bind_group(0, &bind, &[radix_pass * 256]);
-                    pass.set_pipeline(&pipes.radix_count);
-                    pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 12);
-                    pass.set_pipeline(&pipes.radix_scan_blocks);
-                    pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 24);
-                    pass.set_pipeline(&pipes.radix_prefix);
-                    pass.dispatch_workgroups(1, 1, 1);
-                    pass.set_pipeline(&pipes.radix_scatter);
-                    pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 12);
-                }
-                pass.set_bind_group(0, &bind, &[0]);
-                pass.set_pipeline(&pipes.link_groups);
-                pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 12);
-                pass.set_pipeline(&pipes.prefix_tiles);
-                dispatch(&mut pass, tile_total);
-                pass.set_pipeline(&pipes.prefix);
-                dispatch(&mut pass, strip_total);
-                pass.set_pipeline(&pipes.integrate_edges);
-                pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 12);
-                pass.set_pipeline(&pipes.integrate);
-                pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 12);
-                pass.set_pipeline(&pipes.classify);
-                dispatch(&mut pass, tile_total);
-                pass.set_bind_group(0, &args_bind, &[0]);
-                pass.set_pipeline(&pipes.prepare_cells);
-                pass.dispatch_workgroups(1, 1, 1);
-                pass.set_bind_group(0, &bind, &[0]);
-                pass.set_pipeline(&pipes.fill_cells);
-                pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 36);
-                if candidate.is_some() {
-                    pass.set_bind_group(0, cache_bind.as_ref().expect("cache binding"), &[0]);
-                    pass.set_pipeline(&pipes.store_cache);
-                    pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 36);
-                }
-            }
+            pass.set_bind_group(0, &bind, &[0]);
+            pass.set_pipeline(&pipes.flatten);
+            dispatch(&mut pass, params[0]);
+            pass.set_pipeline(&pipes.bin);
+            dispatch(&mut pass, params[0]);
             pass.set_bind_group(0, &args_bind, &[0]);
-            pass.set_pipeline(&pipes.emit_args);
+            pass.set_pipeline(&pipes.prepare_dispatch);
+            pass.dispatch_workgroups(1, 1, 1);
+            pass.set_bind_group(0, &bind, &[0]);
+            pass.set_pipeline(&pipes.fragment_bins);
+            pass.dispatch_workgroups_indirect(&buffers.args, 0);
+            pass.set_bind_group(0, &args_bind, &[0]);
+            pass.set_pipeline(&pipes.prepare_dispatch);
+            pass.dispatch_workgroups(1, 1, 1);
+            for radix_pass in 0..radix_pass_count {
+                pass.set_bind_group(0, &bind, &[radix_pass * 256]);
+                pass.set_pipeline(&pipes.radix_count);
+                pass.dispatch_workgroups_indirect(&buffers.args, 12);
+                pass.set_pipeline(&pipes.radix_scan_blocks);
+                pass.dispatch_workgroups_indirect(&buffers.args, 24);
+                pass.set_pipeline(&pipes.radix_prefix);
+                pass.dispatch_workgroups(1, 1, 1);
+                pass.set_pipeline(&pipes.radix_scatter);
+                pass.dispatch_workgroups_indirect(&buffers.args, 12);
+            }
+            pass.set_bind_group(0, &bind, &[0]);
+            pass.set_pipeline(&pipes.link_groups);
+            pass.dispatch_workgroups_indirect(&buffers.args, 12);
+            pass.set_pipeline(&pipes.prefix_tiles);
+            dispatch(&mut pass, tile_total);
+            pass.set_pipeline(&pipes.prefix);
+            dispatch(&mut pass, strip_total);
+            pass.set_pipeline(&pipes.integrate_edges);
+            pass.dispatch_workgroups_indirect(&buffers.args, 12);
+            pass.set_pipeline(&pipes.integrate);
+            pass.dispatch_workgroups_indirect(&buffers.args, 12);
+            pass.set_pipeline(&pipes.classify);
+            dispatch(&mut pass, tile_total);
+            pass.set_bind_group(0, &args_bind, &[0]);
+            pass.set_pipeline(&pipes.prepare_cells);
+            pass.dispatch_workgroups(1, 1, 1);
+            pass.set_bind_group(0, &bind, &[0]);
+            pass.set_pipeline(&pipes.fill_cells);
+            pass.dispatch_workgroups_indirect(&buffers.args, 36);
+            pass.set_pipeline(&pipes.emit_counts);
             dispatch(
                 &mut pass,
                 u32::try_from(self.paths.len()).expect("coverage capacity fits u32"),
             );
         }
-        if let Some(entry) = candidate {
-            self.cache_bytes += entry.bytes();
-            self.cache.insert(key, entry);
-        }
-        self.bytes += self.cache_bytes;
         self.buffers = Some(buffers);
         Ok(())
     }
@@ -856,7 +875,7 @@ impl GpuCoverage {
             label: Some("gpu coverage"),
             entries: &entries
                 .iter()
-                .filter(|entry| entry.binding != 8)
+                .filter(|entry| entry.binding != 7)
                 .copied()
                 .collect::<Vec<_>>(),
         });
@@ -878,13 +897,11 @@ impl GpuCoverage {
         let make = |entry: &'static str| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(entry),
-                layout: Some(
-                    if matches!(entry, "prepare_dispatch" | "prepare_cells" | "emit_args") {
-                        &args_pipe_layout
-                    } else {
-                        &pipe_layout
-                    },
-                ),
+                layout: Some(if matches!(entry, "prepare_dispatch" | "prepare_cells") {
+                    &args_pipe_layout
+                } else {
+                    &pipe_layout
+                }),
                 module: &module,
                 entry_point: Some(entry),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -894,9 +911,6 @@ impl GpuCoverage {
         self.pipes = Some(Pipes {
             prepare_dispatch: make("prepare_dispatch"),
             prepare_cells: make("prepare_cells"),
-            store_cache: make("store_cache"),
-            replay_cache: make("replay_cache"),
-            replay_texels: make("replay_texels"),
             radix_count: make("radix_count"),
             radix_scan_blocks: make("radix_scan_blocks"),
             radix_prefix: make("radix_prefix"),
@@ -911,7 +925,7 @@ impl GpuCoverage {
             integrate: make("integrate"),
             classify: make("classify"),
             fill_cells: make("fill_cells"),
-            emit_args: make("emit_args"),
+            emit_counts: make("emit_counts"),
         });
         self.layout = Some(layout);
         self.args_layout = Some(args_layout);
@@ -999,28 +1013,14 @@ mod tests {
         assert!(large.cell_cap <= 4 * small.cell_cap);
         let mut frame = GpuCoverage::new();
         frame
-            .push(
-                0,
-                0,
-                Affine::IDENTITY,
-                (4096, 4096),
-                &Instance::new(0),
-                &large_path,
-            )
+            .push(0, Affine::IDENTITY, (4096, 4096), &large_path)
             .expect("sparse 4096-square capacity");
         assert!(frame.bound_bytes < GPU_COV_MAX_BYTES);
         let huge_path = rectangle(1_000_000);
         let before = frame.paths.len();
         assert!(
             frame
-                .push(
-                    0,
-                    0,
-                    Affine::IDENTITY,
-                    (1_000_000, 1_000_000),
-                    &Instance::new(0),
-                    &huge_path
-                )
+                .push(0, Affine::IDENTITY, (1_000_000, 1_000_000), &huge_path)
                 .is_err()
         );
         assert_eq!(frame.paths.len(), before, "reject before appending a path");

@@ -147,7 +147,49 @@ fn apply(m: array<vec4<f32>, 2>, p: vec2<f32>) -> vec2<f32> {
 }
 
 // cell-buffer
-@group(0) @binding(4) var<storage, read> cell_texels: array<u32>;
+const FLAG_CELL_BUFFER: u32 = 0x80u;
+// The coverage arena (water-rs/waterui#3081): one block per GPU-routed
+// entry — count header, emitted geometry records, packed R8 texels.
+@group(0) @binding(4) var<storage, read> coverage_arena: array<u32>;
+// cell-buffer
+
+// cell-buffer
+// A GPU-routed draw joins its block's geometry records to the anchor
+// instance's drawing state in the vertex stage: `vertex_index` encodes
+// the anchor in its high bits ((A + 1) * 8 + corner), `instance_index`
+// addresses the geometry slot. The anchor's `shape.half` carries the
+// draw's shift and `uv.x` the block's texel base word.
+struct GpuJoin {
+    inst: Instance,
+    anchor: u32,
+    corner: u32,
+}
+fn join_gpu_instance(vi: u32, ii: u32) -> GpuJoin {
+    let a = (vi >> 3u) - 1u;
+    var inst = instances[a];
+    let shift = inst.shape.half;
+    let base = ii * 8u + 4u;
+    let bounds = bitcast<vec4<f32>>(vec4<u32>(
+        coverage_arena[base], coverage_arena[base + 1u],
+        coverage_arena[base + 2u], coverage_arena[base + 3u]));
+    let data = vec4<u32>(
+        coverage_arena[base + 4u], coverage_arena[base + 5u],
+        coverage_arena[base + 6u], coverage_arena[base + 7u]);
+    inst.bounds = bounds + shift.xyxy;
+    var kind = data.w;
+    if kind == KIND_GLYPH {
+        inst.shape.half = vec2<f32>(f32(data.z & 0xffffu), f32(data.z >> 16u));
+        inst.uv.x = bitcast<f32>(bitcast<u32>(inst.uv.x) + data.x);
+        inst.uv.y = f32(data.y);
+        inst.meta_.w = inst.meta_.w | (FLAG_CELL_BUFFER << 24u);
+        if data.z != 0u && inst.meta_.y == PAINT_SOLID {
+            kind = KIND_REGION;
+            inst.meta_.z = data.z;
+        }
+    }
+    inst.meta_.x = kind;
+    return GpuJoin(inst, a, vi & 7u);
+}
 // cell-buffer
 
 // Buffer cells carry local pixel coordinates, keeping large word offsets
@@ -168,7 +210,7 @@ fn path_cell_coverage(texel: vec2<i32>, origin: vec2<f32>, interior: vec2<f32>, 
         let omitted = u32(interior.y - interior.x);
         let column = local.x - select(0u, omitted, local.x >= u32(interior.y));
         let pixel = local.y * (u32(origin.y) - omitted) + column;
-        let word = cell_texels[u32(origin.x) + pixel / 4u];
+        let word = coverage_arena[bitcast<u32>(origin.x) + pixel / 4u];
         return f32((word >> ((pixel % 4u) * 8u)) & 255u) / 255.0;
     }
     // cell-buffer
@@ -192,6 +234,14 @@ fn vs_main(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
 }
 
 fn quad_vertex(vi: u32, ii: u32) -> VsOut {
+    // cell-buffer
+    // CPU draws always issue vi < 8; a GPU draw's first vertex encodes
+    // its anchor, so vi >= 8 joins the geometry record at `ii`.
+    if vi >= 8u {
+        let joined = join_gpu_instance(vi, ii);
+        return instance_vertex(joined.corner, joined.anchor, joined.inst);
+    }
+    // cell-buffer
     return instance_vertex(vi, ii, instances[ii]);
 }
 
