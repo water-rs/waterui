@@ -83,10 +83,14 @@ belong to water-rs/waterui.
   the limit. Frame-budget checks run under the default governor.
   Sub-millisecond scenes are compared by Mali shader-core active cycles
   (`pixel_compare.py run --gpu-counters`), never by GPU time: their frames
-  are latency-bound, so added work does not add GPU time. CPU-backend
-  comparisons (`pixel_compare.py run --engine cherenkov-cpu`) hold every
-  cluster the workers run on at one clock and are judged on frame and shade
-  time, at one worker and at eight.
+  are latency-bound, so added work does not add GPU time.
+- **A phone never decides a CPU-side change.** Its big.LITTLE scheduling
+  makes CPU timing unstable, and pinning threads or steering their placement
+  measures a device no user has; a CPU-side change is proven by the Callgrind
+  gate. On a phone the CPU backend is checked only for an obvious regression,
+  with clocks held so thermal throttling stays out of the run and the
+  scheduler left alone. Real devices are for what only they have: the GPU and
+  memory bandwidth.
 - **Memory is a first-class cost, measured like time.** A cache or retained
   structure has to pay for its memory in measured time or energy. Every
   change reports the steady-state `Engine::memory()` (GPU and CPU) of the five
