@@ -407,7 +407,7 @@ fn extend_t(t: f32, extend: Extend) -> Option<f32> {
     clippy::many_single_char_names,
     reason = "r/g/b/a are the channel names"
 )]
-fn to_premul(c: [f32; 4], interpolation: Interpolation) -> [f32; 4] {
+pub(super) fn to_premul(c: [f32; 4], interpolation: Interpolation) -> [f32; 4] {
     let [r, g, b, a] = c;
     let [pr, pg, pb] = if interpolation == Interpolation::SrgbEncoded {
         transform(&SRGB_TO_P3, [r, g, b].map(srgb_decode))
@@ -621,18 +621,16 @@ impl PaintData {
                 stops,
                 extend,
                 interpolation,
-            } => output.sample(|dx, dy| {
-                let (px, py) = apply(*inv, dx, dy);
-                let (sx, sy, ex, ey) = (*end_points).into();
-                let (ddx, ddy) = (ex - sx, ey - sy);
-                let len2 = ddy.mul_add(ddy, ddx * ddx);
-                let t = if len2 == 0.0 {
-                    0.0
-                } else {
-                    (py - sy).mul_add(ddy, (px - sx) * ddx) / len2
-                };
-                extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
-            }),
+            } => output.linear(
+                self,
+                Linear {
+                    inv: *inv,
+                    end_points: *end_points,
+                    stops,
+                    extend: *extend,
+                    interpolation: *interpolation,
+                },
+            ),
             Self::Radial {
                 inv,
                 centres,
@@ -653,7 +651,8 @@ impl PaintData {
         }
     }
 
-    /// Evaluates pixel centres into `out`, bit for bit like [`Self::eval`].
+    /// Evaluates pixel centres into `out`, agreeing with [`Self::eval`] to
+    /// within rounding; a pixel never depends on its span alignment.
     /// Every element is initialized. Solid spans use four-pixel native stores;
     /// other paints select their scalar formula once for the whole span.
     #[expect(
@@ -679,6 +678,57 @@ trait PaintOutput: Sized {
 
     fn sample(self, evaluate: impl FnMut(f32, f32) -> [f32; 4]) -> Self::Output;
     fn solid(self, color: [f32; 4]) -> Self::Output;
+
+    /// The linear-gradient leaf: `outer` supplies the `Transformed`
+    /// chain whose inverses apply before `params.inv` — for a leaf
+    /// reached directly it is the leaf itself and the walk finds no
+    /// links.
+    fn linear(self, outer: &PaintData, params: Linear<'_>) -> Self::Output;
+}
+
+/// The resolved `PaintData::Linear` fields a `linear` output consumes,
+/// named so the span kernel and the scalar evaluator share them.
+#[derive(Clone, Copy)]
+pub(super) struct Linear<'a> {
+    /// Device-to-content transform.
+    pub(super) inv: [f32; 6],
+    /// Start and end points in content space.
+    pub(super) end_points: [f32; 4],
+    /// Sorted stops.
+    pub(super) stops: &'a [Stop],
+    /// The continuation mode.
+    pub(super) extend: Extend,
+    /// The interpolation space.
+    pub(super) interpolation: Interpolation,
+}
+
+/// The linear leaf's scalar evaluation: `outer`'s transform chain, then
+/// `params`' map, projection, extend and stops — the same expression the
+/// span kernel evaluates per lane.
+#[cfg(test)]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+fn linear_at(outer: &PaintData, params: &Linear<'_>, mut x: f32, mut y: f32) -> [f32; 4] {
+    let mut link = outer;
+    while let PaintData::Transformed(inner, inverse) = link {
+        (x, y) = apply(affine_f32(*inverse), x, y);
+        link = inner;
+    }
+    let (px, py) = apply(params.inv, x, y);
+    let (sx, sy, ex, ey) = params.end_points.into();
+    let (ddx, ddy) = (ex - sx, ey - sy);
+    let len2 = ddy.mul_add(ddy, ddx * ddx);
+    let t = if len2 == 0.0 {
+        0.0
+    } else {
+        (py - sy).mul_add(ddy, (px - sx) * ddx) / len2
+    };
+    extend_t(t, params.extend).map_or([0.0; 4], |t| {
+        eval_stops(params.stops, t, params.interpolation)
+    })
 }
 
 /// Applies each mapping separately, preserving the scalar evaluator's f32
@@ -715,6 +765,17 @@ impl<O: PaintOutput> PaintOutput for TransformedOutput<'_, O> {
     fn solid(self, color: [f32; 4]) -> Self::Output {
         self.output.solid(color)
     }
+
+    /// The chain lives in `self.paint`; the leaf's own `self` carries
+    /// none — forward the transform-owning paint.
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn linear(self, _outer: &PaintData, params: Linear<'_>) -> Self::Output {
+        self.output.linear(self.paint, params)
+    }
 }
 
 #[cfg(test)]
@@ -743,6 +804,15 @@ impl PaintOutput for PixelCenter {
     #[inline(always)]
     fn solid(self, color: [f32; 4]) -> Self::Output {
         color
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn linear(self, outer: &PaintData, params: Linear<'_>) -> Self::Output {
+        linear_at(outer, &params, self.dx, self.dy)
     }
 }
 
@@ -807,6 +877,15 @@ impl<'a, S: Simd> PaintOutput for PixelSpan<'a, S> {
         // SAFETY: the four-pixel stores and scalar tail initialized every element.
         unsafe { out.assume_init_mut() }
     }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn linear(self, outer: &PaintData, params: Linear<'_>) -> Self::Output {
+        super::gradient::linear_span(self.simd, outer, &params, self.x0, self.py, self.out)
+    }
 }
 
 #[cfg(test)]
@@ -865,6 +944,77 @@ mod tests {
         }
     }
 
+    /// The linear-gradient matrix the span kernel must match lane for
+    /// lane: every extend mode and interpolation space, a diagonal and a
+    /// zero-length line, stops sharing one offset, stops outside
+    /// `[0, 1]`, a single stop and none, and inverse maps whose
+    /// parameter overflows — huge magnitudes, `±∞` and `NaN` mid-span.
+    fn linear_cases() -> Vec<PaintData> {
+        let lower =
+            |paint: &Paint, inv: Affine| kernels::paint(paint, inv, []).expect("test paints lower");
+        let mut cases = Vec::new();
+        for extend in [Extend::Pad, Extend::Repeat, Extend::Reflect, Extend::None] {
+            for interpolation in [Interpolation::Working, Interpolation::SrgbEncoded] {
+                let mut gradient = linear();
+                gradient.extend = extend;
+                gradient.interpolation = interpolation;
+                cases.push(lower(&Paint::Linear(gradient), Affine::IDENTITY));
+            }
+            // A diagonal line exercises both projection terms.
+            let mut diagonal = LinearGradient::new((64.0, 8.0), (128.0, 40.0));
+            diagonal.stops = stops();
+            diagonal.extend = extend;
+            cases.push(lower(&Paint::Linear(diagonal), Affine::IDENTITY));
+            // A zero-length line: `len2 == 0.0` fixes the parameter at 0.
+            let mut degenerate = LinearGradient::new((32.0, 13.0), (32.0, 13.0));
+            degenerate.stops = stops();
+            degenerate.extend = extend;
+            cases.push(lower(&Paint::Linear(degenerate), Affine::IDENTITY));
+        }
+        // Two stops sharing an offset: the zero-span window's `f == 0`.
+        let mut shared = linear();
+        shared.stops = [
+            (0.0, [0.9, 0.1, 0.2, 1.0]),
+            (0.35, [0.1, 0.8, 0.3, 1.0]),
+            (0.35, [0.6, 0.2, 0.7, 0.5]),
+            (1.0, [0.05, 0.05, 0.4, 1.0]),
+        ]
+        .into_iter()
+        .map(|(offset, color)| ColorStop {
+            offset,
+            color: WorkingColor::new(color),
+        })
+        .collect();
+        cases.push(lower(&Paint::Linear(shared), Affine::IDENTITY));
+        // Stop offsets outside `[0, 1]` and a single-stop gradient.
+        for offsets in [[-0.5, 0.5, 1.5].as_slice(), &[0.4]] {
+            let mut gradient = linear();
+            gradient.stops = stops()
+                .into_iter()
+                .zip(offsets)
+                .map(|(mut stop, &offset)| {
+                    stop.offset = offset;
+                    stop
+                })
+                .collect();
+            cases.push(lower(&Paint::Linear(gradient), Affine::IDENTITY));
+        }
+        cases.push(lower(&Paint::Linear(linear()), Affine::IDENTITY));
+        let mut empty = linear();
+        empty.stops = Vec::new();
+        cases.push(lower(&Paint::Linear(empty), Affine::IDENTITY));
+        // Inverse scales carrying the projection to finite overflow,
+        // `±∞` and `NaN` — and mixing all of them inside one block.
+        for scale in [1e-30, 1e-37, 1e-38, -1e-38] {
+            for extend in [Extend::Pad, Extend::Repeat, Extend::Reflect, Extend::None] {
+                let mut gradient = linear();
+                gradient.extend = extend;
+                cases.push(lower(&Paint::Linear(gradient), Affine::scale(scale)));
+            }
+        }
+        cases
+    }
+
     /// Every paint kind the span table covers, lowered through the real
     /// `paint_data`/`CpuImage::decode` path a bench uses.
     fn each_kind() -> Vec<PaintData> {
@@ -917,38 +1067,79 @@ mod tests {
         ]
     }
 
-    /// `eval_span` is per-pixel `eval`, bit for bit, over every run of
-    /// length 0–67 starting at offsets 0–7, under the detected level and
+    fn scalar_reference(paint: &PaintData, x: f32, y: f32) -> [f32; 4] {
+        if let PaintData::Transformed(inner, inverse) = paint {
+            let (x, y) = super::apply(super::affine_f32(*inverse), x, y);
+            scalar_reference(inner, x, y)
+        } else {
+            paint.eval(x, y)
+        }
+    }
+
+    const PY: usize = 13;
+    const REFERENCE_LEN: usize = 80;
+
+    fn span<S: fearless_simd::Simd>(
+        simd: S,
+        paint: &PaintData,
+        x0: usize,
+        len: usize,
+    ) -> Vec<[f32; 4]> {
+        let mut out = vec![MaybeUninit::uninit(); len];
+        paint.eval_span(simd, x0, PY, &mut out).to_vec()
+    }
+
+    /// A pixel never depends on its lane or the span's alignment: every
+    /// sub-span pixel equals the pixel of one reference span covering
+    /// x in 0..80, bit for bit, over every run of length 0-67 starting at
+    /// offsets 0-7, under the detected level and the scalar fallback.
+    #[test]
+    fn eval_span_is_alignment_invariant() {
+        fn check<S: fearless_simd::Simd>(simd: S, paint: &PaintData) {
+            let reference = span(simd, paint, 0, REFERENCE_LEN);
+            for x0 in 0..=7usize {
+                for len in 0..=67usize {
+                    for (i, px) in span(simd, paint, x0, len).iter().enumerate() {
+                        assert_eq!(
+                            px.map(f32::to_bits),
+                            reference[x0 + i].map(f32::to_bits),
+                            "paint {paint:?}, run x0={x0} len={len}, pixel {i}"
+                        );
+                    }
+                }
+            }
+        }
+        for paint in each_kind().into_iter().chain(linear_cases()) {
+            fearless_simd::dispatch!(crate::Level::new(), simd => check(simd, &paint));
+            check(fearless_simd::Fallback::new(), &paint);
+        }
+    }
+
+    /// `eval_span` agrees with per-pixel `eval` at the pixel centre to
+    /// within `1e-5 * max(1, |scalar|)` per channel, over every run of
+    /// length 0-67 starting at offsets 0-7, under the detected level and
     /// the scalar fallback.
     #[expect(
         clippy::cast_precision_loss,
         reason = "pixel indices and band offsets are far below 2^24"
     )]
     #[test]
-    fn eval_span_matches_scalar_eval_bit_for_bit() {
-        fn scalar_reference(paint: &PaintData, x: f32, y: f32) -> [f32; 4] {
-            if let PaintData::Transformed(inner, inverse) = paint {
-                let (x, y) = super::apply(super::affine_f32(*inverse), x, y);
-                scalar_reference(inner, x, y)
-            } else {
-                paint.eval(x, y)
-            }
-        }
-
+    fn eval_span_agrees_with_scalar_eval_within_rounding() {
         fn check<S: fearless_simd::Simd>(simd: S, paint: &PaintData, x0: usize, len: usize) {
-            let py = 13usize;
-            let mut span = vec![MaybeUninit::uninit(); len];
-            let span = paint.eval_span(simd, x0, py, &mut span);
-            for (i, px) in span.iter().enumerate() {
-                assert_eq!(
-                    px.map(f32::to_bits),
-                    scalar_reference(paint, (x0 + i) as f32 + 0.5, py as f32 + 0.5)
-                        .map(f32::to_bits),
-                    "paint {paint:?}, run x0={x0} len={len}, pixel {i}"
-                );
+            for (i, px) in span(simd, paint, x0, len).iter().enumerate() {
+                let scalar = scalar_reference(paint, (x0 + i) as f32 + 0.5, PY as f32 + 0.5);
+                for c in 0..4 {
+                    let tolerance = 1e-5 * scalar[c].abs().max(1.0);
+                    assert!(
+                        (px[c] - scalar[c]).abs() <= tolerance,
+                        "paint {paint:?}, run x0={x0} len={len}, pixel {i} channel {c}: span {} scalar {}",
+                        px[c],
+                        scalar[c]
+                    );
+                }
             }
         }
-        for paint in each_kind() {
+        for paint in each_kind().into_iter().chain(linear_cases()) {
             for x0 in 0..=7usize {
                 for len in 0..=67usize {
                     fearless_simd::dispatch!(crate::Level::new(), simd => check(
