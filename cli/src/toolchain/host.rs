@@ -430,6 +430,42 @@ impl Host {
         self.with_env("HOME", &home).with_env("USERPROFILE", &home)
     }
 
+    /// A host whose environment no longer binds `key`.
+    ///
+    /// The removal follows the platform's environment semantics — variable
+    /// names are case-insensitive on Windows — matching [`Host::env`]'s
+    /// lookup.
+    #[must_use]
+    pub fn without_env(&self, key: impl AsRef<OsStr>) -> Self {
+        let mut host = self.clone();
+        let key = key.as_ref();
+        if cfg!(target_os = "windows") {
+            host.env
+                .retain(|existing, _| !existing.as_os_str().eq_ignore_ascii_case(key));
+        } else {
+            host.env.remove(key);
+        }
+        host
+    }
+
+    /// A host whose environment carries no Cargo target-directory override:
+    /// `CARGO_TARGET_DIR` and `CARGO_BUILD_TARGET_DIR` — the
+    /// `build.target-dir` config key's environment spelling — are both
+    /// removed.
+    ///
+    /// Test fixtures cloning the real environment strip these so every
+    /// `cargo` a test spawns builds into a directory the test owns: under
+    /// the inherited override a fixture's `cargo build` writes — and a
+    /// `cargo clean` deletes — the developer's own build directory
+    /// (water-rs/waterui#3098). The real CLI keeps honoring the override,
+    /// so this stays a fixture-construction choice rather than a behavior
+    /// of [`Host::current`].
+    #[must_use]
+    pub fn without_cargo_target_dir(&self) -> Self {
+        self.without_env("CARGO_TARGET_DIR")
+            .without_env("CARGO_BUILD_TARGET_DIR")
+    }
+
     /// Every environment variable on this host, in map order.
     ///
     /// For resolvers that take the whole environment at once rather than

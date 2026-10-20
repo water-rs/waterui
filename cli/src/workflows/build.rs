@@ -5552,7 +5552,7 @@ mod tests {
         cargo_home: &std::path::Path,
     ) -> super::RustBuild {
         super::RustBuild::new(
-            &crate::toolchain::Host::current(),
+            &crate::toolchain::Host::current().without_cargo_target_dir(),
             crate_dir,
             Triple::host(),
         )
@@ -5707,7 +5707,7 @@ mod tests {
             std::fs::create_dir_all(&crate_dir).expect("crate dir");
 
             let flags = super::RustBuild::new(
-                &crate::toolchain::Host::current(),
+                &crate::toolchain::Host::current().without_cargo_target_dir(),
                 &crate_dir,
                 Triple::host(),
             )

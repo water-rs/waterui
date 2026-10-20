@@ -52,13 +52,16 @@ fn write(path: &Path, contents: &str) {
 /// the fixture's own `[build] rustflags` (Cargo's rustflags sources are
 /// mutually exclusive and `target.*` wins), silently discarding the flags
 /// the fixture relies on. The toolchain still resolves through rustup's
-/// `RUSTUP_HOME`, which neither `CARGO_HOME` nor the home affects.
+/// `RUSTUP_HOME`, which neither `CARGO_HOME` nor the home affects. An
+/// inherited `CARGO_TARGET_DIR` is stripped as well so the fixture's cargo
+/// builds into `<fixture>/target`, the directory the assertions read.
 fn hermetic_host(root: &Path) -> Host {
     let cargo_home = root.join("cargo-home");
     std::fs::create_dir_all(&cargo_home).expect("create hermetic CARGO_HOME");
     let home = root.join("water-home");
     std::fs::create_dir_all(&home).expect("create hermetic home");
     Host::current()
+        .without_cargo_target_dir()
         .with_home(home)
         .with_env("CARGO_HOME", cargo_home)
 }
