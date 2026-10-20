@@ -13,6 +13,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use waterui::{AnyView, Color, View, ViewExt as _};
 use waterui_core::Environment;
@@ -102,6 +103,29 @@ impl SceneContent for IntrinsicScenePane {
     fn input(&mut self, _event: &SurfaceInputEvent) {}
 
     fn rebuild_for_engine(&mut self) {}
+}
+
+/// The issue's reproduction for water-rs/waterui#1958: a `GpuContent` whose
+/// natural size resolves only after it starts — `intrinsic_size` stays
+/// `None`, and the stream's size arrives through `measure` alone (a decoder
+/// that learns its dimensions once it opens).
+struct DeferredSizeProbe {
+    natural: Arc<Mutex<Option<Size>>>,
+}
+
+impl GpuContent for DeferredSizeProbe {
+    fn setup(&mut self, _gpu: &GpuContext<'_>) {}
+
+    fn render(&mut self, _frame: &mut GpuFrame<'_>) {}
+
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(self.natural.lock().expect("probe lock").unwrap_or_else(|| {
+            Size::new(
+                proposal.width.unwrap_or(0.0),
+                proposal.height.unwrap_or(0.0),
+            )
+        }))
+    }
 }
 
 /// Which kind of input-receiving leaf the panes are built from.
@@ -679,4 +703,102 @@ fn input_scene_view_panes_split_the_divider_width() {
         vec![396.5, DIVIDER_WIDTH, 396.5],
         "the three children must share the 800-point row"
     );
+}
+
+/// water-rs/waterui#1958 — a `GpuContentView` is sized by
+/// `GpuContent::measure`, not by the `intrinsic_size` snapshot
+/// `GpuContentView::new` took at construction. The probe keeps
+/// `intrinsic_size` `None` and reports 100x200 through `measure` once the
+/// source knows its size, the deferred-source contract a camera or decoded
+/// stream implements.
+///
+/// The issue's reproduction is the unconstrained-axis pass: laid out through
+/// `resolve_scene_proposal(None, …)` the leaf answered the proposal (0 on
+/// the open axis) instead of the 100x200 `measure` reports.
+#[test]
+fn gpu_content_is_sized_by_its_live_measure() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let theme = renderer.theme();
+    let natural = Arc::new(Mutex::new(None));
+    let node = RenderNode::build(
+        AnyView::new(GpuContentView::new(DeferredSizeProbe {
+            natural: Arc::clone(&natural),
+        })),
+        &env,
+        &mut renderer,
+    );
+
+    // Before the source knows its size the leaf fills the proposal.
+    let proposal = ProposalSize::new(Some(390.0), Some(WINDOW_HEIGHT));
+    let measured = node.measure(&mut renderer.state, &env, &theme, proposal);
+    assert_eq!(measured.size, Size::new(390.0, WINDOW_HEIGHT));
+    assert_eq!(node.stretch_for_test(), StretchAxis::Both);
+
+    // Once `measure` reports a natural size, the leaf answers it under an
+    // open proposal — the issue's unconstrained scroll axis — and stops
+    // claiming leftover space.
+    *natural.lock().expect("probe lock") = Some(Size::new(100.0, 200.0));
+    let measured = node.measure(&mut renderer.state, &env, &theme, ProposalSize::UNSPECIFIED);
+    assert_eq!(
+        measured.size,
+        Size::new(100.0, 200.0),
+        "the leaf must answer the natural size `measure` reports, not the \
+         `intrinsic_size` snapshot (still `None`)"
+    );
+    assert_eq!(
+        node.stretch_for_test(),
+        StretchAxis::None,
+        "a GPU leaf whose content reports a natural size claims no leftover space"
+    );
+
+    // The semantic measure path (`Native<GpuContentView>::dimensions`, used
+    // for transient measures) answers the same live contract.
+    let leaf = AnyView::new(waterui_core::Native::new(GpuContentView::new(
+        DeferredSizeProbe {
+            natural: Arc::clone(&natural),
+        },
+    )));
+    let dims = crate::renderer::measure_transient_view_with_proposal(
+        &leaf,
+        ProposalSize::UNSPECIFIED,
+        &mut renderer.state,
+        &env,
+        &theme,
+    );
+    assert_eq!(dims, Size::new(100.0, 200.0));
+}
+
+/// The drift half of water-rs/waterui#1958: the leaf carries no consumable
+/// mark, so a `measure` answer that moves after mount must surface through
+/// `size_drifted` — a re-probe at the latched proposal — or an enclosing
+/// retained sub-view keeps the leaf at its first box forever.
+#[test]
+fn gpu_content_measure_drift_marks_layout() {
+    use crate::renderer::tree::RetainedSubview;
+
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let natural = Arc::new(Mutex::new(None));
+    let mut retained = RetainedSubview::new(AnyView::new(GpuContentView::new(DeferredSizeProbe {
+        natural: Arc::clone(&natural),
+    })));
+
+    let proposal = ProposalSize::new(Some(390.0), Some(WINDOW_HEIGHT));
+    let (size, stretch) = retained.patch_and_measure(&mut renderer, &env, proposal);
+    assert_eq!(size, Size::new(390.0, WINDOW_HEIGHT));
+    assert_eq!(stretch, StretchAxis::Both);
+    assert!(
+        !retained.take_layout_dirty(),
+        "an unchanged measure answer reports no drift"
+    );
+
+    *natural.lock().expect("probe lock") = Some(Size::new(100.0, 200.0));
+    assert!(
+        retained.take_layout_dirty(),
+        "a `measure` answer that moved after mount must mark the sub-view's layout"
+    );
+    let (size, stretch) = retained.patch_and_measure(&mut renderer, &env, proposal);
+    assert_eq!(size, Size::new(100.0, 200.0));
+    assert_eq!(stretch, StretchAxis::None);
 }

@@ -360,10 +360,42 @@ pub fn effective_stretch_axis(view: &AnyView) -> StretchAxis {
     if let Some(content) = passthrough_content(view) {
         return effective_stretch_axis(content);
     }
+    if let Some(gpu) = view.downcast_ref::<Native<GpuContentView>>() {
+        return gpu_content_stretch_axis(gpu.as_inner());
+    }
+    if let Some(external) = view.downcast_ref::<Native<ExternalFrameView>>() {
+        return external_frame_stretch_axis(external.as_inner());
+    }
     if view.downcast_ref::<Divider>().is_some() {
         return StretchAxis::CrossAxis;
     }
     view.stretch_axis()
+}
+
+/// The axes a `GpuContentView` fills, asked of the live content rather than
+/// the `intrinsic_size` snapshot [`NativeView::stretch_axis`] reads
+/// (water-rs/waterui#1958).
+pub fn gpu_content_stretch_axis(view: &GpuContentView) -> StretchAxis {
+    live_measured_stretch_axis(view.measure(ProposalSize::UNSPECIFIED).size)
+}
+
+/// The axes an `ExternalFrameView` fills, asked of the live source — the
+/// same live-measure contract as [`gpu_content_stretch_axis`].
+pub fn external_frame_stretch_axis(view: &ExternalFrameView) -> StretchAxis {
+    live_measured_stretch_axis(view.measure(ProposalSize::UNSPECIFIED).size)
+}
+
+/// Which axes `ideal` — a leaf's `measure` answer under the unspecified
+/// proposal — leaves to the container: an axis it reports an extent on is
+/// content-sized and does not stretch, an axis it leaves empty fills the
+/// proposal.
+const fn live_measured_stretch_axis(ideal: LayoutSize) -> StretchAxis {
+    match (ideal.width > 0.0, ideal.height > 0.0) {
+        (true, true) => StretchAxis::None,
+        (false, true) => StretchAxis::Horizontal,
+        (true, false) => StretchAxis::Vertical,
+        (false, false) => StretchAxis::Both,
+    }
 }
 
 /// Whether a view is the empty view `()`, possibly under layout-transparent
