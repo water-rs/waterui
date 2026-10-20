@@ -177,7 +177,10 @@ jobs:
   # `compile_error!` off wasm32 (the wasm job lints it where it is legal) —
   # and `skill_snippets`, whose `dev` feature would turn `dynamic_linking`
   # back on and whose `compile-gate-tests` transcriptions must never run
-  # (see the Linux job). The two excluded crates with
+  # (see the Linux job). `layout-twins` and `ios-test-host` are out for the
+  # same `dev` feature: it is their only one, so their default-feature
+  # tests in `test` are all this platform can run of them. The two
+  # excluded crates with
   # platform-specific code in their feature shapes run afterwards in the
   # shapes they have.
   all-features:
@@ -221,6 +224,8 @@ jobs:
             --exclude waterui-core `
             --exclude waterui-browser-cef `
             --exclude skill_snippets `
+            --exclude layout-twins `
+            --exclude ios-test-host `
             --exclude filtrate `
             -E 'not binary(/^trybuild_/)'
       - name: Test (waterui-core, every stable feature)
