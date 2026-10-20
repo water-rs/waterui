@@ -896,6 +896,7 @@ pub fn harvest(geometry: &mut GeometryCache, content: &ContentData) {
     let Some((ops, _)) = content.current() else {
         return;
     };
+    geometry.reserve(ops.len());
     for (op, realization) in ops.iter().zip(content.realizations()) {
         if realization.valid
             && let Some(Emission::Draw(data)) = &realization.data

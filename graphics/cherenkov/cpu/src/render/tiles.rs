@@ -32,9 +32,10 @@
 //! rounding of the same exact value — but an integer add, a `cvtsi2ss`
 //! and a multiply on every target, with no libm call on any of them.
 
+use std::mem::MaybeUninit;
 use std::sync::Arc;
 
-use fearless_simd::{Simd, f32x4};
+use fearless_simd::{Simd, f32x4, i32x4};
 
 use super::raster::Edge;
 
@@ -49,7 +50,7 @@ const UNIT: f64 = 256.0;
 /// A tile's side in units of 1/256 px.
 const TILE_UNITS: i32 = 127 * 256;
 /// `UNIT` as the decode multiplier.
-const DECODE: f32 = 1.0 / 256.0;
+pub const DECODE: f32 = 1.0 / 256.0;
 /// Header and bounds words before the tile words.
 const HEAD: usize = 3;
 
@@ -91,29 +92,42 @@ fn decode_scalar([ox, oy]: [i32; 2], q: Word) -> Edge {
     }
 }
 
-/// [`decode_scalar`] as vector ops: widen the four `i16`s to `i32`, add
-/// `[ox_u, oy_u, ox_u, oy_u]`, convert and scale — about five
-/// instructions under any SIMD level, and no libm call anywhere.
+/// The decoded edge `[x0, y0, x1, y1]` of the packed word `q`, moved
+/// into the caller's space by `shift`: `(origin_u + q) as f32 * 2^-8 +
+/// shift` as one fused multiply-add. The `i32` sum is exact below 2^24
+/// units and the power-of-two scale is exact, so the fused form rounds
+/// the same exact sum once, as the separate convert, multiply and add
+/// did — six instructions under any SIMD level, no libm call.
 #[expect(
     clippy::inline_always,
     clippy::cast_possible_truncation,
     reason = "compiled under the dispatched CPU level like its callers; \
-              each word half is exactly one packed coordinate pair"
+              each word field is exactly one packed i16 lane"
 )]
 #[inline(always)]
-pub fn decode<S: Simd>(simd: S, [ox, oy]: [i32; 2], q: Word) -> f32x4<S> {
-    let (lo, hi) = (q as i32, (q >> 32) as i32);
-    let v = simd.load_array_i32x4([lo, hi, lo, hi]);
-    // Sign-extend each 16-bit lane: [x0, x1, x0, x1] and [y0, y1, y0, y1].
-    let xs = simd.shr_i32x4(simd.shl_i32x4(v, 16), 16);
-    let ys = simd.shr_i32x4(v, 16);
-    // [x0, y0, x1, y1].
-    let q = simd.zip_low_i32x4(xs, ys);
-    let origin = simd.load_array_i32x4([ox, oy, ox, oy]);
-    simd.mul_f32x4(
-        simd.cvt_f32_i32x4(simd.add_i32x4(q, origin)),
-        simd.splat_f32x4(DECODE),
-    )
+pub fn decode<S: Simd>(
+    simd: S,
+    origin: i32x4<S>,
+    q: Word,
+    scale: f32x4<S>,
+    shift: f32x4<S>,
+) -> f32x4<S> {
+    let v = simd.load_array_i16x8([
+        q as i16,
+        (q >> 16) as i16,
+        (q >> 32) as i16,
+        (q >> 48) as i16,
+        0,
+        0,
+        0,
+        0,
+    ]);
+    // Pair each 16-bit lane with itself, then read it as an `i32`: the
+    // arithmetic shift right sign-extends the lane — `vpunpcklwd` +
+    // `vpsrad` — giving `[x0, y0, x1, y1]` as `i32`.
+    let q = simd.cvt_from_bytes_i32x4(simd.reinterpret_u8_i16x8(simd.zip_low_i16x8(v, v)));
+    let q = simd.shr_i32x4(q, 16);
+    simd.mul_add_f32x4(simd.cvt_f32_i32x4(simd.add_i32x4(q, origin)), scale, shift)
 }
 
 /// A draw's flattened edges in retained, tile-local fixed point, as one
@@ -133,18 +147,16 @@ pub struct EdgeTiles {
 pub struct EdgeScratch {
     /// `(packed tile index, edge word)` pairs in emission order.
     pieces: Vec<(u32, Word)>,
-    /// Per dense-tile counts, then that tile's write position in `out`.
+    /// Per dense-tile counts, then that tile's write position in the
+    /// retained layout.
     counts: Vec<u32>,
-    /// The layout being assembled, before the `Arc` copies it.
-    out: Vec<Word>,
 }
 
 impl EdgeScratch {
     /// Retained high-water capacity: a renderer buffer, not per draw.
     pub(crate) const fn heap_bytes(&self) -> u64 {
         (self.pieces.capacity() * size_of::<(u32, Word)>()
-            + self.counts.capacity() * size_of::<u32>()
-            + self.out.capacity() * size_of::<Word>()) as u64
+            + self.counts.capacity() * size_of::<u32>()) as u64
     }
 
     /// Releases the storage at a frame boundary: reuse is within one
@@ -343,15 +355,18 @@ impl EdgeTiles {
             });
         }
         let n = u32::try_from(pieces.len()).expect("a draw's edges fit u32");
-        let out = &mut scratch.out;
-        out.clear();
+        let write_bounds = |out: &mut [MaybeUninit<Word>]| {
+            out[1].write(u64::from(bounds[0].to_bits()) | u64::from(bounds[1].to_bits()) << 32);
+            out[2].write(u64::from(bounds[2].to_bits()) | u64::from(bounds[3].to_bits()) << 32);
+        };
         if n == 0 {
-            out.resize(HEAD, 0);
-            out[1] = u64::from(bounds[0].to_bits()) | u64::from(bounds[1].to_bits()) << 32;
-            out[2] = u64::from(bounds[2].to_bits()) | u64::from(bounds[3].to_bits()) << 32;
-            return Self {
-                words: Arc::from(&out[..]),
-            };
+            let mut words = Arc::<[Word]>::new_uninit_slice(HEAD);
+            let out = Arc::get_mut(&mut words).expect("a fresh Arc is unique");
+            out[0].write(0);
+            write_bounds(out);
+            // SAFETY: the three header/bounds words were written above.
+            let words = unsafe { words.assume_init() };
+            return Self { words };
         }
         // Dense keys over the draw's tile grid, ordering tiles as the
         // former `(ox_bits, oy_bits)` sort did so each piece keeps its
@@ -366,7 +381,10 @@ impl EdgeTiles {
             counts[dense(key(k))] += 1;
         }
         let ntiles = counts.iter().filter(|&&c| c != 0).count();
-        out.resize(HEAD + ntiles + n as usize, 0);
+        // The retained storage is written in place: tile words in the
+        // prefix pass, edge words in the scatter.
+        let mut words = Arc::<[Word]>::new_uninit_slice(HEAD + ntiles + n as usize);
+        let out = Arc::get_mut(&mut words).expect("a fresh Arc is unique");
         // Prefix pass: tile words and each tile's write position.
         let (mut t, mut running) = (0usize, 0u32);
         for (d, c) in counts.iter_mut().enumerate() {
@@ -375,8 +393,9 @@ impl EdgeTiles {
             }
             let (tx, ty) = (unrank(d / ye, tx_lo, tx_hi), unrank(d % ye, ty_lo, ty_hi));
             running += *c;
-            out[HEAD + t] =
-                u64::from(tx as u16) | u64::from(ty as u16) << 16 | u64::from(running) << 32;
+            out[HEAD + t].write(
+                u64::from(tx as u16) | u64::from(ty as u16) << 16 | u64::from(running) << 32,
+            );
             *c = (HEAD + ntiles) as u32 + running - *c;
             t += 1;
         }
@@ -384,15 +403,17 @@ impl EdgeTiles {
         // each tile's order.
         for &(k, w) in pieces.iter() {
             let d = dense(key(k));
-            out[counts[d] as usize] = w;
+            out[counts[d] as usize].write(w);
             counts[d] += 1;
         }
-        out[0] = u64::from(ntiles as u32) | u64::from(n) << 32;
-        out[1] = u64::from(bounds[0].to_bits()) | u64::from(bounds[1].to_bits()) << 32;
-        out[2] = u64::from(bounds[2].to_bits()) | u64::from(bounds[3].to_bits()) << 32;
-        Self {
-            words: Arc::from(&out[..]),
-        }
+        out[0].write(u64::from(ntiles as u32) | u64::from(n) << 32);
+        write_bounds(out);
+        // SAFETY: the tile write positions are the counting sort's prefix,
+        // so the scatter wrote every slot of `HEAD + ntiles .. len`
+        // exactly once, and the header, bounds and tile words were
+        // written explicitly.
+        let words = unsafe { words.assume_init() };
+        Self { words }
     }
 
     /// `(tiles, edges)` counts.
@@ -544,11 +565,21 @@ impl TileCursor<'_> {
         }
     }
 
-    /// The packed edge at `i` and its tile's origin in units of 1/256 px.
+    /// Advances the current tile to the one holding `i` and returns its
+    /// origin in units of 1/256 px, its past-last edge index, and its
+    /// edge words starting at `i`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the tile word's end field is exactly one packed u32"
+    )]
     #[inline]
-    pub(crate) fn parts(&mut self, i: usize) -> ([i32; 2], Word) {
+    pub(crate) fn run(&mut self, i: usize) -> ([i32; 2], usize, &[Word]) {
         self.position(i);
-        (self.origin, self.edges[i])
+        (
+            self.origin,
+            self.end as usize,
+            &self.edges[i..self.end as usize],
+        )
     }
 }
 
@@ -595,8 +626,8 @@ impl EdgeCursor for TileCursor<'_> {
     }
 
     fn at(&mut self, i: usize) -> Edge {
-        let (origin, q) = self.parts(i);
-        decode_scalar(origin, q)
+        self.position(i);
+        decode_scalar(self.origin, self.edges[i])
     }
 }
 

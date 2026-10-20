@@ -3087,18 +3087,48 @@ impl Band<'_> {
         acc.clear_range(y_lo, y_hi);
         // The frame's origin relative to the band's top row.
         let dy = oy - self.y0 as f32;
+        let scale = simd.splat_f32x4(crate::render::tiles::DECODE);
         let shift = simd.load_array_f32x4([ox, dy, ox, dy]);
+        // The band test as two mask compares over `[x0, y0, x1, y1]`:
+        // `all y < 0` or `all y >= bh` — every decoded coordinate is
+        // finite, so the x lanes against ±∞ always hold.
+        let below = simd.load_array_f32x4([f32::INFINITY, 0.0, f32::INFINITY, 0.0]);
+        let above =
+            simd.load_array_f32x4([f32::NEG_INFINITY, bh as f32, f32::NEG_INFINITY, bh as f32]);
         let mut cursor = edges.cursor();
-        for &ei in sel {
-            let (origin, q) = cursor.parts(ei);
-            let [x0, ey0, x1, ey1] = simd.as_array_f32x4(
-                simd.add_f32x4(crate::render::tiles::decode(simd, origin, q), shift),
-            );
-            // Only edges crossing the band deposit anything.
-            if ey0.max(ey1) < 0.0 || ey0.min(ey1) >= bh as f32 {
-                continue;
+        let mut buf = [const { MaybeUninit::<[f32; 4]>::uninit() }; SPAN_CHUNK];
+        for chunk in sel.chunks(SPAN_CHUNK) {
+            // Decode and band-test without a call, compacting the
+            // crossing edges; each tile's origin is built once per run.
+            let mut n = 0usize;
+            let mut i = 0usize;
+            while i < chunk.len() {
+                let (origin_u, end, words) = cursor.run(chunk[i]);
+                let base = chunk[i];
+                let origin =
+                    simd.load_array_i32x4([origin_u[0], origin_u[1], origin_u[0], origin_u[1]]);
+                while i < chunk.len() && chunk[i] < end {
+                    let e = crate::render::tiles::decode(
+                        simd,
+                        origin,
+                        words[chunk[i] - base],
+                        scale,
+                        shift,
+                    );
+                    if !(simd.all_true_mask32x4(simd.simd_lt_f32x4(e, below))
+                        || simd.all_true_mask32x4(simd.simd_ge_f32x4(e, above)))
+                    {
+                        buf[n & (SPAN_CHUNK - 1)].write(simd.as_array_f32x4(e));
+                        n += 1;
+                    }
+                    i += 1;
+                }
             }
-            acc.draw_line(x0, ey0, x1, ey1);
+            // SAFETY: pass 1 wrote `buf[..n]`, and `n <= chunk.len() <=
+            // SPAN_CHUNK`.
+            for e in unsafe { buf[..n].assume_init_ref() } {
+                acc.draw_line(e[0], e[1], e[2], e[3]);
+            }
         }
         let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
         let mut src = [const { MaybeUninit::<[f32; 4]>::uninit() }; SPAN_CHUNK];
