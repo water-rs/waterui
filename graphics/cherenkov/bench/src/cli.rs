@@ -465,6 +465,18 @@ enum Sub {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Read one line of a buffer larger than every cache level at a fixed
+    /// rate, pinned to one CPU, until killed: keeps the memory controller
+    /// out of its low-power state beside a measurement (#2988). Prints
+    /// `ready` once the reads begin.
+    MemoryKeepalive {
+        /// The CPU the reads run on.
+        #[arg(long)]
+        cpu: u32,
+        /// Reads per second.
+        #[arg(long)]
+        rate: u32,
+    },
     /// List compiled-in adapter keys.
     Engines,
 }
@@ -704,6 +716,9 @@ fn run(cli: Cli) -> Result<(), BenchError> {
         } => creation_cmd(&out, cycles, stop_after.as_deref()),
         Sub::ProjectiveQuality { scenes, out } => {
             crate::projective_quality::run(&scenes, out.as_deref())
+        }
+        Sub::MemoryKeepalive { cpu, rate } => {
+            crate::keepalive::run(cpu, rate).map(|never| match never {})
         }
     }
 }

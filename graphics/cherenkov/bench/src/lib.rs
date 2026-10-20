@@ -51,6 +51,7 @@ pub mod external_cost;
 pub mod gamut_sweep;
 pub mod gpu_clock;
 pub mod gpu_counters;
+pub mod keepalive;
 pub mod memory;
 #[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
 pub mod motion;
