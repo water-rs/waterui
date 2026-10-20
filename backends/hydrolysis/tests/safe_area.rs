@@ -17,6 +17,7 @@ use std::time::Duration;
 use waterui::component::list::{List, ListItem};
 use waterui::graphics::color::Srgb;
 use waterui::id::SelfId;
+use waterui::layout::LayoutDirection;
 use waterui::layout::frame::Frame;
 use waterui::layout::padding::EdgeInsets;
 use waterui::layout::safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
@@ -146,6 +147,63 @@ fn ignore_safe_area_releases_only_the_flagged_edges() {
     assert!(
         (bounds.x0 - f64::from(SAFE_INSETS.leading())).abs() <= 1.0,
         "the leading edge stays inside the safe area, got {bounds:?}"
+    );
+}
+
+/// §1's direction resolution reaches the safe area's regions: a `leading`
+/// inset sits on the window's *right* edge under right-to-left — the
+/// physical right edge is the leading one — where the same value sits on
+/// the left under left-to-right (water-rs/waterui#1827).
+#[test]
+fn a_leading_inset_sits_on_the_right_under_right_to_left() {
+    let insets = waterui::binding(EdgeInsets::new(0.0, 0.0, 30.0, 0.0));
+    let mut env = env_with_insets(&insets);
+    env.insert(LayoutDirection::RightToLeft);
+    let mut app = mount_rendered(
+        env,
+        move || vstack((card("edge"),)).alignment(HorizontalAlignment::Leading),
+        390,
+        844,
+    );
+
+    // The text is leading-aligned: under right-to-left the leading edge is
+    // the right one, and the 30-unit leading inset sits there.
+    let bounds = node_bounds_with_role(app.tree(), Role::Label, "edge");
+    assert!(
+        (bounds.x1 - 360.0).abs() <= 1.0,
+        "the leading edge should inset 30 on the right (x1 = 360), got {bounds:?}"
+    );
+}
+
+/// `.ignore_safe_area(leading)` releases the *leading* edge — under
+/// right-to-left the physical right edge, not the left
+/// (water-rs/waterui#1827). The published insets here are asymmetric so
+/// the released edge is discriminable from the untouched trailing one.
+#[test]
+fn a_leading_release_reaches_the_right_edge_under_right_to_left() {
+    let insets = waterui::binding(EdgeInsets::new(0.0, 0.0, 30.0, 10.0));
+    let mut env = env_with_insets(&insets);
+    env.insert(LayoutDirection::RightToLeft);
+    let mut app = mount_rendered(
+        env,
+        move || {
+            vstack((card("released"),))
+                .alignment(HorizontalAlignment::Leading)
+                .ignore_safe_area(EdgeSet::new(false, true, false, false))
+        },
+        390,
+        844,
+    );
+
+    let bounds = node_bounds_with_role(app.tree(), Role::Label, "released");
+    assert!(
+        (bounds.x1 - 390.0).abs() <= 1.0,
+        "the leading release should reach the window's right edge, got {bounds:?}"
+    );
+    assert!(
+        bounds.x0 >= 9.0,
+        "the trailing edge — physical left under right-to-left — stays \
+         inset by the trailing depth, got {bounds:?}"
     );
 }
 

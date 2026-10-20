@@ -41,18 +41,25 @@ pub(super) fn window_keyboard_insets(
 /// collapse to the origin rather than inverting the rect.
 /// [`ReleasedRegions::unreleased_depth`](safe_area::ReleasedRegions::unreleased_depth)
 /// owns the `max(container, keyboard)` resolution — the one place it lives.
+/// `direction` is the publish direction the insets' leading and trailing
+/// resolve under (water-rs/waterui#1827).
 pub fn window_content_rect(
     bounds: kurbo::Rect,
     container: &EdgeInsets,
     keyboard: &EdgeInsets,
+    direction: waterui_core::layout::LayoutDirection,
 ) -> kurbo::Rect {
     let none = safe_area::ReleasedRegions::default();
-    let x0 = bounds.x0 + none.unreleased_depth(safe_area::Edge::Leading, container, keyboard);
-    let y0 = bounds.y0 + none.unreleased_depth(safe_area::Edge::Top, container, keyboard);
-    let x1 =
-        (bounds.x1 - none.unreleased_depth(safe_area::Edge::Trailing, container, keyboard)).max(x0);
-    let y1 =
-        (bounds.y1 - none.unreleased_depth(safe_area::Edge::Bottom, container, keyboard)).max(y0);
+    let x0 =
+        bounds.x0 + none.unreleased_depth(safe_area::Edge::Leading, container, keyboard, direction);
+    let y0 =
+        bounds.y0 + none.unreleased_depth(safe_area::Edge::Top, container, keyboard, direction);
+    let x1 = (bounds.x1
+        - none.unreleased_depth(safe_area::Edge::Trailing, container, keyboard, direction))
+    .max(x0);
+    let y1 = (bounds.y1
+        - none.unreleased_depth(safe_area::Edge::Bottom, container, keyboard, direction))
+    .max(y0);
     kurbo::Rect::new(x0, y0, x1, y1)
 }
 
@@ -71,7 +78,11 @@ pub fn window_root_layout(
 ) -> (kurbo::Rect, Size, safe_area::SafeAreaLayout) {
     let container = window_container_insets(renderer, env);
     let keyboard = window_keyboard_insets(renderer, env);
-    let content = window_content_rect(bounds, &container, &keyboard);
+    // The direction the regions' leading and trailing resolve under —
+    // read as a signal so a direction change re-lays the window out
+    // (water-rs/waterui#1827).
+    let direction = renderer.read_signal(&waterui_layout::layout_direction(env));
+    let content = window_content_rect(bounds, &container, &keyboard, direction);
     let size = Size::new(
         crate::num_cast::f64_as_f32(content.width()),
         crate::num_cast::f64_as_f32(content.height()),
@@ -93,6 +104,7 @@ pub fn window_root_layout(
             frame,
             xx.hypot(yx),
             xy.hypot(yy),
+            direction,
         ),
     )
 }

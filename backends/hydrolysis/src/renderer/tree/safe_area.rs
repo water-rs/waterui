@@ -23,7 +23,7 @@ use core::cell::{Cell, RefCell};
 use core::ops::Range;
 
 use waterui_core::animation::Animation;
-use waterui_core::layout::{Rect, Size};
+use waterui_core::layout::{LayoutDirection, Rect, Size};
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
 use waterui_layout::scroll::Axis as ScrollAxis;
@@ -31,6 +31,15 @@ use waterui_layout::scroll::Axis as ScrollAxis;
 use crate::scroll::ScrollRunOutcome;
 
 /// One of the four edges §7.1's regions sit on.
+///
+/// The variants name *physical* window edges — `Leading` is always the
+/// left edge (`x0`), `Trailing` the right (`x1`) — because every
+/// coordinate they touch (`frame_edge`, `boundary_at`, `split_band`)
+/// computes in physical window space. Logical edges enter only through
+/// the two functions that take the resolved `LayoutDirection`:
+/// [`Self::named_in`] for `.ignore_safe_area`'s `EdgeSet` and
+/// [`Self::depth_in`] for a region's `EdgeInsets`
+/// (water-rs/waterui#1827).
 #[derive(Clone, Copy)]
 pub enum Edge {
     Top,
@@ -44,13 +53,28 @@ pub enum Edge {
 const EDGES: [Edge; 4] = [Edge::Top, Edge::Leading, Edge::Bottom, Edge::Trailing];
 
 impl Edge {
-    /// Whether `edges` names this edge.
-    const fn named_in(self, edges: EdgeSet) -> bool {
+    /// Whether `edges` names this physical edge — `EdgeSet`'s leading
+    /// and trailing are logical: under right-to-left `edges.leading`
+    /// names the physical right edge and `edges.trailing` the physical
+    /// left (docs/layout-spec.md §1, water-rs/waterui#1827).
+    const fn named_in(self, edges: EdgeSet, direction: LayoutDirection) -> bool {
         match self {
             Self::Top => edges.top,
-            Self::Leading => edges.leading,
+            Self::Leading => {
+                if direction.is_right_to_left() {
+                    edges.trailing
+                } else {
+                    edges.leading
+                }
+            }
             Self::Bottom => edges.bottom,
-            Self::Trailing => edges.trailing,
+            Self::Trailing => {
+                if direction.is_right_to_left() {
+                    edges.leading
+                } else {
+                    edges.trailing
+                }
+            }
         }
     }
 
@@ -66,13 +90,28 @@ impl Edge {
         }
     }
 
-    /// This edge's depth inside `insets`.
-    const fn depth_in(self, insets: &EdgeInsets) -> f32 {
+    /// This physical edge's depth inside `insets` — the insets are
+    /// logical: `leading()` is the depth on the edge `direction` calls
+    /// leading, so under right-to-left the physical left edge's depth
+    /// sits in `trailing()` (water-rs/waterui#1827).
+    const fn depth_in(self, insets: &EdgeInsets, direction: LayoutDirection) -> f32 {
         match self {
             Self::Top => insets.top(),
-            Self::Leading => insets.leading(),
+            Self::Leading => {
+                if direction.is_right_to_left() {
+                    insets.trailing()
+                } else {
+                    insets.leading()
+                }
+            }
             Self::Bottom => insets.bottom(),
-            Self::Trailing => insets.trailing(),
+            Self::Trailing => {
+                if direction.is_right_to_left() {
+                    insets.leading()
+                } else {
+                    insets.trailing()
+                }
+            }
         }
     }
 
@@ -210,19 +249,22 @@ impl ReleasedRegions {
     /// and `keyboard` inset depths — zero when every region is released,
     /// which puts the boundary at the window edge itself. With the set
     /// empty this is also the window content rect's per-edge inset: the one
-    /// place the `max(container, keyboard)` resolution lives.
+    /// place the `max(container, keyboard)` resolution lives. `direction`
+    /// is the direction the insets' leading/trailing were published
+    /// under — the logical→physical mapping [`Edge::depth_in`] needs.
     pub(super) fn unreleased_depth(
         self,
         edge: Edge,
         container: &EdgeInsets,
         keyboard: &EdgeInsets,
+        direction: LayoutDirection,
     ) -> f64 {
         let mut depth = 0.0_f64;
         if !self.container {
-            depth = depth.max(f64::from(edge.depth_in(container)));
+            depth = depth.max(f64::from(edge.depth_in(container, direction)));
         }
         if !self.keyboard {
-            depth = depth.max(f64::from(edge.depth_in(keyboard)));
+            depth = depth.max(f64::from(edge.depth_in(keyboard, direction)));
         }
         depth
     }
@@ -348,6 +390,16 @@ pub struct SafeAreaLayout {
     /// The window's vertical scale factor — the y-axis touch tolerance
     /// derives from it.
     y_scale: f64,
+    /// The direction the `container`/`keyboard` regions' leading and
+    /// trailing were published under — the direction
+    /// [`Edge::depth_in`] maps a physical edge's depth back through
+    /// (water-rs/waterui#1827). It is the window env's direction, never a
+    /// subtree override's: the regions are physical facts of the window
+    /// the host reported them for. A declaration's *named* edges resolve
+    /// under the declaring env's direction instead — `release`'s
+    /// parameter — and the two agree whenever the override does not flip
+    /// direction inside the tree.
+    direction: LayoutDirection,
     top: EdgeBoundary,
     leading: EdgeBoundary,
     bottom: EdgeBoundary,
@@ -362,6 +414,8 @@ impl SafeAreaLayout {
     /// means the f32-measured root frame is what touch tests compare
     /// against. `x_scale`/`y_scale` are the window transform's axis scale
     /// factors, the physical-pixel units the touch tolerance derives from.
+    /// `direction` is the direction the regions' leading and trailing
+    /// were published under — the window env's direction.
     pub fn root(
         window: kurbo::Rect,
         container: EdgeInsets,
@@ -369,6 +423,7 @@ impl SafeAreaLayout {
         frame: kurbo::Rect,
         x_scale: f64,
         y_scale: f64,
+        direction: LayoutDirection,
     ) -> Self {
         let boundary = |position: f64| EdgeBoundary::Reachable {
             position,
@@ -381,6 +436,7 @@ impl SafeAreaLayout {
             keyboard,
             x_scale,
             y_scale,
+            direction,
             top: boundary(frame.y0),
             leading: boundary(frame.x0),
             bottom: boundary(frame.y1),
@@ -634,8 +690,10 @@ impl SafeAreaLayout {
 
     /// The deepest region `released` does not cover on `edge` — zero when
     /// every region is released, putting the boundary at the window edge.
+    /// The regions' logical→physical mapping resolves under
+    /// [`Self::direction`] — the publish direction.
     fn unreleased_depth(&self, edge: Edge, released: ReleasedRegions) -> f64 {
-        released.unreleased_depth(edge, &self.container, &self.keyboard)
+        released.unreleased_depth(edge, &self.container, &self.keyboard, self.direction)
     }
 
     /// The edge's touch tolerance in window logical units: half a physical
@@ -693,12 +751,22 @@ impl SafeAreaLayout {
     /// the released boundary positions and the trailing edges come back
     /// from `size`, so a descendant's f32-derived frame edge lands on the
     /// moved boundary the same way the root's own frame lands on its own.
-    pub fn release(&self, ignore: IgnoreSafeArea, size: Size) -> (Self, EdgeOffsets, Size) {
+    ///
+    /// `direction` is the direction `ignore.edges`' leading and trailing
+    /// resolve under — the declaring env's direction, which a scoped
+    /// override can set differently from [`Self::direction`]'s publish
+    /// direction (water-rs/waterui#1827).
+    pub fn release(
+        &self,
+        ignore: IgnoreSafeArea,
+        size: Size,
+        direction: LayoutDirection,
+    ) -> (Self, EdgeOffsets, Size) {
         let mut positions: [Option<(f64, ReleasedRegions)>; 4] = [None; 4];
         let mut released = EdgeOffsets::default();
         for (index, edge) in EDGES.iter().enumerate() {
             let boundary = self.boundary(*edge);
-            if !edge.named_in(ignore.edges) || !self.touches(*edge) {
+            if !edge.named_in(ignore.edges, direction) || !self.touches(*edge) {
                 continue;
             }
             let regions = boundary.released().union(ignore.regions);

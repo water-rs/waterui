@@ -513,7 +513,14 @@ impl RenderNode {
                         node.child.layout(renderer, &node_env, None, proposal, size);
                         return;
                     };
-                    let (child_area, released, child_size) = area.release(*ignore, size);
+                    // The declaration's named edges resolve under the
+                    // wrapper's own env direction — a scoped override
+                    // may flip direction inside the tree — while the
+                    // regions' depths stay under the publish direction
+                    // the context records (water-rs/waterui#1827).
+                    let direction =
+                        renderer.read_signal(&waterui_layout::layout_direction(&node_env));
+                    let (child_area, released, child_size) = area.release(*ignore, size, direction);
                     node.released_offsets.set(released);
                     let child_proposal = ProposalSize::new(
                         proposal.width.map(|_| child_size.width),

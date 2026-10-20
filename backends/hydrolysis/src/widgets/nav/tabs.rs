@@ -17,7 +17,7 @@ use nami::{Binding, Signal};
 use waterui::navigation::tab::{NativeTabStyle, TabIcon, TabsLayout};
 use waterui_controls::label::LabelDisplayMode;
 use waterui_core::id::Id;
-use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
+use waterui_core::layout::{LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 
 #[cfg(feature = "accessibility")]
@@ -311,13 +311,14 @@ pub fn render_tabs_node(
     // The bar's layout and metrics are decided once with the chrome
     // split: `render_tabs_parts` draws the bar the split carved, so the
     // layout it places items under is the one the band was derived from.
+    let dock_edge = tabs_dock_edge(style, waterui_layout::layout_direction(env).snapshot());
     let (chrome, layout, theme_metrics) = {
         let theme = ctx.theme();
         let extent = tabs_bar_item_extent(ctx.bounds.width(), style, &theme);
         let layout = theme.tabs_item_layout(extent, state.borrow().tabs.len());
         let metrics = theme.tabs_metrics(layout);
         (
-            ctx.chrome_splits([(tabs_dock_edge(style), metrics.bar_height)]),
+            ctx.chrome_splits([(dock_edge, metrics.bar_height)]),
             layout,
             metrics,
         )
@@ -361,7 +362,7 @@ pub fn render_tabs_node(
             );
         }
     }
-    render_tabs_parts(ctx, state, env, chrome, layout, theme_metrics);
+    render_tabs_parts(ctx, state, env, chrome, layout, theme_metrics, dock_edge);
 }
 
 #[expect(
@@ -375,6 +376,7 @@ fn render_tabs_parts(
     chrome: crate::renderer::ChromeGroup<1>,
     layout: TabItemLayout,
     theme_metrics: crate::theme::TabsMetrics,
+    dock_edge: Edge,
 ) {
     let (selection, style, tab_count) = {
         let st = state.borrow();
@@ -403,21 +405,32 @@ fn render_tabs_parts(
     // top row of a bottom bar, the trailing column of a sidebar strip —
     // spanning the surface's reach, so a strip's divider runs from the
     // window's top edge to its bottom one.
-    let bar_surface = match style {
-        NativeTabStyle::Sidebar => bar.surface(Edge::Leading),
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => bar.surface(Edge::Bottom),
-    };
+    let bar_surface = bar.surface(dock_edge);
     {
         let theme = ctx.theme();
         ctx.draw_context(|draw| {
             theme.draw_tabs_bar(&mut *draw, bar_surface);
             let divider = match style {
-                NativeTabStyle::Sidebar => kurbo::Rect::new(
-                    (bar_rect.x1 - 1.0).max(bar_rect.x0),
-                    bar_surface.y0,
-                    bar_rect.x1,
-                    bar_surface.y1,
-                ),
+                NativeTabStyle::Sidebar => {
+                    // One pixel on the band's inner edge — the right edge
+                    // of a left-docked strip, the left edge of a
+                    // right-docked one under right-to-left.
+                    let inner = dock_edge.inner_edge(bar_rect);
+                    match dock_edge {
+                        Edge::Leading => kurbo::Rect::new(
+                            (inner - 1.0).max(bar_rect.x0),
+                            bar_surface.y0,
+                            inner,
+                            bar_surface.y1,
+                        ),
+                        _ => kurbo::Rect::new(
+                            inner,
+                            bar_surface.y0,
+                            (inner + 1.0).min(bar_rect.x1),
+                            bar_surface.y1,
+                        ),
+                    }
+                }
                 NativeTabStyle::Automatic | NativeTabStyle::TabBar => kurbo::Rect::new(
                     bar_surface.x0,
                     bar_rect.y0,
@@ -602,11 +615,20 @@ fn tab_label_env(env: &Environment) -> Environment {
 }
 
 /// The edge a style's tab bar docks to — the bottom edge for
-/// `Automatic`/`TabBar`, the leading edge for a `Sidebar` strip (§7.1's
-/// chrome split docks a bar to the edge it touches).
-const fn tabs_dock_edge(style: NativeTabStyle) -> Edge {
+/// `Automatic`/`TabBar`, the *leading* edge for a `Sidebar` strip (§7.1's
+/// chrome split docks a bar to the edge it touches). `Edge`'s variants
+/// are physical, so the leading dock resolves under `direction` — a
+/// sidebar lands on the right edge under right-to-left
+/// (water-rs/waterui#1827).
+const fn tabs_dock_edge(style: NativeTabStyle, direction: LayoutDirection) -> Edge {
     match style {
-        NativeTabStyle::Sidebar => Edge::Leading,
+        NativeTabStyle::Sidebar => {
+            if direction.is_right_to_left() {
+                Edge::Trailing
+            } else {
+                Edge::Leading
+            }
+        }
         NativeTabStyle::Automatic | NativeTabStyle::TabBar => Edge::Bottom,
     }
 }
