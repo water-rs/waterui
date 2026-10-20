@@ -84,9 +84,11 @@ belong to water-rs/waterui.
   Sub-millisecond scenes are compared by Mali shader-core active cycles
   (`pixel_compare.py run --gpu-counters`), never by GPU time: their frames
   are latency-bound, so added work does not add GPU time. CPU-backend
-  comparisons (`pixel_compare.py run --engine cherenkov-cpu`) hold every
-  cluster the workers run on at one clock and are judged on frame and shade
-  time, at one worker and at eight.
+  comparisons (`pixel_compare.py run --engine cherenkov-cpu`) are made at
+  one worker, with its cluster held at one clock and a memory keep-alive
+  holding DRAM out of its low-power state, and are judged on frame and shade
+  time. At eight workers the scheduler's placement moves identical builds by
+  more than the limit, so eight workers get only the frame-budget check.
 - **Memory is a first-class cost, measured like time.** A cache or retained
   structure has to pay for its memory in measured time or energy. Every
   change reports the steady-state `Engine::memory()` (GPU and CPU) of the five

@@ -64,7 +64,7 @@ class TheWidthRuleStands(unittest.TestCase):
         self.assertEqual(decide(-10.0, -10.5, -9.5), 'pass')
 
 
-def collection(out, scenes, rounds=4, frames=40, cycles=None, cpu=None):
+def collection(out, scenes, rounds=4, frames=40, cycles=None, cpu=None, budget=False):
     """Writes a completed pinned collection. `scenes` maps a name to its
     per-invocation GPU milliseconds `(base, head)`, one pair per round; each
     invocation's frames scatter ±1% around its value. With `cycles`, a
@@ -73,17 +73,19 @@ def collection(out, scenes, rounds=4, frames=40, cycles=None, cpu=None):
     values are frame milliseconds, `cpu` maps each scene to the share of the
     frame its `shade` phase takes per invocation `(base, head)`, and every
     frame splits into a 10% encode and a submit of which 0.1 ms lies outside
-    the phases."""
+    the phases. With `budget`, a cherenkov-cpu frame-budget check: the clocks
+    left to their governors and the frame its only metric."""
     rng = random.Random(0)
     save = pixel_compare.save
     if cpu is not None:
-        engine, metrics = 'cherenkov-cpu', ['frame', 'shade']
+        engine, metrics = 'cherenkov-cpu', ['frame'] if budget else ['frame', 'shade']
     else:
         engine = 'cherenkov'
         metrics = ['gpu-time' if cycles is None else 'shader-core-cycles']
+    clocks = 'governor' if budget else {'gpu': 649000, 'policy7': 2294000}
     save(out / pixel_compare.PLAN, {
         'arms': {}, 'rounds': rounds, 'frames': frames, 'warmup': 10,
-        'clocks': {'gpu': 649000, 'policy7': 2294000}, 'engine': engine, 'metrics': metrics,
+        'clocks': clocks, 'engine': engine, 'metrics': metrics,
         'scenes': [{'name': name} for name in scenes]})
     save(out / pixel_compare.CONTROL, {'completed': True})
     rows = []
@@ -126,11 +128,26 @@ def cpu_sample(frame_ms, shade_share):
 
 
 class Analyze(unittest.TestCase):
-    def analyze(self, scenes, cycles=None, cpu=None):
+    def analyze(self, scenes, cycles=None, cpu=None, budget=False):
         with tempfile.TemporaryDirectory() as dir:
             out = pathlib.Path(dir)
-            collection(out, scenes, cycles=cycles, cpu=cpu)
+            collection(out, scenes, cycles=cycles, cpu=cpu, budget=budget)
             return pixel_compare.analyze(out, LIMIT, 1000 / pixel_compare.RATE_HZ)['scenes']
+
+    def test_a_budget_check_reports_both_arms_and_decides_no_change(self):
+        # The head is 20% slower, yet only the budget is judged.
+        entry = self.analyze({'ui-list': [(6.0, 7.2)] * 4},
+                             cpu={'ui-list': [(0.6, 0.6)] * 4}, budget=True)['ui-list']
+        self.assertEqual(list(entry['metrics']), ['frame'])
+        judged = self.metric(entry, 'frame')
+        self.assertNotIn('change_percent', judged)
+        self.assertNotIn('interval_percent', judged)
+        self.assertAlmostEqual(judged['budget_ms'], 1000 / 120)
+        self.assertEqual(set(judged['median_p99']), {'base', 'head'})
+        self.assertEqual(entry['verdict'], 'within budget')
+        over = self.analyze({'effects': [(8.0, 8.5)] * 4},
+                            cpu={'effects': [(0.9, 0.9)] * 4}, budget=True)['effects']
+        self.assertEqual(over['verdict'], 'over budget')
 
     def metric(self, entry, name):
         return entry['metrics'][name]
@@ -338,6 +355,11 @@ class CpuEngines(unittest.TestCase):
         self.assertEqual(engines['vello-cpu'].environment(8), {'VELLO_CPU_THREADS': '8'})
         self.assertEqual(engines['vello-cpu'].adapter(8), 'vello-cpu (8 threads)')
         self.assertEqual(engines['skia-cpu'].max_workers, 1)
+
+    def test_one_worker_compares_and_more_check_the_budget(self):
+        self.assertEqual(pixel_compare.cpu_cell(1), 'comparison')
+        self.assertEqual(pixel_compare.cpu_cell(2), 'budget')
+        self.assertEqual(pixel_compare.cpu_cell(8), 'budget')
 
 
 class DeviceControlEvidence(unittest.TestCase):

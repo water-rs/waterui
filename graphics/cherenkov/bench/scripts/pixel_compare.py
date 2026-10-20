@@ -5,8 +5,10 @@ Pixel-class device.
   pixel_compare.py run     --base B --head H --scene DIR... --out O
                            [--governor | --gpu-counters]
   pixel_compare.py run     --base B --head H --scene DIR... --out O
-                           --engine E --workers N --cpus LIST --cluster-khz POLICY=KHZ...
+                           --engine E --workers 1 --cpus LIST --cluster-khz POLICY=KHZ...
                            [--devfreq-khz NAME=KHZ...]
+  pixel_compare.py run     --base B --head H --scene DIR... --out O
+                           --engine E --workers N --cpus LIST
   pixel_compare.py analyze O
   pixel_compare.py quiet-limit O...
 
@@ -49,14 +51,22 @@ scenes.
 `skia-cpu`) measures a CPU rasterizer instead: `measure --engine E --cpu
 LIST` with every bench thread confined to the CPU set `--cpus`, the engine at
 `--workers` workers, each scene at its own size, and no pacing or energy
-window, so frames run back to back and measure cost. The worker count reaches
-the engine through its own control: cherenkov-cpu's raster pool, and rayon's
-global pool beside it, through `RAYON_NUM_THREADS`; vello-cpu's dispatcher
-through `VELLO_CPU_THREADS` (one worker is its single-threaded dispatcher, N
-its multithreaded one with N workers); skia-cpu is single-threaded and runs
-at one worker only. The GPU is left to its governor. Every CPU frequency
-policy holding a CPU of the set is held at its `--cluster-khz` clock for the
-workload instead. Original policy values are restored after each invocation.
+window, so frames run back to back. The worker count reaches the engine
+through its own control: cherenkov-cpu's raster pool, and rayon's global pool
+beside it, through `RAYON_NUM_THREADS`; vello-cpu's dispatcher through
+`VELLO_CPU_THREADS` (one worker is its single-threaded dispatcher, N its
+multithreaded one with N workers); skia-cpu is single-threaded and runs at
+one worker only. The GPU is left to its governor.
+
+The worker count selects what a CPU-engine collection decides (#2988). At one
+worker it compares cost: every CPU frequency policy holding a CPU of the set
+is held at its `--cluster-khz` clock for the workload, original policy values
+are restored after each invocation, and `analyze` decides the change by the
+rule below. At more workers the scheduler places the workers on different
+clusters from run to run, which moves identical builds by more than the
+limit, so the collection checks the frame budget instead: the clocks stay
+with their governors, as with `--governor`, and `analyze` reports each arm's
+frame p99 against `--budget-ms` without deciding a change.
 
 For cherenkov-cpu, "N workers" means N raster workers confined to `--cpus`,
 while the frame's serial work runs on CPU 7 alone: `measure --render-cpu 7`
@@ -72,10 +82,20 @@ were put is invalid.
 The memory, L3 and interconnect clocks (`mif`, `dsu`, `bci`: the devfreq
 devices `*.devfreq_NAME`) follow their own governors. Every run records
 their residency over the workload (`interconnect_residency_ms` in the run
-log), and `--devfreq-khz NAME=KHZ` holds one at a clock (`min_freq =
-max_freq`), restored afterwards; a held clock's residency outside that
-clock invalidates the run. Holding all three leaves the spread between
-identical one-worker runs as it was (#2988), so none is held by default.
+log), and in a comparison `--devfreq-khz NAME=KHZ` holds one at a clock
+(`min_freq = max_freq`), restored afterwards; a held clock's residency
+outside that clock invalidates the run. None is held by default: what moves
+a one-worker run is the memory controller's low-power state, which these
+clocks do not reach. A one-worker frame misses its caches only sparsely, the
+controller powers down in the gaps, and how often depends on what else
+reaches DRAM at the time, so identical one-worker runs moved by a percent
+and more, within a process over seconds, and outside activity made them
+faster (#2988). A one-worker comparison therefore runs the base arm's
+`memory-keepalive` on CPU 0 beside every invocation of either arm: one read
+of a 64 MiB buffer every microsecond keeps the controller active. The
+supervisor starts the workload on its `ready` signal and fails the run when
+it exits early; as the supervisor's child it never counts as another
+process.
 
 Controls, checked for every invocation and recorded with it:
 
@@ -135,8 +155,10 @@ of the median invocation p99 and its interval, which decide nothing. More
 `--frames` shrink the sampling error of each p50 and more `--rounds` average
 over more processes; full-size scenes resolve on GPU time at the defaults,
 and scenes of a fraction of a millisecond on shader-core cycles. In governor
-mode `analyze` reports each arm's worst invocation GPU p99 against
-`--budget-ms` and makes no cost decision.
+mode, and for a CPU engine at more than one worker, `analyze` judges only
+the first metric (GPU time or the frame): it reports each arm's worst and
+median invocation p99 against `--budget-ms`, is `over budget` when the
+head's worst exceeds it, and makes no cost decision.
 
 For cherenkov-cpu `analyze` also reports, per arm, how much of `submit` the
 backend's phases (`lower`, `glyph`, `shade`) leave unaccounted: the render
@@ -230,6 +252,11 @@ BOOTSTRAP_RESAMPLES = 2000
 QUIET_SIGMAS = 3
 # The GPU engine's measuring CPU, and a CPU engine's render CPU.
 CPU = 7
+# Where a one-worker comparison runs `memory-keepalive`, and its reads per
+# second: enough that the memory controller never idles long enough to
+# power down beside the workload.
+KEEPALIVE_CPU = 0
+KEEPALIVE_RATE = 1_000_000
 # Memory, L3 and interconnect clocks (devfreq devices `*.devfreq_NAME`),
 # whose residency every run records and `--devfreq-khz` holds.
 INTERCONNECT = ("mif", "dsu", "bci")
@@ -281,6 +308,12 @@ def cpu_list(text: str) -> list[int]:
         low, _, high = part.partition("-")
         cpus.update(range(int(low), int(high or low) + 1))
     return sorted(cpus)
+
+
+def cpu_cell(workers: int) -> str:
+    """What a CPU-engine collection at `workers` workers decides: the cost
+    change at one worker, the frame budget at more (#2988)."""
+    return "comparison" if workers == 1 else "budget"
 
 
 class Process(typing.NamedTuple):
@@ -587,13 +620,24 @@ class Session:
         self.device = Device(args.serial)
         self.cpu_engine = CPU_ENGINES.get(args.engine)
         self.render_cpus = None
+        self.remote = f"/data/local/tmp/pixel-compare-{self.out.name}"
+        # What runs beside the workload under the supervisor.
+        self.beside: list[str] = []
         if self.cpu_engine is None:
             self.cpus = [CPU]
             self.pinned = None if args.governor else {"gpu": args.gpu_khz,
                                                       self.policy_of(CPU): args.cpu_khz}
         else:
             self.cpus = cpu_list(args.cpus)
-            self.pinned = dict(args.cluster_khz)
+            if cpu_cell(args.workers) == "comparison":
+                self.pinned = dict(args.cluster_khz)
+                if KEEPALIVE_CPU in self.cpus:
+                    raise SystemExit(f"--cpus must leave CPU {KEEPALIVE_CPU} to the memory "
+                                     "keep-alive")
+                self.beside = ["--keepalive", f"{self.remote}/bench-base", str(KEEPALIVE_CPU),
+                               str(KEEPALIVE_RATE)]
+            else:
+                self.pinned = None
             if self.cpu_engine.render_thread:
                 if CPU not in self.cpus:
                     raise SystemExit(f"--cpus must hold the render thread's CPU {CPU}")
@@ -602,7 +646,6 @@ class Session:
             self.pinned |= dict(args.devfreq_khz)
         names = list(self.pinned or {"gpu": 0, self.policy_of(CPU): 0})
         self.clocks = Clocks(self.device, names + [n for n in INTERCONNECT if n not in names])
-        self.remote = f"/data/local/tmp/pixel-compare-{self.out.name}"
         self.performance = PerformanceControls(self.device, self.clocks, self.pinned, args.battery_c)
         self.device_runs: dict[str, dict[str, Any]] = {}
         self.tick_hz = int(self.device.adb("shell", "getconf CLK_TCK"))
@@ -634,7 +677,7 @@ class Session:
             policies = Clocks.describe(self.device)
             holding = {name for name, policy in policies.items()
                        if set(policy["cpus"]) & set(self.cpus)}
-            if set(self.pinned) - set(INTERCONNECT) != holding:
+            if self.pinned is not None and set(self.pinned) - set(INTERCONNECT) != holding:
                 raise SystemExit(f"--cluster-khz must name exactly the policies holding CPUs "
                                  f"{self.cpus}: {sorted(holding)}")
         if self.pinned:
@@ -643,6 +686,9 @@ class Session:
                     raise SystemExit(f"{name} {khz} kHz is not an available frequency")
         if self.cpu_engine is None:
             metrics = ["shader-core-cycles" if args.gpu_counters else "gpu-time"]
+        elif self.pinned is None:
+            # A frame-budget check judges the frame alone.
+            metrics = list(self.cpu_engine.metrics[:1])
         else:
             metrics = list(self.cpu_engine.metrics)
         plan = {
@@ -651,6 +697,8 @@ class Session:
             "warmup": args.warmup, "width": args.width, "rate_hz": RATE_HZ,
             "engine": args.engine, "workers": args.workers, "cpus": self.cpus,
             "render_cpus": self.render_cpus,
+            "memory_keepalive": ({"cpu": KEEPALIVE_CPU, "reads_per_s": KEEPALIVE_RATE,
+                                  "bench": "base"} if self.beside else None),
             "metrics": metrics, "policies": policies,
             "clocks": "governor" if self.pinned is None else self.pinned,
             "battery_c": args.battery_c, "serial": args.serial,
@@ -709,7 +757,7 @@ class Session:
         remote_control = f"{self.remote}/{run_id}-control"
         supervised = ["sh", self.remote + "/pixel_run.sh", "--out", remote_control,
                       "--seconds", str(args.run_seconds), *self.performance.arguments,
-                      "--", *prefix, *command]
+                      *self.beside, "--", *prefix, *command]
         process = subprocess.Popen(
             ["adb", "-s", self.device.serial, "shell", "su -c " + shlex.quote(shlex.join(supervised))],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -980,20 +1028,23 @@ def analyze(out: Path, limit_percent: float, budget_ms: float) -> dict[str, Any]
             per_invocation = {side: {"p50": [quantile(run, 0.5) for run in runs_],
                                      "p99": [quantile(run, 0.99) for run in runs_]}
                               for side, runs_ in frames.items()}
-            change = median_change(frames)
-            low, high = change_interval(frames, random.Random(f"{name}/{metric}"))
-            p99_low, p99_high = change_interval(frames, random.Random(f"{name}/{metric}/p99"),
-                                                0.99)
             judged = {"unit": unit, "per_invocation": per_invocation,
-                      "change_percent": change, "interval_percent": [low, high],
-                      "p99_change_percent": median_change(frames, 0.99),
-                      "p99_interval_percent": [p99_low, p99_high],
                       "worst_p99": {side: max(v["p99"]) for side, v in per_invocation.items()}}
             if pinned:
-                judged["verdict"] = decide(change, low, high, limit_percent)
+                change = median_change(frames)
+                low, high = change_interval(frames, random.Random(f"{name}/{metric}"))
+                p99_low, p99_high = change_interval(
+                    frames, random.Random(f"{name}/{metric}/p99"), 0.99)
+                judged |= {"change_percent": change, "interval_percent": [low, high],
+                           "p99_change_percent": median_change(frames, 0.99),
+                           "p99_interval_percent": [p99_low, p99_high],
+                           "verdict": decide(change, low, high, limit_percent)}
             else:
-                judged["verdict"] = "within budget" if judged["worst_p99"]["head"] <= budget_ms \
-                    else "over budget"
+                judged |= {"budget_ms": budget_ms,
+                           "median_p99": {side: statistics.median(v["p99"])
+                                          for side, v in per_invocation.items()},
+                           "verdict": "within budget" if judged["worst_p99"]["head"] <= budget_ms
+                           else "over budget"}
             entry["metrics"][metric] = judged
         entry["verdict"] = entry["metrics"][plan["metrics"][0]]["verdict"]
         if plan["engine"] == "cherenkov-cpu":
@@ -1071,12 +1122,19 @@ def main() -> None:
                 parser.error("--workers, --cpus and --cluster-khz select a CPU engine's cells")
         else:
             if args.governor or args.gpu_counters:
-                parser.error("a CPU engine is measured at pinned CPU clocks, without GPU counters")
-            if args.workers is None or args.cpus is None or not args.cluster_khz:
-                parser.error("a CPU engine needs --workers, --cpus and --cluster-khz")
+                parser.error("a CPU engine's worker count selects its mode, without GPU counters")
+            if args.workers is None or args.cpus is None:
+                parser.error("a CPU engine needs --workers and --cpus")
             if args.workers < 1 or (engine.max_workers is not None
                                     and args.workers > engine.max_workers):
                 parser.error(f"{args.engine} runs at 1 to {engine.max_workers or 'any'} workers")
+            if cpu_cell(args.workers) == "comparison":
+                if not args.cluster_khz:
+                    parser.error("one worker compares cost at held clocks: name them with "
+                                 "--cluster-khz")
+            elif args.cluster_khz or args.devfreq_khz:
+                parser.error("more workers check the frame budget under the default governors; "
+                             "--cluster-khz and --devfreq-khz hold clocks")
             if len(dict(args.cluster_khz)) != len(args.cluster_khz):
                 parser.error("--cluster-khz names a policy twice")
         if args.governor and args.devfreq_khz:
@@ -1108,6 +1166,13 @@ def main() -> None:
                 print(f"{name}: {entry['verdict']}")
                 continue
             for metric, judged in entry["metrics"].items():
+                if "budget_ms" in judged:
+                    print(f"{name} {metric}: {judged['verdict']} (budget "
+                          f"{judged['budget_ms']:.2f} ms; invocation p99 worst / median: " +
+                          ", ".join(f"{side} {judged['worst_p99'][side]:.3f} / "
+                                    f"{judged['median_p99'][side]:.3f} ms"
+                                    for side in ("base", "head")) + ")")
+                    continue
                 low, high = judged["interval_percent"]
                 p99_low, p99_high = judged["p99_interval_percent"]
                 print(f"{name} {metric}: {judged['verdict']} ({judged['change_percent']:+.3f}%, "

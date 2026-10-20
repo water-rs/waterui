@@ -5,7 +5,8 @@
 # scaling_min_freq/scaling_max_freq), --devfreq NAME DEVFREQ_DIR KHZ
 # (min_freq/max_freq), --residency NAME FILE (a time-in-state table read
 # before and after the workload), --sensor NAME PATH MAX_MILLICELSIUS,
-# followed by -- COMMAND ARGUMENTS.
+# --keepalive BENCH CPU RATE (`BENCH memory-keepalive` beside the
+# workload), followed by -- COMMAND ARGUMENTS.
 # The caller supplies a fresh --out directory and a positive --seconds bound.
 set -u
 umask 022
@@ -15,6 +16,8 @@ controls=0
 clocks=0
 residencies=0
 worker=
+keepalive_bench=
+keepalive=
 # "NAME:PATH:LIMIT" per sensor, and every reading taken, both held in the
 # shell so a check opens nothing but the sensors themselves.
 sensors=
@@ -30,6 +33,10 @@ restore() {
         kill -TERM -- "-$worker" 2>/dev/null || :
         kill -KILL -- "-$worker" 2>/dev/null || :
         wait "$worker" 2>/dev/null || :
+    fi
+    if [ -n "$keepalive" ]; then
+        kill -TERM "$keepalive" 2>/dev/null || :
+        wait "$keepalive" 2>/dev/null || :
     fi
     if [ -n "$out" ] && [ -n "$sensors" ]; then
         printf '%s' "$readings" > "$out/temperature-samples" || result=1
@@ -140,6 +147,12 @@ while [ "$#" -gt 0 ]; do
             residencies=$((residencies + 1))
             shift 3
             ;;
+        --keepalive)
+            keepalive_bench=$2
+            keepalive_cpu=$3
+            keepalive_rate=$4
+            shift 4
+            ;;
         --sensor)
             [ -n "$out" ] || exit 2
             case "$2:$3:$4" in
@@ -232,6 +245,24 @@ record_clocks() {
         index=$((index + 1))
     done
 }
+# The memory keep-alive runs beside the workload's whole window. It is this
+# shell's child, so the process snapshots leave it out and its CPU time is
+# reaped only after the window. Its `ready` line, written once its reads
+# begin, is the signal to start.
+if [ -n "$keepalive_bench" ]; then
+    mkfifo "$out/keepalive-ready" || exit 1
+    "$keepalive_bench" memory-keepalive --cpu "$keepalive_cpu" --rate "$keepalive_rate" \
+        > "$out/keepalive-ready" 2> "$out/keepalive.log" &
+    keepalive=$!
+    signal=
+    read -r signal < "$out/keepalive-ready"
+    rm "$out/keepalive-ready" || exit 1
+    if [ "$signal" != ready ]; then
+        echo "memory keep-alive did not start; see keepalive.log" >&2
+        exit 1
+    fi
+fi
+
 record_clocks before || exit 1
 
 # The temperature checks wait on a FIFO nobody writes, a read with a
@@ -273,4 +304,8 @@ result=$?
 worker=
 snapshot_processes after || exit 1
 record_clocks after || exit 1
+if [ -n "$keepalive" ] && ! kill -0 "$keepalive" 2>/dev/null; then
+    echo "memory keep-alive exited during the workload; see keepalive.log" >&2
+    exit 1
+fi
 exit "$result"
