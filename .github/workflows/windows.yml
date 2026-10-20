@@ -23,30 +23,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: full
-            args: --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example'
-            config: ""
-            archive: true
           - name: full-deps-opt0
             args: --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example'
-            config: --config 'profile.dev.package."*".opt-level=0'
-            archive: false
-          - name: hydrolysis
-            args: -p hydrolysis
-            config: ""
-            archive: false
-          - name: cherenkov
-            args: -p cherenkov -p cherenkov-gpu -p cherenkov-cpu -p cherenkov-oracle -p cherenkov-scene -p cherenkov-record -p cherenkov-shader
-            config: ""
-            archive: false
-          - name: cli
-            args: -p waterui-cli
-            config: ""
-            archive: false
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
         with:
+          targets: wasm32-unknown-unknown
           cache: "false"
       - uses: ./.github/actions/cargo-sources
       - uses: ./.github/actions/spirv-tools-windows
@@ -58,25 +41,19 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - uses: ./.github/actions/generate-scene-assets
         with:
-          mode: fonts
+          mode: full
+      - name: Dependencies at opt-level 0
+        shell: bash
+        run: printf '[profile.dev.package."*"]\nopt-level = 0\n' >> .cargo/config.toml
       - name: Build test targets
         shell: bash
         run: |
           start=$(date +%s)
-          eval cargo test --locked --no-run --timings ${{ matrix.config }} ${{ matrix.args }}
+          eval cargo nextest run --locked --no-run --profile ci ${{ matrix.args }}
           echo "BUILD_SECONDS=$(( $(date +%s) - start ))"
-      - name: Archive size
-        if: matrix.archive
+      - name: Run tests
         shell: bash
         run: |
           start=$(date +%s)
-          eval cargo nextest archive --locked ${{ matrix.args }} --archive-file nextest.tar.zst
-          echo "ARCHIVE_SECONDS=$(( $(date +%s) - start ))"
-          ls -l nextest.tar.zst
-          du -sh target/debug/deps
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: timings-${{ matrix.name }}
-          path: target/cargo-timings/
-          retention-days: 7
+          eval cargo nextest run --locked --no-fail-fast --profile ci ${{ matrix.args }} || true
+          echo "RUN_SECONDS=$(( $(date +%s) - start ))"
