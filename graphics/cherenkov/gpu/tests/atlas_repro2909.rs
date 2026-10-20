@@ -28,14 +28,19 @@ fn font() -> cherenkov::FontSource {
 }
 
 /// `count` glyphs, each at a distinct fractional position → distinct cell keys.
-fn heavy_run(font: cherenkov::FontId, base_y: f32, count: u32, size: f32, salt: u32) -> GlyphRun {
+/// Position math runs in `f64` (u32 keys convert losslessly); the `Glyph`
+/// fields are `f32` API fields, the one narrowing this function makes.
+#[allow(clippy::cast_possible_truncation)]
+fn heavy_run(font: cherenkov::FontId, base_y: f64, count: u32, size: f32, salt: u32) -> GlyphRun {
+    let size64 = f64::from(size);
     let glyphs: Vec<_> = (0..count)
         .map(|i| {
             let k = i + salt;
+            let kf = f64::from(k);
             cherenkov::Glyph {
                 id: 1 + k % 200,
-                x: ((k % 60) as f32 * (size * 0.62)) + (k as f32 * 0.37),
-                y: base_y + (k / 60) as f32 * (size * 1.35) + (k as f32 * 0.13),
+                x: (size64 * 0.62).mul_add(f64::from(k % 60), kf * 0.37) as f32,
+                y: (size64 * 1.35).mul_add(f64::from(k / 60), kf.mul_add(0.13, base_y)) as f32,
                 transform: None,
             }
         })
@@ -75,11 +80,11 @@ fn huge_text_frame_grows_atlas() -> Result<(), Box<dyn std::error::Error>> {
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             for row in 0..25u32 {
-                let y = 30.0 + row as f64 * 120.0;
+                let y = f64::from(row).mul_add(120.0, 30.0);
                 c.fill(Circle::new((40.0, y + 40.0), 24.0), ink);
                 c.fill(RoundedRect::new(80.0, y, 800.0, y + 104.0, 18.0), bubble);
-                c.glyphs(heavy_run(font.id(), (y + 40.0) as f32, 40, 17.0, row * 40), ink);
-                c.glyphs(heavy_run(font.id(), (y + 74.0) as f32, 60, 14.0, row * 61), ink);
+                c.glyphs(heavy_run(font.id(), y + 40.0, 40, 17.0, row * 40), ink);
+                c.glyphs(heavy_run(font.id(), y + 74.0, 60, 14.0, row * 61), ink);
             }
         }));
     });
@@ -118,23 +123,24 @@ fn churning_batches_never_exhaust() -> Result<(), Box<dyn std::error::Error>> {
         surface.update(|tx| {
             tx[surface.root()].content(surface.record(|c| {
                 for row in 0..rows {
-                    let y = 30.0 + row as f64 * 120.0;
+                    let y = f64::from(row).mul_add(120.0, 30.0);
+                    let w = f64::from(row).mul_add(9.0, 700.0).min(1300.0);
                     c.fill(Circle::new((40.0, y + 40.0), 24.0), ink);
                     c.fill(
                         polygon(&[
                             (80.0, y),
-                            (80.0 + (700.0 + row as f64 * 9.0).min(1300.0), y),
-                            (80.0 + (700.0 + row as f64 * 9.0).min(1300.0), y + 104.0),
+                            (80.0 + w, y),
+                            (80.0 + w, y + 104.0),
                             (80.0, y + 104.0),
                         ]),
                         bubble,
                     );
                     c.glyphs(
-                        heavy_run(font.id(), (y + 40.0) as f32, 40, 17.0, frame * 977 + row * 40),
+                        heavy_run(font.id(), y + 40.0, 40, 17.0, frame * 977 + row * 40),
                         ink,
                     );
                     c.glyphs(
-                        heavy_run(font.id(), (y + 74.0) as f32, 60, 14.0, frame * 613 + row * 61),
+                        heavy_run(font.id(), y + 74.0, 60, 14.0, frame * 613 + row * 61),
                         ink,
                     );
                 }
