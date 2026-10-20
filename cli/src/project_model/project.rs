@@ -4593,7 +4593,7 @@ mod target_graph_tests {
         let host = machine
             .host([("WATERUI_FAKE_LOG", log.as_os_str())])
             .with_offline(true);
-        let cache = host.cache_dir().unwrap().join("waterui/fonts");
+        let cache = super::super::assets::cache_dir(&host).unwrap();
         std::fs::create_dir_all(&cache).unwrap();
         smol::block_on(async {
             let mut manifest = Manifest::open(root.join("Water.toml")).await.unwrap();
@@ -4637,7 +4637,7 @@ mod target_graph_tests {
             smol::block_on(async {
                 if cached_font {
                     let url = "https://example.com/inter.ttf";
-                    let cache = host.cache_dir().unwrap().join("waterui/fonts");
+                    let cache = super::super::assets::cache_dir(&host).unwrap();
                     std::fs::create_dir_all(&cache).unwrap();
                     let hash = hex::encode(Sha256::digest(url.as_bytes()));
                     std::fs::write(cache.join(format!("{hash}.ttf")), b"cached font").unwrap();
