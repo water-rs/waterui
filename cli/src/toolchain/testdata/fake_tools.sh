@@ -646,6 +646,11 @@ winget)
             exit 1
             ;;
         install*)
+            # A winget that never returns: its child outlives the direct
+            # process unless the whole tree is killed.
+            if [ -n "${WATERUI_FAKE_WINGET_HANG-}" ]; then
+                /bin/sleep 300
+            fi
             exit 0
             ;;
         *)

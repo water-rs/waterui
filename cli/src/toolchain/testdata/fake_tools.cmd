@@ -468,7 +468,10 @@ exit /b 0
 if "%1 %2"=="list --id" (
     call :list_contains "%WATERUI_FAKE_WINGET_INSTALLED%" "%~3" & exit /b !errorlevel!
 )
-if "%1"=="install" exit /b 0
+if "%1"=="install" (
+    if defined WATERUI_FAKE_WINGET_HANG ping -n 300 127.0.0.1 >nul
+    exit /b 0
+)
 exit /b 2
 
 :dpkg_query
