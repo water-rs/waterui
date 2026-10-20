@@ -26,7 +26,7 @@
 use std::mem::MaybeUninit;
 
 use cherenkov::{Extend, Interpolation};
-use fearless_simd::{Select, Simd, SimdFloat, f32x4, f32x16, mask32x16};
+use fearless_simd::{Select, Simd, SimdFloat, SimdMask, f32x4, f32x16, mask32x16};
 
 use super::paint::{LinearPaint, PaintData, Project, Stop, to_premul};
 
@@ -127,6 +127,11 @@ where
     }
     done |= take_last;
     for w in stops.windows(2) {
+        // Each lane keeps its first matching window. Once every
+        // lane is resolved, later windows cannot change the result.
+        if done.all_true() {
+            return mixed;
+        }
         let (a, b) = (&w[0], &w[1]);
         let inside =
             t.simd_ge(V::splat(simd, a.offset)) & t.simd_le(V::splat(simd, b.offset)) & !done;
@@ -373,41 +378,61 @@ fn store_block<S: Simd>(simd: S, px: [f32x16<S>; 4], stage: &mut [f32; 64]) {
     }
 }
 
-/// `store_block` for a `count`-pixel prefix (`count < LANES`): whole
-/// four-pixel groups store into `out` directly; the final partial
-/// group is staged and copied with a fixed-size `match`, so no
-/// `memcpy` call remains.
+/// Store up to four pixels from a statically selected quarter of a
+/// block. Keeping the quarter constant lets the level's registers
+/// feed the transpose directly instead of indexing spilled vectors.
+///
+/// # Safety
+/// `K < 4` and `out` is writable for `count.min(4)` pixels.
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level"
 )]
 #[inline(always)]
-fn store_partial<S: Simd>(
+unsafe fn store_quarter<S: Simd, const K: usize>(
     simd: S,
-    px: [f32x16<S>; 4],
-    out: &mut [MaybeUninit<[f32; 4]>],
+    px: &[f32x16<S>; 4],
+    out: *mut MaybeUninit<[f32; 4]>,
     count: usize,
 ) {
-    let full = count / 4;
-    for k in 0..full {
-        // SAFETY: `out[4k..4k + 4]` is sixteen contiguous
-        // uninitialised floats — every bit pattern is a valid f32.
-        let group = unsafe { &mut *out[4 * k..].as_mut_ptr().cast::<[f32; 16]>() };
-        simd.store_interleaved_128_f32x16(block_group(simd, &px, k), group);
-    }
-    let rest = count % 4;
-    if rest != 0 {
+    if count >= 4 {
+        // SAFETY: the caller supplies at least `count` writable pixels.
+        let group = unsafe { &mut *out.cast::<[f32; 16]>() };
+        simd.store_interleaved_128_f32x16(block_group(simd, px, K), group);
+    } else if count != 0 {
         let mut stage = [0.0f32; 16];
-        simd.store_interleaved_128_f32x16(block_group(simd, &px, full), &mut stage);
-        let dst = out[4 * full..].as_mut_ptr().cast::<f32>();
-        // SAFETY: `stage` is initialised and `rest * 4` floats fit in
-        // the `rest`-pixel remainder.
+        simd.store_interleaved_128_f32x16(block_group(simd, px, K), &mut stage);
+        let dst = out.cast::<f32>();
+        // SAFETY: `stage` is initialized and `count * 4` floats fit
+        // in the caller's remainder.
         unsafe {
-            match rest {
+            match count {
                 1 => std::ptr::copy_nonoverlapping(stage.as_ptr(), dst, 4),
                 2 => std::ptr::copy_nonoverlapping(stage.as_ptr(), dst, 8),
                 _ => std::ptr::copy_nonoverlapping(stage.as_ptr(), dst, 12),
             }
+        }
+    }
+}
+
+/// Store an eight-to-fifteen-pixel prefix with constant quarter
+/// selections. The first two quarters are always complete.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn store_partial<S: Simd>(simd: S, px: [f32x16<S>; 4], out: &mut [MaybeUninit<[f32; 4]>]) {
+    let dst = out.as_mut_ptr();
+    // SAFETY: the prefix contains eight to fifteen pixels. Each
+    // constant quarter is in range and writes only its live pixels;
+    // a zero count does not dereference the one-past-the-end pointer.
+    unsafe {
+        store_quarter::<S, 0>(simd, &px, dst, 4);
+        store_quarter::<S, 1>(simd, &px, dst.add(4), 4);
+        store_quarter::<S, 2>(simd, &px, dst.add(8), out.len() - 8);
+        if out.len() > 12 {
+            store_quarter::<S, 3>(simd, &px, dst.add(12), out.len() - 12);
         }
     }
 }
@@ -673,13 +698,10 @@ pub(super) fn linear_span<'a, S: Simd>(
         // padded remainder share one inlined f32x16 block body.
         loop {
             let remaining = out.len() - base;
-            if remaining < SHORT_TAIL {
-                break;
-            }
             let xs = simd.add_f32x16(simd.splat_f32x16(((x0 + base) as i64) as f32), ramp);
             let px = eval_block(simd, &eval, xs, dy, params.extend);
             if remaining < LANES {
-                store_partial(simd, px, &mut out[base..], remaining);
+                store_partial(simd, px, &mut out[base..]);
                 base = out.len();
                 break;
             }
@@ -689,6 +711,9 @@ pub(super) fn linear_span<'a, S: Simd>(
             let stage = unsafe { &mut *out[base..].as_mut_ptr().cast::<[f32; 64]>() };
             store_block(simd, px, stage);
             base += LANES;
+            if out.len() - base < SHORT_TAIL {
+                break;
+            }
         }
     }
     // One `eval_run_extend` call site: a short span's whole `out`, or
