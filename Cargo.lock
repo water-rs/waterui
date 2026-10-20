@@ -1782,6 +1782,7 @@ dependencies = [
  "objc2-ui-kit 0.3.2",
  "png",
  "pollster 0.4.0",
+ "profiling",
  "rspirv",
  "rustc-hash 2.1.3",
  "skrifa 0.44.0",
@@ -1789,6 +1790,7 @@ dependencies = [
  "thiserror 2.0.21",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
+ "tracing-subscriber",
  "wasm-bindgen",
  "wasm-bindgen-test",
  "web-sys",
@@ -8739,6 +8741,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 dependencies = [
  "profiling-procmacros",
+ "tracing",
 ]
 
 [[package]]

@@ -136,6 +136,9 @@ cherenkov = { path = "..", features = ["testing"] }
 nami = { version = "0.13", default-features = false, features = ["std", "kurbo"] }
 # `tests/planes.rs` runs its cases on the process main thread.
 libtest-mimic = "0.8.2"
+profiling = { version = "1.0.18", default-features = false, features = ["profile-with-tracing"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
+tracing = "0.1"
 
 [[test]]
 name = "planes"

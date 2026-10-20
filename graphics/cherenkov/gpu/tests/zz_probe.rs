@@ -1,7 +1,39 @@
 //! Diagnostic for #2726, never merged: where a GPU test's time goes on this
 //! adapter. Writes one line per phase to `$PROBE_OUT`.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use tracing_subscriber::layer::{Context, SubscriberExt as _};
+use tracing_subscriber::registry::LookupSpan;
+
+type Spans = Arc<Mutex<BTreeMap<&'static str, (u32, Duration)>>>;
+
+/// Accumulates entered time per span name; wgpu-hal's `profiling` scopes
+/// arrive as tracing spans with `profile-with-tracing`.
+struct SpanTimer(Spans);
+
+struct Entered(Instant);
+
+impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for SpanTimer {
+    fn on_enter(&self, id: &tracing::span::Id, ctx: Context<'_, S>) {
+        if let Some(span) = ctx.span(id) {
+            span.extensions_mut().replace(Entered(Instant::now()));
+        }
+    }
+    fn on_exit(&self, id: &tracing::span::Id, ctx: Context<'_, S>) {
+        if let Some(span) = ctx.span(id) {
+            if let Some(Entered(at)) = span.extensions_mut().remove::<Entered>() {
+                let mut map = self.0.lock().unwrap();
+                let slot = map.entry(span.name()).or_default();
+                slot.0 += 1;
+                slot.1 += at.elapsed();
+            }
+        }
+    }
+}
 use std::time::Instant;
 
 use cherenkov::kurbo::Rect;
@@ -34,9 +66,15 @@ split_test! {
 fn phases() -> Result<(), Box<dyn std::error::Error>> {
     let mut out = String::new();
     let start = Instant::now();
+    let spans: Spans = Arc::default();
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(SpanTimer(spans.clone())),
+    )?;
+    writeln!(out, "instance_flags {:?}", wgpu::InstanceFlags::default())?;
     let phases = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let mut config = GpuConfig::default();
     let sink = phases.clone();
+    let seen: Mutex<BTreeMap<&'static str, (u32, Duration)>> = Mutex::default();
     let last = Instant::now();
     let last = std::sync::Mutex::new(last);
     config.creation_probe = Some(CreationProbe::new(move |point| {
@@ -46,6 +84,15 @@ fn phases() -> Result<(), Box<dyn std::error::Error>> {
             let info = adapter.get_info();
             line.push_str(&format!(" [{} {:?} {}]", info.name, info.backend, info.driver));
         }
+        let now = spans.lock().unwrap().clone();
+        let mut seen = seen.lock().unwrap();
+        for (name, (n, total)) in &now {
+            let (n0, t0) = seen.get(name).copied().unwrap_or_default();
+            if *n != n0 {
+                line.push_str(&format!("\n    span {name} n={} total={:?}", n - n0, *total - t0));
+            }
+        }
+        *seen = now;
         *prev = Instant::now();
         let mut sink = sink.lock().unwrap();
         sink.push_str(&line);
