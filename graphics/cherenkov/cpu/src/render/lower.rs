@@ -15,7 +15,7 @@ use cherenkov::{BlendMode, FillRule, FrameId, GlyphRun, GlyphStyle, ShapeData};
 use cherenkov::{LayerId, RenderError, SurfaceId, SurfaceTree};
 
 use super::filter::{Erased, Registry};
-use super::geometry::{Frame, GeometryCache, Resolved, same_linear};
+use super::geometry::{Frame, GeometryCache, Offers, Resolved, same_linear};
 use super::prepared::Op;
 use crate::names;
 use crate::render::paint::PaintData;
@@ -869,7 +869,7 @@ pub fn resolve_edges(edges: Vec<Edge>, rule: FillRule) -> (Vec<Edge>, FillRule) 
 
 /// Offers a draw's geometry before its realization is dropped: a fill
 /// or a stroke realized as one draw.
-fn offer(geometry: &mut GeometryCache, op: &Op, data: &DeviceData<Vec<Item>>) {
+fn offer(offers: &mut Offers<'_>, op: &Op, data: &DeviceData<Vec<Item>>) {
     let (local, shape, stroke) = match op {
         Op::Fill { local, shape, .. } => (local, shape, None),
         Op::Stroke {
@@ -886,7 +886,7 @@ fn offer(geometry: &mut GeometryCache, op: &Op, data: &DeviceData<Vec<Item>>) {
         },
     ] = data.output.as_slice()
     {
-        geometry.offer(shape, stroke, data.transform * *local, edges, *rule, *swept);
+        offers.offer(shape, stroke, data.transform * *local, edges, *rule, *swept);
     }
 }
 
@@ -896,12 +896,12 @@ pub fn harvest(geometry: &mut GeometryCache, content: &ContentData) {
     let Some((ops, _)) = content.current() else {
         return;
     };
-    geometry.reserve(ops.len());
+    let mut offers = geometry.offers(ops.len());
     for (op, realization) in ops.iter().zip(content.realizations()) {
         if realization.valid
             && let Some(Emission::Draw(data)) = &realization.data
         {
-            offer(geometry, op, data);
+            offer(&mut offers, op, data);
         }
     }
 }

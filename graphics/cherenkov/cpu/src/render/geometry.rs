@@ -23,10 +23,11 @@
 //! quantized at build time, so a hit also saves the tile build, and a
 //! lookup was already paid whenever the table held any entry.
 //!
-//! The table lives for one frame: [`GeometryCache::finish_frame`] drops it
-//! after the frame's lowering, so it holds no memory between frames and its
-//! bound is the draws replaced in one frame. Under critical memory
-//! pressure [`GeometryCache::clear`] drops it at once.
+//! The table lives for one frame: it is allocated at the frame's first
+//! cacheable offer and [`GeometryCache::finish_frame`] drops it after the
+//! frame's lowering, so it holds no memory between frames and its bound is
+//! the draws replaced in one frame. Under critical memory pressure
+//! [`GeometryCache::clear`] drops it at once.
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -64,6 +65,16 @@ pub struct GeometryCache {
     entries: FxHashMap<u64, Entry>,
     /// The frame's key-word arena; every entry's `key` spans into it.
     words: Vec<u64>,
+}
+
+/// The offers of one content about to be dropped. The table and the key-word
+/// arena are reserved for its `n` ops at its first cacheable offer, so a
+/// content that offers nothing (glyph runs, images, uncacheable shapes)
+/// allocates nothing.
+pub struct Offers<'a> {
+    cache: &'a mut GeometryCache,
+    /// Ops still to reserve for; zero once reserved.
+    reserve: usize,
 }
 
 /// Geometry produced for a draw: its edges in the draw's [`Frame`], the rule
@@ -127,44 +138,12 @@ impl GeometryCache {
         })
     }
 
-    /// Offers the frame edges of a draw of `shape` under `transform`
-    /// (stroked by `stroke` when set) whose realization is being dropped,
-    /// for the rest of the frame.
-    pub fn offer(
-        &mut self,
-        shape: &ShapeData,
-        stroke: Option<&kurbo::Stroke>,
-        transform: Affine,
-        edges: &EdgeTiles,
-        rule: FillRule,
-        swept: bool,
-    ) {
-        if let Some(key) = Key::new(shape, stroke, transform) {
-            let start = u32::try_from(self.words.len()).expect("key words fit u32");
-            self.words.extend(key.words());
-            let len = u32::try_from(self.words.len()).expect("key words fit u32") - start;
-            let path = match shape {
-                ShapeData::Path { elements, .. } => Some(elements.clone()),
-                _ => None,
-            };
-            self.entries.insert(
-                key.digest(),
-                Entry {
-                    key: (start, len),
-                    path,
-                    edges: edges.clone(),
-                    rule,
-                    swept,
-                },
-            );
+    /// Starts offering the draws of a content of `n` ops.
+    pub const fn offers(&mut self, n: usize) -> Offers<'_> {
+        Offers {
+            cache: self,
+            reserve: n,
         }
-    }
-
-    /// Reserves the table and the key-word arena for `n` offered draws,
-    /// so the frame's offers allocate once.
-    pub fn reserve(&mut self, n: usize) {
-        self.entries.reserve(n);
-        self.words.reserve(n.saturating_mul(16));
     }
 
     /// Drops the frame's table: geometry not taken by now is not reused.
@@ -195,6 +174,47 @@ impl GeometryCache {
             }
         }
         bytes
+    }
+}
+
+impl Offers<'_> {
+    /// Offers the frame edges of a draw of `shape` under `transform`
+    /// (stroked by `stroke` when set) whose realization is being dropped,
+    /// for the rest of the frame.
+    pub fn offer(
+        &mut self,
+        shape: &ShapeData,
+        stroke: Option<&kurbo::Stroke>,
+        transform: Affine,
+        edges: &EdgeTiles,
+        rule: FillRule,
+        swept: bool,
+    ) {
+        let Some(key) = Key::new(shape, stroke, transform) else {
+            return;
+        };
+        if self.reserve != 0 {
+            let n = std::mem::take(&mut self.reserve);
+            self.cache.entries.reserve(n);
+            self.cache.words.reserve(n.saturating_mul(16));
+        }
+        let start = u32::try_from(self.cache.words.len()).expect("key words fit u32");
+        self.cache.words.extend(key.words());
+        let len = u32::try_from(self.cache.words.len()).expect("key words fit u32") - start;
+        let path = match shape {
+            ShapeData::Path { elements, .. } => Some(elements.clone()),
+            _ => None,
+        };
+        self.cache.entries.insert(
+            key.digest(),
+            Entry {
+                key: (start, len),
+                path,
+                edges: edges.clone(),
+                rule,
+                swept,
+            },
+        );
     }
 }
 
