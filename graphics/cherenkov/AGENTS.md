@@ -89,8 +89,8 @@ belong to water-rs/waterui.
   measures a device no user has; a CPU-side change is proven by the Callgrind
   gate. On a phone the CPU backend is checked only for an obvious regression,
   with clocks held so thermal throttling stays out of the run and the
-  scheduler left alone. Real devices are for what only they have: the GPU and
-  memory bandwidth.
+  scheduler left alone. Real devices are for what only they have: the GPU,
+  memory bandwidth, and real memory use, energy and frame time.
 - **Memory is a first-class cost, measured like time.** A cache or retained
   structure has to pay for its memory in measured time or energy. Every
   change reports the steady-state `Engine::memory()` (GPU and CPU) of the five
