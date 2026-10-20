@@ -1010,9 +1010,11 @@ enum DrawClip {
     /// Every operand contains the draw: its resolved geometry stands and
     /// only the stack's rect factor applies.
     Inside,
-    /// The device-space boundary of `shape ∩ ∩ operands`, traced exactly —
-    /// a `0`/`1`-winding boundary, drawn under `NonZero`.
-    Intersected(Vec<Edge>),
+    /// The device-space boundary of `shape ∩ ∩ operands`, traced exactly,
+    /// under the draw's own rule — the oracle finishes the same segment
+    /// set under `rule` (an `EvenOdd` draw's doubled-winding pieces are
+    /// still holes inside the clip).
+    Intersected(Vec<Edge>, FillRule),
 }
 
 /// The draw's fate under the geometric clip operands, matching the
@@ -1097,9 +1099,6 @@ fn intersect_draw(
             return DrawClip::Outside;
         }
         segs = Some(out);
-        // An intersected boundary carries winding `0`/`1`: under either
-        // rule the inside tests below read it the same.
-        rule = FillRule::NonZero;
     }
     segs.map_or(DrawClip::Inside, |segs| {
         #[expect(clippy::float_cmp, reason = "horizontal edges carry no area")]
@@ -1110,12 +1109,13 @@ fn intersect_draw(
             .collect();
         // A self-crossing operand emits pieces interior to the covered
         // region that the area accumulator still reads as boundary; the
-        // sweep emits the region's true `0`/`1`-winding boundary instead.
-        let (edges, _) = resolve_edges(edges, FillRule::NonZero);
+        // sweep emits the region's true boundary instead — under the
+        // draw's own rule, as the oracle's `finish(rule)` does.
+        let (edges, rule) = resolve_edges(edges, rule);
         if edges.is_empty() {
             DrawClip::Outside
         } else {
-            DrawClip::Intersected(edges)
+            DrawClip::Intersected(edges, rule)
         }
     })
 }
@@ -2712,8 +2712,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 match intersect_draw(&edges, frame.offset, operands, boundary) {
                     DrawClip::Outside => return,
                     DrawClip::Inside => (edges, frame.offset, rect, rule, swept),
-                    DrawClip::Intersected(edges) => {
-                        (edges.into(), [0.0; 2], rect, FillRule::NonZero, false)
+                    DrawClip::Intersected(edges, rule) => {
+                        (edges.into(), [0.0; 2], rect, rule, false)
                     }
                 }
             }
@@ -3241,6 +3241,65 @@ mod tests {
             assert!(
                 (emitted - 0.789).abs() < 0.02,
                 "pixel ({x},85): emitted {emitted}, exact ~0.789"
+            );
+        }
+    }
+
+    /// An `EvenOdd` draw keeps its doubled-winding holes inside a
+    /// geometric clip: the oracle finishes the same intersected boundary
+    /// under the draw's own rule, so the region two subpaths cover twice
+    /// stays uncovered. Two overlapping rects `EvenOdd` make the overlap
+    /// a hole; the clip's edges cross the union so the boundary is
+    /// intersected, not fast-pathed.
+    #[test]
+    fn an_evenodd_draw_keeps_its_holes_inside_a_clip() {
+        use super::coverage_mask;
+        let mut path = BezPath::new();
+        for r in [
+            kurbo::Rect::new(20.0, 20.0, 60.0, 60.0),
+            kurbo::Rect::new(40.0, 40.0, 80.0, 80.0),
+        ] {
+            path.move_to((r.x0, r.y0));
+            path.line_to((r.x1, r.y0));
+            path.line_to((r.x1, r.y1));
+            path.line_to((r.x0, r.y1));
+            path.close_path();
+        }
+        let shape = ShapeData::Path {
+            elements: path.into_elements().into(),
+            rule: FillRule::EvenOdd,
+        };
+        // Half-integer edges keep the rect off the binary fast path.
+        let clip = ShapeData::Rect(kurbo::Rect::new(30.5, 10.5, 70.5, 90.5));
+        let items = clipped_lowering(Some(&clip), 100, 100, |l| {
+            l.fill(&shape, &PaintData::Solid([0.0, 0.0, 0.0, 0.0]), None);
+        });
+        let [Item::Draw {
+            edges, rule, offset, ..
+        }] = items.as_slice()
+        else {
+            panic!("the shape is one draw")
+        };
+        let placed: Vec<super::Edge> = edges
+            .iter()
+            .map(|e| super::Edge {
+                x0: e.x0 + offset[0],
+                y0: e.y0 + offset[1],
+                x1: e.x1 + offset[0],
+                y1: e.y1 + offset[1],
+            })
+            .collect();
+        let cov = coverage_mask(&placed, *rule, 100, 100);
+        assert!(
+            cov[50 * 100 + 50] < 0.02,
+            "the EvenOdd hole stays open: coverage {}",
+            cov[50 * 100 + 50]
+        );
+        for &(x, y) in &[(35usize, 30usize), (65, 70)] {
+            assert!(
+                cov[y * 100 + x] > 0.98,
+                "pixel ({x},{y}) is covered once: coverage {}",
+                cov[y * 100 + x]
             );
         }
     }
