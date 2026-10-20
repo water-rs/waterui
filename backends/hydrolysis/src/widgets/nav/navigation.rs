@@ -45,6 +45,43 @@ fn back_button_title_reserve(theme: &Rc<dyn crate::theme::WidgetTheme>) -> f64 {
     metrics.back_button_size + metrics.title_leading_inset
 }
 
+/// The x the bar's leading toolbar group starts at. A pushed page's back
+/// button owns the bar's leading edge, so the group starts at the button's
+/// trailing edge plus the bar's inter-item gap; on a root page it starts at
+/// the bar inset (water-rs/waterui#1939 — without the offset a pushed
+/// `Cancellation` item paints under the button).
+fn navigation_leading_items_x0(
+    bar_x0: f64,
+    leading_reserve: f64,
+    metrics: &crate::theme::NavigationMetrics,
+) -> f64 {
+    if leading_reserve > 0.0 {
+        bar_x0 + metrics.back_button_leading_inset + metrics.back_button_size + metrics.item_spacing
+    } else {
+        bar_x0 + metrics.horizontal_inset
+    }
+}
+
+/// The x the bar title starts at for a measured leading-group width and the
+/// pushed page's back-button reserve — the single rule the visual flush and
+/// the accessibility emission share so their title rects agree.
+fn navigation_title_x0(
+    bar_x0: f64,
+    leading_width: f64,
+    leading_reserve: f64,
+    metrics: &crate::theme::NavigationMetrics,
+) -> f64 {
+    if leading_width > 0.0 {
+        navigation_leading_items_x0(bar_x0, leading_reserve, metrics)
+            + leading_width
+            + metrics.item_spacing
+    } else if leading_reserve > 0.0 {
+        bar_x0 + metrics.horizontal_inset + leading_reserve + metrics.item_spacing
+    } else {
+        bar_x0 + metrics.title_leading_inset
+    }
+}
+
 /// The environment a page is presented under: `base`, plus the stack's
 /// back-button reserve for any pushed destination. The reserve is a
 /// property of the page, not of the stack's current depth — a pushed page
@@ -307,13 +344,27 @@ pub fn navigation_view_accessibility(
                     } else {
                         (bar_height - title_height).mul_add(0.5, bar_rect.y0)
                     };
-                    let title_leading = navigation_leading_reserve(env);
+                    // The same leading-slot rule the flush uses, so the
+                    // title node's bounds match the rendered title —
+                    // including the leading group's width and the pushed
+                    // page's back-button offset (water-rs/waterui#1939).
+                    let leading_width = f64::from(
+                        measure_retained_toolbar_group(
+                            &state.leading,
+                            renderer.state_mut(),
+                            env,
+                            theme,
+                        )
+                        .width,
+                    );
+                    let title_leading = navigation_title_x0(
+                        bar_rect.x0,
+                        leading_width,
+                        navigation_leading_reserve(env),
+                        &metrics,
+                    );
                     let title_rect = kurbo::Rect::new(
-                        if title_leading > 0.0 {
-                            bar_rect.x0 + metrics.horizontal_inset + title_leading
-                        } else {
-                            bar_rect.x0 + metrics.title_leading_inset
-                        },
+                        title_leading.min(bar_rect.x1),
                         title_y0,
                         bar_rect.x1 - metrics.title_trailing_inset,
                         title_y0 + title_height,
@@ -649,10 +700,12 @@ pub fn render_navigation_view_parts(
         };
         let leading_width = f64::from(leading_size.width);
         let trailing_width = f64::from(trailing_size.width);
+        let leading_reserve = navigation_leading_reserve(env);
+        let leading_x0 = navigation_leading_items_x0(bar_rect.x0, leading_reserve, &metrics);
         let leading_rect = kurbo::Rect::new(
-            bar_rect.x0 + metrics.horizontal_inset,
+            leading_x0,
             bar_rect.y0,
-            (bar_rect.x0 + metrics.horizontal_inset + leading_width).min(bar_rect.x1),
+            (leading_x0 + leading_width).min(bar_rect.x1),
             (bar_rect.y0 + base_bar_height).min(bar_rect.y1),
         );
         let trailing_rect = kurbo::Rect::new(
@@ -691,12 +744,7 @@ pub fn render_navigation_view_parts(
         } else {
             (base_bar_height - title_height).mul_add(0.5, bar_rect.y0)
         };
-        let effective_leading_width = leading_width.max(navigation_leading_reserve(env));
-        let title_x0 = if effective_leading_width > 0.0 {
-            bar_rect.x0 + metrics.horizontal_inset + effective_leading_width + metrics.item_spacing
-        } else {
-            bar_rect.x0 + metrics.title_leading_inset
-        };
+        let title_x0 = navigation_title_x0(bar_rect.x0, leading_width, leading_reserve, &metrics);
         let title_x1 = if trailing_width > 0.0 {
             bar_rect.x1 - metrics.horizontal_inset - trailing_width - metrics.item_spacing
         } else {
