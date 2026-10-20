@@ -36,13 +36,14 @@ use cherenkov::{FillRule, ShapeData};
 use rustc_hash::{FxHashMap, FxHasher};
 
 use super::raster::Edge;
+use super::tiles::EdgeTiles;
 
 /// One offered draw: its key and its swept edges.
 struct Entry {
     shape: ShapeData,
     stroke: Option<kurbo::Stroke>,
     linear: [u64; 4],
-    edges: Arc<[Edge]>,
+    edges: Arc<EdgeTiles>,
     rule: FillRule,
 }
 
@@ -57,7 +58,7 @@ pub struct GeometryCache {
 /// Geometry produced for a draw: its edges in the draw's [`Frame`], the rule
 /// they fill under, and whether the winding sweep produced or confirmed them.
 pub struct Resolved {
-    pub edges: Arc<[Edge]>,
+    pub edges: Arc<EdgeTiles>,
     pub rule: FillRule,
     pub swept: bool,
 }
@@ -92,20 +93,22 @@ impl GeometryCache {
         let (edges, rule) = flatten()?;
         Some(match cherenkov::lowering::resolve_winding(&edges, rule) {
             Winding::Disjoint => Resolved {
-                edges: Arc::from(edges),
+                edges: Arc::new(EdgeTiles::new(&edges)),
                 rule,
                 swept: false,
             },
             Winding::Unchanged => Resolved {
-                edges: Arc::from(edges),
+                edges: Arc::new(EdgeTiles::new(&edges)),
                 rule,
                 swept: true,
             },
             Winding::Resolved(resolved) => Resolved {
-                edges: resolved
-                    .into_iter()
-                    .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 })
-                    .collect(),
+                edges: Arc::new(EdgeTiles::new(
+                    &resolved
+                        .into_iter()
+                        .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 })
+                        .collect::<Vec<_>>(),
+                )),
                 rule: FillRule::NonZero,
                 swept: true,
             },
@@ -120,7 +123,7 @@ impl GeometryCache {
         shape: &ShapeData,
         stroke: Option<&kurbo::Stroke>,
         transform: Affine,
-        edges: &Arc<[Edge]>,
+        edges: &Arc<EdgeTiles>,
         rule: FillRule,
     ) {
         if let Some(key) = Key::new(shape, stroke, transform) {
@@ -154,7 +157,7 @@ impl GeometryCache {
         let mut bytes = table as u64;
         for entry in self.entries.values() {
             if Arc::strong_count(&entry.edges) == 1 {
-                bytes += (entry.edges.len() * size_of::<Edge>()) as u64;
+                bytes += entry.edges.heap_bytes();
             }
             if let ShapeData::Path { elements, .. } = &entry.shape
                 && Arc::strong_count(elements) == 1

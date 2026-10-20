@@ -97,11 +97,7 @@ fn item_bytes(item: &Item) -> u64 {
     match item {
         Item::Draw {
             edges, paint, clip, ..
-        } => {
-            (edges.len() * size_of::<super::raster::Edge>()) as u64
-                + paint_data_bytes(paint)
-                + clip.as_deref().map_or(0, clip_bytes)
-        }
+        } => edges.heap_bytes() + paint_data_bytes(paint) + clip.as_deref().map_or(0, clip_bytes),
         Item::Glyph { paint, clip, .. } | Item::Silhouette { paint, clip, .. } => {
             paint_data_bytes(paint) + clip.as_deref().map_or(0, clip_bytes)
         }

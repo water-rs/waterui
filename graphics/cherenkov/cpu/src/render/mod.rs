@@ -26,6 +26,7 @@ pub mod present;
 mod projective;
 mod raster;
 mod shadow;
+mod tiles;
 
 // The `testing` feature's surface: the span kernels and the types their
 // signatures name. `render` is a private module, so nothing is reachable

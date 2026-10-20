@@ -31,6 +31,7 @@ use crate::render::lower::{
 };
 use crate::render::paint::PaintData;
 use crate::render::shadow;
+use crate::render::tiles::{EdgeList, EdgeTiles};
 use crate::{Band as BandOut, BandPixels};
 use cherenkov::OffscreenFormat;
 use fearless_simd::{Simd, f32x4};
@@ -3061,7 +3062,7 @@ impl Band<'_> {
         simd: S,
         acc: &mut Accum,
         stack: &mut Vec<Plane>,
-        (edges, sel, [ox, oy]): (&[Edge], &[usize], [f32; 2]),
+        (edges, sel, [ox, oy]): (&EdgeTiles, &[usize], [f32; 2]),
         bbox: crate::render::lower::DrawBox,
         rule: FillRule,
         paint: &PaintData,
@@ -3087,7 +3088,7 @@ impl Band<'_> {
         // The frame's origin relative to the band's top row.
         let dy = oy - self.y0 as f32;
         for &ei in sel {
-            let e = &edges[ei];
+            let e = edges.edge(ei);
             // Only edges crossing the band deposit anything.
             let ey0 = e.y0 + dy;
             let ey1 = e.y1 + dy;
@@ -3604,7 +3605,7 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
     let mut index = EdgeBins::default();
     index.rebuild(
         std::iter::once(EdgeGroup {
-            edges,
+            edges: EdgeList::Flat(edges),
             geometry_unchanged: false,
             oy: 0.0,
             band0: 0,

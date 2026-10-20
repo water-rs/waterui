@@ -20,6 +20,7 @@ use super::prepared::Op;
 use crate::names;
 use crate::render::paint::PaintData;
 use crate::render::raster::{Edge, coverage_mask};
+use crate::render::tiles::EdgeTiles;
 
 /// Curve-to-path and stroke tolerance in device pixels.
 pub const FLATTEN_TOL: f64 = 0.02;
@@ -73,8 +74,9 @@ pub enum Item {
     /// A filled, flattened polygon.
     Draw {
         /// Directed edges in the draw's translation-normalized frame
-        /// ([`Frame`]): device space is the frame moved by `offset`.
-        edges: Arc<[Edge]>,
+        /// ([`Frame`]), retained tile-local: device space is the frame
+        /// moved by `offset`.
+        edges: Arc<EdgeTiles>,
         /// The device position of the frame's origin, added to every edge
         /// coordinate.
         offset: [f32; 2],
@@ -911,9 +913,9 @@ pub fn harvest(geometry: &mut GeometryCache, content: &ContentData) {
     clippy::cast_precision_loss,
     reason = "clamped to the target, whose sides fit u16 and f32 exactly"
 )]
-fn bbox_of(edges: &[Edge], [ox, oy]: [f32; 2], w: usize, h: usize) -> DrawBox {
+fn bbox_of(edges: &EdgeTiles, [ox, oy]: [f32; 2], w: usize, h: usize) -> DrawBox {
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-    for e in edges {
+    for e in edges.iter() {
         x0 = x0.min(e.x0.min(e.x1));
         y0 = y0.min(e.y0.min(e.y1));
         x1 = x1.max(e.x0.max(e.x1));
@@ -2645,6 +2647,7 @@ mod tests {
     use crate::render::bitmap::BitmapCache;
     use crate::render::geometry::GeometryCache;
     use crate::render::paint::PaintData;
+    use crate::render::tiles::EdgeTiles;
     use cherenkov::kurbo::{self, Affine, BezPath, Vec2};
     use cherenkov::{FillRule, FrameId, LayerId, ShapeData};
     use rustc_hash::FxHashMap;
@@ -2670,8 +2673,8 @@ mod tests {
         }
     }
 
-    /// `edges` as exact words.
-    fn bits(edges: &[super::Edge]) -> Vec<[u32; 4]> {
+    /// `edges` decoded, as exact words.
+    fn bits(edges: &EdgeTiles) -> Vec<[u32; 4]> {
         edges
             .iter()
             .map(|e| [e.x0, e.y0, e.x1, e.y1].map(f32::to_bits))
@@ -2685,7 +2688,7 @@ mod tests {
         op: &Op,
         transform: Affine,
         cache: &mut Realization<Emission>,
-    ) -> (Arc<[super::Edge]>, [f32; 2], super::DrawBox, bool) {
+    ) -> (Arc<EdgeTiles>, [f32; 2], super::DrawBox, bool) {
         let (mut items, mut scratch) = (Vec::new(), AnchorScratch::default());
         let (mut fonts, bitmap_fonts) = (FxHashMap::default(), FxHashMap::default());
         let (mut bitmaps, mut geometry) = (BitmapCache::new(0), GeometryCache::default());
