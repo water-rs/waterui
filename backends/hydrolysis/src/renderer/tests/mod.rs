@@ -34,6 +34,7 @@ mod gesture_surface;
 mod gpu_surface_direct;
 mod gpu_surface_idle;
 mod gpu_surface_input;
+mod group_opacity;
 mod image_ingest;
 mod ime;
 mod interaction_state;
@@ -2871,6 +2872,11 @@ pub struct ChromePlan {
     pub captures: Vec<(CaptureClass, MaterialCapture)>,
     /// The materials `draw_interaction_state_layer` records per call.
     pub draws: Vec<ChromeDraw>,
+    /// Scene fills `draw_interaction_state_layer` records after the
+    /// materials — each lands in the segment above the last member, so a
+    /// test can mount a keyed mount and a scene segment over it in one
+    /// program (water-rs/waterui#2002).
+    pub fills: Vec<(kurbo::RoundedRect, Paint)>,
     /// When set, `draw_interaction_state_layer` records the materials
     /// this resolves from the live `WidgetInteractionState` instead —
     /// how a theme whose uniforms depend on the press is written.
@@ -3003,6 +3009,9 @@ impl WidgetTheme for MinimalTestTheme {
                 chrome.capture,
                 chrome.effect.clone(),
             );
+        }
+        for (shape, paint) in &self.chrome.fills {
+            draw.fill(*shape, paint.clone());
         }
     }
 

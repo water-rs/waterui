@@ -85,6 +85,7 @@ fn glass_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
             ),
         ],
         draws,
+        fills: Vec::new(),
         stateful_draws: None,
     }
 }
