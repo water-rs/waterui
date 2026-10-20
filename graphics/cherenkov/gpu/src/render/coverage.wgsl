@@ -56,14 +56,14 @@ struct GpuPath {
     _pad: array<u32, 2>,
     affine: vec4<f32>,
     translate: vec2<f32>,
-    surface: vec2<f32>,
+    clip_hi: vec2<f32>,
     tile_base: u32,
     bound_y: f32,
     rect_x: f32,
     rect_y: f32,
     rect_w: u32,
     rect_h: u32,
-    _pad2: vec2<f32>,
+    clip_lo: vec2<f32>,
 }
 
 struct Params {
@@ -128,12 +128,14 @@ fn cubic_at(p0: vec2<f32>, c0: vec2<f32>, c1: vec2<f32>, p1: vec2<f32>, t: f32) 
 }
 
 // The coverage grid rect the CPU sweep derives: the segment bbox
-// inflated by 1 px and clipped to the surface, floored and ceiled.
+// inflated by 1 px and clipped to the generation frame's clip —
+// `[0, surface]` for a clipped path, the same rect shifted by −offset
+// for a retained placement-relative one (water-rs/waterui#3081).
 fn grid_rect(pi: u32) -> vec4<f32> {
-    let x0 = max(unordered(atomicLoad(&paths[pi].atom[0])) - 1.0, 0.0);
-    let y0 = max(unordered(atomicLoad(&paths[pi].atom[1])) - 1.0, 0.0);
-    let x1 = min(unordered(atomicLoad(&paths[pi].atom[2])) + 1.0, paths[pi].surface.x);
-    let y1 = min(unordered(atomicLoad(&paths[pi].atom[3])) + 1.0, paths[pi].surface.y);
+    let x0 = max(unordered(atomicLoad(&paths[pi].atom[0])) - 1.0, paths[pi].clip_lo.x);
+    let y0 = max(unordered(atomicLoad(&paths[pi].atom[1])) - 1.0, paths[pi].clip_lo.y);
+    let x1 = min(unordered(atomicLoad(&paths[pi].atom[2])) + 1.0, paths[pi].clip_hi.x);
+    let y1 = min(unordered(atomicLoad(&paths[pi].atom[3])) + 1.0, paths[pi].clip_hi.y);
     let gx = floor(x0);
     let gy = floor(y0);
     let w = max(ceil(x1) - gx, 0.0);

@@ -621,9 +621,16 @@ pub fn prepare_gpu(elements: &[PathEl], raster: Affine, surface: (f64, f64)) -> 
 
 impl GpuPath {
     /// Reposition encoded geometry without rebuilding its local curves.
-    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn translated(&self, offset: Vec2, surface: (f64, f64)) -> Self {
-        let clip = Rect::new(0.0, 0.0, surface.0, surface.1);
+        self.translated_clip(offset, Rect::new(0.0, 0.0, surface.0, surface.1))
+    }
+
+    /// The same bound in a frame whose surface clip is `clip`: the
+    /// retained coverage entry's generation frame clips to
+    /// `[0, surface] − offset` — a no-op for the unclipped hulls it
+    /// serves (water-rs/waterui#3081).
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn translated_clip(&self, offset: Vec2, clip: Rect) -> Self {
         let mut bound = self.bound;
         // The bound raster grid: the hull inflated by a pixel and clipped to
         // the surface, floored and ceiled like the sweep's rect.

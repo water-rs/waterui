@@ -2800,6 +2800,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                 Err(declined)
             }
         };
+        let gpu_cov = gpu_cov::GpuCoverage::new(&device, config.budget.gpu.0 / 8);
         let renderer = GpuRenderer {
             instance,
             adapter,
@@ -2873,7 +2874,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             bound_instance_size: 272 * 16,
             arena_placeholder,
             bound_arena_gen: 0,
-            gpu_cov: gpu_cov::GpuCoverage::new(),
+            gpu_cov,
             bound_stop_size: 32 * 16,
             bound_globals_size: 256,
             atlas,
@@ -3155,6 +3156,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         Some(&adapter),
         Some(&device),
     )?;
+    let gpu_cov = gpu_cov::GpuCoverage::new(&device, config.budget.gpu.0 / 8);
     let renderer = GpuRenderer {
         instance,
         adapter,
@@ -3202,7 +3204,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         quad_indices,
         arena_placeholder,
         bound_arena_gen: 0,
-        gpu_cov: gpu_cov::GpuCoverage::new(),
+        gpu_cov,
         bind0,
         dummy_view,
         dummy_uint_view,
@@ -4858,6 +4860,9 @@ impl GpuRenderer {
             .collect();
         diag::set_phase("lower");
         let results = self.lower_all(&mut pending, &dirty, &inputs);
+        // GPU coverage generations count once per commit, wherever the
+        // entry landed (water-rs/waterui#3081).
+        stats.paths_rasterized += self.gpu_cov.generated();
         for (id, mut surf) in dirty.iter().zip(pending) {
             surf.plane_resources = (self.images_gen, self.image_replacements, surf.interop);
             self.surfaces.insert(id.id, surf);
@@ -5023,6 +5028,9 @@ impl GpuRenderer {
             .collect();
         diag::set_phase("lower");
         let results = self.lower_all(&mut pending, &dirty, &inputs);
+        // GPU coverage generations count once per commit, wherever the
+        // entry landed (water-rs/waterui#3081).
+        stats.paths_rasterized += self.gpu_cov.generated();
         for (id, mut surf) in dirty.iter().zip(pending) {
             surf.plane_resources = (self.images_gen, self.image_replacements, surf.interop);
             self.surfaces.insert(id.id, surf);
@@ -7119,6 +7127,14 @@ impl GpuRenderer {
             .filter_map(|r| r.as_ref().ok())
             .flat_map(|l| l.pending.iter())
             .collect();
+        // The frame's live GPU-coverage entries touch before any miss
+        // may allocate, so an eviction can never take a block this
+        // frame draws (water-rs/waterui#3081).
+        for raster in &rasters {
+            if let glyph::PendingRaster::GpuPath(draw) = raster {
+                self.gpu_cov.touch(draw.key);
+            }
+        }
         let n_cells: usize = rasters.iter().map(|r| r.cell_count()).sum();
         // A frame whose batch places strictly needs no replay pins and
         // no eviction, so no emission scan and no touch decoding runs —
@@ -7557,13 +7573,16 @@ impl GpuRenderer {
                 }
                 Ok(PendingOrigin::None)
             }
-            PendingRaster::GpuPath {
-                rule,
-                raster,
-                surface,
-                path,
-            } => {
-                let index = self.gpu_cov.push(rule, raster, surface, &path)?;
+            PendingRaster::GpuPath(draw) => {
+                let index = self.gpu_cov.draw(
+                    &self.device,
+                    draw.key,
+                    draw.offset,
+                    draw.rule,
+                    draw.raster,
+                    draw.clip,
+                    &draw.path,
+                )?;
                 Ok(PendingOrigin::Gpu(index))
             }
         }
@@ -8283,7 +8302,7 @@ impl GpuRenderer {
         // The timestamp query set and resolve buffer grow once for the
         // frame's whole pass count; never mid-encoder.
         if self.timestamps && passes > 0 {
-            let coverage_passes = u32::from(self.gpu_cov.has_draws());
+            let coverage_passes = u32::from(self.gpu_cov.has_misses());
             self.ensure_query_capacity(
                 2 * (u32::try_from(passes).expect("frame pass count fits u32") + coverage_passes),
             );
@@ -8637,28 +8656,36 @@ impl GpuRenderer {
         // in this encoder ahead of the raster passes — whichever dirty
         // surface is encoded first records it (#2543).
         if self.gpu_cov.needs_prologue() {
+            // Only a coverage miss records a compute pass: all-hit
+            // frames need just the count-word copies (#3081).
+            let misses = self.gpu_cov.has_misses();
             let first_query = self.query_base + 2 * self.frame_pass_count;
-            self.frame_pass_count += 1;
-            if self.timestamps {
-                self.pass_meta.push(PassMeta {
-                    name: "coverage".to_owned(),
-                    width: 0,
-                    height: 0,
-                    format: "compute",
+            let timestamp_writes = self
+                .query_set
+                .as_ref()
+                .filter(|_| misses)
+                .map(|query_set| wgpu::ComputePassTimestampWrites {
+                    query_set,
+                    beginning_of_pass_write_index: Some(first_query),
+                    end_of_pass_write_index: Some(first_query + 1),
                 });
+            if misses {
+                self.frame_pass_count += 1;
+                if self.timestamps {
+                    self.pass_meta.push(PassMeta {
+                        name: "coverage".to_owned(),
+                        width: 0,
+                        height: 0,
+                        format: "compute",
+                    });
+                }
             }
             self.gpu_cov.record_prologue(
                 &self.device,
                 &self.queue,
                 &mut encoder,
                 self.shader_delivery,
-                self.query_set
-                    .as_ref()
-                    .map(|query_set| wgpu::ComputePassTimestampWrites {
-                        query_set,
-                        beginning_of_pass_write_index: Some(first_query),
-                        end_of_pass_write_index: Some(first_query + 1),
-                    }),
+                timestamp_writes,
             )?;
         }
         let mut i = 0;
@@ -10083,6 +10110,10 @@ impl GpuRenderer {
             }
             buffers.push(encoder.finish());
             let submission = self.queue.submit(buffers);
+            // The coverage prologue this encoder carries has landed:
+            // entries it generated are replayable and a pending
+            // compaction's copies have executed (water-rs/waterui#3081).
+            self.gpu_cov.submitted();
             track_submission(&self.queue, &self.tracker);
             // The epoch's descriptor sets were referenced by the
             // command buffers just submitted and by nothing else, so

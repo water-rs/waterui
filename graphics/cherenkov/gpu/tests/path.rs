@@ -860,6 +860,133 @@ fn a_leaf_with_thousands_of_cells_replays_every_cell() -> Result<(), Box<dyn std
 }
 }
 
+/// 0.5 px dots at 1 px pitch in a 4-row band — a second qualifying
+/// path whose coverage stays disjoint from `sparse_dots`' rows.
+fn dense_band() -> BezPath {
+    let mut path = BezPath::new();
+    for row in 0..4_u32 {
+        for column in 0..512_u32 {
+            let x = f64::from(column);
+            let y = 266.0 + f64::from(row);
+            path.move_to((x + 0.25, y + 0.25));
+            path.line_to((x + 0.75, y + 0.25));
+            path.line_to((x + 0.75, y + 0.75));
+            path.line_to((x + 0.25, y + 0.75));
+            path.close_path();
+        }
+    }
+    path
+}
+
+split_test! {
+/// An integer layer translation replays the retained coverage entry —
+/// the block shifts per draw and nothing regenerates; a fractional
+/// translation changes the placement key and regenerates
+/// (water-rs/waterui#3081).
+fn a_gpu_path_replays_under_integer_translation_only() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::kurbo::Affine;
+    let Some(engine) = wait!(engine())? else {
+        return Ok(());
+    };
+    let (surface, dots) = wait!(sized_surface(&engine, (512, 272)))?;
+    surface.update(|tx| {
+        tx[&dots].content(surface.record(|c| c.fill(sparse_dots(), RED)));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(engine.stats().paths_rasterized, 1);
+    let produced = wait!(surface.readback())?;
+    // +3, +2 keeps the hull on the surface: same key, a per-draw shift.
+    surface.update(|tx| {
+        tx[&dots].transform(Affine::translate((3.0, 2.0)));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(engine.stats().paths_rasterized, 0, "an integer move replays");
+    let moved = wait!(surface.readback())?;
+    for y in 2..258 {
+        for x in 3..512 {
+            assert_eq!(
+                px(&moved, x, y).map(f32::to_bits),
+                px(&produced, x - 3, y - 2).map(f32::to_bits),
+                "shifted pixel {x},{y}"
+            );
+        }
+    }
+    // A half-pixel translation changes the key: the entry regenerates.
+    surface.update(|tx| {
+        tx[&dots].transform(Affine::translate((3.5, 2.0)));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(engine.stats().paths_rasterized, 1, "a fractional move regenerates");
+    Ok(())
+}
+}
+
+split_test! {
+/// One retained entry serves two integer-offset draws of the same
+/// path — frame 1 generates once per distinct key — and changing only
+/// the other path's content regenerates it alone (water-rs/waterui#3081).
+fn a_retained_gpu_entry_serves_two_offsets_and_survives_a_sibling_change(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::kurbo::Affine;
+    let Some(engine) = wait!(engine())? else {
+        return Ok(());
+    };
+    let (surface, layer) = wait!(sized_surface(&engine, (512, 272)))?;
+    let draw = |surface: &cherenkov::Surface<Gpu>, band: BezPath| {
+        surface.record(move |c| {
+            c.fill(sparse_dots(), RED);
+            c.transform(Affine::translate((3.0, 7.0)), |c| {
+                c.fill(sparse_dots(), RED);
+            });
+            c.fill(band, RED);
+        })
+    };
+    surface.update(|tx| {
+        tx[&layer].content(draw(&surface, dense_band()));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(
+        engine.stats().paths_rasterized,
+        2,
+        "one generation per distinct key"
+    );
+    let produced = wait!(surface.readback())?;
+    // A band of 1 px squares on a shifted pitch — a new content hash.
+    let mut changed = BezPath::new();
+    for row in 0..4_u32 {
+        for column in 0..340_u32 {
+            let x = f64::from(column) * 1.5;
+            let y = 266.0 + f64::from(row);
+            changed.move_to((x + 0.3, y + 0.3));
+            changed.line_to((x + 0.8, y + 0.3));
+            changed.line_to((x + 0.8, y + 0.8));
+            changed.line_to((x + 0.3, y + 0.8));
+            changed.close_path();
+        }
+    }
+    surface.update(|tx| {
+        tx[&layer].content(draw(&surface, changed));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(
+        engine.stats().paths_rasterized,
+        1,
+        "only the changed path regenerates"
+    );
+    let replayed = wait!(surface.readback())?;
+    for y in 0..264 {
+        for x in 0..506 {
+            assert_eq!(
+                px(&replayed, x, y).map(f32::to_bits),
+                px(&produced, x, y).map(f32::to_bits),
+                "unchanged pixel {x},{y}"
+            );
+        }
+    }
+    Ok(())
+}
+}
+
 /// Where the cut test's content lies in its local space, as in a document
 /// scrolled this far: tens of thousands of units from the origin.
 const CUT_SCROLL: (f64, f64) = (40_000.0, 24_000.0);

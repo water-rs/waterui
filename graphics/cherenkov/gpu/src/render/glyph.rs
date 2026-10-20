@@ -1059,7 +1059,7 @@ impl Atlas {
                 PendingRaster::MaskTexture { .. }
                 | PendingRaster::Colr { .. }
                 | PendingRaster::Bitmap { .. }
-                | PendingRaster::GpuPath { .. } => {}
+                | PendingRaster::GpuPath(_) => {}
             }
         }
     }
@@ -2128,7 +2128,7 @@ impl PendingRaster {
             Self::MaskTexture { .. }
             | Self::Colr { .. }
             | Self::Bitmap { .. }
-            | Self::GpuPath { .. } => 0,
+            | Self::GpuPath(_) => 0,
         }
     }
 }
@@ -2221,22 +2221,37 @@ pub enum PendingRaster {
     },
     /// A path routed to the GPU coverage kernels (issue #2543, decision
     /// S3): the lowering recorded its curve elements, fill rule and
-    /// device transform — the CPU never flattened it and nothing is
-    /// rasterized or stored in the atlas. The record joins the frame's
-    /// compute input at apply time; the anchor instance in the frame's
-    /// instance array supplies the drawing state the vertex stage
-    /// joins to each emitted geometry record (water-rs/waterui#3081).
-    GpuPath {
-        /// `FillRule` as the kernel's `rule` field (0 non-zero,
-        /// 1 even-odd).
-        rule: u32,
-        /// Local → device transform the kernels apply.
-        raster: kurbo::Affine,
-        /// The target surface size the grid bounds clip to.
-        surface: (u32, u32),
-        /// Encoded geometry and its storage bounds.
-        path: crate::render::path::GpuPath,
-    },
+    /// placement — the CPU never flattened it and nothing is rasterized
+    /// or stored in the atlas. The record joins the frame's coverage
+    /// state at apply time; the anchor instance in the frame's instance
+    /// array supplies the drawing state the vertex stage joins to each
+    /// emitted geometry record (water-rs/waterui#3081).
+    GpuPath(GpuDraw),
+}
+
+/// A GPU-routed path's draw record (water-rs/waterui#3081): the
+/// placement key its coverage entry lives under plus everything a miss
+/// regenerates from. Retained leaves keep a clone so a hit re-joins —
+/// or regenerates — the entry without the lowering that produced it.
+#[derive(Clone)]
+pub struct GpuDraw {
+    /// The `path::placement` retention key — `key_exact` when the
+    /// surface clips the coverage hull.
+    pub key: u64,
+    /// Integer translation the coverage is relative to; a later draw at
+    /// another integer offset shifts it by `offset − entry.offset`.
+    pub offset: [i32; 2],
+    /// `FillRule` as the kernel's `rule` field (0 non-zero, 1 even-odd).
+    pub rule: u32,
+    /// Kernel transform in the generation frame: the 2x2 plus the
+    /// translation's fraction, or the full raster when clipped.
+    pub raster: kurbo::Affine,
+    /// Generation-frame clip rect `(x0, y0, x1, y1)`: `[0, surface]`
+    /// shifted by `−offset` — a no-op for unclipped entries — or the
+    /// surface rect itself when clipped.
+    pub clip: [f32; 4],
+    /// Encoded geometry and its storage bounds in the generation frame.
+    pub path: crate::render::path::GpuPath,
 }
 
 /// The glyph's atlas cell. On a cache hit the entry is returned with
