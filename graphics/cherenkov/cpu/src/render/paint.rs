@@ -58,8 +58,9 @@ pub struct ImagePaintData {
 /// parameters the evaluator needs.
 #[derive(Clone, Debug)]
 pub enum PaintData {
-    /// A shared prepared paint and its shape-to-paint coordinate map.
-    Transformed(std::sync::Arc<Self>, Affine),
+    /// A shared prepared paint, its shape-to-paint coordinate map and
+    /// that map's f32 conversion, stored so evaluators never reconvert.
+    Transformed(std::sync::Arc<Self>, Affine, [f32; 6]),
     /// Prepared bilinear patches shared across placements.
     Mesh(super::mesh::Mesh),
     /// A registered image pattern.
@@ -271,7 +272,8 @@ pub fn paint_data(
                 return paint_data(inner, inv, images);
             }
             let inner = paint_data(inner, Affine::IDENTITY, images)?;
-            PaintData::Transformed(std::sync::Arc::new(inner), inverse * inv)
+            let inverse = inverse * inv;
+            PaintData::Transformed(std::sync::Arc::new(inner), inverse, affine_f32(inverse))
         }
         Paint::Solid(c) => {
             let [r, g, b, a] = c.components;
@@ -526,7 +528,7 @@ impl PaintData {
     pub fn transformed(&self, transform: Affine) -> Self {
         let mut paint = self.clone();
         match &mut paint {
-            Self::Transformed(inner, inverse) => return inner.transformed(*inverse * transform),
+            Self::Transformed(inner, inverse, _) => return inner.transformed(*inverse * transform),
             Self::Solid(_) => {}
             Self::Mesh(mesh) => *mesh = mesh.transformed(transform),
             Self::Image(image) => image.inv = affine_f32(image.mapping * transform),
@@ -558,7 +560,7 @@ impl PaintData {
     fn evaluate<O: PaintOutput>(&self, output: O) -> O::Output {
         if matches!(self, Self::Transformed(..)) {
             let mut leaf = self;
-            while let Self::Transformed(inner, _) = leaf {
+            while let Self::Transformed(inner, ..) = leaf {
                 leaf = inner;
             }
             leaf.evaluate_leaf(TransformedOutput {
@@ -713,8 +715,8 @@ pub(super) struct Linear<'a> {
 #[inline(always)]
 fn linear_at(outer: &PaintData, params: &Linear<'_>, mut x: f32, mut y: f32) -> [f32; 4] {
     let mut link = outer;
-    while let PaintData::Transformed(inner, inverse) = link {
-        (x, y) = apply(affine_f32(*inverse), x, y);
+    while let PaintData::Transformed(inner, _, inverse) = link {
+        (x, y) = apply(*inverse, x, y);
         link = inner;
     }
     let (px, py) = apply(params.inv, x, y);
@@ -749,8 +751,8 @@ impl<O: PaintOutput> PaintOutput for TransformedOutput<'_, O> {
     fn sample(self, mut evaluate: impl FnMut(f32, f32) -> [f32; 4]) -> Self::Output {
         self.output.sample(|mut x, mut y| {
             let mut paint = self.paint;
-            while let PaintData::Transformed(inner, inverse) = paint {
-                (x, y) = apply(affine_f32(*inverse), x, y);
+            while let PaintData::Transformed(inner, _, inverse) = paint {
+                (x, y) = apply(*inverse, x, y);
                 paint = inner;
             }
             evaluate(x, y)
@@ -1068,8 +1070,8 @@ mod tests {
     }
 
     fn scalar_reference(paint: &PaintData, x: f32, y: f32) -> [f32; 4] {
-        if let PaintData::Transformed(inner, inverse) = paint {
-            let (x, y) = super::apply(super::affine_f32(*inverse), x, y);
+        if let PaintData::Transformed(inner, _, inverse) = paint {
+            let (x, y) = super::apply(*inverse, x, y);
             scalar_reference(inner, x, y)
         } else {
             paint.eval(x, y)
