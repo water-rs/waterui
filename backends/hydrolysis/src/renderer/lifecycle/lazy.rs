@@ -107,13 +107,10 @@ pub fn place_lazy_stack_item(
 ) -> kurbo::Rect {
     match axis_config {
         LazyStackAxisConfig::Vertical { alignment, .. } => {
-            assert!(
-                !(matches!(
-                    stretch_axis,
-                    StretchAxis::Vertical | StretchAxis::Both | StretchAxis::MainAxis
-                )),
-                "hydrolysis LazyContainer VStackLayout does not support children stretching on main axis"
-            );
+            // The main axis takes the measured extent: the lazy stack
+            // proposes `None` there, so a main-axis stretching child
+            // keeps its ideal extent exactly as an eager stack's does
+            // (docs/layout-spec.md §4.2, §5; water-rs/waterui#1930).
             let child_width = if matches!(
                 stretch_axis,
                 StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::CrossAxis
@@ -139,13 +136,8 @@ pub fn place_lazy_stack_item(
             kurbo::Rect::new(x, cursor, x + child_width, cursor + child_height)
         }
         LazyStackAxisConfig::Horizontal { alignment, .. } => {
-            assert!(
-                !(matches!(
-                    stretch_axis,
-                    StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::MainAxis
-                )),
-                "hydrolysis LazyContainer HStackLayout does not support children stretching on main axis"
-            );
+            // Same main-axis rule as the vertical arm: the measured
+            // extent is the child's ideal (water-rs/waterui#1930).
             let child_width = f64::from(size.width);
             let child_height = if matches!(
                 stretch_axis,

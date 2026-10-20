@@ -860,3 +860,39 @@ fn report_offset_writes_under_the_semantic_runtime() {
         writes.get()
     );
 }
+
+/// water-rs/waterui#1930: a lazy stack proposes each item `None` on the
+/// main axis, so a main-axis stretching item answers its ideal extent and
+/// is placed at it — exactly what an eager stack's child under an
+/// unspecified main proposal does (§4.2, §5). The backend rejected the
+/// answer instead: `place_lazy_stack_item` asserted the item's
+/// `stretch_axis` never named the main axis and panicked on
+/// `vstack((spacer(), text("item")))`.
+#[test]
+fn a_main_axis_stretching_item_keeps_its_ideal_extent() {
+    let mut app = mount_rendered(
+        Environment::new(),
+        || {
+            scroll(VStack::for_each(
+                (0..4).map(SelfId::new).collect::<Vec<_>>(),
+                move |_item| vstack((spacer(), text("item").a11y_label("item-0"))),
+            ))
+        },
+        320,
+        240,
+    );
+    app.settle();
+
+    // The mount must reach layout without the panic, and the item's text
+    // reports a finite extent inside the viewport: under the assert this
+    // point was never reached.
+    let item = node_bounds(app.tree(), "item-0");
+    assert!(
+        item.height() > 0.0 && item.height() < 240.0,
+        "a stretching lazy item must keep a finite ideal extent, got {item:?}"
+    );
+    assert!(
+        item.width() <= 320.0,
+        "the item stays inside the scroll's cross extent, got {item:?}"
+    );
+}
