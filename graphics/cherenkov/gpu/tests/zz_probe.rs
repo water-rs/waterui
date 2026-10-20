@@ -9,7 +9,7 @@ use cherenkov::{
     __engine_fn as split_fn, __engine_test as split_test, __engine_wait as wait,
 };
 use cherenkov::{Draw, Engine, Offscreen, OffscreenFormat, WorkingColor};
-use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_gpu::{CreationProbe, Gpu, GpuConfig};
 
 split_fn! {
 fn card(engine: &Engine<Gpu>, alpha: f32) -> Result<(), Box<dyn std::error::Error>> {
@@ -34,8 +34,27 @@ split_test! {
 fn phases() -> Result<(), Box<dyn std::error::Error>> {
     let mut out = String::new();
     let start = Instant::now();
-    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let phases = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let mut config = GpuConfig::default();
+    let sink = phases.clone();
+    let last = Instant::now();
+    let last = std::sync::Mutex::new(last);
+    config.creation_probe = Some(CreationProbe::new(move |point| {
+        let mut prev = last.lock().unwrap();
+        let mut line = format!("  phase {:?} {:?}", point.phase, prev.elapsed());
+        if let (cherenkov_gpu::CreationPhase::Adapter, Some(adapter)) = (point.phase, point.adapter) {
+            let info = adapter.get_info();
+            line.push_str(&format!(" [{} {:?} {}]", info.name, info.backend, info.driver));
+        }
+        *prev = Instant::now();
+        let mut sink = sink.lock().unwrap();
+        sink.push_str(&line);
+        sink.push('\n');
+        false
+    }));
+    let engine = wait!(Engine::<Gpu>::new(config))?;
     writeln!(out, "engine_new_1 {:?}", start.elapsed())?;
+    out.push_str(&phases.lock().unwrap());
     let t = Instant::now();
     wait!(card(&engine, 1.0))?;
     writeln!(out, "first_card {:?}", t.elapsed())?;
