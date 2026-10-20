@@ -2216,8 +2216,8 @@ pub enum PendingRaster {
         width: u32,
         /// Bitmap height.
         height: u32,
-        /// Premultiplied linear-P3 f16 texels.
-        texels: Vec<u8>,
+        /// The decoded pixels, stored like an image of them.
+        upload: super::image_storage::Upload<'static>,
     },
     /// A path routed to the GPU coverage kernels (issue #2543, decision
     /// S3): the lowering recorded its curve elements, fill rule, device

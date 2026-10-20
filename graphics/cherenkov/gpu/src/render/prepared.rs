@@ -201,13 +201,53 @@ const fn extend_code(extend: Extend) -> u32 {
     }
 }
 
-/// Lowers a paint; `to_local` maps content space to the instance's local
-/// (shape-centred) space in which the shader evaluates gradient parameters.
+/// The image space -> content transform that maps a `width` x `height`
+/// image onto the whole of `dst`.
+pub(super) fn image_placement(dst: &Rect, width: u32, height: u32) -> Affine {
+    Affine::translate((dst.x0, dst.y0))
+        * Affine::scale_non_uniform(
+            (dst.x1 - dst.x0) / f64::from(width),
+            (dst.y1 - dst.y0) / f64::from(height),
+        )
+}
+
+/// An image paint over a texture of `width` x `height` with source
+/// conversion `sampling_flags`; `transform` maps image space to content
+/// space and `to_local` content space to the instance's local space.
 #[expect(
     clippy::cast_precision_loss,
     clippy::many_single_char_names,
     reason = "image dimensions fit f32; affine coefficients are conventionally a..f"
 )]
+pub(super) fn image_paint(
+    to_local: Affine,
+    transform: Affine,
+    (width, height): (u32, u32),
+    (extend_x, extend_y): (Extend, Extend),
+    sampling: cherenkov::Sampling,
+    sampling_flags: u32,
+) -> PaintData {
+    // `to_local * transform` maps image space to instance-local; the
+    // shader needs the inverse.
+    let [a, b, c, d, e, f] = (to_local * transform).inverse().as_coeffs();
+    let sampling = match sampling {
+        cherenkov::Sampling::Nearest => 0,
+        cherenkov::Sampling::Linear => 1,
+    };
+    PaintData {
+        kind: PAINT_IMAGE,
+        grad: [f32_f64(a), f32_f64(b), f32_f64(c), f32_f64(d)],
+        grad2: [f32_f64(e), f32_f64(f), width as f32, height as f32],
+        packed: extend_code(extend_x)
+            | (extend_code(extend_y) << 4)
+            | (sampling << 8)
+            | sampling_flags,
+        ..PaintData::default()
+    }
+}
+
+/// Lowers a paint; `to_local` maps content space to the instance's local
+/// (shape-centred) space in which the shader evaluates gradient parameters.
 fn paint_data(
     paint: &Paint,
     to_local: Affine,
@@ -267,22 +307,17 @@ fn paint_data(
             let img = images.get(&pattern.image.raw()).ok_or_else(|| {
                 RenderError::Image(format!("unregistered image {}", pattern.image.raw()))
             })?;
-            // `to_local * transform` maps image space to instance-local; the
-            // shader needs the inverse.
-            let [a, b, c, d, e, f] = (to_local * pattern.transform).inverse().as_coeffs();
-            data.kind = PAINT_IMAGE;
-            data.grad = [f32_f64(a), f32_f64(b), f32_f64(c), f32_f64(d)];
-            let (iw, ih) = (img.width as f32, img.height as f32);
-            data.grad2 = [f32_f64(e), f32_f64(f), iw, ih];
-            let sampling = match pattern.sampling {
-                cherenkov::Sampling::Nearest => 0,
-                cherenkov::Sampling::Linear => 1,
+            data = PaintData {
+                image: Some(pattern.image.raw()),
+                ..image_paint(
+                    to_local,
+                    pattern.transform,
+                    (img.width, img.height),
+                    (pattern.extend_x, pattern.extend_y),
+                    pattern.sampling,
+                    img.sampling_flags,
+                )
             };
-            data.packed = extend_code(pattern.extend_x)
-                | (extend_code(pattern.extend_y) << 4)
-                | (sampling << 8)
-                | img.sampling_flags;
-            data.image = Some(pattern.image.raw());
         }
         Paint::Shader(_) => return Err(RenderError::Unsupported(names::SHADER)),
         Paint::Transformed(_) => unreachable!("transformed paints resolve separately"),
@@ -678,8 +713,6 @@ pub enum Op {
         font: u64,
         /// The glyph index.
         glyph: u32,
-        /// The glyph origin in run coordinates.
-        origin: [f32; 2],
         /// The run size.
         size: f32,
     },
@@ -897,13 +930,10 @@ impl Lowerer<'_> {
             .images
             .get(&image.raw())
             .ok_or_else(|| RenderError::Image(format!("unregistered image {}", image.raw())))?;
-        let (iw, ih) = (f64::from(img.width), f64::from(img.height));
-        let (dw, dh) = (dst.x1 - dst.x0, dst.y1 - dst.y0);
-        if dw <= 0.0 || dh <= 0.0 {
+        if dst.x1 - dst.x0 <= 0.0 || dst.y1 - dst.y0 <= 0.0 {
             return Ok(());
         }
-        let transform =
-            Affine::translate((dst.x0, dst.y0)) * Affine::scale_non_uniform(dw / iw, dh / ih);
+        let transform = image_placement(dst, img.width, img.height);
         let paint = Paint::Image(ImagePattern {
             image,
             transform,
@@ -1304,15 +1334,18 @@ impl Lowerer<'_> {
                 continue;
             }
             if bitmap {
-                let (local, origin) = match super::glyph::classify(glyph)? {
-                    super::glyph::GlyphPlacement::Translate(glyph) => (ambient, [glyph.x, glyph.y]),
-                    super::glyph::GlyphPlacement::Outline(place) => (ambient * place, [0.0, 0.0]),
+                // The placement composes like an image drawn under the
+                // glyph's transform, so the two realize identically.
+                let place = match super::glyph::classify(glyph)? {
+                    super::glyph::GlyphPlacement::Translate(glyph) => {
+                        Affine::translate((f64::from(glyph.x), f64::from(glyph.y)))
+                    }
+                    super::glyph::GlyphPlacement::Outline(place) => place,
                 };
                 ops.push(Op::BitmapGlyph {
-                    local,
+                    local: ambient * place,
                     font: run.font.raw(),
                     glyph: glyph.id,
-                    origin,
                     size: run.size,
                 });
                 continue;

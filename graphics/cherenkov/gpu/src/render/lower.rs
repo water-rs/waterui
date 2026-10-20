@@ -548,6 +548,29 @@ const fn variant_after(open: ShaderVariant, inst: &Instance) -> ShaderVariant {
     variant
 }
 
+/// One shaped instance's geometry, whatever its paint resolves from.
+#[derive(Clone, Copy)]
+struct ShapedGeometry {
+    /// `KIND_*`.
+    kind: u32,
+    /// Content -> instance-local, including the box's centring.
+    local: Affine,
+    /// Content transform without the centring (for the AA margin).
+    ambient: Affine,
+    /// The centred shape.
+    shape: super::instance::Shape,
+    /// The inner shape of an offset stroke.
+    inner: Option<super::instance::Shape>,
+    /// Uninflated local bounds.
+    bounds: Rect,
+    /// The margin that is not antialiasing.
+    extra_margin: f64,
+    /// `params[0]`.
+    param_x: f32,
+    /// `meta[3]` flag bits.
+    flags: u32,
+}
+
 /// The part of a shadow its following opaque fill hides, in shadow-local
 /// space: the fill's rounded box minus its corner squares, as the union of
 /// `wide` (corner rows excluded) and `tall` (corner columns excluded).
@@ -4515,28 +4538,20 @@ impl<'a> Lowering<'a> {
                 paint,
                 param_x,
                 flags,
-            } => {
-                let margin = extra_margin + self.margin(self.transform * *ambient);
-                let b = bounds.inflate(margin, margin);
-                if b.width() <= 0.0 || b.height() <= 0.0 {
-                    return Ok(());
-                }
-                let mut inst = Self::base(*kind, affine(self.transform * *local), self.clip);
-                inst.bounds = [f32_f64(b.x0), f32_f64(b.y0), f32_f64(b.x1), f32_f64(b.y1)];
-                inst.shape = *shape;
-                if let Some(inner) = inner {
-                    inst.inner = *inner;
-                }
-                inst.params[0] = *param_x;
-                let paint = self.shaped_paint(paint, *bounds, *local, *extra_margin)?;
-                inst.color = paint.color;
-                inst.grad = paint.grad;
-                inst.grad2 = paint.grad2;
-                inst.meta[1] = paint.kind;
-                inst.meta[2] = paint.first_stop;
-                inst.meta[3] |= (paint.packed & 0x00ff_ffff) | (flags << 24);
-                self.push_shaped(inst, self.transform * *local, *bounds, margin);
-            }
+            } => self.shaped(
+                &ShapedGeometry {
+                    kind: *kind,
+                    local: *local,
+                    ambient: *ambient,
+                    shape: *shape,
+                    inner: *inner,
+                    bounds: *bounds,
+                    extra_margin: *extra_margin,
+                    param_x: *param_x,
+                    flags: *flags,
+                },
+                |this| this.shaped_paint(paint, *bounds, *local, *extra_margin),
+            )?,
             Op::Shadow {
                 local,
                 ambient,
@@ -4591,9 +4606,8 @@ impl<'a> Lowering<'a> {
                 local,
                 font,
                 glyph,
-                origin,
                 size,
-            } => self.bitmap_glyph(*local, *font, *glyph, *origin, *size, glyphs)?,
+            } => self.bitmap_glyph(*local, *font, *glyph, *size, glyphs)?,
             _ => unreachable!("scope is composed, never realized as a leaf"),
         }
         Ok(())
@@ -4601,16 +4615,11 @@ impl<'a> Lowering<'a> {
 
     #[cold]
     #[inline(never)]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "bitmap glyph decoding and image-instance emission form one cold path"
-    )]
     fn bitmap_glyph(
         &mut self,
         local: Affine,
         font_id: u64,
         glyph_id: u32,
-        origin: [f32; 2],
         size: f32,
         glyphs: &GlyphContext<'_>,
     ) -> Result<(), RenderError> {
@@ -4634,22 +4643,23 @@ impl<'a> Lowering<'a> {
             strike,
             glyph: glyph_id,
         };
-        let (em, width, height) = if let Some(bitmap) = glyphs.bitmaps.get(&key) {
-            (bitmap.em, bitmap.image.width, bitmap.image.height)
-        } else if let Some((em, width, height)) = self.pending.iter().find_map(|raster| {
+        let (em, width, height, sampling_flags) = if let Some(bitmap) = glyphs.bitmaps.get(&key) {
+            let image = &bitmap.image;
+            (bitmap.em, image.width, image.height, image.sampling_flags)
+        } else if let Some(found) = self.pending.iter().find_map(|raster| {
             let PendingRaster::Bitmap {
                 key: pending_key,
                 em,
                 width,
                 height,
-                ..
+                upload,
             } = raster
             else {
                 return None;
             };
-            (*pending_key == key).then_some((*em, *width, *height))
+            (*pending_key == key).then_some((*em, *width, *height, upload.flags))
         }) {
-            (em, width, height)
+            found
         } else {
             let Some(decoded) =
                 super::bitmap::decode(&font.data, font.index, bitmap_font, strike, glyph_id)?
@@ -4658,69 +4668,97 @@ impl<'a> Lowering<'a> {
             };
             let em = decoded.em;
             let (width, height) = (decoded.width, decoded.height);
-            let texels = super::image_texels(
-                &decoded.rgba,
+            let upload = super::image_storage::Upload::rgba8(
+                decoded.rgba,
                 cherenkov::ImageColorSpace::Srgb,
                 decoded.premultiplied,
             );
+            let sampling_flags = upload.flags;
             self.pending.push(PendingRaster::Bitmap {
                 key,
                 em,
                 width,
                 height,
-                texels,
+                upload,
             });
             self.glyphs += 1;
-            (em, width, height)
+            (em, width, height, sampling_flags)
         };
-        let rect = Rect::new(
-            f64::from(size).mul_add(em.x0, f64::from(origin[0])),
-            f64::from(size).mul_add(em.y0, f64::from(origin[1])),
-            f64::from(size).mul_add(em.x1, f64::from(origin[0])),
-            f64::from(size).mul_add(em.y1, f64::from(origin[1])),
-        );
+        // The glyph realizes as `Command::Image` of its bitmap over the
+        // placed em box would: the same fill, placement and image paint.
+        let size = f64::from(size);
+        let rect = Rect::new(size * em.x0, size * em.y0, size * em.x1, size * em.y1);
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return Ok(());
         }
         let Some(boxed) = box_shape(&ShapeData::Rect(rect))? else {
             return Ok(());
         };
-        let to_device = transform * boxed.extra;
-        let margin = self.margin(transform);
-        let bounds = boxed.bounds.inflate(margin, margin);
-        let mut inst = Self::base(KIND_FILL, affine(to_device), self.clip);
-        inst.bounds = [
-            f32_f64(bounds.x0),
-            f32_f64(bounds.y0),
-            f32_f64(bounds.x1),
-            f32_f64(bounds.y1),
-        ];
-        inst.shape = boxed.shape;
-        inst.meta[1] = PAINT_IMAGE;
-        let bitmap_transform = Affine::translate((rect.x0, rect.y0))
-            * Affine::scale_non_uniform(
-                rect.width() / f64::from(width),
-                rect.height() / f64::from(height),
-            );
-        let [x_scale, y_skew, x_skew, y_scale, x_translate, y_translate] = (boxed.extra.inverse()
-            * bitmap_transform)
-            .inverse()
-            .as_coeffs();
-        inst.grad = [
-            f32_f64(x_scale),
-            f32_f64(y_skew),
-            f32_f64(x_skew),
-            f32_f64(y_scale),
-        ];
-        inst.grad2 = [
-            f32_f64(x_translate),
-            f32_f64(y_translate),
-            f32_f64(f64::from(width)),
-            f32_f64(f64::from(height)),
-        ];
-        inst.meta[3] |= super::instance::EXTEND_PAD | (super::instance::EXTEND_PAD << 4) | (1 << 8);
-        self.set_image(Some(ImageSource::Bitmap(key)));
-        self.push_shaped(inst, to_device, boxed.bounds, margin);
+        let paint = super::prepared::image_paint(
+            boxed.extra.inverse(),
+            super::prepared::image_placement(&rect, width, height),
+            (width, height),
+            (cherenkov::Extend::Pad, cherenkov::Extend::Pad),
+            cherenkov::Sampling::Linear,
+            sampling_flags,
+        );
+        self.shaped(
+            &ShapedGeometry {
+                kind: KIND_FILL,
+                local: local * boxed.extra,
+                ambient: local,
+                shape: boxed.shape,
+                inner: None,
+                bounds: boxed.bounds,
+                extra_margin: 0.0,
+                param_x: 0.0,
+                flags: 0,
+            },
+            |this| {
+                this.set_image(Some(ImageSource::Bitmap(key)));
+                Ok(paint)
+            },
+        )
+    }
+
+    /// Emits one shaped instance whose paint `paint` resolves once the
+    /// instance is known to cover anything.
+    fn shaped(
+        &mut self,
+        geometry: &ShapedGeometry,
+        paint: impl FnOnce(&mut Self) -> Result<PaintData, RenderError>,
+    ) -> Result<(), RenderError> {
+        let ShapedGeometry {
+            kind,
+            local,
+            ambient,
+            shape,
+            inner,
+            bounds,
+            extra_margin,
+            param_x,
+            flags,
+        } = *geometry;
+        let margin = extra_margin + self.margin(self.transform * ambient);
+        let b = bounds.inflate(margin, margin);
+        if b.width() <= 0.0 || b.height() <= 0.0 {
+            return Ok(());
+        }
+        let mut inst = Self::base(kind, affine(self.transform * local), self.clip);
+        inst.bounds = [f32_f64(b.x0), f32_f64(b.y0), f32_f64(b.x1), f32_f64(b.y1)];
+        inst.shape = shape;
+        if let Some(inner) = inner {
+            inst.inner = inner;
+        }
+        inst.params[0] = param_x;
+        let paint = paint(self)?;
+        inst.color = paint.color;
+        inst.grad = paint.grad;
+        inst.grad2 = paint.grad2;
+        inst.meta[1] = paint.kind;
+        inst.meta[2] = paint.first_stop;
+        inst.meta[3] |= (paint.packed & 0x00ff_ffff) | (flags << 24);
+        self.push_shaped(inst, self.transform * local, bounds, margin);
         Ok(())
     }
 
