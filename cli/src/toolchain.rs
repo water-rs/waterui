@@ -13,6 +13,7 @@ pub mod linux;
 pub mod managed_tool;
 pub mod meson;
 pub mod msvc;
+pub(crate) mod process_tree;
 pub mod rust;
 pub mod sccache;
 pub mod spirv_tools;

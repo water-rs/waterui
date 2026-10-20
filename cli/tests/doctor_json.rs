@@ -55,6 +55,7 @@ fn doctor_json_emits_typed_item_records_for_every_check() {
     // effective on Unix; the write itself is a small config file the CLI
     // owns anyway.)
     let output = Host::current()
+        .without_cargo_target_dir()
         .with_env("HOME", home.path())
         .with_env("USERPROFILE", home.path())
         .with_cwd(project.path())

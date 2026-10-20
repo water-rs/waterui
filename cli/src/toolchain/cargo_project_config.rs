@@ -329,7 +329,9 @@ mod tests {
     fn hermetic_host(root: &Path) -> crate::toolchain::Host {
         let home = root.join("cargo-home");
         std::fs::create_dir_all(&home).expect("create hermetic CARGO_HOME");
-        crate::toolchain::Host::current().with_env("CARGO_HOME", home)
+        crate::toolchain::Host::current()
+            .without_cargo_target_dir()
+            .with_env("CARGO_HOME", home)
     }
 
     /// The probe crate whose build fails unless the `--cfg

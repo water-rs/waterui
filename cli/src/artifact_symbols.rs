@@ -231,6 +231,7 @@ mod tests {
     /// so these tests read exactly the artifact a `water` build produces.
     fn built_lib_fixture(fixture: &Path, extra_args: &[&str]) -> PathBuf {
         let output = crate::toolchain::Host::current()
+            .without_cargo_target_dir()
             .std_command("cargo")
             .args(["build", "--lib", "--message-format=json-render-diagnostics"])
             .args(extra_args)

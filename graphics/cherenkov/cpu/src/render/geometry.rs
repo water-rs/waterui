@@ -14,17 +14,20 @@
 //! on scale.
 //!
 //! A static scene records its content again every frame, which drops every
-//! realization. Before that happens, the swept edges of the realization are
-//! offered here under their key, and the lowering that follows takes them
-//! for a draw whose key matches bit for bit instead of sweeping again.
+//! realization. Before that happens, the retained edges of the realization
+//! are offered here under their key, and the lowering that follows takes
+//! them for a draw whose key matches bit for bit instead of flattening,
+//! testing and quantizing again.
 //!
-//! Only swept geometry is offered: input the pre-sweep test proves
-//! disjoint costs about as much to flatten and test again as to look up.
+//! Every cacheable draw is offered, swept or not: retained geometry is
+//! quantized at build time, so a hit also saves the tile build, and a
+//! lookup was already paid whenever the table held any entry.
 //!
-//! The table lives for one frame: [`GeometryCache::finish_frame`] drops it
-//! after the frame's lowering, so it holds no memory between frames and its
-//! bound is the swept draws replaced in one frame. Under critical memory
-//! pressure [`GeometryCache::clear`] drops it at once.
+//! The table lives for one frame: it is allocated at the frame's first
+//! cacheable offer and [`GeometryCache::finish_frame`] drops it after the
+//! frame's lowering, so it holds no memory between frames and its bound is
+//! the draws replaced in one frame. Under critical memory pressure
+//! [`GeometryCache::clear`] drops it at once.
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -36,28 +39,48 @@ use cherenkov::{FillRule, ShapeData};
 use rustc_hash::{FxHashMap, FxHasher};
 
 use super::raster::Edge;
+use super::tiles::{EdgeScratch, EdgeTiles};
 
-/// One offered draw: its key and its swept edges.
+/// One offered draw: its key's span in the frame's word arena, its path
+/// elements when it is one, its retained edges and whether the winding
+/// sweep produced or confirmed them. About 48 bytes, so an insert or a
+/// rehash move is a constant-size copy that never calls memcpy.
 struct Entry {
-    shape: ShapeData,
-    stroke: Option<kurbo::Stroke>,
-    linear: [u64; 4],
-    edges: Arc<[Edge]>,
+    /// `(start, len)` of the key's words in `GeometryCache::words`.
+    key: (u32, u32),
+    /// The shape's path elements; a path compares by element, so its
+    /// contents stay out of the arena.
+    path: Option<Arc<[PathEl]>>,
+    edges: EdgeTiles,
     rule: FillRule,
+    swept: bool,
 }
 
 /// Swept draw geometry offered for the current frame, by content hash. A
 /// lookup compares the whole key; a different key with the same hash
-/// replaces the entry.
+/// replaces the entry. The compact key words live in `words`, an arena
+/// that lives exactly as long as the table.
 #[derive(Default)]
 pub struct GeometryCache {
     entries: FxHashMap<u64, Entry>,
+    /// The frame's key-word arena; every entry's `key` spans into it.
+    words: Vec<u64>,
+}
+
+/// The offers of one content about to be dropped. The table and the key-word
+/// arena are reserved for its `n` ops at its first cacheable offer, so a
+/// content that offers nothing (glyph runs, images, uncacheable shapes)
+/// allocates nothing.
+pub struct Offers<'a> {
+    cache: &'a mut GeometryCache,
+    /// Ops still to reserve for; zero once reserved.
+    reserve: usize,
 }
 
 /// Geometry produced for a draw: its edges in the draw's [`Frame`], the rule
 /// they fill under, and whether the winding sweep produced or confirmed them.
 pub struct Resolved {
-    pub edges: Arc<[Edge]>,
+    pub edges: EdgeTiles,
     pub rule: FillRule,
     pub swept: bool,
 }
@@ -66,13 +89,14 @@ impl GeometryCache {
     /// The edges of `shape` under `transform` in its [`Frame`] — its outline
     /// stroked by `stroke` when set. An offered entry with the same key is
     /// reused; otherwise `flatten` produces the flattened frame edges and
-    /// their rule, and the winding is resolved. `None` means the shape has
-    /// no area.
+    /// their rule, the winding is resolved and the retained form is built
+    /// in `scratch`. `None` means the shape has no area.
     pub fn resolve(
         &self,
         shape: &ShapeData,
         stroke: Option<&kurbo::Stroke>,
         transform: Affine,
+        scratch: &mut EdgeScratch,
         flatten: impl FnOnce() -> Option<(Vec<Edge>, FillRule)>,
     ) -> Option<Resolved> {
         if !self.entries.is_empty()
@@ -80,39 +104,81 @@ impl GeometryCache {
         {
             let hash = key.digest();
             if let Some(entry) = self.entries.get(&hash)
-                && entry.matches(&key)
+                && entry.matches(&key, &self.words)
             {
                 return Some(Resolved {
                     edges: entry.edges.clone(),
                     rule: entry.rule,
-                    swept: true,
+                    swept: entry.swept,
                 });
             }
         }
         let (edges, rule) = flatten()?;
         Some(match cherenkov::lowering::resolve_winding(&edges, rule) {
             Winding::Disjoint => Resolved {
-                edges: Arc::from(edges),
+                edges: EdgeTiles::new(scratch, edges.iter().copied()),
                 rule,
                 swept: false,
             },
             Winding::Unchanged => Resolved {
-                edges: Arc::from(edges),
+                edges: EdgeTiles::new(scratch, edges.iter().copied()),
                 rule,
                 swept: true,
             },
             Winding::Resolved(resolved) => Resolved {
-                edges: resolved
-                    .into_iter()
-                    .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 })
-                    .collect(),
+                edges: EdgeTiles::new(
+                    scratch,
+                    resolved
+                        .into_iter()
+                        .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 }),
+                ),
                 rule: FillRule::NonZero,
                 swept: true,
             },
         })
     }
 
-    /// Offers the swept frame edges of a draw of `shape` under `transform`
+    /// Starts offering the draws of a content of `n` ops.
+    pub const fn offers(&mut self, n: usize) -> Offers<'_> {
+        Offers {
+            cache: self,
+            reserve: n,
+        }
+    }
+
+    /// Drops the frame's table: geometry not taken by now is not reused.
+    pub fn finish_frame(&mut self) {
+        self.entries = FxHashMap::default();
+        self.words = Vec::new();
+    }
+
+    /// Drops every entry and the table itself.
+    pub fn clear(&mut self) {
+        self.entries = FxHashMap::default();
+        self.words = Vec::new();
+    }
+
+    /// Heap bytes the table holds, and any edges or path elements only an
+    /// entry still references. Zero between frames.
+    pub fn bytes(&self) -> u64 {
+        let table = self.entries.capacity() * (size_of::<(u64, Entry)>() + size_of::<u8>());
+        let mut bytes = (table + self.words.capacity() * size_of::<u64>()) as u64;
+        for entry in self.entries.values() {
+            if entry.edges.strong_count() == 1 {
+                bytes += entry.edges.heap_bytes();
+            }
+            if let Some(elements) = &entry.path
+                && Arc::strong_count(elements) == 1
+            {
+                bytes += (elements.len() * size_of::<PathEl>()) as u64;
+            }
+        }
+        bytes
+    }
+}
+
+impl Offers<'_> {
+    /// Offers the frame edges of a draw of `shape` under `transform`
     /// (stroked by `stroke` when set) whose realization is being dropped,
     /// for the rest of the frame.
     pub fn offer(
@@ -120,54 +186,35 @@ impl GeometryCache {
         shape: &ShapeData,
         stroke: Option<&kurbo::Stroke>,
         transform: Affine,
-        edges: &Arc<[Edge]>,
+        edges: &EdgeTiles,
         rule: FillRule,
+        swept: bool,
     ) {
-        if let Some(key) = Key::new(shape, stroke, transform) {
-            self.entries.insert(
-                key.digest(),
-                Entry {
-                    shape: shape.clone(),
-                    stroke: stroke.cloned(),
-                    linear: key.linear,
-                    edges: edges.clone(),
-                    rule,
-                },
-            );
+        let Some(key) = Key::new(shape, stroke, transform) else {
+            return;
+        };
+        if self.reserve != 0 {
+            let n = std::mem::take(&mut self.reserve);
+            self.cache.entries.reserve(n);
+            self.cache.words.reserve(n.saturating_mul(16));
         }
-    }
-
-    /// Drops the frame's table: geometry not taken by now is not reused.
-    pub fn finish_frame(&mut self) {
-        self.entries = FxHashMap::default();
-    }
-
-    /// Drops every entry and the table itself.
-    pub fn clear(&mut self) {
-        self.entries = FxHashMap::default();
-    }
-
-    /// Heap bytes the table holds, and any edges, path elements or dash
-    /// pattern only an entry still references. Zero between frames.
-    pub fn bytes(&self) -> u64 {
-        let table = self.entries.capacity() * (size_of::<(u64, Entry)>() + size_of::<u8>());
-        let mut bytes = table as u64;
-        for entry in self.entries.values() {
-            if Arc::strong_count(&entry.edges) == 1 {
-                bytes += (entry.edges.len() * size_of::<Edge>()) as u64;
-            }
-            if let ShapeData::Path { elements, .. } = &entry.shape
-                && Arc::strong_count(elements) == 1
-            {
-                bytes += (elements.len() * size_of::<PathEl>()) as u64;
-            }
-            if let Some(stroke) = &entry.stroke
-                && stroke.dash_pattern.spilled()
-            {
-                bytes += (stroke.dash_pattern.capacity() * size_of::<f64>()) as u64;
-            }
-        }
-        bytes
+        let start = u32::try_from(self.cache.words.len()).expect("key words fit u32");
+        self.cache.words.extend(key.words());
+        let len = u32::try_from(self.cache.words.len()).expect("key words fit u32") - start;
+        let path = match shape {
+            ShapeData::Path { elements, .. } => Some(elements.clone()),
+            _ => None,
+        };
+        self.cache.entries.insert(
+            key.digest(),
+            Entry {
+                key: (start, len),
+                path,
+                edges: edges.clone(),
+                rule,
+                swept,
+            },
+        );
     }
 }
 
@@ -296,17 +343,34 @@ impl<'a> Key<'a> {
     fn digest(&self) -> u64 {
         key_hash(self.shape, self.stroke, &self.linear)
     }
+
+    /// The key as a word stream: the four linear words, the stroke tag
+    /// and its words, then the shape's tag and rule or its scalar fields.
+    /// A path's elements are not words: they compare through
+    /// `Entry::path`.
+    fn words(&self) -> impl Iterator<Item = u64> + '_ {
+        self.linear
+            .into_iter()
+            .chain([u64::from(self.stroke.is_some())])
+            .chain(self.stroke.into_iter().flat_map(stroke_words))
+            .chain(shape_words(self.shape))
+    }
 }
 
 impl Entry {
-    fn matches(&self, key: &Key<'_>) -> bool {
-        self.linear == key.linear
-            && match (&self.stroke, key.stroke) {
-                (None, None) => true,
-                (Some(a), Some(b)) => stroke_words(a).eq(stroke_words(b)),
-                _ => false,
+    /// Whether the entry was offered under `key`: the key's words compare
+    /// one at a time — never a slice compare — and a path's elements
+    /// compare by `Arc` identity or element-wise.
+    fn matches(&self, key: &Key<'_>, words: &[u64]) -> bool {
+        let (start, len) = (self.key.0 as usize, self.key.1 as usize);
+        words[start..start + len].iter().copied().eq(key.words())
+            && match (&self.path, key.shape) {
+                (Some(a), ShapeData::Path { elements, .. }) => {
+                    Arc::ptr_eq(a, elements) || elements_eq(a, elements)
+                }
+                (Some(_), _) | (None, ShapeData::Path { .. }) => false,
+                (None, _) => true,
             }
-            && shape_eq(&self.shape, key.shape)
     }
 }
 
@@ -411,32 +475,32 @@ fn shape_hash(shape: &ShapeData, hasher: &mut FxHasher) {
     }
 }
 
-fn shape_eq(a: &ShapeData, b: &ShapeData) -> bool {
-    match (a, b) {
-        (
-            ShapeData::Path {
-                elements: ea,
-                rule: ra,
-            },
-            ShapeData::Path {
-                elements: eb,
-                rule: rb,
-            },
-        ) => {
-            ra == rb
-                && (Arc::ptr_eq(ea, eb)
-                    || (ea.len() == eb.len()
-                        && ea.iter().zip(eb.iter()).all(|(x, y)| {
-                            let ((vx, px), (vy, py)) = (element_parts(x), element_parts(y));
-                            vx == vy
-                                && px.iter().zip(&py).all(|(p, q)| {
-                                    p.x.to_bits() == q.x.to_bits() && p.y.to_bits() == q.y.to_bits()
-                                })
-                        })))
+/// The shape's key words: a path's tag and fill rule — its elements
+/// compare through the entry's `path` — or `scalar_words` for a shape
+/// without a path.
+fn shape_words(shape: &ShapeData) -> ArrayVec<u64, 14> {
+    let mut words = ArrayVec::new();
+    match shape {
+        ShapeData::Path { rule, .. } => {
+            words.push(5);
+            words.push(*rule as u64);
         }
-        (ShapeData::Path { .. }, _) | (_, ShapeData::Path { .. }) => false,
-        (a, b) => scalar_words(a) == scalar_words(b),
+        shape => words = scalar_words(shape),
     }
+    words
+}
+
+/// Two path element lists, element by element.
+fn elements_eq(a: &[PathEl], b: &[PathEl]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b.iter()).all(|(x, y)| {
+            let ((vx, px), (vy, py)) = (element_parts(x), element_parts(y));
+            vx == vy
+                && px
+                    .iter()
+                    .zip(&py)
+                    .all(|(p, q)| p.x.to_bits() == q.x.to_bits() && p.y.to_bits() == q.y.to_bits())
+        })
 }
 
 /// A path element's verb and its points.
