@@ -146,6 +146,16 @@ goto :exit_ok
 :exit_ok
 exit /b 0
 
+rem `merge-base --is-ancestor` exits with the configured code. The exit sits
+rem outside any parenthesised block: under `cmd /c`, `exit /b !var!` inside a
+rem block exits 0 whatever the variable holds.
+:git_merge_base
+set "code=0"
+if defined WATERUI_FAKE_GIT_ANCESTOR set "code=!WATERUI_FAKE_GIT_ANCESTOR!"
+if exist .fake-git-unshallowed set "code=0"
+if exist .fake-git-unshallowed if defined WATERUI_FAKE_GIT_ANCESTOR_COMPLETE set "code=!WATERUI_FAKE_GIT_ANCESTOR_COMPLETE!"
+exit /b !code!
+
 rem The managed-checkout sequence `git -C <dir> init | remote add | fetch |
 rem checkout` produces: on `checkout`, copy every file the staged
 rem WATERUI_FAKE_GIT_CHECKOUT tree holds into the -C directory, like a
@@ -169,14 +179,7 @@ if %errorlevel%==0 (call :respond GIT_REVISION & exit /b !errorlevel!)
 call :contains git_args --unshallow
 if %errorlevel%==0 (type nul > .fake-git-unshallowed & exit /b 0)
 call :contains git_args "merge-base --is-ancestor"
-if %errorlevel%==0 (
-    if exist .fake-git-unshallowed (
-        if defined WATERUI_FAKE_GIT_ANCESTOR_COMPLETE exit /b !WATERUI_FAKE_GIT_ANCESTOR_COMPLETE!
-        exit /b 0
-    )
-    if defined WATERUI_FAKE_GIT_ANCESTOR exit /b !WATERUI_FAKE_GIT_ANCESTOR!
-    exit /b 0
-)
+if %errorlevel%==0 goto :git_merge_base
 call :contains git_args ls-tree
 if %errorlevel%==0 (call :respond_or_empty GIT_ENTRY & exit /b !errorlevel!)
 if "%~1"=="show" (call :respond GIT_FILE & exit /b !errorlevel!)
