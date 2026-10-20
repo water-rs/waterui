@@ -1,6 +1,10 @@
-//! CPU placement control for `measure`: `--cpu` pins the measuring
-//! thread (and, by inheritance, threads spawned afterwards) so timings
-//! stay on one cluster of a big.LITTLE host. Linux and Android only.
+//! CPU placement control for `measure`. Linux and Android only.
+//!
+//! `--cpu` pins the measuring thread (and, by inheritance, threads
+//! spawned afterwards) so timings stay on one cluster of a big.LITTLE
+//! host; `--render-cpu` then moves the engine's render thread and the
+//! measuring thread to a subset of it. Every thread's mask and CPU time
+//! over the measured window is recorded.
 
 use std::collections::BTreeSet;
 
@@ -45,22 +49,179 @@ pub fn parse_cpu_list(spec: &str) -> Result<Vec<u32>, BenchError> {
 /// the flag is refused rather than silently ignored.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn pin_current_thread(cpus: &[u32]) -> Result<(), BenchError> {
-    // SAFETY: `set` is a valid, fully initialised `cpu_set_t`; the pid 0
-    // selector addresses the calling thread.
+    // The tid 0 selector addresses the calling thread.
+    pin_thread(0, cpus)
+}
+
+/// Pins the thread `tid` of any process the caller may control
+/// (`sched_setaffinity`); 0 is the calling thread.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn pin_thread(tid: libc::pid_t, cpus: &[u32]) -> Result<(), BenchError> {
+    // SAFETY: `set` is a valid, fully initialised `cpu_set_t`.
     let rc = unsafe {
         let mut set = std::mem::zeroed::<libc::cpu_set_t>();
         for &cpu in cpus {
             libc::CPU_SET(cpu as usize, &mut set);
         }
-        libc::sched_setaffinity(0, std::mem::size_of_val(&set), &raw const set)
+        libc::sched_setaffinity(tid, std::mem::size_of_val(&set), &raw const set)
     };
     if rc != 0 {
         return Err(BenchError::Engine(format!(
-            "sched_setaffinity: {}",
+            "sched_setaffinity({tid}): {}",
             std::io::Error::last_os_error()
         )));
     }
     Ok(())
+}
+
+/// Moves the engine's render thread and the calling (measuring) thread
+/// to `cpus`; call after the engine is created.
+///
+/// Every other thread stays where it is: the worker pools the engine
+/// built on its render thread keep the mask that was current when the
+/// engine was created.
+///
+/// A thread names itself once it starts, so a worker the render thread
+/// has spawned carries the render thread's name until then. The render
+/// thread is therefore taken once it is the only thread with its name:
+/// every thread it spawned has started.
+///
+/// # Errors
+/// [`BenchError::Engine`] when no thread carries the render thread's
+/// name, when more than one still does after [`RENDER_THREAD_START`],
+/// or when the kernel rejects the set.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn pin_render_thread(cpus: &[u32]) -> Result<(), BenchError> {
+    /// The name the engine gives its render thread
+    /// (`cherenkov::Engine::new`, `src/engine/native.rs`).
+    const RENDER_THREAD: &str = "cherenkov-render";
+    // The kernel keeps a thread's name to TASK_COMM_LEN - 1 = 15 bytes.
+    let comm = &RENDER_THREAD[..RENDER_THREAD.len().min(15)];
+    let started = std::time::Instant::now();
+    loop {
+        let named: Vec<ThreadState> = task_threads()?
+            .into_iter()
+            .filter(|thread| thread.name == comm)
+            .collect();
+        match named.as_slice() {
+            [render] => {
+                pin_thread(render.tid, cpus)?;
+                return pin_current_thread(cpus);
+            }
+            [] => {
+                return Err(BenchError::Engine(format!(
+                    "--render-cpu: no thread is named {comm:?}; the engine has no render thread"
+                )));
+            }
+            _ if started.elapsed() > RENDER_THREAD_START => {
+                return Err(BenchError::Engine(format!(
+                    "--render-cpu: {} threads are still named {comm:?} after {RENDER_THREAD_START:?}",
+                    named.len()
+                )));
+            }
+            _ => std::thread::yield_now(),
+        }
+    }
+}
+
+/// How long the threads the render thread spawned may take to start and
+/// name themselves before [`pin_render_thread`] fails.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const RENDER_THREAD_START: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Moves the engine's render thread; unsupported on this platform.
+///
+/// # Errors
+/// Always errors — `--render-cpu` is refused rather than silently ignored.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub fn pin_render_thread(_cpus: &[u32]) -> Result<(), BenchError> {
+    Err(BenchError::Engine(
+        "CPU affinity is not supported on this platform; --render-cpu requires Linux or Android"
+            .into(),
+    ))
+}
+
+/// One thread of this process as `/proc/self/task` shows it.
+#[derive(Clone, Debug)]
+pub struct ThreadState {
+    /// Kernel thread id.
+    pub tid: i32,
+    /// Thread name (`comm`, at most 15 bytes).
+    pub name: String,
+    /// CPUs the thread may run on (`Cpus_allowed_list`).
+    pub allowed: Vec<u32>,
+    /// Nanoseconds the thread has run (`schedstat`'s first field).
+    pub run_ns: u64,
+}
+
+/// Every thread of this process; `None` where the platform has no
+/// per-thread placement (macOS, Windows). Read outside timed frames
+/// only: it walks `/proc/self/task`.
+///
+/// # Errors
+/// [`BenchError::Engine`] when a live thread's files cannot be read or
+/// parsed. A thread that exits during the walk is skipped.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn threads() -> Result<Option<Vec<ThreadState>>, BenchError> {
+    task_threads().map(Some)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn task_threads() -> Result<Vec<ThreadState>, BenchError> {
+    let bad = |what: String| BenchError::Engine(format!("/proc/self/task: {what}"));
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir("/proc/self/task").map_err(|e| bad(e.to_string()))? {
+        let path = entry.map_err(|e| bad(e.to_string()))?.path();
+        let read = |name: &str| match std::fs::read_to_string(path.join(name)) {
+            Ok(text) => Ok(Some(text)),
+            // The thread exited between the listing and the read.
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    || error.raw_os_error() == Some(libc::ESRCH) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(bad(format!("{}/{name}: {error}", path.display()))),
+        };
+        let (Some(name), Some(status), Some(schedstat)) =
+            (read("comm")?, read("status")?, read("schedstat")?)
+        else {
+            continue;
+        };
+        let tid = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.parse().ok())
+            .ok_or_else(|| bad(format!("{} is not a thread id", path.display())))?;
+        let allowed = status
+            .lines()
+            .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))
+            .ok_or_else(|| bad(format!("{tid}: no Cpus_allowed_list")))
+            .and_then(|list| parse_cpu_list(list.trim()))?;
+        let run_ns = schedstat
+            .split_whitespace()
+            .next()
+            .and_then(|ns| ns.parse().ok())
+            .ok_or_else(|| bad(format!("{tid}: schedstat {schedstat:?}")))?;
+        out.push(ThreadState {
+            tid,
+            name: name.trim_end_matches('\n').to_owned(),
+            allowed,
+            run_ns,
+        });
+    }
+    out.sort_by_key(|thread| thread.tid);
+    Ok(out)
+}
+
+/// Every thread of this process; `None`: this platform has no
+/// per-thread placement.
+///
+/// # Errors
+/// Never.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub const fn threads() -> Result<Option<Vec<ThreadState>>, BenchError> {
+    Ok(None)
 }
 
 /// Pins the calling thread to `cpus`; unsupported on this platform.

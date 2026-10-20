@@ -11,7 +11,11 @@
 //!   records raw per-frame CPU encode, submit and GPU seconds (real
 //!   timestamps only) plus p50/p90/p99. `--cpu LIST` pins the run to a
 //!   CPU set — required for meaningful numbers on big.LITTLE hosts
-//!   (Linux and Android only); the report records placement either way.
+//!   (Linux and Android only); the report records placement either way,
+//!   with every thread's mask and CPU time over the measured window.
+//!   `--render-cpu LIST` then moves the engine's render thread and the
+//!   measuring thread to a subset of it, leaving the worker pools on
+//!   `--cpu`.
 //!   `--rate HZ` paces the measured frames to a fixed rate instead of
 //!   running flat out; `--energy` brackets the window with the
 //!   platform's power meter (Android ODPM rails, root via `su -c`;
@@ -44,7 +48,7 @@ use crate::refcache;
 use crate::report::{
     CapacityProbe, CapacityReport, CapacityResult, CpuUse, FrameSample, MeasureReport,
     NativeResolution, Pacing, PassPercentiles, Percentiles, PhasePercentiles, Placement,
-    RenderReport, UnsupportedReport, percentiles,
+    RenderReport, ThreadUse, UnsupportedReport, percentiles,
 };
 use crate::{
     BenchError, DeviceInfo, EncodeInput, Engine, affinity, conditions, create_engine, energy,
@@ -252,6 +256,16 @@ enum Sub {
         /// a run that compares timings leaves it off.
         #[arg(long)]
         gpu_counters: bool,
+        /// After the engine is created with every thread on `--cpu`,
+        /// move the engine's render thread and the measuring thread to
+        /// this subset of it — a list like `--cpu`'s. The frame's serial
+        /// work (encode on the measuring thread; lowering and the frame
+        /// handoff on the render thread) then runs on these CPUs, while
+        /// the worker pools the engine built keep `--cpu`. Requires
+        /// `--cpu` and an engine with a render thread (`cherenkov`,
+        /// `cherenkov-cpu`); Linux and Android only.
+        #[arg(long, value_name = "LIST", requires = "cpu")]
+        render_cpu: Option<String>,
     },
     /// Record the #169 allocation-event diagnostic for one scene.
     ///
@@ -579,6 +593,7 @@ fn run(cli: Cli) -> Result<(), BenchError> {
             native,
             composition,
             gpu_counters,
+            render_cpu,
         } => measure_cmd(
             &engine,
             MeasureOpts {
@@ -595,6 +610,7 @@ fn run(cli: Cli) -> Result<(), BenchError> {
                 native: native.as_deref(),
                 composition,
                 gpu_counters,
+                render_cpu: render_cpu.as_deref(),
             },
         ),
         Sub::AllocDiag {
@@ -926,6 +942,7 @@ struct MeasureOpts<'a> {
     native: Option<&'a str>,
     composition: bool,
     gpu_counters: bool,
+    render_cpu: Option<&'a str>,
 }
 
 /// Wall-clock seconds a `render` scene (or a whole pass) spent in each
@@ -1228,7 +1245,18 @@ fn measure_cmd(engine: &str, opts: MeasureOpts<'_>) -> Result<(), BenchError> {
         // inherits the mask.
         affinity::pin_current_thread(cpus)?;
     }
+    let render = opts.render_cpu.map(affinity::parse_cpu_list).transpose()?;
+    if let (Some(render), Some(cpus)) = (&render, &pinned)
+        && !render.iter().all(|cpu| cpus.contains(cpu))
+    {
+        return Err(BenchError::Engine(format!(
+            "--render-cpu {render:?} must be a subset of --cpu {cpus:?}"
+        )));
+    }
     let mut engine = measure_engine(engine, opts.composition)?;
+    if let Some(render) = &render {
+        affinity::pin_render_thread(render)?;
+    }
     let mut gpu_counters = opts
         .gpu_counters
         .then(crate::gpu_counters::Session::open)
@@ -1252,6 +1280,7 @@ fn measure_cmd(engine: &str, opts: MeasureOpts<'_>) -> Result<(), BenchError> {
                 warmup: opts.warmup,
                 pause_at: opts.pause_at,
                 pinned: pinned.as_deref(),
+                render: render.as_deref(),
                 rate: opts.rate,
                 measure_energy: opts.energy,
                 idle_memory: idle_memory.clone(),
@@ -1562,6 +1591,8 @@ struct Window {
     gpu_clock: Option<crate::gpu_clock::Snapshot>,
     start: Instant,
     missed_deadlines: u32,
+    /// Every thread at the window's close and its CPU time inside it.
+    threads: Option<Vec<ThreadUse>>,
 }
 
 /// How far past a deadline a frame may start before it counts as
@@ -1607,6 +1638,7 @@ fn run_frames(
     let mut gpu_clock = None;
     let mut start = Instant::now();
     let mut missed_deadlines = 0u32;
+    let mut opening_threads = None;
     let mut samples = Vec::with_capacity(frames as usize);
     let total_frames = warmup + frames;
     let mut memory_samples = Vec::with_capacity(warmup as usize);
@@ -1624,6 +1656,7 @@ fn run_frames(
                 meter = Some(energy::Meter::begin(window_hint)?);
             }
             gpu_clock = crate::gpu_clock::Snapshot::read()?;
+            opening_threads = affinity::threads()?;
             start = Instant::now();
         }
         if frame >= warmup
@@ -1684,6 +1717,7 @@ fn run_frames(
         attribute_gpu(&mut samples, warmup, submit.gpu);
     }
     attribute_gpu(&mut samples, warmup, engine.finish_gpu()?);
+    let threads = window_threads(opening_threads, affinity::threads()?);
     Ok(Window {
         samples,
         memory_samples,
@@ -1691,6 +1725,37 @@ fn run_frames(
         gpu_clock,
         start,
         missed_deadlines,
+        threads,
+    })
+}
+
+/// Each thread alive at the window's close with the CPU time it ran
+/// since the opening snapshot; a thread created inside the window
+/// counts whole.
+fn window_threads(
+    opening: Option<Vec<affinity::ThreadState>>,
+    closing: Option<Vec<affinity::ThreadState>>,
+) -> Option<Vec<ThreadUse>> {
+    let opening: BTreeMap<i32, u64> = opening
+        .into_iter()
+        .flatten()
+        .map(|thread| (thread.tid, thread.run_ns))
+        .collect();
+    closing.map(|closing| {
+        closing
+            .into_iter()
+            .map(|thread| ThreadUse {
+                // A tid the kernel reused inside the window is a new
+                // thread whose run time is below the old one's.
+                window_ns: opening
+                    .get(&thread.tid)
+                    .and_then(|&opened| thread.run_ns.checked_sub(opened))
+                    .unwrap_or(thread.run_ns),
+                tid: thread.tid,
+                name: thread.name,
+                allowed: thread.allowed,
+            })
+            .collect()
     })
 }
 
@@ -1755,6 +1820,7 @@ struct MeasureSceneOptions<'a> {
     warmup: u32,
     pause_at: Option<u32>,
     pinned: Option<&'a [u32]>,
+    render: Option<&'a [u32]>,
     rate: Option<f64>,
     measure_energy: bool,
     idle_memory: MemorySnapshot,
@@ -1813,6 +1879,7 @@ fn measure_scene(
         warmup,
         pause_at,
         pinned,
+        render,
         rate,
         measure_energy,
         idle_memory,
@@ -1879,7 +1946,11 @@ fn measure_scene(
             .as_ref()
             .and_then(|o| o.thermal_pressure.clone()),
     );
-    let placement = measure_placement(pinned, heterogeneous, prepare_cpu, &samples);
+    let placement = Placement {
+        render: render.map(<[u32]>::to_vec),
+        threads: window.threads,
+        ..measure_placement(pinned, heterogeneous, prepare_cpu, &samples)
+    };
     let percentiles = frame_percentiles(&samples);
     Ok(MeasureReport {
         engine: engine.info().name,
@@ -1962,6 +2033,8 @@ fn measure_placement(
         prepare_cpu,
         cpus: cpu_use(prepare_cpu, samples),
         migrated: u32::try_from(samples.iter().filter(|s| s.migrated).count()).unwrap_or(u32::MAX),
+        render: None,
+        threads: None,
     }
 }
 

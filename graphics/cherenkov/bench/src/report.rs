@@ -137,6 +137,29 @@ pub struct Placement {
     pub cpus: BTreeMap<u32, CpuUse>,
     /// Samples that migrated between their start and end CPU.
     pub migrated: u32,
+    /// Sorted CPU ids passed via `--render-cpu`: the engine's render
+    /// thread and the measuring thread were moved there after engine
+    /// creation, while the threads the engine had spawned kept
+    /// `requested`. `null` when not given.
+    pub render: Option<Vec<u32>>,
+    /// Every thread alive when the measured window closed, with its CPU
+    /// mask then and the CPU time it ran inside the window; `null` where
+    /// the platform has no per-thread accounting (macOS, Windows).
+    pub threads: Option<Vec<ThreadUse>>,
+}
+
+/// One thread in [`Placement::threads`].
+#[derive(Clone, Debug, Serialize)]
+pub struct ThreadUse {
+    /// Kernel thread id.
+    pub tid: i32,
+    /// Thread name as the kernel keeps it (at most 15 bytes).
+    pub name: String,
+    /// CPUs the thread may run on as the window closed.
+    pub allowed: Vec<u32>,
+    /// Nanoseconds it ran inside the measured window (all of its run
+    /// time when it was created inside the window).
+    pub window_ns: u64,
 }
 
 /// Per-CPU tally in [`Placement::cpus`].
