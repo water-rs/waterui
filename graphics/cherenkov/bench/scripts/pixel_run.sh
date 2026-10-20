@@ -1,16 +1,25 @@
 #!/system/bin/sh
 # Own one benchmark process and its temporary device configuration.
 # Arguments are repeated --node PATH VALUE, --property KEY VALUE,
-# --sensor NAME PATH MAX_MILLICELSIUS, followed by -- COMMAND ARGUMENTS.
+# --clock NAME POLICY_DIR KHZ (a cpufreq policy or the GPU:
+# scaling_min_freq/scaling_max_freq), --devfreq NAME DEVFREQ_DIR KHZ
+# (min_freq/max_freq), --residency NAME FILE (a time-in-state table read
+# before and after the workload), --sensor NAME PATH MAX_MILLICELSIUS,
+# followed by -- COMMAND ARGUMENTS.
 # The caller supplies a fresh --out directory and a positive --seconds bound.
 set -u
 umask 022
 out=
 seconds=
 controls=0
-sensors=0
 clocks=0
+residencies=0
 worker=
+# "NAME:PATH:LIMIT" per sensor, and every reading taken, both held in the
+# shell so a check opens nothing but the sensors themselves.
+sensors=
+readings=
+checks=0
 
 # Called by the EXIT trap, including signal and error exits.
 # shellcheck disable=SC2329
@@ -22,6 +31,9 @@ restore() {
         kill -KILL -- "-$worker" 2>/dev/null || :
         wait "$worker" 2>/dev/null || :
     fi
+    if [ -n "$out" ] && [ -n "$sensors" ]; then
+        printf '%s' "$readings" > "$out/temperature-samples" || result=1
+    fi
     index=$controls
     while [ "$index" -gt 0 ]; do
         index=$((index - 1))
@@ -30,12 +42,14 @@ restore() {
         read -r key < "$entry.key"
         read -r value < "$entry.original"
         if [ "$kind" = clock ]; then
+            read -r low < "$entry.min-node"
+            read -r high_node < "$entry.max-node"
             read -r high < "$entry.original-max"
-            printf '%s\n' "$high" > "$key/scaling_max_freq" || result=1
-            printf '%s\n' "$value" > "$key/scaling_min_freq" || result=1
-            printf '%s\n' "$high" > "$key/scaling_max_freq" || result=1
-            cat "$key/scaling_min_freq" > "$entry.restored" || result=1
-            cat "$key/scaling_max_freq" > "$entry.restored-max" || result=1
+            printf '%s\n' "$high" > "$key/$high_node" || result=1
+            printf '%s\n' "$value" > "$key/$low" || result=1
+            printf '%s\n' "$high" > "$key/$high_node" || result=1
+            cat "$key/$low" > "$entry.restored" || result=1
+            cat "$key/$high_node" > "$entry.restored-max" || result=1
             cmp -s "$entry.original-max" "$entry.restored-max" || result=1
         elif [ "$kind" = property ]; then
             setprop "$key" "$value" || result=1
@@ -58,6 +72,24 @@ trap restore EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+# A clock held at one frequency: its name, directory and the two nodes
+# that bound it.
+register_clock() {
+    entry="$out/control-$controls"
+    printf 'clock\n' > "$entry.kind"
+    printf '%s\n' "$2" > "$entry.key"
+    printf '%s\n' "$3" > "$entry.requested"
+    printf '%s\n' "$1" > "$entry.name"
+    printf '%s\n' "$4" > "$entry.min-node"
+    printf '%s\n' "$5" > "$entry.max-node"
+    cat "$2/$4" > "$entry.original" || exit 1
+    cat "$2/$5" > "$entry.original-max" || exit 1
+    printf '%s\n' "$controls" > "$out/clock-$clocks"
+    controls=$((controls + 1))
+    printf '%s\n' "$controls" > "$out/registered-controls"
+    clocks=$((clocks + 1))
+}
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -93,26 +125,27 @@ while [ "$#" -gt 0 ]; do
             ;;
         --clock)
             [ -n "$out" ] || exit 2
-            entry="$out/control-$controls"
-            printf 'clock\n' > "$entry.kind"
-            printf '%s\n' "$3" > "$entry.key"
-            printf '%s\n' "$4" > "$entry.requested"
-            printf '%s\n' "$2" > "$entry.name"
-            cat "$3/scaling_min_freq" > "$entry.original" || exit 1
-            cat "$3/scaling_max_freq" > "$entry.original-max" || exit 1
-            printf '%s\n' "$controls" > "$out/clock-$clocks"
-            controls=$((controls + 1))
-            printf '%s\n' "$controls" > "$out/registered-controls"
-            clocks=$((clocks + 1))
+            register_clock "$2" "$3" "$4" scaling_min_freq scaling_max_freq
             shift 4
+            ;;
+        --devfreq)
+            [ -n "$out" ] || exit 2
+            register_clock "$2" "$3" "$4" min_freq max_freq
+            shift 4
+            ;;
+        --residency)
+            [ -n "$out" ] || exit 2
+            printf '%s\n' "$2" > "$out/residency-$residencies.name"
+            printf '%s\n' "$3" > "$out/residency-$residencies.path"
+            residencies=$((residencies + 1))
+            shift 3
             ;;
         --sensor)
             [ -n "$out" ] || exit 2
-            entry="$out/sensor-$sensors"
-            printf '%s\n' "$2" > "$entry.name"
-            printf '%s\n' "$3" > "$entry.path"
-            printf '%s\n' "$4" > "$entry.limit"
-            sensors=$((sensors + 1))
+            case "$2:$3:$4" in
+                *[[:space:]]*|*:*:*:*) echo "invalid sensor: $2 $3 $4" >&2; exit 2 ;;
+            esac
+            sensors="$sensors $2:$3:$4"
             shift 4
             ;;
         --)
@@ -122,25 +155,34 @@ while [ "$#" -gt 0 ]; do
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
-[ -n "$out" ] && [ -n "$seconds" ] && [ "$seconds" -gt 0 ] && [ "$sensors" -gt 0 ] && [ "$#" -gt 0 ] || exit 2
+[ -n "$out" ] && [ -n "$seconds" ] && [ "$seconds" -gt 0 ] && [ -n "$sensors" ] && [ "$#" -gt 0 ] || exit 2
+# One sensor per line; the list splits on the spaces between entries.
+# shellcheck disable=SC2086
+printf '%s\n' $sensors > "$out/sensors"
 
+# Reads every sensor once with builtins only, so a check forks nothing.
 check_temperatures() {
-    index=0
-    while [ "$index" -lt "$sensors" ]; do
-        entry="$out/sensor-$index"
-        read -r path < "$entry.path"
-        read -r limit < "$entry.limit"
+    line=
+    for sensor in $sensors; do
+        name=${sensor%%:*}
+        rest=${sensor#*:}
+        path=${rest%:*}
+        limit=${rest##*:}
         read -r value < "$path" || return 1
-        case "$value:$limit" in
-            *[!0-9:]*|:*|*:) echo "invalid temperature reading: $path" >&2; return 1 ;;
+        case "$value" in
+            ''|*[!0-9]*) echo "invalid temperature reading: $path" >&2; return 1 ;;
         esac
-        printf '%s\n' "$value" >> "$entry.samples"
+        line="$line $name=$value"
         if [ "$value" -ge "$limit" ]; then
-            echo "temperature limit: $(cat "$entry.name") $value >= $limit mC" >&2
+            readings="$readings$checks$line
+"
+            echo "temperature limit: $name $value >= $limit mC" >&2
             return 1
         fi
-        index=$((index + 1))
     done
+    readings="$readings$checks$line
+"
+    checks=$((checks + 1))
 }
 check_temperatures || exit 125
 index=0
@@ -150,11 +192,13 @@ while [ "$index" -lt "$controls" ]; do
     read -r key < "$entry.key"
     read -r value < "$entry.requested"
     if [ "$kind" = clock ]; then
-        printf '%s\n' "$value" > "$key/scaling_max_freq" || exit 1
-        printf '%s\n' "$value" > "$key/scaling_min_freq" || exit 1
-        printf '%s\n' "$value" > "$key/scaling_max_freq" || exit 1
-        cat "$key/scaling_min_freq" > "$entry.applied" || exit 1
-        cat "$key/scaling_max_freq" > "$entry.applied-max" || exit 1
+        read -r low < "$entry.min-node"
+        read -r high < "$entry.max-node"
+        printf '%s\n' "$value" > "$key/$high" || exit 1
+        printf '%s\n' "$value" > "$key/$low" || exit 1
+        printf '%s\n' "$value" > "$key/$high" || exit 1
+        cat "$key/$low" > "$entry.applied" || exit 1
+        cat "$key/$high" > "$entry.applied-max" || exit 1
         cmp -s "$entry.requested" "$entry.applied-max" || exit 1
     elif [ "$kind" = property ]; then
         setprop "$key" "$value" || exit 1
@@ -175,14 +219,27 @@ record_clocks() {
         entry="$out/control-$index"
         read -r key < "$entry.key"
         read -r name < "$entry.name"
-        cat "$key/scaling_min_freq" "$key/scaling_max_freq" > "$out/$name-$moment-range" || return 1
-        if [ "$name" != gpu ]; then
-            cat "$key/stats/time_in_state" > "$out/$name-$moment-residency" || return 1
-        fi
+        read -r low < "$entry.min-node"
+        read -r high < "$entry.max-node"
+        cat "$key/$low" "$key/$high" > "$out/$name-$moment-range" || return 1
         clock=$((clock + 1))
+    done
+    index=0
+    while [ "$index" -lt "$residencies" ]; do
+        read -r name < "$out/residency-$index.name"
+        read -r path < "$out/residency-$index.path"
+        cat "$path" > "$out/$name-$moment-residency" || return 1
+        index=$((index + 1))
     done
 }
 record_clocks before || exit 1
+
+# The temperature checks wait on a FIFO nobody writes, a read with a
+# timeout: a wait that forks nothing. The open descriptor keeps the FIFO
+# alive once its name is gone.
+mkfifo "$out/tick" || exit 1
+exec 3<>"$out/tick"
+rm "$out/tick" || exit 1
 
 # Every process's cumulative CPU time and every CPU's tick counters, taken
 # outside the workload's lifetime so they cost its frames nothing. A process
@@ -206,7 +263,10 @@ while kill -0 "$worker" 2>/dev/null; do
         echo "benchmark deadline: $seconds seconds" >&2
         exit 124
     fi
-    sleep 0.25
+    # mksh, Android's sh, reads with a fractional timeout.
+    # shellcheck disable=SC3045
+    # The workload's exit interrupts the read early, which ends the wait.
+    read -t 0.25 -r _ <&3 2>/dev/null
 done
 wait "$worker"
 result=$?

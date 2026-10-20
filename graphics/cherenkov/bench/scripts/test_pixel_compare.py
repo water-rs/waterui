@@ -374,5 +374,49 @@ class DeviceControlEvidence(unittest.TestCase):
             self.assertIsNone(result["settings"][0]["applied"])
 
 
+class ResidencyTables(unittest.TestCase):
+    def test_a_cpu_policy_table_is_split_on_spaces(self):
+        self.assertEqual(pixel_compare.residency_table("2294000 451\n1425000 0\n", "policy7"),
+                         {2294000: 451, 1425000: 0})
+
+    def test_a_devfreq_table_is_split_by_width_where_its_columns_touch(self):
+        # The DSU's table as the Pixel 9 Pro prints it.
+        text = " 2150000         0\n  6100001010953204\n  324000         0\n"
+        self.assertEqual(pixel_compare.residency_table(text, "dsu"),
+                         {2150000: 0, 610000: 1010953204, 324000: 0})
+
+
+class ThreadPlacement(unittest.TestCase):
+    CPUS = tuple(range(8))
+
+    def threads(self, render=(7,), worker=tuple(range(8)), other=(7,), other_ns=1):
+        return [{"tid": 1, "name": "bench-base", "allowed": list(other), "window_ns": other_ns},
+                {"tid": 2, "name": pixel_compare.RENDER_THREAD, "allowed": list(render),
+                 "window_ns": 5},
+                {"tid": 3, "name": pixel_compare.RASTER_THREAD, "allowed": list(worker),
+                 "window_ns": 9}]
+
+    def check(self, threads):
+        return pixel_compare.thread_placement(threads, list(self.CPUS), [7])
+
+    def test_the_render_thread_on_its_cpu_and_workers_on_the_set_pass(self):
+        self.assertEqual(self.check(self.threads()), [])
+
+    def test_a_render_thread_left_on_the_whole_set_fails(self):
+        self.assertTrue(self.check(self.threads(render=self.CPUS)))
+
+    def test_a_worker_pinned_with_the_render_thread_fails(self):
+        self.assertTrue(self.check(self.threads(worker=(7,))))
+
+    def test_an_active_thread_outside_the_set_fails_and_an_idle_one_does_not(self):
+        outside = tuple(range(9))
+        self.assertTrue(self.check(self.threads(other=outside)))
+        self.assertEqual(self.check(self.threads(other=outside, other_ns=0)), [])
+
+    def test_a_second_render_thread_fails(self):
+        threads = self.threads()
+        self.assertTrue(self.check(threads + [dict(threads[1], tid=4)]))
+
+
 if __name__ == '__main__':
     unittest.main()

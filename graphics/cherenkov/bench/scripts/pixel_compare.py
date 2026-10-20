@@ -6,6 +6,7 @@ Pixel-class device.
                            [--governor | --gpu-counters]
   pixel_compare.py run     --base B --head H --scene DIR... --out O
                            --engine E --workers N --cpus LIST --cluster-khz POLICY=KHZ...
+                           [--devfreq-khz NAME=KHZ...]
   pixel_compare.py analyze O
   pixel_compare.py quiet-limit O...
 
@@ -57,14 +58,39 @@ at one worker only. The GPU is left to its governor. Every CPU frequency
 policy holding a CPU of the set is held at its `--cluster-khz` clock for the
 workload instead. Original policy values are restored after each invocation.
 
+For cherenkov-cpu, "N workers" means N raster workers confined to `--cpus`,
+while the frame's serial work runs on CPU 7 alone: `measure --render-cpu 7`
+moves the engine's render thread (lowering, glyph resolution and the frame
+handoff) and the measuring thread (encode) there once the engine has built
+its pool. With one mask over a big.LITTLE set those serial phases would land
+on a big or a little core from run to run (#2988). `--cpus` must hold CPU 7;
+at one worker (`--cpus 7`) everything shares it. Each report lists every
+thread's CPU mask and its CPU time over the measured window, and a run whose
+render thread, raster workers or other active threads are not where they
+were put is invalid.
+
+The memory, L3 and interconnect clocks (`mif`, `dsu`, `bci`: the devfreq
+devices `*.devfreq_NAME`) follow their own governors. Every run records
+their residency over the workload (`interconnect_residency_ms` in the run
+log), and `--devfreq-khz NAME=KHZ` holds one at a clock (`min_freq =
+max_freq`), restored afterwards; a held clock's residency outside that
+clock invalidates the run. Holding all three leaves the spread between
+identical one-worker runs as it was (#2988), so none is held by default.
+
 Controls, checked for every invocation and recorded with it:
 
 - before: screen off, physical sensors below their limits, and the requested
   device settings applied with readback evidence;
-- during: physical temperature supervision, GPU clock residency, CPU placement,
-  and the requested worker count;
-- after: pinned policy ranges and CPU frequency residency over the workload,
-  followed by restoration of every original property and sysfs value.
+- during: physical temperature supervision, GPU clock residency, CPU and
+  thread placement, and the requested worker count;
+- after: pinned policy ranges, CPU frequency and interconnect clock residency
+  over the workload, followed by restoration of every original property and
+  sysfs value.
+
+The supervisor checks the temperatures every 250 ms beside the frames. A
+check reads the sensors with shell builtins and waits on a FIFO with a read
+timeout, so it forks nothing and appends to no file; the readings are
+written once the workload has exited.
 
 Other processes take CPU time from a run's frames, most of all when the
 workers hold every CPU. The device supervisor therefore snapshots every
@@ -169,21 +195,28 @@ CPU_PHASES = ("lower", "glyph", "shade")
 class CpuEngine(typing.NamedTuple):
     """A CPU rasterizer the bench measures: the environment that sets its
     worker count, the `device.adapter` a report states for that count, the
-    metrics `analyze` decides it on, and its most workers."""
+    metrics `analyze` decides it on, its most workers, and whether it runs
+    its frame's serial work on a render thread of its own."""
     environment: typing.Callable[[int], dict[str, str]]
     adapter: typing.Callable[[int], str]
     metrics: tuple[str, ...]
     max_workers: int | None
+    render_thread: bool
 
 
 CPU_ENGINES = {
     "cherenkov-cpu": CpuEngine(lambda n: {"RAYON_NUM_THREADS": str(n)},
-                               lambda n: f"cherenkov-cpu ({n} threads)", ("frame", "shade"), None),
+                               lambda n: f"cherenkov-cpu ({n} threads)", ("frame", "shade"), None,
+                               True),
     "vello-cpu": CpuEngine(lambda n: {"VELLO_CPU_THREADS": "0" if n == 1 else str(n)},
                            lambda n: "vello-cpu (single-threaded dispatcher)" if n == 1
-                           else f"vello-cpu ({n} threads)", ("frame",), None),
-    "skia-cpu": CpuEngine(lambda n: {}, lambda n: "Skia raster surface", ("frame",), 1),
+                           else f"vello-cpu ({n} threads)", ("frame",), None, False),
+    "skia-cpu": CpuEngine(lambda n: {}, lambda n: "Skia raster surface", ("frame",), 1, False),
 }
+# The kernel's names (15 bytes) for cherenkov's render thread and raster
+# workers (`cherenkov-render`, `cherenkov-raster-N`).
+RENDER_THREAD = "cherenkov-rende"
+RASTER_THREAD = "cherenkov-raste"
 GPU_ENGINE = "cherenkov"
 
 # A collection's identity: every field `analyze` relies on is in the plan.
@@ -195,8 +228,12 @@ BOOTSTRAP_RESAMPLES = 2000
 # How far above the quiet runs' median, in robust standard deviations, the
 # other processes' CPU of a run may lie before it is rerun.
 QUIET_SIGMAS = 3
-# The GPU engine's measuring CPU.
+# The GPU engine's measuring CPU, and a CPU engine's render CPU.
 CPU = 7
+# Memory, L3 and interconnect clocks (devfreq devices `*.devfreq_NAME`),
+# whose residency every run records and `--devfreq-khz` holds.
+INTERCONNECT = ("mif", "dsu", "bci")
+DEVFREQ = "/sys/class/devfreq"
 # CoolingDevice types of `android.os.CoolingDevice`: CPU and GPU.
 COOLING_TYPES = (2, 3)
 CPUFREQ = "/sys/devices/system/cpu/cpufreq"
@@ -343,12 +380,34 @@ def outside_cpu(directory: Path, tick_hz: int) -> dict[str, Any]:
 class Clocks:
     """Frequency policies read and pinned through sysfs, by name: `gpu` is
     the Mali device behind `/sys/class/misc/mali0`, `policyN` a CPU
-    frequency policy."""
+    frequency policy, and a name of `INTERCONNECT` the devfreq device
+    `DEVFREQ/*.devfreq_NAME`."""
 
     def __init__(self, device: Device, names: list[str]) -> None:
         self.device = device
-        self.paths = {name: device.root("readlink -f /sys/class/misc/mali0/device").strip()
-                      if name == "gpu" else f"{CPUFREQ}/{name}" for name in names}
+        self.paths = {name: self.locate(device, name) for name in names}
+
+    @staticmethod
+    def locate(device: Device, name: str) -> str:
+        if name == "gpu":
+            return device.root("readlink -f /sys/class/misc/mali0/device").strip()
+        if name in INTERCONNECT:
+            found = device.root(f"ls -d {DEVFREQ}/*.devfreq_{name}").split()
+            if len(found) != 1:
+                raise ControlError(f"devfreq {name}: {found}")
+            return device.root("readlink -f " + shlex.quote(found[0])).strip()
+        return f"{CPUFREQ}/{name}"
+
+    @staticmethod
+    def nodes(name: str) -> tuple[str, str, str, str]:
+        """A clock's lower and upper bound, current frequency and available
+        frequencies, as node names in its directory."""
+        if name in INTERCONNECT:
+            return "min_freq", "max_freq", "cur_freq", "available_frequencies"
+        if name == "gpu":
+            return "scaling_min_freq", "scaling_max_freq", "cur_freq", "available_frequencies"
+        return ("scaling_min_freq", "scaling_max_freq", "scaling_cur_freq",
+                "scaling_available_frequencies")
 
     @staticmethod
     def describe(device: Device) -> dict[str, dict[str, Any]]:
@@ -367,17 +426,32 @@ class Clocks:
         return out
 
     def available(self, name: str) -> list[int]:
-        node = "available_frequencies" if name == "gpu" else "scaling_available_frequencies"
+        node = self.nodes(name)[3]
         return [int(v) for v in self.device.root(f"cat {self.paths[name]}/{node}").split()]
 
     def state(self) -> dict[str, dict[str, int]]:
         state = {}
         for name, path in self.paths.items():
-            current = "cur_freq" if name == "gpu" else "scaling_cur_freq"
-            values = self.device.root(
-                f"cat {path}/scaling_min_freq {path}/scaling_max_freq {path}/{current}").split()
+            low, high, current, _ = self.nodes(name)
+            values = self.device.root(f"cat {path}/{low} {path}/{high} {path}/{current}").split()
             state[name] = dict(zip(("min", "max", "current"), map(int, values)))
         return state
+
+    @staticmethod
+    def residency_file(name: str) -> str:
+        """The time-in-state table of a CPU policy (ticks) or an
+        interconnect clock (milliseconds), relative to its directory."""
+        return "time_in_state" if name in INTERCONNECT else "stats/time_in_state"
+
+
+def residency_table(text: str, name: str) -> dict[int, int]:
+    """A time-in-state table by kHz. A CPU policy's rows are `KHZ TICKS`; a
+    devfreq table prints `%8lu%10lu`, so its columns touch once a time
+    reaches ten digits and are split by width."""
+    rows = text.splitlines()
+    if name in INTERCONNECT:
+        return {int(row[:8]): int(row[8:]) for row in rows}
+    return {int(khz): int(ticks) for khz, ticks in (row.split() for row in rows)}
 
 
 
@@ -409,6 +483,10 @@ class PerformanceControls:
                  battery_c: float) -> None:
         self.arguments: list[str] = []
         self.sensors: list[dict[str, Any]] = []
+        # Every interconnect clock's residency is recorded, held or not.
+        for name in INTERCONNECT:
+            self.arguments += ["--residency", name,
+                               clocks.paths[name] + "/" + clocks.residency_file(name)]
         power = json.loads(device.root("cat /vendor/etc/powerhint.json"))
         nodes = {node["Name"]: node for node in power["Nodes"]}
         if pinned:
@@ -425,11 +503,16 @@ class PerformanceControls:
                     self.arguments += ["--node", node["Path"], "1"]
             for name, khz in pinned.items():
                 path = clocks.paths[name]
+                if name in INTERCONNECT:
+                    self.arguments += ["--devfreq", name, path, str(khz)]
+                    continue
                 if name != "gpu":
                     governors = device.root("cat " + shlex.quote(path + "/scaling_available_governors")).split()
                     if "performance" not in governors:
                         raise ControlError(f"{name} has no performance governor")
-                    self.arguments += ["--node", path + "/scaling_governor", "performance"]
+                    self.arguments += ["--node", path + "/scaling_governor", "performance",
+                                       "--residency", name,
+                                       path + "/" + clocks.residency_file(name)]
                 self.arguments += ["--clock", name, path, str(khz)]
 
         config_name = device.root("getprop vendor.thermal.config").strip()
@@ -503,6 +586,7 @@ class Session:
         self.out: Path = args.out
         self.device = Device(args.serial)
         self.cpu_engine = CPU_ENGINES.get(args.engine)
+        self.render_cpus = None
         if self.cpu_engine is None:
             self.cpus = [CPU]
             self.pinned = None if args.governor else {"gpu": args.gpu_khz,
@@ -510,7 +594,14 @@ class Session:
         else:
             self.cpus = cpu_list(args.cpus)
             self.pinned = dict(args.cluster_khz)
-        self.clocks = Clocks(self.device, list(self.pinned or {"gpu": 0, self.policy_of(CPU): 0}))
+            if self.cpu_engine.render_thread:
+                if CPU not in self.cpus:
+                    raise SystemExit(f"--cpus must hold the render thread's CPU {CPU}")
+                self.render_cpus = [CPU]
+        if self.pinned is not None:
+            self.pinned |= dict(args.devfreq_khz)
+        names = list(self.pinned or {"gpu": 0, self.policy_of(CPU): 0})
+        self.clocks = Clocks(self.device, names + [n for n in INTERCONNECT if n not in names])
         self.remote = f"/data/local/tmp/pixel-compare-{self.out.name}"
         self.performance = PerformanceControls(self.device, self.clocks, self.pinned, args.battery_c)
         self.device_runs: dict[str, dict[str, Any]] = {}
@@ -543,7 +634,7 @@ class Session:
             policies = Clocks.describe(self.device)
             holding = {name for name, policy in policies.items()
                        if set(policy["cpus"]) & set(self.cpus)}
-            if set(self.pinned) != holding:
+            if set(self.pinned) - set(INTERCONNECT) != holding:
                 raise SystemExit(f"--cluster-khz must name exactly the policies holding CPUs "
                                  f"{self.cpus}: {sorted(holding)}")
         if self.pinned:
@@ -559,6 +650,7 @@ class Session:
             "scenes": scenes, "rounds": args.rounds, "frames": args.frames,
             "warmup": args.warmup, "width": args.width, "rate_hz": RATE_HZ,
             "engine": args.engine, "workers": args.workers, "cpus": self.cpus,
+            "render_cpus": self.render_cpus,
             "metrics": metrics, "policies": policies,
             "clocks": "governor" if self.pinned is None else self.pinned,
             "battery_c": args.battery_c, "serial": args.serial,
@@ -611,6 +703,8 @@ class Session:
                 command += ["--native", f"{args.width}x{height}"]
         else:
             environment = self.cpu_engine.environment(args.workers)
+            if self.render_cpus is not None:
+                command += ["--render-cpu", ",".join(map(str, self.render_cpus))]
         prefix = ["env", *(f"{k}={v}" for k, v in environment.items())] if environment else []
         remote_control = f"{self.remote}/{run_id}-control"
         supervised = ["sh", self.remote + "/pixel_run.sh", "--out", remote_control,
@@ -648,11 +742,16 @@ class Session:
         failures = []
         if report["conditions"]["screen_state"] not in ("off", "dozing", "asleep"):
             failures.append(f"screen {report['conditions']['screen_state']}")
-        if not (report["placement"]["controlled"] and report["placement"]["requested"] == self.cpus):
+        placement = report["placement"]
+        if not (placement["controlled"] and placement["requested"] == self.cpus
+                and placement["render"] == self.render_cpus):
             failures.append("placement not pinned")
-        if any(s["cpu_start"] not in self.cpus or s["cpu_end"] not in self.cpus
+        measuring = self.render_cpus or self.cpus
+        if any(s["cpu_start"] not in measuring or s["cpu_end"] not in measuring
                for s in report["samples"]):
-            failures.append(f"measuring thread left CPUs {self.cpus}")
+            failures.append(f"measuring thread left CPUs {measuring}")
+        if self.render_cpus is not None:
+            failures += thread_placement(placement["threads"], self.cpus, self.render_cpus)
         if self.cpu_engine is not None:
             adapter = self.cpu_engine.adapter(self.args.workers)
             if report["device"]["adapter"] != adapter:
@@ -711,26 +810,28 @@ class Session:
         before = self.snapshot()
         local = self.measure(scene, side, run_id)
         directory = self.out / f"{run_id}-control"
-        residency = {}
         ranges = {}
         for name in self.pinned or {}:
             values = [int(v) for v in (directory / f"{name}-after-range").read_text().split()]
             ranges[name] = dict(zip(("min", "max"), values))
-            if name != "gpu":
-                readings = [{int(k): int(v) for k, v in
-                             (line.split() for line in (directory / f"{name}-{moment}-residency").read_text().splitlines())}
-                            for moment in ("before", "after")]
-                residency[name] = {khz: ticks - readings[0][khz] for khz, ticks in readings[1].items()}
+        residency = {}
+        for name in [n for n in self.pinned or {} if n != "gpu" and n not in INTERCONNECT] + list(INTERCONNECT):
+            readings = [residency_table((directory / f"{name}-{moment}-residency").read_text(), name)
+                        for moment in ("before", "after")]
+            residency[name] = {khz: value - readings[0][khz] for khz, value in readings[1].items()}
         after = {"thermal": thermal(self.device), "clocks": ranges,
                  "restored_clocks": self.clocks.state(),
                  "cpu_residency_ticks": {name: {k: v for k, v in table.items() if v}
-                                         for name, table in residency.items()}}
+                                         for name, table in residency.items()
+                                         if name not in INTERCONNECT},
+                 "interconnect_residency_ms": {name: {k: v for k, v in residency[name].items() if v}
+                                               for name in INTERCONNECT}}
         failures = self.check_report(local)
         if self.pinned:
             # What a pinned run controls is the clocks: a cooling device
             # that moved none leaves the run valid. Each range is checked
-            # after the run, and each CPU policy's residency over the whole
-            # process.
+            # after the run, and each CPU policy's and interconnect clock's
+            # residency over the whole process.
             for name, khz in self.pinned.items():
                 state = after["clocks"][name]
                 if state["min"] != khz or state["max"] != khz:
@@ -753,6 +854,30 @@ class Session:
             raise ControlError(f"{run_id}: {'; '.join(failures)}")
         return rejected
 
+
+
+def thread_placement(threads: list[dict[str, Any]], cpus: list[int],
+                     render: list[int]) -> list[str]:
+    """What is wrong with a cherenkov-cpu report's threads when its render
+    thread was moved to `render`: that thread must be there, every raster
+    worker on `cpus`, and every other thread that ran in the window within
+    `cpus`."""
+    failures = []
+    names = [t["name"] for t in threads]
+    if names.count(RENDER_THREAD) != 1:
+        failures.append(f"{names.count(RENDER_THREAD)} render threads")
+    for thread in threads:
+        if thread["name"] == RENDER_THREAD:
+            expected = render
+        elif thread["name"] == RASTER_THREAD:
+            expected = cpus
+        elif thread["window_ns"] == 0 or set(thread["allowed"]) <= set(cpus):
+            continue
+        else:
+            expected = None
+        if thread["allowed"] != expected:
+            failures.append(f"thread {thread['tid']} {thread['name']} on {thread['allowed']}")
+    return failures
 
 
 def quantile(values: list[float], q: float) -> float:
@@ -914,6 +1039,9 @@ def main() -> None:
     run.add_argument("--cluster-khz", action="append", default=[],
                      type=lambda text: (text.split("=", 1)[0], int(text.split("=", 1)[1])),
                      metavar="POLICY=KHZ")
+    run.add_argument("--devfreq-khz", action="append", default=[],
+                     type=lambda text: (text.split("=", 1)[0], int(text.split("=", 1)[1])),
+                     metavar="NAME=KHZ")
     run.add_argument("--governor", action="store_true")
     run.add_argument("--gpu-counters", action="store_true")
     run.add_argument("--gpu-khz", type=int, default=649000)
@@ -951,6 +1079,11 @@ def main() -> None:
                 parser.error(f"{args.engine} runs at 1 to {engine.max_workers or 'any'} workers")
             if len(dict(args.cluster_khz)) != len(args.cluster_khz):
                 parser.error("--cluster-khz names a policy twice")
+        if args.governor and args.devfreq_khz:
+            parser.error("--devfreq-khz holds clocks; --governor leaves them to their governors")
+        if (len(dict(args.devfreq_khz)) != len(args.devfreq_khz)
+                or not set(dict(args.devfreq_khz)) <= set(INTERCONNECT)):
+            parser.error(f"--devfreq-khz names each of {', '.join(INTERCONNECT)} at most once")
         if args.rounds < 2 or args.rounds % 2:
             parser.error("--rounds must be even, so each arm runs first equally often")
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(124))
