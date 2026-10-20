@@ -996,3 +996,51 @@ fn destructive_rows_draw_in_error_colour_on_the_plain_popup_path() {
         "the destructive command's label draws in the theme's error colour on the plain popup path"
     );
 }
+
+/// water-rs/waterui#1929: an accessory with no explicit `preview` keeps the
+/// source lit through the dim's hole — the whole source, label ink and all,
+/// not just its surface pill.
+#[test]
+fn the_lifted_source_keeps_its_label_with_an_accessory_but_no_preview() {
+    let mut runtime = runtime_sized(110.0, (320, 480), || {
+        ContextMenu::new(vec!["Copy".action(|| {})])
+            .accessory(waterui::prelude::text("preview").padding_with(6.0))
+    });
+    assert_lifted_source_interior_matches(&mut runtime);
+}
+
+/// The label's ink crosses the button's vertical middle: every sample along
+/// a strip through the interior must match what the same point drew before
+/// the menu — the lifted source keeps its content.
+fn assert_lifted_source_interior_matches(runtime: &mut HeadlessRuntime) {
+    let bounds = bounds_of(runtime, "host");
+    let baseline = runtime
+        .pump_at(true, Instant::now())
+        .snapshot
+        .expect("a captured frame");
+
+    let (cx, cy) = (
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.y0, bounds.y1)),
+    );
+    for event in secondary_click(cx, cy) {
+        runtime.push_input_event(event);
+    }
+    let opened = capture_until_settled(runtime);
+
+    let mid_y = crate::num_cast::f64_as_u32(f64::midpoint(bounds.y0, bounds.y1));
+    let mut mismatches = Vec::new();
+    let first = crate::num_cast::f64_as_u32(bounds.x0 + 4.0);
+    let last = crate::num_cast::f64_as_u32(bounds.x1 - 4.0);
+    for px in (first..last).step_by(2) {
+        let opened_px = pixel(&opened, px, mid_y);
+        let baseline_px = pixel(&baseline, px, mid_y);
+        if !near(opened_px, baseline_px, 16) {
+            mismatches.push((px, baseline_px, opened_px));
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "the lifted source's interior did not draw through the hole: {mismatches:?}"
+    );
+}

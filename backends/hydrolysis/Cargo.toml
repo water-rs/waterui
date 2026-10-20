@@ -334,6 +334,9 @@ waterui-navigation.workspace = true
 # The #210 regression test drives a real `ReactiveImage`: its handle's `set`
 # is the same call the decode pipeline makes when an image lands.
 waterui-image.workspace = true
+# The #1929 regression mounts the real Material 3 style the issue reports —
+# its layered widget theme is what the lifted-source hole has to reveal.
+hydrolysis-m3.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 # The protocol tests compose the async-call script on the host too —

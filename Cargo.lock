@@ -4641,6 +4641,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "hydrolysis",
+ "hydrolysis-m3",
  "icu_properties",
  "icu_provider",
  "image",
