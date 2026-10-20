@@ -1277,6 +1277,9 @@ fn binary_state_machine_acquired_once() {
     };
     let (dev, _, family) = raw(&shared);
     let generation = rgb_generation(&shared, &device, rgb, (8, 8), None, None);
+    // A frame reaches `stage_acquire` only through an installed slot,
+    // which holds an engine lease until it is uninstalled.
+    generation.lease();
     // SAFETY: `dev` is live and `family` is the engine's queue family.
     let pool = unsafe {
         dev.create_command_pool(
@@ -1337,6 +1340,7 @@ fn binary_state_machine_acquired_once() {
     vulkan::cancel_staged(&mut native);
     // SAFETY: `cb` was never submitted and `pool` is destroyed once.
     unsafe { dev.destroy_command_pool(pool, None) };
+    generation.unlease();
 }
 
 #[test]
@@ -1437,6 +1441,9 @@ fn plan_cancellation_restores_the_frame() {
         }),
         None,
     );
+    // A frame reaches `stage_acquire` only through an installed slot,
+    // which holds an engine lease until it is uninstalled.
+    generation.lease();
     // Stage an acquire into a scratch context through the engine's own
     // path: `stage_acquire` is the unit a cancelled encode unwinds. The
     // barrier is recorded into a real buffer the submission never sees.
@@ -1494,6 +1501,7 @@ fn plan_cancellation_restores_the_frame() {
     // SAFETY: the semaphore was never submitted to a queue — no command
     // references it, so destroying it is safe and happens exactly once.
     unsafe { dev.destroy_semaphore(semaphore, None) };
+    generation.unlease();
 }
 
 /// A lease that ends between `stage_acquire` and `mark_submitted` — the
