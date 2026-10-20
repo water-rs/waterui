@@ -545,3 +545,119 @@ fn gpu_sparse_interiors_preserve_painter_order_across_frames() {
         }
     }
 }
+
+/// Render a recorded scene on `route`, returning its pixels.
+fn render_recorded(
+    route: CoverageRoute,
+    size: (u32, u32),
+    record: impl FnOnce(&mut cherenkov::Recorder),
+) -> Vec<[f32; 4]> {
+    let engine = Engine::<Gpu>::new(GpuConfig {
+        coverage_route: Some(route),
+        ..GpuConfig::default()
+    })
+    .expect("GPU coverage test adapter");
+    let surface = engine
+        .surface(Offscreen::new(size, OffscreenFormat::LinearF16), || {})
+        .expect("offscreen surface");
+    surface.clear_color(WorkingColor::new([0.0, 0.0, 0.0, 1.0]));
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(record));
+    });
+    engine.render(FrameTime::now()).expect("render the route");
+    surface.readback().expect("readback").pixels
+}
+
+/// A five-point star centred on (32, 32) with straight edges, whose
+/// coverage both routes compute exactly.
+fn star() -> BezPath {
+    let mut path = BezPath::new();
+    for i in 0..5 {
+        let angle = f64::from(i).mul_add(144.0, -90.0).to_radians();
+        let point = (
+            angle.cos().mul_add(24.0, 32.0),
+            angle.sin().mul_add(24.0, 32.0),
+        );
+        if i == 0 {
+            path.move_to(point);
+        } else {
+            path.line_to(point);
+        }
+    }
+    path.close_path();
+    path
+}
+
+/// The worst per-channel difference between two renders.
+fn worst_difference(a: &[[f32; 4]], b: &[[f32; 4]]) -> f32 {
+    assert_eq!(a.len(), b.len(), "same surface");
+    a.iter()
+        .zip(b)
+        .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).abs()))
+        .fold(0.0, f32::max)
+}
+
+/// A GPU-routed path drawn at a non-zero integer translation lands where
+/// the polygon route puts it: the retained entry holds placement-relative
+/// coverage, so the draw must add its own offset back on the frame that
+/// generates it (water-rs/waterui#3081).
+#[test]
+fn a_gpu_path_at_an_integer_translation_matches_the_sweep_route() {
+    let ink = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
+    let draw = |c: &mut cherenkov::Recorder| {
+        c.transform(cherenkov::kurbo::Affine::translate((3.0, 2.0)), |c| {
+            c.fill(star(), ink);
+        });
+    };
+    let sweep = render_recorded(CoverageRoute::Sweep, (64, 64), draw);
+    let gpu = render_recorded(CoverageRoute::Gpu, (64, 64), draw);
+    assert_eq!(
+        sweep[(2 + 32) * 64 + 3 + 32][0],
+        1.0,
+        "the star covers its centre"
+    );
+    let worst = worst_difference(&sweep, &gpu);
+    assert!(
+        worst <= 2.0 / 255.0,
+        "GPU placement differs from the sweep: {worst}"
+    );
+}
+
+/// The polygon tiers of an opaque ellipse draw under the plain opaque
+/// pipeline even when the pass's last range was GPU-routed: under the
+/// cell-buffer pipeline every tier vertex past the eighth reads as a GPU
+/// join and writes garbage depth (water-rs/waterui#3081).
+#[test]
+fn polygon_tiers_after_a_gpu_path_range_match_the_sweep_route() {
+    let red = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
+    let green = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
+    let blue = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
+    // The leading instances carry colours of their own: a tier vertex
+    // misread as a GPU join takes its drawing state from one of them.
+    let draw = |c: &mut cherenkov::Recorder| {
+        c.fill(
+            cherenkov::kurbo::Rect::new(300.0, 300.0, 316.0, 316.0),
+            blue,
+        );
+        c.fill(cherenkov::kurbo::Circle::new((192.0, 192.0), 128.0), red);
+        let mut square = BezPath::new();
+        square.move_to((4.5, 4.5));
+        square.line_to((60.5, 4.5));
+        square.line_to((60.5, 60.5));
+        square.line_to((4.5, 60.5));
+        square.close_path();
+        c.fill(square, green);
+    };
+    let sweep = render_recorded(CoverageRoute::Sweep, (320, 320), draw);
+    let gpu = render_recorded(CoverageRoute::Gpu, (320, 320), draw);
+    assert_eq!(
+        sweep[192 * 320 + 192][0],
+        1.0,
+        "the circle covers its centre"
+    );
+    let worst = worst_difference(&sweep, &gpu);
+    assert!(
+        worst <= 2.0 / 255.0,
+        "GPU tiers differ from the sweep: {worst}"
+    );
+}

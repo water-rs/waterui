@@ -138,10 +138,10 @@ pub const ENGINE_GROUP0: &[Entry] = &[
     Entry::storage_read(1, VERTEX | FRAGMENT),
     Entry::storage_read(2, FRAGMENT),
     Entry::texture(3),
-    // The frame's GPU-coverage cell texels (issue #2543): a storage
-    // buffer the fragment stage reads instead of the atlas for
-    // FLAG_CELL_BUFFER instances.
-    Entry::storage_read(4, FRAGMENT),
+    // The coverage arena (issues #2543, #3081): the vertex stage joins
+    // a GPU draw's geometry records to its anchor; the fragment stage
+    // reads the block's texels for FLAG_CELL_BUFFER instances.
+    Entry::storage_read(4, VERTEX | FRAGMENT),
     // The sRGB transfer decode table of natively stored 8-bit images.
     Entry::storage_read(IMAGE_DECODE_BINDING, FRAGMENT),
 ];
@@ -230,10 +230,10 @@ pub const SPACE_CONVERT_GROUP0: &[Entry] = &[Entry::texture(0)];
 #[allow(dead_code)]
 pub const ENGINE_GROUPS: &[&[Entry]] = &[ENGINE_GROUP0, ENGINE_GROUP1];
 
-/// The GPU coverage kernels' single group (`coverage.wgsl`, issue
-/// #2543): per-frame compute input, coverage scratch, the emitted cell
-/// texels, the frame instance buffer's tail and the indirect argument
-/// buffer.
+/// The GPU coverage kernels' single group (`coverage.wgsl`, issues
+/// #2543 and #3081): per-frame compute input, coverage scratch, the
+/// retained coverage arena the kernels write blocks into, and the
+/// dispatch-domain argument buffer.
 ///
 /// Used by `build.rs`; the crate builds the layout from `COVERAGE_GROUP0`
 /// directly.
@@ -246,7 +246,6 @@ pub const COVERAGE_GROUP0: &[Entry] = &[
     Entry::storage(5, COMPUTE),
     Entry::storage(6, COMPUTE),
     Entry::storage(7, COMPUTE),
-    Entry::storage(8, COMPUTE),
 ];
 
 /// The coverage pipeline's group list.
