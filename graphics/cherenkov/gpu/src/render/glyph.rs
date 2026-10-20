@@ -2238,9 +2238,10 @@ pub struct GpuDraw {
     /// The `path::placement` retention key — `key_exact` when the
     /// surface clips the coverage hull.
     pub key: u64,
-    /// Integer translation the coverage is relative to; a later draw at
-    /// another integer offset shifts it by `offset − entry.offset`.
-    pub offset: [i32; 2],
+    /// The draw's integer shift: an unclipped entry holds placement-relative
+    /// coverage, so the draw adds its own integer placement offset back; a
+    /// clipped entry holds absolute coverage and shifts by zero.
+    pub shift: [i32; 2],
     /// `FillRule` as the kernel's `rule` field (0 non-zero, 1 even-odd).
     pub rule: u32,
     /// Kernel transform in the generation frame: the 2x2 plus the

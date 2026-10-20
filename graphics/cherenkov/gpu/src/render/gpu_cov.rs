@@ -22,8 +22,11 @@ use std::sync::Arc;
 use crate::render::instance::Instance;
 use crate::render::path::{GpuElement, GpuPath};
 
+/// The divisor taking the engine's GPU budget to the retained-but-undrawn
+/// coverage share (water-rs/waterui#3081).
+pub const BUDGET_SHARE: u64 = 8;
 /// u32 words of one `GpuPath` record on the device.
-const PATH_WORDS: usize = 40;
+const PATH_WORDS: usize = 36;
 /// u32 words of `Params`.
 const PARAMS_WORDS: usize = 20;
 /// u32 words of indirect arguments per GPU draw: `draw_indirect` (4) +
@@ -57,8 +60,9 @@ const BLOCK_HEADER_WORDS: u32 = 4;
 struct Draw {
     /// The entry's retention key.
     key: u64,
-    /// `draw offset − entry offset`: the integer translation the
-    /// anchor's `shape.half` carries into the vertex-stage join.
+    /// The integer translation the anchor's `shape.half` carries into
+    /// the vertex-stage join: the draw's own placement offset for an
+    /// unclipped entry, zero for a clipped one.
     shift: [i32; 2],
 }
 
@@ -75,8 +79,6 @@ struct Entry {
     /// This commit's `paths` record index while the entry awaits
     /// generation — the compaction's record fix-up needs it.
     record: u32,
-    /// Integer translation the block's coverage is relative to.
-    offset: [i32; 2],
     /// The generating frame's submit landed. Entries that never made
     /// it into a submission die at the next `begin_frame`, so no frame
     /// can replay a block whose kernels never ran.
@@ -108,10 +110,9 @@ struct CoverageArena {
     words: u32,
     /// Bump frontier, always 8-word aligned.
     tail: u32,
-    /// Bumped on every buffer replacement so `bind0` is rebuilt.
+    /// Bumped on every buffer replacement; `bind0` is stale whenever it
+    /// differs from the generation `bind0` was built against.
     generation: u64,
-    /// The buffer moved since the last `ensure` — `bind0` is stale.
-    dirty: bool,
 }
 
 impl CoverageArena {
@@ -121,7 +122,6 @@ impl CoverageArena {
             words: 0,
             tail: 0,
             generation: 0,
-            dirty: false,
         }
     }
 
@@ -140,7 +140,6 @@ impl CoverageArena {
         self.words = 0;
         self.tail = 0;
         self.generation += 1;
-        self.dirty = true;
     }
 }
 
@@ -224,9 +223,7 @@ pub struct GpuCoverage {
     row_total: u32,
     /// The R2 bound's accumulated byte size — the cap's denominator.
     bound_bytes: u64,
-    /// GPU buffer bytes currently held — `Engine::memory()` reports it.
-    bytes: u64,
-    /// The coverage arena: geometry records and texels, one block per draw.
+    /// The coverage arena: geometry records and texels, one block per entry.
     arena: CoverageArena,
     /// The prologue went into some surface's encoder already.
     encoded: bool,
@@ -266,7 +263,6 @@ impl GpuCoverage {
             fragment_total: 0,
             row_total: 0,
             bound_bytes: 0,
-            bytes: 0,
             arena: CoverageArena::new(),
             encoded: false,
             layout: None,
@@ -318,10 +314,24 @@ impl GpuCoverage {
         self.has_draws() && !self.encoded
     }
 
-    /// GPU buffer bytes held — the `Engine::memory()` contribution of
-    /// scope item 8.
-    pub const fn bytes(&self) -> u64 {
-        self.bytes
+    /// GPU buffer bytes resident — the `Engine::memory()` contribution
+    /// of scope item 8. While a compaction is pending its source arena
+    /// is still held next to the new one until the submit lands.
+    pub fn bytes(&self) -> u64 {
+        self.buffers.as_ref().map_or(0, |b| {
+            b.params.size()
+                + b.elements.size()
+                + b.paths.size()
+                + b.segments.size()
+                + b.coverage.size()
+                + b.args.size()
+                + b.work.size()
+        }) + self.arena.buffer.as_ref().map_or(0, wgpu::Buffer::size)
+            + self
+                .compaction
+                .as_ref()
+                .map_or(0, |compaction| compaction.source.size())
+            + self.draws_buffer.as_ref().map_or(0, wgpu::Buffer::size)
     }
 
     /// Retained host input/draw-list allocation capacities.
@@ -413,7 +423,7 @@ impl GpuCoverage {
         &mut self,
         device: &wgpu::Device,
         key: u64,
-        offset: [i32; 2],
+        shift: [i32; 2],
         rule: u32,
         raster: Affine,
         clip: [f32; 4],
@@ -424,10 +434,7 @@ impl GpuCoverage {
                 self.undrawn_bytes -= u64::from(entry.words) * 4;
                 entry.last_used = self.epoch;
             }
-            self.draws.push(Draw {
-                key,
-                shift: [offset[0] - entry.offset[0], offset[1] - entry.offset[1]],
-            });
+            self.draws.push(Draw { key, shift });
             return Ok(u32::try_from(self.draws.len() - 1).expect("draw count fits u32"));
         }
         let GpuPath {
@@ -474,9 +481,6 @@ impl GpuCoverage {
                 "GPU coverage bound exceeds the per-frame cap",
             ));
         }
-        // Retained-but-undrawn entries pay for themselves: evict them
-        // LRU-first until they fit the budget again (§3.3).
-        self.evict_undrawn();
         let record = u32::try_from(self.paths.len()).expect("path count fits u32");
         let elem_base = self.element_total;
         let geometry_slots = u32::try_from(bound.instance_cap).expect("instance cap fits u32");
@@ -500,23 +504,21 @@ impl GpuCoverage {
         words[12] = grid_base;
         words[13] = texel_base;
         words[14] = base + BLOCK_HEADER_WORDS;
-        words[16] = rule;
-        words[17] = u32::try_from(bound.grid_w).expect("grid fits u32");
-        words[18] = u32::try_from(bound.grid_h).expect("grid fits u32");
-        words[19] = geometry_slots;
-        words[21] = self.row_total;
-        words[20] = texels;
+        words[15] = rule;
+        words[16] = u32::try_from(bound.grid_w).expect("grid fits u32");
+        words[17] = u32::try_from(bound.grid_h).expect("grid fits u32");
+        words[18] = self.row_total;
         // affine = (a, c, b, d); translate = (e, f)
-        words[24] = (xx as f32).to_bits();
-        words[25] = (xy as f32).to_bits();
-        words[26] = (yx as f32).to_bits();
-        words[27] = (yy as f32).to_bits();
-        words[28] = (tx as f32).to_bits();
-        words[29] = (ty as f32).to_bits();
-        words[30] = clip[2].to_bits();
-        words[31] = clip[3].to_bits();
-        words[38] = clip[0].to_bits();
-        words[39] = clip[1].to_bits();
+        words[20] = (xx as f32).to_bits();
+        words[21] = (xy as f32).to_bits();
+        words[22] = (yx as f32).to_bits();
+        words[23] = (yy as f32).to_bits();
+        words[24] = (tx as f32).to_bits();
+        words[25] = (ty as f32).to_bits();
+        words[26] = clip[2].to_bits();
+        words[27] = clip[3].to_bits();
+        words[34] = clip[0].to_bits();
+        words[35] = clip[1].to_bits();
 
         self.paths.push(words);
         self.element_total += u32::try_from(elements.len()).expect("elements fit u32");
@@ -529,14 +531,13 @@ impl GpuCoverage {
                 words: block_words,
                 geometry_slots,
                 record,
-                offset,
                 generated: false,
                 src: None,
                 last_used: self.epoch,
             },
         );
         self.generated += 1;
-        self.draws.push(Draw { key, shift: [0, 0] });
+        self.draws.push(Draw { key, shift });
         self.seg_total += u32::try_from(bound.segments).expect("segments");
         self.bin_total += u32::try_from(bound.bins).expect("bins");
         self.fragment_total = fragment_total;
@@ -546,9 +547,24 @@ impl GpuCoverage {
         Ok(u32::try_from(self.draws.len() - 1).expect("draw count fits u32"))
     }
 
-    /// Evict undrawn entries LRU-first until their retained bytes fit
-    /// the budget again. Entries this frame drew — `last_used` at the
-    /// current epoch — are never touched (§3.3).
+    /// Settle the retained set once per commit, after the frame's
+    /// entries were touched and before any miss allocates (§3.3).
+    /// Retained-but-undrawn entries pay for themselves: they are evicted
+    /// LRU-first until they fit the budget again. Entries this frame
+    /// drew — `last_used` at the current epoch — are never touched. When
+    /// the frame draws coverage and the arena's frontier then exceeds
+    /// twice the live words, the live blocks are rebuilt into a fresh
+    /// buffer, whether or not any draw misses. A frame without GPU
+    /// draws records no encoder work to carry the copies, so its
+    /// compaction waits for the next frame that has some.
+    pub fn settle(&mut self, device: &wgpu::Device, draws_coverage: bool) {
+        self.evict_undrawn();
+        if draws_coverage && u64::from(self.arena.tail) > 2 * self.live_words {
+            self.compact(device, 0)
+                .expect("the live blocks fit the arena they came from");
+        }
+    }
+
     fn evict_undrawn(&mut self) {
         if self.undrawn_bytes <= self.budget {
             return;
@@ -581,11 +597,9 @@ impl GpuCoverage {
     ) -> Result<(u32, u32, u32), RenderError> {
         let block_words = (BLOCK_HEADER_WORDS + geometry_slots * GEOMETRY_WORDS + texels)
             .next_multiple_of(GEOMETRY_WORDS);
-        // The 2x fragmentation rule, or a block that does not fit at the
-        // tail, rebuilds live blocks into a fresh buffer (§3.3).
-        if self.arena.tail + block_words > self.arena.words
-            || u64::from(self.arena.tail) > 2 * self.live_words
-        {
+        // A block that does not fit at the tail rebuilds the live blocks
+        // into a fresh buffer with room for it (§3.3).
+        if self.arena.tail + block_words > self.arena.words {
             self.compact(device, block_words)?;
         }
         let base = self.arena.tail;
@@ -618,7 +632,12 @@ impl GpuCoverage {
                 "GPU coverage output exceeds device buffer limit",
             ));
         }
-        let size = ((u64::from(tail) + u64::from(extra)) * 8).max(64);
+        // Doubling headroom, clamped to what one binding can address:
+        // the live set plus the immediate need already fit.
+        let size = (2 * (u64::from(tail) + u64::from(extra)))
+            .min(self.limit_words)
+            .max(16)
+            * 4;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("coverage arena"),
             size,
@@ -661,7 +680,6 @@ impl GpuCoverage {
         self.arena.words = u32::try_from(size / 4).expect("arena words fit u32");
         self.arena.tail = tail;
         self.arena.generation += 1;
-        self.arena.dirty = true;
         Ok(())
     }
 
@@ -722,8 +740,8 @@ impl GpuCoverage {
 
     /// Size the draws buffer to the frame's draws. The arena itself is
     /// already sized — commit-time allocations create or compact it —
-    /// and this returns whether it moved, so `bind0` is rebuilt.
-    pub fn ensure(&mut self, device: &wgpu::Device) -> bool {
+    /// and its generation tells the renderer whether `bind0` is stale.
+    pub fn ensure(&mut self, device: &wgpu::Device) {
         self.draws_buffer = Some(sized_buffer(
             device,
             self.draws_buffer.as_ref(),
@@ -731,9 +749,6 @@ impl GpuCoverage {
             (self.draws.len() as u64).max(1) * u64::from(ARGS_WORDS) * 4,
             wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
         ));
-        let dirty = self.arena.dirty;
-        self.arena.dirty = false;
-        dirty
     }
 
     pub fn trim(&mut self) {
@@ -743,7 +758,6 @@ impl GpuCoverage {
         self.undrawn_bytes = 0;
         self.buffers = None;
         self.draws_buffer = None;
-        self.bytes = 0;
         self.arena.trim();
     }
 
@@ -790,16 +804,6 @@ impl GpuCoverage {
                 );
             }
         }
-        self.bytes = self.buffers.as_ref().map_or(0, |b| {
-            b.params.size()
-                + b.elements.size()
-                + b.paths.size()
-                + b.segments.size()
-                + b.coverage.size()
-                + b.args.size()
-                + b.work.size()
-        }) + self.arena.buffer.as_ref().map_or(0, wgpu::Buffer::size)
-            + self.draws_buffer.as_ref().map_or(0, wgpu::Buffer::size);
         Ok(())
     }
 
@@ -821,7 +825,7 @@ impl GpuCoverage {
         self.ensure_pipes(device, delivery);
 
         for (index, path) in self.paths.iter().enumerate() {
-            for strip in 0..path[18].div_ceil(
+            for strip in 0..path[17].div_ceil(
                 u32::try_from(crate::render::path::STRIP_H).expect("coverage capacity fits u32"),
             ) {
                 self.work.push([
@@ -832,8 +836,8 @@ impl GpuCoverage {
         }
         let strip_total = u32::try_from(self.work.len()).expect("coverage capacity fits u32");
         for (index, path) in self.paths.iter_mut().enumerate() {
-            path[32] = u32::try_from(self.work.len()).expect("work count fits u32") - strip_total;
-            let tiles = path[17].div_ceil(CLASSIFY_WIDTH) * path[18].div_ceil(4);
+            path[28] = u32::try_from(self.work.len()).expect("work count fits u32") - strip_total;
+            let tiles = path[16].div_ceil(CLASSIFY_WIDTH) * path[17].div_ceil(4);
             for tile in 0..tiles {
                 self.work
                     .push([u32::try_from(index).expect("path index fits u32"), tile]);

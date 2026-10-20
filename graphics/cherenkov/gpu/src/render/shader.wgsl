@@ -745,7 +745,7 @@ fn fs_simple(in: VsOut, classified: bool) -> vec4<f32> {
             } else {
                 texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(cell_texel_origin(in.cell.zw, in.meta_.w));
             }
-            cov = path_cell_coverage(texel, in.cell.zw, in.shape_a.xy, in.meta_.w);
+            cov = path_cell_coverage(texel, in.cell.zw, in.cell_texel, in.shape_a.xy, in.meta_.w);
         }
         case KIND_SPAN: {
             cov = 1.0;
@@ -795,8 +795,9 @@ struct PartialOut {
     // cell-buffer
     // Buffer-cell stamps joined in the vertex stage (water-rs/waterui#3081).
     @location(3) @interpolate(flat) cell: vec4<f32>,
-    @location(4) @interpolate(flat) interior: vec2<f32>,
-    @location(5) @interpolate(flat) cell_meta: vec2<u32>,
+    @location(4) @interpolate(flat) cell_texel: u32,
+    @location(5) @interpolate(flat) interior: vec2<f32>,
+    @location(6) @interpolate(flat) cell_meta: vec2<u32>,
     // cell-buffer
 }
 
@@ -902,6 +903,7 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
         inst = joined.inst;
         depth_index = joined.anchor;
         out = instance_vertex(array<u32, 8>(0u, 1u, 2u, 5u, 5u, 5u, 5u, 5u)[joined.corner], joined.anchor, inst);
+        out.cell_texel = joined.texel;
     } else {
     // cell-buffer
         out = quad_vertex(array<u32, 8>(0u, 1u, 2u, 5u, 5u, 5u, 5u, 5u)[vi], ii);
@@ -930,6 +932,7 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
         out.affine1.zw,
         // cell-buffer
         out.cell,
+        out.cell_texel,
         out.shape_a.xy,
         vec2<u32>(out.meta_.x, out.meta_.w),
         // cell-buffer
@@ -952,6 +955,7 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
     // `in.instance` is the draw's anchor, which carries none of the
     // stamps compute wrote per emitted instance (water-rs/waterui#3081).
     data.cell = in.cell;
+    data.cell_texel = in.cell_texel;
     data.shape_a = vec4<f32>(in.interior, 0.0, 0.0);
     data.meta_.w = in.cell_meta.y;
     kind = in.cell_meta.x;
@@ -1023,7 +1027,7 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
         }
         case KIND_GLYPH: {
             let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(cell_texel_origin(in.cell.zw, in.meta_.w));
-            cov = path_cell_coverage(texel, in.cell.zw, in.shape_a.xy, in.meta_.w);
+            cov = path_cell_coverage(texel, in.cell.zw, in.cell_texel, in.shape_a.xy, in.meta_.w);
         }
         case KIND_SPAN: {
             cov = 1.0;

@@ -1173,10 +1173,10 @@ pub struct GpuRenderer {
     bound_stop_size: u64,
     /// The globals buffer size `bind0` was built against.
     bound_globals_size: u64,
-    /// The per-frame cell-texel storage buffer the GPU coverage route
-    /// writes and the raster passes read (decision S1, issue #2543).
+    /// The one-word stand-in `bind0` binds as the coverage arena until
+    /// the GPU coverage route allocates the real one.
     arena_placeholder: wgpu::Buffer,
-    /// The cell-texel buffer size `bind0` was built against.
+    /// The coverage arena generation `bind0` was built against.
     bound_arena_gen: u64,
     /// The frame's GPU coverage dispatch context (issue #2543).
     gpu_cov: gpu_cov::GpuCoverage,
@@ -1186,6 +1186,9 @@ pub struct GpuRenderer {
     commit_writes: glyph::CellWrites,
     /// Per-surface pending origins, rebuilt in place each apply.
     pending_origins: Vec<PendingOrigin>,
+    /// `(draw index, anchor instance)` of the surface's GPU draws,
+    /// refilled in place each apply.
+    gpu_draw_ranges: Vec<(u32, u32)>,
     /// Replay-pin slots, reused across evicting commits (#119).
     commit_touches: Vec<u32>,
     /// A dummy 1×1 view for unused group-1 slots.
@@ -1982,7 +1985,6 @@ fn make_bind1(
     })
 }
 
-/// Builds the group-0 bind group over the current buffers and atlas.
 /// The placeholder coverage arena bound until the GPU coverage
 /// route first sizes its buffer (issues #2543, #3081).
 fn arena_placeholder(device: &wgpu::Device) -> wgpu::Buffer {
@@ -2800,7 +2802,8 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                 Err(declined)
             }
         };
-        let gpu_cov = gpu_cov::GpuCoverage::new(&device, config.budget.gpu.0 / 8);
+        let gpu_cov =
+            gpu_cov::GpuCoverage::new(&device, config.budget.gpu.0 / gpu_cov::BUDGET_SHARE);
         let renderer = GpuRenderer {
             instance,
             adapter,
@@ -2880,6 +2883,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             atlas,
             commit_writes: glyph::CellWrites::default(),
             pending_origins: Vec::new(),
+            gpu_draw_ranges: Vec::new(),
             commit_touches: Vec::new(),
             surfaces: FxHashMap::default(),
             producers: FxHashMap::default(),
@@ -3156,7 +3160,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         Some(&adapter),
         Some(&device),
     )?;
-    let gpu_cov = gpu_cov::GpuCoverage::new(&device, config.budget.gpu.0 / 8);
+    let gpu_cov = gpu_cov::GpuCoverage::new(&device, config.budget.gpu.0 / gpu_cov::BUDGET_SHARE);
     let renderer = GpuRenderer {
         instance,
         adapter,
@@ -3225,6 +3229,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         atlas,
         commit_writes: glyph::CellWrites::default(),
         pending_origins: Vec::new(),
+        gpu_draw_ranges: Vec::new(),
         commit_touches: Vec::new(),
         surfaces: FxHashMap::default(),
         producers: FxHashMap::default(),
@@ -7130,11 +7135,16 @@ impl GpuRenderer {
         // The frame's live GPU-coverage entries touch before any miss
         // may allocate, so an eviction can never take a block this
         // frame draws (water-rs/waterui#3081).
+        let mut draws_coverage = false;
         for raster in &rasters {
             if let glyph::PendingRaster::GpuPath(draw) = raster {
                 self.gpu_cov.touch(draw.key);
+                draws_coverage = true;
             }
         }
+        // One eviction and compaction pass per commit, ahead of every
+        // miss's allocation.
+        self.gpu_cov.settle(&self.device, draws_coverage);
         let n_cells: usize = rasters.iter().map(|r| r.cell_count()).sum();
         // A frame whose batch places strictly needs no replay pins and
         // no eviction, so no emission scan and no touch decoding runs —
@@ -7577,7 +7587,7 @@ impl GpuRenderer {
                 let index = self.gpu_cov.draw(
                     &self.device,
                     draw.key,
-                    draw.offset,
+                    draw.shift,
                     draw.rule,
                     draw.raster,
                     draw.clip,
@@ -8181,20 +8191,23 @@ impl GpuRenderer {
                 }
             }
         }
-        let gpu_draws: Vec<(u32, u32)> = surf
-            .frame
-            .passes
-            .iter()
-            .flat_map(|pass| &pass.ranges)
-            .filter_map(|range| range.gpu.map(|index| (index, range.instances.start)))
-            .collect();
-        for (index, anchor_index) in gpu_draws {
+        let mut gpu_draws = std::mem::take(&mut self.gpu_draw_ranges);
+        gpu_draws.clear();
+        gpu_draws.extend(
+            surf.frame
+                .passes
+                .iter()
+                .flat_map(|pass| &pass.ranges)
+                .filter_map(|range| range.gpu.map(|index| (index, range.instances.start))),
+        );
+        for &(index, anchor_index) in &gpu_draws {
             self.gpu_cov.write_draw(
                 index,
                 inst_base + anchor_index,
                 &mut surf.frame.instances[anchor_index as usize],
             );
         }
+        self.gpu_draw_ranges = gpu_draws;
         surf.inst_base = inst_base;
         surf.globals_base = globals_base;
         // Appended `KIND_POLYGON` slots store the painter index locally;
@@ -8222,6 +8235,7 @@ impl GpuRenderer {
                     atlas,
                 );
                 self.bound_atlas = atlas.generation();
+                self.bound_arena_gen = self.gpu_cov.arena_generation();
                 self.invalidate_painter_replays();
             }
         }
@@ -8565,7 +8579,8 @@ impl GpuRenderer {
         let gpu_active = self.gpu_cov.has_draws();
         if gpu_active {
             self.gpu_cov.validate_output_sizes(&self.device.limits())?;
-            if self.gpu_cov.ensure(&self.device) {
+            self.gpu_cov.ensure(&self.device);
+            if self.gpu_cov.arena_generation() != self.bound_arena_gen {
                 let atlas = &self.atlas;
                 diag::bind_groups_dropped(&self.device, 1, "coverage arena");
                 self.bind0 = make_bind0(
@@ -8660,15 +8675,13 @@ impl GpuRenderer {
             // frames need just the count-word copies (#3081).
             let misses = self.gpu_cov.has_misses();
             let first_query = self.query_base + 2 * self.frame_pass_count;
-            let timestamp_writes = self
-                .query_set
-                .as_ref()
-                .filter(|_| misses)
-                .map(|query_set| wgpu::ComputePassTimestampWrites {
+            let timestamp_writes = self.query_set.as_ref().filter(|_| misses).map(|query_set| {
+                wgpu::ComputePassTimestampWrites {
                     query_set,
                     beginning_of_pass_write_index: Some(first_query),
                     end_of_pass_write_index: Some(first_query + 1),
-                });
+                }
+            });
             if misses {
                 self.frame_pass_count += 1;
                 if self.timestamps {
@@ -9233,6 +9246,20 @@ impl GpuRenderer {
                         );
                     }
                     stats.draws += 1;
+                }
+                // The polygon tiers draw vertex indices past 8, which
+                // the cell-buffer variants read as a GPU-draw join: they
+                // run under the plain opaque pipeline.
+                if gpu_module {
+                    gpu_module = false;
+                    render_pass.set_pipeline(coverage_pipeline(
+                        &mut self.coverage_pipelines,
+                        &factory,
+                        target_format,
+                        CoveragePhase::Opaque,
+                        gpu_module,
+                    )?);
+                    stats.pipeline_switches += 1;
                 }
                 for (tier, range) in pass.tier_ranges.iter().enumerate() {
                     if !range.is_empty() {

@@ -13,9 +13,6 @@ const FLATTEN: f32 = 0.02;
 
 const KIND_GLYPH: u32 = 4u;
 const KIND_SPAN: u32 = 5u;
-const KIND_REGION: u32 = 6u;
-const PAINT_SOLID: u32 = 0u;
-const FLAG_CELL_BUFFER: u32 = 0x80u;
 
 const F_INF: f32 = 3.4e38;
 const F_NINF: f32 = -3.4e38;
@@ -46,14 +43,11 @@ struct GpuPath {
     grid_base: u32,
     texel_base: u32,
     inst_base: u32,
-    args_base: u32,
     rule: u32,
     grid_w: u32,
     grid_h: u32,
-    instance_cap: u32,
-    cell_cap: u32,
     row_base: u32,
-    _pad: array<u32, 2>,
+    _pad: u32,
     affine: vec4<f32>,
     translate: vec2<f32>,
     clip_hi: vec2<f32>,

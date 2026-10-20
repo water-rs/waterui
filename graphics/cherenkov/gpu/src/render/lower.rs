@@ -914,7 +914,7 @@ pub struct Emission {
     /// everything a coverage-entry miss regenerates from. `Some` makes
     /// the emission's single retained instance the draw's anchor
     /// (water-rs/waterui#3081).
-    gpu: Option<glyph::GpuDraw>,
+    gpu: Option<Box<glyph::GpuDraw>>,
 }
 
 impl Emission {
@@ -4314,7 +4314,7 @@ impl<'a> Lowering<'a> {
         let gpu = self.pending[first_pending..]
             .iter()
             .find_map(|pending| match pending {
-                PendingRaster::GpuPath(draw) => Some(draw.clone()),
+                PendingRaster::GpuPath(draw) => Some(Box::new(draw.clone())),
                 _ => None,
             });
         cache.data = Some(Emission {
@@ -4374,7 +4374,7 @@ impl<'a> Lowering<'a> {
                 // The retained anchor re-enters the frame under the
                 // current clip and the draw re-joins its coverage entry
                 // — or regenerates it after an eviction (#3081).
-                self.push_gpu_draw(template, gpu.clone());
+                self.push_gpu_draw(&template, (**gpu).clone());
             } else {
                 let first = self.frame.instances.len();
                 check_instance_bound(first + retained.len());
@@ -5146,11 +5146,10 @@ impl<'a> Lowering<'a> {
         template.bounds = bound.rect;
         self.set_variant(&template);
         let pl = path::placement(content, self.transform, surface);
-        let offset = [pl.offset.x as i32, pl.offset.y as i32];
         let draw = if bound.clipped {
             glyph::GpuDraw {
                 key: pl.key_exact(),
-                offset,
+                shift: [0, 0],
                 rule: rule as u32,
                 raster: self.transform,
                 clip: [0.0, 0.0, surface.0 as f32, surface.1 as f32],
@@ -5167,7 +5166,7 @@ impl<'a> Lowering<'a> {
             );
             glyph::GpuDraw {
                 key: pl.key,
-                offset,
+                shift: [pl.offset.x as i32, pl.offset.y as i32],
                 rule: rule as u32,
                 raster: Affine::new([coeffs[0], coeffs[1], coeffs[2], coeffs[3], qx, qy]),
                 clip: [
@@ -5179,20 +5178,18 @@ impl<'a> Lowering<'a> {
                 path: prepared.translated_clip(Vec2::new(-pl.offset.x, -pl.offset.y), clip),
             }
         };
-        self.push_gpu_draw(template, draw);
+        self.push_gpu_draw(&template, draw);
     }
 
     /// Push the draw half of a GPU-routed path — shared by
     /// `emit_gpu_path`'s fresh anchor and a retained emission's
-    /// restored one. Closes the open CPU segment, pushes the anchor
-    /// with its flag bits, then the pending record and its draw range
+    /// restored one. Closes the open CPU segment, pushes the anchor,
+    /// then the pending record and its draw range
     /// (water-rs/waterui#3081).
-    fn push_gpu_draw(&mut self, mut anchor: Instance, draw: glyph::GpuDraw) {
+    fn push_gpu_draw(&mut self, anchor: &Instance, draw: glyph::GpuDraw) {
         self.end_segment();
         let index = u32::try_from(self.frame.instances.len()).expect("instance index");
-        anchor.params[0] = f32::from_bits(index);
-        anchor.meta[3] |= 0x8000_0000;
-        self.frame.instances.push(anchor);
+        self.frame.instances.push(*anchor);
         if let Some(mask) = self.mask_pending {
             self.mask_patches.push((index, mask));
         }
