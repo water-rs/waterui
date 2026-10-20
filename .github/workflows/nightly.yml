@@ -241,6 +241,12 @@ jobs:
       # DXIL; the Windows image does not ship it.
       - uses: ./.github/actions/install-dxc
         if: runner.os == 'Windows'
+      # #3093: the ignored hydrolysis suite's test binaries create wgpu
+      # devices; stage the pinned WARP before nextest builds them.
+      - uses: ./.github/actions/install-warp
+        if: runner.os == 'Windows'
+        with:
+          into: target/debug/deps
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145

@@ -1,0 +1,79 @@
+name: Install current WARP
+description: >
+  Stages a pinned, hash-verified `d3d10warp.dll` from the NuGet
+  `Microsoft.Direct3D.WARP` redistributable next to the executables that
+  will load it. The Windows Server 2022 image's system WARP
+  (`C:\Windows\System32\d3d10warp.dll` 10.0.20348.5386) misexecutes valid
+  optimized DXIL — it stores the incremented loop phi where the shader
+  stores the pre-increment value — while NuGet WARP 1.0.21 runs the same
+  DXIL correctly (water-rs/waterui#3093).
+
+inputs:
+  into:
+    description: >-
+      Directories that receive a copy of `d3d10warp.dll`, one per line,
+      created when missing. D3D12 resolves `d3d10warp.dll` through the
+      standard DLL search, where the executable's own directory wins over
+      System32 — so the DLL must sit beside each executable that creates
+      a wgpu device. For nextest test binaries that is `deps/` of the
+      cargo profile the job builds (`target/debug/deps` unless the job
+      passes `--release` or `--cargo-profile`); cargo never deletes
+      unknown files there, so one copy placed before the build covers
+      every test binary written afterwards.
+    required: true
+  cache:
+    description: >-
+      Whether the extracted DLL is restored from and saves to an Actions
+      cache. "false" for e2e lanes, which keep no Actions cache.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # Same exposure as every other tool download here (#1120): a NuGet
+    # package GET plus a pinned content hash below. The key carries the
+    # pinned package version; a hit skips the download, the hash check
+    # and the extraction entirely. A version bump edits the URL, the
+    # hash and the key together.
+    - uses: actions/cache@v4
+      id: cache
+      if: inputs.cache == 'true'
+      with:
+        path: warp/d3d10warp.dll
+        key: install-tool-v1-${{ runner.os }}-${{ runner.arch }}-warp@1.0.21
+    - name: Download and verify Microsoft.Direct3D.WARP 1.0.21
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        New-Item -ItemType Directory -Force warp | Out-Null
+        Invoke-WebRequest `
+          -Uri https://www.nuget.org/api/v2/package/Microsoft.Direct3D.WARP/1.0.21 `
+          -OutFile warp\warp.nupkg
+        $pinned = 'ea44b77eb30eec14427193e20f40cdb2e4c31ed11ab39cb880538fdf4bac2681'
+        $actual = (Get-FileHash warp\warp.nupkg -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -ne $pinned) {
+          throw "Microsoft.Direct3D.WARP 1.0.21 SHA-256 mismatch: expected $pinned, got $actual"
+        }
+        # A .nupkg is a zip; the runner's bsdtar pulls the x64
+        # redistributable straight out of build/native/bin.
+        tar -xf warp\warp.nupkg -C warp build/native/bin/x64/d3d10warp.dll
+        Move-Item warp\build\native\bin\x64\d3d10warp.dll warp\d3d10warp.dll
+        Remove-Item -Recurse -Force warp\build, warp\warp.nupkg
+    # The copy, not the download, is what every `into` entry shares: one
+    # invocation can stage several executable directories. The printed
+    # file version records in the log which WARP the tests actually ran
+    # on.
+    - name: Stage d3d10warp.dll next to the executables
+      shell: pwsh
+      env:
+        INTO: ${{ inputs.into }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        foreach ($dir in ($env:INTO -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $dest = Join-Path $dir 'd3d10warp.dll'
+          Copy-Item warp\d3d10warp.dll $dest -Force
+          '{0}: {1}' -f $dest, (Get-Item $dest).VersionInfo.FileVersion
+        }
