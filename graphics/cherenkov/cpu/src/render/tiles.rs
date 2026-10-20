@@ -250,37 +250,45 @@ impl EdgeTiles {
     }
 }
 
-/// An edge list the band bins index: retained tile-local geometry or
-/// transient `f32` edges — clip coverage masks, silhouette captures —
-/// that are never retained.
-#[derive(Clone, Copy, Debug)]
-pub enum EdgeList<'a> {
-    /// Retained tile-local edges.
-    Tiled(&'a EdgeTiles),
-    /// Transient `f32` edges.
-    Flat(&'a [Edge]),
-}
-
-impl EdgeList<'_> {
+/// An edge list the band bins index: retained tile-local geometry
+/// ([`EdgeTiles`]) or transient `f32` edges — clip coverage masks,
+/// silhouette captures — that are never retained (`[Edge]`).
+pub trait EdgeSource: Sync {
     /// The list's edge count.
-    pub fn len(&self) -> usize {
-        match self {
-            Self::Tiled(tiles) => tiles.len(),
-            Self::Flat(edges) => edges.len(),
-        }
-    }
+    fn len(&self) -> usize;
 
     /// Decoded edge `i`.
-    pub fn edge(&self, i: usize) -> Edge {
-        match self {
-            Self::Tiled(tiles) => tiles.edge(i),
-            Self::Flat(edges) => edges[i],
-        }
-    }
+    fn edge(&self, i: usize) -> Edge;
 
     /// The decoded edges in order.
-    pub fn iter(&self) -> impl Iterator<Item = Edge> + '_ {
-        (0..self.len()).map(|i| self.edge(i))
+    fn iter(&self) -> impl Iterator<Item = Edge> + '_;
+}
+
+impl EdgeSource for EdgeTiles {
+    fn len(&self) -> usize {
+        Self::len(self)
+    }
+
+    fn edge(&self, i: usize) -> Edge {
+        Self::edge(self, i)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = Edge> + '_ {
+        Self::iter(self)
+    }
+}
+
+impl EdgeSource for [Edge] {
+    fn len(&self) -> usize {
+        <[Edge]>::len(self)
+    }
+
+    fn edge(&self, i: usize) -> Edge {
+        self[i]
+    }
+
+    fn iter(&self) -> impl Iterator<Item = Edge> + '_ {
+        <[Edge]>::iter(self).copied()
     }
 }
 

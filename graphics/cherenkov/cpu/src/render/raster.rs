@@ -31,7 +31,7 @@ use crate::render::lower::{
 };
 use crate::render::paint::PaintData;
 use crate::render::shadow;
-use crate::render::tiles::{EdgeList, EdgeTiles};
+use crate::render::tiles::EdgeTiles;
 use crate::{Band as BandOut, BandPixels};
 use cherenkov::OffscreenFormat;
 use fearless_simd::{Simd, f32x4};
@@ -3605,7 +3605,7 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
     let mut index = EdgeBins::default();
     index.rebuild(
         std::iter::once(EdgeGroup {
-            edges: EdgeList::Flat(edges),
+            edges,
             geometry_unchanged: false,
             oy: 0.0,
             band0: 0,
