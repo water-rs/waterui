@@ -1,7 +1,8 @@
 //! Engine-neutral contract tests: the behaviours every `TextEngine` must
 //! satisfy for the editing and measurement paths that consume it.
 
-use waterui_core::layout::{HorizontalAlignment, Size as LayoutSize};
+use waterui_core::layout::{HorizontalAlignment, Size as LayoutSize, VerticalAlignment};
+use waterui_text::font::{Body, FontWeight, ResolvedFont};
 use waterui_text::styled::StyledStr;
 
 use super::{
@@ -151,6 +152,50 @@ fn a_truncated_leaf_reports_the_drawn_line() {
     assert!(
         dimensions.size.width > 85.0,
         "the laid-out line fills the bound to within a cluster"
+    );
+}
+
+/// A resized run spaces on the resized face's own metrics, never the theme
+/// slot's absolute pitch: a `.size(40)` text inside a 16/24 `Body` slot
+/// must not inherit the default's 24 pt line height — that parked the
+/// baseline at 25 pt under a 24 pt frame and cut the glyph tops off at the
+/// window edge (water-rs/waterui#2719).
+#[test]
+fn a_resized_run_spaces_on_its_own_face_metrics() {
+    let mut env = test_environment();
+    waterui::theme::install_font_signal::<Body>(
+        &mut env,
+        nami::Computed::constant(
+            ResolvedFont::new(16.0, FontWeight::Normal).with_typography_metrics(24.0, 0.0),
+        ),
+    );
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let styled = StyledStr::plain("Hello 0").size(40.0);
+
+    let dimensions = HydrolysisRenderer::measure_text_dimensions(
+        &mut state,
+        styled,
+        HorizontalAlignment::Leading,
+        &env,
+        Some(600.0),
+        None,
+    );
+
+    // A Latin face's own pitch at 40 pt exceeds the em — the stale 24 pt
+    // the paragraph default carried does not.
+    assert!(
+        dimensions.size.height >= 40.0,
+        "a 40 pt run must report the resized face's own line height, got {}",
+        dimensions.size.height
+    );
+    // Its baseline stays inside the measured frame: the slot pitch left the
+    // baseline one point *below* a 24 pt frame, so the glyph tops painted
+    // above the window's first row.
+    let first_baseline = dimensions.vertical(VerticalAlignment::FirstBaseline);
+    assert!(
+        first_baseline <= dimensions.size.height,
+        "first baseline {first_baseline} must stay inside the measured height {}",
+        dimensions.size.height
     );
 }
 

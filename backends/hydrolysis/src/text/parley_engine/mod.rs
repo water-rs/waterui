@@ -552,12 +552,19 @@ fn push_text_style(
         parley::StyleProperty::FontWeight(parley_font_weight(style.font.weight)),
         range.clone(),
     );
-    if let Some(line_height) = style.font.line_height {
-        builder.push(
-            parley::StyleProperty::LineHeight(parley::LineHeight::Absolute(line_height)),
-            range.clone(),
-        );
-    }
+    // `line_height: None` on a resolved font means the selected face's
+    // preferred metrics (`ResolvedFont` documents it), which parley spells
+    // `MetricsRelative(1.0)`. Leaving the span unset would inherit the
+    // paragraph default instead — the theme slot's absolute pitch — so a
+    // resized run (whose `Font::size` drops the slot's metrics) would space
+    // on the *unresized* face's line height: a 40 pt run inside a 16/24
+    // pitch draws its glyph tops above the laid-out frame
+    // (water-rs/waterui#2719).
+    let line_height = style.font.line_height.map_or(
+        parley::LineHeight::MetricsRelative(1.0),
+        parley::LineHeight::Absolute,
+    );
+    builder.push(parley::StyleProperty::LineHeight(line_height), range.clone());
     builder.push(
         parley::StyleProperty::LetterSpacing(style.font.letter_spacing),
         range.clone(),

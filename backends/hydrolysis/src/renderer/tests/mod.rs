@@ -75,6 +75,8 @@ mod popup_windows;
 mod registrations;
 mod render_identity;
 mod retained_scene;
+#[cfg(not(target_arch = "wasm32"))]
+mod text_line_height;
 mod scene_offer;
 #[cfg(feature = "accessibility")]
 mod scroll_frames;
