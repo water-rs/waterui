@@ -199,6 +199,10 @@ pub enum Item {
     },
 }
 
+// LLVM inlines a fixed-size copy of at most 128 bytes; above that every
+// `Item` move becomes a `memcpy` call.
+const _: () = assert!(size_of::<Item>() <= 128);
+
 /// A member clip as the SDF reads evaluate it: its centred rounded box
 /// and the device → box-local affine that maps a sample point into it —
 /// the GPU's `clip_inv` and `Shape` pair.

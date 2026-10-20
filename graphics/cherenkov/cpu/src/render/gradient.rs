@@ -8,12 +8,20 @@
 //!
 //! [`apply_span`], [`extend_t_span`], [`project_span`],
 //! [`eval_stops_span`] and [`premul_span`] are generic over the vector
-//! width: `f32x16` for a full block, `f32x4` for a short remainder's
-//! one-lane evaluation. The level's ops are the same at every width —
-//! `mul_add` is fused or unfused at both — so a remainder lane agrees
-//! with the block lanes bit for bit. They operate on a vector of
+//! width: `f32x16` for a full block, `f32x4` for a short span's
+//! one-pixel path. The level's ops are the same at every width —
+//! `mul_add` is fused or unfused at both — so a lone pixel agrees with
+//! the block lanes bit for bit. They operate on a vector of
 //! parameters rather than a single paint kind: the radial and sweep
 //! kernels reuse them over their own parameter projections.
+//!
+//! No closure and nothing that takes one (`Option::map_or`,
+//! `[T; N]::map`, iterator adapters) may appear on the kernel path: a
+//! closure is its own function and does not inherit the dispatched
+//! level's target features, so an intrinsic it holds compiles into an
+//! out-of-line call on x86. Write `match`, explicit arrays and plain
+//! loops instead, and where clippy suggests the combinator silence it
+//! with an `expect` stating this reason.
 
 use std::mem::MaybeUninit;
 
@@ -23,12 +31,12 @@ use fearless_simd::{Select, Simd, SimdFloat, f32x4, f32x16, mask32x16};
 use super::paint::{Linear, PaintData, Stop, to_premul};
 
 /// Lanes per gradient-kernel block; a run's remainder goes through the
-/// one-lane path or one padded block.
+/// one-pixel path or one padded block.
 const LANES: usize = 16;
 
-/// A remainder below this many pixels takes the one-lane path; at or
-/// above it one padded block costs less — a block breaks even against
-/// per-pixel evaluation around eight pixels.
+/// A span or remainder below this many pixels takes the one-pixel
+/// path, inline in the caller: a call into the block kernel breaks
+/// even against per-pixel evaluation around eight pixels.
 const SHORT_TAIL: usize = 8;
 
 /// `apply` lane-wise: the same two multiply-adds per lane.
@@ -102,26 +110,34 @@ where
 {
     let first = &stops[0];
     let last = &stops[stops.len() - 1];
-    let splat = |v: f32| V::splat(simd, v);
-    let mut mixed = first.color.map(&splat);
-    let mut done = t.simd_le(splat(first.offset));
-    let take_last = t.simd_ge(splat(last.offset)) & !done;
+    let mut mixed = [
+        V::splat(simd, first.color[0]),
+        V::splat(simd, first.color[1]),
+        V::splat(simd, first.color[2]),
+        V::splat(simd, first.color[3]),
+    ];
+    let mut done = t.simd_le(V::splat(simd, first.offset));
+    let take_last = t.simd_ge(V::splat(simd, last.offset)) & !done;
     for (c, out) in last.color.iter().zip(mixed.iter_mut()) {
-        *out = take_last.select(splat(*c), *out);
+        *out = take_last.select(V::splat(simd, *c), *out);
     }
     done |= take_last;
     for w in stops.windows(2) {
         let (a, b) = (&w[0], &w[1]);
-        let inside = t.simd_ge(splat(a.offset)) & t.simd_le(splat(b.offset)) & !done;
+        let inside =
+            t.simd_ge(V::splat(simd, a.offset)) & t.simd_le(V::splat(simd, b.offset)) & !done;
         let span = b.offset - a.offset;
         let f = if span > 0.0 {
-            (t - splat(a.offset)) / splat(span)
+            (t - V::splat(simd, a.offset)) / V::splat(simd, span)
         } else {
-            splat(0.0)
+            V::splat(simd, 0.0)
         };
         for (i, out) in mixed.iter_mut().enumerate() {
             *out = inside.select(
-                f.mul_add(splat(b.color[i] - a.color[i]), splat(a.color[i])),
+                f.mul_add(
+                    V::splat(simd, b.color[i] - a.color[i]),
+                    V::splat(simd, a.color[i]),
+                ),
                 *out,
             );
         }
@@ -131,7 +147,7 @@ where
     // parameter — yields the last stop.
     let remaining = !done;
     for (c, out) in last.color.iter().zip(mixed.iter_mut()) {
-        *out = remaining.select(splat(*c), *out);
+        *out = remaining.select(V::splat(simd, *c), *out);
     }
     mixed
 }
@@ -168,7 +184,12 @@ where
                 dst[lane] = p[ch];
             }
         }
-        out.map(|c| V::from_slice(simd, &c[..V::N]))
+        [
+            V::from_slice(simd, &out[0][..V::N]),
+            V::from_slice(simd, &out[1][..V::N]),
+            V::from_slice(simd, &out[2][..V::N]),
+            V::from_slice(simd, &out[3][..V::N]),
+        ]
     }
 }
 
@@ -192,83 +213,78 @@ where
     ) / V::splat(simd, p.len2)
 }
 
-/// `extend_t_span` on lane 0 of a four-lane splat — the same ops as the
-/// block expression, scalarized by the lane-0-only use — with the
-/// coverage mask read back as a flag.
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
-)]
-#[inline(always)]
-fn extend_t_lane<S: Simd>(simd: S, t: f32, extend: Extend) -> (f32, bool) {
-    let (t, active) = extend_t_span(simd, simd.splat_f32x4(t), extend);
-    (t[0], active[0] != 0)
-}
-
-/// `premul_span` on lane 0 of a four-lane splat.
+/// `premul_span`'s working-space arm on one pixel's channel vector:
+/// `[r·a, g·a, b·a, a]` as one multiply — the same IEEE products — and
+/// a blend restoring the alpha lane. The encoded space stays scalar,
+/// `to_premul`, as the block's per-lane conversion does.
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level"
 )]
 #[inline(always)]
-fn premul_lane<S: Simd>(simd: S, c: [f32; 4], working: bool) -> [f32; 4] {
-    premul_span(simd, c.map(|ch| simd.splat_f32x4(ch)), working).map(|v| v[0])
+fn premul_pixel<S: Simd>(simd: S, c: f32x4<S>, working: bool) -> f32x4<S> {
+    if working {
+        let premul = c * simd.splat_f32x4(c[3]);
+        // Lane 3 holds `a·a`; restore `a` itself.
+        simd.load_array_mask32x4([0, 0, 0, -1]).select(c, premul)
+    } else {
+        simd.load_array_f32x4(to_premul(c.into(), Interpolation::SrgbEncoded))
+    }
 }
 
-/// `eval_stops`' early-exit window search at one lane: the control
+/// `eval_stops`' early-exit window search on one pixel: the control
 /// flow is scalar — `t ≤ first` / `t ≥ last` first, then the first
-/// matching window, the NaN fall-through to the last stop — and the
-/// window arithmetic is `eval_stops_span`'s per-lane expression on
-/// lane 0 of `f32x4`, so a remainder pixel rounds exactly like the
-/// block lanes. `stops` holds at least two entries.
+/// matching window, the NaN fall-through to the last stop — `f` is the
+/// exactly rounded scalar quotient, and the window mix is one
+/// four-channel `mul_add`, the block lane's expression. `stops` holds
+/// at least two entries.
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn eval_stops_lane<S: Simd>(simd: S, stops: &[Stop], t: f32, working: bool) -> [f32; 4] {
+fn eval_stops_pixel<S: Simd>(simd: S, stops: &[Stop], t: f32, working: bool) -> f32x4<S> {
     let first = &stops[0];
     if t <= first.offset {
-        return premul_lane(simd, first.color, working);
+        return premul_pixel(simd, simd.load_array_f32x4(first.color), working);
     }
     let last = &stops[stops.len() - 1];
     if t >= last.offset {
-        return premul_lane(simd, last.color, working);
+        return premul_pixel(simd, simd.load_array_f32x4(last.color), working);
     }
     for w in stops.windows(2) {
         let (a, b) = (&w[0], &w[1]);
         if t >= a.offset && t <= b.offset {
             let span = b.offset - a.offset;
             let f = if span > 0.0 {
-                (simd.splat_f32x4(t) - simd.splat_f32x4(a.offset)) / simd.splat_f32x4(span)
+                (t - a.offset) / span
             } else {
-                simd.splat_f32x4(0.0)
+                0.0
             };
-            let mut mixed = [0.0f32; 4];
-            for (i, out) in mixed.iter_mut().enumerate() {
-                *out = f.mul_add(
-                    simd.splat_f32x4(b.color[i] - a.color[i]),
-                    simd.splat_f32x4(a.color[i]),
-                )[0];
-            }
-            return premul_lane(simd, mixed, working);
+            let a4 = simd.load_array_f32x4(a.color);
+            let b4 = simd.load_array_f32x4(b.color);
+            let mixed = simd.splat_f32x4(f).mul_add(b4 - a4, a4);
+            return premul_pixel(simd, mixed, working);
         }
     }
-    premul_lane(simd, last.color, working)
+    premul_pixel(simd, simd.load_array_f32x4(last.color), working)
 }
 
 /// `extend` folded to a constant per instantiation: `block` is
-/// [`extend_t_span`] at `LANES`, `lane` the same expression on one lane
-/// of a four-lane splat — LLVM scalarizes the lane-0-only use.
+/// [`extend_t_span`] at `LANES`, `lane` the same extension on one
+/// scalar parameter — the modes' strict compares are exact in scalar
+/// code, and `Reflect`'s `mul_add` goes through the level's own op on
+/// lane 0 of an `f32x4`.
 trait ExtendSpan<S: Simd> {
     /// [`extend_t_span`] at block width.
     fn block(simd: S, t: f32x16<S>) -> (f32x16<S>, mask32x16<S>);
-    /// The same expression on one lane, with its coverage flag.
+    /// The same extension on one parameter, with its coverage flag —
+    /// `Extend::None` outside `[0, 1]` yields transparent.
     fn lane(simd: S, t: f32) -> (f32, bool);
 }
 
 macro_rules! extend_span {
-    ($name:ident, $extend:expr) => {
+    ($name:ident, $extend:expr, |$simd:ident, $t:ident| $lane:expr) => {
         /// The mode's [`ExtendSpan`] instantiation.
         struct $name;
         impl<S: Simd> ExtendSpan<S> for $name {
@@ -277,17 +293,33 @@ macro_rules! extend_span {
                 extend_t_span(simd, t, $extend)
             }
             #[inline(always)]
-            fn lane(simd: S, t: f32) -> (f32, bool) {
-                extend_t_lane(simd, t, $extend)
+            fn lane($simd: S, $t: f32) -> (f32, bool) {
+                $lane
             }
         }
     };
 }
 
-extend_span!(PadSpan, Extend::Pad);
-extend_span!(RepeatSpan, Extend::Repeat);
-extend_span!(ReflectSpan, Extend::Reflect);
-extend_span!(NoneSpan, Extend::None);
+extend_span!(PadSpan, Extend::Pad, |_simd, t| {
+    // The block's selects as scalar `if`s: a strict comparison falls
+    // through to `t`, so NaN and the zero sign survive.
+    let t = if t < 0.0 { 0.0 } else { t };
+    (if t > 1.0 { 1.0 } else { t }, true)
+});
+extend_span!(RepeatSpan, Extend::Repeat, |_simd, t| {
+    (t - t.floor(), true)
+});
+extend_span!(ReflectSpan, Extend::Reflect, |simd, t| {
+    // `floor(t·½)·(−2) + t` through the level's own `mul_add` on lane
+    // 0, the fused-or-not rounding the block lanes get.
+    let m = simd
+        .splat_f32x4((t * 0.5).floor())
+        .mul_add(simd.splat_f32x4(-2.0), simd.splat_f32x4(t))[0];
+    (if m > 1.0 { 2.0 - m } else { m }, true)
+});
+extend_span!(NoneSpan, Extend::None, |_simd, t| {
+    (t, (0.0..=1.0).contains(&t))
+});
 
 /// Lanes `4k..4k+4` of a sixteen-lane vector.
 #[expect(
@@ -307,6 +339,21 @@ fn lane4<S: Simd>(simd: S, v: f32x16<S>, k: usize) -> f32x4<S> {
     }
 }
 
+/// The interleaved sixteen-float group holding lanes `4k..4k+4` of a
+/// block's premultiplied channels — pixels `4k..4k+4`, ready for
+/// [`Simd::store_interleaved_128_f32x16`].
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn block_group<S: Simd>(simd: S, px: &[f32x16<S>; 4], k: usize) -> f32x16<S> {
+    simd.combine_f32x8(
+        simd.combine_f32x4(lane4(simd, px[0], k), lane4(simd, px[1], k)),
+        simd.combine_f32x4(lane4(simd, px[2], k), lane4(simd, px[3], k)),
+    )
+}
+
 /// The premultiplied channels of a block transposed into `stage` as
 /// sixteen `[r, g, b, a]` pixels — the solid kernel's interleaved
 /// store, one 128-bit group per four lanes. A full block's `stage`
@@ -318,11 +365,46 @@ fn lane4<S: Simd>(simd: S, v: f32x16<S>, k: usize) -> f32x4<S> {
 #[inline(always)]
 fn store_block<S: Simd>(simd: S, px: [f32x16<S>; 4], stage: &mut [f32; 64]) {
     for (k, group) in stage.as_chunks_mut::<16>().0.iter_mut().enumerate() {
-        let planes = simd.combine_f32x8(
-            simd.combine_f32x4(lane4(simd, px[0], k), lane4(simd, px[1], k)),
-            simd.combine_f32x4(lane4(simd, px[2], k), lane4(simd, px[3], k)),
-        );
-        simd.store_interleaved_128_f32x16(planes, group);
+        simd.store_interleaved_128_f32x16(block_group(simd, &px, k), group);
+    }
+}
+
+/// `store_block` for a `count`-pixel prefix (`count < LANES`): whole
+/// four-pixel groups store into `out` directly; the final partial
+/// group is staged and copied with a fixed-size `match`, so no
+/// `memcpy` call remains.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn store_partial<S: Simd>(
+    simd: S,
+    px: [f32x16<S>; 4],
+    out: &mut [MaybeUninit<[f32; 4]>],
+    count: usize,
+) {
+    let full = count / 4;
+    for k in 0..full {
+        // SAFETY: `out[4k..4k + 4]` is sixteen contiguous
+        // uninitialised floats — every bit pattern is a valid f32.
+        let group = unsafe { &mut *out[4 * k..].as_mut_ptr().cast::<[f32; 16]>() };
+        simd.store_interleaved_128_f32x16(block_group(simd, &px, k), group);
+    }
+    let rest = count % 4;
+    if rest != 0 {
+        let mut stage = [0.0f32; 16];
+        simd.store_interleaved_128_f32x16(block_group(simd, &px, full), &mut stage);
+        let dst = out[4 * full..].as_mut_ptr().cast::<f32>();
+        // SAFETY: `stage` is initialised and `rest * 4` floats fit in
+        // the `rest`-pixel remainder.
+        unsafe {
+            match rest {
+                1 => std::ptr::copy_nonoverlapping(stage.as_ptr(), dst, 4),
+                2 => std::ptr::copy_nonoverlapping(stage.as_ptr(), dst, 8),
+                _ => std::ptr::copy_nonoverlapping(stage.as_ptr(), dst, 12),
+            }
+        }
     }
 }
 
@@ -342,6 +424,7 @@ struct Project {
 /// absent for a degenerate gradient, whose parameter is fixed at 0 —
 /// the stops as a window walk or a constant colour, and the
 /// premultiplication branch.
+#[derive(Clone, Copy)]
 struct LinearEval<'a> {
     /// The paint the chain walk starts from.
     outer: &'a PaintData,
@@ -361,6 +444,11 @@ impl<'a> LinearEval<'a> {
     /// Decides every span-invariant choice once: the degenerate
     /// projection, the constant-colour stop lists and the
     /// premultiplication branch.
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
     fn new(outer: &'a PaintData, params: &Linear<'a>) -> Self {
         let (sx, sy, ex, ey) = params.end_points.into();
         let (ddx, ddy) = (ex - sx, ey - sy);
@@ -390,6 +478,10 @@ impl<'a> LinearEval<'a> {
 /// monomorphized extend and the span-decided stops — premultiplied
 /// channels, zero where `Extend::None` leaves the domain.
 #[expect(
+    clippy::option_if_let_else,
+    reason = "a map_or closure is compiled without the level's target features"
+)]
+#[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
@@ -401,19 +493,25 @@ where
 {
     let (mut cx, mut cy) = (xs, dy);
     let mut link = eval.outer;
-    while let PaintData::Transformed(inner, _, inverse) = link {
-        (cx, cy) = apply_span(simd, *inverse, cx, cy);
-        link = inner;
+    while let PaintData::Transformed(inner) = link {
+        (cx, cy) = apply_span(simd, inner.inverse_f32, cx, cy);
+        link = &inner.paint;
     }
     let (cx, cy) = apply_span(simd, eval.inv, cx, cy);
     let zero = simd.splat_f32x16(0.0);
-    let t = eval
-        .project
-        .map_or(zero, |p| project_span(simd, &p, cx, cy));
+    let t = match eval.project {
+        Some(p) => project_span(simd, &p, cx, cy),
+        None => zero,
+    };
     let (t, active) = E::block(simd, t);
     let mut px = match eval.stops {
         Ok(stops) => premul_span(simd, eval_stops_span(simd, stops, t), eval.working),
-        Err(c) => c.map(|ch| simd.splat_f32x16(ch)),
+        Err(c) => [
+            simd.splat_f32x16(c[0]),
+            simd.splat_f32x16(c[1]),
+            simd.splat_f32x16(c[2]),
+            simd.splat_f32x16(c[3]),
+        ],
     };
     for c in &mut px {
         *c = active.select(*c, zero);
@@ -421,38 +519,112 @@ where
     px
 }
 
-/// One pixel of the block expression on lane 0 of `f32x4`: the chain
-/// inverses, `inv` and the projection through the level's own ops —
-/// the same arithmetic, fused `mul_add` or not, the block lanes get —
-/// with a scalar extend flag and the early-exit stop search.
+/// One pixel of the block expression in channel-vector form: `outer`'s
+/// chain — present only in the `CHAINED` instantiation — and `inv`
+/// applied with the level's own `mul_add` on lane 0 of an `f32x4`, the
+/// same arithmetic, fused or not, the block lanes get; the scalar
+/// extend and early-exit stop search, one four-channel mix and
+/// premultiply, zero where `Extend::None` leaves the domain.
+#[expect(
+    clippy::option_if_let_else,
+    reason = "a map_or closure is compiled without the level's target features"
+)]
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn eval_lane<S, E>(simd: S, eval: &LinearEval<'_>, x: f32, y: f32) -> [f32; 4]
+fn eval_pixel<S, E, const CHAINED: bool>(simd: S, eval: LinearEval<'_>, x: f32, y: f32) -> f32x4<S>
 where
     S: Simd,
     E: ExtendSpan<S>,
 {
     let (mut cx, mut cy) = (simd.splat_f32x4(x), simd.splat_f32x4(y));
-    let mut link = eval.outer;
-    while let PaintData::Transformed(inner, _, inverse) = link {
-        (cx, cy) = apply_span(simd, *inverse, cx, cy);
-        link = inner;
+    if CHAINED {
+        let mut link = eval.outer;
+        while let PaintData::Transformed(inner) = link {
+            (cx, cy) = apply_span(simd, inner.inverse_f32, cx, cy);
+            link = &inner.paint;
+        }
     }
     let (cx, cy) = apply_span(simd, eval.inv, cx, cy);
-    let t = eval
-        .project
-        .map_or(0.0, |p| project_span(simd, &p, cx, cy)[0]);
+    let t = match eval.project {
+        Some(p) => project_span(simd, &p, cx, cy)[0],
+        None => 0.0,
+    };
     let (t, active) = E::lane(simd, t);
     if !active {
-        return [0.0; 4];
+        return simd.splat_f32x4(0.0);
     }
     match eval.stops {
-        Ok(stops) => eval_stops_lane(simd, stops, t, eval.working),
-        Err(c) => c,
+        Ok(stops) => eval_stops_pixel(simd, stops, t, eval.working),
+        Err(c) => simd.load_array_f32x4(c),
     }
+}
+
+/// `eval_pixel` over a run of `out`, `x` stepping the device pixel
+/// centres by `1.0` — the same value the block lanes form,
+/// `(x0 + base) as f32 + i + 0.5`, exact below 2²³.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+fn eval_pixels<S, E, const CHAINED: bool>(
+    simd: S,
+    eval: LinearEval<'_>,
+    mut x: f32,
+    y: f32,
+    out: &mut [MaybeUninit<[f32; 4]>],
+) where
+    S: Simd,
+    E: ExtendSpan<S>,
+{
+    for px in out.iter_mut() {
+        // SAFETY: the store writes all four lanes of `px`.
+        simd.store_array_f32x4(eval_pixel::<S, E, CHAINED>(simd, eval, x, y), unsafe {
+            &mut *px.as_mut_ptr()
+        });
+        x += 1.0;
+    }
+}
+
+/// The one-pixel path over a whole run, shared by the inline short
+/// span and a block's short remainder: the `Transformed` test is
+/// decided once, outside the loop, so the common leaf case carries no
+/// chain walk.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+fn eval_run<S, E>(simd: S, eval: LinearEval<'_>, x: f32, y: f32, out: &mut [MaybeUninit<[f32; 4]>])
+where
+    S: Simd,
+    E: ExtendSpan<S>,
+{
+    if matches!(eval.outer, PaintData::Transformed(..)) {
+        eval_pixels::<S, E, true>(simd, eval, x, y, out);
+    } else {
+        eval_pixels::<S, E, false>(simd, eval, x, y, out);
+    }
+}
+
+/// What [`linear_blocks`]' `vectorize` closure captures through one
+/// pointer: the span's parameters by shared reference — `&mut` is not
+/// `Copy`, so `out` enters as a raw slice the closure reborrows.
+#[derive(Clone, Copy)]
+struct LinearRun<'a> {
+    /// The paint the chain walk starts from.
+    outer: &'a PaintData,
+    /// The leaf's resolved parameters.
+    params: &'a Linear<'a>,
+    /// The run's first device column.
+    x0: usize,
+    /// The run's device row.
+    py: usize,
+    /// The output span.
+    out: *mut [MaybeUninit<[f32; 4]>],
 }
 
 /// The block loop, out of line and entered through `vectorize` so the
@@ -460,35 +632,36 @@ where
 /// `eval_span` dispatch while the body still compiles under the
 /// level's target features. `E` folds the span's extend mode into the
 /// instantiation. Full `LANES` blocks store straight into `out`; a
-/// remainder under [`SHORT_TAIL`] pixels takes the one-lane path, a
-/// wider one a single padded block through the stage.
+/// remainder under [`SHORT_TAIL`] pixels takes the one-pixel path, a
+/// wider one a single padded block whose complete four-pixel groups
+/// store directly.
 #[expect(
     clippy::cast_precision_loss,
     reason = "pixel indices and band offsets are far below 2^24"
 )]
 #[inline(never)]
-fn linear_blocks<S, E>(
-    simd: S,
-    eval: &LinearEval<'_>,
-    x0: usize,
-    py: usize,
-    out: &mut [MaybeUninit<[f32; 4]>],
-) where
+fn linear_blocks<S, E>(simd: S, run: &LinearRun<'_>)
+where
     S: Simd,
     E: ExtendSpan<S>,
 {
     simd.vectorize(
         #[inline(always)]
         || {
-            let dy = simd.splat_f32x16(py as f32 + 0.5);
+            let eval = LinearEval::new(run.outer, run.params);
+            // SAFETY: `run.out` is the caller's exclusive span for the
+            // duration of this `vectorize` call, which writes every
+            // element before returning.
+            let out = unsafe { &mut *run.out };
+            let dy = simd.splat_f32x16(run.py as f32 + 0.5);
             let ramp = simd.load_array_f32x16([
                 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5, 13.5, 14.5,
                 15.5,
             ]);
             let mut base = 0;
             while base + LANES <= out.len() {
-                let xs = simd.add_f32x16(simd.splat_f32x16((x0 + base) as f32), ramp);
-                let px = eval_block::<S, E>(simd, eval, xs, dy);
+                let xs = simd.add_f32x16(simd.splat_f32x16((run.x0 + base) as f32), ramp);
+                let px = eval_block::<S, E>(simd, &eval, xs, dy);
                 // SAFETY: `out[base..base + LANES]` is `LANES * 4`
                 // contiguous uninitialised floats — every bit pattern
                 // is a valid f32 — and `stage` is exclusive.
@@ -501,29 +674,17 @@ fn linear_blocks<S, E>(
                 return;
             }
             if tail < SHORT_TAIL {
-                for (i, px) in out[base..].iter_mut().enumerate() {
-                    px.write(eval_lane::<S, E>(
-                        simd,
-                        eval,
-                        (x0 + base + i) as f32 + 0.5,
-                        py as f32 + 0.5,
-                    ));
-                }
+                eval_run::<S, E>(
+                    simd,
+                    eval,
+                    (run.x0 + base) as f32 + 0.5,
+                    run.py as f32 + 0.5,
+                    &mut out[base..],
+                );
             } else {
-                let xs = simd.add_f32x16(simd.splat_f32x16((x0 + base) as f32), ramp);
-                let px = eval_block::<S, E>(simd, eval, xs, dy);
-                let mut stage = [0.0f32; 64];
-                store_block(simd, px, &mut stage);
-                // SAFETY: `stage` holds sixteen initialised pixels and
-                // `out[base..base + tail]` is `tail * 4` contiguous
-                // uninit floats.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        stage.as_ptr(),
-                        out[base..].as_mut_ptr().cast::<f32>(),
-                        tail * 4,
-                    );
-                }
+                let xs = simd.add_f32x16(simd.splat_f32x16((run.x0 + base) as f32), ramp);
+                let px = eval_block::<S, E>(simd, &eval, xs, dy);
+                store_partial(simd, px, &mut out[base..], tail);
             }
         },
     );
@@ -534,8 +695,13 @@ fn linear_blocks<S, E>(
 /// content space, one affine apply per link so the chain keeps the
 /// scalar rounding; the projection, extend mode and shared stop
 /// evaluation follow. Every choice that holds for the whole span is
-/// decided here or in [`LinearEval`]; the extend mode monomorphizes
-/// [`linear_blocks`].
+/// decided here or in [`LinearEval`]. A span under [`SHORT_TAIL`]
+/// pixels evaluates inline by [`eval_run`]; longer spans call the
+/// out-of-line block kernel, monomorphized per extend mode.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "pixel indices and band offsets are far below 2^24"
+)]
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
@@ -549,13 +715,30 @@ pub(super) fn linear_span<'a, S: Simd>(
     py: usize,
     out: &'a mut [MaybeUninit<[f32; 4]>],
 ) -> &'a mut [[f32; 4]] {
-    let eval = LinearEval::new(outer, params);
-    match params.extend {
-        Extend::Pad => linear_blocks::<S, PadSpan>(simd, &eval, x0, py, out),
-        Extend::Repeat => linear_blocks::<S, RepeatSpan>(simd, &eval, x0, py, out),
-        Extend::Reflect => linear_blocks::<S, ReflectSpan>(simd, &eval, x0, py, out),
-        Extend::None => linear_blocks::<S, NoneSpan>(simd, &eval, x0, py, out),
+    if out.len() < SHORT_TAIL {
+        let eval = LinearEval::new(outer, params);
+        let (x, y) = (x0 as f32 + 0.5, py as f32 + 0.5);
+        match params.extend {
+            Extend::Pad => eval_run::<S, PadSpan>(simd, eval, x, y, out),
+            Extend::Repeat => eval_run::<S, RepeatSpan>(simd, eval, x, y, out),
+            Extend::Reflect => eval_run::<S, ReflectSpan>(simd, eval, x, y, out),
+            Extend::None => eval_run::<S, NoneSpan>(simd, eval, x, y, out),
+        }
+    } else {
+        let run = LinearRun {
+            outer,
+            params,
+            x0,
+            py,
+            out: std::ptr::from_mut(&mut *out),
+        };
+        match params.extend {
+            Extend::Pad => linear_blocks::<S, PadSpan>(simd, &run),
+            Extend::Repeat => linear_blocks::<S, RepeatSpan>(simd, &run),
+            Extend::Reflect => linear_blocks::<S, ReflectSpan>(simd, &run),
+            Extend::None => linear_blocks::<S, NoneSpan>(simd, &run),
+        }
     }
-    // SAFETY: `linear_blocks` initialized every element of `out`.
+    // SAFETY: either branch initialized every element of `out`.
     unsafe { out.assume_init_mut() }
 }
