@@ -30,7 +30,10 @@ fn font() -> cherenkov::FontSource {
 /// `count` glyphs, each at a distinct fractional position → distinct cell keys.
 /// Position math runs in `f64` (u32 keys convert losslessly); the `Glyph`
 /// fields are `f32` API fields, the one narrowing this function makes.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the `Glyph` API fields are f32; the f64 position math narrows only here"
+)]
 fn heavy_run(font: cherenkov::FontId, base_y: f64, count: u32, size: f32, salt: u32) -> GlyphRun {
     let size64 = f64::from(size);
     let glyphs: Vec<_> = (0..count)
