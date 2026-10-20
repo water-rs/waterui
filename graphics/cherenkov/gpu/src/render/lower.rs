@@ -4243,11 +4243,8 @@ impl<'a> Lowering<'a> {
         // A GPU draw's pending record is only meaningful with the draw
         // range that rolled back with it; every other pending raster is
         // content the CPU route still needs placed (#3081).
-        if let Some(gpu) = self.pending[first_pending..]
-            .iter()
-            .position(|pending| matches!(pending, PendingRaster::GpuPath(_)))
-        {
-            self.pending.remove(first_pending + gpu);
+        if Self::leaf_gpu_draw(&self.pending[first_pending..]).is_some() {
+            self.pending.pop();
         }
         self.compose(
             cache.data.as_ref().expect("realized leaf has data"),
@@ -4333,12 +4330,7 @@ impl<'a> Lowering<'a> {
             .extend_from_slice(&self.frame.stops[first_stop..]);
         // A GPU leaf's retained draw record re-joins — or regenerates —
         // its coverage entry on every recompose (#3081).
-        let gpu = self.pending[first_pending..]
-            .iter()
-            .find_map(|pending| match pending {
-                PendingRaster::GpuPath(draw) => Some(Arc::clone(draw)),
-                _ => None,
-            });
+        let gpu = Self::leaf_gpu_draw(&self.pending[first_pending..]).map(Arc::clone);
         cache.data = Some(Emission {
             gpu,
             pending_cells: PendingCells::new(
@@ -4369,6 +4361,25 @@ impl<'a> Lowering<'a> {
                 .clone(),
         });
         Ok(())
+    }
+
+    /// A leaf's GPU draw record among the pending rasters it pushed.
+    /// Only a path leaf draws on the GPU, through `push_gpu_draw`, which
+    /// pushes its one record as the path's final pending raster — so it
+    /// is the last one, and a leaf's lowering costs one tail check, not
+    /// a scan of everything it queued (#3081).
+    fn leaf_gpu_draw(pushed: &[PendingRaster]) -> Option<&Arc<glyph::GpuDraw>> {
+        let (last, earlier) = pushed.split_last()?;
+        debug_assert!(
+            !earlier
+                .iter()
+                .any(|pending| matches!(pending, PendingRaster::GpuPath(_))),
+            "a leaf's GPU draw is the last pending raster it pushes"
+        );
+        match last {
+            PendingRaster::GpuPath(draw) => Some(draw),
+            _ => None,
+        }
     }
 
     /// Emits a retained leaf's instances and stops into this frame under
