@@ -613,8 +613,8 @@ impl GpuCoverage {
     }
 
     /// Repack every live entry into a fresh arena buffer sized to the
-    /// live words plus this frame's immediate need, with the doubling
-    /// headroom `sized_buffer` growth uses (§3.3). Generated entries
+    /// live words plus this frame's immediate need, with a quarter of
+    /// that as headroom (§3.3). Generated entries
     /// schedule one copy each into the coverage prologue; ungenerated
     /// ones redirect their dispatch record to the new block.
     fn compact(&mut self, device: &wgpu::Device, extra: u32) -> Result<(), RenderError> {
@@ -632,9 +632,15 @@ impl GpuCoverage {
                 "GPU coverage output exceeds device buffer limit",
             ));
         }
-        // Doubling headroom, clamped to what one binding can address:
-        // the live set plus the immediate need already fit.
-        let size = (2 * (u64::from(tail) + u64::from(extra)))
+        // The live set is bounded by the drawn set plus the undrawn
+        // budget, so in steady state it churns rather than grows: the
+        // headroom only absorbs the holes misses leave between repacks.
+        // A quarter of the need amortizes each repack over `live / 4`
+        // newly generated words, where doubling would hold the live set's
+        // size again in empty capacity. Clamped to what one binding can
+        // address; the live set plus the immediate need already fit.
+        let need = u64::from(tail) + u64::from(extra);
+        let size = (need + u64::from(extra).max(need / 4))
             .min(self.limit_words)
             .max(16)
             * 4;
