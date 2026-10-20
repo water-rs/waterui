@@ -6387,7 +6387,6 @@ impl GpuRenderer {
         inputs: &[projective::Inputs],
     ) -> Vec<Result<Lowered, RenderError>> {
         let coverage_options = self.coverage_options();
-        let mut grew = false;
         loop {
             let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
                 .iter()
@@ -6476,11 +6475,10 @@ impl GpuRenderer {
             // before any placement or upload happens, so a failed
             // placement never enqueues uploads into an atlas the same
             // preparation abandons.
-            match self.commit_rasters(pending, &mut results, grew) {
+            match self.commit_rasters(pending, &mut results) {
                 Commit::Done => break results,
                 Commit::Resize(size, pages) => {
                     self.atlas.resize_to(&self.device, size, pages);
-                    grew = true;
                     tracing::debug!(
                         size = self.atlas.size(),
                         pages = self.atlas.pages(),
@@ -6508,7 +6506,6 @@ impl GpuRenderer {
         inputs: &[projective::Inputs],
     ) -> Vec<Result<Lowered, RenderError>> {
         let coverage_options = self.coverage_options();
-        let mut grew = false;
         loop {
             let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
                 .iter()
@@ -6548,11 +6545,10 @@ impl GpuRenderer {
             // before any placement or upload happens, so a failed
             // placement never enqueues uploads into an atlas the same
             // preparation abandons.
-            match self.commit_rasters(pending, &mut results, grew) {
+            match self.commit_rasters(pending, &mut results) {
                 Commit::Done => break results,
                 Commit::Resize(size, pages) => {
                     self.atlas.resize_to(&self.device, size, pages);
-                    grew = true;
                     tracing::debug!(
                         size = self.atlas.size(),
                         pages = self.atlas.pages(),
@@ -7069,8 +7065,10 @@ impl GpuRenderer {
     /// Commits every surface's pending rasters transactionally
     /// (#169 A3). The shelves this lowering's hits live on are marked
     /// first so no placement can evict them; [`Atlas::plan`] then
-    /// dry-runs all placements against shelf metadata alone; only a
-    /// `Fits` verdict — or the last attempt after a grow — commits for
+    /// dry-runs all placements against shelf metadata alone; every
+    /// `Resize` verdict it proves is applied by the caller — a grow or
+    /// shrink — and the re-lowered batch is planned again, so a
+    /// `Fits`-family verdict or a genuine exhaustion commits for
     /// real. When even an emptied atlas cannot hold the batch the
     /// commit runs evicting instead of clearing: cold shelves are
     /// reclaimed in place, so surviving entries — and the retained
@@ -7084,7 +7082,6 @@ impl GpuRenderer {
         &mut self,
         pending: &mut [SurfaceState],
         results: &mut [Result<Lowered, RenderError>],
-        grew: bool,
     ) -> Commit {
         // The frame's GPU coverage context restarts with its lowers:
         // retry-safe — a re-committed frame records its dispatches from
@@ -7115,7 +7112,7 @@ impl GpuRenderer {
             self.commit_touches = touches;
             match self.atlas.plan(&rasters) {
                 glyph::AtlasPlan::Fits | glyph::AtlasPlan::FitsEviction => "fits-eviction",
-                glyph::AtlasPlan::Resize(size, pages) if !grew => {
+                glyph::AtlasPlan::Resize(size, pages) => {
                     // The resize discards the atlas and re-lowers, so
                     // every retained emission is dead anyway — but the
                     // pending cells recorded this round index a raster
@@ -7126,7 +7123,7 @@ impl GpuRenderer {
                     }
                     return Commit::Resize(size, pages);
                 }
-                glyph::AtlasPlan::Resize(..) | glyph::AtlasPlan::Recycle => {
+                glyph::AtlasPlan::Recycle => {
                     // Bounded in-place eviction makes room instead of a
                     // wholesale clear: the commit below reclaims shelves
                     // nothing touched until the batch places or nothing
@@ -7238,6 +7235,25 @@ impl GpuRenderer {
                         ),
                         |slot| touches.push(slot),
                     );
+                    // One stored UV names only the shelf its own quad
+                    // samples, but an emission's band set is wider: a
+                    // region interval widened across cells can span
+                    // shelves. The `(slot, epoch)` refs recorded at
+                    // apply hold every band the emission samples, so
+                    // the still-live ones pin too (#2909). A deferred
+                    // `refs` has no pairs yet — this commit derives
+                    // them at apply, and every hit cell it will name
+                    // is already pinned by the UV scan above.
+                    if emission.refs & lower::DEFERRED_REFS == 0 {
+                        touches.extend(
+                            content.storage.refs[emission.refs_range()]
+                                .iter()
+                                .filter(|&&(slot, epoch)| {
+                                    self.atlas.shelf_epoch(slot) == epoch
+                                })
+                                .map(|&(slot, _)| slot),
+                        );
+                    }
                 }
             }
             // Clip masks bound through `uv[2..3]` pin the same way:
