@@ -24,6 +24,7 @@ pub use path::CoverageRoute;
 pub mod planes;
 mod prepared;
 pub mod present;
+mod programs;
 mod projective;
 mod raster;
 mod reduce;
@@ -113,19 +114,12 @@ impl CoveragePass {
         }
     }
 
-    const fn vertex(self) -> &'static str {
+    /// The index of the pass's program in `programs::ENGINE`.
+    const fn program(self) -> usize {
         match self {
-            Self::Painter(_) => "vs_main",
-            Self::Coverage(CoveragePhase::Opaque) => "vs_opaque",
-            Self::Coverage(CoveragePhase::Partial) => "vs_partial",
-        }
-    }
-
-    const fn fragment(self) -> &'static str {
-        match self {
-            Self::Painter(_) => "fs_main",
-            Self::Coverage(CoveragePhase::Opaque) => "fs_opaque",
-            Self::Coverage(CoveragePhase::Partial) => "fs_partial",
+            Self::Painter(_) => 0,
+            Self::Coverage(CoveragePhase::Opaque) => 1,
+            Self::Coverage(CoveragePhase::Partial) => 2,
         }
     }
 
@@ -1152,7 +1146,7 @@ pub struct GpuRenderer {
     /// encode loop, so the module materializes in
     /// `prepare_lazy_pipelines`).
     #[cfg(target_arch = "wasm32")]
-    lazy_modules: FxHashMap<usize, wgpu::ShaderModule>,
+    lazy_modules: FxHashMap<usize, shaders::EnginePrograms>,
     /// The configured isolation texture format.
     scratch_format: wgpu::TextureFormat,
     layout0: wgpu::BindGroupLayout,
@@ -1537,11 +1531,13 @@ fn create_device(
         & (image_storage::COMPRESSION_FEATURES
             | wgpu::Features::INDIRECT_FIRST_INSTANCE
             | float32_target_features());
-    // The fixed engine shaders are precompiled (#57): Vulkan loads SPIR-V
-    // and Metal a metallib through the passthrough API; wgpu-hal advertises
-    // the feature unconditionally on both backends.
-    if matches!(info.backend, wgpu::Backend::Vulkan | wgpu::Backend::Metal)
-        && supported.contains(wgpu::Features::PASSTHROUGH_SHADERS)
+    // The fixed engine shaders are precompiled (#57, #2726): Vulkan loads
+    // SPIR-V, Metal a metallib and DX12 DXIL through the passthrough API;
+    // wgpu-hal advertises the feature unconditionally on all three.
+    if matches!(
+        info.backend,
+        wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12
+    ) && supported.contains(wgpu::Features::PASSTHROUGH_SHADERS)
     {
         required |= wgpu::Features::PASSTHROUGH_SHADERS;
     }
@@ -2229,23 +2225,24 @@ fn create_pipeline(
     config: &GpuConfig,
     layout: &wgpu::PipelineLayout,
     cache: Option<&wgpu::PipelineCache>,
-    module: &wgpu::ShaderModule,
+    programs: &shaders::EnginePrograms,
     format: wgpu::TextureFormat,
     mode: CoveragePass,
 ) -> Result<wgpu::RenderPipeline, EngineError> {
+    let program = &programs[mode.program()];
     let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("cherenkov"),
         layout: Some(layout),
         vertex: wgpu::VertexState {
-            module,
-            entry_point: Some(mode.vertex()),
+            module: &program.vertex,
+            entry_point: Some(program.vertex_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[],
         },
         fragment: Some(wgpu::FragmentState {
-            module,
-            entry_point: Some(mode.fragment()),
+            module: &program.fragment,
+            entry_point: Some(program.fragment_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
@@ -2280,23 +2277,24 @@ async fn create_pipeline(
     config: &GpuConfig,
     layout: &wgpu::PipelineLayout,
     cache: Option<&wgpu::PipelineCache>,
-    module: &wgpu::ShaderModule,
+    programs: &shaders::EnginePrograms,
     format: wgpu::TextureFormat,
     mode: CoveragePass,
 ) -> Result<wgpu::RenderPipeline, EngineError> {
+    let program = &programs[mode.program()];
     let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("cherenkov"),
         layout: Some(layout),
         vertex: wgpu::VertexState {
-            module,
-            entry_point: Some(mode.vertex()),
+            module: &program.vertex,
+            entry_point: Some(program.vertex_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[],
         },
         fragment: Some(wgpu::FragmentState {
-            module,
-            entry_point: Some(mode.fragment()),
+            module: &program.fragment,
+            entry_point: Some(program.fragment_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
@@ -2344,7 +2342,7 @@ impl PipelineFactory<'_> {
     ) -> Result<wgpu::RenderPipeline, RenderError> {
         let module = self
             .delivery
-            .engine_module(self.device, variant_index(variant));
+            .engine_programs(self.device, variant_index(variant));
         create_pipeline(
             self.device,
             self.config,
@@ -2431,7 +2429,7 @@ fn create_external_pipeline(
     device: &wgpu::Device,
     layout0: &wgpu::BindGroupLayout,
     layout1: &wgpu::BindGroupLayout,
-    module: &wgpu::ShaderModule,
+    program: &shaders::RenderProgram,
     format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -2448,14 +2446,14 @@ fn create_external_pipeline(
         label: Some("cherenkov external"),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
-            module,
-            entry_point: Some("vs_main"),
+            module: &program.vertex,
+            entry_point: Some(program.vertex_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[],
         },
         fragment: Some(wgpu::FragmentState {
-            module,
-            entry_point: Some("fs_external"),
+            module: &program.fragment,
+            entry_point: Some(program.fragment_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
@@ -2583,7 +2581,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             );
         }
         let modules = core_pipelines_eager()
-            .then(|| EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_module(&device, v)));
+            .then(|| EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_programs(&device, v)));
         fire_probe(
             &config,
             CreationPhase::ShaderModules,
@@ -2963,7 +2961,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     // union module is not in this eager set. WebGPU keeps WGSL (#57).
     let shader_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let shader_delivery = shaders::delivery(info.backend, &device)?;
-    let modules = EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_module(&device, v));
+    let modules = EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_programs(&device, v));
     if let Some(error) = shader_scope.pop().await {
         return Err(EngineError::Backend(error.to_string()));
     }
@@ -5313,7 +5311,7 @@ impl GpuRenderer {
                     &self.config,
                     &self.pipeline_layout,
                     self.pipeline_cache.as_ref(),
-                    module,
+                    &shaders::wgsl_engine_programs(module),
                     format,
                     CoveragePass::Painter(false),
                 )
@@ -5908,7 +5906,7 @@ impl GpuRenderer {
                     entries: &layout_entries(bindings::EXTERNAL_GROUP1),
                 })
         });
-        let module = self.shader_delivery.external_module(&self.device);
+        let module = self.shader_delivery.external_program(&self.device);
         // Error scopes resolve asynchronously; only the native path pops
         // synchronously. A failure here is an engine bug, so the wasm path
         // reports through the uncaptured-error handler instead.
@@ -9713,7 +9711,7 @@ impl GpuRenderer {
                                             &self.config,
                                             &self.pipeline_layout,
                                             self.pipeline_cache.as_ref(),
-                                            module,
+                                            &shaders::wgsl_engine_programs(module),
                                             target_format,
                                             CoveragePass::Painter(replace),
                                         )
@@ -11082,7 +11080,7 @@ impl GpuRenderer {
         let module = self
             .lazy_modules
             .entry(variant)
-            .or_insert_with(|| self.shader_delivery.engine_module(&self.device, variant));
+            .or_insert_with(|| self.shader_delivery.engine_programs(&self.device, variant));
         *cell = Some(
             create_pipeline(
                 &self.device,
@@ -11118,7 +11116,7 @@ impl GpuRenderer {
             .entry(variant_index(ShaderVariant::Simple))
             .or_insert_with(|| {
                 self.shader_delivery
-                    .engine_module(&self.device, variant_index(ShaderVariant::Simple))
+                    .engine_programs(&self.device, variant_index(ShaderVariant::Simple))
             });
         for phase in [CoveragePhase::Opaque, CoveragePhase::Partial] {
             self.coverage_pipelines[format_i][0][phase as usize] = Some(

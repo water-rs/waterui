@@ -44,7 +44,7 @@ pub enum Kind {
 }
 
 /// One bind group layout entry, backend-agnostic.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Entry {
     /// The WGSL `@binding` number within its group.
     pub binding: u32,
@@ -234,9 +234,6 @@ pub const ENGINE_GROUPS: &[&[Entry]] = &[ENGINE_GROUP0, ENGINE_GROUP1];
 /// #2543 and #3081): per-frame compute input, coverage scratch, the
 /// retained coverage arena the kernels write blocks into, and the
 /// dispatch-domain argument buffer.
-///
-/// Used by `build.rs`; the crate builds the layout from `COVERAGE_GROUP0`
-/// directly.
 pub const COVERAGE_GROUP0: &[Entry] = &[
     Entry::uniform(0, COMPUTE, true, 80),
     Entry::storage_read(1, COMPUTE),
@@ -248,11 +245,17 @@ pub const COVERAGE_GROUP0: &[Entry] = &[
     Entry::storage(7, COMPUTE),
 ];
 
-/// The coverage pipeline's group list.
-///
-/// Used by `build.rs`; the crate addresses the group directly.
-#[allow(dead_code)]
+/// The coverage kernels' main group: every binding but the
+/// dispatch-domain argument buffer at binding 7, which only the
+/// argument-writing kernels bind.
+pub const COVERAGE_MAIN_GROUP0: &[Entry] = COVERAGE_GROUP0.split_at(7).0;
+const _: () = assert!(COVERAGE_GROUP0.len() == 8 && COVERAGE_GROUP0[7].binding == 7);
+
+/// The argument-writing coverage kernels' group list.
 pub const COVERAGE_GROUPS: &[&[Entry]] = &[COVERAGE_GROUP0];
+
+/// The other coverage kernels' group list.
+pub const COVERAGE_MAIN_GROUPS: &[&[Entry]] = &[COVERAGE_MAIN_GROUP0];
 /// The present pipeline's group list.
 ///
 /// Used by `build.rs`; the crate addresses the group directly.

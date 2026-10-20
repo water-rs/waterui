@@ -656,7 +656,9 @@ fn plain_device()
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = block!(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
     let required_features = match adapter.get_info().backend {
-        wgpu::Backend::Vulkan | wgpu::Backend::Metal => wgpu::Features::PASSTHROUGH_SHADERS,
+        wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => {
+            wgpu::Features::PASSTHROUGH_SHADERS
+        }
         _ => wgpu::Features::empty(),
     };
     let (device, queue) = block!(adapter.request_device(&wgpu::DeviceDescriptor {
