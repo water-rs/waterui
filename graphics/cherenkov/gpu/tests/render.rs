@@ -599,11 +599,17 @@ fn a_linear_f32_target_keeps_values_finer_than_f16() -> Result<(), Box<dyn std::
     match wait!(sub_f16_ramp(&engine))? {
         Ok((readback, low, high)) => {
             let span = f64::from(high - low);
+            // Edge coverage is computed from the vertex-interpolated local
+            // position, whose precision the rasterizer does not guarantee:
+            // WARP places the last column's centre 2^-19 past 63.5, so the
+            // pixel-aligned right edge covers it 0.9999981. That is f32
+            // noise, far below an f16 step (2^-11), so alpha is held to the
+            // same bound as the colour.
             for x in 0..readback.width {
                 let [red, .., alpha] = readback.pixels[(readback.width + x) as usize];
                 let want = f64::from(low) + span * (f64::from(x) + 0.5) / 64.0;
                 assert!(
-                    (f64::from(red) - want).abs() < span / 16.0 && alpha.to_bits() == 1.0_f32.to_bits(),
+                    (f64::from(red) - want).abs() < span / 16.0 && (f64::from(alpha) - 1.0).abs() < span / 16.0,
                     "pixel {x}: {red} {alpha}, expected {want}"
                 );
             }
