@@ -13,12 +13,16 @@ use std::{
     io,
     path::{Path, PathBuf},
     process::{Output, Stdio},
+    time::Duration,
 };
 
 use cargo_metadata::{Metadata, MetadataCommand};
 use smol::{io::AsyncReadExt as _, process::Command, unblock};
 
-use crate::utils::{CommandError, format_failure_stream};
+use crate::{
+    toolchain::process_tree::ProcessTree,
+    utils::{CommandError, format_failure_stream},
+};
 
 mod detached;
 
@@ -584,8 +588,33 @@ impl Host {
         program: impl AsRef<OsStr>,
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
     ) -> Result<Output, CommandError> {
-        self.collect_output(program.as_ref(), args, None::<smol::io::Empty>)
+        self.collect_output(program.as_ref(), args, None::<smol::io::Empty>, None)
             .await
+    }
+
+    /// [`Host::output`] bound by `deadline`.
+    ///
+    /// The child leads its own process tree. When `deadline` elapses before
+    /// it exits, the whole tree is killed and the run ends in
+    /// [`CommandError::TimedOut`] carrying what the child had written so far.
+    ///
+    /// # Errors
+    /// - [`CommandError::Spawn`] when the program cannot be spawned, awaited
+    ///   or grouped.
+    /// - [`CommandError::TimedOut`] when `deadline` elapses first.
+    pub async fn output_within(
+        &self,
+        program: impl AsRef<OsStr>,
+        args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+        deadline: Duration,
+    ) -> Result<Output, CommandError> {
+        self.collect_output(
+            program.as_ref(),
+            args,
+            None::<smol::io::Empty>,
+            Some(deadline),
+        )
+        .await
     }
 
     /// [`Host::output`] with `input` streamed into the child's stdin, which
@@ -607,13 +636,15 @@ impl Host {
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
         input: impl smol::io::AsyncRead,
     ) -> Result<Output, CommandError> {
-        self.collect_output(program.as_ref(), args, Some(input))
+        self.collect_output(program.as_ref(), args, Some(input), None)
             .await
     }
 
-    /// The spawn-feed-drain behind [`Host::output`] and
-    /// [`Host::output_with_input`]: stdin is piped only when there is
-    /// `input` to feed, and null otherwise (see [`Host::command`]).
+    /// The spawn-feed-drain behind [`Host::output`],
+    /// [`Host::output_with_input`] and [`Host::output_within`]: stdin is
+    /// piped only when there is `input` to feed, and null otherwise (see
+    /// [`Host::command`]). With a `deadline` the child leads a process tree
+    /// that is killed when the deadline passes.
     ///
     /// # Panics
     /// Panics if the piped-stdio invariant is violated — the streams are
@@ -624,6 +655,7 @@ impl Host {
         program: &OsStr,
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
         input: Option<impl smol::io::AsyncRead>,
+        deadline: Option<Duration>,
     ) -> Result<Output, CommandError> {
         let program_name = program.to_string_lossy().into_owned();
         let args = args
@@ -632,9 +664,13 @@ impl Host {
             .collect::<Vec<_>>();
         tracing::debug!(program = %program_name, ?args, "spawning");
         let started = std::time::Instant::now();
-        let mut command = self.command(program);
+        let mut command = self.std_command(program);
+        command.args(&args);
+        if deadline.is_some() {
+            ProcessTree::lead(&mut command);
+        }
+        let mut command = Command::from(command);
         command
-            .args(&args)
             .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -645,6 +681,13 @@ impl Host {
             program: program_name.clone(),
             source,
         })?;
+        let tree = deadline
+            .map(|_| ProcessTree::adopt(child.id()))
+            .transpose()
+            .map_err(|source| CommandError::Spawn {
+                program: program_name.clone(),
+                source,
+            })?;
         let feed = feed_child_stdin(input.zip(child.stdin.take()));
 
         let echo = self.std_output;
@@ -659,7 +702,30 @@ impl Host {
             echo,
         ));
 
-        let (input_fed, status) = futures_util::future::join(feed, child.status()).await;
+        let waited = futures_util::future::join(feed, child.status());
+        let (input_fed, status) = match deadline.zip(tree.as_ref()) {
+            None => waited.await,
+            Some((after, tree)) => {
+                let expiry = async {
+                    smol::Timer::after(after).await;
+                    None
+                };
+                if let Some(finished) = smol::future::or(async { Some(waited.await) }, expiry).await
+                {
+                    finished
+                } else {
+                    tree.signal(false);
+                    let _ = child.status().await;
+                    let stdout = stdout_task.await.unwrap_or_default();
+                    let stderr = stderr_task.await.unwrap_or_default();
+                    return Err(CommandError::TimedOut {
+                        program: program_name,
+                        after,
+                        report: failure_report(&stdout, &stderr),
+                    });
+                }
+            }
+        };
         let status = status.map_err(|source| CommandError::Spawn {
             program: program_name.clone(),
             source,
@@ -701,20 +767,24 @@ impl Host {
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
     ) -> Result<String, CommandError> {
         let program = program.as_ref();
-        let output = self.output(program, args).await?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        } else {
-            Err(CommandError::Failed {
-                program: program.to_string_lossy().into_owned(),
-                status: output.status,
-                report: format!(
-                    "{}{}",
-                    format_failure_stream("stderr", &output.stderr),
-                    format_failure_stream("stdout", &output.stdout),
-                ),
-            })
-        }
+        succeeded(program, &self.output(program, args).await?)
+    }
+
+    /// [`Host::run`] bound by `deadline`, as [`Host::output_within`] bounds
+    /// [`Host::output`].
+    ///
+    /// # Errors
+    /// - [`CommandError::Spawn`] when the program cannot be spawned.
+    /// - [`CommandError::Failed`] when it exits non-zero.
+    /// - [`CommandError::TimedOut`] when `deadline` elapses first.
+    pub async fn run_within(
+        &self,
+        program: impl AsRef<OsStr>,
+        args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+        deadline: Duration,
+    ) -> Result<String, CommandError> {
+        let program = program.as_ref();
+        succeeded(program, &self.output_within(program, args, deadline).await?)
     }
 
     /// `cargo metadata` as `command` configures it, run on this host.
@@ -894,6 +964,29 @@ const fn withhold_std_handles_from_children() {
     // POSIX children receive only the descriptors we pass: every descriptor
     // the standard library opens is close-on-exec, and daemons detach through
     // fork rather than handle inheritance.
+}
+
+/// `output`'s stdout as text when `program` exited successfully, else
+/// [`CommandError::Failed`] carrying its captured streams.
+fn succeeded(program: &OsStr, output: &Output) -> Result<String, CommandError> {
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(CommandError::Failed {
+            program: program.to_string_lossy().into_owned(),
+            status: output.status,
+            report: failure_report(&output.stdout, &output.stderr),
+        })
+    }
+}
+
+/// The diagnostic tails of a failed command's captured streams.
+fn failure_report(stdout: &[u8], stderr: &[u8]) -> String {
+    format!(
+        "{}{}",
+        format_failure_stream("stderr", stderr),
+        format_failure_stream("stdout", stdout),
+    )
 }
 
 /// Copy `input` into a child's piped stdin, then close it so the child sees

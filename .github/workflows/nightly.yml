@@ -1087,6 +1087,13 @@ jobs:
         run: |
           Copy-Item "C:\Users\$env:E2E_USER\e2e-logs" "$env:RUNNER_TEMP\e2e-logs" `
             -Recurse -Force -ErrorAction SilentlyContinue
+          # winget's own diagnostic logs of the fresh user: what it was doing
+          # when a doctor fix stalled.
+          $diag = "C:\Users\$env:E2E_USER\AppData\Local\Packages\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\LocalState\DiagOutputDir"
+          if (Test-Path $diag) {
+            New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\e2e-logs\winget-diag" | Out-Null
+            Copy-Item "$diag\*" "$env:RUNNER_TEMP\e2e-logs\winget-diag" -Recurse -Force
+          }
 
       # One JSON record per leg for `cli-e2e-metrics`: the fresh user's
       # timings.tsv plus what the runner account timed (the CLI install, the
