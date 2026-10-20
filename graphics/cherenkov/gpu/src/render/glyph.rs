@@ -2225,19 +2225,21 @@ pub enum PendingRaster {
     /// or stored in the atlas. The record joins the frame's coverage
     /// state at apply time; the anchor instance in the frame's instance
     /// array supplies the drawing state the vertex stage joins to each
-    /// emitted geometry record (water-rs/waterui#3081).
-    GpuPath(GpuDraw),
+    /// emitted geometry record (water-rs/waterui#3081). The record is
+    /// shared with the retained emission that drew it.
+    GpuPath(Arc<GpuDraw>),
 }
 
 /// A GPU-routed path's draw record (water-rs/waterui#3081): the
 /// placement key its coverage entry lives under plus everything a miss
-/// regenerates from. Retained leaves keep a clone so a hit re-joins —
-/// or regenerates — the entry without the lowering that produced it.
-#[derive(Clone)]
+/// regenerates from. A retained leaf shares it with each frame's
+/// pending list, so a hit re-joins — or regenerates — the entry without
+/// the lowering that produced it, and a re-placement rewrites it in
+/// place.
 pub struct GpuDraw {
-    /// The `path::placement` retention key — `key_exact` when the
-    /// surface clips the coverage hull.
-    pub key: u64,
+    /// The coverage entry's retention key — exact when the surface clips
+    /// the coverage hull.
+    pub key: crate::render::path::CoverageKey,
     /// The draw's integer shift: an unclipped entry holds placement-relative
     /// coverage, so the draw adds its own integer placement offset back; a
     /// clipped entry holds absolute coverage and shifts by zero.
@@ -2253,6 +2255,93 @@ pub struct GpuDraw {
     pub clip: [f32; 4],
     /// Encoded geometry and its storage bounds in the generation frame.
     pub path: crate::render::path::GpuPath,
+}
+
+impl GpuDraw {
+    /// The draw of `content` under `raster` on a `surface`-pixel target,
+    /// from its geometry `device` placed under that raster. Unclipped
+    /// coverage is generated placement-relative — the raster keeps its
+    /// translation's fraction and the integer offset moves to the draw's
+    /// shift — so every integer offset shares one entry; coverage the
+    /// surface clips stays exact-offset keyed at its true position.
+    pub fn new(
+        content: u64,
+        rule: u32,
+        raster: Affine,
+        device: crate::render::path::GpuPath,
+        surface: (u32, u32),
+    ) -> Self {
+        let placed = DrawPlacement::new(content, raster, device.bound, surface);
+        Self {
+            key: placed.key,
+            shift: placed.shift,
+            rule,
+            raster: placed.raster,
+            clip: placed.clip,
+            path: device.with_bound(placed.bound),
+        }
+    }
+
+    /// Re-places the draw in place under `raster`, whose device-frame
+    /// bound for this geometry is `bound` — the same record
+    /// [`GpuDraw::new`] builds there, without moving it.
+    pub fn place(
+        &mut self,
+        raster: Affine,
+        bound: crate::render::path::GpuBound,
+        surface: (u32, u32),
+    ) {
+        let placed = DrawPlacement::new(self.key.content(), raster, bound, surface);
+        self.key = placed.key;
+        self.shift = placed.shift;
+        self.raster = placed.raster;
+        self.clip = placed.clip;
+        self.path.bound = placed.bound;
+    }
+}
+
+/// Everything about a [`GpuDraw`] its placement decides.
+struct DrawPlacement {
+    key: crate::render::path::CoverageKey,
+    shift: [i32; 2],
+    raster: Affine,
+    clip: [f32; 4],
+    bound: crate::render::path::GpuBound,
+}
+
+impl DrawPlacement {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "device coordinates are f32"
+    )]
+    fn new(
+        content: u64,
+        raster: Affine,
+        bound: crate::render::path::GpuBound,
+        surface: (u32, u32),
+    ) -> Self {
+        let [xx, yx, xy, yy, tx, ty] = raster.as_coeffs();
+        let offset = Vec2::new(tx.floor(), ty.floor());
+        let (width, height) = (surface.0 as f32, surface.1 as f32);
+        if bound.clipped {
+            return Self {
+                key: crate::render::path::CoverageKey::new(content, raster, offset, surface, true),
+                shift: [0, 0],
+                raster,
+                clip: [0.0, 0.0, width, height],
+                bound,
+            };
+        }
+        let (left, top) = (offset.x as f32, offset.y as f32);
+        Self {
+            key: crate::render::path::CoverageKey::new(content, raster, offset, surface, false),
+            shift: [offset.x as i32, offset.y as i32],
+            raster: Affine::new([xx, yx, xy, yy, tx - offset.x, ty - offset.y]),
+            clip: [-left, -top, width - left, height - top],
+            bound: bound.shifted(-offset),
+        }
+    }
 }
 
 /// The glyph's atlas cell. On a cache hit the entry is returned with

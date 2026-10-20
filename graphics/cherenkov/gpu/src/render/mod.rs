@@ -7584,15 +7584,7 @@ impl GpuRenderer {
                 Ok(PendingOrigin::None)
             }
             PendingRaster::GpuPath(draw) => {
-                let index = self.gpu_cov.draw(
-                    &self.device,
-                    draw.key,
-                    draw.shift,
-                    draw.rule,
-                    draw.raster,
-                    draw.clip,
-                    &draw.path,
-                )?;
+                let index = self.gpu_cov.draw(&self.device, &draw)?;
                 Ok(PendingOrigin::Gpu(index))
             }
         }

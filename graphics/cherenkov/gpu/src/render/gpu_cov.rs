@@ -15,12 +15,12 @@
 //! 4-byte buffer copies.
 
 use cherenkov::RenderError;
-use kurbo::Affine;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
+use crate::render::glyph::GpuDraw;
 use crate::render::instance::Instance;
-use crate::render::path::{GpuElement, GpuPath};
+use crate::render::path::{CoverageKey, GpuElement, GpuPath};
 
 /// The divisor taking the engine's GPU budget to the retained-but-undrawn
 /// coverage share (water-rs/waterui#3081).
@@ -59,7 +59,7 @@ const BLOCK_HEADER_WORDS: u32 = 4;
 #[derive(Clone, Copy)]
 struct Draw {
     /// The entry's retention key.
-    key: u64,
+    key: CoverageKey,
     /// The integer translation the anchor's `shape.half` carries into
     /// the vertex-stage join: the draw's own placement offset for an
     /// unclipped entry, zero for a clipped one.
@@ -183,7 +183,7 @@ pub struct GpuCoverage {
     /// `GpuPath` record words for the frame's misses, in apply order.
     paths: Vec<[u32; PATH_WORDS]>,
     /// Retained coverage entries by placement key (water-rs/waterui#3081).
-    entries: FxHashMap<u64, Entry>,
+    entries: FxHashMap<CoverageKey, Entry>,
     /// Commit ordinal — `Entry::last_used`'s clock.
     epoch: u64,
     /// Coverage generations this commit — `stats.paths_rasterized`.
@@ -336,7 +336,7 @@ impl GpuCoverage {
 
     /// Retained host input/draw-list allocation capacities.
     pub fn cpu_bytes(&self) -> u64 {
-        (self.entries.capacity() * std::mem::size_of::<(u64, Entry)>()
+        (self.entries.capacity() * std::mem::size_of::<(CoverageKey, Entry)>()
             + self.paths.capacity() * std::mem::size_of::<[u32; PATH_WORDS]>()
             + self.elements.capacity() * std::mem::size_of::<GpuElement>()
             + self.element_sources.capacity() * std::mem::size_of::<Arc<[GpuElement]>>()
@@ -381,7 +381,7 @@ impl GpuCoverage {
 
     /// Mark `key`'s entry live for this commit before any miss may
     /// evict it: the frame's drawn entries are never evicted (§3.3).
-    pub fn touch(&mut self, key: u64) {
+    pub fn touch(&mut self, key: CoverageKey) {
         if let Some(entry) = self.entries.get_mut(&key)
             && entry.last_used != self.epoch
         {
@@ -412,23 +412,18 @@ impl GpuCoverage {
         reason = "device coordinates are f32"
     )]
     #[expect(
-        clippy::too_many_arguments,
-        reason = "the draw record's six fields plus the device"
-    )]
-    #[expect(
         clippy::too_many_lines,
         reason = "hit arm plus the miss's bound and record"
     )]
-    pub fn draw(
-        &mut self,
-        device: &wgpu::Device,
-        key: u64,
-        shift: [i32; 2],
-        rule: u32,
-        raster: Affine,
-        clip: [f32; 4],
-        prepared: &GpuPath,
-    ) -> Result<u32, RenderError> {
+    pub fn draw(&mut self, device: &wgpu::Device, draw: &GpuDraw) -> Result<u32, RenderError> {
+        let &GpuDraw {
+            key,
+            shift,
+            rule,
+            raster,
+            clip,
+            path: ref prepared,
+        } = draw;
         if let Some(entry) = self.entries.get_mut(&key) {
             if entry.last_used != self.epoch {
                 self.undrawn_bytes -= u64::from(entry.words) * 4;
@@ -569,7 +564,7 @@ impl GpuCoverage {
         if self.undrawn_bytes <= self.budget {
             return;
         }
-        let mut undrawn: Vec<u64> = self
+        let mut undrawn: Vec<CoverageKey> = self
             .entries
             .iter()
             .filter(|(_, e)| e.last_used < self.epoch)
@@ -618,7 +613,7 @@ impl GpuCoverage {
     /// schedule one copy each into the coverage prologue; ungenerated
     /// ones redirect their dispatch record to the new block.
     fn compact(&mut self, device: &wgpu::Device, extra: u32) -> Result<(), RenderError> {
-        let mut order: Vec<u64> = self.entries.keys().copied().collect();
+        let mut order: Vec<CoverageKey> = self.entries.keys().copied().collect();
         order.sort_by_key(|key| self.entries[key].base);
         let mut tail = 0u32;
         let mut moves = Vec::with_capacity(order.len());
@@ -1239,7 +1234,7 @@ fn sized_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kurbo::{PathEl, Point};
+    use kurbo::{Affine, PathEl, Point};
 
     #[test]
     fn radix_passes_order_keys_below_the_sentinel() {
@@ -1280,12 +1275,7 @@ mod tests {
         frame
             .draw(
                 &device,
-                1,
-                [0, 0],
-                0,
-                Affine::IDENTITY,
-                [0.0, 0.0, 4096.0, 4096.0],
-                &large_path,
+                &GpuDraw::new(1, 0, Affine::IDENTITY, large_path, (4096, 4096)),
             )
             .expect("sparse 4096-square capacity");
         assert!(frame.bound_bytes < GPU_COV_MAX_BYTES);
@@ -1295,12 +1285,7 @@ mod tests {
             frame
                 .draw(
                     &device,
-                    2,
-                    [0, 0],
-                    0,
-                    Affine::IDENTITY,
-                    [0.0, 0.0, 1_000_000.0, 1_000_000.0],
-                    &huge_path,
+                    &GpuDraw::new(2, 0, Affine::IDENTITY, huge_path, (1_000_000, 1_000_000)),
                 )
                 .is_err()
         );

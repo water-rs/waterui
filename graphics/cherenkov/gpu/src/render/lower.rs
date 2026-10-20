@@ -3,6 +3,7 @@
 
 use cherenkov::lowering::Realization;
 use std::ops::Range;
+use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -887,6 +888,16 @@ impl RetainedInstance {
 /// always misses (#119).
 pub const DEFERRED_REFS: u64 = 1 << 62;
 
+/// Whether `a` and `b` differ at most in their translation.
+#[expect(
+    clippy::float_cmp,
+    reason = "the leaf hit check's exact transform equality, less the translation"
+)]
+fn same_linear(a: Affine, b: Affine) -> bool {
+    let ([a0, a1, a2, a3, ..], [b0, b1, b2, b3, ..]) = (a.as_coeffs(), b.as_coeffs());
+    [a0, a1, a2, a3] == [b0, b1, b2, b3]
+}
+
 /// Per-operation device output under its sampled placement.
 pub struct Emission {
     /// The leaf's `(instance, pending raster, cell)` patches in the
@@ -911,10 +922,11 @@ pub struct Emission {
     stops: Range<usize>,
     image: Option<ImageSource>,
     /// A GPU-routed leaf's coverage draw record — the placement key and
-    /// everything a coverage-entry miss regenerates from. `Some` makes
-    /// the emission's single retained instance the draw's anchor
+    /// everything a coverage-entry miss regenerates from — shared with
+    /// the pending list of each frame that draws it. `Some` makes the
+    /// emission's single retained instance the draw's anchor
     /// (water-rs/waterui#3081).
-    gpu: Option<Box<glyph::GpuDraw>>,
+    gpu: Option<Arc<glyph::GpuDraw>>,
 }
 
 impl Emission {
@@ -4081,14 +4093,25 @@ impl<'a> Lowering<'a> {
                     && e.size.map(f32::to_bits) == [self.width, self.height].map(f32::to_bits)
                     && (e.live_stamp == glyphs.live_stamp || e.stale_live(glyphs.atlas, storage))
             });
+        // A GPU leaf whose layer only translated keeps its emission: the
+        // draw is re-placed in place (water-rs/waterui#3081).
+        let replaced = !hit
+            && cache.valid
+            && cache.data.as_mut().is_some_and(|e| {
+                e.gpu.is_some()
+                    && e.cover.map(|index| storage.covers[index]) == cover
+                    && same_linear(e.transform, self.transform)
+                    && e.size.map(f32::to_bits) == [self.width, self.height].map(f32::to_bits)
+                    && (e.live_stamp == glyphs.live_stamp || e.stale_live(glyphs.atlas, storage))
+                    && self.replace_gpu_leaf(op, e, storage)
+            });
         cache.valid = true;
-        if hit {
+        if hit || replaced {
             self.compose(
-                cache.data.as_ref().expect("a hit has data"),
+                cache.data.as_ref().expect("a retained leaf has data"),
                 storage,
-                self.clip,
             );
-            return Ok(false);
+            return Ok(replaced);
         }
         // GPU leaves retain like CPU leaves (water-rs/waterui#3081): the
         // anchor instance and its coverage draw record live on the
@@ -4160,7 +4183,7 @@ impl<'a> Lowering<'a> {
             .get(&index)
             .expect("prepared GPU geometry")
             .path
-            .translated(
+            .placed(
                 Vec2::new(coefficients[4], coefficients[5]),
                 (f64::from(self.width), f64::from(self.height)),
             );
@@ -4229,7 +4252,6 @@ impl<'a> Lowering<'a> {
         self.compose(
             cache.data.as_ref().expect("realized leaf has data"),
             storage,
-            clip,
         );
         Ok(())
     }
@@ -4314,7 +4336,7 @@ impl<'a> Lowering<'a> {
         let gpu = self.pending[first_pending..]
             .iter()
             .find_map(|pending| match pending {
-                PendingRaster::GpuPath(draw) => Some(Box::new(draw.clone())),
+                PendingRaster::GpuPath(draw) => Some(Arc::clone(draw)),
                 _ => None,
             });
         cache.data = Some(Emission {
@@ -4350,13 +4372,8 @@ impl<'a> Lowering<'a> {
     }
 
     /// Emits a retained leaf's instances and stops into this frame under
-    /// `clip`, rebasing its stop and pending-cell indices.
-    fn compose(
-        &mut self,
-        emission: &Emission,
-        storage: &EmissionStorage,
-        clip: Option<DeviceClip>,
-    ) {
+    /// the current clip, rebasing its stop and pending-cell indices.
+    fn compose(&mut self, emission: &Emission, storage: &EmissionStorage) {
         let offset = u32::try_from(self.frame.stops.len()).expect("stop count fits u32");
         self.frame
             .stops
@@ -4368,13 +4385,13 @@ impl<'a> Lowering<'a> {
             // A realized leaf shares paint and clip fields. Its varying
             // kinds (fill/span/cell) all use the same shader specialization.
             let mut template = first.restore(&storage.templates[emission.template], offset);
-            Self::apply_clip(&mut template, clip);
+            Self::apply_clip(&mut template, self.clip);
             self.set_variant(&template);
             if let Some(gpu) = &emission.gpu {
                 // The retained anchor re-enters the frame under the
                 // current clip and the draw re-joins its coverage entry
                 // — or regenerates it after an eviction (#3081).
-                self.push_gpu_draw(&template, (**gpu).clone());
+                self.push_gpu_draw(&template, Arc::clone(gpu));
             } else {
                 let first = self.frame.instances.len();
                 check_instance_bound(first + retained.len());
@@ -5119,16 +5136,8 @@ impl<'a> Lowering<'a> {
     }
 
     /// Consume the same encoded path whose bounds the route selector
-    /// inspected. The coverage entry is retained by `path::placement`:
-    /// unclipped paths generate placement-relative geometry — the
-    /// integer offset moves to a per-draw shift — while clipped ones
-    /// stay exact-offset keyed and generate at their true position
-    /// (water-rs/waterui#3081).
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
-        reason = "device coordinates are f32"
-    )]
+    /// inspected. The coverage entry is retained by its
+    /// `path::CoverageKey` (water-rs/waterui#3081): see `GpuDraw::new`.
     fn emit_gpu_path(
         &mut self,
         rule: FillRule,
@@ -5145,40 +5154,73 @@ impl<'a> Lowering<'a> {
         let mut template = self.gpu_template(paint, shader_data);
         template.bounds = bound.rect;
         self.set_variant(&template);
-        let pl = path::placement(content, self.transform, surface);
-        let draw = if bound.clipped {
-            glyph::GpuDraw {
-                key: pl.key_exact(),
-                shift: [0, 0],
-                rule: rule as u32,
-                raster: self.transform,
-                clip: [0.0, 0.0, surface.0 as f32, surface.1 as f32],
-                path: prepared,
-            }
-        } else {
-            let coeffs = self.transform.as_coeffs();
-            let (qx, qy) = (coeffs[4] - pl.offset.x, coeffs[5] - pl.offset.y);
-            let clip = Rect::new(
-                -pl.offset.x,
-                -pl.offset.y,
-                f64::from(surface.0) - pl.offset.x,
-                f64::from(surface.1) - pl.offset.y,
-            );
-            glyph::GpuDraw {
-                key: pl.key,
-                shift: [pl.offset.x as i32, pl.offset.y as i32],
-                rule: rule as u32,
-                raster: Affine::new([coeffs[0], coeffs[1], coeffs[2], coeffs[3], qx, qy]),
-                clip: [
-                    clip.x0 as f32,
-                    clip.y0 as f32,
-                    clip.x1 as f32,
-                    clip.y1 as f32,
-                ],
-                path: prepared.translated_clip(Vec2::new(-pl.offset.x, -pl.offset.y), clip),
-            }
+        let draw = glyph::GpuDraw::new(content, rule as u32, self.transform, prepared, surface);
+        self.push_gpu_draw(&template, Arc::new(draw));
+    }
+
+    /// Re-places a retained GPU leaf whose layer moved by a translation
+    /// alone (water-rs/waterui#3081): its anchor bounds, its template's
+    /// translation and its draw record are rewritten in place from the
+    /// retained geometry, and the caller composes it like a hit. No
+    /// curve is re-encoded, no content is hashed and the retained
+    /// storage does not grow, so an animated translation costs what the
+    /// placement itself costs. Returns `false` — leaving the emission
+    /// untouched for an ordinary realization — when the new placement
+    /// changes what the leaf emits: a shader paint, which reads device
+    /// bounds; an empty grid; or an automatic-route path that no longer
+    /// prefers the GPU there.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "surface sizes fit u32"
+    )]
+    fn replace_gpu_leaf(
+        &self,
+        op: &Op,
+        emission: &mut Emission,
+        storage: &mut EmissionStorage,
+    ) -> bool {
+        let Op::Path { local, paint, .. } = op else {
+            unreachable!("only a path leaf emits a GPU draw")
         };
-        self.push_gpu_draw(&template, draw);
+        if matches!(paint, ResolvedPaint::Shader(_)) {
+            return false;
+        }
+        let gpu = emission.gpu.as_mut().expect("a GPU emission has a draw");
+        let raster = self.transform * *local;
+        let [.., e, f] = raster.as_coeffs();
+        let bound = gpu.path.bound_at(
+            Vec2::new(e, f),
+            (f64::from(self.width), f64::from(self.height)),
+        );
+        if bound.empty
+            || (self.coverage_route == path::CoverageRoute::Automatic && !bound.prefers_gpu())
+        {
+            return false;
+        }
+        debug_assert_eq!(emission.instances.len(), 1, "a GPU emission is its anchor");
+        storage.instances[emission.instances.start].bounds = bound.rect;
+        let [a0, a1, a2, a3, a4, a5, ..] = affine(raster);
+        storage.templates[emission.template].affine = [a0, a1, a2, a3, a4, a5];
+        let surface = (self.width as u32, self.height as u32);
+        // Last frame's pending list released its share at apply, so the
+        // record is rewritten where it lies; a share still held by this
+        // frame's pending list keeps its record and this leaf takes a
+        // new one.
+        match Arc::get_mut(gpu) {
+            Some(record) => record.place(raster, bound, surface),
+            None => {
+                *gpu = Arc::new(glyph::GpuDraw::new(
+                    gpu.key.content(),
+                    gpu.rule,
+                    raster,
+                    gpu.path.clone().with_bound(bound),
+                    surface,
+                ));
+            }
+        }
+        emission.transform = self.transform;
+        true
     }
 
     /// Push the draw half of a GPU-routed path — shared by
@@ -5186,7 +5228,7 @@ impl<'a> Lowering<'a> {
     /// restored one. Closes the open CPU segment, pushes the anchor,
     /// then the pending record and its draw range
     /// (water-rs/waterui#3081).
-    fn push_gpu_draw(&mut self, anchor: &Instance, draw: glyph::GpuDraw) {
+    fn push_gpu_draw(&mut self, anchor: &Instance, draw: Arc<glyph::GpuDraw>) {
         self.end_segment();
         let index = u32::try_from(self.frame.instances.len()).expect("instance index");
         self.frame.instances.push(*anchor);
@@ -6093,7 +6135,7 @@ mod tests {
     #[test]
     #[expect(
         clippy::too_many_lines,
-        reason = "three coverage-route cases with two frames each"
+        reason = "three coverage-route cases, the GPU one over three frames"
     )]
     fn automatic_coverage_retains_gpu_emissions() {
         use std::sync::Arc;
@@ -6139,11 +6181,13 @@ mod tests {
             let mut cache = Realization::default();
             let mut retained = ContentData::new(cherenkov::Picture::record(|_| {}));
             let mut previous_geometry = None;
+            let mut previous_draw = std::ptr::null();
             // CPU pending atlas patches are applied by the renderer before reuse.
             // The GPU leaf's second frame hits the retained emission and
             // re-pushes its draw record — the coverage entry joins at
-            // commit, not here (#3081).
-            for iteration in 0..if gpu { 2 } else { 1 } {
+            // commit, not here — and its third, translated, re-places
+            // the emission in place (#3081).
+            for iteration in 0..if gpu { 3 } else { 1 } {
                 retained.storage.retain_gpu_paths(std::slice::from_ref(&op));
                 let mut frame = Frame::default();
                 let mut anchors = AnchorScratch::default();
@@ -6156,7 +6200,11 @@ mod tests {
                     has_compute,
                 );
                 lowering.begin_pass(Target::Part(0), None);
-                lowering
+                let moved = iteration == 2;
+                if moved {
+                    lowering.transform = Affine::translate((5.25, 3.0));
+                }
+                let changed = lowering
                     .leaf(
                         (0, &op),
                         None,
@@ -6166,6 +6214,7 @@ mod tests {
                         &cherenkov::DisplayList::default(),
                     )
                     .expect("automatic coverage");
+                assert_eq!(changed, iteration != 1, "only the unmoved frame hits");
                 let tasks = lowering
                     .pending
                     .iter()
@@ -6204,6 +6253,24 @@ mod tests {
                     }
                     previous_geometry =
                         Some(Arc::clone(&retained.storage.gpu_paths[&0].path.elements));
+                    let draw = emission.gpu.as_ref().expect("gpu draw");
+                    if moved {
+                        assert!(
+                            std::ptr::eq(Arc::as_ptr(draw), previous_draw),
+                            "a translated leaf rewrites its draw record in place"
+                        );
+                        assert_eq!(draw.shift, [5, 3]);
+                        assert_eq!(emission.transform, Affine::translate((5.25, 3.0)));
+                        assert_eq!(
+                            (
+                                retained.storage.instances.len(),
+                                retained.storage.templates.len()
+                            ),
+                            (1, 1),
+                            "re-placement does not grow the retained storage"
+                        );
+                    }
+                    previous_draw = Arc::as_ptr(draw);
                 }
             }
         }

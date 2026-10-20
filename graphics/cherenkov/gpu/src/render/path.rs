@@ -413,7 +413,12 @@ pub struct GpuElement {
 pub struct GpuPath {
     /// Local curve records consumed by the flatten kernel.
     pub elements: Arc<[GpuElement]>,
+    /// The device hull under the encoding raster.
     hull: Rect,
+    /// The encoding raster's translation: [`GpuPath::placed`] moves the
+    /// hull by a translation's difference from it, so a placement is
+    /// always measured from the encoding, never from an earlier placement.
+    origin: Vec2,
     /// Device-space capacity and work estimates for these records.
     pub bound: GpuBound,
 }
@@ -421,12 +426,7 @@ pub struct GpuPath {
 impl GpuPath {
     /// Large, crossing-dense paths amortize compute dispatch and classification.
     pub const fn prefers_gpu(&self) -> bool {
-        let bound = &self.bound;
-        let strips = bound.grid_h.div_ceil(STRIP_H);
-        !bound.empty
-            && bound.segments >= GPU_ROUTE_MIN_ELEMENTS
-            && bound.grid_w * bound.grid_h >= 4096
-            && bound.bins >= strips * 32
+        self.bound.prefers_gpu()
     }
 }
 
@@ -456,6 +456,37 @@ pub struct GpuBound {
     pub clipped: bool,
     /// Conservative device bounds, used by pass planning before compute.
     pub rect: [f32; 4],
+}
+
+impl GpuBound {
+    /// Large, crossing-dense paths amortize compute dispatch and classification.
+    pub const fn prefers_gpu(&self) -> bool {
+        let strips = self.grid_h.div_ceil(STRIP_H);
+        !self.empty
+            && self.segments >= GPU_ROUTE_MIN_ELEMENTS
+            && self.grid_w * self.grid_h >= 4096
+            && self.bins >= strips * 32
+    }
+
+    /// The same bound seen from a frame moved by the integer vector `by`:
+    /// the geometry and the surface clip move together, so only the
+    /// grid's position changes — its size, clipping and capacities hold.
+    /// A retained coverage entry's placement-relative frame is the device
+    /// frame shifted by `−offset` (water-rs/waterui#3081).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "device coordinates are f32; the shift is an integer"
+    )]
+    pub const fn shifted(mut self, by: Vec2) -> Self {
+        let (x, y) = (by.x as f32, by.y as f32);
+        self.rect = [
+            self.rect[0] + x,
+            self.rect[1] + y,
+            self.rect[2] + x,
+            self.rect[3] + y,
+        ];
+        self
+    }
 }
 
 /// The uniform subdivision count for `kind` (1 quad, 2 cubic) whose
@@ -611,31 +642,39 @@ pub fn prepare_gpu(elements: &[PathEl], raster: Affine, surface: (f64, f64)) -> 
         state.push(&mut hull, 0, p0, p0, s);
     }
     let (out, bound) = (state.out, state.bound);
+    let [.., e, f] = raster.as_coeffs();
+    let origin = Vec2::new(e, f);
     GpuPath {
         elements: out.into(),
         bound,
         hull,
+        origin,
     }
-    .translated(Vec2::ZERO, surface)
+    .placed(origin, surface)
 }
 
 impl GpuPath {
-    /// Reposition encoded geometry without rebuilding its local curves.
-    pub fn translated(&self, offset: Vec2, surface: (f64, f64)) -> Self {
-        self.translated_clip(offset, Rect::new(0.0, 0.0, surface.0, surface.1))
+    /// The encoded geometry under the encoding raster's 2x2 and the
+    /// translation `translation`, bound against the surface — without
+    /// rebuilding its local curves.
+    pub fn placed(&self, translation: Vec2, surface: (f64, f64)) -> Self {
+        self.clone().with_bound(self.bound_at(translation, surface))
     }
 
-    /// The same bound in a frame whose surface clip is `clip`: the
-    /// retained coverage entry's generation frame clips to
-    /// `[0, surface] − offset` — a no-op for the unclipped hulls it
-    /// serves (water-rs/waterui#3081).
+    /// The same geometry under `bound`.
+    pub const fn with_bound(mut self, bound: GpuBound) -> Self {
+        self.bound = bound;
+        self
+    }
+
+    /// [`GpuPath::placed`]'s bound alone.
     #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    pub fn translated_clip(&self, offset: Vec2, clip: Rect) -> Self {
+    pub fn bound_at(&self, translation: Vec2, surface: (f64, f64)) -> GpuBound {
         let mut bound = self.bound;
         // The bound raster grid: the hull inflated by a pixel and clipped to
         // the surface, floored and ceiled like the sweep's rect.
-        let inflated = (self.hull + offset).inflate(1.0, 1.0);
-        let r = inflated.intersect(clip);
+        let inflated = (self.hull + (translation - self.origin)).inflate(1.0, 1.0);
+        let r = inflated.intersect(Rect::new(0.0, 0.0, surface.0, surface.1));
         let w = (r.x1.ceil() - r.x0.floor()).max(0.0) as usize;
         let h = (r.y1.ceil() - r.y0.floor()).max(0.0) as usize;
         bound.rect = [
@@ -666,11 +705,54 @@ impl GpuPath {
             .max(usize::from(w <= 32 && h <= 32));
         // Spans and cells share the same output range and never overlap.
         bound.instance_cap = (bound.cell_cap * 2 + h.div_ceil(STRIP_H)).min(strip_cap);
+        bound
+    }
+}
+
+/// A retained GPU coverage entry's identity (water-rs/waterui#3081):
+/// the path content, the raster's 2x2 and translation fraction as the
+/// f32 the kernels run on, the surface, and — for coverage the surface
+/// clips — the integer offset as well. Compared field for field: two
+/// placements share an entry exactly when the kernels would generate
+/// the same coverage for both.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct CoverageKey {
+    content: u64,
+    linear: [u32; 4],
+    fraction: [u32; 2],
+    surface: [u32; 2],
+    offset: Option<[i32; 2]>,
+}
+
+impl CoverageKey {
+    /// The key of `content` generated under `raster`, whose translation
+    /// splits into the integer `offset` and the fraction the kernels
+    /// see. `exact` keeps the offset in the key, for coverage the surface
+    /// clips; otherwise every integer offset shares the entry.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the kernels run on f32 coefficients and i32 offsets"
+    )]
+    pub fn new(
+        content: u64,
+        raster: Affine,
+        offset: Vec2,
+        surface: (u32, u32),
+        exact: bool,
+    ) -> Self {
+        let [xx, yx, xy, yy, tx, ty] = raster.as_coeffs();
         Self {
-            elements: Arc::clone(&self.elements),
-            bound,
-            hull: (self.hull + offset),
+            content,
+            linear: [xx, yx, xy, yy].map(|v| (v as f32).to_bits()),
+            fraction: [tx - offset.x, ty - offset.y].map(|v| (v as f32).to_bits()),
+            surface: surface.into(),
+            offset: exact.then_some([offset.x as i32, offset.y as i32]),
         }
+    }
+
+    /// The path content the key was made for.
+    pub const fn content(&self) -> u64 {
+        self.content
     }
 }
 
