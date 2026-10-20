@@ -11,6 +11,7 @@ mod filter;
 mod font;
 mod geometry;
 mod glyph;
+mod gradient;
 mod image;
 mod mesh;
 #[cfg(any(test, feature = "testing"))]
