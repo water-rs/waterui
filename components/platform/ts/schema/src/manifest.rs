@@ -235,6 +235,18 @@ pub struct BundleFile {
     pub sha256: Sha256Digest,
 }
 
+impl BundleFile {
+    /// The bundle file at `url`, `size` bytes long, hashing to `sha256`.
+    #[must_use]
+    pub fn new(url: impl Into<String>, size: u64, sha256: Sha256Digest) -> Self {
+        Self {
+            url: url.into(),
+            size,
+            sha256,
+        }
+    }
+}
+
 /// What a bundle says about itself.
 ///
 /// Serialized in declaration order; [`signed_bytes`](Self::signed_bytes) is
@@ -261,6 +273,25 @@ pub struct BundleManifest {
 }
 
 impl BundleManifest {
+    /// The manifest of `bundle` at `version`, built for `runtime` and carrying
+    /// `modules`. It ships no translations until
+    /// [`translations`](Self::translations) is filled.
+    #[must_use]
+    pub const fn new(
+        version: u64,
+        runtime: RuntimeFingerprint,
+        bundle: BundleFile,
+        modules: BTreeMap<String, ContractHash>,
+    ) -> Self {
+        Self {
+            version,
+            runtime,
+            bundle,
+            modules,
+            translations: BTreeMap::new(),
+        }
+    }
+
     /// The bytes the signature covers: this manifest's compact JSON form.
     ///
     /// Deterministic by construction — the type serializes its members in
@@ -311,6 +342,16 @@ pub struct SignedManifest {
 }
 
 impl SignedManifest {
+    /// `manifest` with its ed25519 `signature` over
+    /// [`BundleManifest::signed_bytes`].
+    #[must_use]
+    pub const fn new(manifest: BundleManifest, signature: SignatureBytes) -> Self {
+        Self {
+            manifest,
+            signature,
+        }
+    }
+
     /// Reads a signed manifest from its JSON text.
     ///
     /// # Errors
