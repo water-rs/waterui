@@ -14,16 +14,18 @@
 //! on scale.
 //!
 //! A static scene records its content again every frame, which drops every
-//! realization. Before that happens, the swept edges of the realization are
-//! offered here under their key, and the lowering that follows takes them
-//! for a draw whose key matches bit for bit instead of sweeping again.
+//! realization. Before that happens, the retained edges of the realization
+//! are offered here under their key, and the lowering that follows takes
+//! them for a draw whose key matches bit for bit instead of flattening,
+//! testing and quantizing again.
 //!
-//! Only swept geometry is offered: input the pre-sweep test proves
-//! disjoint costs about as much to flatten and test again as to look up.
+//! Every cacheable draw is offered, swept or not: retained geometry is
+//! quantized at build time, so a hit also saves the tile build, and a
+//! lookup was already paid whenever the table held any entry.
 //!
 //! The table lives for one frame: [`GeometryCache::finish_frame`] drops it
 //! after the frame's lowering, so it holds no memory between frames and its
-//! bound is the swept draws replaced in one frame. Under critical memory
+//! bound is the draws replaced in one frame. Under critical memory
 //! pressure [`GeometryCache::clear`] drops it at once.
 
 use std::hash::{Hash, Hasher};
@@ -36,15 +38,17 @@ use cherenkov::{FillRule, ShapeData};
 use rustc_hash::{FxHashMap, FxHasher};
 
 use super::raster::Edge;
-use super::tiles::EdgeTiles;
+use super::tiles::{EdgeScratch, EdgeTiles};
 
-/// One offered draw: its key and its swept edges.
+/// One offered draw: its key, its retained edges and whether the winding
+/// sweep produced or confirmed them.
 struct Entry {
     shape: ShapeData,
     stroke: Option<kurbo::Stroke>,
     linear: [u64; 4],
-    edges: Arc<EdgeTiles>,
+    edges: EdgeTiles,
     rule: FillRule,
+    swept: bool,
 }
 
 /// Swept draw geometry offered for the current frame, by content hash. A
@@ -58,7 +62,7 @@ pub struct GeometryCache {
 /// Geometry produced for a draw: its edges in the draw's [`Frame`], the rule
 /// they fill under, and whether the winding sweep produced or confirmed them.
 pub struct Resolved {
-    pub edges: Arc<EdgeTiles>,
+    pub edges: EdgeTiles,
     pub rule: FillRule,
     pub swept: bool,
 }
@@ -67,13 +71,14 @@ impl GeometryCache {
     /// The edges of `shape` under `transform` in its [`Frame`] — its outline
     /// stroked by `stroke` when set. An offered entry with the same key is
     /// reused; otherwise `flatten` produces the flattened frame edges and
-    /// their rule, and the winding is resolved. `None` means the shape has
-    /// no area.
+    /// their rule, the winding is resolved and the retained form is built
+    /// in `scratch`. `None` means the shape has no area.
     pub fn resolve(
         &self,
         shape: &ShapeData,
         stroke: Option<&kurbo::Stroke>,
         transform: Affine,
+        scratch: &mut EdgeScratch,
         flatten: impl FnOnce() -> Option<(Vec<Edge>, FillRule)>,
     ) -> Option<Resolved> {
         if !self.entries.is_empty()
@@ -86,36 +91,36 @@ impl GeometryCache {
                 return Some(Resolved {
                     edges: entry.edges.clone(),
                     rule: entry.rule,
-                    swept: true,
+                    swept: entry.swept,
                 });
             }
         }
         let (edges, rule) = flatten()?;
         Some(match cherenkov::lowering::resolve_winding(&edges, rule) {
             Winding::Disjoint => Resolved {
-                edges: Arc::new(EdgeTiles::new(&edges)),
+                edges: EdgeTiles::new(scratch, edges.iter().copied()),
                 rule,
                 swept: false,
             },
             Winding::Unchanged => Resolved {
-                edges: Arc::new(EdgeTiles::new(&edges)),
+                edges: EdgeTiles::new(scratch, edges.iter().copied()),
                 rule,
                 swept: true,
             },
             Winding::Resolved(resolved) => Resolved {
-                edges: Arc::new(EdgeTiles::new(
-                    &resolved
+                edges: EdgeTiles::new(
+                    scratch,
+                    resolved
                         .into_iter()
-                        .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 })
-                        .collect::<Vec<_>>(),
-                )),
+                        .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 }),
+                ),
                 rule: FillRule::NonZero,
                 swept: true,
             },
         })
     }
 
-    /// Offers the swept frame edges of a draw of `shape` under `transform`
+    /// Offers the frame edges of a draw of `shape` under `transform`
     /// (stroked by `stroke` when set) whose realization is being dropped,
     /// for the rest of the frame.
     pub fn offer(
@@ -123,8 +128,9 @@ impl GeometryCache {
         shape: &ShapeData,
         stroke: Option<&kurbo::Stroke>,
         transform: Affine,
-        edges: &Arc<EdgeTiles>,
+        edges: &EdgeTiles,
         rule: FillRule,
+        swept: bool,
     ) {
         if let Some(key) = Key::new(shape, stroke, transform) {
             self.entries.insert(
@@ -135,6 +141,7 @@ impl GeometryCache {
                     linear: key.linear,
                     edges: edges.clone(),
                     rule,
+                    swept,
                 },
             );
         }
@@ -156,7 +163,7 @@ impl GeometryCache {
         let table = self.entries.capacity() * (size_of::<(u64, Entry)>() + size_of::<u8>());
         let mut bytes = table as u64;
         for entry in self.entries.values() {
-            if Arc::strong_count(&entry.edges) == 1 {
+            if entry.edges.strong_count() == 1 {
                 bytes += entry.edges.heap_bytes();
             }
             if let ShapeData::Path { elements, .. } = &entry.shape

@@ -50,12 +50,11 @@
 
 use rayon::prelude::*;
 use std::ops::Range;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use crate::render::lower::Item;
 use crate::render::raster::{BAND_H, Edge};
-use crate::render::tiles::{EdgeSource, EdgeTiles};
+use crate::render::tiles::{EdgeCursor, EdgeSource, EdgeTiles};
 
 /// Half an ulp of one round-to-nearest f32 rounding.
 const U: f64 = f32::EPSILON as f64 / 2.0;
@@ -278,11 +277,17 @@ impl EdgeBins {
                 .get(g + 1)
                 .copied()
                 .unwrap_or(self.edge_rows.len());
-            end - start == group.edges.len()
-                && self.edge_rows[start..end]
-                    .iter()
-                    .zip(group.edges.iter())
-                    .all(|(rows, edge)| *rows == [edge.y0.to_bits(), edge.y1.to_bits()])
+            if end - start != group.edges.len() {
+                return false;
+            }
+            let mut cursor = group.edges.cursor();
+            self.edge_rows[start..end]
+                .iter()
+                .enumerate()
+                .all(|(i, rows)| {
+                    let edge = cursor.at(i);
+                    *rows == [edge.y0.to_bits(), edge.y1.to_bits()]
+                })
         })
     }
 
@@ -330,11 +335,14 @@ impl EdgeBins {
             let mut written = 0;
             for group in groups.clone().skip(first) {
                 let count = (group.edges.len() - skip).min(spans.len() - written);
-                for ((span, row), edge) in spans[written..written + count]
+                let mut cursor = group.edges.cursor();
+                cursor.seek(skip);
+                for ((span, row), i) in spans[written..written + count]
                     .iter_mut()
                     .zip(&mut rows[written..written + count])
-                    .zip((skip..skip + count).map(|i| group.edges.edge(i)))
+                    .zip(skip..skip + count)
                 {
+                    let edge = cursor.at(i);
                     *row = [edge.y0.to_bits(), edge.y1.to_bits()];
                     *span = edge_bands(&edge, group.oy, h, bands);
                 }
@@ -453,8 +461,8 @@ impl EdgeBins {
 struct GeometryIdentity(usize);
 
 impl GeometryIdentity {
-    fn of(edges: &Arc<EdgeTiles>) -> Self {
-        Self(Arc::as_ptr(edges) as usize)
+    fn of(edges: &EdgeTiles) -> Self {
+        Self(edges.identity())
     }
 }
 
@@ -479,7 +487,7 @@ pub struct FrameIndex {
     /// The draws' edge bins, draw rank as group.
     edges: EdgeBins,
     /// Immutable geometry retained to establish identity across raster calls.
-    sources: Vec<Arc<EdgeTiles>>,
+    sources: Vec<EdgeTiles>,
     /// Draw-order identities; `sources` keeps each backing allocation alive.
     source_ids: Vec<GeometryIdentity>,
 }
@@ -553,7 +561,7 @@ impl FrameIndex {
             };
             let reach = rows_bands((bbox.y0 as usize, (bbox.y1 as usize).min(h)), bands);
             EdgeGroup {
-                edges: &**edges,
+                edges,
                 geometry_unchanged: self.source_ids.get(g) == Some(&GeometryIdentity::of(edges)),
                 oy: offset[1],
                 band0: reach.start,
@@ -570,7 +578,7 @@ impl FrameIndex {
             self.sources.clear();
             self.sources.extend(sources.cloned());
             self.sources.sort_unstable_by_key(GeometryIdentity::of);
-            self.sources.dedup_by(|a, b| Arc::ptr_eq(a, b));
+            self.sources.dedup_by(|a, b| a.identity() == b.identity());
         }
     }
 
@@ -639,13 +647,13 @@ impl FrameIndex {
             + self.counts.capacity())
             * size_of::<usize>()) as u64
             + self.edges.heap_bytes()
-            + (self.sources.capacity() * size_of::<Arc<EdgeTiles>>()
+            + (self.sources.capacity() * size_of::<EdgeTiles>()
                 + self.source_ids.capacity() * size_of::<GeometryIdentity>()) as u64
             + self
                 .sources
                 .iter()
-                .filter(|source| Arc::strong_count(source) == 1)
-                .map(|source| source.heap_bytes())
+                .filter(|source| source.strong_count() == 1)
+                .map(EdgeTiles::heap_bytes)
                 .sum::<u64>()
     }
 }
@@ -869,7 +877,7 @@ mod tests {
 
     #[test]
     fn retained_geometry_checks_placement_and_replacement() {
-        let draw = |edges: Arc<EdgeTiles>| Item::Draw {
+        let draw = |edges: EdgeTiles| Item::Draw {
             edges,
             offset: [0.0; 2],
             bbox: crate::render::lower::DrawBox {
@@ -883,12 +891,16 @@ mod tests {
             clip: None,
             swept: false,
         };
-        let geometry = Arc::new(EdgeTiles::new(&[Edge {
-            x0: 0.0,
-            y0: 2.0,
-            x1: 1.0,
-            y1: 6.0,
-        }]));
+        let geometry = EdgeTiles::new(
+            &mut crate::render::tiles::EdgeScratch::default(),
+            [Edge {
+                x0: 0.0,
+                y0: 2.0,
+                x1: 1.0,
+                y1: 6.0,
+            }]
+            .into_iter(),
+        );
         let mut items = vec![draw(geometry.clone()), draw(geometry)];
         let mut index = FrameIndex::default();
         index.rebuild(&items, 64);
@@ -902,12 +914,16 @@ mod tests {
         assert_eq!(index.edges(0, 0), &[0usize; 0]);
         assert_eq!(index.edges(2, 0), &[0]);
         assert_eq!(index.edges(0, 1), &[0]);
-        items[0] = draw(Arc::new(EdgeTiles::new(&[Edge {
-            x0: 0.0,
-            y0: 50.0,
-            x1: 1.0,
-            y1: 54.0,
-        }])));
+        items[0] = draw(EdgeTiles::new(
+            &mut crate::render::tiles::EdgeScratch::default(),
+            [Edge {
+                x0: 0.0,
+                y0: 50.0,
+                x1: 1.0,
+                y1: 54.0,
+            }]
+            .into_iter(),
+        ));
         index.rebuild(&items, 64);
         assert_eq!(index.sources.len(), 2);
         assert_eq!(index.edges(2, 0), &[0usize; 0]);
@@ -967,7 +983,10 @@ mod tests {
     fn item_bins_track_bounds_and_scopes() {
         use crate::render::lower::DrawBox;
         let draw = |y0: u16, y1: u16| Item::Draw {
-            edges: Arc::new(EdgeTiles::new(&[])),
+            edges: EdgeTiles::new(
+                &mut crate::render::tiles::EdgeScratch::default(),
+                std::iter::empty(),
+            ),
             offset: [0.0, 0.0],
             bbox: DrawBox {
                 x0: 0,

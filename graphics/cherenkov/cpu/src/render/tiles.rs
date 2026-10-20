@@ -19,22 +19,39 @@
 //! a piece ending on a boundary encodes as ±32512, never saturating, so
 //! the piece that follows decodes to the same point.
 //!
-//! Decoding is `origin + q * (1/256)` in `f32`: the product is exact (a
-//! power of two) and the sum is exact at every coordinate this backend
-//! produces, so every consumer reads decoded `f32` edges and keeps its
-//! own arithmetic.
+//! A draw's retained form is a single `Arc<[Word]>` allocation: a header
+//! word (tile and edge counts), two words of decoded-coordinate bounds,
+//! one word per tile (`tx: i16 | ty: i16 | end: u32`), then one word per
+//! edge. Tile indices are `i16`: frame coordinates beyond ±4,161,409 px
+//! fail the encoding — the forms a draw retains come from a `Frame` whose
+//! contents sit next to its origin.
+//!
+//! Decoding is `(origin_u + q) as f32 * 2^-8`: the `i32` sum is exact,
+//! the conversion rounds once and the scale by a power of two is exact.
+//! That is bit-identical to `f32::mul_add(q, 2^-8, origin)` — one
+//! rounding of the same exact value — but an integer add, a `cvtsi2ss`
+//! and a multiply on every target, with no libm call on any of them.
 
-use std::ops::Range;
+use std::sync::Arc;
+
+use fearless_simd::{Simd, f32x4};
 
 use super::raster::Edge;
+
+/// The allocation unit of the retained layout: eight bytes.
+pub type Word = u64;
 
 /// A tile's side in pixels.
 const TILE: f64 = 127.0;
 /// Quantization units per pixel: one unit is 1/256 px and an `i16`
 /// reaches ±128 px from its tile's origin.
 const UNIT: f64 = 256.0;
+/// A tile's side in units of 1/256 px.
+const TILE_UNITS: i32 = 127 * 256;
 /// `UNIT` as the decode multiplier.
 const DECODE: f32 = 1.0 / 256.0;
+/// Header and bounds words before the tile words.
+const HEAD: usize = 3;
 
 /// A quantized edge: endpoints in 1/256 px relative to its tile's origin.
 #[derive(Clone, Copy, Debug)]
@@ -45,51 +62,97 @@ struct QEdge {
     y1: i16,
 }
 
-/// One tile of the frame grid and the `edges` range it owns.
-#[derive(Debug)]
-struct Tile {
-    /// The tile's origin: an integer multiple of 127 on each axis.
-    ox: f32,
-    oy: f32,
-    /// `edges[start..end]` belong to this tile.
-    start: u32,
-    end: u32,
-}
-
-impl Tile {
-    const fn range(&self) -> Range<usize> {
-        self.start as usize..self.end as usize
-    }
-
-    /// `origin + q * (1/256)` in `f32`, one rounding per coordinate.
-    fn decode(&self, q: QEdge) -> Edge {
-        Edge {
-            x0: f32::from(q.x0).mul_add(DECODE, self.ox),
-            y0: f32::from(q.y0).mul_add(DECODE, self.oy),
-            x1: f32::from(q.x1).mul_add(DECODE, self.ox),
-            y1: f32::from(q.y1).mul_add(DECODE, self.oy),
-        }
+impl QEdge {
+    /// `[x0, y0, x1, y1]` packed little-endian into one word.
+    fn word(self) -> Word {
+        u64::from(self.x0.cast_unsigned())
+            | u64::from(self.y0.cast_unsigned()) << 16
+            | u64::from(self.x1.cast_unsigned()) << 32
+            | u64::from(self.y1.cast_unsigned()) << 48
     }
 }
 
-/// A draw's flattened edges in retained, tile-local fixed point.
-///
-/// The quantization step runs where the `f32` form was built — after the
-/// winding sweep — so every retained edge is `i16` at 1/256 px and only
-/// transient edge lists stay in `f32`.
-#[derive(Debug)]
+/// The decoded edge `[x0, y0, x1, y1]` of the packed word `q` under a
+/// tile origin given in units of 1/256 px.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "each word field is exactly one i16 lane; the one-rounding \
+              conversion is the decode rule"
+)]
+#[inline]
+fn decode_scalar([ox, oy]: [i32; 2], q: Word) -> Edge {
+    let at = |origin: i32, q: i16| (origin + i32::from(q)) as f32 * DECODE;
+    Edge {
+        x0: at(ox, q as i16),
+        y0: at(oy, (q >> 16) as i16),
+        x1: at(ox, (q >> 32) as i16),
+        y1: at(oy, (q >> 48) as i16),
+    }
+}
+
+/// [`decode_scalar`] as vector ops: widen the four `i16`s to `i32`, add
+/// `[ox_u, oy_u, ox_u, oy_u]`, convert and scale — about five
+/// instructions under any SIMD level, and no libm call anywhere.
+#[expect(
+    clippy::inline_always,
+    clippy::cast_possible_truncation,
+    reason = "compiled under the dispatched CPU level like its callers; \
+              each word half is exactly one packed coordinate pair"
+)]
+#[inline(always)]
+pub fn decode<S: Simd>(simd: S, [ox, oy]: [i32; 2], q: Word) -> f32x4<S> {
+    let (lo, hi) = (q as i32, (q >> 32) as i32);
+    let v = simd.load_array_i32x4([lo, hi, lo, hi]);
+    // Sign-extend each 16-bit lane: [x0, x1, x0, x1] and [y0, y1, y0, y1].
+    let xs = simd.shr_i32x4(simd.shl_i32x4(v, 16), 16);
+    let ys = simd.shr_i32x4(v, 16);
+    // [x0, y0, x1, y1].
+    let q = simd.zip_low_i32x4(xs, ys);
+    let origin = simd.load_array_i32x4([ox, oy, ox, oy]);
+    simd.mul_f32x4(
+        simd.cvt_f32_i32x4(simd.add_i32x4(q, origin)),
+        simd.splat_f32x4(DECODE),
+    )
+}
+
+/// A draw's flattened edges in retained, tile-local fixed point, as one
+/// `Arc` allocation. Clones share it, like an `Arc`.
+#[derive(Clone)]
 pub struct EdgeTiles {
-    /// Tiles by edge range: contiguous and covering `0..edges.len()`.
-    tiles: Box<[Tile]>,
-    /// Quantized edges, grouped by tile.
-    edges: Box<[QEdge]>,
+    /// `[header, bounds × 2, tiles, edges]`: the header's low half is the
+    /// tile count and its high half the edge count; each tile word is
+    /// `tx: i16 | ty: i16 | end: u32`, `end` the edge index where the
+    /// next tile begins.
+    words: Arc<[Word]>,
 }
 
-/// The tile of the frame grid containing `(x, y)` — floor to a 127 px
-/// boundary, so a point exactly on a boundary belongs to the tile
-/// starting there.
-fn tile_of(x: f64, y: f64) -> (f64, f64) {
-    ((x / TILE).floor() * TILE, (y / TILE).floor() * TILE)
+/// Scratch an [`EdgeTiles::new`] builds into, retained across draws and
+/// frames so a rebuilt draw costs exactly the one `Arc` allocation.
+#[derive(Default)]
+pub struct EdgeScratch {
+    /// `(packed tile index, edge word)` pairs in emission order.
+    pieces: Vec<(u32, Word)>,
+    /// Per dense-tile counts, then that tile's write position in `out`.
+    counts: Vec<u32>,
+    /// The layout being assembled, before the `Arc` copies it.
+    out: Vec<Word>,
+}
+
+impl EdgeScratch {
+    /// Retained high-water capacity: a renderer buffer, not per draw.
+    pub(crate) const fn heap_bytes(&self) -> u64 {
+        (self.pieces.capacity() * size_of::<(u32, Word)>()
+            + self.counts.capacity() * size_of::<u32>()
+            + self.out.capacity() * size_of::<Word>()) as u64
+    }
+
+    /// Releases the storage at a frame boundary: reuse is within one
+    /// lowering pass, and a large draw's buffers are not retained between
+    /// frames.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
 }
 
 /// The nearest unit of 1/256 px, ties rounded up: the tile origins are
@@ -98,28 +161,48 @@ fn tile_of(x: f64, y: f64) -> (f64, f64) {
 /// the `i16` limits.
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "the float-to-int cast is the quantization rule; inputs stay in ±32512"
-)]
-#[expect(
-    clippy::missing_const_for_fn,
-    reason = "f64 mul_add and floor are not const-stable"
+    clippy::suboptimal_flops,
+    reason = "the float-to-int cast is the quantization rule; inputs stay in \
+              ±32512. `v * 256 + 0.5` rounds once — the multiply is a power \
+              of two and exact — so it equals `mul_add` without the libcall"
 )]
 fn quantize(v: f64) -> i16 {
-    v.mul_add(UNIT, 0.5).floor() as i16
+    ifloor(v * UNIT + 0.5) as i16
 }
 
-/// Emits `e`'s quantized pieces to `emit` as `(tile origin, piece)`
-/// pairs: the part inside each crossed range boundary becomes its own
-/// edge under the tile holding its start.
+/// `v.floor()` as an integer: truncation plus a one-step correction for
+/// negative fractions — `cvttsd2si`, never a libcall.
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "a tile's origin is a multiple of 128, exact in f32"
+    clippy::cast_precision_loss,
+    reason = "the correction compares against the truncated value; inputs are \
+              tile and quantization magnitudes, far under 2^52"
 )]
-fn split(e: &Edge, mut emit: impl FnMut([f32; 2], QEdge)) {
+fn ifloor(v: f64) -> i64 {
+    let t = v as i64;
+    t - i64::from(v < t as f64)
+}
+
+/// The tile of the frame grid containing `(x, y)` — floor to a 127 px
+/// boundary, so a point exactly on a boundary belongs to the tile
+/// starting there.
+fn tile_index(x: f64, y: f64) -> (i64, i64) {
+    (ifloor(x / TILE), ifloor(y / TILE))
+}
+
+/// Emits `e`'s quantized pieces to `emit` as `(tile index, piece)`
+/// triples: the part inside each crossed range boundary becomes its own
+/// edge under the tile holding its start.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "tile indices far under 2^52 become f64 origins exactly"
+)]
+fn split(e: &Edge, mut emit: impl FnMut(i16, i16, QEdge)) {
     let (mut x0, mut y0) = (f64::from(e.x0), f64::from(e.y0));
     let (x1, y1) = (f64::from(e.x1), f64::from(e.y1));
     loop {
-        let (tx, ty) = tile_of(x0, y0);
+        let (txi, tyi) = tile_index(x0, y0);
+        let (tx, ty) = (txi as f64 * TILE, tyi as f64 * TILE);
         // The first range boundary the open end crosses. The far side
         // (+127) is a grid line, so snapping the exit coordinate lands
         // the next piece's start inside the neighbouring tile exactly —
@@ -167,7 +250,11 @@ fn split(e: &Edge, mut emit: impl FnMut([f32; 2], QEdge)) {
         // Quantization can flatten a piece; horizontal edges carry no
         // area and drop out as in `flatten_edges`.
         if q.y0 != q.y1 {
-            emit([tx as f32, ty as f32], q);
+            emit(
+                i16::try_from(txi).expect("frame-space tile index exceeds ±32767"),
+                i16::try_from(tyi).expect("frame-space tile index exceeds ±32767"),
+                q,
+            );
         }
         if inside {
             break;
@@ -177,76 +264,291 @@ fn split(e: &Edge, mut emit: impl FnMut([f32; 2], QEdge)) {
     }
 }
 
+/// The order a `(origin_x_bits, origin_y_bits)` sort produced, mapped to
+/// `0..hi - lo + 1` dense keys: non-negative tile indices ascending, then
+/// negatives in ascending magnitude — `f32` bits order the negative half
+/// from nearest to farthest.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "the rank is an index into the dense grid by construction"
+)]
+const fn rank(t: i32, lo: i32, hi: i32) -> usize {
+    let r = if lo >= 0 {
+        t - lo
+    } else if hi < 0 {
+        -1 - t
+    } else if t >= 0 {
+        t
+    } else {
+        hi - t
+    };
+    r as usize
+}
+
+/// The tile index of a dense `rank` — the inverse of [`rank`]. `rank`
+/// stays under 2^16 per axis, so the `usize → i32` conversion is exact.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "ranks are dense indices under the 2^16-wide tile grid"
+)]
+const fn unrank(r: usize, lo: i32, hi: i32) -> i32 {
+    let r = r as i32;
+    if lo >= 0 {
+        lo + r
+    } else if hi < 0 {
+        -1 - r
+    } else if r <= hi {
+        r
+    } else {
+        hi - r
+    }
+}
+
 impl EdgeTiles {
     /// Quantizes `edges` — finite frame-space `f32` segments — into
-    /// tile-local fixed point.
-    pub fn new(edges: &[Edge]) -> Self {
-        // (tile origin, quantized piece) pairs in emission order.
-        let mut pieces = Vec::with_capacity(edges.len());
+    /// tile-local fixed point, in one pass over `edges` and three over
+    /// `scratch`, whose storage persists across calls.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::similar_names,
+        reason = "tile indices are checked i16; counts and positions are \
+                  bounded by the edge count, itself checked u32"
+    )]
+    pub fn new(scratch: &mut EdgeScratch, edges: impl Iterator<Item = Edge>) -> Self {
+        let pieces = &mut scratch.pieces;
+        pieces.clear();
+        // Tile-grid extent, tracked as pieces emit; `bounds` is the
+        // decoded extrema `bbox_of` reduced over.
+        let (mut tx_lo, mut tx_hi, mut ty_lo, mut ty_hi) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+        let mut bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
         for e in edges {
-            split(e, |origin, q| pieces.push((origin, q)));
+            split(&e, |tx, ty, q| {
+                tx_lo = tx_lo.min(i32::from(tx));
+                tx_hi = tx_hi.max(i32::from(tx));
+                ty_lo = ty_lo.min(i32::from(ty));
+                ty_hi = ty_hi.max(i32::from(ty));
+                let origin = [i32::from(tx) * TILE_UNITS, i32::from(ty) * TILE_UNITS];
+                let w = q.word();
+                let d = decode_scalar(origin, w);
+                bounds[0] = bounds[0].min(d.x0.min(d.x1));
+                bounds[1] = bounds[1].min(d.y0.min(d.y1));
+                bounds[2] = bounds[2].max(d.x0.max(d.x1));
+                bounds[3] = bounds[3].max(d.y0.max(d.y1));
+                pieces.push((
+                    u32::from(tx.cast_unsigned()) << 16 | u32::from(ty.cast_unsigned()),
+                    w,
+                ));
+            });
         }
-        // Group by tile; the stable sort keeps each tile's pieces in
-        // emission order.
-        pieces.sort_by_key(|(origin, _)| (origin[0].to_bits(), origin[1].to_bits()));
-        let mut tiles: Vec<Tile> = Vec::new();
-        let mut quantized = Vec::with_capacity(pieces.len());
-        for (origin, q) in pieces {
-            let last = tiles.last_mut();
-            let tile = match last {
-                Some(t)
-                    if t.ox.to_bits() == origin[0].to_bits()
-                        && t.oy.to_bits() == origin[1].to_bits() =>
-                {
-                    t
-                }
-                _ => {
-                    tiles.push(Tile {
-                        ox: origin[0],
-                        oy: origin[1],
-                        start: u32::try_from(quantized.len()).expect("a draw's edges fit u32"),
-                        end: 0,
-                    });
-                    tiles.last_mut().expect("just pushed")
-                }
+        let n = u32::try_from(pieces.len()).expect("a draw's edges fit u32");
+        let out = &mut scratch.out;
+        out.clear();
+        if n == 0 {
+            out.resize(HEAD, 0);
+            out[1] = u64::from(bounds[0].to_bits()) | u64::from(bounds[1].to_bits()) << 32;
+            out[2] = u64::from(bounds[2].to_bits()) | u64::from(bounds[3].to_bits()) << 32;
+            return Self {
+                words: Arc::from(&out[..]),
             };
-            quantized.push(q);
-            tile.end = u32::try_from(quantized.len()).expect("a draw's edges fit u32");
         }
+        // Dense keys over the draw's tile grid, ordering tiles as the
+        // former `(ox_bits, oy_bits)` sort did so each piece keeps its
+        // edge index.
+        let (xe, ye) = ((tx_hi - tx_lo + 1) as usize, (ty_hi - ty_lo + 1) as usize);
+        let dense = |(tx, ty): (i32, i32)| rank(tx, tx_lo, tx_hi) * ye + rank(ty, ty_lo, ty_hi);
+        let key = |k: u32| (i32::from((k >> 16) as i16), i32::from(k as i16));
+        let counts = &mut scratch.counts;
+        counts.clear();
+        counts.resize(xe * ye, 0);
+        for &(k, _) in pieces.iter() {
+            counts[dense(key(k))] += 1;
+        }
+        let ntiles = counts.iter().filter(|&&c| c != 0).count();
+        out.resize(HEAD + ntiles + n as usize, 0);
+        // Prefix pass: tile words and each tile's write position.
+        let (mut t, mut running) = (0usize, 0u32);
+        for (d, c) in counts.iter_mut().enumerate() {
+            if *c == 0 {
+                continue;
+            }
+            let (tx, ty) = (unrank(d / ye, tx_lo, tx_hi), unrank(d % ye, ty_lo, ty_hi));
+            running += *c;
+            out[HEAD + t] =
+                u64::from(tx as u16) | u64::from(ty as u16) << 16 | u64::from(running) << 32;
+            *c = (HEAD + ntiles) as u32 + running - *c;
+            t += 1;
+        }
+        // Scatter: a stable counting sort — pieces in emission order keep
+        // each tile's order.
+        for &(k, w) in pieces.iter() {
+            let d = dense(key(k));
+            out[counts[d] as usize] = w;
+            counts[d] += 1;
+        }
+        out[0] = u64::from(ntiles as u32) | u64::from(n) << 32;
+        out[1] = u64::from(bounds[0].to_bits()) | u64::from(bounds[1].to_bits()) << 32;
+        out[2] = u64::from(bounds[2].to_bits()) | u64::from(bounds[3].to_bits()) << 32;
         Self {
-            tiles: tiles.into(),
-            edges: quantized.into(),
+            words: Arc::from(&out[..]),
         }
+    }
+
+    /// `(tiles, edges)` counts.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "each header field is exactly one packed u32"
+    )]
+    fn header(&self) -> (usize, usize) {
+        (
+            self.words[0] as u32 as usize,
+            (self.words[0] >> 32) as usize,
+        )
+    }
+
+    /// The tile words, ordered by their grid position as the emission's
+    /// `(ox_bits, oy_bits)` sort produced.
+    fn tiles(&self) -> &[Word] {
+        &self.words[HEAD..HEAD + self.header().0]
+    }
+
+    /// The packed edge words, grouped by tile.
+    fn edges(&self) -> &[Word] {
+        &self.words[HEAD + self.header().0..]
+    }
+
+    /// `[x_min, y_min, x_max, y_max]` over the decoded coordinates,
+    /// recorded at build time — the extrema `bbox_of` reduced per edge.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "each bounds field is exactly one packed f32 lane"
+    )]
+    pub fn bounds(&self) -> [f32; 4] {
+        [
+            f32::from_bits(self.words[1] as u32),
+            f32::from_bits((self.words[1] >> 32) as u32),
+            f32::from_bits(self.words[2] as u32),
+            f32::from_bits((self.words[2] >> 32) as u32),
+        ]
     }
 
     /// The edge count, split pieces included.
     pub fn len(&self) -> usize {
-        self.edges.len()
+        self.header().1
     }
 
     /// Whether no edge survived quantization.
     pub fn is_empty(&self) -> bool {
-        self.edges.is_empty()
+        self.len() == 0
     }
 
-    /// Decoded frame-space edge `i`.
-    pub fn edge(&self, i: usize) -> Edge {
-        let tile = &self.tiles[self.tiles.partition_point(|t| t.end as usize <= i)];
-        tile.decode(self.edges[i])
+    /// A forward reader over the tiles and edges.
+    pub fn cursor(&self) -> TileCursor<'_> {
+        TileCursor {
+            tiles: self.tiles(),
+            edges: self.edges(),
+            next: 0,
+            end: 0,
+            origin: [0; 2],
+            pos: 0,
+        }
     }
 
-    /// The decoded edges in storage order.
+    /// The decoded edges in storage order — tests and transient checks.
+    #[cfg(test)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "each word field is exactly one i16 lane"
+    )]
     pub fn iter(&self) -> impl Iterator<Item = Edge> + '_ {
-        self.tiles.iter().flat_map(|tile| {
-            self.edges[tile.range()]
-                .iter()
-                .map(move |&q| tile.decode(q))
+        let edges = self.edges();
+        let mut start = 0usize;
+        self.tiles().iter().flat_map(move |&t| {
+            let end = (t >> 32) as usize;
+            let range = start..end;
+            start = end;
+            let origin = [
+                i32::from(t as i16) * TILE_UNITS,
+                i32::from((t >> 16) as i16) * TILE_UNITS,
+            ];
+            edges[range].iter().map(move |&q| decode_scalar(origin, q))
         })
     }
 
-    /// The real heap size: 8 bytes per edge plus the tile table.
+    /// The retained allocation's identity: the `Arc`'s backing pointer.
+    pub(super) fn identity(&self) -> usize {
+        Arc::as_ptr(&self.words).cast::<u64>() as usize
+    }
+
+    /// The retained allocation's strong refcount.
+    pub(super) fn strong_count(&self) -> usize {
+        Arc::strong_count(&self.words)
+    }
+
+    /// The real heap size: one allocation of `words` plus the `Arc`'s
+    /// refcount pair.
     pub fn heap_bytes(&self) -> u64 {
-        (self.edges.len() * size_of::<QEdge>() + self.tiles.len() * size_of::<Tile>()) as u64
+        (self.words.len() * size_of::<Word>() + 2 * size_of::<usize>()) as u64
+    }
+}
+
+impl std::fmt::Debug for EdgeTiles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (tiles, edges) = self.header();
+        f.debug_struct("EdgeTiles")
+            .field("tiles", &tiles)
+            .field("edges", &edges)
+            .field("bounds", &self.bounds())
+            .finish()
+    }
+}
+
+/// A forward reader over an [`EdgeTiles`]: `seek` places the read index
+/// by binary search over the tile ends, then sequential reads advance
+/// the current tile only when it is left behind — amortized O(1) per
+/// edge, O(tiles) per scan.
+pub struct TileCursor<'a> {
+    tiles: &'a [Word],
+    edges: &'a [Word],
+    /// The next tile word to load once the read index leaves `end`.
+    next: usize,
+    /// The current tile's past-last edge index — `0` before any load, so
+    /// the first read always loads a tile.
+    end: u64,
+    /// The current tile's origin in units of 1/256 px.
+    origin: [i32; 2],
+    /// The last index read: reads never go back.
+    pos: usize,
+}
+
+impl TileCursor<'_> {
+    /// Advances the current tile to the one holding `i` — a while-loop,
+    /// not a search: every step is a tile the scan leaves behind.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "each word field is exactly one i16 lane"
+    )]
+    #[inline]
+    fn position(&mut self, i: usize) {
+        debug_assert!(i >= self.pos, "an edge cursor reads forward");
+        self.pos = i;
+        while i as u64 >= self.end {
+            let w = self.tiles[self.next];
+            self.origin = [
+                i32::from(w as i16) * TILE_UNITS,
+                i32::from((w >> 16) as i16) * TILE_UNITS,
+            ];
+            self.end = w >> 32;
+            self.next += 1;
+        }
+    }
+
+    /// The packed edge at `i` and its tile's origin in units of 1/256 px.
+    #[inline]
+    pub(crate) fn parts(&mut self, i: usize) -> ([i32; 2], Word) {
+        self.position(i);
+        (self.origin, self.edges[i])
     }
 }
 
@@ -254,51 +556,102 @@ impl EdgeTiles {
 /// ([`EdgeTiles`]) or transient `f32` edges — clip coverage masks,
 /// silhouette captures — that are never retained (`[Edge]`).
 pub trait EdgeSource: Sync {
+    /// The forward reader this source produces.
+    type Cursor<'a>: EdgeCursor
+    where
+        Self: 'a;
     /// The list's edge count.
     fn len(&self) -> usize;
+    /// A reader positioned at the start of the list.
+    fn cursor(&self) -> Self::Cursor<'_>;
+}
 
-    /// Decoded edge `i`.
-    fn edge(&self, i: usize) -> Edge;
-
-    /// The decoded edges in order.
-    fn iter(&self) -> impl Iterator<Item = Edge> + '_;
+/// A forward reader over an edge list's decoded edges, produced by
+/// [`EdgeSource::cursor`].
+pub trait EdgeCursor {
+    /// Places the reader at edge `i` — the first index a scan reads.
+    fn seek(&mut self, i: usize);
+    /// Decoded edge `i`: a reader is called with ascending indices only.
+    fn at(&mut self, i: usize) -> Edge;
 }
 
 impl EdgeSource for EdgeTiles {
+    type Cursor<'a> = TileCursor<'a>;
+
     fn len(&self) -> usize {
         Self::len(self)
     }
 
-    fn edge(&self, i: usize) -> Edge {
-        Self::edge(self, i)
+    fn cursor(&self) -> TileCursor<'_> {
+        Self::cursor(self)
+    }
+}
+
+impl EdgeCursor for TileCursor<'_> {
+    fn seek(&mut self, i: usize) {
+        self.next = self.tiles.partition_point(|&w| w >> 32 <= i as u64);
+        self.end = 0;
+        self.pos = i;
     }
 
-    fn iter(&self) -> impl Iterator<Item = Edge> + '_ {
-        Self::iter(self)
+    fn at(&mut self, i: usize) -> Edge {
+        let (origin, q) = self.parts(i);
+        decode_scalar(origin, q)
     }
 }
 
 impl EdgeSource for [Edge] {
+    type Cursor<'a> = &'a [Edge];
+
     fn len(&self) -> usize {
         <[Edge]>::len(self)
     }
 
-    fn edge(&self, i: usize) -> Edge {
-        self[i]
+    fn cursor(&self) -> &[Edge] {
+        self
     }
+}
 
-    fn iter(&self) -> impl Iterator<Item = Edge> + '_ {
-        <[Edge]>::iter(self).copied()
+impl EdgeCursor for &[Edge] {
+    fn seek(&mut self, _: usize) {}
+
+    fn at(&mut self, i: usize) -> Edge {
+        self[i]
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::ops::Range;
 
     fn edge(x0: f32, y0: f32, x1: f32, y1: f32) -> Edge {
         Edge { x0, y0, x1, y1 }
+    }
+
+    fn tiled(input: &[Edge]) -> EdgeTiles {
+        EdgeTiles::new(&mut EdgeScratch::default(), input.iter().copied())
+    }
+
+    /// Tile `t`: its decoded origin and its edge indices.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "tile indices are i16 fields; px origins are exact in f32"
+    )]
+    fn tile_at(tiles: &EdgeTiles, t: usize) -> (f32, f32, Range<usize>) {
+        let w = tiles.tiles()[t];
+        let end = (w >> 32) as usize;
+        let start = if t == 0 {
+            0
+        } else {
+            (tiles.tiles()[t - 1] >> 32) as usize
+        };
+        (
+            i32::from(w as i16) as f32 * TILE as f32,
+            i32::from((w >> 16) as i16) as f32 * TILE as f32,
+            start..end,
+        )
     }
 
     /// The largest coordinate difference between two edges.
@@ -320,7 +673,7 @@ mod tests {
             edge(64.0, 200.0, 64.25, 5.0),
             edge(0.125, 300.0, 99.75, 129.5),
         ];
-        let tiles = EdgeTiles::new(&input);
+        let tiles = tiled(&input);
         assert_eq!(tiles.len(), input.len());
         for q in tiles.iter() {
             let nearest = input
@@ -336,16 +689,18 @@ mod tests {
     /// per tile the remainder enters.
     #[test]
     fn edge_longer_than_the_tile_range_splits() {
-        let tiles = EdgeTiles::new(&[edge(10.0, 10.0, 500.0, 380.0)]);
+        let tiles = tiled(&[edge(10.0, 10.0, 500.0, 380.0)]);
         assert!(tiles.len() > 2, "expected several pieces: {tiles:?}");
         // Every piece's decoded start sits inside its own tile and every
         // decoded coordinate stays within ±127 px of the origin.
-        for tile in &tiles.tiles {
-            for &q in &tiles.edges[tile.range()] {
-                let e = tile.decode(q);
-                assert!((0.0..=127.0).contains(&(e.x0 - tile.ox)));
-                assert!((0.0..=127.0).contains(&(e.y0 - tile.oy)));
-                for rel in [e.x1 - tile.ox, e.y1 - tile.oy] {
+        for t in 0..tiles.tiles().len() {
+            let (ox, oy, range) = tile_at(&tiles, t);
+            for i in range {
+                let mut cursor = tiles.cursor();
+                let e = EdgeCursor::at(&mut cursor, i);
+                assert!((0.0..=127.0).contains(&(e.x0 - ox)));
+                assert!((0.0..=127.0).contains(&(e.y0 - oy)));
+                for rel in [e.x1 - ox, e.y1 - oy] {
                     assert!((-127.0..=127.0).contains(&rel), "{rel} out of range");
                 }
             }
@@ -367,15 +722,18 @@ mod tests {
     /// starting there.
     #[test]
     fn start_on_a_tile_boundary() {
-        let tiles = EdgeTiles::new(&[edge(127.0, 5.0, 140.0, 60.0)]);
-        assert_eq!(tiles.tiles.len(), 1);
-        assert_eq!([tiles.tiles[0].ox, tiles.tiles[0].oy], [127.0, 0.0]);
-        let e = tiles.edge(0);
+        let tiles = tiled(&[edge(127.0, 5.0, 140.0, 60.0)]);
+        assert_eq!(tiles.header().0, 1);
+        let (ox, oy, ..) = tile_at(&tiles, 0);
+        assert_eq!([ox, oy], [127.0, 0.0]);
+        let mut cursor = tiles.cursor();
+        let e = EdgeCursor::at(&mut cursor, 0);
         assert_eq!(e.x0, 127.0);
         assert!((e.y0 - 5.0).abs() <= 1.0 / 512.0);
         // A corner start belongs to the tile at the corner.
-        let tiles = EdgeTiles::new(&[edge(127.0, 127.0, 140.0, 150.0)]);
-        assert_eq!([tiles.tiles[0].ox, tiles.tiles[0].oy], [127.0, 127.0]);
+        let tiles = tiled(&[edge(127.0, 127.0, 140.0, 150.0)]);
+        let (ox, oy, ..) = tile_at(&tiles, 0);
+        assert_eq!([ox, oy], [127.0, 127.0]);
     }
 
     /// Negative frame coordinates tile and decode like positive ones:
@@ -386,25 +744,23 @@ mod tests {
             edge(-50.0, -50.0, -20.0, -60.0),
             edge(-20.0, -10.0, -5.0, -60.0),
         ];
-        let tiles = EdgeTiles::new(&input);
+        let tiles = tiled(&input);
         // Both edges start in the (-127, -127) tile and stay in range.
         assert_eq!(tiles.len(), 2);
-        assert_eq!([tiles.tiles[0].ox, tiles.tiles[0].oy], [-127.0, -127.0]);
+        let (ox, oy, ..) = tile_at(&tiles, 0);
+        assert_eq!([ox, oy], [-127.0, -127.0]);
         for (e, q) in input.iter().zip(tiles.iter()) {
             assert!(distance(e, &q) <= 1.0 / 512.0, "decoded {q:?}");
         }
     }
 
     /// A placement offset moves the decoded edges, not the retained
-    /// geometry: the same `Arc` serves every translation.
+    /// geometry: the same allocation serves every translation.
     #[test]
     fn translation_reuses_the_same_geometry() {
-        let geometry = Arc::new(EdgeTiles::new(&[
-            edge(1.0, 2.0, 40.0, 60.0),
-            edge(40.0, 60.0, 90.0, 12.5),
-        ]));
+        let geometry = tiled(&[edge(1.0, 2.0, 40.0, 60.0), edge(40.0, 60.0, 90.0, 12.5)]);
         let moved = geometry.clone();
-        assert!(Arc::ptr_eq(&geometry, &moved));
+        assert_eq!(geometry.identity(), moved.identity());
         let at = |offset: [f32; 2]| -> Vec<(f32, f32, f32, f32)> {
             moved
                 .iter()
@@ -423,6 +779,25 @@ mod tests {
             assert!((a.0 + 3.25 - b.0).abs() <= 1.0 / 256.0);
             assert!((a.1 - 60.5 - b.1).abs() <= 1.0 / 256.0);
         }
+    }
+
+    /// The stored bounds are the decoded edges' extrema — what the
+    /// placement's `bbox_of` reduced per edge.
+    #[test]
+    fn bounds_match_the_decoded_extrema() {
+        let tiles = tiled(&[
+            edge(1.0, 2.0, 37.31, 90.7),
+            edge(200.0, 10.0, 5.5, 64.25),
+            edge(-64.0, 200.0, -64.25, 5.0),
+        ]);
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for e in tiles.iter() {
+            x0 = x0.min(e.x0.min(e.x1));
+            y0 = y0.min(e.y0.min(e.y1));
+            x1 = x1.max(e.x0.max(e.x1));
+            y1 = y1.max(e.y0.max(e.y1));
+        }
+        assert_eq!(tiles.bounds(), [x0, y0, x1, y1]);
     }
 
     /// Many disjoint closed rectangles whose sides each cross two tile
@@ -447,7 +822,7 @@ mod tests {
             edges.push(edge(x + 3.0, y1, x, y1));
             edges.push(edge(x, y1, x, y0));
         }
-        let tiles = EdgeTiles::new(&edges);
+        let tiles = tiled(&edges);
         let decoded: Vec<Edge> = tiles.iter().collect();
         let (w, h) = (640usize, 360usize);
         let a = crate::render::raster::coverage_mask(&edges, cherenkov::FillRule::NonZero, w, h);

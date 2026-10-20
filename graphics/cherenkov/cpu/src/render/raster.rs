@@ -3087,15 +3087,18 @@ impl Band<'_> {
         acc.clear_range(y_lo, y_hi);
         // The frame's origin relative to the band's top row.
         let dy = oy - self.y0 as f32;
+        let shift = simd.load_array_f32x4([ox, dy, ox, dy]);
+        let mut cursor = edges.cursor();
         for &ei in sel {
-            let e = edges.edge(ei);
+            let (origin, q) = cursor.parts(ei);
+            let [x0, ey0, x1, ey1] = simd.as_array_f32x4(
+                simd.add_f32x4(crate::render::tiles::decode(simd, origin, q), shift),
+            );
             // Only edges crossing the band deposit anything.
-            let ey0 = e.y0 + dy;
-            let ey1 = e.y1 + dy;
             if ey0.max(ey1) < 0.0 || ey0.min(ey1) >= bh as f32 {
                 continue;
             }
-            acc.draw_line(e.x0 + ox, ey0, e.x1 + ox, ey1);
+            acc.draw_line(x0, ey0, x1, ey1);
         }
         let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
         let mut src = [const { MaybeUninit::<[f32; 4]>::uninit() }; SPAN_CHUNK];
