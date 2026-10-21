@@ -3,9 +3,12 @@
 //! The Kotlin host lives in the framework tree itself —
 //! `hydrolysis-android-host-subdirectory` names the Gradle composite root
 //! inside the selected framework source (#1428). The CLI materializes that
-//! source: a managed shallow clone of the framework repository at the
-//! selected revision for a channel project, the `waterui_path` checkout
-//! itself for a local one. It renders the generated Gradle app against the
+//! source into a CLI-owned directory: a managed shallow clone of the
+//! framework repository at the selected revision for a channel project, a
+//! mirror of the host project staged under `<backend>/android-host/local`
+//! for a `waterui_path` one — Gradle writes its `.gradle/` and `build/`
+//! outputs into the materialized tree, never the framework checkout
+//! (#3223). It renders the generated Gradle app against the
 //! host inside it, and drives the same NDK/Gradle/ABI/signing/asset
 //! machinery every Android build shares — the launcher crate
 //! `templates::hydrolysis` produces is the cdylib the host activity loads.
@@ -152,10 +155,11 @@ pub fn resolve_painter(
 /// The stamped marker recording which host revision a managed checkout holds.
 const HOST_STAMP_FILE: &str = ".waterui-host-revision";
 
-/// The managed checkout of the pinned Hydrolysis Android host for
-/// `revision`, under the backend's cache directory.
-fn android_host_dir(backend_path: &Path, revision: &str) -> PathBuf {
-    backend_path.join("android-host").join(revision)
+/// The CLI-owned host directory under the backend's cache for `key` — a
+/// channel checkout's `revision`, or `local` for the `waterui_path` staging
+/// mirror.
+fn android_host_dir(backend_path: &Path, key: &str) -> PathBuf {
+    backend_path.join("android-host").join(key)
 }
 
 /// The generated Gradle project's root inside the managed backend.
@@ -163,34 +167,44 @@ fn android_dir(backend_path: &Path) -> PathBuf {
     backend_path.join("android")
 }
 
-/// Ensure the checkout the Hydrolysis Android host lives inside exists for
-/// `resolved` and return its root.
+/// Ensure the directory the Hydrolysis Android host is built from exists
+/// for `resolved` and return its root.
 ///
 /// The host is a subdirectory of the selected framework source —
 /// `hydrolysis-android-host-subdirectory` names the Gradle root inside the
-/// checkout this returns. For a channel selection the source is a shallow
+/// directory this returns. For a channel selection the source is a shallow
 /// clone of the framework repository at the selected revision, materialized
 /// under `<backend>/android-host/<revision>` — a stamp file records the
 /// revision a directory was produced for so a repin replaces it. For a
-/// `waterui_path` project the framework checkout itself is the host
-/// checkout; no clone exists for a filesystem source. The caller passes the
-/// resolution it already holds, so one that also reads the resolution's
+/// `waterui_path` selection the host project is mirrored into
+/// `<backend>/android-host/local` on every call — the checkout is live
+/// source, and Gradle must never write into it (#3223). The caller passes
+/// the resolution it already holds, so one that also reads the resolution's
 /// other metadata resolves it once.
 ///
 /// # Errors
 ///
-/// Returns an error when the framework's host coordinates are missing or
-/// the git fetch fails.
+/// Returns an error when the framework's host coordinates are missing, the
+/// git fetch fails, or the local mirror cannot be staged.
 async fn materialize_android_host(
     project: &Project,
     resolved: &ResolvedFramework,
 ) -> eyre::Result<PathBuf> {
     let host = project.host();
+    let backend_path = project.backend_path::<HydrolysisBackend>();
     let (url, revision) = match resolved.hydrolysis_android_host()? {
         crate::framework::HydrolysisAndroidHost::Git { url, revision } => (url, revision),
-        crate::framework::HydrolysisAndroidHost::Local { root } => return Ok(root.to_path_buf()),
+        crate::framework::HydrolysisAndroidHost::Local { root } => {
+            let staging_root = android_host_dir(&backend_path, "local");
+            stage_local_host(
+                root,
+                resolved.hydrolysis_android_host_subdirectory()?,
+                &staging_root,
+            )
+            .await?;
+            return Ok(staging_root);
+        }
     };
-    let backend_path = project.backend_path::<HydrolysisBackend>();
     let host_dir = android_host_dir(&backend_path, revision);
 
     let stamped = fs::read_to_string(host_dir.join(HOST_STAMP_FILE))
@@ -254,6 +268,231 @@ async fn materialize_android_host(
         host_dir.display()
     );
     Ok(host_dir)
+}
+
+/// Mirror the `waterui_path` host Gradle project into `staging_root`: copy
+/// `root.join(subdirectory)` to `staging_root.join(subdirectory)` so every
+/// generated Gradle project `includeBuild`s a CLI-owned tree and Gradle's
+/// `.gradle/` and `build/` outputs never land in the framework checkout —
+/// which the user running `water` need not even be able to write (#3223).
+/// The host project is self-contained — no `../` references — so nothing
+/// outside the subdirectory is needed.
+///
+/// A local checkout is live source — the developer edits it between builds
+/// — so every call re-syncs the mirror rather than copying once:
+///
+/// - The source walks with the `ignore` crate honoring the checkout's
+///   `.gitignore` files, parents included, so build outputs — `.gradle/`,
+///   `build/`, `.kotlin/`, `local.properties`, `.idea/` — are never copied.
+/// - A staged file is rewritten only when its bytes differ, so Gradle's
+///   up-to-date checks see stable mtimes.
+/// - Staged entries the source no longer yields are removed — except paths
+///   the staged ignore files mark ignored, which are the staging tree's own
+///   Gradle state and must survive between builds.
+///
+/// The whole sync is blocking filesystem work, run off the executor as one
+/// unit like the surrounding `smol::unblock` users.
+///
+/// # Errors
+///
+/// Returns an error when the source cannot be walked or a file cannot be
+/// copied or removed.
+async fn stage_local_host(
+    root: &Path,
+    subdirectory: &str,
+    staging_root: &Path,
+) -> eyre::Result<()> {
+    let source = root.join(subdirectory);
+    let staged = staging_root.join(subdirectory);
+    smol::unblock(move || stage_local_host_sync(&source, &staged)).await
+}
+
+/// The `ignore`-crate walker configuration the mirror's source side uses:
+/// dotfiles are real entries — `.gitignore` itself must be mirrored, and
+/// the host keeps dotfiles — and `.gitignore` applies without a `.git`
+/// directory, because a `waterui_path` can name an exported tree whose
+/// ignore files still declare its build outputs. Parent-directory ignore
+/// files apply: the checkout's `.gitignore` chain reaches the host
+/// subdirectory.
+fn host_source_walk(root: &Path) -> ignore::WalkBuilder {
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder.standard_filters(true);
+    builder.hidden(false);
+    builder.require_git(false);
+    builder
+}
+
+/// The blocking mirror [`stage_local_host`] runs off the executor: copy
+/// every entry the source walk yields into `staged`, then drop every
+/// unignored staged entry the source no longer yields.
+fn stage_local_host_sync(source: &Path, staged: &Path) -> eyre::Result<()> {
+    use std::collections::HashSet;
+
+    let mut expected_dirs = HashSet::new();
+    let mut expected_files = HashSet::new();
+    std::fs::create_dir_all(staged).wrap_err_with(|| {
+        format!(
+            "failed to create the staged hydrolysis android host at {}",
+            staged.display()
+        )
+    })?;
+    for entry in host_source_walk(source).build() {
+        let entry = entry.wrap_err_with(|| {
+            format!(
+                "failed to walk the local hydrolysis android host at {}",
+                source.display()
+            )
+        })?;
+        let relative = entry
+            .path()
+            .strip_prefix(source)
+            .map_err(|error| eyre::eyre!("{error}"))?;
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        let destination = staged.join(relative);
+        if entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_dir())
+        {
+            std::fs::create_dir_all(&destination)
+                .wrap_err_with(|| format!("failed to create {}", destination.display()))?;
+            expected_dirs.insert(relative.to_path_buf());
+            continue;
+        }
+        if !entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_file())
+        {
+            continue;
+        }
+        std::fs::create_dir_all(
+            destination
+                .parent()
+                .expect("a nested host path has a parent"),
+        )
+        .wrap_err_with(|| format!("failed to create {}", destination.display()))?;
+        crate::utils::copy_file_if_changed_sync(entry.path(), &destination).wrap_err_with(
+            || {
+                format!(
+                    "failed to stage {} at {}",
+                    entry.path().display(),
+                    destination.display()
+                )
+            },
+        )?;
+        preserve_source_permissions(entry.path(), &destination)
+            .wrap_err_with(|| format!("failed to set permissions on {}", destination.display()))?;
+        expected_files.insert(relative.to_path_buf());
+    }
+    prune_stale_staged(staged, &expected_files, &expected_dirs)
+}
+
+/// Drop every unignored staged entry the source walk no longer yields.
+fn prune_stale_staged(
+    staged: &Path,
+    expected_files: &std::collections::HashSet<PathBuf>,
+    expected_dirs: &std::collections::HashSet<PathBuf>,
+) -> eyre::Result<()> {
+    // The staged tree's own walk honors the staged `.gitignore` files — the
+    // ones this sync just mirrored — so Gradle's `.gradle/` and `build/`
+    // state under the staging root is invisible here and always survives;
+    // `parents(false)` keeps the ignore decision inside the staged project,
+    // independent of whatever ignores the backend directory sits under.
+    let mut staged_files = Vec::new();
+    let mut staged_dirs = Vec::new();
+    let mut staging_walk = host_source_walk(staged);
+    staging_walk.parents(false);
+    for entry in staging_walk.build() {
+        let entry = entry.wrap_err_with(|| {
+            format!(
+                "failed to walk the staged hydrolysis android host at {}",
+                staged.display()
+            )
+        })?;
+        let relative = entry
+            .path()
+            .strip_prefix(staged)
+            .map_err(|error| eyre::eyre!("{error}"))?;
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        if entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_dir())
+        {
+            staged_dirs.push(relative.to_path_buf());
+        } else if entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_file())
+        {
+            staged_files.push(relative.to_path_buf());
+        }
+    }
+    for file in staged_files {
+        if !expected_files.contains(&file) {
+            remove_staged_file(&staged.join(&file))
+                .wrap_err_with(|| format!("failed to remove {}", staged.join(&file).display()))?;
+        }
+    }
+    // Deepest first so a stale directory's children leave before it does; a
+    // directory that is already gone is the outcome asked for. A stale
+    // directory's ignored contents leave with it — the whole subtree is
+    // dead once the source drops it.
+    staged_dirs.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for dir in staged_dirs {
+        if expected_dirs.contains(&dir) {
+            continue;
+        }
+        match std::fs::remove_dir_all(staged.join(&dir)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .wrap_err_with(|| format!("failed to remove {}", staged.join(&dir).display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Stamp `source`'s permission bits on `destination`, widened to
+/// owner-writable: the staged copy must accept the next sync's rewrite even
+/// when the checkout itself is `a+rX` — #3223's runner-owned tree — and the
+/// host's `gradlew` must keep its execute bit.
+#[cfg(unix)]
+fn preserve_source_permissions(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let mode = std::fs::metadata(source)?.permissions().mode();
+    std::fs::set_permissions(destination, std::fs::Permissions::from_mode(mode | 0o600))
+}
+
+#[cfg(not(unix))]
+fn preserve_source_permissions(_source: &Path, _destination: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// `remove_file` for a staged mirror entry, clearing a kept read-only bit
+/// first on Windows: a copy that preserved a read-only source mode cannot
+/// be unlinked until the attribute is cleared; Unix ignores it for unlink.
+fn remove_staged_file(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        #[cfg(windows)]
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "Windows-only: clears the read-only attribute so the file can be unlinked; there is no Unix mode to widen"
+        )]
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            let mut permissions = std::fs::metadata(path)?.permissions();
+            permissions.set_readonly(false);
+            std::fs::set_permissions(path, permissions)?;
+            std::fs::remove_file(path)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// The Gradle project directory inside the host checkout the framework's
@@ -848,8 +1087,8 @@ pub async fn package_with_abis(
         envs.push((crate::android::signing::UNSIGNED_ENV, "1".to_owned()));
     }
     {
-        // The app `includeBuild`s the host checkout, whose `build/` and
-        // `.gradle/` every other build of that checkout — a preview host
+        // The app `includeBuild`s the materialized host directory, whose
+        // `build/` and `.gradle/` every other build of it — a preview host
         // included — writes too.
         let _host_build =
             crate::water_dir::android_host_build_lock(host, &host_project_dir).await?;
@@ -1022,9 +1261,9 @@ fn preview_host_fingerprint(
 /// changed host `preview` module produces a different code and the device
 /// receives a reinstall. Returns the APK path and that `versionCode`.
 ///
-/// Every project's composite `includeBuild`s the one host checkout, whose
-/// Gradle build directories the builds share, so the Gradle build runs
-/// under the host's build lock.
+/// A project's composite `includeBuild`s its materialized host directory,
+/// whose Gradle build directories every build of it shares, so the Gradle
+/// build runs under the host's build lock.
 ///
 /// # Errors
 ///
@@ -1430,6 +1669,92 @@ mod tests {
                 .await
                 .expect("stamped checkout needs no git");
             assert_eq!(again, checkout);
+            Ok(())
+        })
+    }
+
+    /// A `waterui_path` host mirrors into the staging root on every call:
+    /// the ignore walk keeps build outputs and parent-ignored files out,
+    /// edits and removals propagate on re-sync — while the staging tree's
+    /// own ignored outputs, Gradle's state, survive it.
+    #[test]
+    fn stage_local_host_mirrors_sources_and_preserves_gradle_state() -> std::io::Result<()> {
+        smol::block_on(async {
+            const SUBDIRECTORY: &str = "backends/hydrolysis/android";
+            let temporary = tempfile::tempdir().expect("tempdir");
+            let checkout = temporary.path().join("checkout");
+            let source = checkout.join("backends/hydrolysis/android");
+            let staging_root = temporary.path().join("android-host/local");
+            let staged = staging_root.join("backends/hydrolysis/android");
+
+            std::fs::create_dir_all(source.join("build"))?;
+            std::fs::write(source.join(".gitignore"), "build/\n")?;
+            std::fs::write(source.join("settings.gradle.kts"), "// settings v1\n")?;
+            std::fs::write(source.join("build/classes.jar"), "bytecode")?;
+            std::fs::write(source.join("retired.gradle.kts"), "// gone next sync\n")?;
+            let gradlew = source.join("gradlew");
+            std::fs::write(&gradlew, "#!/bin/sh\n")?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&gradlew, std::fs::Permissions::from_mode(0o755))?;
+            }
+            // A checkout-root `.gitignore` reaches the host subdirectory:
+            // the walk honors parents, so what it names never stages. No
+            // `.git` exists here — `require_git(false)` applies the rules
+            // anyway, the same an exported `waterui_path` tree would need.
+            std::fs::write(checkout.join(".gitignore"), "*.log\n")?;
+            std::fs::write(source.join("session.log"), "noise")?;
+
+            stage_local_host(&checkout, SUBDIRECTORY, &staging_root)
+                .await
+                .expect("first stage");
+            assert!(staged.join("settings.gradle.kts").is_file());
+            assert!(staged.join(".gitignore").is_file());
+            assert!(staged.join("retired.gradle.kts").is_file());
+            assert!(!staged.join("build").exists(), "build outputs never stage");
+            assert!(
+                !staged.join("session.log").exists(),
+                "checkout-root ignores apply"
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let mode = std::fs::metadata(staged.join("gradlew"))?
+                    .permissions()
+                    .mode();
+                assert_eq!(mode & 0o111, 0o111, "gradlew keeps its execute bit");
+            }
+            let gitignore_mtime = std::fs::metadata(staged.join(".gitignore"))?.modified()?;
+
+            std::fs::write(source.join("settings.gradle.kts"), "// settings v2\n")?;
+            std::fs::remove_file(source.join("retired.gradle.kts"))?;
+            // Gradle's own state in the staged tree — covered by the staged
+            // `.gitignore`, so the mirror must never touch it.
+            std::fs::create_dir_all(staged.join("build"))?;
+            std::fs::write(staged.join("build/outputs.jar"), "gradle state")?;
+
+            stage_local_host(&checkout, SUBDIRECTORY, &staging_root)
+                .await
+                .expect("re-stage");
+            assert_eq!(
+                std::fs::read_to_string(staged.join("settings.gradle.kts"))?,
+                "// settings v2\n",
+                "edits propagate on re-sync"
+            );
+            assert!(
+                !staged.join("retired.gradle.kts").exists(),
+                "a deleted source file leaves the mirror"
+            );
+            assert!(
+                staged.join("build/outputs.jar").is_file(),
+                "gradle state survives a re-sync"
+            );
+            assert_eq!(
+                std::fs::metadata(staged.join(".gitignore"))?.modified()?,
+                gitignore_mtime,
+                "an unchanged file keeps its mtime for Gradle's up-to-date checks"
+            );
             Ok(())
         })
     }
