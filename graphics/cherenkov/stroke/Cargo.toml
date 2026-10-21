@@ -5,6 +5,9 @@ description = "Stroke expansion that splits cubic Beziers at cusps before kurbo 
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../README.md"
+keywords = ["graphics", "2d", "stroke", "bezier", "cusp"]
+categories = ["graphics", "rendering"]
 
 [lints]
 workspace = true
