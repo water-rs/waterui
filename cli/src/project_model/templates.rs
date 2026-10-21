@@ -4493,7 +4493,7 @@ impl From<GeneratedDependencyDetail> for SupportDependencyDetail {
 /// these crates, not the code under debug.
 ///
 /// Dependencies are also compiled with optimizations: the rendering stack
-/// (vello, wgpu, parley) is a dependency of every generated crate and sits on
+/// (cherenkov, wgpu, parley) is a dependency of every generated crate and sits on
 /// every frame's hot path, and at `opt-level` 0 its per-frame encode-and-submit
 /// alone costs several milliseconds — a debug `water run` visibly drops frames
 /// while scrolling. The generated crate itself stays unoptimized and fully

@@ -62,6 +62,7 @@ fn hermetic_host(root: &Path) -> Host {
     std::fs::create_dir_all(&home).expect("create hermetic home");
     Host::current()
         .without_cargo_target_dir()
+        .without_compile_wrapper()
         .with_home(home)
         .with_env("CARGO_HOME", cargo_home)
 }

@@ -286,7 +286,9 @@ impl TestMachine {
 /// test that needs real `cargo`/`rustc` runs on the declared host and writes
 /// nothing under `~/.water`. The Cargo target-directory overrides are
 /// stripped so a `cargo` the fixture spawns builds into a directory the
-/// test owns instead of the developer's (water-rs/waterui#3098).
+/// test owns instead of the developer's (water-rs/waterui#3098), and the
+/// compiler wrapper with them, since it is configured for the real home
+/// (water-rs/waterui#3124).
 pub fn real_toolchain_host(home: impl AsRef<Path>) -> Host {
     let real = Host::current();
     let vars = real
@@ -295,6 +297,7 @@ pub fn real_toolchain_host(home: impl AsRef<Path>) -> Host {
         .map(|(key, value)| (key.to_os_string(), value.to_os_string()));
     Host::new(real.path_entries(), vars)
         .without_cargo_target_dir()
+        .without_compile_wrapper()
         .with_home(home.as_ref())
         .with_cwd(home.as_ref().to_path_buf())
 }

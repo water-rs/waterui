@@ -647,17 +647,17 @@ filtrate-core = { path = "graphics/filtrate/core" }
 filtrate-derive = { path = "graphics/filtrate/derive" }
 
 
-# The suite's vello baseline is the fork WaterUI and Hydrolysis actually
-# ship, not crates.io. `vello` carries our Mali Vulkan device-loss fix
-# (linebender/vello#1817, still open upstream) plus the glifo canonical-location
-# hint-cache fix applied to vello_encoding's GlyphCache (branch
-# `glifo-canonical-location-classic`, on the Mali rev), and this rev adds the
-# bump-buffer overflow re-render on top of what cherenkov pinned (7f5e1ca5);
-# it is the rev the rest of the WaterUI graph already resolves. The
-# sparse-strip crates and glifo sit on the same canonical-location fix at
-# `glifo-canonical-location` — without it, an explicit all-default location
-# (`[0, 0, …]`) never matched a stored hint entry and every glyph run repaid
-# a HintingInstance reconfigure. `cherenkov-bench` measures against these.
+# Reference engines for cherenkov-bench's cross-engine comparison only;
+# WaterUI renders through Cherenkov and ships none of these. They resolve
+# from the fork, not crates.io: `vello` carries our Mali Vulkan device-loss
+# fix (linebender/vello#1817, still open upstream) plus the glifo
+# canonical-location hint-cache fix applied to vello_encoding's GlyphCache
+# (branch `glifo-canonical-location-classic`, on the Mali rev), and this rev
+# adds the bump-buffer overflow re-render on top of what cherenkov pinned
+# (7f5e1ca5). The sparse-strip crates and glifo sit on the same
+# canonical-location fix at `glifo-canonical-location` — without it, an
+# explicit all-default location (`[0, 0, …]`) never matched a stored hint
+# entry and every glyph run repaid a HintingInstance reconfigure.
 vello = { git = "https://github.com/lexoliu/vello", rev = "76292095f408cf04b901023c2053f8d424652f06" }
 vello_hybrid = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
 vello_common = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }

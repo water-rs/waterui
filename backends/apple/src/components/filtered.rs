@@ -1580,6 +1580,15 @@ impl CapturableSurface for FilteredCapturable {
         )
     }
 
+    /// The window-level half of `canPresentNow` — a filtered output in a
+    /// window that cannot present joins the capture for its redraw
+    /// routing even while its bounds give it no spec.
+    fn can_present(&self) -> bool {
+        self.state
+            .upgrade()
+            .is_some_and(|state| can_attach_now(&state.view))
+    }
+
     /// Native-pass suppression: direct `hidden` mutation on the
     /// presentation layer only — no transaction work of ours. The outer
     /// `ViewCapture` owns the one enclosing disabled-actions transaction

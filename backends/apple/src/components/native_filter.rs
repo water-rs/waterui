@@ -1551,6 +1551,16 @@ impl CapturableSurface for NativeFilterCapturable {
         }
     }
 
+    /// Screen presentation is Core Animation compositing `CALayer.filters`
+    /// on the owner's window, so the answer is the window's own
+    /// presentability — a scene-less or never-ordered host cannot present.
+    fn can_present(&self) -> bool {
+        self.owner.upgrade().is_some_and(|owner| {
+            cocoa_ui::view::window(&owner.view)
+                .is_some_and(|window| cocoa_ui::visibility::window_presentable(&window))
+        })
+    }
+
     /// Redirects parameter updates to the capture's redraw hook. Screen
     /// presentation continues — `CALayer.filters` is Core Animation's
     /// own presentation — while the capture pulls frames.

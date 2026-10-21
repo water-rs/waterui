@@ -28,6 +28,7 @@ fn create_rejects_the_published_stable_manifest_without_backend_members() {
     std::fs::create_dir_all(&water_home).expect("create hermetic home");
     let host = waterui_cli::toolchain::Host::current()
         .without_cargo_target_dir()
+        .without_compile_wrapper()
         .with_home(water_home);
 
     let result = smol::block_on(Project::create(

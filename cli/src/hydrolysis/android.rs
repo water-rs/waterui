@@ -48,7 +48,7 @@ use crate::{
 
 /// The painter the Hydrolysis Android host draws with.
 ///
-/// `gpu` is the Vello attachment the host's `android/gpu` module ships;
+/// `gpu` is the Cherenkov GPU attachment the host's `android/gpu` module ships;
 /// `hwui` is the `RenderNode` painter of the planned `android/hwui` module.
 /// Selection is explicit — `[hydrolysis] painter` in `Water.toml`
 /// or `--painter` — and an absent module in the pinned checkout is an error
