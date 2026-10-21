@@ -127,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    fn colinear_cubic_is_not_split() {
+    fn collinear_cubic_is_not_split() {
         let c = cubic([(0.0, 0.0), (3.0, 3.0), (-1.0, -1.0), (2.0, 2.0)]);
         assert_eq!(cusp::parameter(&c), None);
     }

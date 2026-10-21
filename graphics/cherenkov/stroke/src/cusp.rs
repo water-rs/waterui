@@ -1,12 +1,12 @@
 //! The exact cusp predicate.
 //!
 //! With the control arms `A = P1−P0`, `B = P2−P1`, `C = P3−P2` and
-//! `α = B×C`, `β = C×A`, `γ = A×B`, a non-colinear cubic has an interior cusp
+//! `α = B×C`, `β = C×A`, `γ = A×B`, a non-collinear cubic has an interior cusp
 //! iff `α`, `β`, `γ` are nonzero with one sign and `β² = 4αγ`; the cusp is at
 //! `t₀ = 2γ / (β + 2γ)`. A cubic within `f64` precision of that is accepted
 //! too: `|β² − 4αγ| ≤ 256·u·s⁴` with `u = 2⁻⁵³` and `s` the largest absolute
 //! arm component. The comparison is decided exactly over the `f64` inputs, so
-//! no evaluation rounding moves it. The colinear case (`α = β = γ = 0`) is left
+//! no evaluation rounding moves it. The collinear case (`α = β = γ = 0`) is left
 //! to `kurbo`.
 
 use kurbo::CubicBez;
