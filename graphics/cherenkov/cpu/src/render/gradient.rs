@@ -28,7 +28,7 @@
 //! loops instead, and where clippy suggests the combinator silence it
 //! with an `expect` stating this reason.
 
-use std::mem::MaybeUninit;
+use std::{marker::PhantomData, mem::MaybeUninit};
 
 use cherenkov::{Extend, Interpolation};
 use fearless_simd::{Select, Simd, SimdFloat, SimdMask, f32x4, f32x16};
@@ -363,7 +363,9 @@ impl<'a, S: Simd> SpanEval<'a, S> for LinearEval<'a> {
 }
 
 /// Which equation a radial span's lanes solve — decided once per
-/// span, as the scalar `radial_t` decides per pixel.
+/// span, as the scalar `radial_t` decides per pixel. [`radial_span`]
+/// matches it once; each arm runs a span body generic over the
+/// variant's [`RadialSolve`] type, so neither loop re-tests the form.
 #[derive(Clone, Copy)]
 enum RadialForm {
     /// The circles are identical: the parameter is `-∞` on and inside
@@ -442,14 +444,185 @@ impl<'a> RadialEval<'a> {
     }
 }
 
+/// A `RadialForm` variant as a type: `solve` evaluates `t` for a
+/// block and for a lane — the scalar expressions are identical at
+/// every width, so one generic method serves both. [`radial_span`]
+/// picks the type once per span; no form test runs inside a loop.
+trait RadialSolve {
+    /// Whether `solve` can yield `NaN`, the scalar evaluator's
+    /// unpainted pixel; a form that never does skips the per-pixel gate.
+    const MAY_FAIL: bool;
+
+    /// `radial_t` lane-wise over `p − centre₀` for this form.
+    fn solve<S, V>(simd: S, eval: &RadialEval<'_>, px: V, py: V) -> V
+    where
+        S: Simd,
+        V: SimdFloat<S, Element = f32>,
+        V::Mask: Select<V>;
+}
+
+/// The lane-scale `b`, `c`, `r0` and `s` every solving form shares:
+/// `s` is `1` while `max(|px|, |py|)` is at most
+/// [`RADIAL_RESCALE_ABOVE`], that bound beyond it. `p` and `r0`
+/// multiplied by the lane reciprocal `1/s` — one divide per lane
+/// instead of three — scales `b` by `1/s`, `c` and the discriminant
+/// by `1/s²` and every root by `1/s`, so no term overflows for a
+/// finite content point — unscaled, `px²` overflows f32 near 1.8e19
+/// and `4a·c` before that, and the pixel paints nothing where the
+/// oracle paints. At `s = 1` the expressions are unchanged.
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
-impl<'a, S: Simd> SpanEval<'a, S> for RadialEval<'a> {
+#[inline(always)]
+fn scaled_terms<S, V>(simd: S, eval: &RadialEval<'_>, px: V, py: V) -> (V, V, V, V)
+where
+    S: Simd,
+    V: SimdFloat<S, Element = f32>,
+    V::Mask: Select<V>,
+{
+    let one = V::splat(simd, 1.0);
+    let hi = px.abs().max(py.abs());
+    let s = hi
+        .simd_gt(V::splat(simd, RADIAL_RESCALE_ABOVE))
+        .select(hi, one);
+    let inv = one / s;
+    let (px, py, r0) = (px * inv, py * inv, V::splat(simd, eval.r0) * inv);
+    // b = -2·(r0·dr + dcx·px + dcy·py), c = px² + py² − r0², at scale s.
+    let inner = V::splat(simd, eval.dcy).mul_add(py, V::splat(simd, eval.dcx) * px);
+    let b = V::splat(simd, -2.0) * r0.mul_add(V::splat(simd, eval.dr), inner);
+    let c = r0.mul_add(-r0, py.mul_add(py, px * px));
+    (b, c, r0, s)
+}
+
+/// `RadialForm::Identical`: the parameter is `-∞` on and inside `r0`,
+/// `+∞` outside, by `hypot(p) ≤ r0`.
+struct IdenticalSolve;
+
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+impl RadialSolve for IdenticalSolve {
+    const MAY_FAIL: bool = false;
+
+    #[inline(always)]
+    fn solve<S, V>(simd: S, eval: &RadialEval<'_>, px: V, py: V) -> V
+    where
+        S: Simd,
+        V: SimdFloat<S, Element = f32>,
+        V::Mask: Select<V>,
+    {
+        let zero = V::splat(simd, 0.0);
+        let one = V::splat(simd, 1.0);
+        let hi = px.abs().max(py.abs());
+        // `f32::hypot` lane-wise: `hi·sqrt(1 + (lo/hi)²)`. `hi == 0`
+        // is 0, and an infinite component already reads as `> r0`.
+        let lo = px.abs().min(py.abs());
+        let r = lo / hi;
+        let h = hi * r.mul_add(r, one).sqrt();
+        let h = hi.simd_eq(zero).select(zero, h);
+        h.simd_le(V::splat(simd, eval.r0)).select(
+            V::splat(simd, f32::NEG_INFINITY),
+            V::splat(simd, f32::INFINITY),
+        )
+    }
+}
+
+/// `RadialForm::Degenerate` — `|a| < 1e-12`: the quadratic reduces to
+/// the `-c / b` linear solve.
+struct DegenerateSolve;
+
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+impl RadialSolve for DegenerateSolve {
+    const MAY_FAIL: bool = true;
+
+    #[inline(always)]
+    fn solve<S, V>(simd: S, eval: &RadialEval<'_>, px: V, py: V) -> V
+    where
+        S: Simd,
+        V: SimdFloat<S, Element = f32>,
+        V::Mask: Select<V>,
+    {
+        let (b, c, r0, s) = scaled_terms(simd, eval, px, py);
+        let dr = V::splat(simd, eval.dr);
+        let t = -c / b;
+        // |b| < 1e-12 has no solution; `t·dr + r0 ≥ 0` keeps the
+        // solve's radius non-negative — both scale-free.
+        let ok = (b * s).abs().simd_ge(V::splat(simd, 1e-12))
+            & t.mul_add(dr, r0).simd_ge(V::splat(simd, 0.0));
+        ok.select(t * s, V::splat(simd, f32::NAN))
+    }
+}
+
+/// `RadialForm::Quadratic`: `a·t² + b·t + c = 0`, keeping the largest
+/// root whose radius `r0 + t·dr` is non-negative — `NaN` when there is
+/// none.
+struct QuadraticSolve;
+
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+impl RadialSolve for QuadraticSolve {
+    const MAY_FAIL: bool = true;
+
+    #[inline(always)]
+    fn solve<S, V>(simd: S, eval: &RadialEval<'_>, px: V, py: V) -> V
+    where
+        S: Simd,
+        V: SimdFloat<S, Element = f32>,
+        V::Mask: Select<V>,
+    {
+        let (b, c, r0, s) = scaled_terms(simd, eval, px, py);
+        let zero = V::splat(simd, 0.0);
+        let nan = V::splat(simd, f32::NAN);
+        let dr = V::splat(simd, eval.dr);
+        let disc = V::splat(simd, eval.a4).mul_add(-c, b * b);
+        let sq = disc.sqrt();
+        let den = V::splat(simd, eval.a2);
+        let r1 = (-b + sq) / den;
+        let r2 = (-b - sq) / den;
+        // `f32::max`/`min` ignore a NaN operand; NEON's `vmaxq`/`vminq`
+        // propagate it, and an infinite `b`/`sq` leaves one root NaN and
+        // the other infinite, so the precise variants are required.
+        let (hi, lo) = (r1.max_precise(r2), r1.min_precise(r2));
+        // radius_ok(hi) ? hi : radius_ok(lo) ? lo : NaN. A negative
+        // discriminant's `NaN` roots already fail the `≥ 0` test, so the
+        // discriminant select only mirrors the scalar early return.
+        let t = hi
+            .mul_add(dr, r0)
+            .simd_ge(zero)
+            .select(hi, lo.mul_add(dr, r0).simd_ge(zero).select(lo, nan));
+        disc.simd_lt(zero).select(nan, t * s)
+    }
+}
+
+/// A radial span with the form folded to a type parameter —
+/// `parameter` calls the variant's [`RadialSolve`] directly, so the
+/// block and one-pixel paths carry no runtime form test.
+struct RadialFormEval<'a, F> {
+    /// The span-invariant radial state.
+    eval: RadialEval<'a>,
+    /// The form marker — zero-sized, decided by [`radial_span`]'s match.
+    form: PhantomData<F>,
+}
+
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+impl<'a, S, F> SpanEval<'a, S> for RadialFormEval<'a, F>
+where
+    S: Simd,
+    F: RadialSolve,
+{
     #[inline(always)]
     fn base(&self) -> &SpanBase<'a> {
-        &self.base
+        &self.eval.base
     }
     #[inline(always)]
     fn parameter<V>(&self, simd: S, cx: V, cy: V) -> V
@@ -457,11 +630,11 @@ impl<'a, S: Simd> SpanEval<'a, S> for RadialEval<'a> {
         V: SimdFloat<S, Element = f32>,
         V::Mask: Select<V>,
     {
-        radial_t_span(
+        F::solve(
             simd,
-            self,
-            cx - V::splat(simd, self.x0),
-            cy - V::splat(simd, self.y0),
+            &self.eval,
+            cx - V::splat(simd, self.eval.x0),
+            cy - V::splat(simd, self.eval.y0),
         )
     }
     #[inline(always)]
@@ -469,84 +642,10 @@ impl<'a, S: Simd> SpanEval<'a, S> for RadialEval<'a> {
     where
         V: SimdFloat<S, Element = f32>,
     {
-        // The scalar evaluator's `t.is_nan()` gate, lane-wise.
-        Some(t.simd_eq(t))
+        // The scalar evaluator's `t.is_nan()` gate, lane-wise; identical
+        // circles only produce ±∞, so their span carries no gate.
+        F::MAY_FAIL.then(|| t.simd_eq(t))
     }
-}
-
-/// `radial_t` lane-wise over `p − centre₀`, the scalar evaluator's
-/// expressions: identical circles give ±∞ by `hypot(p) ≤ r0`;
-/// otherwise `b` and `c` per lane feed the linear solve or the
-/// quadratic, keeping the largest root whose radius `r0 + t·dr` is
-/// non-negative — `NaN` when there is none.
-///
-/// The solves run at lane scale `s`: `1` while `max(|px|, |py|)` is at
-/// most [`RADIAL_RESCALE_ABOVE`], that bound beyond it. Dividing `p`
-/// and `r0` by `s` scales `b` by `1/s`, `c` and the discriminant by
-/// `1/s²` and every root by `1/s`, so no term overflows for a finite
-/// content point — unscaled, `px²` overflows f32 near 1.8e19 and
-/// `4a·c` before that, and the pixel paints nothing where the oracle
-/// paints. At `s = 1` the expressions are unchanged.
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
-)]
-#[inline(always)]
-fn radial_t_span<S, V>(simd: S, eval: &RadialEval<'_>, px: V, py: V) -> V
-where
-    S: Simd,
-    V: SimdFloat<S, Element = f32>,
-    V::Mask: Select<V>,
-{
-    let zero = V::splat(simd, 0.0);
-    let one = V::splat(simd, 1.0);
-    let nan = V::splat(simd, f32::NAN);
-    let hi = px.abs().max(py.abs());
-    if matches!(eval.form, RadialForm::Identical) {
-        // `f32::hypot` lane-wise: `hi·sqrt(1 + (lo/hi)²)`. `hi == 0`
-        // is 0, and an infinite component already reads as `> r0`.
-        let lo = px.abs().min(py.abs());
-        let r = lo / hi;
-        let h = hi * r.mul_add(r, one).sqrt();
-        let h = hi.simd_eq(zero).select(zero, h);
-        return h.simd_le(V::splat(simd, eval.r0)).select(
-            V::splat(simd, f32::NEG_INFINITY),
-            V::splat(simd, f32::INFINITY),
-        );
-    }
-    let s = hi
-        .simd_gt(V::splat(simd, RADIAL_RESCALE_ABOVE))
-        .select(hi, one);
-    let (px, py, r0) = (px / s, py / s, V::splat(simd, eval.r0) / s);
-    let dr = V::splat(simd, eval.dr);
-    // b = -2·(r0·dr + dcx·px + dcy·py), c = px² + py² − r0², at scale s.
-    let inner = V::splat(simd, eval.dcy).mul_add(py, V::splat(simd, eval.dcx) * px);
-    let b = V::splat(simd, -2.0) * r0.mul_add(dr, inner);
-    let c = r0.mul_add(-r0, py.mul_add(py, px * px));
-    if matches!(eval.form, RadialForm::Degenerate) {
-        let t = -c / b;
-        // |b| < 1e-12 has no solution; `t·dr + r0 ≥ 0` keeps the
-        // solve's radius non-negative — both scale-free.
-        let ok = (b * s).abs().simd_ge(V::splat(simd, 1e-12)) & t.mul_add(dr, r0).simd_ge(zero);
-        return ok.select(t * s, nan);
-    }
-    let disc = V::splat(simd, eval.a4).mul_add(-c, b * b);
-    let sq = disc.sqrt();
-    let den = V::splat(simd, eval.a2);
-    let r1 = (-b + sq) / den;
-    let r2 = (-b - sq) / den;
-    // `f32::max`/`min` ignore a NaN operand; NEON's `vmaxq`/`vminq`
-    // propagate it, and an infinite `b`/`sq` leaves one root NaN and
-    // the other infinite, so the precise variants are required.
-    let (hi, lo) = (r1.max_precise(r2), r1.min_precise(r2));
-    // radius_ok(hi) ? hi : radius_ok(lo) ? lo : NaN. A negative
-    // discriminant's `NaN` roots already fail the `≥ 0` test, so the
-    // discriminant select only mirrors the scalar early return.
-    let t = hi
-        .mul_add(dr, r0)
-        .simd_ge(zero)
-        .select(hi, lo.mul_add(dr, r0).simd_ge(zero).select(lo, nan));
-    disc.simd_lt(zero).select(nan, t * s)
 }
 
 /// One `LANES`-wide block from device x-centres `xs` on row `dy`'s
@@ -762,7 +861,10 @@ pub(super) fn linear_span<'a, S: Simd>(
 }
 
 /// `PaintData::Radial` over `out`: the span driver with the
-/// span-invariant choices [`RadialEval`] decides.
+/// span-invariant choices [`RadialEval`] decides. The form is
+/// unswitched once per span — each arm runs a span body generic over
+/// the variant's [`RadialSolve`] type, so neither the block loop nor
+/// the one-pixel loop re-tests it.
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
@@ -776,5 +878,44 @@ pub(super) fn radial_span<'a, S: Simd>(
     py: usize,
     out: &'a mut [MaybeUninit<[f32; 4]>],
 ) -> &'a mut [[f32; 4]] {
-    super::span::span(simd, &RadialEval::new(outer, params), x0, py, out)
+    let eval = RadialEval::new(outer, params);
+    match eval.form {
+        RadialForm::Identical => radial_span_form::<S, IdenticalSolve>(simd, eval, x0, py, out),
+        RadialForm::Degenerate => radial_span_form::<S, DegenerateSolve>(simd, eval, x0, py, out),
+        RadialForm::Quadratic => radial_span_form::<S, QuadraticSolve>(simd, eval, x0, py, out),
+    }
+}
+
+/// One form's span body, entered through `vectorize` so it compiles
+/// under the level's target features even though it is not inlined —
+/// `#[inline(never)]` keeps only one form's body live per stack frame;
+/// the earlier all-inlined attempt's three copies overflowed the
+/// debug test stack.
+#[inline(never)]
+fn radial_span_form<'o, S, F>(
+    simd: S,
+    eval: RadialEval<'_>,
+    x0: usize,
+    py: usize,
+    out: &'o mut [MaybeUninit<[f32; 4]>],
+) -> &'o mut [[f32; 4]]
+where
+    S: Simd,
+    F: RadialSolve,
+{
+    simd.vectorize(
+        #[inline(always)]
+        || {
+            super::span::span(
+                simd,
+                &RadialFormEval::<F> {
+                    eval,
+                    form: PhantomData,
+                },
+                x0,
+                py,
+                out,
+            )
+        },
+    )
 }
