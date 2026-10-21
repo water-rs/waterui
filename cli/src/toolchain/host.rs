@@ -466,6 +466,20 @@ impl Host {
             .without_env("CARGO_BUILD_TARGET_DIR")
     }
 
+    /// A host whose environment carries no compiler wrapper: `RUSTC_WRAPPER`
+    /// and its config spelling `CARGO_BUILD_RUSTC_WRAPPER` are both removed.
+    ///
+    /// Test fixtures that redirect the home directory strip these too: the
+    /// developer's wrapper is configured for the real home, and sccache on
+    /// Windows panics resolving its config directory under a scratch
+    /// `USERPROFILE`, failing every `cargo` the fixture spawns
+    /// (water-rs/waterui#3124). The real CLI keeps honoring the wrapper.
+    #[must_use]
+    pub fn without_compile_wrapper(&self) -> Self {
+        self.without_env("RUSTC_WRAPPER")
+            .without_env("CARGO_BUILD_RUSTC_WRAPPER")
+    }
+
     /// Every environment variable on this host, in map order.
     ///
     /// For resolvers that take the whole environment at once rather than
