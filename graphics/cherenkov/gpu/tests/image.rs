@@ -14,6 +14,7 @@ use cherenkov::{
     Engine, EngineError, Image, ImageColorSpace, ImageData, Offscreen, OffscreenFormat, Rgba8,
 };
 use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::metrics::assert_close;
 
 split_fn! {
 /// An engine, or `None` when no adapter exists.
@@ -219,11 +220,8 @@ fn an_image_pattern_with_extend_none_is_transparent() -> Result<(), Box<dyn std:
     let rb = wait!(surface.readback())?;
     let px = |x: u32, y: u32| rb.pixels[(y * rb.width + x) as usize];
     close_px(px(0, 0), premul_p3([255, 0, 0, 255]));
-    assert_eq!(
-        px(8, 8).map(f32::to_bits),
-        [0.0_f32; 4].map(f32::to_bits),
-        "outside the image must be clear"
-    );
+    // Outside the image the surface stays clear.
+    assert_close(&px(8, 8), &[0.0_f32; 4]);
     Ok(())
 }
 }

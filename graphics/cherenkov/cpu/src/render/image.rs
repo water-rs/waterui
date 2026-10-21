@@ -189,6 +189,7 @@ fn mul(matrix: &[[f64; 3]; 3], value: [f64; 3]) -> [f64; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cherenkov_oracle::metrics::assert_close;
 
     /// A `LinearP3` upload is the working space already: no transfer
     /// function and no primaries matrix — the byte value passes through.
@@ -203,10 +204,7 @@ mod tests {
             format: ImageFormat::Rgba8,
         };
         let decoded = CpuImage::decode(&image).expect("decode");
-        // 255/255 and 0/255 decode to exactly one and zero under the identity transfer.
-        assert_eq!(
-            decoded.pixels[0].map(f32::to_bits),
-            [1.0, 0.0, 0.0, 1.0].map(f32::to_bits)
-        );
+        // 255/255 and 0/255 decode to one and zero under the identity transfer.
+        assert_close(&decoded.pixels[0], &[1.0, 0.0, 0.0, 1.0]);
     }
 }

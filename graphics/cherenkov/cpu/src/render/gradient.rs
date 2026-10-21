@@ -3,17 +3,24 @@
 //! projection and `extend_t`/`eval_stops`' vector counterparts — the
 //! same expressions the scalar path evaluates per pixel. Each lane
 //! depends only on its own column, never on its position in the span,
-//! and agrees with `PaintData::eval` to within rounding: the vector
-//! `mul_add` is whatever the level offers, fused or not.
+//! and agrees with `PaintData::eval` to within what a viewer can see:
+//! every multiply-add is the level's own `mul_add`, fused on NEON and
+//! AVX2 and a separate product and sum elsewhere. No expression depends
+//! on the fused rounding to stay finite — the radial quadratic rescales
+//! lanes whose content point would overflow its terms.
 //!
-//! [`apply_span`], [`extend_t_span`], [`project_span`],
-//! [`eval_stops_span`] and [`premul_span`] are generic over the vector
-//! width: `f32x16` for a full block, `f32x4` for a short span's
-//! one-pixel path. The level's ops are the same at every width —
-//! `mul_add` is fused or unfused at both — so a lone pixel agrees with
-//! the block lanes bit for bit. They operate on a vector of
-//! parameters rather than a single paint kind: the radial and sweep
-//! kernels reuse them over their own parameter projections.
+//! [`project_span`], [`eval_stops_span`] and [`premul_span`] are
+//! generic over the vector width: `f32x16` for a full block, `f32x4`
+//! for the driver's one-pixel path. Sweeps evaluate [`atan2_span`], a
+//! polynomial `atan2` with a stated error bound, in place of
+//! `f32::atan2`, which has no vector form. Radials shorter than one block
+//! solve scalar points without constructing block state; both paths
+//! agree within visual rounding tolerance. Each kind decides
+//! its span-invariant state once into a [`SpanEval`]; `eval_block`,
+//! `eval_pixel` and the [`SpanKernel`] blanket impl are generic over
+//! it — one kernel body shared by every gradient kind. The
+//! kind-agnostic driver, lane helpers, extend modes and stores live in
+//! `super::span`.
 //!
 //! No closure and nothing that takes one (`Option::map_or`,
 //! `[T; N]::map`, iterator adapters) may appear on the kernel path: a
@@ -23,77 +30,18 @@
 //! loops instead, and where clippy suggests the combinator silence it
 //! with an `expect` stating this reason.
 
-use std::mem::MaybeUninit;
+use std::{marker::PhantomData, mem::MaybeUninit};
 
 use cherenkov::{Extend, Interpolation};
-use fearless_simd::{Select, Simd, SimdFloat, SimdMask, f32x4, f32x16, mask32x16};
+use fearless_simd::{Select, Simd, SimdFloat, SimdMask, f32x4, f32x16};
 
-use super::paint::{LinearPaint, PaintData, Project, Stop, to_premul};
-
-/// Lanes per gradient-kernel block; a run's remainder goes through the
-/// one-pixel path or one padded block.
-const LANES: usize = 16;
-
-/// A span below this many pixels takes the one-pixel path, inline in
-/// the caller: a padded block breaks even against per-pixel evaluation
-/// at nine pixels.
-const SHORT_SPAN: usize = 9;
-
-/// A block path's remainder below this many pixels takes the one-pixel
-/// path: the block's fixed cost is already paid.
-const SHORT_TAIL: usize = 8;
-
-/// `apply` lane-wise: the same two multiply-adds per lane.
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
-)]
-#[inline(always)]
-fn apply_span<S, V>(simd: S, m: [f32; 6], x: V, y: V) -> (V, V)
-where
-    S: Simd,
-    V: SimdFloat<S, Element = f32>,
-{
-    (
-        V::splat(simd, m[0]).mul_add(x, V::splat(simd, m[2]).mul_add(y, V::splat(simd, m[4]))),
-        V::splat(simd, m[1]).mul_add(x, V::splat(simd, m[3]).mul_add(y, V::splat(simd, m[5]))),
-    )
-}
-
-/// `extend_t` lane-wise: the extended parameter and the mask of lanes
-/// the gradient covers — every lane for `Pad`/`Repeat`/`Reflect`, the
-/// `[0, 1]` lanes for `Extend::None`.
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
-)]
-#[inline(always)]
-fn extend_t_span<S, V>(simd: S, t: V, extend: Extend) -> (V, V::Mask)
-where
-    S: Simd,
-    V: SimdFloat<S, Element = f32>,
-    V::Mask: Select<V>,
-{
-    let zero = V::splat(simd, 0.0);
-    let one = V::splat(simd, 1.0);
-    let all = zero.simd_eq(zero);
-    match extend {
-        // f32::clamp: a strict comparison falls through to `t`, so NaN
-        // and the zero sign survive.
-        Extend::Pad => {
-            let t = t.simd_lt(zero).select(zero, t);
-            (t.simd_gt(one).select(one, t), all)
-        }
-        Extend::Repeat => (t - t.floor(), all),
-        Extend::Reflect => {
-            let m = (t * V::splat(simd, 0.5))
-                .floor()
-                .mul_add(V::splat(simd, -2.0), t);
-            (m.simd_gt(one).select(V::splat(simd, 2.0) - m, m), all)
-        }
-        Extend::None => (t, t.simd_ge(zero) & t.simd_le(one)),
-    }
-}
+use super::paint::{
+    LinearPaint, PaintData, Project, RADIAL_RESCALE_ABOVE, RadialGeometry, RadialPaint, Stop,
+    SweepPaint, to_premul,
+};
+use super::span::{
+    ExtendSpan, LANES, NoneSpan, PadSpan, ReflectSpan, RepeatSpan, SpanKernel, apply_span,
+};
 
 /// `eval_stops`' window walk lane-wise over `t`, returning
 /// interpolation-space straight-alpha channels for [`premul_span`].
@@ -203,8 +151,8 @@ where
 }
 
 /// The projection lane-wise — `((cy − sy)·ddy + (cx − sx)·ddx) / len2`
-/// — the scalar evaluator's expression: one fused-or-not `mul_add`,
-/// one `mul`, one `div`. Called only for a non-degenerate gradient;
+/// — the scalar evaluator's expression: one `mul_add`, one `mul`, one
+/// `div`. Called only for a non-degenerate gradient;
 /// [`LinearEval`] decides `len2 == 0.0`.
 #[expect(
     clippy::inline_always,
@@ -220,6 +168,67 @@ where
         V::splat(simd, p.ddy),
         (cx - V::splat(simd, p.sx)) * V::splat(simd, p.ddx),
     ) / V::splat(simd, p.len2)
+}
+
+/// `atan2` lane-wise: `f32::atan2` has no vector form, so the sweep
+/// kernel evaluates this polynomial at every width and a pixel never
+/// depends on its lane. Cephes' single-precision `atan` reduction:
+/// `t ∈ [0, 1]` from |min|/|max|, `t > tan(π/8)` folded through
+/// `(t − 1)/(t + 1)` with a π/4 bias, the four-coefficient minimax on
+/// `|u| ≤ tan(π/8)`, then the quadrant rebuilt from the arguments'
+/// signs. The IEEE corners fall out of the same selects: `±0`/`±π` for
+/// a zero pair, `±π/4`/`±3π/4` for `±∞,±∞`, NaN in gives NaN out. The
+/// absolute error is under 3×10⁻⁷ rad (≈1.1 ulp at π), as measured
+/// over the domain; `f32::atan2` itself is good to ≈0.5 ulp.
+#[expect(
+    clippy::many_single_char_names,
+    reason = "x/y/t/u/z/r are the atan2 reduction's own names"
+)]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+pub(super) fn atan2_span<S, V>(simd: S, y: V, x: V) -> V
+where
+    S: Simd,
+    V: SimdFloat<S, Element = f32>,
+    V::Mask: Select<V>,
+{
+    let zero = V::splat(simd, 0.0);
+    let one = V::splat(simd, 1.0);
+    let (ax, ay) = (x.abs(), y.abs());
+    let (lo, hi) = (ax.min(ay), ax.max(ay));
+    // `lo / hi` is NaN when both are ∞ — atan(±1) — or both are 0;
+    // the first is corrected here, the second below.
+    let t = lo
+        .simd_eq(V::splat(simd, f32::INFINITY))
+        .select(one, lo / hi);
+    let big = t.simd_gt(V::splat(simd, 0.414_213_57));
+    let u = big.select((t - one) / (t + one), t);
+    let z = u * u;
+    // atan(u) = u + u³·P(u²), P the cephes f32 coefficients.
+    let p = V::splat(simd, 8.053_744_5e-2)
+        .mul_add(z, V::splat(simd, -1.387_768_5e-1))
+        .mul_add(z, V::splat(simd, 1.997_771_1e-1))
+        .mul_add(z, V::splat(simd, -3.333_295e-1));
+    let mut r =
+        (u * z).mul_add(p, u) + big.select(V::splat(simd, std::f32::consts::FRAC_PI_4), zero);
+    r = ay
+        .simd_gt(ax)
+        .select(V::splat(simd, std::f32::consts::FRAC_PI_2) - r, r);
+    r = x
+        .simd_lt(zero)
+        .select(V::splat(simd, std::f32::consts::PI) - r, r);
+    let r = r.copysign(y);
+    // atan2(±0, ±0): ±π for a negative-signed x, ±0 otherwise.
+    let corner = x
+        .simd_lt(zero)
+        .select(V::splat(simd, std::f32::consts::PI), zero)
+        .copysign(y);
+    let r = hi.simd_eq(zero).select(corner, r);
+    // NaN in either argument gives NaN, whatever min/max picked.
+    (!(x.simd_eq(x)) | !(y.simd_eq(y))).select(V::splat(simd, f32::NAN), r)
 }
 
 /// `premul_span`'s working-space arm on one pixel's channel vector:
@@ -245,8 +254,8 @@ fn premul_pixel<S: Simd>(simd: S, c: f32x4<S>, working: bool) -> f32x4<S> {
 /// flow is scalar — `t ≤ first` / `t ≥ last` first, then the first
 /// matching window, the NaN fall-through to the last stop — `f` is the
 /// exactly rounded scalar quotient, and the window mix is one
-/// four-channel `mul_add`, the block lane's expression. `stops` holds
-/// at least two entries.
+/// four-channel `mul_add`, the block lane's expression. `stops`
+/// holds at least two entries.
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
@@ -279,179 +288,20 @@ fn eval_stops_pixel<S: Simd>(simd: S, stops: &[Stop], t: f32, working: bool) -> 
     premul_pixel(simd, simd.load_array_f32x4(last.color), working)
 }
 
-/// `extend` folded to a constant per instantiation: `block` is
-/// [`extend_t_span`] at `LANES`, `lane` the same extension on one
-/// scalar parameter — the modes' strict compares are exact in scalar
-/// code, and `Reflect`'s `mul_add` goes through the level's own op on
-/// lane 0 of an `f32x4`.
-trait ExtendSpan<S: Simd> {
-    /// [`extend_t_span`] at block width.
-    fn block(simd: S, t: f32x16<S>) -> (f32x16<S>, mask32x16<S>);
-    /// The same extension on one parameter, with its coverage flag —
-    /// `Extend::None` outside `[0, 1]` yields transparent.
-    fn lane(simd: S, t: f32) -> (f32, bool);
-}
-
-macro_rules! extend_span {
-    ($name:ident, $extend:expr, |$simd:ident, $t:ident| $lane:expr) => {
-        /// The mode's [`ExtendSpan`] instantiation.
-        struct $name;
-        impl<S: Simd> ExtendSpan<S> for $name {
-            #[inline(always)]
-            fn block(simd: S, t: f32x16<S>) -> (f32x16<S>, mask32x16<S>) {
-                extend_t_span(simd, t, $extend)
-            }
-            #[inline(always)]
-            fn lane($simd: S, $t: f32) -> (f32, bool) {
-                $lane
-            }
-        }
-    };
-}
-
-extend_span!(PadSpan, Extend::Pad, |_simd, t| {
-    // The block's selects as scalar `if`s: a strict comparison falls
-    // through to `t`, so NaN and the zero sign survive.
-    let t = if t < 0.0 { 0.0 } else { t };
-    (if t > 1.0 { 1.0 } else { t }, true)
-});
-extend_span!(RepeatSpan, Extend::Repeat, |_simd, t| {
-    (t - t.floor(), true)
-});
-extend_span!(ReflectSpan, Extend::Reflect, |simd, t| {
-    // `floor(t·½)·(−2) + t` through the level's own `mul_add` on lane
-    // 0, the fused-or-not rounding the block lanes get.
-    let m = simd
-        .splat_f32x4((t * 0.5).floor())
-        .mul_add(simd.splat_f32x4(-2.0), simd.splat_f32x4(t))[0];
-    (if m > 1.0 { 2.0 - m } else { m }, true)
-});
-extend_span!(NoneSpan, Extend::None, |_simd, t| {
-    (t, (0.0..=1.0).contains(&t))
-});
-
-/// Lanes `4k..4k+4` of a sixteen-lane vector.
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level"
-)]
-#[inline(always)]
-fn lane4<S: Simd>(simd: S, v: f32x16<S>, k: usize) -> f32x4<S> {
-    let (lo, hi) = simd.split_f32x16(v);
-    let (q0, q1) = simd.split_f32x8(lo);
-    let (q2, q3) = simd.split_f32x8(hi);
-    match k {
-        0 => q0,
-        1 => q1,
-        2 => q2,
-        _ => q3,
-    }
-}
-
-/// The interleaved sixteen-float group holding lanes `4k..4k+4` of a
-/// block's premultiplied channels — pixels `4k..4k+4`, ready for
-/// [`Simd::store_interleaved_128_f32x16`].
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level"
-)]
-#[inline(always)]
-fn block_group<S: Simd>(simd: S, px: &[f32x16<S>; 4], k: usize) -> f32x16<S> {
-    simd.combine_f32x8(
-        simd.combine_f32x4(lane4(simd, px[0], k), lane4(simd, px[1], k)),
-        simd.combine_f32x4(lane4(simd, px[2], k), lane4(simd, px[3], k)),
-    )
-}
-
-/// The premultiplied channels of a block transposed into `stage` as
-/// sixteen `[r, g, b, a]` pixels — the solid kernel's interleaved
-/// store, one 128-bit group per four lanes. A full block's `stage`
-/// aliases `out` directly.
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level"
-)]
-#[inline(always)]
-fn store_block<S: Simd>(simd: S, px: [f32x16<S>; 4], stage: &mut [f32; 64]) {
-    for (k, group) in stage.as_chunks_mut::<16>().0.iter_mut().enumerate() {
-        simd.store_interleaved_128_f32x16(block_group(simd, &px, k), group);
-    }
-}
-
-/// Store up to four pixels from a statically selected quarter of a
-/// block. Keeping the quarter constant lets the level's registers
-/// feed the transpose directly instead of indexing spilled vectors.
-///
-/// # Safety
-/// `K < 4` and `out` is writable for `count.min(4)` pixels.
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level"
-)]
-#[inline(always)]
-unsafe fn store_quarter<S: Simd, const K: usize>(
-    simd: S,
-    px: &[f32x16<S>; 4],
-    out: *mut MaybeUninit<[f32; 4]>,
-    count: usize,
-) {
-    if count >= 4 {
-        // SAFETY: the caller supplies at least `count` writable pixels.
-        let group = unsafe { &mut *out.cast::<[f32; 16]>() };
-        simd.store_interleaved_128_f32x16(block_group(simd, px, K), group);
-    } else if count != 0 {
-        let mut stage = [0.0f32; 16];
-        simd.store_interleaved_128_f32x16(block_group(simd, px, K), &mut stage);
-        let dst = out.cast::<f32>();
-        // SAFETY: `stage` is initialized and `count * 4` floats fit
-        // in the caller's remainder.
-        unsafe {
-            match count {
-                1 => std::ptr::copy_nonoverlapping(stage.as_ptr(), dst, 4),
-                2 => std::ptr::copy_nonoverlapping(stage.as_ptr(), dst, 8),
-                _ => std::ptr::copy_nonoverlapping(stage.as_ptr(), dst, 12),
-            }
-        }
-    }
-}
-
-/// Store an eight-to-fifteen-pixel prefix with constant quarter
-/// selections. The first two quarters are always complete.
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level"
-)]
-#[inline(always)]
-fn store_partial<S: Simd>(simd: S, px: [f32x16<S>; 4], out: &mut [MaybeUninit<[f32; 4]>]) {
-    let dst = out.as_mut_ptr();
-    // SAFETY: the prefix contains eight to fifteen pixels. Each
-    // constant quarter is in range and writes only its live pixels;
-    // a zero count does not dereference the one-past-the-end pointer.
-    unsafe {
-        store_quarter::<S, 0>(simd, &px, dst, 4);
-        store_quarter::<S, 1>(simd, &px, dst.add(4), 4);
-        store_quarter::<S, 2>(simd, &px, dst.add(8), out.len() - 8);
-        if out.len() > 12 {
-            store_quarter::<S, 3>(simd, &px, dst.add(12), out.len() - 12);
-        }
-    }
-}
-
-/// The span-invariant evaluation, decided once per span: the
-/// device→content map after the `Transformed` chain (each link's f32
-/// inverse lives on `PaintData` since lowering), the projection —
-/// absent for a degenerate gradient, whose parameter is fixed at 0 —
-/// the stops as a window walk or a constant colour, and the
-/// premultiplication branch.
+/// The span-invariant state every gradient kind's evaluation shares,
+/// decided once per span by one constructor: the paint the
+/// `Transformed` chain walk starts from (each link's f32 inverse lives
+/// on `PaintData` since lowering), the leaf's device→content map, the
+/// extend mode, the stops as a window walk or a constant colour, and
+/// the premultiplication branch.
 #[derive(Clone, Copy)]
-struct LinearEval<'a> {
+struct SpanBase<'a> {
     /// The paint the chain walk starts from.
     outer: &'a PaintData,
     /// Device-to-content transform.
     inv: [f32; 6],
-    /// `Some` projects to `t`; `None` is a degenerate gradient
-    /// (`len2 == 0.0`), fixing `t` at 0.
-    project: Option<Project>,
+    /// The continuation mode.
+    extend: Extend,
     /// `Ok` takes the window walk (two or more stops); `Err` is the
     /// span's constant premultiplied colour (zero or one stop).
     stops: Result<&'a [Stop], [f32; 4]>,
@@ -459,10 +309,71 @@ struct LinearEval<'a> {
     working: bool,
 }
 
+impl<'a> SpanBase<'a> {
+    /// Decides the shared span-invariant choices once: the
+    /// constant-colour stop lists and the premultiplication branch.
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
+    fn new(
+        outer: &'a PaintData,
+        inv: [f32; 6],
+        stops: &'a std::sync::Arc<[Stop]>,
+        extend: Extend,
+        interpolation: Interpolation,
+    ) -> Self {
+        Self {
+            outer,
+            inv,
+            extend,
+            stops: match &**stops {
+                [] => Err([0.0; 4]),
+                [s] => Err(to_premul(s.color, interpolation)),
+                stops => Ok(stops),
+            },
+            working: interpolation == Interpolation::Working,
+        }
+    }
+}
+
+/// A gradient kind's per-span evaluation: the [`SpanBase`] everything
+/// shares, plus the per-kind parameter each lane's content point
+/// yields and the mask of lanes it is solvable for. [`eval_block`]
+/// and [`eval_pixel`] are generic over it, and the [`SpanKernel`]
+/// blanket impl below drives it through the shared span driver.
+trait SpanEval<'a, S: Simd> {
+    /// The shared span-invariant state.
+    fn base(&self) -> &SpanBase<'a>;
+    /// The gradient parameter of each lane's content point, before
+    /// extension.
+    fn parameter<V>(&self, simd: S, cx: V, cy: V) -> V
+    where
+        V: SimdFloat<S, Element = f32>,
+        V::Mask: Select<V>;
+    /// The lanes whose parameter is solvable, tested before extension:
+    /// radial's no-solution `NaN`. `None` for a kind whose parameter
+    /// has no such case — a compile-time fact, so its block and pixel
+    /// paths carry no mask and no branch.
+    fn solvable<V>(&self, t: V) -> Option<V::Mask>
+    where
+        V: SimdFloat<S, Element = f32>;
+}
+
+/// The span-invariant linear evaluation, decided once per span: the
+/// shared base and the projection — `None` for a degenerate gradient
+/// (`len2 == 0.0`), fixing the parameter at 0.
+#[derive(Clone, Copy)]
+struct LinearEval<'a> {
+    /// The shared span-invariant state.
+    base: SpanBase<'a>,
+    /// `Some` projects to `t`; `None` fixes it at 0.
+    project: Option<Project>,
+}
+
 impl<'a> LinearEval<'a> {
-    /// Decides every span-invariant choice once: the projection —
-    /// computed at lowering — the constant-colour stop lists and the
-    /// premultiplication branch.
+    /// The projection — computed at lowering — over the shared base.
     #[expect(
         clippy::inline_always,
         reason = "compiled under the dispatched CPU level so mul_add is one instruction"
@@ -470,24 +381,421 @@ impl<'a> LinearEval<'a> {
     #[inline(always)]
     fn new(outer: &'a PaintData, params: &'a LinearPaint) -> Self {
         Self {
-            outer,
-            inv: params.inv,
+            base: SpanBase::new(
+                outer,
+                params.inv,
+                &params.stops,
+                params.extend,
+                params.interpolation,
+            ),
             project: params.project,
-            stops: match &*params.stops {
-                [] => Err([0.0; 4]),
-                [s] => Err(to_premul(s.color, params.interpolation)),
-                stops => Ok(stops),
-            },
-            working: params.interpolation == Interpolation::Working,
         }
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+impl<'a, S: Simd> SpanEval<'a, S> for LinearEval<'a> {
+    #[inline(always)]
+    fn base(&self) -> &SpanBase<'a> {
+        &self.base
+    }
+    #[expect(
+        clippy::option_if_let_else,
+        reason = "a map_or_else closure is compiled without the level's target features"
+    )]
+    #[inline(always)]
+    fn parameter<V>(&self, simd: S, cx: V, cy: V) -> V
+    where
+        V: SimdFloat<S, Element = f32>,
+        V::Mask: Select<V>,
+    {
+        match self.project {
+            Some(p) => project_span(simd, &p, cx, cy),
+            None => V::splat(simd, 0.0),
+        }
+    }
+    #[inline(always)]
+    fn solvable<V>(&self, _t: V) -> Option<V::Mask>
+    where
+        V: SimdFloat<S, Element = f32>,
+    {
+        None
+    }
+}
+
+/// The span-invariant sweep evaluation, decided once per span: the
+/// shared base and the centre, start angle and angular span — lowering
+/// normalized the start to `[0, TAU)` and the span to a positive finite
+/// value.
+#[derive(Clone, Copy)]
+struct SweepEval<'a> {
+    /// The shared span-invariant state.
+    base: SpanBase<'a>,
+    /// The centre in content space.
+    center: [f32; 2],
+    /// Start angle in radians.
+    start: f32,
+    /// Angular span in radians.
+    span: f32,
+}
+
+impl<'a> SweepEval<'a> {
+    /// The sweep constants over the shared base.
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
+    fn new(outer: &'a PaintData, params: &'a SweepPaint) -> Self {
+        Self {
+            base: SpanBase::new(
+                outer,
+                params.inv,
+                &params.stops,
+                params.extend,
+                params.interpolation,
+            ),
+            center: params.center,
+            start: params.start,
+            span: params.span,
+        }
+    }
+}
+
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+impl<'a, S: Simd> SpanEval<'a, S> for SweepEval<'a> {
+    #[inline(always)]
+    fn base(&self) -> &SpanBase<'a> {
+        &self.base
+    }
+    #[inline(always)]
+    fn parameter<V>(&self, simd: S, cx: V, cy: V) -> V
+    where
+        V: SimdFloat<S, Element = f32>,
+        V::Mask: Select<V>,
+    {
+        let zero = V::splat(simd, 0.0);
+        let turn = V::splat(simd, std::f32::consts::TAU);
+        let raw = atan2_span(
+            simd,
+            cy - V::splat(simd, self.center[1]),
+            cx - V::splat(simd, self.center[0]),
+        ) - V::splat(simd, self.start);
+        // At most two additions take the angle to [0, TAU).
+        let raw = raw
+            .simd_lt(V::splat(simd, -std::f32::consts::TAU))
+            .select(raw + turn, raw);
+        let angle = raw.simd_lt(zero).select(raw + turn, raw);
+        angle / V::splat(simd, self.span)
+    }
+    #[inline(always)]
+    fn solvable<V>(&self, _t: V) -> Option<V::Mask>
+    where
+        V: SimdFloat<S, Element = f32>,
+    {
+        None
+    }
+}
+
+/// Which equation a radial span's lanes solve — decided once per
+/// span, as the scalar `radial_t` decides per pixel. [`radial_span`]
+/// matches it once; each arm runs a span body generic over the
+/// variant's [`RadialSolve`] type, so neither loop re-tests the form.
+#[derive(Clone, Copy)]
+enum RadialForm {
+    /// The circles are identical: the parameter is `-∞` on and inside
+    /// `r0`, `+∞` outside.
+    Identical,
+    /// `|a| < 1e-12`: the quadratic degenerates to the `-c / b`
+    /// linear solve.
+    Degenerate,
+    /// The quadratic `a·t² + b·t + c = 0`.
+    Quadratic,
+}
+
+/// The span-invariant radial evaluation, decided once per span: the
+/// shared base, the quadratic's constants and its decided form.
+#[derive(Clone, Copy)]
+struct RadialEval<'a> {
+    /// The shared span-invariant state.
+    base: SpanBase<'a>,
+    /// `centres[0]` and `centres[1]`: the point `radial_t` measures
+    /// from.
+    x0: f32,
+    y0: f32,
+    /// `radii[0]` and `radii[1] - radii[0]`.
+    r0: f32,
+    dr: f32,
+    /// `centres[2] - centres[0]` and `centres[3] - centres[1]`.
+    dcx: f32,
+    dcy: f32,
+    /// `4·a` and `2·a`, in the scalar expression's rounding.
+    a4: f32,
+    a2: f32,
+    /// The equation the span solves.
+    form: RadialForm,
+}
+
+impl<'a> RadialEval<'a> {
+    /// Selects the form from the prepared coefficients: `|a| < 1e-12`
+    /// selects the linear solve, `identical` the ±∞ edge.
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
+    fn new(outer: &'a PaintData, params: &'a RadialPaint) -> Self {
+        let RadialGeometry {
+            x0,
+            y0,
+            r0,
+            dr,
+            dcx,
+            dcy,
+            a,
+        } = params.geometry;
+        Self {
+            base: SpanBase::new(
+                outer,
+                params.inv,
+                &params.stops,
+                params.extend,
+                params.interpolation,
+            ),
+            x0,
+            y0,
+            r0,
+            dr,
+            dcx,
+            dcy,
+            a4: 4.0 * a,
+            a2: 2.0 * a,
+            form: if params.identical {
+                RadialForm::Identical
+            } else if a.abs() < 1e-12 {
+                RadialForm::Degenerate
+            } else {
+                RadialForm::Quadratic
+            },
+        }
+    }
+}
+
+/// A `RadialForm` variant as a type: `solve` evaluates `t` for a
+/// block and for a lane — the scalar expressions are identical at
+/// every width, so one generic method serves both. [`radial_span`]
+/// picks the type once per span; no form test runs inside a loop.
+trait RadialSolve {
+    /// Whether `solve` can yield `NaN`, the scalar evaluator's
+    /// unpainted pixel; a form that never does skips the per-pixel gate.
+    const MAY_FAIL: bool;
+
+    /// `radial_t` lane-wise over `p − centre₀` for this form.
+    fn solve<S, V>(simd: S, eval: &RadialEval<'_>, px: V, py: V) -> V
+    where
+        S: Simd,
+        V: SimdFloat<S, Element = f32>,
+        V::Mask: Select<V>;
+}
+
+/// The lane-scale `b`, `c`, `r0` and `s` every solving form shares:
+/// `s` is `1` while `max(|px|, |py|)` is at most
+/// [`RADIAL_RESCALE_ABOVE`], that bound beyond it. `p` and `r0`
+/// multiplied by the lane reciprocal `1/s` — one divide per lane
+/// instead of three — scales `b` by `1/s`, `c` and the discriminant
+/// by `1/s²` and every root by `1/s`, so no term overflows for a
+/// finite content point — unscaled, `px²` overflows f32 near 1.8e19
+/// and `4a·c` before that, and the pixel paints nothing where the
+/// oracle paints. At `s = 1` the expressions are unchanged.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+fn scaled_terms<S, V>(simd: S, eval: &RadialEval<'_>, px: V, py: V) -> (V, V, V, V)
+where
+    S: Simd,
+    V: SimdFloat<S, Element = f32>,
+    V::Mask: Select<V>,
+{
+    let one = V::splat(simd, 1.0);
+    let hi = px.abs().max(py.abs());
+    let s = hi
+        .simd_gt(V::splat(simd, RADIAL_RESCALE_ABOVE))
+        .select(hi, one);
+    let inv = one / s;
+    let (px, py, r0) = (px * inv, py * inv, V::splat(simd, eval.r0) * inv);
+    // b = -2·(r0·dr + dcx·px + dcy·py), c = px² + py² − r0², at scale s.
+    let inner = V::splat(simd, eval.dcy).mul_add(py, V::splat(simd, eval.dcx) * px);
+    let b = V::splat(simd, -2.0) * r0.mul_add(V::splat(simd, eval.dr), inner);
+    let c = r0.mul_add(-r0, py.mul_add(py, px * px));
+    (b, c, r0, s)
+}
+
+/// `RadialForm::Identical`: the parameter is `-∞` on and inside `r0`,
+/// `+∞` outside, by `hypot(p) ≤ r0`.
+struct IdenticalSolve;
+
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+impl RadialSolve for IdenticalSolve {
+    const MAY_FAIL: bool = false;
+
+    #[inline(always)]
+    fn solve<S, V>(simd: S, eval: &RadialEval<'_>, px: V, py: V) -> V
+    where
+        S: Simd,
+        V: SimdFloat<S, Element = f32>,
+        V::Mask: Select<V>,
+    {
+        let zero = V::splat(simd, 0.0);
+        let one = V::splat(simd, 1.0);
+        let hi = px.abs().max(py.abs());
+        // `f32::hypot` lane-wise: `hi·sqrt(1 + (lo/hi)²)`. `hi == 0`
+        // is 0, and an infinite component already reads as `> r0`.
+        let lo = px.abs().min(py.abs());
+        let r = lo / hi;
+        let h = hi * r.mul_add(r, one).sqrt();
+        let h = hi.simd_eq(zero).select(zero, h);
+        h.simd_le(V::splat(simd, eval.r0)).select(
+            V::splat(simd, f32::NEG_INFINITY),
+            V::splat(simd, f32::INFINITY),
+        )
+    }
+}
+
+/// `RadialForm::Degenerate` — `|a| < 1e-12`: the quadratic reduces to
+/// the `-c / b` linear solve.
+struct DegenerateSolve;
+
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+impl RadialSolve for DegenerateSolve {
+    const MAY_FAIL: bool = true;
+
+    #[inline(always)]
+    fn solve<S, V>(simd: S, eval: &RadialEval<'_>, px: V, py: V) -> V
+    where
+        S: Simd,
+        V: SimdFloat<S, Element = f32>,
+        V::Mask: Select<V>,
+    {
+        let (b, c, r0, s) = scaled_terms(simd, eval, px, py);
+        let dr = V::splat(simd, eval.dr);
+        let t = -c / b;
+        // |b| < 1e-12 has no solution; `t·dr + r0 ≥ 0` keeps the
+        // solve's radius non-negative — both scale-free.
+        let ok = (b * s).abs().simd_ge(V::splat(simd, 1e-12))
+            & t.mul_add(dr, r0).simd_ge(V::splat(simd, 0.0));
+        ok.select(t * s, V::splat(simd, f32::NAN))
+    }
+}
+
+/// `RadialForm::Quadratic`: `a·t² + b·t + c = 0`, keeping the largest
+/// root whose radius `r0 + t·dr` is non-negative — `NaN` when there is
+/// none.
+struct QuadraticSolve;
+
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+impl RadialSolve for QuadraticSolve {
+    const MAY_FAIL: bool = true;
+
+    #[inline(always)]
+    fn solve<S, V>(simd: S, eval: &RadialEval<'_>, px: V, py: V) -> V
+    where
+        S: Simd,
+        V: SimdFloat<S, Element = f32>,
+        V::Mask: Select<V>,
+    {
+        let (b, c, r0, s) = scaled_terms(simd, eval, px, py);
+        let zero = V::splat(simd, 0.0);
+        let nan = V::splat(simd, f32::NAN);
+        let dr = V::splat(simd, eval.dr);
+        let disc = V::splat(simd, eval.a4).mul_add(-c, b * b);
+        let sq = disc.sqrt();
+        let den = V::splat(simd, eval.a2);
+        let r1 = (-b + sq) / den;
+        let r2 = (-b - sq) / den;
+        // `f32::max`/`min` ignore a NaN operand; NEON's `vmaxq`/`vminq`
+        // propagate it, and an infinite `b`/`sq` leaves one root NaN and
+        // the other infinite, so the precise variants are required.
+        let (hi, lo) = (r1.max_precise(r2), r1.min_precise(r2));
+        // radius_ok(hi) ? hi : radius_ok(lo) ? lo : NaN. A negative
+        // discriminant's `NaN` roots already fail the `≥ 0` test, so the
+        // discriminant select only mirrors the scalar early return.
+        let t = hi
+            .mul_add(dr, r0)
+            .simd_ge(zero)
+            .select(hi, lo.mul_add(dr, r0).simd_ge(zero).select(lo, nan));
+        disc.simd_lt(zero).select(nan, t * s)
+    }
+}
+
+/// A radial span with the form folded to a type parameter —
+/// `parameter` calls the variant's [`RadialSolve`] directly, so the
+/// block and one-pixel paths carry no runtime form test.
+struct RadialFormEval<'a, F> {
+    /// The span-invariant radial state.
+    eval: RadialEval<'a>,
+    /// The form marker — zero-sized, decided by [`radial_span`]'s match.
+    form: PhantomData<F>,
+}
+
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+impl<'a, S, F> SpanEval<'a, S> for RadialFormEval<'a, F>
+where
+    S: Simd,
+    F: RadialSolve,
+{
+    #[inline(always)]
+    fn base(&self) -> &SpanBase<'a> {
+        &self.eval.base
+    }
+    #[inline(always)]
+    fn parameter<V>(&self, simd: S, cx: V, cy: V) -> V
+    where
+        V: SimdFloat<S, Element = f32>,
+        V::Mask: Select<V>,
+    {
+        F::solve(
+            simd,
+            &self.eval,
+            cx - V::splat(simd, self.eval.x0),
+            cy - V::splat(simd, self.eval.y0),
+        )
+    }
+    #[inline(always)]
+    fn solvable<V>(&self, t: V) -> Option<V::Mask>
+    where
+        V: SimdFloat<S, Element = f32>,
+    {
+        // The scalar evaluator's `t.is_nan()` gate, lane-wise; identical
+        // circles only produce ±∞, so their span carries no gate.
+        F::MAY_FAIL.then(|| t.simd_eq(t))
+    }
+}
+
 /// One `LANES`-wide block from device x-centres `xs` on row `dy`'s
-/// centre: `outer`'s chain inverses and `inv`, the projection, the
+/// centre: the base's chain inverses and `inv`, the parameter, the
 /// extend mode as a runtime choice on one block copy and the
 /// span-decided stops — premultiplied channels, zero where
-/// `Extend::None` leaves the domain.
+/// `Extend::None` leaves the domain or the parameter has no solution.
 #[expect(
     clippy::option_if_let_else,
     reason = "a map_or closure is compiled without the level's target features"
@@ -497,33 +805,34 @@ impl<'a> LinearEval<'a> {
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn eval_block<S: Simd>(
-    simd: S,
-    eval: &LinearEval<'_>,
-    xs: f32x16<S>,
-    dy: f32x16<S>,
-    extend: Extend,
-) -> [f32x16<S>; 4] {
+fn eval_block<'a, S, E>(simd: S, eval: &E, xs: f32x16<S>, dy: f32x16<S>) -> [f32x16<S>; 4]
+where
+    S: Simd,
+    E: SpanEval<'a, S>,
+{
+    let base = eval.base();
     let (mut cx, mut cy) = (xs, dy);
-    let mut link = eval.outer;
+    let mut link = base.outer;
     while let PaintData::Transformed(inner) = link {
         (cx, cy) = apply_span(simd, inner.inverse_f32, cx, cy);
         link = &inner.paint;
     }
-    let (cx, cy) = apply_span(simd, eval.inv, cx, cy);
+    let (cx, cy) = apply_span(simd, base.inv, cx, cy);
     let zero = simd.splat_f32x16(0.0);
-    let t = match eval.project {
-        Some(p) => project_span(simd, &p, cx, cy),
-        None => zero,
-    };
-    let (t, active) = match extend {
+    let t = eval.parameter(simd, cx, cy);
+    let solvable = eval.solvable(t);
+    let (t, active) = match base.extend {
         Extend::Pad => PadSpan::block(simd, t),
         Extend::Repeat => RepeatSpan::block(simd, t),
         Extend::Reflect => ReflectSpan::block(simd, t),
         Extend::None => NoneSpan::block(simd, t),
     };
-    let mut px = match eval.stops {
-        Ok(stops) => premul_span(simd, eval_stops_span(simd, stops, t), eval.working),
+    let active = match solvable {
+        Some(solvable) => active & solvable,
+        None => active,
+    };
+    let mut px = match base.stops {
+        Ok(stops) => premul_span(simd, eval_stops_span(simd, stops, t), base.working),
         Err(c) => [
             simd.splat_f32x16(c[0]),
             simd.splat_f32x16(c[1]),
@@ -537,45 +846,47 @@ fn eval_block<S: Simd>(
     px
 }
 
-/// One pixel of the block expression in channel-vector form: `outer`'s
-/// chain — present only in the `CHAINED` instantiation — and `inv`
-/// applied with the level's own `mul_add` on lane 0 of an `f32x4`, the
-/// same arithmetic, fused or not, the block lanes get; the scalar
-/// extend and early-exit stop search, one four-channel mix and
-/// premultiply, zero where `Extend::None` leaves the domain.
-#[expect(
-    clippy::option_if_let_else,
-    reason = "a map_or closure is compiled without the level's target features"
-)]
+/// One pixel of the block expression in channel-vector form: the
+/// base's chain — present only in the `CHAINED` instantiation — and
+/// `inv` applied through `apply_span`'s `f32x4` lane, the same
+/// arithmetic the block lanes get;
+/// the scalar extend and early-exit stop search, one four-channel mix
+/// and premultiply, zero where `Extend::None` leaves the domain or the
+/// parameter has no solution.
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn eval_pixel<S, E, const CHAINED: bool>(simd: S, eval: LinearEval<'_>, x: f32, y: f32) -> f32x4<S>
+fn eval_pixel<'a, S, X, E, const CHAINED: bool>(simd: S, eval: &E, x: f32, y: f32) -> f32x4<S>
 where
     S: Simd,
-    E: ExtendSpan<S>,
+    X: ExtendSpan<S>,
+    E: SpanEval<'a, S>,
 {
+    let base = eval.base();
     let (mut cx, mut cy) = (simd.splat_f32x4(x), simd.splat_f32x4(y));
     if CHAINED {
-        let mut link = eval.outer;
+        let mut link = base.outer;
         while let PaintData::Transformed(inner) = link {
             (cx, cy) = apply_span(simd, inner.inverse_f32, cx, cy);
             link = &inner.paint;
         }
     }
-    let (cx, cy) = apply_span(simd, eval.inv, cx, cy);
-    let t = match eval.project {
-        Some(p) => project_span(simd, &p, cx, cy)[0],
-        None => 0.0,
-    };
-    let (t, active) = E::lane(simd, t);
+    let (cx, cy) = apply_span(simd, base.inv, cx, cy);
+    let t = eval.parameter(simd, cx, cy);
+    // `solvable`'s lane 0 — the splat point makes every lane identical.
+    if let Some(solvable) = eval.solvable(t)
+        && solvable[0] == 0
+    {
+        return simd.splat_f32x4(0.0);
+    }
+    let (t, active) = X::lane(simd, t[0]);
     if !active {
         return simd.splat_f32x4(0.0);
     }
-    match eval.stops {
-        Ok(stops) => eval_stops_pixel(simd, stops, t, eval.working),
+    match base.stops {
+        Ok(stops) => eval_stops_pixel(simd, stops, t, base.working),
         Err(c) => simd.load_array_f32x4(c),
     }
 }
@@ -588,19 +899,20 @@ where
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn eval_pixels<S, E, const CHAINED: bool>(
+fn eval_pixels<'a, S, X, E, const CHAINED: bool>(
     simd: S,
-    eval: LinearEval<'_>,
+    eval: &E,
     mut x: f32,
     y: f32,
     out: &mut [MaybeUninit<[f32; 4]>],
 ) where
     S: Simd,
-    E: ExtendSpan<S>,
+    X: ExtendSpan<S>,
+    E: SpanEval<'a, S>,
 {
     for px in out.iter_mut() {
         // SAFETY: the store writes all four lanes of `px`.
-        simd.store_array_f32x4(eval_pixel::<S, E, CHAINED>(simd, eval, x, y), unsafe {
+        simd.store_array_f32x4(eval_pixel::<S, X, E, CHAINED>(simd, eval, x, y), unsafe {
             &mut *px.as_mut_ptr()
         });
         x += 1.0;
@@ -616,15 +928,16 @@ fn eval_pixels<S, E, const CHAINED: bool>(
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn eval_run<S, E>(simd: S, eval: LinearEval<'_>, x: f32, y: f32, out: &mut [MaybeUninit<[f32; 4]>])
+fn eval_run<'a, S, X, E>(simd: S, eval: &E, x: f32, y: f32, out: &mut [MaybeUninit<[f32; 4]>])
 where
     S: Simd,
-    E: ExtendSpan<S>,
+    X: ExtendSpan<S>,
+    E: SpanEval<'a, S>,
 {
-    if matches!(eval.outer, PaintData::Transformed(..)) {
-        eval_pixels::<S, E, true>(simd, eval, x, y, out);
+    if matches!(eval.base().outer, PaintData::Transformed(..)) {
+        eval_pixels::<S, X, E, true>(simd, eval, x, y, out);
     } else {
-        eval_pixels::<S, E, false>(simd, eval, x, y, out);
+        eval_pixels::<S, X, E, false>(simd, eval, x, y, out);
     }
 }
 
@@ -637,43 +950,43 @@ where
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn eval_run_extend<S: Simd>(
-    simd: S,
-    eval: LinearEval<'_>,
-    extend: Extend,
-    x: f32,
-    y: f32,
-    out: &mut [MaybeUninit<[f32; 4]>],
-) {
-    match extend {
-        Extend::Pad => eval_run::<S, PadSpan>(simd, eval, x, y, out),
-        Extend::Repeat => eval_run::<S, RepeatSpan>(simd, eval, x, y, out),
-        Extend::Reflect => eval_run::<S, ReflectSpan>(simd, eval, x, y, out),
-        Extend::None => eval_run::<S, NoneSpan>(simd, eval, x, y, out),
+fn eval_run_extend<'a, S, E>(simd: S, eval: &E, x: f32, y: f32, out: &mut [MaybeUninit<[f32; 4]>])
+where
+    S: Simd,
+    E: SpanEval<'a, S>,
+{
+    match eval.base().extend {
+        Extend::Pad => eval_run::<S, PadSpan, E>(simd, eval, x, y, out),
+        Extend::Repeat => eval_run::<S, RepeatSpan, E>(simd, eval, x, y, out),
+        Extend::Reflect => eval_run::<S, ReflectSpan, E>(simd, eval, x, y, out),
+        Extend::None => eval_run::<S, NoneSpan, E>(simd, eval, x, y, out),
     }
 }
 
-/// `PaintData::Linear` over `out`: `outer`'s `Transformed` chain
-/// inverses then `params.inv` map each lane's device centre into
-/// content space, one affine apply per link so the chain keeps the
-/// scalar rounding; the projection, extend mode and shared stop
-/// evaluation follow. Every choice that holds for the whole span is
-/// decided here or in [`LinearEval`]. A span under [`SHORT_SPAN`]
-/// pixels evaluates inline by [`eval_run`]; a longer span runs
-/// `LANES`-wide blocks inline — one block body, one call site, the
-/// extend mode chosen at runtime per block — full blocks storing
-/// straight into `out`, a [`SHORT_TAIL`]-or-wider remainder taking a
-/// padded block through the same body. What the blocks leave —
-/// a short span's whole `out` or a remainder under [`SHORT_TAIL`]
-/// pixels — takes the one-pixel path, also once.
+/// Every [`SpanEval`] is a [`SpanKernel`]: `block` is [`eval_block`]'s
+/// one inlined body, `run` the extend-dispatched one-pixel path — the
+/// pieces [`super::span::span`] drives.
 #[expect(
-    clippy::cast_precision_loss,
-    reason = "pixel indices and band offsets are far below 2^24"
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "device coordinates are far below 2^24"
-)]
+impl<'a, S, E> SpanKernel<'a, S> for E
+where
+    S: Simd,
+    E: SpanEval<'a, S>,
+{
+    #[inline(always)]
+    fn block(&self, simd: S, xs: f32x16<S>, dy: f32x16<S>) -> [f32x16<S>; 4] {
+        eval_block(simd, self, xs, dy)
+    }
+    #[inline(always)]
+    fn run(&self, simd: S, x: f32, y: f32, out: &mut [MaybeUninit<[f32; 4]>]) {
+        eval_run_extend(simd, self, x, y, out);
+    }
+}
+
+/// `PaintData::Linear` over `out`: the span driver with the
+/// span-invariant choices [`LinearEval`] decides.
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
@@ -687,42 +1000,84 @@ pub(super) fn linear_span<'a, S: Simd>(
     py: usize,
     out: &'a mut [MaybeUninit<[f32; 4]>],
 ) -> &'a mut [[f32; 4]] {
-    let eval = LinearEval::new(outer, params);
-    let mut base = 0;
-    if out.len() >= SHORT_SPAN {
-        let dy = simd.splat_f32x16((py as i64) as f32 + 0.5);
-        let ramp = simd.load_array_f32x16([
-            0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5, 13.5, 14.5, 15.5,
-        ]);
-        // One `eval_block` call site: the run's full blocks and a
-        // padded remainder share one inlined f32x16 block body.
-        loop {
-            let remaining = out.len() - base;
-            let xs = simd.add_f32x16(simd.splat_f32x16(((x0 + base) as i64) as f32), ramp);
-            let px = eval_block(simd, &eval, xs, dy, params.extend);
-            if remaining < LANES {
-                store_partial(simd, px, &mut out[base..]);
-                base = out.len();
-                break;
-            }
-            // SAFETY: `out[base..base + LANES]` is `LANES * 4`
-            // contiguous uninitialised floats — every bit pattern
-            // is a valid f32 — and `stage` is exclusive.
-            let stage = unsafe { &mut *out[base..].as_mut_ptr().cast::<[f32; 64]>() };
-            store_block(simd, px, stage);
-            base += LANES;
-            if out.len() - base < SHORT_TAIL {
-                break;
-            }
-        }
+    super::span::span(simd, &LinearEval::new(outer, params), x0, py, out)
+}
+
+/// `PaintData::Radial` over `out`: the span driver with the
+/// span-invariant choices [`RadialEval`] decides for full blocks.
+/// The caller handles short runs before that setup. The block form is
+/// unswitched once per span — each arm runs a span body generic over
+/// the variant's [`RadialSolve`] type, so neither the block loop nor
+/// the one-pixel loop re-tests it.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+pub(super) fn radial_span<'a, S: Simd>(
+    simd: S,
+    outer: &PaintData,
+    params: &RadialPaint,
+    x0: usize,
+    py: usize,
+    out: &'a mut [MaybeUninit<[f32; 4]>],
+) -> &'a mut [[f32; 4]] {
+    let eval = RadialEval::new(outer, params);
+    match eval.form {
+        RadialForm::Identical => radial_span_form::<S, IdenticalSolve>(simd, eval, x0, py, out),
+        RadialForm::Degenerate => radial_span_form::<S, DegenerateSolve>(simd, eval, x0, py, out),
+        RadialForm::Quadratic => radial_span_form::<S, QuadraticSolve>(simd, eval, x0, py, out),
     }
-    // One `eval_run_extend` call site: a short span's whole `out`, or
-    // the remainder the blocks left.
-    if base < out.len() {
-        let (x, y) = (((x0 + base) as i64) as f32 + 0.5, (py as i64) as f32 + 0.5);
-        eval_run_extend(simd, eval, params.extend, x, y, &mut out[base..]);
-    }
-    // SAFETY: the blocks and the one-pixel path together initialized
-    // every element of `out`.
-    unsafe { out.assume_init_mut() }
+}
+
+/// One form's span body, entered through `vectorize` so it compiles
+/// under the level's target features even though it is not inlined —
+/// `#[inline(never)]` keeps only one form's body live per stack frame;
+/// the earlier all-inlined attempt's three copies overflowed the
+/// debug test stack.
+#[inline(never)]
+fn radial_span_form<'o, S, F>(
+    simd: S,
+    eval: RadialEval<'_>,
+    x0: usize,
+    py: usize,
+    out: &'o mut [MaybeUninit<[f32; 4]>],
+) -> &'o mut [[f32; 4]]
+where
+    S: Simd,
+    F: RadialSolve,
+{
+    simd.vectorize(
+        #[inline(always)]
+        || {
+            super::span::span(
+                simd,
+                &RadialFormEval::<F> {
+                    eval,
+                    form: PhantomData,
+                },
+                x0,
+                py,
+                out,
+            )
+        },
+    )
+}
+
+/// `PaintData::Sweep` over `out`: the span driver with the
+/// span-invariant choices [`SweepEval`] decides.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+pub(super) fn sweep_span<'a, S: Simd>(
+    simd: S,
+    outer: &PaintData,
+    params: &SweepPaint,
+    x0: usize,
+    py: usize,
+    out: &'a mut [MaybeUninit<[f32; 4]>],
+) -> &'a mut [[f32; 4]] {
+    super::span::span(simd, &SweepEval::new(outer, params), x0, py, out)
 }

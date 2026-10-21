@@ -113,6 +113,16 @@ struct AnimatedRadioIndicatorState {
     last_tick: Instant,
 }
 
+/// Whether a repeat-forever animation counts as running work in a
+/// quiescence query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerpetualAnimation {
+    /// It counts: the query asks whether anything is still animating.
+    Counts,
+    /// It does not: the query asks whether anything will finish.
+    Ignored,
+}
+
 #[derive(Debug)]
 struct RepeatingPhaseSlot {
     started_at: Instant,
@@ -333,6 +343,14 @@ impl AnimationController {
     /// scheduled).
     #[must_use]
     pub fn has_active(&self, now: Instant) -> bool {
+        self.has_finite_active(now) || self.repeating_slots.values().any(|slot| slot.repeat)
+    }
+
+    /// Like [`has_active`](Self::has_active), but ignoring repeat-forever
+    /// timeline slots: whether any animation is running that will finish on
+    /// its own.
+    #[must_use]
+    pub fn has_finite_active(&self, now: Instant) -> bool {
         self.slots
             .values()
             .any(|slot| slot.state.borrow().is_active())
@@ -341,7 +359,7 @@ impl AnimationController {
                 .values()
                 .any(|slot| slot.state.borrow().is_active())
             || self.repeating_slots.values().any(|slot| {
-                slot.repeat || now.saturating_duration_since(slot.started_at) < slot.cycle
+                !slot.repeat && now.saturating_duration_since(slot.started_at) < slot.cycle
             })
     }
 

@@ -2,7 +2,7 @@
 //!
 //! Full curved/HDR scenes retain section 4.3 thresholds 1–3. Polygon coverage
 //! is checked separately on identical f32 line geometry against the independent
-//! f64 region-area oracle: at most one R8 byte of error and exact interiors.
+//! f64 region-area oracle, as visually equivalent coverage images.
 //! CPU/GPU painted-image differences remain diagnostics, because different
 //! valid curve flattenings and HDR paint do not define an R8 coverage metric.
 
@@ -274,93 +274,58 @@ fn polygon_coverage(scene: &Scene) -> (RuledPath, Vec<f64>) {
     )
 }
 
+/// A coverage mask as a grey image, so coverage compares like any render.
 #[expect(
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "clamped R8 coverage"
+    reason = "the oracle's f64 coverage compares as f32 pixels"
 )]
-fn quantize(area: f64) -> u8 {
-    area.clamp(0.0, 1.0).mul_add(255.0, 0.5) as u8
+fn coverage_image(scene: &Scene, coverage: impl Iterator<Item = f64>) -> F32Image {
+    F32Image {
+        width: scene.width,
+        height: scene.height,
+        pixels: coverage.map(|area| [area as f32; 4]).collect(),
+    }
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "exact full/empty oracle interiors have a stronger byte contract"
-)]
 fn check_polygon_coverage(scene: &Scene, name: &str) {
     let (polygon, reference) = polygon_coverage(scene);
-    let images = ROUTES.map(|route| {
-        render_path(
-            scene,
-            RuledPath {
-                elements: polygon.elements.clone(),
-                rule: polygon.rule,
-            },
-            WorkingColor::new([1.0; 4]),
-            None,
-            WorkingColor::new([0.0; 4]),
-            route,
-        )
-    });
-    for (route, image) in ROUTES.iter().zip(images) {
-        assert_eq!(
-            image.pixels.len(),
-            reference.len(),
-            "complete coverage image"
+    let image = render_path(
+        scene,
+        polygon,
+        WorkingColor::new([1.0; 4]),
+        None,
+        WorkingColor::new([0.0; 4]),
+        CoverageRoute::Gpu,
+    );
+    assert_eq!(
+        image.pixels.len(),
+        reference.len(),
+        "complete coverage image"
+    );
+    for (index, pixel) in image.pixels.iter().enumerate() {
+        assert!(
+            pixel[3].is_finite() && (0.0..=1.0).contains(&pixel[3]),
+            "{name}: invalid coverage at pixel {index}"
         );
-        let mut mismatches = 0;
-        let mut worst = (0u8, 0usize, 0u8, 0u8);
-        for (index, (&area, pixel)) in reference.iter().zip(&image.pixels).enumerate() {
-            assert!(
-                pixel[3].is_finite() && (0.0..=1.0).contains(&pixel[3]),
-                "{name}: invalid coverage at pixel {index}"
-            );
-            let expected = quantize(area);
-            // LinearF16 alpha uniquely preserves every R8 value: its
-            // rounding error is less than half of one coverage byte.
-            let actual = quantize(f64::from(pixel[3]));
-            let difference = expected.abs_diff(actual);
-            if difference > worst.0 {
-                worst = (difference, index, expected, actual);
-            }
-            if difference > 1 || ((area == 0.0 || area == 1.0) && actual != expected) {
-                mismatches += 1;
-            }
-        }
-        if *route == CoverageRoute::Gpu {
-            assert_eq!(
-                mismatches, 0,
-                "{name}: GPU polygon coverage; worst(byte error,index,expected,actual)={worst:?}"
-            );
-        } else if mismatches > 0 {
-            tracing::warn!(
-                scene = name,
-                mismatches,
-                ?worst,
-                "CPU raster does not conform to exact polygon coverage"
-            );
-        }
     }
+    cherenkov_oracle::metrics::assert_images_match(
+        &coverage_image(scene, reference.into_iter()),
+        &coverage_image(scene, image.pixels.iter().map(|pixel| f64::from(pixel[3]))),
+    );
 }
 
 /// One scene's oracle-relative metrics on each of [`ROUTES`].
 fn route_metrics(name: &str) -> [cherenkov_oracle::Metrics; 3] {
     let scene = Scene::load(&corpus().join(name)).expect("load corpus scene");
-    let reference = cherenkov_oracle::Renderer::new(
-        usize::try_from(scene.width).expect("scene width"),
-        usize::try_from(scene.height).expect("scene height"),
-    )
-    .render(&scene, &corpus().join(name))
-    .expect("oracle render");
-    let images = ROUTES.map(|route| render(&scene, route));
-    let (difference, _) = cherenkov_oracle::metrics::compare(&images[0], &images[1]);
-    tracing::info!(
-        scene = name,
-        flip_mean = difference.flip_mean,
-        max_local_error = difference.max_local_error,
-        "painted route difference (diagnostic)"
+    let reference = cherenkov_oracle::metrics::Reference::new(
+        &cherenkov_oracle::Renderer::new(
+            usize::try_from(scene.width).expect("scene width"),
+            usize::try_from(scene.height).expect("scene height"),
+        )
+        .render(&scene, &corpus().join(name))
+        .expect("oracle render"),
     );
-    images.map(|image| cherenkov_oracle::metrics::compare(&reference, &image).0)
+    ROUTES.map(|route| reference.metrics(&render(&scene, route)))
 }
 
 #[test]
@@ -500,9 +465,10 @@ fn gpu_boundary_cells_integrate_fill_rule_regions() {
             .render(FrameTime::now())
             .expect("GPU boundary integration");
         let image = surface.readback().expect("coverage pixels");
+        let mut expected_grid = Vec::with_capacity(64);
         for y in 0..8usize {
             for x in 0..8usize {
-                let expected = if x == 1 && y == 1 {
+                let expected: f32 = if x == 1 && y == 1 {
                     if rule == FillRule::NonZero {
                         128.0 / 255.0
                     } else {
@@ -515,19 +481,108 @@ fn gpu_boundary_cells_integrate_fill_rule_regions() {
                 } else {
                     0.0
                 };
-                let alpha = image.pixels[y * 8 + x][3];
-                assert!(
-                    (alpha - expected).abs() < 0.001,
-                    "{rule:?} ({x},{y}): coverage {alpha}, expected {expected}; alpha grid {:?}",
-                    image
-                        .pixels
-                        .iter()
-                        .map(|pixel| pixel[3])
-                        .collect::<Vec<_>>()
-                );
+                expected_grid.push(expected);
             }
         }
+        let alpha: Vec<f32> = image.pixels.iter().map(|pixel| pixel[3]).collect();
+        cherenkov_oracle::metrics::assert_close(&alpha, &expected_grid);
     }
+}
+
+/// Stroke-outline polygons the GPU route used to misrender
+/// (water-rs/waterui#3158): a butt cap whose edge passes within rounding of
+/// a pixel corner, and two outlines that retrace an offset line, so distinct
+/// segments clip to one line in a cell. Each is its own path, so its grid —
+/// and with it the f32 rounding the cells see — is the one the outline had.
+#[test]
+fn gpu_coverage_matches_rounding_degenerate_outlines() {
+    const SIZE: (u32, u32) = (320, 160);
+    const POLYGONS: [&[(f32, f32)]; 3] = [
+        &[
+            (3.515_190_4, 139.125_38),
+            (9.515_19, 135.799_53),
+            (10.484_81, 137.548_77),
+            (4.484_809_4, 140.874_62),
+        ],
+        &[
+            (10.815_504, 3.474_928_6),
+            (17.248_934, 4.561_709),
+            (14.892_125, 6.918_518),
+            (14.951_047, 5.162_539_5),
+            (15.799_575, 6.011_067_4),
+            (14.892_125, 6.918_518),
+        ],
+        &[
+            (306.657_75, 141.152_2),
+            (305.458_37, 141.112_95),
+            (305.581_54, 137.350_5),
+            (292.057, 149.402_47),
+            (305.458_37, 141.112_95),
+            (305.505_8, 139.664_28),
+        ],
+    ];
+    let engine = Engine::<Gpu>::new(GpuConfig {
+        coverage_route: Some(CoverageRoute::Gpu),
+        ..GpuConfig::default()
+    })
+    .expect("GPU coverage test adapter");
+    let surface = engine
+        .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16), || {})
+        .expect("coverage test surface");
+    surface.clear_color(WorkingColor::new([0.0; 4]));
+    let mut oracle = cherenkov_oracle::coverage::Coverage::new(SIZE.0 as usize, SIZE.1 as usize);
+    let paths = POLYGONS.map(|polygon| {
+        let points: Vec<(f64, f64)> = polygon
+            .iter()
+            .map(|&(x, y)| (f64::from(x), f64::from(y)))
+            .collect();
+        oracle.add_polyline(&points, true);
+        let mut path = BezPath::new();
+        path.move_to(points[0]);
+        for &point in &points[1..] {
+            path.line_to(point);
+        }
+        path.close_path();
+        path
+    });
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|canvas| {
+            for path in paths {
+                canvas.fill(
+                    Fixed(RuledPath {
+                        elements: path.into_iter().collect(),
+                        rule: FillRule::NonZero,
+                    }),
+                    WorkingColor::new([1.0; 4]),
+                );
+            }
+        }));
+    });
+    engine
+        .render(FrameTime::now())
+        .expect("GPU outline coverage");
+    let image = surface.readback().expect("coverage pixels");
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the oracle's f64 coverage compares as f32 pixels"
+    )]
+    let reference = F32Image {
+        width: SIZE.0,
+        height: SIZE.1,
+        pixels: oracle
+            .finish(cherenkov_scene::FillRule::NonZero)
+            .into_iter()
+            .map(|area| [area as f32; 4])
+            .collect(),
+    };
+    cherenkov_oracle::metrics::assert_images_match(
+        &reference,
+        &F32Image {
+            width: SIZE.0,
+            height: SIZE.1,
+            pixels: image.pixels,
+        },
+    );
 }
 
 /// Sparse full interiors, translucent painter ordering and repeated frames
@@ -602,21 +657,19 @@ fn gpu_sparse_interiors_preserve_painter_order_across_frames() {
                 [0.0, 0.5, 0.5, 1.0]
             };
             let edge = image.pixels[4 * 273 + 1 + usize::try_from(shift).unwrap()];
-            assert!(
-                (edge[3] - 0.75).abs() < 0.005,
-                "translated outer edge: {edge:?}"
-            );
+            // The edge's coverage is an 8-bit mask value, 191/255 for 0.75.
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "coverage is in [0, 1]"
+            )]
+            let edge_byte = (edge[3] * 255.0).round() as u8;
+            cherenkov_oracle::metrics::assert_unorm8_close(&[edge_byte], &[191]);
             for x in [32usize, 128, 240] {
-                let actual = image.pixels[4 * 273 + x];
-                for channel in 0..4 {
-                    assert!(
-                        (actual[channel] - expected[channel]).abs() < 0.001,
-                        "reverse={reverse} x={x}: {actual:?}, expected {expected:?}"
-                    );
-                }
+                cherenkov_oracle::metrics::assert_close(&image.pixels[4 * 273 + x], &expected);
             }
-            assert_eq!(image.pixels[0], [0.0; 4]);
-            assert_eq!(image.pixels[8 * 257 + 256], [0.0; 4]);
+            cherenkov_oracle::metrics::assert_close(&image.pixels[0], &[0.0; 4]);
+            cherenkov_oracle::metrics::assert_close(&image.pixels[8 * 257 + 256], &[0.0; 4]);
         }
     }
 }
@@ -663,13 +716,13 @@ fn star() -> BezPath {
     path
 }
 
-/// The worst per-channel difference between two renders.
-fn worst_difference(a: &[[f32; 4]], b: &[[f32; 4]]) -> f32 {
-    assert_eq!(a.len(), b.len(), "same surface");
-    a.iter()
-        .zip(b)
-        .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).abs()))
-        .fold(0.0, f32::max)
+/// A render's pixels as an image of `size`.
+fn image(size: (u32, u32), pixels: Vec<[f32; 4]>) -> F32Image {
+    F32Image {
+        width: size.0,
+        height: size.1,
+        pixels,
+    }
 }
 
 /// A GPU-routed path drawn at a non-zero integer translation lands where
@@ -686,16 +739,9 @@ fn a_gpu_path_at_an_integer_translation_matches_the_sweep_route() {
     };
     let sweep = render_recorded(CoverageRoute::Sweep, (64, 64), draw);
     let gpu = render_recorded(CoverageRoute::Gpu, (64, 64), draw);
-    assert_eq!(
-        sweep[(2 + 32) * 64 + 3 + 32][0],
-        1.0,
-        "the star covers its centre"
-    );
-    let worst = worst_difference(&sweep, &gpu);
-    assert!(
-        worst <= 2.0 / 255.0,
-        "GPU placement differs from the sweep: {worst}"
-    );
+    // The star covers its centre.
+    cherenkov_oracle::metrics::assert_close(&[sweep[(2 + 32) * 64 + 3 + 32][0]], &[1.0]);
+    cherenkov_oracle::metrics::assert_images_match(&image((64, 64), sweep), &image((64, 64), gpu));
 }
 
 /// The polygon tiers of an opaque ellipse draw under the plain opaque
@@ -725,14 +771,10 @@ fn polygon_tiers_after_a_gpu_path_range_match_the_sweep_route() {
     };
     let sweep = render_recorded(CoverageRoute::Sweep, (320, 320), draw);
     let gpu = render_recorded(CoverageRoute::Gpu, (320, 320), draw);
-    assert_eq!(
-        sweep[192 * 320 + 192][0],
-        1.0,
-        "the circle covers its centre"
-    );
-    let worst = worst_difference(&sweep, &gpu);
-    assert!(
-        worst <= 2.0 / 255.0,
-        "GPU tiers differ from the sweep: {worst}"
+    // The circle covers its centre.
+    cherenkov_oracle::metrics::assert_close(&[sweep[192 * 320 + 192][0]], &[1.0]);
+    cherenkov_oracle::metrics::assert_images_match(
+        &image((320, 320), sweep),
+        &image((320, 320), gpu),
     );
 }

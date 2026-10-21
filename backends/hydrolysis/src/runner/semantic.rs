@@ -13,6 +13,7 @@
 
 use super::executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
 use super::*;
+use crate::animation::PerpetualAnimation;
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility::{
     AccessibilityContentTypes, MergedAccessibilityUpdate, WINDOW_ID_STRIDE,
@@ -335,15 +336,28 @@ impl SemanticRuntime {
     /// move semantic state.
     #[must_use]
     pub fn is_settled(&self) -> bool {
+        self.is_quiescent(PerpetualAnimation::Counts)
+    }
+
+    /// [`Self::is_settled`] except that repeat-forever animations do not
+    /// count: whether any work remains that will finish on its own.
+    #[must_use]
+    pub fn is_settled_except_perpetual(&self) -> bool {
+        self.is_quiescent(PerpetualAnimation::Ignored)
+    }
+
+    fn is_quiescent(&self, perpetual: PerpetualAnimation) -> bool {
+        let scheduled = |core: &SemanticCore| match perpetual {
+            PerpetualAnimation::Counts => core.has_scheduled_semantic_work(),
+            PerpetualAnimation::Ignored => core.has_finite_semantic_work(),
+        };
         !self.window.has_pending_events()
             && !self.window.refresh_requested
             && !self.local_executor.has_pending()
             && self.pending_window_queue.borrow().is_empty()
-            && !self.window.core.has_scheduled_semantic_work()
+            && !scheduled(&self.window.core)
             && self.popup_windows.iter().all(|popup| {
-                !popup.has_pending_events()
-                    && !popup.refresh_requested
-                    && !popup.core.has_scheduled_semantic_work()
+                !popup.has_pending_events() && !popup.refresh_requested && !scheduled(&popup.core)
             })
     }
 

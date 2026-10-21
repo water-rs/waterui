@@ -555,6 +555,24 @@ debug = "line-tables-only"
 debug = false
 opt-level = 2
 
+# Workspace members are not reached by the wildcard above. cherenkov-oracle is
+# test and bench infrastructure only — the reference rasterizer and FLIP
+# metrics the cherenkov tests judge renders by — so nothing is stepped through
+# there, while its f64 rasterizing and filtering is the heaviest arithmetic
+# those tests run (water-rs/waterui#3159). `test` inherits this through `dev`.
+[profile.dev.package.cherenkov-oracle]
+debug = false
+opt-level = 2
+
+# The engine under test: the CPU sweep route and the lowering it shares with
+# the GPU routes run every corpus scene, and at opt-level 0 they were most of
+# what is left of the cherenkov tests' runtime (water-rs/waterui#3159).
+# opt-level 1 recovers nearly all of opt-level 2's test-time speed at a small
+# fraction of its compile time, and keeps debug assertions and line tables.
+# Only `test` builds take it: `dev` keeps the engine fully debuggable.
+[profile.test.package.cherenkov]
+opt-level = 1
+
 [profile.ci-check]
 inherits = "dev"
 debug = false
@@ -658,11 +676,11 @@ filtrate-derive = { path = "graphics/filtrate/derive" }
 # canonical-location fix at `glifo-canonical-location` — without it, an
 # explicit all-default location (`[0, 0, …]`) never matched a stored hint
 # entry and every glyph run repaid a HintingInstance reconfigure.
-vello = { git = "https://github.com/lexoliu/vello", rev = "76292095f408cf04b901023c2053f8d424652f06" }
-vello_hybrid = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
-vello_common = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
-vello_sparse_shaders = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
-glifo = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
+vello = { git = "https://github.com/lexoliu/vello", branch = "perf/1262-bump-sizing" }
+vello_hybrid = { git = "https://github.com/lexoliu/vello", branch = "glifo-canonical-location" }
+vello_common = { git = "https://github.com/lexoliu/vello", branch = "glifo-canonical-location" }
+vello_sparse_shaders = { git = "https://github.com/lexoliu/vello", branch = "glifo-canonical-location" }
+glifo = { git = "https://github.com/lexoliu/vello", branch = "glifo-canonical-location" }
 
 # wgpu 30.0.1's Metal backend reads the address of the kCGColorSpace* globals
 # instead of their value and crashes in CGColorSpaceCreateWithName whenever a

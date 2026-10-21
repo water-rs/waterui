@@ -6,6 +6,7 @@ use cherenkov::{
     WorkingColor,
 };
 use cherenkov_cpu::{Raster, RasterConfig};
+use cherenkov_oracle::metrics::assert_close;
 
 const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
 const BLUE: WorkingColor = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
@@ -29,11 +30,8 @@ fn clear_composite_preserves_destination_outside_clip() {
     });
     engine.render(FrameTime::now()).expect("render");
     let pixels = surface.readback().expect("pixels").pixels;
-    assert_eq!(pixels[0].map(f32::to_bits), [1.0_f32; 4].map(f32::to_bits));
-    assert_eq!(
-        pixels[3 * 8 + 3].map(f32::to_bits),
-        [0.0_f32; 4].map(f32::to_bits)
-    );
+    assert_close(&pixels[0], &[1.0_f32; 4]);
+    assert_close(&pixels[3 * 8 + 3], &[0.0_f32; 4]);
 }
 
 #[test]
@@ -68,9 +66,8 @@ fn blended_descendant_isolates_its_normal_group() {
     // outer group's offscreen, which then composites `Normal` over the red
     // background. Without outer isolation the `Clear` reached the scene
     // framebuffer and every pixel came out transparent.
-    let red = [1.0_f32, 0.0, 0.0, 1.0].map(f32::to_bits);
-    for (i, px) in pixels.iter().enumerate() {
-        assert_eq!(px.map(f32::to_bits), red, "pixel {i}");
+    for px in &pixels {
+        assert_close(px, &[1.0, 0.0, 0.0, 1.0]);
     }
 }
 
@@ -101,14 +98,8 @@ fn tree_layer_isolates_blended_child_layer() {
     engine.render(FrameTime::now()).expect("render");
     let pixels = surface.readback().expect("pixels").pixels;
     let pixel = |x: usize, y: usize| pixels[y * 8 + x];
-    assert_eq!(
-        pixel(1, 3).map(f32::to_bits),
-        [0.0_f32, 0.0, 1.0, 1.0].map(f32::to_bits)
-    );
-    assert_eq!(
-        pixel(3, 3).map(f32::to_bits),
-        [1.0_f32, 0.0, 0.0, 1.0].map(f32::to_bits)
-    );
+    assert_close(&pixel(1, 3), &[0.0_f32, 0.0, 1.0, 1.0]);
+    assert_close(&pixel(3, 3), &[1.0_f32, 0.0, 0.0, 1.0]);
 }
 
 #[test]
@@ -134,14 +125,8 @@ fn tree_layer_isolates_blended_content_group() {
     engine.render(FrameTime::now()).expect("render");
     let pixels = surface.readback().expect("pixels").pixels;
     let pixel = |x: usize, y: usize| pixels[y * 8 + x];
-    assert_eq!(
-        pixel(1, 3).map(f32::to_bits),
-        [0.0_f32, 0.0, 1.0, 1.0].map(f32::to_bits)
-    );
-    assert_eq!(
-        pixel(3, 3).map(f32::to_bits),
-        [1.0_f32, 0.0, 0.0, 1.0].map(f32::to_bits)
-    );
+    assert_close(&pixel(1, 3), &[0.0_f32, 0.0, 1.0, 1.0]);
+    assert_close(&pixel(3, 3), &[1.0_f32, 0.0, 0.0, 1.0]);
 }
 
 #[test]
@@ -176,14 +161,8 @@ fn nested_tree_layers_isolate_at_the_blending_parent() {
     engine.render(FrameTime::now()).expect("render");
     let pixels = surface.readback().expect("pixels").pixels;
     let pixel = |x: usize, y: usize| pixels[y * 8 + x];
-    assert_eq!(
-        pixel(1, 3).map(f32::to_bits),
-        [0.0_f32, 1.0, 0.0, 1.0].map(f32::to_bits)
-    );
-    assert_eq!(
-        pixel(3, 3).map(f32::to_bits),
-        [0.0_f32, 0.0, 1.0, 1.0].map(f32::to_bits)
-    );
+    assert_close(&pixel(1, 3), &[0.0_f32, 1.0, 0.0, 1.0]);
+    assert_close(&pixel(3, 3), &[0.0_f32, 0.0, 1.0, 1.0]);
 }
 
 #[test]
@@ -218,7 +197,7 @@ fn encoded_group_composites_in_encoded_space() {
     for channel in &pixel[..3] {
         assert!((f64::from(*channel) - expected).abs() < 1e-5, "{pixel:?}");
     }
-    assert_eq!(pixel[3].to_bits(), 1.0_f32.to_bits());
+    assert_close(&[pixel[3]], &[1.0]);
 }
 
 /// A non-destructive blended layer under a clip scales the source by the
@@ -263,40 +242,14 @@ fn clipped_blend_layer_scales_source_by_clip_coverage() {
     // Screen rows (3): outside the clip the backdrop is untouched;
     // fully inside, screen(0.5, 1) = 1; at the half-covered edge the
     // coverage scales the source — B(0.5, 0.5·white) = 0.75 premultiplied.
-    assert_eq!(
-        pixels[3 * w + 2].map(f32::to_bits),
-        [0.5_f32, 0.5, 0.5, 1.0].map(f32::to_bits),
-        "screen outside clip"
-    );
-    assert_eq!(
-        pixels[3 * w + 4].map(f32::to_bits),
-        [0.75_f32, 0.75, 0.75, 1.0].map(f32::to_bits),
-        "screen at half-covered clip edge: {:?}",
-        pixels[3 * w + 4]
-    );
-    assert_eq!(
-        pixels[3 * w + 6].map(f32::to_bits),
-        [1.0_f32; 4].map(f32::to_bits),
-        "screen inside clip"
-    );
+    assert_close(&pixels[3 * w + 2], &[0.5_f32, 0.5, 0.5, 1.0]);
+    assert_close(&pixels[3 * w + 4], &[0.75_f32, 0.75, 0.75, 1.0]);
+    assert_close(&pixels[3 * w + 6], &[1.0_f32; 4]);
     // Clear rows (9): the destructive path lerps by the clip coverage —
     // untouched outside, cleared inside, halfway at the edge.
-    assert_eq!(
-        pixels[9 * w + 2].map(f32::to_bits),
-        [0.5_f32, 0.5, 0.5, 1.0].map(f32::to_bits),
-        "clear outside clip"
-    );
-    assert_eq!(
-        pixels[9 * w + 4].map(f32::to_bits),
-        [0.25_f32, 0.25, 0.25, 0.5].map(f32::to_bits),
-        "clear at half-covered clip edge: {:?}",
-        pixels[9 * w + 4]
-    );
-    assert_eq!(
-        pixels[9 * w + 6].map(f32::to_bits),
-        [0.0_f32; 4].map(f32::to_bits),
-        "clear inside clip"
-    );
+    assert_close(&pixels[9 * w + 2], &[0.5_f32, 0.5, 0.5, 1.0]);
+    assert_close(&pixels[9 * w + 4], &[0.25_f32, 0.25, 0.25, 0.5]);
+    assert_close(&pixels[9 * w + 6], &[0.0_f32; 4]);
 }
 
 /// Two overlapping opaque `PlusLighter` layers: coverage saturates at 1,

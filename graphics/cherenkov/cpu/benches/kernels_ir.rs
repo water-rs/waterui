@@ -31,6 +31,41 @@ mod kernels_bench {
 
     use super::cases::{self, Case, Composite, Eval, Kind};
 
+    fn geometry_setup(name: &str) -> cherenkov_cpu::testing::GeometryChange {
+        use cherenkov_scene::{Draw, Item, Layer, Shape};
+        fn stroke(
+            layer: &Layer,
+        ) -> Option<(&cherenkov::kurbo::BezPath, &cherenkov_scene::StrokeStyle)> {
+            layer.items.iter().find_map(|item| match item {
+                Item::Draw(Draw::Stroke {
+                    shape: Shape::Path { path },
+                    stroke,
+                    ..
+                }) => Some((path, stroke)),
+                Item::Layer(layer) => stroke(layer),
+                _ => None,
+            })
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../scenes/perf")
+            .join(name);
+        let scene = cherenkov_scene::Scene::load(&path).expect("generated perf scene");
+        let (path, style) = stroke(&scene.root).expect("road-network has a path stroke");
+        cherenkov_cpu::testing::GeometryChange::new(path.clone(), style.into())
+    }
+
+    #[library_benchmark]
+    #[benches::roads(args = ["road-network-n10", "road-network-n20", "road-network"], setup = geometry_setup)]
+    fn geometry_change(
+        input: cherenkov_cpu::testing::GeometryChange,
+    ) -> cherenkov_cpu::testing::GeometryChange {
+        black_box(
+            input.recompile(black_box(cherenkov::kurbo::Affine::scale_non_uniform(
+                1.01, 0.99,
+            ))),
+        )
+    }
+
     fn eval_setup(case: Case) -> Eval {
         case.eval()
     }
@@ -96,6 +131,27 @@ mod kernels_bench {
         black_box(input.dst)
     }
 
+    #[library_benchmark]
+    #[benches::lengths(iter = cases::LENS.iter().copied(), setup = cases::opaque_store)]
+    fn uniform_store(mut input: Composite) -> Vec<[f32; 4]> {
+        bench_kernels::composite_uniform(
+            input.level,
+            black_box(&mut input.dst),
+            black_box(1.0),
+            input.clip,
+            black_box(input.src[0]),
+            input.space,
+        );
+        black_box(input.dst)
+    }
+
+    #[library_benchmark]
+    #[benches::widths(args = [64, 256, 2048], setup = bench_kernels::RowReader::new)]
+    fn row_reader(mut row: bench_kernels::RowReader) -> bench_kernels::RowReader {
+        black_box(row.read());
+        row
+    }
+
     fn encode_setup(len: usize) -> (cherenkov_cpu::Level, Vec<[f32; 4]>) {
         (
             cherenkov_cpu::Level::new(),
@@ -135,7 +191,16 @@ mod kernels_bench {
 
     library_benchmark_group!(
         name = kernels,
-        benchmarks = [eval, composite, opaque_store, encode, decode]
+        benchmarks = [
+            eval,
+            composite,
+            opaque_store,
+            encode,
+            decode,
+            uniform_store,
+            row_reader,
+            geometry_change
+        ]
     );
 }
 

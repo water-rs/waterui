@@ -155,9 +155,8 @@ fn paint_bytes(paint: &cherenkov::Paint) -> u64 {
 fn paint_data_bytes(paint: &PaintData) -> u64 {
     match paint {
         PaintData::Linear(linear) => (linear.stops.len() * size_of::<super::paint::Stop>()) as u64,
-        PaintData::Radial { stops, .. } | PaintData::Sweep { stops, .. } => {
-            (stops.len() * size_of::<super::paint::Stop>()) as u64
-        }
+        PaintData::Radial(radial) => (radial.stops.len() * size_of::<super::paint::Stop>()) as u64,
+        PaintData::Sweep(sweep) => (sweep.stops.len() * size_of::<super::paint::Stop>()) as u64,
         PaintData::Mesh(mesh) => mesh.heap_bytes(),
         PaintData::Image(data) => size_of_val(&**data) as u64,
         PaintData::Transformed(link) => {

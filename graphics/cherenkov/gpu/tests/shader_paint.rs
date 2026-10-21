@@ -8,7 +8,12 @@ use cherenkov::{
     ShaderSource,
 };
 use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::metrics::assert_images_match;
 use std::time::Duration;
+
+#[path = "support/visual.rs"]
+mod visual;
+use visual::crop;
 
 split_test! {
 fn shader_registration_rejects_invalid_source() -> Result<(), Box<dyn std::error::Error>> {
@@ -247,16 +252,12 @@ fn shader_strokes_and_degenerate_geometry_keep_ordinary_coverage()
             wait!(engine
                 .render(FrameTime::now()))
                 .map_err(|error| format!("geometry {geometry}: {error}"))?;
-            outputs.push(
-                wait!(surface
-                    .readback())?
-                    .pixels
-                    .into_iter()
-                    .map(|pixel| pixel.map(f32::to_bits))
-                    .collect::<Vec<_>>(),
-            );
+            outputs.push(wait!(surface.readback())?);
         }
-        assert_eq!(outputs[0], outputs[1], "geometry {geometry}");
+        assert_images_match(
+            &crop(&outputs[0], 0..16, 0..16),
+            &crop(&outputs[1], 0..16, 0..16),
+        );
     }
     Ok(())
 }

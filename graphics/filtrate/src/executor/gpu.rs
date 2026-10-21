@@ -3,7 +3,11 @@
 
 extern crate alloc;
 
-use alloc::{borrow::Cow, string::ToString, vec::Vec};
+use alloc::{
+    borrow::Cow,
+    string::{String, ToString},
+    vec::Vec,
+};
 
 use cherenkov_shader::{SamplerFilter, SegmentArg, naga::Module};
 use filtrate_core::{AuxFormat, AuxImage, Filter, ImageVisitor, ShapeInput, WorkingSpace};
@@ -19,6 +23,7 @@ use crate::{
         EffectContext, EffectInput, EffectOutput, EffectRenderError, EffectSetupError,
         RetainedMemory,
     },
+    pipeline_cache::{PassKey, PassPipeline},
 };
 
 /// The format every intermediate is materialized in: f16, so every
@@ -64,9 +69,6 @@ impl PlanOptions {
         Ok(plan)
     }
 }
-
-/// The full-screen triangle every pass draws.
-const VERTEX_SHADER: &str = include_str!("../shaders/fullscreen.wgsl");
 
 /// One pass's pipeline and uniform block.
 #[derive(Debug)]
@@ -199,17 +201,11 @@ impl Gpu {
             probe_intermediate_format(ctx.device).await?;
         }
 
-        let vertex = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("filtrate full-screen triangle"),
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(VERTEX_SHADER)),
-            });
         let last = plan.passes.len() - 1;
         let mut passes = Vec::with_capacity(plan.passes.len());
         for (index, pass) in plan.passes.into_iter().enumerate() {
             let resizes_output = resizes_output && index == last;
-            let module = entry::pass_module(
+            let (module, wgsl) = entry::pass_module(
                 &plan.module,
                 plan.capabilities,
                 index,
@@ -221,18 +217,8 @@ impl Gpu {
             } else {
                 INTERMEDIATE_FORMAT
             };
-            passes.push(
-                GpuPass::new(
-                    ctx.device,
-                    &vertex,
-                    module,
-                    pass,
-                    index,
-                    format,
-                    resizes_output,
-                )
-                .await?,
-            );
+            passes
+                .push(GpuPass::new(ctx, module, wgsl, pass, index, format, resizes_output).await?);
         }
 
         let space = ctx.device.create_buffer(&wgpu::BufferDescriptor {
@@ -449,78 +435,38 @@ fn scale_words(input: (u32, u32), output: (u32, u32)) -> Vec<u32> {
 }
 
 impl GpuPass {
-    #[cfg_attr(
-        target_arch = "wasm32",
-        allow(
-            clippy::future_not_send,
-            reason = "setup runs on the page's event loop; wgpu handles' Send bound varies with Cargo feature unification"
-        )
+    #[expect(
+        clippy::future_not_send,
+        reason = "the context carries the device-bound pipeline cache, which setup shares on the GPU host thread"
     )]
     async fn new(
-        device: &wgpu::Device,
-        vertex: &wgpu::ShaderModule,
+        ctx: &EffectContext<'_>,
         module: Module,
+        wgsl: String,
         plan: PassPlan,
         index: usize,
         format: wgpu::TextureFormat,
         resizes_output: bool,
     ) -> Result<Self, EffectSetupError> {
-        let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("filtrate pass layout"),
-            entries: &layout_entries(&plan, resizes_output),
-        });
-        let fragment = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("filtrate pass"),
-            source: wgpu::ShaderSource::Naga(Cow::Owned(module)),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("filtrate pass pipeline layout"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("filtrate pass pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: vertex,
-                entry_point: Some("main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &fragment,
-                entry_point: Some(ENTRY_POINT),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-        if let Some(error) = error_scope.pop().await {
-            let message = error.to_string();
-            tracing::error!("[filtrate] pass {index} pipeline validation failed: {message}");
-            return Err(EffectSetupError::PipelineValidation {
-                pass: index,
-                message,
-            });
-        }
+        let key = PassKey {
+            wgsl,
+            layout: layout_entries(&plan, resizes_output),
+            resizes_output,
+            format,
+        };
+        let shared = if let Some(shared) = ctx.pipelines.get(&key) {
+            shared
+        } else {
+            let vertex = ctx.pipelines.vertex(ctx.device);
+            let built = build_pipeline(ctx.device, &vertex, module, &key, index).await?;
+            ctx.pipelines.insert(key, built)
+        };
 
         let uses_space = plan.segment.args.contains(&SegmentArg::WorkingSpace);
         Ok(Self {
             plan,
-            pipeline,
-            layout,
+            pipeline: shared.pipeline,
+            layout: shared.layout,
             params: UniformBuffers::new("filtrate pass parameters"),
             output_scale: resizes_output.then(|| UniformBuffers::new("filtrate output scale")),
             uses_space,
@@ -624,6 +570,75 @@ impl GpuPass {
         }
         Some(self.params.select(device, queue, words, sequence))
     }
+}
+
+/// Compiles `module` into the pipeline `key` describes; a validation failure
+/// is an error and is not cached.
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        clippy::future_not_send,
+        reason = "setup runs on the page's event loop; wgpu handles' Send bound varies with Cargo feature unification"
+    )
+)]
+async fn build_pipeline(
+    device: &wgpu::Device,
+    vertex: &wgpu::ShaderModule,
+    module: Module,
+    key: &PassKey,
+    index: usize,
+) -> Result<PassPipeline, EffectSetupError> {
+    let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("filtrate pass layout"),
+        entries: &key.layout,
+    });
+    let fragment = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("filtrate pass"),
+        source: wgpu::ShaderSource::Naga(Cow::Owned(module)),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("filtrate pass pipeline layout"),
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("filtrate pass pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: vertex,
+            entry_point: Some("main"),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &fragment,
+            entry_point: Some(ENTRY_POINT),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: key.format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+    if let Some(error) = error_scope.pop().await {
+        let message = error.to_string();
+        tracing::error!("[filtrate] pass {index} pipeline validation failed: {message}");
+        return Err(EffectSetupError::PipelineValidation {
+            pass: index,
+            message,
+        });
+    }
+    Ok(PassPipeline { pipeline, layout })
 }
 
 /// The bind group layout a pass's segment needs.

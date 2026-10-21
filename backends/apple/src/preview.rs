@@ -364,7 +364,7 @@ async fn render_and_write(
     let content_env = env.extending(ledger.clone());
     let stage = Stage::mount(&content_env, mtm, host, view, capture.size);
     crate::content::await_content(&ledger, &stage.root, capture.content_deadline).await?;
-    let result = stage.capture(env, mtm).await?;
+    let result = stage.capture().await?;
     drop(stage);
     waterui_preview_protocol::run::write_png(
         capture.output,
@@ -382,6 +382,11 @@ async fn render_and_write(
 /// Fields drop in declaration order: the mounted content detaches while
 /// its root, controller and window are still retained.
 struct Stage {
+    /// The windowless frame drive — declared first so its `ViewCapture`
+    /// shuts down, ending every external-rendering scope, before the
+    /// mounted subtree detaches.
+    #[cfg(feature = "gpu_surface")]
+    drive: Rc<crate::capture_image::CaptureDrive>,
     /// The mounted subtree.
     _content: Rc<crate::contract::Mounted>,
     /// The mount's watchers and guards.
@@ -441,7 +446,14 @@ impl Stage {
         let mut keepalive = crate::contract::KeepAlive::default();
         let content = crate::embedding::mount_content(&root, view(), env, &mut keepalive);
         crate::first_paint::mark(&root, env);
+        // The window never orders in, so the surfaces inside cannot
+        // present: the drive keeps their frames — and the content their
+        // scenes settle — moving until the terminal capture.
+        #[cfg(feature = "gpu_surface")]
+        let drive = crate::capture_image::CaptureDrive::begin(&root, env, mtm);
         Self {
+            #[cfg(feature = "gpu_surface")]
+            drive,
             _content: content,
             _keepalive: keepalive,
             root,
@@ -488,7 +500,15 @@ impl Stage {
         let content = crate::embedding::mount_content(&root, view(), env, &mut keepalive);
         crate::first_paint::mark(&root, env);
         window.layoutIfNeeded();
+        // The scene-less window never reaches a presentable scene, so the
+        // surfaces inside cannot present: the drive keeps their frames —
+        // and the content their scenes settle — moving until the terminal
+        // capture.
+        #[cfg(feature = "gpu_surface")]
+        let drive = crate::capture_image::CaptureDrive::begin(&root, env, mtm);
         Self {
+            #[cfg(feature = "gpu_surface")]
+            drive,
             _content: content,
             _keepalive: keepalive,
             _appearance: appearance,
@@ -507,19 +527,14 @@ impl Stage {
         clippy::future_not_send,
         reason = "the capture runs on the main thread; the Retained native objects it holds across the wait are not Send"
     )]
-    async fn capture(
-        &self,
-        env: &Environment,
-        mtm: MainThreadMarker,
-    ) -> Result<waterui_core::view_renderer::RenderResult, CaptureFailure> {
+    async fn capture(&self) -> Result<waterui_core::view_renderer::RenderResult, CaptureFailure> {
         // The window is never ordered in, so its display pass never runs on
         // its own: run it explicitly — it draws the backing stores and
         // attaches every subview's backing layer into the root layer tree
         // `ViewCapture`'s `renderInContext` reads.
         #[cfg(target_os = "macos")]
         self.window.displayIfNeeded();
-        let scale = cocoa_ui::view::backing_scale_factor(&self.root);
-        let result = crate::capture_image::capture_rgba(&self.root, env, scale, mtm).await?;
+        let result = self.drive.capture_rgba().await?;
         Ok(waterui_core::view_renderer::RenderResult::new(
             result.pixels,
             result.width,
@@ -535,11 +550,7 @@ impl Stage {
         clippy::future_not_send,
         reason = "the capture runs on the main thread; the Retained native objects it holds across the wait are not Send"
     )]
-    async fn capture(
-        &self,
-        _env: &Environment,
-        _mtm: MainThreadMarker,
-    ) -> Result<waterui_core::view_renderer::RenderResult, CaptureFailure> {
+    async fn capture(&self) -> Result<waterui_core::view_renderer::RenderResult, CaptureFailure> {
         crate::capture::capture_presented(&self.root).await
     }
 }

@@ -21,6 +21,7 @@ pub mod spirv_tools;
 pub(crate) mod testing;
 pub mod web;
 pub mod windows_arm64_llvm;
+pub mod windows_long_paths;
 pub(crate) mod winget;
 
 pub use host::Host;

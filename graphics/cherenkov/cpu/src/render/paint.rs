@@ -67,44 +67,13 @@ pub enum PaintData {
     /// A registered image pattern.
     Image(Box<ImagePaintData>),
     /// A sweep (conic) gradient.
-    Sweep {
-        /// Device-to-content transform.
-        inv: [f32; 6],
-        /// The centre in content space.
-        center: [f32; 2],
-        /// Start angle in radians.
-        start: f32,
-        /// Angular span in radians, adjusted to `> 0` like the oracle.
-        span: f32,
-        /// Sorted stops.
-        stops: std::sync::Arc<[Stop]>,
-        /// The continuation mode.
-        extend: Extend,
-        /// The interpolation space.
-        interpolation: Interpolation,
-    },
+    Sweep(SweepPaint),
     /// Premultiplied solid colour.
     Solid([f32; 4]),
     /// A linear gradient.
     Linear(LinearPaint),
     /// A two-point radial gradient.
-    Radial {
-        /// Device-to-content transform.
-        inv: [f32; 6],
-        /// Centres: `x0, y0, x1, y1` in content space.
-        centres: [f32; 4],
-        /// Radii: `r0, r1`.
-        radii: [f32; 2],
-        /// The circles are identical: the parameter is `-∞` inside `r0` and
-        /// `+∞` outside.
-        identical: bool,
-        /// Sorted stops.
-        stops: std::sync::Arc<[Stop]>,
-        /// The continuation mode.
-        extend: Extend,
-        /// The interpolation space.
-        interpolation: Interpolation,
-    },
+    Radial(RadialPaint),
 }
 
 /// A [`PaintData::Linear`] payload: the resolved parameters the
@@ -122,6 +91,89 @@ pub struct LinearPaint {
     pub extend: Extend,
     /// The interpolation space.
     pub interpolation: Interpolation,
+}
+
+/// A [`PaintData::Radial`] payload: the resolved parameters the
+/// evaluators share, with the identical-circles decision made once at
+/// lowering.
+#[derive(Clone, Debug)]
+pub struct RadialPaint {
+    /// Device-to-content transform.
+    pub inv: [f32; 6],
+    /// The circle equation's paint-invariant coefficients.
+    pub geometry: RadialGeometry,
+    /// The circles are identical: the parameter is `-∞` inside `r0` and
+    /// `+∞` outside.
+    pub identical: bool,
+    /// Sorted stops.
+    pub stops: std::sync::Arc<[Stop]>,
+    /// The continuation mode.
+    pub extend: Extend,
+    /// The interpolation space.
+    pub interpolation: Interpolation,
+}
+
+/// A [`PaintData::Sweep`] payload: the resolved parameters the
+/// evaluators share.
+#[derive(Clone, Debug)]
+pub struct SweepPaint {
+    /// Device-to-content transform.
+    pub inv: [f32; 6],
+    /// The centre in content space.
+    pub center: [f32; 2],
+    /// Start angle in radians.
+    pub start: f32,
+    /// Angular span in radians, adjusted to `> 0` like the oracle.
+    pub span: f32,
+    /// Sorted stops.
+    pub stops: std::sync::Arc<[Stop]>,
+    /// The continuation mode.
+    pub extend: Extend,
+    /// The interpolation space.
+    pub interpolation: Interpolation,
+}
+
+/// The content-space distance from the start centre past which the
+/// radial solve divides the point and `r0` by that distance: below it
+/// every term of the quadratic is far from f32 overflow and the solve
+/// is the plain expression; above it, unscaled, `px²` and `4a·c`
+/// overflow (near 1.8e19 and earlier) and the pixel drops out.
+pub(super) const RADIAL_RESCALE_ABOVE: f32 = 65536.0;
+
+/// The two-circle equation, prepared once when the paint is lowered.
+#[derive(Clone, Copy, Debug)]
+pub struct RadialGeometry {
+    /// Start centre's x coordinate.
+    pub x0: f32,
+    /// Start centre's y coordinate.
+    pub y0: f32,
+    /// Start radius.
+    pub r0: f32,
+    /// Radius delta.
+    pub dr: f32,
+    /// Centre delta's x coordinate.
+    pub dcx: f32,
+    /// Centre delta's y coordinate.
+    pub dcy: f32,
+    /// Quadratic coefficient `dc·dc - dr²`.
+    pub a: f32,
+}
+
+impl RadialGeometry {
+    fn new(centres: [f32; 4], radii: [f32; 2]) -> Self {
+        let (x0, y0) = (centres[0], centres[1]);
+        let (dcx, dcy) = (centres[2] - x0, centres[3] - y0);
+        let (r0, dr) = (radii[0], radii[1] - radii[0]);
+        Self {
+            x0,
+            y0,
+            r0,
+            dr,
+            dcx,
+            dcy,
+            a: dr.mul_add(-dr, dcy.mul_add(dcy, dcx * dcx)),
+        }
+    }
 }
 
 /// The non-degenerate linear projection's span constants.
@@ -347,20 +399,22 @@ pub fn paint_data(
             if identical && matches!(g.extend, Extend::Repeat | Extend::Reflect) {
                 return Err(RenderError::IdenticalRadialCircles(g.extend));
             }
-            PaintData::Radial {
+            PaintData::Radial(RadialPaint {
                 inv: affine_f32(inv),
-                centres: [
-                    f32_f64(g.start_center.x),
-                    f32_f64(g.start_center.y),
-                    f32_f64(g.end_center.x),
-                    f32_f64(g.end_center.y),
-                ],
-                radii: [f32_f64(g.start_radius), f32_f64(g.end_radius)],
+                geometry: RadialGeometry::new(
+                    [
+                        f32_f64(g.start_center.x),
+                        f32_f64(g.start_center.y),
+                        f32_f64(g.end_center.x),
+                        f32_f64(g.end_center.y),
+                    ],
+                    [f32_f64(g.start_radius), f32_f64(g.end_radius)],
+                ),
                 identical,
                 stops: stops(&g.stops, g.interpolation),
                 extend: g.extend,
                 interpolation: g.interpolation,
-            }
+            })
         }
         _ => return extra_paint(paint, inv, images),
     })
@@ -397,7 +451,7 @@ fn extra_paint(
                     "sweep span exceeds raster precision".into(),
                 ));
             }
-            PaintData::Sweep {
+            PaintData::Sweep(SweepPaint {
                 inv: affine_f32(inv),
                 center: [f32_f64(gradient.center.x), f32_f64(gradient.center.y)],
                 start: f32_f64(gradient.start_angle.rem_euclid(std::f64::consts::TAU)),
@@ -405,7 +459,7 @@ fn extra_paint(
                 stops: stops(&gradient.stops, gradient.interpolation),
                 extend: gradient.extend,
                 interpolation: gradient.interpolation,
-            }
+            })
         }
         Paint::Mesh(mesh) => {
             if mesh.points().iter().any(|point| !point.is_finite()) {
@@ -456,6 +510,11 @@ fn extend_t(t: f32, extend: Extend) -> Option<f32> {
 }
 
 /// Premultiplies interpolation-space straight components into linear P3.
+#[expect(
+    clippy::inline_always,
+    reason = "keep premultiplication inside the dispatched per-pixel loop"
+)]
+#[inline(always)]
 #[expect(
     clippy::many_single_char_names,
     reason = "r/g/b/a are the channel names"
@@ -515,43 +574,80 @@ fn eval_stops(stops: &[Stop], t: f32, interpolation: Interpolation) -> [f32; 4] 
 /// and `+∞` outside, as the oracle's `radial_t` does.
 #[allow(clippy::many_single_char_names)] // quadratic notation mirrors the spec
 #[expect(
+    clippy::suboptimal_flops,
+    reason = "f32 squares are exact in f64, so the circle test needs no fused operation"
+)]
+#[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn radial_t(px: f32, py: f32, centres: [f32; 4], radii: [f32; 2], identical: bool) -> f32 {
-    let (px, py) = (px - centres[0], py - centres[1]);
-    let (r0, dr) = (radii[0], radii[1] - radii[0]);
+fn radial_t(px: f32, py: f32, geometry: &RadialGeometry, identical: bool) -> f32 {
+    let RadialGeometry {
+        x0,
+        y0,
+        r0,
+        dr,
+        dcx,
+        dcy,
+        a,
+    } = *geometry;
+    let (px, py) = (px - x0, py - y0);
     if identical {
-        return if px.hypot(py) <= r0 {
+        // Squaring f32 coordinates in f64 cannot overflow. Comparing
+        // squared distances avoids both a square root and a libm call.
+        let (px, py, radius) = (f64::from(px), f64::from(py), f64::from(r0));
+        return if radius >= 0.0 && px * px + py * py <= radius * radius {
             f32::NEG_INFINITY
         } else {
             f32::INFINITY
         };
     }
-    let (dcx, dcy) = (centres[2] - centres[0], centres[3] - centres[1]);
-    let radius_ok = |t: f32| t.mul_add(dr, r0) >= 0.0;
-    let a = dr.mul_add(-dr, dcy.mul_add(dcy, dcx * dcx));
-    let b = -2.0 * r0.mul_add(dr, dcy.mul_add(py, dcx * px));
+    // The span kernel's lane scale: past `RADIAL_RESCALE_ABOVE` the
+    // solve runs on `p/s` and `r0/s`, so `b`, `c` and the discriminant
+    // stay finite, and the root is scaled back.
+    // A NaN coordinate makes the solve NaN regardless of the scale,
+    // so this comparison need not implement max's NaN-ignoring rule.
+    let (ax, ay) = (px.abs(), py.abs());
+    let m = if ax > ay { ax } else { ay };
+    let (px, py, r0, s) = if m > RADIAL_RESCALE_ABOVE {
+        let inv = 1.0 / m;
+        (px * inv, py * inv, r0 * inv, m)
+    } else {
+        (px, py, r0, 1.0)
+    };
+    // Write the equation as a*t² - 2*b*t + c = 0. Its half-linear
+    // coefficient avoids the cancelling factors of two in the roots.
+    let b = r0.mul_add(dr, dcy.mul_add(py, dcx * px));
     let c = r0.mul_add(-r0, py.mul_add(py, px * px));
     if a.abs() < 1e-12 {
-        if b.abs() < 1e-12 {
+        let b = 2.0 * b;
+        if (b * s).abs() < 1e-12 {
             return f32::NAN;
         }
-        let t = -c / b;
-        return if radius_ok(t) { t } else { f32::NAN };
+        let t = c / b;
+        return if t.mul_add(dr, r0) >= 0.0 {
+            t * s
+        } else {
+            f32::NAN
+        };
     }
-    let disc = (4.0 * a).mul_add(-c, b * b);
+    let disc = a.mul_add(-c, b * b);
     if disc < 0.0 {
         return f32::NAN;
     }
-    let sq = disc.sqrt();
-    let (r1, r2) = ((-b + sq) / (2.0 * a), (-b - sq) / (2.0 * a));
-    let (hi, lo) = (r1.max(r2), r1.min(r2));
-    if radius_ok(hi) {
-        hi
-    } else if radius_ok(lo) {
-        lo
+    // The denominator's sign orders the roots. Evaluate the larger
+    // root first, and only divide for the smaller root if needed.
+    // A NaN larger root also reaches the smaller root, just as max/min
+    // ignore a NaN operand in the vector solver.
+    let sq = disc.sqrt().copysign(a);
+    let hi = (b + sq) / a;
+    if hi.mul_add(dr, r0) >= 0.0 {
+        return hi * s;
+    }
+    let lo = (b - sq) / a;
+    if lo.mul_add(dr, r0) >= 0.0 {
+        lo * s
     } else {
         f32::NAN
     }
@@ -586,9 +682,8 @@ impl PaintData {
             Self::Mesh(mesh) => *mesh = mesh.transformed(transform),
             Self::Image(image) => image.inv = affine_f32(image.mapping * transform),
             Self::Linear(linear) => linear.inv = affine_f32(transform),
-            Self::Radial { inv, .. } | Self::Sweep { inv, .. } => {
-                *inv = affine_f32(transform);
-            }
+            Self::Radial(radial) => radial.inv = affine_f32(transform),
+            Self::Sweep(sweep) => sweep.inv = affine_f32(transform),
         }
         paint
     }
@@ -651,44 +746,10 @@ impl PaintData {
                 };
                 sample_image(&image.image, u, v, image.sampling)
             }),
-            Self::Sweep {
-                inv,
-                center,
-                start,
-                span,
-                stops,
-                extend,
-                interpolation,
-            } => output.sample(|dx, dy| {
-                let (px, py) = apply(*inv, dx, dy);
-                let raw = (py - center[1]).atan2(px - center[0]) - *start;
-                // Lowering normalizes start to [0, TAU]; atan2 is in [-PI, PI].
-                // At most two additions wrap the angle without a per-pixel fmod.
-                let turn = std::f32::consts::TAU;
-                let raw = if raw < -turn { raw + turn } else { raw };
-                let angle = if raw < 0.0 { raw + turn } else { raw };
-                let t = angle / *span;
-                extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
-            }),
+            Self::Sweep(p) => output.sweep(self, p),
 
             Self::Linear(p) => output.linear(self, p),
-            Self::Radial {
-                inv,
-                centres,
-                radii,
-                identical,
-                stops,
-                extend,
-                interpolation,
-            } => output.sample(|dx, dy| {
-                let (px, py) = apply(*inv, dx, dy);
-                let t = radial_t(px, py, *centres, *radii, *identical);
-                if t.is_nan() {
-                    [0.0; 4]
-                } else {
-                    extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
-                }
-            }),
+            Self::Radial(p) => output.radial(self, p),
         }
     }
 
@@ -725,6 +786,12 @@ trait PaintOutput: Sized {
     /// reached directly it is the leaf itself and the walk finds no
     /// links.
     fn linear(self, outer: &PaintData, params: &LinearPaint) -> Self::Output;
+
+    /// The radial-gradient leaf, `outer` as in [`Self::linear`].
+    fn radial(self, outer: &PaintData, params: &RadialPaint) -> Self::Output;
+
+    /// The sweep-gradient leaf, `outer` as in [`Self::linear`].
+    fn sweep(self, outer: &PaintData, params: &SweepPaint) -> Self::Output;
 }
 
 /// The linear leaf's scalar evaluation: `outer`'s transform chain, then
@@ -746,6 +813,68 @@ fn linear_at(outer: &PaintData, params: &LinearPaint, mut x: f32, mut y: f32) ->
     let t = params.project.map_or(0.0, |p| {
         (py - p.sy).mul_add(p.ddy, (px - p.sx) * p.ddx) / p.len2
     });
+    extend_t(t, params.extend).map_or([0.0; 4], |t| {
+        eval_stops(&params.stops, t, params.interpolation)
+    })
+}
+
+/// The radial leaf's scalar evaluation: `outer`'s transform chain, then
+/// `params`' map, `radial_t`, extend and stops — the same expression the
+/// span kernel evaluates per lane, including the no-solution `NaN`
+/// mapping to transparent before extension.
+#[expect(
+    clippy::option_if_let_else,
+    reason = "keep stop interpolation inside the dispatched target features, without a closure boundary"
+)]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+fn radial_at(outer: &PaintData, params: &RadialPaint, mut x: f32, mut y: f32) -> [f32; 4] {
+    let mut link = outer;
+    while let PaintData::Transformed(inner) = link {
+        (x, y) = apply(inner.inverse_f32, x, y);
+        link = &inner.paint;
+    }
+    let (px, py) = apply(params.inv, x, y);
+    let t = radial_t(px, py, &params.geometry, params.identical);
+    if t.is_nan() {
+        return [0.0; 4];
+    }
+    match extend_t(t, params.extend) {
+        Some(t) => eval_stops(&params.stops, t, params.interpolation),
+        None => [0.0; 4],
+    }
+}
+
+/// The shared `atan2` on one pixel, for the scalar reference: the
+/// kernel's polynomial at `Fallback` precision, whose multiply-adds
+/// are unfused. It agrees with the dispatched kernel within rounding.
+#[cfg(test)]
+fn atan2_f32(y: f32, x: f32) -> f32 {
+    let simd = fearless_simd::Fallback::new();
+    super::gradient::atan2_span(simd, simd.splat_f32x4(y), simd.splat_f32x4(x))[0]
+}
+
+/// The sweep leaf's scalar reference: `outer`'s transform chain, then
+/// `params`' map, [`atan2_f32`], angular wrap, extend and stops. It
+/// agrees with the span kernel within rounding.
+#[cfg(test)]
+fn sweep_at(outer: &PaintData, params: &SweepPaint, mut x: f32, mut y: f32) -> [f32; 4] {
+    let mut link = outer;
+    while let PaintData::Transformed(inner) = link {
+        (x, y) = apply(inner.inverse_f32, x, y);
+        link = &inner.paint;
+    }
+    let (px, py) = apply(params.inv, x, y);
+    let raw = atan2_f32(py - params.center[1], px - params.center[0]) - params.start;
+    // Lowering normalizes start to [0, TAU]; atan2 is in [-PI, PI].
+    // At most two additions wrap the angle without a per-pixel fmod.
+    let turn = std::f32::consts::TAU;
+    let raw = if raw < -turn { raw + turn } else { raw };
+    let angle = if raw < 0.0 { raw + turn } else { raw };
+    let t = angle / params.span;
     extend_t(t, params.extend).map_or([0.0; 4], |t| {
         eval_stops(&params.stops, t, params.interpolation)
     })
@@ -796,6 +925,26 @@ impl<O: PaintOutput> PaintOutput for TransformedOutput<'_, O> {
     fn linear(self, _outer: &PaintData, params: &LinearPaint) -> Self::Output {
         self.output.linear(self.paint, params)
     }
+
+    /// As [`Self::linear`].
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn radial(self, _outer: &PaintData, params: &RadialPaint) -> Self::Output {
+        self.output.radial(self.paint, params)
+    }
+
+    /// As [`Self::linear`].
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn sweep(self, _outer: &PaintData, params: &SweepPaint) -> Self::Output {
+        self.output.sweep(self.paint, params)
+    }
 }
 
 #[cfg(test)]
@@ -833,6 +982,24 @@ impl PaintOutput for PixelCenter {
     #[inline(always)]
     fn linear(self, outer: &PaintData, params: &LinearPaint) -> Self::Output {
         linear_at(outer, params, self.dx, self.dy)
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn radial(self, outer: &PaintData, params: &RadialPaint) -> Self::Output {
+        radial_at(outer, params, self.dx, self.dy)
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn sweep(self, outer: &PaintData, params: &SweepPaint) -> Self::Output {
+        sweep_at(outer, params, self.dx, self.dy)
     }
 }
 
@@ -909,6 +1076,31 @@ impl<'a, S: Simd> PaintOutput for PixelSpan<'a, S> {
     fn linear(self, outer: &PaintData, params: &LinearPaint) -> Self::Output {
         super::gradient::linear_span(self.simd, outer, params, self.x0, self.py, self.out)
     }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn radial(self, outer: &PaintData, params: &RadialPaint) -> Self::Output {
+        if self.out.len() < super::span::LANES {
+            self.sample(
+                #[inline(always)]
+                |x, y| radial_at(outer, params, x, y),
+            )
+        } else {
+            super::gradient::radial_span(self.simd, outer, params, self.x0, self.py, self.out)
+        }
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn sweep(self, outer: &PaintData, params: &SweepPaint) -> Self::Output {
+        super::gradient::sweep_span(self.simd, outer, params, self.x0, self.py, self.out)
+    }
 }
 
 #[cfg(test)]
@@ -945,6 +1137,12 @@ mod tests {
 
     fn linear() -> LinearGradient {
         let mut gradient = LinearGradient::new((0.0, 0.0), (1024.0, 0.0));
+        gradient.stops = stops();
+        gradient
+    }
+
+    fn sweep() -> SweepGradient {
+        let mut gradient = SweepGradient::new((512.0, 256.0), 0.0, std::f64::consts::TAU);
         gradient.stops = stops();
         gradient
     }
@@ -1038,6 +1236,252 @@ mod tests {
         cases
     }
 
+    /// A two-point radial with moving centres — `b` and `c` vary per
+    /// lane and the row crosses the cone's no-solution region.
+    fn radial() -> RadialGradient {
+        RadialGradient {
+            start_center: (30.0, 13.5).into(),
+            start_radius: 12.0,
+            end_center: (150.0, 13.5).into(),
+            end_radius: 70.0,
+            stops: stops(),
+            extend: Extend::Pad,
+            interpolation: Interpolation::Working,
+        }
+    }
+
+    /// A radial whose end circle contains the start: `a < 0`, and at
+    /// `px = ±∞` the quadratic's roots split into one infinite and one
+    /// NaN root.
+    fn radial_contained() -> RadialGradient {
+        RadialGradient {
+            start_center: (30.0, 13.5).into(),
+            start_radius: 5.0,
+            end_center: (40.0, 13.5).into(),
+            end_radius: 70.0,
+            stops: stops(),
+            extend: Extend::Pad,
+            interpolation: Interpolation::Working,
+        }
+    }
+
+    /// The radial-gradient matrix the span kernel must match lane for
+    /// lane: every extend mode and interpolation space, the identical-
+    /// circles hard edge, the degenerate `|a| < 1e-12` linear
+    /// fallback, stop lists shared with `linear_cases`, and inverse
+    /// maps carrying the parameter to `±∞` and `NaN` mid-span.
+    fn radial_cases() -> Vec<PaintData> {
+        let lower =
+            |paint: &Paint, inv: Affine| kernels::paint(paint, inv, []).expect("test paints lower");
+        let mut cases = Vec::new();
+        for extend in [Extend::Pad, Extend::Repeat, Extend::Reflect, Extend::None] {
+            for interpolation in [Interpolation::Working, Interpolation::SrgbEncoded] {
+                let mut gradient = radial();
+                gradient.extend = extend;
+                gradient.interpolation = interpolation;
+                cases.push(lower(&Paint::Radial(gradient), Affine::IDENTITY));
+            }
+            // Identical circles: −∞ inside the circle, +∞ outside —
+            // Repeat and Reflect fail at lowering, so only Pad and
+            // None reach the kernel.
+            for edge in [Extend::Pad, Extend::None] {
+                let mut identical = radial();
+                identical.end_center = identical.start_center;
+                identical.end_radius = identical.start_radius;
+                identical.extend = edge;
+                cases.push(lower(&Paint::Radial(identical), Affine::IDENTITY));
+            }
+            // `dcx² + dcy² == dr²`: the quadratic degenerates to the
+            // `-c / b` linear solve.
+            let mut degenerate = radial();
+            degenerate.start_center = (0.0, 0.0).into();
+            degenerate.start_radius = 0.0;
+            degenerate.end_center = (100.0, 0.0).into();
+            degenerate.end_radius = 100.0;
+            degenerate.extend = extend;
+            cases.push(lower(&Paint::Radial(degenerate), Affine::IDENTITY));
+        }
+        // A shrinking radius can reject the larger root and accept
+        // the smaller one, for either sign of the quadratic coefficient.
+        for mut gradient in [radial(), radial_contained()] {
+            std::mem::swap(&mut gradient.start_center, &mut gradient.end_center);
+            std::mem::swap(&mut gradient.start_radius, &mut gradient.end_radius);
+            cases.push(lower(&Paint::Radial(gradient), Affine::IDENTITY));
+        }
+        // A `Transformed` chain over a radial gradient.
+        cases.push(lower(
+            &Paint::Transformed(TransformedPaint::new(
+                Paint::Radial(radial()),
+                Affine::translate((4.0, -2.0)) * Affine::rotate(0.2),
+            )),
+            Affine::IDENTITY,
+        ));
+        // X-only inverse scales carrying `cx` past every unscaled
+        // term's f32 range and to `±∞` mid-span, mixing rescaled,
+        // unsolvable and infinite-parameter lanes inside one block,
+        // over both circle-containment orders; `-1e38` on the
+        // containing geometry splits the roots into one `NaN` and one
+        // `+∞`, the `max`/`min` NaN case.
+        for scale in RADIAL_SCALES {
+            for base in [radial(), radial_contained()] {
+                for extend in [Extend::Pad, Extend::Repeat, Extend::Reflect, Extend::None] {
+                    let mut gradient = base.clone();
+                    gradient.extend = extend;
+                    cases.push(lower(
+                        &Paint::Radial(gradient),
+                        Affine::scale_non_uniform(scale, 1.0),
+                    ));
+                }
+            }
+        }
+        cases
+    }
+
+    /// The device→content x scales of the large-scale radial cases.
+    const RADIAL_SCALES: [f64; 5] = [1e18, 1e19, 1e37, 1e38, -1e38];
+
+    /// At content scales where the unscaled quadratic's terms overflow
+    /// f32, a radial pixel paints exactly where the f64 oracle's
+    /// parameter exists — over every pixel whose f32 content point is
+    /// finite, under the detected level and the scalar fallback.
+    #[test]
+    fn radial_large_scale_paints_where_the_oracle_does() {
+        #[expect(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            reason = "pixel indices are far below 2^24, and the f32 product is the kernel's own content point"
+        )]
+        fn check<S: fearless_simd::Simd>(
+            simd: S,
+            paint: &PaintData,
+            oracle: &cherenkov_scene::RadialGradient,
+            scale: f64,
+        ) {
+            let mut pixels = Vec::new();
+            for len in [1, 15, REFERENCE_LEN] {
+                for x0 in (0..REFERENCE_LEN).step_by(len) {
+                    let count = len.min(REFERENCE_LEN - x0);
+                    for (i, pixel) in span(simd, paint, x0, count).into_iter().enumerate() {
+                        pixels.push((x0 + i, pixel));
+                    }
+                }
+            }
+            let y = PY as f64 + 0.5;
+            for (x, px) in pixels {
+                let x = x as f64 + 0.5;
+                if !((scale as f32) * (x as f32)).is_finite() {
+                    continue;
+                }
+                let t = cherenkov_oracle::paint::radial_t((scale * x, y).into(), oracle);
+                assert_eq!(
+                    px[3] > 0.0,
+                    !t.is_nan(),
+                    "scale {scale:e}, {oracle:?}, x={x}: alpha {} where the oracle's t is {t}",
+                    px[3]
+                );
+            }
+        }
+        for scale in RADIAL_SCALES {
+            for base in [radial(), radial_contained()] {
+                let paint = kernels::paint(
+                    &Paint::Radial(base.clone()),
+                    Affine::scale_non_uniform(scale, 1.0),
+                    [],
+                )
+                .expect("test paints lower");
+                let oracle = cherenkov_scene::RadialGradient {
+                    center0: (base.start_center.x, base.start_center.y).into(),
+                    r0: base.start_radius,
+                    center1: (base.end_center.x, base.end_center.y).into(),
+                    r1: base.end_radius,
+                    stops: Vec::new(),
+                    extend: cherenkov_scene::Extend::Pad,
+                    interpolation: cherenkov_scene::ColorSpace::default(),
+                };
+                fearless_simd::dispatch!(crate::Level::new(), simd => check(simd, &paint, &oracle, scale));
+                check(fearless_simd::Fallback::new(), &paint, &oracle, scale);
+            }
+        }
+    }
+
+    /// The sweep-gradient matrix the span kernel must match within
+    /// rounding: every extend mode and interpolation space, a non-zero
+    /// start angle and a partial span, an off-axis centre, stops
+    /// sharing one offset, stops outside `[0, 1]`, a single stop and
+    /// none, a transform chain, and inverse maps whose mapped point
+    /// underflows to the centre's `atan2(±0, ±0)` corner or lands in a
+    /// negative quadrant.
+    fn sweep_cases() -> Vec<PaintData> {
+        let lower =
+            |paint: &Paint, inv: Affine| kernels::paint(paint, inv, []).expect("test paints lower");
+        let mut cases = Vec::new();
+        for extend in [Extend::Pad, Extend::Repeat, Extend::Reflect, Extend::None] {
+            for interpolation in [Interpolation::Working, Interpolation::SrgbEncoded] {
+                let mut gradient = sweep();
+                gradient.extend = extend;
+                gradient.interpolation = interpolation;
+                cases.push(lower(&Paint::Sweep(gradient), Affine::IDENTITY));
+            }
+            // A non-zero start and a partial span exercise both wraps.
+            let mut partial = SweepGradient::new((64.0, 8.0), 0.7, 4.0);
+            partial.stops = stops();
+            partial.extend = extend;
+            cases.push(lower(&Paint::Sweep(partial), Affine::IDENTITY));
+        }
+        // Two stops sharing an offset: the zero-span window's `f == 0`.
+        let mut shared = sweep();
+        shared.stops = [
+            (0.0, [0.9, 0.1, 0.2, 1.0]),
+            (0.35, [0.1, 0.8, 0.3, 1.0]),
+            (0.35, [0.6, 0.2, 0.7, 0.5]),
+            (1.0, [0.05, 0.05, 0.4, 1.0]),
+        ]
+        .into_iter()
+        .map(|(offset, color)| ColorStop {
+            offset,
+            color: WorkingColor::new(color),
+        })
+        .collect();
+        cases.push(lower(&Paint::Sweep(shared), Affine::IDENTITY));
+        // Stop offsets outside `[0, 1]` and a single-stop gradient.
+        for offsets in [[-0.5, 0.5, 1.5].as_slice(), &[0.4]] {
+            let mut gradient = sweep();
+            gradient.stops = stops()
+                .into_iter()
+                .zip(offsets)
+                .map(|(mut stop, &offset)| {
+                    stop.offset = offset;
+                    stop
+                })
+                .collect();
+            cases.push(lower(&Paint::Sweep(gradient), Affine::IDENTITY));
+        }
+        cases.push(lower(&Paint::Sweep(sweep()), Affine::IDENTITY));
+        let mut empty = sweep();
+        empty.stops = Vec::new();
+        cases.push(lower(&Paint::Sweep(empty), Affine::IDENTITY));
+        // A transform chain over a sweep leaf.
+        cases.push(lower(
+            &Paint::Transformed(TransformedPaint::new(
+                Paint::Sweep(sweep()),
+                Affine::translate((20.0, 5.0)) * Affine::rotate(0.3),
+            )),
+            Affine::IDENTITY,
+        ));
+        // Inverse scales mapping every device point to the centre or a
+        // negative quadrant: the `atan2(±0, ±0)` and `|y| > |x|`
+        // corners, and a negative start angle.
+        let mut at_centre = SweepGradient::new((0.0, 0.0), -1.0, std::f64::consts::TAU);
+        at_centre.stops = stops();
+        for scale in [0.0, 1e-38, -1e-38] {
+            cases.push(lower(
+                &Paint::Sweep(at_centre.clone()),
+                Affine::scale(scale),
+            ));
+        }
+        cases
+    }
+
     /// Every paint kind the span table covers, lowered through the real
     /// `paint_data`/`CpuImage::decode` path a bench uses.
     fn each_kind() -> Vec<PaintData> {
@@ -1112,9 +1556,9 @@ mod tests {
         paint.eval_span(simd, x0, PY, &mut out).to_vec()
     }
 
-    /// A pixel never depends on its lane or the span's alignment: every
-    /// sub-span pixel equals the pixel of one reference span covering
-    /// x in 0..80, bit for bit, over every run of length 0-67 starting at
+    /// A pixel never visibly depends on its lane or the span's alignment:
+    /// every sub-span agrees within half an 8-bit step with a reference
+    /// span covering x in 0..80, over every run of length 0-67 starting at
     /// offsets 0-7, under the detected level and the scalar fallback.
     #[test]
     fn eval_span_is_alignment_invariant() {
@@ -1123,23 +1567,32 @@ mod tests {
             for x0 in 0..=7usize {
                 for len in 0..=67usize {
                     for (i, px) in span(simd, paint, x0, len).iter().enumerate() {
-                        assert_eq!(
-                            px.map(f32::to_bits),
-                            reference[x0 + i].map(f32::to_bits),
-                            "paint {paint:?}, run x0={x0} len={len}, pixel {i}"
-                        );
+                        for c in 0..4 {
+                            let expected = reference[x0 + i][c];
+                            assert!(
+                                (px[c] - expected).abs() <= expected.abs().max(1.0) / 510.0,
+                                "paint {paint:?}, run x0={x0} len={len}, pixel {i} channel {c}"
+                            );
+                        }
                     }
                 }
             }
         }
-        for paint in each_kind().into_iter().chain(linear_cases()) {
+        for paint in each_kind()
+            .into_iter()
+            .chain(linear_cases())
+            .chain(radial_cases())
+            .chain(sweep_cases())
+        {
             fearless_simd::dispatch!(crate::Level::new(), simd => check(simd, &paint));
             check(fearless_simd::Fallback::new(), &paint);
         }
     }
 
     /// `eval_span` agrees with per-pixel `eval` at the pixel centre to
-    /// within `1e-5 * max(1, |scalar|)` per channel, over every run of
+    /// within half an 8-bit step, `max(1, |scalar|) / 510` per channel —
+    /// no visible difference, whether or not the level fuses its
+    /// multiply-adds as the scalar evaluator does — over every run of
     /// length 0-67 starting at offsets 0-7, under the detected level and
     /// the scalar fallback.
     #[expect(
@@ -1147,12 +1600,12 @@ mod tests {
         reason = "pixel indices and band offsets are far below 2^24"
     )]
     #[test]
-    fn eval_span_agrees_with_scalar_eval_within_rounding() {
+    fn eval_span_agrees_with_scalar_eval_within_half_a_step() {
         fn check<S: fearless_simd::Simd>(simd: S, paint: &PaintData, x0: usize, len: usize) {
             for (i, px) in span(simd, paint, x0, len).iter().enumerate() {
                 let scalar = scalar_reference(paint, (x0 + i) as f32 + 0.5, PY as f32 + 0.5);
                 for c in 0..4 {
-                    let tolerance = 1e-5 * scalar[c].abs().max(1.0);
+                    let tolerance = scalar[c].abs().max(1.0) / 510.0;
                     assert!(
                         (px[c] - scalar[c]).abs() <= tolerance,
                         "paint {paint:?}, run x0={x0} len={len}, pixel {i} channel {c}: span {} scalar {}",
@@ -1162,7 +1615,42 @@ mod tests {
                 }
             }
         }
-        for paint in each_kind().into_iter().chain(linear_cases()) {
+        for paint in each_kind()
+            .into_iter()
+            .chain(linear_cases())
+            .chain(radial_cases())
+        {
+            for x0 in 0..=7usize {
+                for len in 0..=67usize {
+                    fearless_simd::dispatch!(crate::Level::new(), simd => check(
+                        simd, &paint, x0, len
+                    ));
+                    check(fearless_simd::Fallback::new(), &paint, x0, len);
+                }
+            }
+        }
+    }
+
+    /// The sweep kernel agrees with the scalar reference to the oracle
+    /// crate's visual tolerance, over every run of length 0-67 at
+    /// offsets 0-7, under the detected level and the scalar fallback.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "pixel indices and band offsets are far below 2^24"
+    )]
+    #[test]
+    fn sweep_span_agrees_with_scalar_reference() {
+        fn check<S: fearless_simd::Simd>(simd: S, paint: &PaintData, x0: usize, len: usize) {
+            let actual = span(simd, paint, x0, len)
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+            let expected = (0..len)
+                .flat_map(|i| scalar_reference(paint, (x0 + i) as f32 + 0.5, PY as f32 + 0.5))
+                .collect::<Vec<_>>();
+            cherenkov_oracle::metrics::assert_close(&actual, &expected);
+        }
+        for paint in sweep_cases() {
             for x0 in 0..=7usize {
                 for len in 0..=67usize {
                     fearless_simd::dispatch!(crate::Level::new(), simd => check(

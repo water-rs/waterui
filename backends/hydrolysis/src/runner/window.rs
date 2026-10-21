@@ -2,6 +2,7 @@
 //! scene rebuild/refresh/render phases, and input-event dispatch.
 
 use super::*;
+use crate::animation::PerpetualAnimation;
 use crate::platform::{GpuSurfaceWindow, PresentationSurface as _};
 use crate::renderer::material::{Blending, WithinWindowLevel};
 #[cfg(any(target_os = "android", test))]
@@ -35,6 +36,19 @@ pub(super) enum FrameMode {
 impl FrameMode {
     pub(super) const fn is_pending(self) -> bool {
         !matches!(self, Self::Idle)
+    }
+
+    /// [`Self::is_pending`] under a quiescence query that may ignore
+    /// repeat-forever animations. `Animate` frames are scheduled only by an
+    /// animation tick, and every animation other than a perpetual one is
+    /// counted separately by the renderer's own scheduled-work query, so when
+    /// perpetual animation is ignored only `Refresh` remains pending.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) const fn is_pending_with(self, perpetual: PerpetualAnimation) -> bool {
+        match perpetual {
+            PerpetualAnimation::Counts => self.is_pending(),
+            PerpetualAnimation::Ignored => self.is_unapplied_change(),
+        }
     }
 
     /// Whether the scheduled frame exists to apply an unapplied semantic

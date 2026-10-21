@@ -11,10 +11,11 @@ keywords = ["graphics", "2d", "rendering", "engine", "wgpu"]
 categories = ["graphics", "rendering"]
 
 [features]
-testing = []
+testing = ["dep:cherenkov-oracle"]
 
 [dependencies]
 arc-swap = "1"
+cherenkov-oracle = { path = "oracle", optional = true }
 cherenkov-record = { version = "0.0.0", path = "record", features = ["serde"] }
 crossbeam-channel.workspace = true
 web-time = "1"
@@ -36,6 +37,7 @@ wasm-bindgen-futures = "0.4"
 wasm-bindgen-test = "0.3"
 
 [dev-dependencies]
+cherenkov-oracle = { path = "oracle" }
 nami = { version = "0.13", default-features = false, features = ["std", "kurbo"] }
 
 [lints]

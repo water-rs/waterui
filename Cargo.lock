@@ -1656,6 +1656,7 @@ name = "cherenkov"
 version = "0.0.0"
 dependencies = [
  "arc-swap",
+ "cherenkov-oracle",
  "cherenkov-record",
  "crossbeam-channel",
  "filtrate-core",
@@ -1782,6 +1783,8 @@ dependencies = [
  "objc2-ui-kit 0.3.2",
  "png",
  "pollster 0.4.0",
+ "proc-macro2",
+ "quote",
  "rspirv",
  "rustc-hash 2.1.3",
  "skrifa 0.44.0",
@@ -1789,6 +1792,8 @@ dependencies = [
  "thiserror 2.0.21",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
+ "tracing-log",
+ "tracing-subscriber",
  "wasm-bindgen",
  "wasm-bindgen-test",
  "web-sys",
@@ -3590,6 +3595,7 @@ name = "filtrate"
 version = "0.2.1"
 dependencies = [
  "bytemuck",
+ "cherenkov-oracle",
  "cherenkov-shader",
  "divan",
  "filtrate-core",
@@ -4159,7 +4165,7 @@ dependencies = [
 [[package]]
 name = "glifo"
 version = "0.3.0"
-source = "git+https://github.com/lexoliu/vello?rev=a01e5039c290fa869e0f6f3708e621056740f49b#a01e5039c290fa869e0f6f3708e621056740f49b"
+source = "git+https://github.com/lexoliu/vello?branch=glifo-canonical-location#a01e5039c290fa869e0f6f3708e621056740f49b"
 dependencies = [
  "bytemuck",
  "foldhash 0.2.0",
@@ -11940,7 +11946,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 [[package]]
 name = "vello"
 version = "0.9.0"
-source = "git+https://github.com/lexoliu/vello?rev=76292095f408cf04b901023c2053f8d424652f06#76292095f408cf04b901023c2053f8d424652f06"
+source = "git+https://github.com/lexoliu/vello?branch=perf%2F1262-bump-sizing#76292095f408cf04b901023c2053f8d424652f06"
 dependencies = [
  "bytemuck",
  "futures-intrusive",
@@ -11959,7 +11965,7 @@ dependencies = [
 [[package]]
 name = "vello_common"
 version = "0.2.0"
-source = "git+https://github.com/lexoliu/vello?rev=a01e5039c290fa869e0f6f3708e621056740f49b#a01e5039c290fa869e0f6f3708e621056740f49b"
+source = "git+https://github.com/lexoliu/vello?branch=glifo-canonical-location#a01e5039c290fa869e0f6f3708e621056740f49b"
 dependencies = [
  "bytemuck",
  "fearless_simd",
@@ -11991,7 +11997,7 @@ dependencies = [
 [[package]]
 name = "vello_encoding"
 version = "0.9.0"
-source = "git+https://github.com/lexoliu/vello?rev=76292095f408cf04b901023c2053f8d424652f06#76292095f408cf04b901023c2053f8d424652f06"
+source = "git+https://github.com/lexoliu/vello?branch=perf%2F1262-bump-sizing#76292095f408cf04b901023c2053f8d424652f06"
 dependencies = [
  "bytemuck",
  "guillotiere",
@@ -12003,7 +12009,7 @@ dependencies = [
 [[package]]
 name = "vello_hybrid"
 version = "0.2.0"
-source = "git+https://github.com/lexoliu/vello?rev=a01e5039c290fa869e0f6f3708e621056740f49b#a01e5039c290fa869e0f6f3708e621056740f49b"
+source = "git+https://github.com/lexoliu/vello?branch=glifo-canonical-location#a01e5039c290fa869e0f6f3708e621056740f49b"
 dependencies = [
  "bytemuck",
  "glifo",
@@ -12018,7 +12024,7 @@ dependencies = [
 [[package]]
 name = "vello_shaders"
 version = "0.9.0"
-source = "git+https://github.com/lexoliu/vello?rev=76292095f408cf04b901023c2053f8d424652f06#76292095f408cf04b901023c2053f8d424652f06"
+source = "git+https://github.com/lexoliu/vello?branch=perf%2F1262-bump-sizing#76292095f408cf04b901023c2053f8d424652f06"
 dependencies = [
  "bytemuck",
  "log",
@@ -12030,7 +12036,7 @@ dependencies = [
 [[package]]
 name = "vello_sparse_shaders"
 version = "0.2.0"
-source = "git+https://github.com/lexoliu/vello?rev=a01e5039c290fa869e0f6f3708e621056740f49b#a01e5039c290fa869e0f6f3708e621056740f49b"
+source = "git+https://github.com/lexoliu/vello?branch=glifo-canonical-location#a01e5039c290fa869e0f6f3708e621056740f49b"
 dependencies = [
  "wesl",
  "wesl-macros",
@@ -13621,6 +13627,7 @@ dependencies = [
  "waterui-ts-engine-jsc",
  "waterui-ts-engine-quickjs",
  "waterui-ts-schema",
+ "windows-sys 0.61.2",
  "zenwave 0.6.1",
 ]
 

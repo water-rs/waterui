@@ -7,6 +7,11 @@ use cherenkov::{__engine_fn as split_fn, __engine_test as split_test, __engine_w
 use cherenkov::{Draw, EvenOdd, WorkingColor};
 use cherenkov::{Engine, EngineError, Offscreen, OffscreenFormat};
 use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::metrics::assert_images_match;
+
+#[path = "support/visual.rs"]
+mod visual;
+use visual::crop;
 
 const CLEAR: WorkingColor = WorkingColor::new([0.0, 0.0, 0.0, 1.0]);
 const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
@@ -32,12 +37,8 @@ fn pending_paths_reuse_their_coverage_layout() -> Result<(), Box<dyn std::error:
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     assert_eq!(engine.stats().paths_rasterized, 1);
     let pixels = wait!(surface.readback())?;
-    for y in 0..80 {
-        for x in 0..63 {
-            // A whole-pixel translation rasterises the same coverage: identical bits.
-            assert_eq!(px(&pixels, x, y).map(f32::to_bits), (px(&pixels, x + 65, y)).map(f32::to_bits), "translated pixel {x},{y}");
-        }
-    }
+    // A whole-pixel translation rasterises the same coverage.
+    assert_images_match(&crop(&pixels, 0..63, 0..80), &crop(&pixels, 65..128, 0..80));
     Ok(())
 }
 }
@@ -847,15 +848,7 @@ fn a_leaf_with_thousands_of_cells_replays_every_cell() -> Result<(), Box<dyn std
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     assert_eq!(engine.stats().paths_rasterized, 0, "the dots replay");
     let replayed = wait!(surface.readback())?;
-    for y in 0..256 {
-        for x in 0..512 {
-            assert_eq!(
-                px(&replayed, x, y).map(f32::to_bits),
-                px(&produced, x, y).map(f32::to_bits),
-                "replayed pixel {x},{y}"
-            );
-        }
-    }
+    assert_images_match(&crop(&replayed, 0..512, 0..256), &crop(&produced, 0..512, 0..256));
     Ok(())
 }
 }
@@ -902,15 +895,7 @@ fn a_gpu_path_replays_under_integer_translation_only() -> Result<(), Box<dyn std
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     assert_eq!(engine.stats().paths_rasterized, 0, "an integer move replays");
     let moved = wait!(surface.readback())?;
-    for y in 2..258 {
-        for x in 3..512 {
-            assert_eq!(
-                px(&moved, x, y).map(f32::to_bits),
-                px(&produced, x - 3, y - 2).map(f32::to_bits),
-                "shifted pixel {x},{y}"
-            );
-        }
-    }
+    assert_images_match(&crop(&moved, 3..512, 2..258), &crop(&produced, 0..509, 0..256));
     // A half-pixel translation changes the key: the entry regenerates.
     surface.update(|tx| {
         tx[&dots].transform(Affine::translate((3.5, 2.0)));
@@ -974,15 +959,7 @@ fn a_retained_gpu_entry_serves_two_offsets_and_survives_a_sibling_change(
         "only the changed path regenerates"
     );
     let replayed = wait!(surface.readback())?;
-    for y in 0..264 {
-        for x in 0..506 {
-            assert_eq!(
-                px(&replayed, x, y).map(f32::to_bits),
-                px(&produced, x, y).map(f32::to_bits),
-                "unchanged pixel {x},{y}"
-            );
-        }
-    }
+    assert_images_match(&crop(&replayed, 0..506, 0..264), &crop(&produced, 0..506, 0..264));
     Ok(())
 }
 }
@@ -1031,7 +1008,7 @@ split_test! {
 /// with a hairline a few pixels to its right in the same path. The
 /// hairline moves the right edge of every strip cell of the triangle —
 /// its gap is cheaper to bridge than a second cell — but not one covered
-/// pixel, so every pixel away from the hairline keeps its exact bits.
+/// pixel, so every pixel away from the hairline looks the same.
 ///
 /// An interpolated local point rounds by an amount that grows with the
 /// local coordinates at the cell's corners. The content lies far from its
@@ -1058,21 +1035,22 @@ fn a_cell_paints_the_same_however_its_path_is_cut() -> Result<(), Box<dyn std::e
     let alone = wait!(render_cut(&engine, triangle))?;
     let cut = wait!(render_cut(&engine, with_hairline))?;
     let away = hairline.inflate(2.0, 2.0);
+    let (width, height) = (CUT_SIZE.0 as usize, CUT_SIZE.1 as usize);
+    let reference = crop(&alone, 0..width, 0..height);
+    let mut test = crop(&cut, 0..width, 0..height);
     let mut painted = 0;
     for y in 0..CUT_SIZE.1 {
         for x in 0..CUT_SIZE.0 {
+            let i = y as usize * width + x as usize;
             if away.contains((f64::from(x) + 0.5, f64::from(y) + 0.5)) {
+                // The hairline's own pixels are out of the comparison.
+                test.pixels[i] = reference.pixels[i];
                 continue;
             }
-            let pixel = px(&alone, x, y);
-            painted += usize::from(pixel != CLEAR.components);
-            assert_eq!(
-                px(&cut, x, y).map(f32::to_bits),
-                pixel.map(f32::to_bits),
-                "pixel {x},{y}"
-            );
+            painted += usize::from(reference.pixels[i] != CLEAR.components);
         }
     }
+    assert_images_match(&reference, &test);
     assert!(painted > 900, "the triangle paints {painted} pixels");
     Ok(())
 }

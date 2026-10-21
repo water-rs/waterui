@@ -8,6 +8,7 @@ use cherenkov::{
 };
 use cherenkov::{Engine, EngineError, Offscreen, OffscreenFormat};
 use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::metrics::assert_close;
 
 const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
 const BLUE: WorkingColor = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
@@ -240,8 +241,8 @@ fn extend_none_is_transparent_outside_the_range() -> Result<(), Box<dyn std::err
     let rb = wait!(surface.readback())?;
     let px = |x: u32, y: u32| rb.pixels[(y * rb.width + x) as usize];
     // Outside the gradient's range nothing is drawn: the cleared zero.
-    assert_eq!(px(4, 32).map(f32::to_bits), [0.0; 4].map(f32::to_bits), "left of range must be clear");
-    assert_eq!(px(60, 32).map(f32::to_bits), [0.0; 4].map(f32::to_bits), "right of range must be clear");
+    assert_close(&px(4, 32), &[0.0; 4]);
+    assert_close(&px(60, 32), &[0.0; 4]);
     assert!(px(32, 32)[3] > 0.99, "mid-range must be opaque");
     Ok(())
 }
@@ -318,9 +319,9 @@ fn blended_descendant_isolates_its_normal_group() -> Result<(), Box<dyn std::err
     // outer group's offscreen, which then composites `Normal` over the red
     // background. Without outer isolation the `Clear` reached the scene
     // framebuffer and every pixel came out transparent.
-    for (i, px) in rb.pixels.iter().enumerate() {
+    for px in &rb.pixels {
         // The isolated `Clear` leaves the opaque red background unchanged.
-        assert_eq!((*px).map(f32::to_bits), [1.0, 0.0, 0.0, 1.0].map(f32::to_bits), "pixel {i}");
+        assert_close(px, &[1.0, 0.0, 0.0, 1.0]);
     }
     Ok(())
 }
@@ -353,14 +354,8 @@ fn tree_layer_isolates_blended_child_layer() -> Result<(), Box<dyn std::error::E
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     let pixels = wait!(surface.readback())?.pixels;
     let pixel = |x: usize, y: usize| pixels[y * 8 + x];
-    assert_eq!(
-        pixel(1, 3).map(f32::to_bits),
-        [0.0_f32, 0.0, 1.0, 1.0].map(f32::to_bits)
-    );
-    assert_eq!(
-        pixel(3, 3).map(f32::to_bits),
-        [1.0_f32, 0.0, 0.0, 1.0].map(f32::to_bits)
-    );
+    assert_close(&pixel(1, 3), &[0.0_f32, 0.0, 1.0, 1.0]);
+    assert_close(&pixel(3, 3), &[1.0_f32, 0.0, 0.0, 1.0]);
     Ok(())
 }
 }
@@ -388,14 +383,8 @@ fn tree_layer_isolates_blended_content_group() -> Result<(), Box<dyn std::error:
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     let pixels = wait!(surface.readback())?.pixels;
     let pixel = |x: usize, y: usize| pixels[y * 8 + x];
-    assert_eq!(
-        pixel(1, 3).map(f32::to_bits),
-        [0.0_f32, 0.0, 1.0, 1.0].map(f32::to_bits)
-    );
-    assert_eq!(
-        pixel(3, 3).map(f32::to_bits),
-        [1.0_f32, 0.0, 0.0, 1.0].map(f32::to_bits)
-    );
+    assert_close(&pixel(1, 3), &[0.0_f32, 0.0, 1.0, 1.0]);
+    assert_close(&pixel(3, 3), &[1.0_f32, 0.0, 0.0, 1.0]);
     Ok(())
 }
 }
@@ -432,14 +421,8 @@ fn nested_tree_layers_isolate_at_the_blending_parent() -> Result<(), Box<dyn std
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     let pixels = wait!(surface.readback())?.pixels;
     let pixel = |x: usize, y: usize| pixels[y * 8 + x];
-    assert_eq!(
-        pixel(1, 3).map(f32::to_bits),
-        [0.0_f32, 1.0, 0.0, 1.0].map(f32::to_bits)
-    );
-    assert_eq!(
-        pixel(3, 3).map(f32::to_bits),
-        [0.0_f32, 0.0, 1.0, 1.0].map(f32::to_bits)
-    );
+    assert_close(&pixel(1, 3), &[0.0_f32, 1.0, 0.0, 1.0]);
+    assert_close(&pixel(3, 3), &[0.0_f32, 0.0, 1.0, 1.0]);
     Ok(())
 }
 }

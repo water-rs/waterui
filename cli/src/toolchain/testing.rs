@@ -329,6 +329,7 @@ fn dispatcher_source() -> PathBuf {
         // machine runs it, since the scratch machine has no `cp`.
         let status = Host::current()
             .std_command("cp")
+            .expect("resolve `cp` on the real host's PATH")
             .arg(FAKE_TOOL_SOURCE)
             .arg(&canonical)
             .status()
