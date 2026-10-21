@@ -1656,6 +1656,7 @@ name = "cherenkov"
 version = "0.0.0"
 dependencies = [
  "arc-swap",
+ "cherenkov-oracle",
  "cherenkov-record",
  "crossbeam-channel",
  "filtrate-core",
@@ -1782,6 +1783,8 @@ dependencies = [
  "objc2-ui-kit 0.3.2",
  "png",
  "pollster 0.4.0",
+ "proc-macro2",
+ "quote",
  "rspirv",
  "rustc-hash 2.1.3",
  "skrifa 0.44.0",
@@ -1789,6 +1792,8 @@ dependencies = [
  "thiserror 2.0.21",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
+ "tracing-log",
+ "tracing-subscriber",
  "wasm-bindgen",
  "wasm-bindgen-test",
  "web-sys",
@@ -3590,6 +3595,7 @@ name = "filtrate"
 version = "0.2.1"
 dependencies = [
  "bytemuck",
+ "cherenkov-oracle",
  "cherenkov-shader",
  "divan",
  "filtrate-core",
@@ -13621,6 +13627,7 @@ dependencies = [
  "waterui-ts-engine-jsc",
  "waterui-ts-engine-quickjs",
  "waterui-ts-schema",
+ "windows-sys 0.61.2",
  "zenwave 0.6.1",
 ]
 

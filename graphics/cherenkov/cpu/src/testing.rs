@@ -2,6 +2,8 @@
 //! feature — the same pattern `cherenkov`'s `testing` uses: nothing here
 //! is public API, and without the feature the module does not exist.
 
+pub use crate::render::GeometryChange;
+
 /// The span kernels and the minimum entry points a benchmark needs to
 /// drive them: the real `paint_data` lowering and the real `CpuImage`
 /// decode, so a bench measures data the renderer actually produces.
@@ -19,7 +21,8 @@ pub mod kernels {
     use crate::Level;
     use crate::render::paint_data;
 
-    pub use crate::render::{Accum, ClipMask, ClipRef, ClipRun, CpuImage, Edge, PaintData};
+    pub use crate::render::coverage::testing::RowReader;
+    pub use crate::render::{ClipMask, ClipRef, ClipRun, CpuImage, Edge, PaintData};
     pub use cherenkov::BlendSpace;
 
     /// Lowers `paint` into [`PaintData`] exactly as the renderer does:
@@ -81,6 +84,22 @@ pub mod kernels {
     ) {
         fearless_simd::dispatch!(level, simd => {
             crate::render::composite_solid(simd, dst, cov, clip, color, space);
+        });
+    }
+
+    /// Uniform coverage through the production solid kernel.
+    pub fn composite_uniform(
+        level: Level,
+        dst: &mut [[f32; 4]],
+        coverage: f32,
+        clip: ClipRun<'_>,
+        color: [f32; 4],
+        space: BlendSpace,
+    ) {
+        fearless_simd::dispatch!(level, simd => {
+            crate::render::composite_solid(
+                simd, dst, crate::render::coverage::Uniform(coverage), clip, color, space,
+            );
         });
     }
 

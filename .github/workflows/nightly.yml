@@ -246,7 +246,9 @@ jobs:
       - uses: ./.github/actions/install-warp
         if: runner.os == 'Windows'
         with:
-          into: target/debug/deps
+          into: |
+            target/debug/deps
+            target/debug
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145

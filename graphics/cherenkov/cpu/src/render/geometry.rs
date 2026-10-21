@@ -1,17 +1,10 @@
-//! Winding-resolved fill and stroke geometry in a draw's
+//! Retained fill and stroke geometry in a draw's
 //! translation-normalized [`Frame`], and the per-frame table that carries it
 //! from a realization about to be dropped to the lowering that replaces it.
 //!
-//! A path whose flattened segments may overlap has to be swept
-//! ([`cherenkov::lowering::resolve_winding`]) before its signed area is
-//! accumulated, and the sweep is the dominant cost of lowering such a path.
-//! Its result depends only on the flattened content, which is flattened and
-//! swept in the draw's [`Frame`]: a pure function of the shape, the stroke
-//! style and the linear part of the device transform. A placement that
-//! differs only by a translation therefore keeps its realization's
-//! geometry and moves it by the frame's offset; only a change of the linear
-//! part flattens and sweeps again, because the flattening tolerance depends
-//! on scale.
+//! Flattening and topology depend on the shape, fill rule, stroke and linear
+//! transform in its normalized frame. Integer-grid translations reuse the
+//! compiled visible boundaries; raster bands only integrate their area.
 //!
 //! A static scene records its content again every frame, which drops every
 //! realization. Before that happens, the retained edges of the realization
@@ -19,7 +12,7 @@
 //! them for a draw whose key matches bit for bit instead of flattening,
 //! testing and quantizing again.
 //!
-//! Every cacheable draw is offered, swept or not: retained geometry is
+//! Every cacheable draw is offered, disjoint or not: retained geometry is
 //! quantized at build time, so a hit also saves the tile build, and a
 //! lookup was already paid whenever the table held any entry.
 //!
@@ -34,16 +27,14 @@ use std::sync::Arc;
 
 use arrayvec::ArrayVec;
 use cherenkov::kurbo::{self, Affine, BezPath, PathEl, Point, Vec2};
-use cherenkov::lowering::Winding;
 use cherenkov::{FillRule, ShapeData};
 use rustc_hash::{FxHashMap, FxHasher};
 
 use super::raster::Edge;
-use super::tiles::{EdgeScratch, EdgeTiles};
+use super::tiles::{EdgeScratch, EdgeTiles, Fixed};
 
 /// One offered draw: its key's span in the frame's word arena, its path
-/// elements when it is one, its retained edges and whether the winding
-/// sweep produced or confirmed them. About 48 bytes, so an insert or a
+/// elements when it is one, and its compiled boundaries. About 48 bytes, so an insert or a
 /// rehash move is a constant-size copy that never calls memcpy.
 struct Entry {
     /// `(start, len)` of the key's words in `GeometryCache::words`.
@@ -52,11 +43,9 @@ struct Entry {
     /// contents stay out of the arena.
     path: Option<Arc<[PathEl]>>,
     edges: EdgeTiles,
-    rule: FillRule,
-    swept: bool,
 }
 
-/// Swept draw geometry offered for the current frame, by content hash. A
+/// Retained draw geometry offered for the current frame, by content hash. A
 /// lookup compares the whole key; a different key with the same hash
 /// replaces the entry. The compact key words live in `words`, an arena
 /// that lives exactly as long as the table.
@@ -77,19 +66,16 @@ pub struct Offers<'a> {
     reserve: usize,
 }
 
-/// Geometry produced for a draw: its edges in the draw's [`Frame`], the rule
-/// they fill under, and whether the winding sweep produced or confirmed them.
+/// Visible boundaries compiled in the draw's [`Frame`].
 pub struct Resolved {
     pub edges: EdgeTiles,
-    pub rule: FillRule,
-    pub swept: bool,
 }
 
 impl GeometryCache {
     /// The edges of `shape` under `transform` in its [`Frame`] — its outline
     /// stroked by `stroke` when set. An offered entry with the same key is
     /// reused; otherwise `flatten` produces the flattened frame edges and
-    /// their rule, the winding is resolved and the retained form is built
+    /// their rule, topology is compiled and the retained form is built
     /// in `scratch`. `None` means the shape has no area.
     pub fn resolve(
         &self,
@@ -108,33 +94,12 @@ impl GeometryCache {
             {
                 return Some(Resolved {
                     edges: entry.edges.clone(),
-                    rule: entry.rule,
-                    swept: entry.swept,
                 });
             }
         }
         let (edges, rule) = flatten()?;
-        Some(match cherenkov::lowering::resolve_winding(&edges, rule) {
-            Winding::Disjoint => Resolved {
-                edges: EdgeTiles::new(scratch, edges.iter().copied()),
-                rule,
-                swept: false,
-            },
-            Winding::Unchanged => Resolved {
-                edges: EdgeTiles::new(scratch, edges.iter().copied()),
-                rule,
-                swept: true,
-            },
-            Winding::Resolved(resolved) => Resolved {
-                edges: EdgeTiles::new(
-                    scratch,
-                    resolved
-                        .into_iter()
-                        .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 }),
-                ),
-                rule: FillRule::NonZero,
-                swept: true,
-            },
+        Some(Resolved {
+            edges: EdgeTiles::compile(scratch, &edges, rule),
         })
     }
 
@@ -187,8 +152,6 @@ impl Offers<'_> {
         stroke: Option<&kurbo::Stroke>,
         transform: Affine,
         edges: &EdgeTiles,
-        rule: FillRule,
-        swept: bool,
     ) {
         let Some(key) = Key::new(shape, stroke, transform) else {
             return;
@@ -211,21 +174,14 @@ impl Offers<'_> {
                 key: (start, len),
                 path,
                 edges: edges.clone(),
-                rule,
-                swept,
             },
         );
     }
 }
 
-/// A draw's translation-normalized frame. Fill and stroke geometry is
-/// outlined, flattened and winding-resolved in it, so the coordinates the
-/// stroker and the sweep see — and with them the sweep's absolute epsilon
-/// and its coordinate-scaled error bound — depend on the shape, the stroke
-/// and the linear part of the device transform only, never on where the
-/// shape sits. Device space is the frame moved by [`Frame::offset`], and a
-/// placement that differs only by a translation reuses the geometry
-/// exactly.
+/// A draw's translation-normalized frame. Geometry and its disjointness
+/// proof depend only on shape, stroke and the transform's linear part.
+/// Device placement adds the fixed offset without changing retained edges.
 ///
 /// The shape is first moved so that the corner of its box — its bounds or a
 /// path's control box, grown by the stroke's reach — sits at the origin, the space strokes are
@@ -237,13 +193,12 @@ pub struct Frame {
     corner: Vec2,
     map: Affine,
     /// The device position of the frame's origin.
-    pub offset: [f32; 2],
+    pub offset: Fixed,
 }
 
 impl Frame {
     /// The frame of `shape`, stroked by `stroke` when set, drawn under
     /// `transform`.
-    #[expect(clippy::cast_possible_truncation, reason = "geometry is f32")]
     pub fn new(shape: &ShapeData, stroke: Option<&kurbo::Stroke>, transform: Affine) -> Self {
         let reach = stroke.map_or(0.0, stroke_reach);
         let bounds = control_bounds(shape).inflate(reach, reach);
@@ -264,7 +219,7 @@ impl Frame {
         Self {
             corner,
             map: Affine::translate(shift) * linear,
-            offset: [at.x as f32, at.y as f32],
+            offset: Fixed::new([at.x, at.y]),
         }
     }
 

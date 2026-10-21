@@ -108,7 +108,7 @@ belong to water-rs/waterui.
   shaders and `as_hal` on the same device and queue: on-chip blending, tile
   memory, memoryless attachments (#50–#53).
 - **Engine shaders are precompiled at build time** (WGSL through naga to
-  metallib or SPIR-V) and loaded as passthrough shaders (#57). naga still links
+  metallib, SPIR-V or DXIL) and loaded as passthrough shaders (#57). naga still links
   through wgpu, and that is accepted.
 - **The hardware floor** is on-chip programmable blending plus f16 arithmetic
   on every supported device (#1); there is no low-end tier. Compute is a

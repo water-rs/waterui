@@ -189,20 +189,7 @@ impl Kind {
                     Self::SolidOpaque | Self::SolidTranslucent,
                     PaintData::Solid(_)
                 ) | (Self::Linear, PaintData::Linear(_))
-                    | (
-                        Self::Radial,
-                        PaintData::Radial {
-                            identical: false,
-                            ..
-                        }
-                    )
-                    | (
-                        Self::RadialIdentical,
-                        PaintData::Radial {
-                            identical: true,
-                            ..
-                        }
-                    )
+                    | (Self::Radial | Self::RadialIdentical, PaintData::Radial(_))
                     | (Self::Sweep, PaintData::Sweep { .. })
                     | (
                         Self::ImageNearest | Self::ImageBilinear,
@@ -213,6 +200,14 @@ impl Kind {
             "kind {} lowered to {data:?}",
             self.name()
         );
+        if let PaintData::Radial(radial) = data {
+            assert_eq!(
+                radial.identical,
+                matches!(self, Self::RadialIdentical),
+                "kind {} lowered to {data:?}",
+                self.name()
+            );
+        }
     }
 }
 

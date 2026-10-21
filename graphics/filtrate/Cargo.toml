@@ -83,6 +83,9 @@ wgpu = { version = "30.0.1", features = ["naga-ir"], optional = true }
 web-time = { version = "1", optional = true }
 
 [dev-dependencies]
+# Visual-equivalence assertions: FLIP for rendered images, numeric bounds for
+# kernel values and for what a storage format can represent.
+cherenkov-oracle = { path = "../cherenkov/oracle" }
 # The evaluator runs snippets on the CPU to cross-check the CPU kernels and
 # the linearity of `LINEAR` filters.
 cherenkov-shader = { version = "0.0.0", path = "../cherenkov/shader", features = ["eval"] }

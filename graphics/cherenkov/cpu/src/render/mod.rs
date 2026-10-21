@@ -7,6 +7,7 @@ mod bins;
 mod bitmap;
 mod blend;
 mod colr;
+pub mod coverage;
 mod filter;
 mod font;
 mod geometry;
@@ -26,18 +27,22 @@ pub mod present;
 mod projective;
 mod raster;
 mod shadow;
+mod span;
 mod tiles;
+mod topology;
 
 // The `testing` feature's surface: the span kernels and the types their
 // signatures name. `render` is a private module, so nothing is reachable
 // without `crate::testing`'s re-export, which does not exist without the
 // feature.
 #[cfg(any(test, feature = "testing"))]
+pub use lower::GeometryChange;
+#[cfg(any(test, feature = "testing"))]
 pub use lower::{ClipMask, ClipRef};
 #[cfg(any(test, feature = "testing"))]
 pub use paint::{PaintData, paint_data};
 #[cfg(any(test, feature = "testing"))]
-pub use raster::{Accum, ClipRun, Edge, composite_span};
+pub use raster::{ClipRun, Edge, composite_span};
 #[cfg(any(test, feature = "testing"))]
 pub use raster::{composite_solid, convert_span};
 

@@ -72,11 +72,15 @@ jobs:
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
       # #3093: before the first test binary is built, so `target/debug/deps`
-      # already holds the pinned WARP when nextest's executables land there.
+      # already holds the pinned WARP when nextest's executables land there,
+      # and `target/debug` holds it for the binaries tests spawn through
+      # `CARGO_BIN_EXE_*` (#3163).
       - name: Install current WARP
         uses: ./.github/actions/install-warp
         with:
-          into: target/debug/deps
+          into: |
+            target/debug/deps
+            target/debug
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145
@@ -209,7 +213,9 @@ jobs:
       - name: Install current WARP
         uses: ./.github/actions/install-warp
         with:
-          into: target/debug/deps
+          into: |
+            target/debug/deps
+            target/debug
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145

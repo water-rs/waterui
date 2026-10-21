@@ -9,7 +9,7 @@
 pub struct Pipelines {
     layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
-    module: wgpu::ShaderModule,
+    programs: [super::shaders::RenderProgram; 2],
     /// `(format, [decode, encode])`: the filter targets share their
     /// scope's format, the surface's or the scratch format.
     by_format: Vec<(wgpu::TextureFormat, [wgpu::RenderPipeline; 2])>,
@@ -30,7 +30,7 @@ impl Pipelines {
         Self {
             layout,
             pipeline_layout,
-            module: delivery.space_convert_module(device),
+            programs: delivery.space_convert_programs(device),
             by_format: Vec::new(),
         }
     }
@@ -91,12 +91,11 @@ impl Pipelines {
         let index = if let Some(index) = self.by_format.iter().position(|(f, _)| *f == format) {
             index
         } else {
-            let pipelines = ["fs_decode", "fs_encode"].map(|fragment| {
+            let pipelines = self.programs.each_ref().map(|program| {
                 super::projective::quad_pipeline(
                     device,
                     &self.pipeline_layout,
-                    &self.module,
-                    fragment,
+                    program,
                     format,
                     None,
                 )

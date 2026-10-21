@@ -10,6 +10,11 @@ use cherenkov::{Draw, WorkingColor};
 use cherenkov::{Engine, EngineError, Next, Offscreen, OffscreenFormat, RenderError, SurfaceError};
 use cherenkov_gpu::interop::{SharedDevice, wgpu};
 use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::metrics::{assert_close, assert_images_match};
+
+#[path = "support/visual.rs"]
+mod visual;
+use visual::crop;
 
 split_fn! {
 fn render_card(
@@ -67,11 +72,7 @@ fn a_red_rect_renders_and_reads_back() -> Result<(), Box<dyn std::error::Error>>
         (r - 1.0).abs() < 1e-2 && g.abs() < 1e-2 && b.abs() < 1e-2 && (a - 1.0).abs() < 1e-2,
         "center pixel: {r} {g} {b} {a}"
     );
-    assert_eq!(
-        px(2, 2).map(f32::to_bits),
-        [0.0_f32; 4].map(f32::to_bits),
-        "corner pixel must be the clear colour"
-    );
+    assert_close(&px(2, 2), &[0.0_f32; 4]);
     Ok(())
 }
 }
@@ -502,11 +503,7 @@ fn variants_split_ranges_but_not_pixels() -> Result<(), Box<dyn std::error::Erro
     );
     let readback = wait!(surface.readback())?;
     let px = |x: u32, y: u32| readback.pixels[(y * readback.width + x) as usize];
-    assert_eq!(
-        px(32, 32).map(f32::to_bits),
-        [1.0_f32, 0.0, 0.0, 1.0].map(f32::to_bits),
-        "solid fill centre must be exactly opaque red"
-    );
+    assert_close(&px(32, 32), &[1.0_f32, 0.0, 0.0, 1.0]);
     let [r, g, b, a] = px(100, 30);
     let t = (100.5 - 80.0) / 48.0;
     assert!(
@@ -516,11 +513,7 @@ fn variants_split_ranges_but_not_pixels() -> Result<(), Box<dyn std::error::Erro
             && (f64::from(a) - 1.0).abs() < 1.0 / 255.0,
         "gradient under clip at (100,30): {r} {g} {b} {a}, t {t}"
     );
-    assert_eq!(
-        px(125, 80).map(f32::to_bits),
-        [0.0_f32; 4].map(f32::to_bits),
-        "inside the fill rect but outside the clip: nothing"
-    );
+    assert_close(&px(125, 80), &[0.0_f32; 4]);
     Ok(())
 }
 }
@@ -546,11 +539,12 @@ fn retained_painter_commands_follow_content_revisions() -> Result<(), Box<dyn st
         };
         actual.update(|tx| { tx[actual.root()].content(actual.record(record)); });
         wait!(engine.render(cherenkov::FrameTime::now()))?;
-        let pixels = wait!(actual.readback())?.pixels;
+        let rendered = wait!(actual.readback())?;
         let fresh = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
         fresh.update(|tx| { tx[fresh.root()].content(fresh.record(record)); });
         wait!(engine.render(cherenkov::FrameTime::now()))?;
-        assert_eq!(pixels, wait!(fresh.readback())?.pixels, "painter revision with {count} cards");
+        let fresh = wait!(fresh.readback())?;
+        assert_images_match(&crop(&rendered, 0..64, 0..64), &crop(&fresh, 0..64, 0..64));
     }
     Ok(())
 }
@@ -656,7 +650,9 @@ fn plain_device()
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = block!(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
     let required_features = match adapter.get_info().backend {
-        wgpu::Backend::Vulkan | wgpu::Backend::Metal => wgpu::Features::PASSTHROUGH_SHADERS,
+        wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => {
+            wgpu::Features::PASSTHROUGH_SHADERS
+        }
         _ => wgpu::Features::empty(),
     };
     let (device, queue) = block!(adapter.request_device(&wgpu::DeviceDescriptor {
