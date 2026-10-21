@@ -705,15 +705,16 @@ pub async fn android_preview_project_lock(
 }
 
 /// The lock serializing every Gradle build that `includeBuild`s one
-/// Hydrolysis Android host checkout.
+/// Hydrolysis Android host directory.
 ///
 /// Both the project's Hydrolysis Android app and the preview host
-/// composite `includeBuild` the host checkout the framework selects — for
-/// a local checkout, the one in-tree host every project of that checkout
-/// shares — and Gradle writes the included build's `build/` and `.gradle/`
-/// inside it, so any two such builds, `water run` beside `water preview`
-/// included, would race on the same directories. Keyed by a hash of the
-/// canonical `host_project_dir` under `~/.water/locks/`.
+/// composite `includeBuild` the host directory the framework selects —
+/// the CLI-managed checkout or the `waterui_path` staging mirror
+/// `materialize_android_host` produces — and Gradle writes the included
+/// build's `build/` and `.gradle/` inside it, so any two such builds,
+/// `water run` beside `water preview` included, would race on the same
+/// directories. Keyed by a hash of the canonical `host_project_dir` under
+/// `~/.water/locks/`.
 ///
 /// # Errors
 /// Returns an error if the Water home cannot be resolved, the host
