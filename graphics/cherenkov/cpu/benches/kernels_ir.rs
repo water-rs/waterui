@@ -94,6 +94,27 @@ mod kernels_bench {
         black_box(input.dst)
     }
 
+    #[library_benchmark]
+    #[benches::lengths(iter = cases::LENS.iter().copied(), setup = cases::opaque_store)]
+    fn uniform_store(mut input: Composite) -> Vec<[f32; 4]> {
+        bench_kernels::composite_uniform(
+            input.level,
+            black_box(&mut input.dst),
+            black_box(1.0),
+            input.clip,
+            black_box(input.src[0]),
+            input.space,
+        );
+        black_box(input.dst)
+    }
+
+    #[library_benchmark]
+    #[benches::widths(args = [64, 256, 2048], setup = bench_kernels::RowReader::new)]
+    fn row_reader(mut row: bench_kernels::RowReader) -> bench_kernels::RowReader {
+        black_box(row.read());
+        row
+    }
+
     fn encode_setup(len: usize) -> (cherenkov_cpu::Level, Vec<[f32; 4]>) {
         (
             cherenkov_cpu::Level::new(),
@@ -133,7 +154,15 @@ mod kernels_bench {
 
     library_benchmark_group!(
         name = kernels,
-        benchmarks = [eval, composite, opaque_store, encode, decode]
+        benchmarks = [
+            eval,
+            composite,
+            opaque_store,
+            encode,
+            decode,
+            uniform_store,
+            row_reader
+        ]
     );
 }
 

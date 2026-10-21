@@ -19,6 +19,7 @@ pub mod kernels {
     use crate::Level;
     use crate::render::paint_data;
 
+    pub use crate::render::coverage::testing::RowReader;
     pub use crate::render::{ClipMask, ClipRef, ClipRun, CpuImage, Edge, PaintData};
     pub use cherenkov::BlendSpace;
 
@@ -81,6 +82,22 @@ pub mod kernels {
     ) {
         fearless_simd::dispatch!(level, simd => {
             crate::render::composite_solid(simd, dst, cov, clip, color, space);
+        });
+    }
+
+    /// Uniform coverage through the production solid kernel.
+    pub fn composite_uniform(
+        level: Level,
+        dst: &mut [[f32; 4]],
+        coverage: f32,
+        clip: ClipRun<'_>,
+        color: [f32; 4],
+        space: BlendSpace,
+    ) {
+        fearless_simd::dispatch!(level, simd => {
+            crate::render::composite_solid(
+                simd, dst, crate::render::coverage::Uniform(coverage), clip, color, space,
+            );
         });
     }
 

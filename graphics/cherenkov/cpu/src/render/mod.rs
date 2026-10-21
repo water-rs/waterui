@@ -7,7 +7,7 @@ mod bins;
 mod bitmap;
 mod blend;
 mod colr;
-mod coverage;
+pub mod coverage;
 mod filter;
 mod font;
 mod geometry;

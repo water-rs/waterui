@@ -66,7 +66,7 @@ impl Source for Uniform {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 struct Cell {
     partial: f32,
     cover: i32,
@@ -113,7 +113,7 @@ impl Run<'_> {
 
 /// One row, with a bit per touched column. Samples are reset on first
 /// write, carry on consumption; no draw clears its bounding-box area.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct RowCells {
     cells: Vec<Cell>,
     touched: Vec<u64>,
@@ -276,6 +276,19 @@ struct Segment {
 }
 
 impl Segment {
+    /// Compare the original rational lines at a half-grid ordinate.
+    /// Tile pieces bound both deltas; placement cancels in the difference.
+    fn compare(self, other: Self, twice_y: i64) -> std::cmp::Ordering {
+        let ad = i128::from(self.dy);
+        let bd = i128::from(other.dy);
+        let ax = i128::from(self.dx);
+        let bx = i128::from(other.dx);
+        let distance = 2 * i128::from(self.x0 - other.x0) * ad * bd
+            + i128::from(twice_y - 2 * self.y0) * ax * bd
+            - i128::from(twice_y - 2 * other.y0) * bx * ad;
+        distance.cmp(&0).then_with(|| (ax * bd).cmp(&(bx * ad)))
+    }
+
     #[expect(
         clippy::cast_precision_loss,
         reason = "placed coordinates and differences fit the f64 significand"
@@ -453,8 +466,6 @@ impl Compiler {
 
     #[expect(
         clippy::cast_possible_truncation,
-        clippy::too_many_lines,
-        clippy::float_cmp,
         reason = "one strip sweep; exact coincidence is a geometry identity, not a tolerance"
     )]
     fn group(&mut self, group: Range<usize>, rule: FillRule, row: i32) {
@@ -510,17 +521,12 @@ impl Compiler {
                     self.order.push(i);
                 }
             }
-            let middle = top + (bottom - top) / 2;
+            let twice_middle = 2 * i64::from(row) + i64::from(top) + i64::from(bottom);
             let compare = |a: usize, b: usize| {
                 let (a, b) = (self.pieces[a], self.pieces[b]);
-                self.edges[a.edge]
-                    .at(row + middle)
-                    .total_cmp(&self.edges[b.edge].at(row + middle))
-                    .then_with(|| {
-                        let (a, b) = (self.edges[a.edge], self.edges[b.edge]);
-                        (i128::from(a.dx) * i128::from(b.dy))
-                            .cmp(&(i128::from(b.dx) * i128::from(a.dy)))
-                    })
+                let (a, b) = (self.edges[a.edge], self.edges[b.edge]);
+                a.compare(b, twice_middle)
+                    .then_with(|| (a.x0, a.y0, a.dx, a.dy).cmp(&(b.x0, b.y0, b.dx, b.dy)))
             };
             for i in 1..self.order.len() {
                 let value = self.order[i];
@@ -541,9 +547,7 @@ impl Compiler {
                 i += 1;
                 while i < self.order.len() {
                     let p = self.pieces[self.order[i]];
-                    if self.edges[p.edge].at(row + top) != xa
-                        || self.edges[p.edge].at(row + bottom) != xb
-                    {
+                    if !edge.compare(self.edges[p.edge], twice_middle).is_eq() {
                         break;
                     }
                     winding += self.edges[p.edge].dir;
@@ -567,6 +571,56 @@ const fn inside(winding: i32, rule: FillRule) -> bool {
     match rule {
         FillRule::NonZero => winding != 0,
         FillRule::EvenOdd => winding & 1 != 0,
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    use super::{RowCells, Run};
+
+    /// A prepared sparse row; construction is outside the measured region.
+    #[derive(Debug)]
+    pub struct RowReader(RowCells);
+
+    impl RowReader {
+        /// Repeated fractional boundaries separated by constant interiors.
+        #[must_use]
+        #[expect(clippy::cast_precision_loss, reason = "benchmark row widths fit u16")]
+        pub fn new(width: usize) -> Self {
+            let mut cells = RowCells::default();
+            cells.resize(width);
+            for x in (0..width).step_by(64) {
+                cells.boundary(
+                    1,
+                    65536,
+                    (x as f64 + 0.25) * 65536.0,
+                    (x as f64 + 0.75) * 65536.0,
+                );
+                cells.boundary(
+                    -1,
+                    65536,
+                    ((x + 48).min(width) as f64) * 65536.0,
+                    ((x + 48).min(width) as f64) * 65536.0,
+                );
+            }
+            Self(cells)
+        }
+
+        /// Consumes the row and returns its integrated area.
+        #[expect(clippy::cast_precision_loss, reason = "benchmark run lengths fit u16")]
+        pub fn read(&mut self) -> f32 {
+            let mut sum = 0.0;
+            self.0.read(false, |range, run| {
+                if let Run::Uniform(c) = run {
+                    sum = (range.len() as f32).mul_add(c.0, sum);
+                } else {
+                    for i in 0..range.len() {
+                        sum += run.at(i);
+                    }
+                }
+            });
+            sum
+        }
     }
 }
 
@@ -657,29 +711,47 @@ mod tests {
 
     #[test]
     fn coincident_boundaries_are_permutation_invariant() {
-            fn permute(edges: &mut [Edge], at: usize, rule: FillRule, expected: &[f32]) {
-                if at == edges.len() {
-                    let actual = render(edges, (2, 2), rule, Overlap::Possible, 1);
-                    assert!(
-                        actual
-                            .iter()
-                            .zip(expected)
-                            .all(|(a, b)| a.to_bits() == b.to_bits())
-                    );
-                } else {
-                    for i in at..edges.len() {
-                        edges.swap(at, i);
-                        permute(edges, at + 1, rule, expected);
-                        edges.swap(at, i);
-                    }
+        fn permute(edges: &mut [Edge], at: usize, rule: FillRule, expected: &[f32]) {
+            if at == edges.len() {
+                let actual = render(edges, (2, 2), rule, Overlap::Possible, 1);
+                assert!(
+                    actual
+                        .iter()
+                        .zip(expected)
+                        .all(|(a, b)| a.to_bits() == b.to_bits())
+                );
+            } else {
+                for i in at..edges.len() {
+                    edges.swap(at, i);
+                    permute(edges, at + 1, rule, expected);
+                    edges.swap(at, i);
                 }
             }
-        let mut edges = polygon(&[(0.25, 0.125), (0.75, 0.125), (0.75, 0.875), (0.25, 0.875)]);
-        edges.extend(edges.clone());
-        for rule in [FillRule::NonZero, FillRule::EvenOdd] {
-            let expected = render(&edges, (2, 2), rule, Overlap::Possible, 1);
-
-            permute(&mut edges, 0, rule, &expected);
+        }
+        for points in [
+            [(0.25, 0.125), (0.75, 0.125), (0.75, 0.875), (0.25, 0.875)],
+            [(0.125, 0.0), (0.75, 0.0), (1.75, 1.5), (1.125, 1.5)],
+        ] {
+            let mut edges = polygon(&points);
+            let first = edges[0];
+            let (mx, my) = (first.x0.midpoint(first.x1), first.y0.midpoint(first.y1));
+            edges.extend([
+                Edge {
+                    x1: mx,
+                    y1: my,
+                    ..first
+                },
+                Edge {
+                    x0: mx,
+                    y0: my,
+                    ..first
+                },
+                edges[1],
+            ]);
+            for rule in [FillRule::NonZero, FillRule::EvenOdd] {
+                let expected = render(&edges, (2, 2), rule, Overlap::Possible, 1);
+                permute(&mut edges, 0, rule, &expected);
+            }
         }
     }
 
