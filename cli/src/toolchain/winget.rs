@@ -1,5 +1,7 @@
 //! Shared helper for Windows package installation via winget.
 
+use std::time::Duration;
+
 use crate::{toolchain::Host, utils::CommandError};
 
 /// Errors from winget-backed installation.
@@ -21,30 +23,62 @@ pub enum WingetInstallError {
 const WINGET_COMMON_FLAGS: &[&str] = &[
     "--exact",
     "--silent",
+    "--disable-interactivity",
     "--accept-package-agreements",
     "--accept-source-agreements",
 ];
+
+/// How long one `winget` call may run before it is killed.
+#[derive(Debug, Clone, Copy)]
+struct Deadlines {
+    /// `winget install`.
+    install: Duration,
+    /// `winget list`.
+    probe: Duration,
+}
+
+/// The bounds `ensure_package_installed` applies.
+///
+/// `install` downloads an installer and runs it silently; the packages
+/// `doctor --fix` asks for are tens of megabytes and install in well under a
+/// minute even on a cold CI runner, so an install still running after a
+/// quarter of an hour is hung, not slow (a nightly fresh-user run sat 3h43m
+/// in `winget install Mozilla.sccache`). `list` only reads the local package
+/// database and answers in seconds; two minutes covers a cold source
+/// refresh.
+const DEADLINES: Deadlines = Deadlines {
+    install: Duration::from_mins(15),
+    probe: Duration::from_mins(2),
+};
 
 /// Install a package via winget if it is not already installed.
 pub async fn ensure_package_installed(
     host: &Host,
     package_id: &'static str,
 ) -> Result<(), WingetInstallError> {
+    ensure_package_installed_within(host, package_id, DEADLINES).await
+}
+
+async fn ensure_package_installed_within(
+    host: &Host,
+    package_id: &'static str,
+    deadlines: Deadlines,
+) -> Result<(), WingetInstallError> {
     if host.which("winget").await.is_err() {
         return Err(WingetInstallError::WingetNotFound);
     }
 
-    if is_package_installed(host, package_id).await? {
+    if is_package_installed(host, package_id, deadlines.probe).await? {
         return Ok(());
     }
 
     let mut args = vec!["install", "--id", package_id];
     args.extend(WINGET_COMMON_FLAGS);
-    host.run("winget", args)
+    host.run_within("winget", args, deadlines.install)
         .await
         .map_err(WingetInstallError::CommandFailed)?;
 
-    if is_package_installed(host, package_id).await? {
+    if is_package_installed(host, package_id, deadlines.probe).await? {
         Ok(())
     } else {
         Err(WingetInstallError::NotInstalled { package_id })
@@ -54,9 +88,20 @@ pub async fn ensure_package_installed(
 async fn is_package_installed(
     host: &Host,
     package_id: &'static str,
+    deadline: Duration,
 ) -> Result<bool, WingetInstallError> {
     let output = host
-        .output("winget", ["list", "--id", package_id, "--exact"])
+        .output_within(
+            "winget",
+            [
+                "list",
+                "--id",
+                package_id,
+                "--exact",
+                "--disable-interactivity",
+            ],
+            deadline,
+        )
         .await
         .map_err(WingetInstallError::CommandFailed)?;
     Ok(output.status.success())
@@ -64,8 +109,12 @@ async fn is_package_installed(
 
 #[cfg(test)]
 mod tests {
-    use super::{WingetInstallError, ensure_package_installed};
-    use crate::toolchain::testing::TestMachine;
+    use std::time::Duration;
+
+    use super::{
+        Deadlines, WingetInstallError, ensure_package_installed, ensure_package_installed_within,
+    };
+    use crate::{toolchain::testing::TestMachine, utils::CommandError};
 
     #[test]
     fn winget_absent_reports_winget_not_found() {
@@ -99,6 +148,34 @@ mod tests {
         assert!(
             matches!(result, Err(WingetInstallError::NotInstalled { .. })),
             "a package that never lists must surface NotInstalled: {result:?}"
+        );
+    }
+
+    /// An install that never returns is killed at its deadline and reported
+    /// as `TimedOut`; the fake's child dies with the tree, so nothing is
+    /// left running.
+    #[test]
+    fn hung_install_times_out() {
+        let machine = TestMachine::new();
+        machine.install("winget");
+        let host = machine.host([(String::from("WATERUI_FAKE_WINGET_HANG"), String::from("1"))]);
+        let deadlines = Deadlines {
+            install: Duration::from_millis(500),
+            probe: Duration::from_mins(1),
+        };
+        let result = smol::block_on(ensure_package_installed_within(
+            &host,
+            "Kitware.CMake",
+            deadlines,
+        ));
+        assert!(
+            matches!(
+                result,
+                Err(WingetInstallError::CommandFailed(
+                    CommandError::TimedOut { .. }
+                ))
+            ),
+            "a hung install must surface TimedOut: {result:?}"
         );
     }
 }

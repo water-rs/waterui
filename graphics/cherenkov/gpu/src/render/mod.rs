@@ -1173,11 +1173,11 @@ pub struct GpuRenderer {
     bound_stop_size: u64,
     /// The globals buffer size `bind0` was built against.
     bound_globals_size: u64,
-    /// The per-frame cell-texel storage buffer the GPU coverage route
-    /// writes and the raster passes read (decision S1, issue #2543).
-    cell_texels: wgpu::Buffer,
-    /// The cell-texel buffer size `bind0` was built against.
-    bound_cell_texels_size: u64,
+    /// The one-word stand-in `bind0` binds as the coverage arena until
+    /// the GPU coverage route allocates the real one.
+    arena_placeholder: wgpu::Buffer,
+    /// The coverage arena generation `bind0` was built against.
+    bound_arena_gen: u64,
     /// The frame's GPU coverage dispatch context (issue #2543).
     gpu_cov: gpu_cov::GpuCoverage,
     atlas: Atlas,
@@ -1186,6 +1186,9 @@ pub struct GpuRenderer {
     commit_writes: glyph::CellWrites,
     /// Per-surface pending origins, rebuilt in place each apply.
     pending_origins: Vec<PendingOrigin>,
+    /// `(draw index, anchor instance)` of the surface's GPU draws,
+    /// refilled in place each apply.
+    gpu_draw_ranges: Vec<(u32, u32)>,
     /// Replay-pin slots, reused across evicting commits (#119).
     commit_touches: Vec<u32>,
     /// A dummy 1×1 view for unused group-1 slots.
@@ -1982,12 +1985,11 @@ fn make_bind1(
     })
 }
 
-/// Builds the group-0 bind group over the current buffers and atlas.
-/// The placeholder cell-texel buffer bound until the GPU coverage
-/// route first sizes it (issue #2543).
-fn cell_texels_placeholder(device: &wgpu::Device) -> wgpu::Buffer {
+/// The placeholder coverage arena bound until the GPU coverage
+/// route first sizes its buffer (issues #2543, #3081).
+fn arena_placeholder(device: &wgpu::Device) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("cell texels"),
+        label: Some("coverage arena"),
         size: 4,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
@@ -2000,7 +2002,7 @@ struct EngineBuffers<'a> {
     globals: &'a wgpu::Buffer,
     instances: &'a wgpu::Buffer,
     stops: &'a wgpu::Buffer,
-    cell_texels: &'a wgpu::Buffer,
+    arena: &'a wgpu::Buffer,
     image_decode: &'a wgpu::Buffer,
 }
 
@@ -2014,7 +2016,7 @@ fn make_bind0(
         globals,
         instances,
         stops,
-        cell_texels,
+        arena,
         image_decode,
     } = *buffers;
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2041,7 +2043,7 @@ fn make_bind0(
             },
             wgpu::BindGroupEntry {
                 binding: 4,
-                resource: cell_texels.as_entire_binding(),
+                resource: arena.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 3,
@@ -2680,7 +2682,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         )?;
         let atlas = Atlas::new(&device, config.budget.gpu.0);
         fire_probe(&config, CreationPhase::Atlas, Some(&adapter), Some(&device))?;
-        let cell_texels = cell_texels_placeholder(&device);
+        let arena_placeholder = arena_placeholder(&device);
         let bind0 = make_bind0(
             &device,
             &layout0,
@@ -2688,7 +2690,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                 globals: &globals,
                 instances: &instances,
                 stops: &stops,
-                cell_texels: &cell_texels,
+                arena: &arena_placeholder,
                 image_decode: &image_decode,
             },
             &atlas,
@@ -2800,6 +2802,8 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                 Err(declined)
             }
         };
+        let gpu_cov =
+            gpu_cov::GpuCoverage::new(&device, config.budget.gpu.0 / gpu_cov::BUDGET_SHARE);
         let renderer = GpuRenderer {
             instance,
             adapter,
@@ -2871,14 +2875,15 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             exports: FxHashMap::default(),
             bound_atlas: 0,
             bound_instance_size: 272 * 16,
-            cell_texels,
-            bound_cell_texels_size: 4,
-            gpu_cov: gpu_cov::GpuCoverage::new(),
+            arena_placeholder,
+            bound_arena_gen: 0,
+            gpu_cov,
             bound_stop_size: 32 * 16,
             bound_globals_size: 256,
             atlas,
             commit_writes: glyph::CellWrites::default(),
             pending_origins: Vec::new(),
+            gpu_draw_ranges: Vec::new(),
             commit_touches: Vec::new(),
             surfaces: FxHashMap::default(),
             producers: FxHashMap::default(),
@@ -3066,7 +3071,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     )?;
     let atlas = Atlas::new(&device, config.budget.gpu.0);
     fire_probe(&config, CreationPhase::Atlas, Some(&adapter), Some(&device))?;
-    let cell_texels = cell_texels_placeholder(&device);
+    let arena_placeholder = arena_placeholder(&device);
     let bind0 = make_bind0(
         &device,
         &layout0,
@@ -3074,7 +3079,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
             globals: &globals,
             instances: &instances,
             stops: &stops,
-            cell_texels: &cell_texels,
+            arena: &arena_placeholder,
             image_decode: &image_decode,
         },
         &atlas,
@@ -3155,6 +3160,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         Some(&adapter),
         Some(&device),
     )?;
+    let gpu_cov = gpu_cov::GpuCoverage::new(&device, config.budget.gpu.0 / gpu_cov::BUDGET_SHARE);
     let renderer = GpuRenderer {
         instance,
         adapter,
@@ -3200,9 +3206,9 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         stops,
         image_decode,
         quad_indices,
-        cell_texels,
-        bound_cell_texels_size: 4,
-        gpu_cov: gpu_cov::GpuCoverage::new(),
+        arena_placeholder,
+        bound_arena_gen: 0,
+        gpu_cov,
         bind0,
         dummy_view,
         dummy_uint_view,
@@ -3223,6 +3229,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         atlas,
         commit_writes: glyph::CellWrites::default(),
         pending_origins: Vec::new(),
+        gpu_draw_ranges: Vec::new(),
         commit_touches: Vec::new(),
         surfaces: FxHashMap::default(),
         producers: FxHashMap::default(),
@@ -3979,6 +3986,22 @@ impl Renderer for GpuRenderer {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         diag::set_phase("trim");
         self.gpu_cov.trim();
+        if self.gpu_cov.arena_generation() != self.bound_arena_gen {
+            let atlas = &self.atlas;
+            self.bind0 = make_bind0(
+                &self.device,
+                &self.layout0,
+                &EngineBuffers {
+                    globals: &self.globals,
+                    instances: &self.instances,
+                    stops: &self.stops,
+                    arena: &self.arena_placeholder,
+                    image_decode: &self.image_decode,
+                },
+                atlas,
+            );
+            self.bound_arena_gen = self.gpu_cov.arena_generation();
+        }
         if let Some(blur) = &mut self.shadow_blur {
             blur.trim();
         }
@@ -4169,12 +4192,13 @@ impl Renderer for GpuRenderer {
                 globals: &self.globals,
                 instances: &self.instances,
                 stops: &self.stops,
-                cell_texels: &self.cell_texels,
+                arena: self.gpu_cov.arena().unwrap_or(&self.arena_placeholder),
                 image_decode: &self.image_decode,
             },
             atlas,
         );
         self.bound_atlas = atlas.generation();
+        self.bound_arena_gen = self.gpu_cov.arena_generation();
         diag::set_phase("render");
     }
 
@@ -4186,10 +4210,8 @@ impl Renderer for GpuRenderer {
 
     fn memory(&self) -> MemoryUsage {
         let gpu = self.instances.size()
-            // The GPU coverage route's buffers plus the cell texels
-            // (`self.instances` already counts the emission tail).
+            // The GPU coverage route's arena, draws and scratch buffers.
             + self.gpu_cov.bytes()
-            + self.cell_texels.size()
             + self
                 .planes
                 .values()
@@ -4843,6 +4865,9 @@ impl GpuRenderer {
             .collect();
         diag::set_phase("lower");
         let results = self.lower_all(&mut pending, &dirty, &inputs);
+        // GPU coverage generations count once per commit, wherever the
+        // entry landed (water-rs/waterui#3081).
+        stats.paths_rasterized += self.gpu_cov.generated();
         for (id, mut surf) in dirty.iter().zip(pending) {
             surf.plane_resources = (self.images_gen, self.image_replacements, surf.interop);
             self.surfaces.insert(id.id, surf);
@@ -4865,7 +4890,6 @@ impl GpuRenderer {
                     .saturating_add(surf.frame.reduce_slots());
             }
         }
-        self.gpu_cov.set_inst_origin(inst_base);
         let wait = stats.phases.wait_seconds;
         if result.is_ok() {
             result = self.upload_frame(&dirty, stats).await;
@@ -5009,6 +5033,9 @@ impl GpuRenderer {
             .collect();
         diag::set_phase("lower");
         let results = self.lower_all(&mut pending, &dirty, &inputs);
+        // GPU coverage generations count once per commit, wherever the
+        // entry landed (water-rs/waterui#3081).
+        stats.paths_rasterized += self.gpu_cov.generated();
         for (id, mut surf) in dirty.iter().zip(pending) {
             surf.plane_resources = (self.images_gen, self.image_replacements, surf.interop);
             self.surfaces.insert(id.id, surf);
@@ -5031,7 +5058,6 @@ impl GpuRenderer {
                     .saturating_add(surf.frame.reduce_slots());
             }
         }
-        self.gpu_cov.set_inst_origin(inst_base);
         let wait = stats.phases.wait_seconds;
         result = result.and_then(|()| self.upload_frame(&dirty, stats));
         stats.phases.lower_seconds =
@@ -7106,6 +7132,19 @@ impl GpuRenderer {
             .filter_map(|r| r.as_ref().ok())
             .flat_map(|l| l.pending.iter())
             .collect();
+        // The frame's live GPU-coverage entries touch before any miss
+        // may allocate, so an eviction can never take a block this
+        // frame draws (water-rs/waterui#3081).
+        let mut draws_coverage = false;
+        for raster in &rasters {
+            if let glyph::PendingRaster::GpuPath(draw) = raster {
+                self.gpu_cov.touch(draw.key);
+                draws_coverage = true;
+            }
+        }
+        // One eviction and compaction pass per commit, ahead of every
+        // miss's allocation.
+        self.gpu_cov.settle(&self.device, draws_coverage);
         let n_cells: usize = rasters.iter().map(|r| r.cell_count()).sum();
         // A frame whose batch places strictly needs no replay pins and
         // no eviction, so no emission scan and no touch decoding runs —
@@ -7544,17 +7583,8 @@ impl GpuRenderer {
                 }
                 Ok(PendingOrigin::None)
             }
-            PendingRaster::GpuPath {
-                content,
-                rule,
-                raster,
-                surface,
-                template,
-                path,
-            } => {
-                let index = self
-                    .gpu_cov
-                    .push(content, rule, raster, surface, &template, &path)?;
+            PendingRaster::GpuPath(draw) => {
+                let index = self.gpu_cov.draw(&self.device, &draw)?;
                 Ok(PendingOrigin::Gpu(index))
             }
         }
@@ -8153,15 +8183,23 @@ impl GpuRenderer {
                 }
             }
         }
-        for range in surf.frame.passes.iter().flat_map(|pass| &pass.ranges) {
-            if let Some(index) = range.gpu {
-                self.gpu_cov.set_template(
-                    index,
-                    &surf.frame.instances[range.instances.start as usize],
-                    inst_base,
-                );
-            }
+        let mut gpu_draws = std::mem::take(&mut self.gpu_draw_ranges);
+        gpu_draws.clear();
+        gpu_draws.extend(
+            surf.frame
+                .passes
+                .iter()
+                .flat_map(|pass| &pass.ranges)
+                .filter_map(|range| range.gpu.map(|index| (index, range.instances.start))),
+        );
+        for &(index, anchor_index) in &gpu_draws {
+            self.gpu_cov.write_draw(
+                index,
+                inst_base + anchor_index,
+                &mut surf.frame.instances[anchor_index as usize],
+            );
         }
+        self.gpu_draw_ranges = gpu_draws;
         surf.inst_base = inst_base;
         surf.globals_base = globals_base;
         // Appended `KIND_POLYGON` slots store the painter index locally;
@@ -8183,12 +8221,13 @@ impl GpuRenderer {
                         globals: &self.globals,
                         instances: &self.instances,
                         stops: &self.stops,
-                        cell_texels: &self.cell_texels,
+                        arena: self.gpu_cov.arena().unwrap_or(&self.arena_placeholder),
                         image_decode: &self.image_decode,
                     },
                     atlas,
                 );
                 self.bound_atlas = atlas.generation();
+                self.bound_arena_gen = self.gpu_cov.arena_generation();
                 self.invalidate_painter_replays();
             }
         }
@@ -8207,7 +8246,7 @@ impl GpuRenderer {
                     globals: &self.globals,
                     instances: &self.instances,
                     stops: &self.stops,
-                    cell_texels: &self.cell_texels,
+                    arena: self.gpu_cov.arena().unwrap_or(&self.arena_placeholder),
                     image_decode: &self.image_decode,
                 },
                 atlas,
@@ -8217,6 +8256,7 @@ impl GpuRenderer {
             self.bound_instance_size = self.instances.size();
             self.bound_stop_size = self.stops.size();
             self.bound_globals_size = self.globals.size();
+            self.bound_arena_gen = self.gpu_cov.arena_generation();
         }
 
         Ok(())
@@ -8268,7 +8308,7 @@ impl GpuRenderer {
         // The timestamp query set and resolve buffer grow once for the
         // frame's whole pass count; never mid-encoder.
         if self.timestamps && passes > 0 {
-            let coverage_passes = u32::from(self.gpu_cov.active());
+            let coverage_passes = u32::from(self.gpu_cov.has_misses());
             self.ensure_query_capacity(
                 2 * (u32::try_from(passes).expect("frame pass count fits u32") + coverage_passes),
             );
@@ -8512,7 +8552,7 @@ impl GpuRenderer {
                     globals: &self.globals,
                     instances: &self.instances,
                     stops: &self.stops,
-                    cell_texels: &self.cell_texels,
+                    arena: self.gpu_cov.arena().unwrap_or(&self.arena_placeholder),
                     image_decode: &self.image_decode,
                 },
                 atlas,
@@ -8521,43 +8561,20 @@ impl GpuRenderer {
             self.bound_instance_size = self.instances.size();
             self.bound_stop_size = self.stops.size();
             self.bound_globals_size = self.globals.size();
+            self.bound_arena_gen = self.gpu_cov.arena_generation();
             self.invalidate_painter_replays();
         }
-        // The GPU coverage tail of the instance buffer (issue #2543):
-        // grow the frame buffer and the cell-texel buffer before the
-        // upload copies reference them, then rebuild `bind0` when
-        // either moved. The dispatch itself lands on the encoder below.
-        let gpu_active = self.gpu_cov.active();
+        // The GPU coverage route (issues #2543, #3081): validate the
+        // frame's arena requirement and size the arena and draws
+        // buffer before the prologue lands on the encoder below; a
+        // moved arena leaves `bind0` stale.
+        let gpu_active = self.gpu_cov.has_draws();
         if gpu_active {
             self.gpu_cov.validate_output_sizes(&self.device.limits())?;
-            let need = (u64::from(self.gpu_cov.inst_origin())
-                + u64::from(self.gpu_cov.inst_total()))
-                * 272;
-            if self.instances.size() < need {
-                diag::bind_groups_dropped(&self.device, 1, "coverage instance tail");
-                self.instances = self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("instances"),
-                    size: need,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-            }
-            let need = u64::from(self.gpu_cov.texel_words()) * 4;
-            if self.cell_texels.size() < need {
-                self.cell_texels = self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("cell texels"),
-                    size: need,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-            }
-            if self.instances.size() > self.bound_instance_size
-                || self.stops.size() > self.bound_stop_size
-                || self.globals.size() > self.bound_globals_size
-                || self.cell_texels.size() > self.bound_cell_texels_size
-            {
+            self.gpu_cov.ensure(&self.device);
+            if self.gpu_cov.arena_generation() != self.bound_arena_gen {
                 let atlas = &self.atlas;
-                diag::bind_groups_dropped(&self.device, 1, "coverage buffers");
+                diag::bind_groups_dropped(&self.device, 1, "coverage arena");
                 self.bind0 = make_bind0(
                     &self.device,
                     &self.layout0,
@@ -8565,16 +8582,13 @@ impl GpuRenderer {
                         globals: &self.globals,
                         instances: &self.instances,
                         stops: &self.stops,
-                        cell_texels: &self.cell_texels,
+                        arena: self.gpu_cov.arena().expect("coverage arena sized"),
                         image_decode: &self.image_decode,
                     },
                     atlas,
                 );
                 self.bound_atlas = atlas.generation();
-                self.bound_instance_size = self.instances.size();
-                self.bound_stop_size = self.stops.size();
-                self.bound_globals_size = self.globals.size();
-                self.bound_cell_texels_size = self.cell_texels.size();
+                self.bound_arena_gen = self.gpu_cov.arena_generation();
                 self.invalidate_painter_replays();
             }
         }
@@ -8648,31 +8662,35 @@ impl GpuRenderer {
         // Decision S2: the whole frame's coverage dispatch runs once,
         // in this encoder ahead of the raster passes — whichever dirty
         // surface is encoded first records it (#2543).
-        if self.gpu_cov.needs_dispatch() {
+        if self.gpu_cov.needs_prologue() {
+            // Only a coverage miss records a compute pass: all-hit
+            // frames need just the count-word copies (#3081).
+            let misses = self.gpu_cov.has_misses();
             let first_query = self.query_base + 2 * self.frame_pass_count;
-            self.frame_pass_count += 1;
-            if self.timestamps {
-                self.pass_meta.push(PassMeta {
-                    name: "coverage".to_owned(),
-                    width: 0,
-                    height: 0,
-                    format: "compute",
-                });
+            let timestamp_writes = self.query_set.as_ref().filter(|_| misses).map(|query_set| {
+                wgpu::ComputePassTimestampWrites {
+                    query_set,
+                    beginning_of_pass_write_index: Some(first_query),
+                    end_of_pass_write_index: Some(first_query + 1),
+                }
+            });
+            if misses {
+                self.frame_pass_count += 1;
+                if self.timestamps {
+                    self.pass_meta.push(PassMeta {
+                        name: "coverage".to_owned(),
+                        width: 0,
+                        height: 0,
+                        format: "compute",
+                    });
+                }
             }
-            self.gpu_cov.dispatch(
+            self.gpu_cov.record_prologue(
                 &self.device,
                 &self.queue,
                 &mut encoder,
-                &self.instances,
-                &self.cell_texels,
                 self.shader_delivery,
-                self.query_set
-                    .as_ref()
-                    .map(|query_set| wgpu::ComputePassTimestampWrites {
-                        query_set,
-                        beginning_of_pass_write_index: Some(first_query),
-                        end_of_pass_write_index: Some(first_query + 1),
-                    }),
+                timestamp_writes,
             )?;
         }
         let mut i = 0;
@@ -9210,8 +9228,8 @@ impl GpuRenderer {
                     }
                     if let Some(g) = range.gpu {
                         render_pass.draw_indirect(
-                            self.gpu_cov.args_buffer(),
-                            self.gpu_cov.args_base(g) + u64::from(gpu_cov::ARGS_OPAQUE),
+                            self.gpu_cov.draws_buffer(),
+                            gpu_cov::GpuCoverage::draw_base(g) + u64::from(gpu_cov::ARGS_OPAQUE),
                         );
                     } else {
                         render_pass.draw(
@@ -9220,6 +9238,20 @@ impl GpuRenderer {
                         );
                     }
                     stats.draws += 1;
+                }
+                // The polygon tiers draw vertex indices past 8, which
+                // the cell-buffer variants read as a GPU-draw join: they
+                // run under the plain opaque pipeline.
+                if gpu_module {
+                    gpu_module = false;
+                    render_pass.set_pipeline(coverage_pipeline(
+                        &mut self.coverage_pipelines,
+                        &factory,
+                        target_format,
+                        CoveragePhase::Opaque,
+                        gpu_module,
+                    )?);
+                    stats.pipeline_switches += 1;
                 }
                 for (tier, range) in pass.tier_ranges.iter().enumerate() {
                     if !range.is_empty() {
@@ -9759,13 +9791,13 @@ impl GpuRenderer {
                 if let Some(g) = range.gpu {
                     if coverage_order {
                         render_pass.draw_indexed_indirect(
-                            self.gpu_cov.args_buffer(),
-                            self.gpu_cov.args_base(g) + u64::from(gpu_cov::ARGS_PARTIAL),
+                            self.gpu_cov.draws_buffer(),
+                            gpu_cov::GpuCoverage::draw_base(g) + u64::from(gpu_cov::ARGS_PARTIAL),
                         );
                     } else {
                         render_pass.draw_indirect(
-                            self.gpu_cov.args_buffer(),
-                            self.gpu_cov.args_base(g) + u64::from(gpu_cov::ARGS_NORMAL),
+                            self.gpu_cov.draws_buffer(),
+                            gpu_cov::GpuCoverage::draw_base(g) + u64::from(gpu_cov::ARGS_NORMAL),
                         );
                     }
                 } else if coverage_order {
@@ -10097,6 +10129,10 @@ impl GpuRenderer {
             }
             buffers.push(encoder.finish());
             let submission = self.queue.submit(buffers);
+            // The coverage prologue this encoder carries has landed:
+            // entries it generated are replayable and a pending
+            // compaction's copies have executed (water-rs/waterui#3081).
+            self.gpu_cov.submitted();
             track_submission(&self.queue, &self.tracker);
             // The epoch's descriptor sets were referenced by the
             // command buffers just submitted and by nothing else, so

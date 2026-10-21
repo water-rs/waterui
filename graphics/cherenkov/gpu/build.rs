@@ -106,8 +106,8 @@ fn drop_marked(source: &str, marker: &str) -> String {
 const UNION_NAMES: &[&str] = &["union_field", "member_field"];
 /// What the `// image-source` spans carry.
 const IMAGE_SOURCE_NAMES: &[&str] = &["image_decode", "image_source_texel"];
-/// What the `// cell-buffer` spans carry: the GPU coverage cell reads.
-const CELL_NAMES: &[&str] = &["cell_texels"];
+/// What the `// cell-buffer` spans carry: the GPU coverage arena reads.
+const CELL_NAMES: &[&str] = &["coverage_arena"];
 
 /// The invariant of every stripped product: none of `names` survives — a
 /// marker span that drifted fails loudly here rather than leaving dead code

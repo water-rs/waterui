@@ -17,7 +17,7 @@ use waterui_assets_planner::{BUNDLE_META_PREFIX, BundleMountMeta};
 
 use crate::artifact_symbols::ArtifactSymbols;
 use crate::project_model::templates::embedded;
-use crate::toolchain::Host;
+use crate::toolchain::{Host, process_tree::ProcessTree};
 
 /// The JavaScript package manager a project declares in
 /// `[web] package_manager`.
@@ -385,7 +385,7 @@ pub fn dev_url_from_line(line: &str) -> Option<url::Url> {
 #[derive(Debug)]
 pub struct WebDevServer {
     url: url::Url,
-    child: Option<(std::process::Child, dev_server_tree::DevServerTree)>,
+    child: Option<(std::process::Child, ProcessTree)>,
     _drain: smol::Task<()>,
 }
 
@@ -459,15 +459,11 @@ impl WebDevServer {
             command.args(["--host", "0.0.0.0"]);
         }
         command.stdout(Stdio::piped()).stderr(Stdio::inherit());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt as _;
-            command.process_group(0);
-        }
+        ProcessTree::lead(&mut command);
         let mut child = command.spawn().wrap_err_with(|| {
             format!("failed to spawn `{pm} run {script}` in {}", root.display())
         })?;
-        let tree = dev_server_tree::DevServerTree::adopt(&child)
+        let tree = ProcessTree::adopt(child.id())
             .wrap_err_with(|| format!("failed to group the `{pm} run {script}` process tree"))?;
         let stdout = child.stdout.take().expect("stdout is piped");
         let mut lines = BufReader::new(smol::Unblock::new(stdout)).lines();
@@ -521,140 +517,6 @@ impl WebDevServer {
     #[must_use]
     pub const fn url(&self) -> &url::Url {
         &self.url
-    }
-}
-
-/// The handle on the dev server's whole process tree, whichever the platform
-/// offers: the process group the child was spawned to lead on Unix, a job
-/// object the child is assigned to on Windows.
-mod dev_server_tree {
-    use std::io;
-
-    /// The dev server and every process it re-execs, addressable as one.
-    #[cfg(unix)]
-    #[derive(Debug)]
-    pub struct DevServerTree {
-        group: nix::unistd::Pid,
-    }
-
-    #[cfg(unix)]
-    impl DevServerTree {
-        /// The process group `child` leads. It was spawned with
-        /// `process_group(0)`; a child that did not end up leading its own
-        /// group is refused rather than signalled, because a group signal
-        /// would then reach whatever group it shares — `water` included.
-        pub fn adopt(child: &std::process::Child) -> io::Result<Self> {
-            let pid = nix::unistd::Pid::from_raw(
-                i32::try_from(child.id()).expect("process identifiers fit in i32"),
-            );
-            let group = nix::unistd::getpgid(Some(pid))?;
-            if group != pid {
-                return Err(io::Error::other(format!(
-                    "process {pid} belongs to group {group} instead of leading its own"
-                )));
-            }
-            Ok(Self { group })
-        }
-
-        /// Signal every process in the group: SIGTERM when `graceful`, else
-        /// SIGKILL.
-        pub fn signal(&self, graceful: bool) {
-            let signal = if graceful {
-                nix::sys::signal::Signal::SIGTERM
-            } else {
-                nix::sys::signal::Signal::SIGKILL
-            };
-            let _ = nix::sys::signal::killpg(self.group, signal);
-        }
-    }
-
-    /// The dev server and every process it re-execs, addressable as one: a
-    /// job object that kills its members when the last handle closes, so the
-    /// tree cannot outlive `water` even when it exits without dropping the
-    /// guard.
-    #[cfg(windows)]
-    #[derive(Debug)]
-    pub struct DevServerTree {
-        job: windows_sys::Win32::Foundation::HANDLE,
-    }
-
-    // SAFETY: a job handle is a process-wide kernel object with no thread
-    // affinity; the guard's drop hands it to a waiting thread.
-    #[cfg(windows)]
-    unsafe impl Send for DevServerTree {}
-
-    #[cfg(windows)]
-    impl DevServerTree {
-        /// A new job that kills its members on close, with `child` assigned to
-        /// it — the processes `child` spawns from now on join automatically.
-        pub fn adopt(child: &std::process::Child) -> io::Result<Self> {
-            use std::os::windows::io::AsRawHandle as _;
-
-            use windows_sys::Win32::System::JobObjects::{
-                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-                SetInformationJobObject,
-            };
-
-            // SAFETY: an unnamed job with default security; the null pointers
-            // are the documented arguments for that.
-            let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-            if job.is_null() {
-                return Err(io::Error::last_os_error());
-            }
-            let tree = Self { job };
-            // SAFETY: an all-zero limit block is the documented starting
-            // point; only the kill-on-close flag is set below.
-            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            let size = u32::try_from(std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
-                .expect("the limit block is far smaller than u32::MAX bytes");
-            // SAFETY: `job` is the live handle created above and `limits` is
-            // a fully initialised block of the size passed.
-            let configured = unsafe {
-                SetInformationJobObject(
-                    job,
-                    JobObjectExtendedLimitInformation,
-                    (&raw const limits).cast(),
-                    size,
-                )
-            };
-            if configured == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: both handles are live; the child's comes from the
-            // standard library's `Child` and stays open while `child` is.
-            let assigned = unsafe { AssignProcessToJobObject(job, child.as_raw_handle().cast()) };
-            if assigned == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(tree)
-        }
-
-        /// Terminate every process in the job. Windows has no graceful
-        /// signal a console process observes, so `graceful` selects nothing
-        /// here; the guard's drop escalates to this call after its grace
-        /// period regardless.
-        pub fn signal(&self, graceful: bool) {
-            use windows_sys::Win32::System::JobObjects::TerminateJobObject;
-
-            if graceful {
-                return;
-            }
-            // SAFETY: `self.job` is a live job handle owned by this value.
-            let _ = unsafe { TerminateJobObject(self.job, 1) };
-        }
-    }
-
-    #[cfg(windows)]
-    impl Drop for DevServerTree {
-        fn drop(&mut self) {
-            use windows_sys::Win32::Foundation::CloseHandle;
-
-            // SAFETY: the handle was created by `adopt` and is closed exactly
-            // once, here; closing the last handle kills the job's members.
-            let _ = unsafe { CloseHandle(self.job) };
-        }
     }
 }
 
@@ -1761,7 +1623,7 @@ mod tests {
     /// `water` itself.
     #[test]
     #[cfg(unix)]
-    fn dev_server_tree_signals_the_grandchild_and_refuses_a_shared_group() {
+    fn process_tree_signals_the_grandchild_and_refuses_a_shared_group() {
         use std::os::unix::process::CommandExt as _;
 
         let mut leader = crate::toolchain::Host::current()
@@ -1772,8 +1634,7 @@ mod tests {
             .process_group(0)
             .spawn()
             .expect("sh spawns");
-        let tree =
-            dev_server_tree::DevServerTree::adopt(&leader).expect("the child leads its group");
+        let tree = ProcessTree::adopt(leader.id()).expect("the child leads its group");
         tree.signal(false);
         let status = leader.wait().expect("the leader is reaped");
         assert!(
@@ -1788,7 +1649,7 @@ mod tests {
             .stderr(Stdio::null())
             .spawn()
             .expect("sh spawns");
-        let refused = dev_server_tree::DevServerTree::adopt(&shared);
+        let refused = ProcessTree::adopt(shared.id());
         let _ = shared.wait();
         assert!(refused.is_err(), "a child in our own group must be refused");
     }

@@ -13,6 +13,7 @@ fn completions_generate_a_script_for_each_supported_shell() {
     // Redirect the child's home so `ensure_global_config` never writes
     // `~/.water/config.toml` on the machine running the tests.
     let host = Host::current()
+        .without_cargo_target_dir()
         .with_env("HOME", home.path())
         .with_env("USERPROFILE", home.path());
     for (shell, anchor) in [

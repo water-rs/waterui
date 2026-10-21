@@ -3,7 +3,8 @@
 //! Run `prepare-fonts` first: it produces the OFL subsets in `scenes/fonts/`
 //! that this binary shapes against with parley. Each scene lands in
 //! `scenes/corpus/<name>/` as a `scene.json` plus a `resources/` directory of
-//! BLAKE3-addressed blobs (fonts, images).
+//! BLAKE3-addressed blobs (fonts, images). Takes the cherenkov root — the
+//! directory containing `scenes/` — as its only argument.
 
 #[path = "generate_corpus/authored.rs"]
 mod authored;
@@ -15,7 +16,7 @@ mod gradient_search;
 mod text_layout;
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -1891,7 +1892,15 @@ fn main() -> ExitCode {
         .without_time()
         .init();
 
-    match run() {
+    let mut args = std::env::args_os();
+    args.next();
+    let (Some(root), None) = (args.next(), args.next()) else {
+        tracing::error!("usage: generate-corpus <cherenkov-root>");
+        return ExitCode::FAILURE;
+    };
+    let root = PathBuf::from(root);
+
+    match run(&root) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!(%e, "corpus generation failed");
@@ -2609,10 +2618,9 @@ fn bars(l: &mut LayerBuilder) {
     clippy::suboptimal_flops,
     reason = "the suggested mul_add/hypot rewrites alter serialized float bytes;               corpus and perf scenes are pinned byte-identical"
 )]
-fn run() -> Result<(), SceneError> {
-    let root = corpus::repo_root();
-    let out = corpus::corpus_dir(&root);
-    let mut ctx = TextContext::new(&corpus::fonts_dir(&root))?;
+fn run(root: &Path) -> Result<(), SceneError> {
+    let out = corpus::corpus_dir(root);
+    let mut ctx = TextContext::new(&corpus::fonts_dir(root))?;
     let mut corpus = Corpus::new();
     compressed::generate(&mut corpus);
 
@@ -7756,7 +7764,7 @@ fn run() -> Result<(), SceneError> {
 
     // ---- Write out ---------------------------------------------------------
 
-    let perf_out = corpus::perf_dir(&root);
+    let perf_out = corpus::perf_dir(root);
     write_corpus(&out, &corpus)?;
     write_corpus(&perf_out, &perf)?;
     tracing::info!(count = corpus.entries.len(), dir = %out.display(), "corpus written");
