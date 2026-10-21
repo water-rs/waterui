@@ -649,6 +649,71 @@ pub fn assert_images_match(reference: &F32Image, test: &F32Image) {
 /// bound — the message names its index, both values and the bound.
 #[track_caller]
 pub fn assert_close<T: Copy + Into<f64>>(actual: &[T], expected: &[T]) {
+    assert_within(actual, expected, |e| CLOSE_TOLERANCE * e.abs().max(1.0));
+}
+
+/// The spacing of `f16` values in `[1, 2)`, `2^-10`.
+///
+/// Storing a value in a half float moves it by at most this much relative
+/// to its magnitude: a whole step, since GPUs may round toward zero on a
+/// half-float write.
+pub const F16_STEP: f64 = 1.0 / 1024.0;
+
+/// The smallest positive normal `f16`, `2^-14`. Below it half floats are
+/// evenly spaced at `F16_STEP * F16_MIN_POSITIVE`.
+pub const F16_MIN_POSITIVE: f64 = 1.0 / 16384.0;
+
+/// Assert two routes to the same values agree to the precision of the half
+/// floats one of them stores its results in.
+///
+/// Every element `i` must satisfy
+/// `|actual[i] - expected[i]| <= steps * F16_STEP * max(|expected[i]|, F16_MIN_POSITIVE)`.
+/// `steps` counts the half-float writes on the route, each weighted by how
+/// far converting its value back to the compared space amplifies a relative
+/// error: `1` for a value stored in the compared space itself, a transfer
+/// function's exponent for a value stored encoded (2.4 for sRGB).
+///
+/// Use it where an `Rgba16Float` route meets an `f32` one, in place of
+/// [`assert_close`], whose `2^-12` bound is finer than one half-float step.
+/// The bound scales with magnitude, so it holds unchanged for HDR values
+/// above 1 and for out-of-range kernel results, where
+/// [`max_local_error`]'s absolute difference grows with the value rather
+/// than with what a viewer can see. It stays relative below one, where an
+/// absolute half-float step would hide errors in dark values.
+///
+/// # Panics
+/// When the slices' lengths differ, or at the first element outside the
+/// bound — the message names its index, both values and the bound.
+#[track_caller]
+pub fn assert_f16_close(actual: &[f32], expected: &[f32], steps: f64) {
+    assert_within(actual, expected, |e| {
+        steps * F16_STEP * e.abs().max(F16_MIN_POSITIVE)
+    });
+}
+
+/// Assert two routes that each write an 8-bit unorm target agree to its
+/// precision: every byte within one step of the other.
+///
+/// One step is the representability floor of the format. Two routes that
+/// round at different points — one through an 8-bit intermediate the other
+/// skips, say — can each be exact to the format and still land a step apart,
+/// and in dark linear values one step is large enough for FLIP to score it.
+/// Use it for 8-bit route-vs-route comparisons and for 8-bit output checked
+/// against expected bytes; compare larger renders whose routes differ by
+/// more than rounding with [`assert_images_match`].
+///
+/// # Panics
+/// When the slices' lengths differ, or at the first byte more than one step
+/// away — the message names its index and both values.
+#[track_caller]
+pub fn assert_unorm8_close(actual: &[u8], expected: &[u8]) {
+    assert_within(actual, expected, |_| 1.0);
+}
+
+/// Panics unless `actual` and `expected` have one length and every element
+/// lies within `bound(expected)` of its expected value.
+#[track_caller]
+fn assert_within<T: Copy + Into<f64>>(actual: &[T], expected: &[T], bound: impl Fn(f64) -> f64) {
     assert_eq!(
         actual.len(),
         expected.len(),
@@ -658,7 +723,7 @@ pub fn assert_close<T: Copy + Into<f64>>(actual: &[T], expected: &[T]) {
     );
     for (i, (&a, &e)) in actual.iter().zip(expected).enumerate() {
         let (a, e) = (a.into(), e.into());
-        let bound = CLOSE_TOLERANCE * e.abs().max(1.0);
+        let bound = bound(e);
         assert!(
             (a - e).abs() <= bound,
             "index {i}: |{a} - {e}| exceeds {bound}"
