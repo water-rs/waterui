@@ -1726,6 +1726,7 @@ dependencies = [
  "cherenkov-oracle",
  "cherenkov-scene",
  "cherenkov-shader",
+ "cherenkov-stroke",
  "divan",
  "fearless_simd 1.1.0",
  "filtrate",
@@ -1805,6 +1806,7 @@ name = "cherenkov-oracle"
 version = "0.0.0"
 dependencies = [
  "cherenkov-scene",
+ "cherenkov-stroke",
  "half",
  "kurbo 0.13.1",
  "libm",
@@ -1861,6 +1863,14 @@ dependencies = [
  "half",
  "naga 30.0.1",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "cherenkov-stroke"
+version = "0.0.0"
+dependencies = [
+ "kurbo 0.13.1",
+ "num-bigint",
 ]
 
 [[package]]
