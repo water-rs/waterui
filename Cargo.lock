@@ -1727,7 +1727,7 @@ dependencies = [
  "cherenkov-scene",
  "cherenkov-shader",
  "divan",
- "fearless_simd",
+ "fearless_simd 1.1.0",
  "filtrate",
  "filtrate-core",
  "gungraun",
@@ -3566,6 +3566,12 @@ name = "fearless_simd"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97b65636e5b9ef369943878ac74335ba1c55c1cb6adbf1e2c293c624248d693"
+
+[[package]]
+name = "fearless_simd"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3296eb97d869113eaf148a6bdf01884e90b3828ad7ae2340b0f93362fc158611"
 
 [[package]]
 name = "fiat-crypto"
@@ -11979,7 +11985,7 @@ version = "0.2.0"
 source = "git+https://github.com/lexoliu/vello?branch=glifo-canonical-location#a01e5039c290fa869e0f6f3708e621056740f49b"
 dependencies = [
  "bytemuck",
- "fearless_simd",
+ "fearless_simd 0.4.1",
  "guillotiere",
  "log",
  "peniko",

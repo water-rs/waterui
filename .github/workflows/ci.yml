@@ -122,6 +122,7 @@ jobs:
               - "deny.toml"
             scripts:
               - ".github/scripts/**"
+              - ".github/tools/affected/**"
               - "Cargo.toml"
             android:
               - "cli/src/android/**"
@@ -200,7 +201,7 @@ jobs:
     needs: changes
     if: always() && ((github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - name: Require successful scope discovery
         env:
@@ -210,6 +211,24 @@ jobs:
         if: needs.changes.outputs.scripts == 'true'
       - uses: astral-sh/setup-uv@v6
         if: needs.changes.outputs.scripts == 'true'
+      # The determinator-backed tests skip when the built binary is absent,
+      # so build it exactly as affected.yml does, under the same cache key.
+      - uses: ./.github/actions/setup-rust
+        if: needs.changes.outputs.scripts == 'true'
+        with:
+          cache: "false"
+      - name: Restore Cargo sources
+        if: needs.changes.outputs.scripts == 'true'
+        uses: ./.github/actions/cargo-sources
+      - uses: actions/cache@v4
+        id: affected-tool
+        if: needs.changes.outputs.scripts == 'true'
+        with:
+          path: .github/tools/affected/target/release/affected
+          key: affected-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/tools/affected/Cargo.lock', '.github/tools/affected/Cargo.toml', '.github/tools/affected/src/**', '.github/tools/affected/rules.toml') }}
+      - name: Build the determinator tool
+        if: needs.changes.outputs.scripts == 'true' && steps.affected-tool.outputs.cache-hit != 'true'
+        run: cargo build --locked --release --manifest-path .github/tools/affected/Cargo.toml
       - name: Manifest derivation tests
         if: needs.changes.outputs.scripts == 'true'
         run: >
