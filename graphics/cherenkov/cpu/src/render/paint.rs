@@ -601,27 +601,33 @@ fn radial_t(px: f32, py: f32, geometry: &RadialGeometry, identical: bool) -> f32
     // The span kernel's lane scale: past `RADIAL_RESCALE_ABOVE` the
     // solve runs on `p/s` and `r0/s`, so `b`, `c` and the discriminant
     // stay finite, and the root is scaled back.
-    let m = px.abs().max(py.abs());
+    // A NaN coordinate makes the solve NaN regardless of the scale,
+    // so this comparison need not implement max's NaN-ignoring rule.
+    let (ax, ay) = (px.abs(), py.abs());
+    let m = if ax > ay { ax } else { ay };
     let (px, py, r0, s) = if m > RADIAL_RESCALE_ABOVE {
         let inv = 1.0 / m;
         (px * inv, py * inv, r0 * inv, m)
     } else {
         (px, py, r0, 1.0)
     };
-    let b = -2.0 * r0.mul_add(dr, dcy.mul_add(py, dcx * px));
+    // Write the equation as a*t² - 2*b*t + c = 0. Its half-linear
+    // coefficient avoids the cancelling factors of two in the roots.
+    let b = r0.mul_add(dr, dcy.mul_add(py, dcx * px));
     let c = r0.mul_add(-r0, py.mul_add(py, px * px));
     if a.abs() < 1e-12 {
+        let b = 2.0 * b;
         if (b * s).abs() < 1e-12 {
             return f32::NAN;
         }
-        let t = -c / b;
+        let t = c / b;
         return if t.mul_add(dr, r0) >= 0.0 {
             t * s
         } else {
             f32::NAN
         };
     }
-    let disc = (4.0 * a).mul_add(-c, b * b);
+    let disc = a.mul_add(-c, b * b);
     if disc < 0.0 {
         return f32::NAN;
     }
@@ -630,12 +636,11 @@ fn radial_t(px: f32, py: f32, geometry: &RadialGeometry, identical: bool) -> f32
     // A NaN larger root also reaches the smaller root, just as max/min
     // ignore a NaN operand in the vector solver.
     let sq = disc.sqrt().copysign(a);
-    let den = 2.0 * a;
-    let hi = (-b + sq) / den;
+    let hi = (b + sq) / a;
     if hi.mul_add(dr, r0) >= 0.0 {
         return hi * s;
     }
-    let lo = (-b - sq) / den;
+    let lo = (b - sq) / a;
     if lo.mul_add(dr, r0) >= 0.0 {
         lo * s
     } else {
