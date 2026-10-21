@@ -1193,13 +1193,13 @@ mod tests {
     /// release revision, so `git`-pinned member dependencies like
     /// `waterui-apple` — a precise source `[patch]` cannot redirect — fetch
     /// from the mirror the way a real build fetches the channel's revision.
-    fn stable_checkout_framework_mirror(dir: &Path) -> ResolvedFramework {
+    fn stable_checkout_framework_mirror(dir: &Path) -> std::io::Result<ResolvedFramework> {
         use crate::framework::test_fixtures::{
             git_commit_all, write_local_checkout, write_vendor_stub,
         };
 
         let waterui_root = dir.join("waterui");
-        write_local_checkout(&waterui_root);
+        write_local_checkout(&waterui_root)?;
         std::fs::create_dir_all(waterui_root.join("src")).expect("waterui src");
         std::fs::write(waterui_root.join("src/lib.rs"), "").expect("waterui lib");
         write_vendor_stub(
@@ -1208,17 +1208,20 @@ mod tests {
             &["map", "media", "webview"],
         );
         write_vendor_stub(&waterui_root.join("backends/hydrolysis"), "hydrolysis", &[]);
-        let revision = git_commit_all(&waterui_root, "stage member crates");
-        crate::framework::test_fixtures::stable_checkout_framework_at(
+        let revision = git_commit_all(&waterui_root, "stage member crates")?;
+        Ok(crate::framework::test_fixtures::stable_checkout_framework_at(
             &format!("file://{}", waterui_root.display()),
             &revision,
-        )
+        ))
     }
 
     /// A minimal project whose `Water.toml` records the stable framework
     /// resolution so `resolved_framework` answers offline — the release
     /// provenance pointing at a fixture mirror `fixture_project` stages.
-    async fn fixture_project(host: &Host, extra_manifest: &str) -> (tempfile::TempDir, Project) {
+    async fn fixture_project(
+        host: &Host,
+        extra_manifest: &str,
+    ) -> std::io::Result<(tempfile::TempDir, Project)> {
         fixture_project_with_deps(host, extra_manifest, "").await
     }
 
@@ -1228,7 +1231,7 @@ mod tests {
         host: &Host,
         extra_manifest: &str,
         cargo_dependencies: &str,
-    ) -> (tempfile::TempDir, Project) {
+    ) -> std::io::Result<(tempfile::TempDir, Project)> {
         let temporary = tempfile::tempdir().expect("tempdir");
         let root = temporary.path().join("fixture");
         std::fs::create_dir_all(root.join("src")).expect("crate src");
@@ -1236,7 +1239,7 @@ mod tests {
             "[package]\nname = \"Fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n{extra_manifest}"
         ))
         .expect("Water.toml parses");
-        manifest.framework = Some(stable_checkout_framework_mirror(temporary.path()));
+        manifest.framework = Some(stable_checkout_framework_mirror(temporary.path())?);
         std::fs::write(
             root.join("Water.toml"),
             toml::to_string(&manifest).expect("manifest serializes"),
@@ -1298,7 +1301,7 @@ mod tests {
         let project = Project::open(&host, &root, ManagedBackends::NONE)
             .await
             .expect("fixture project opens");
-        (temporary, project)
+        Ok((temporary, project))
     }
 
     /// A host whose `git` materializes `staged` — a fake framework checkout
@@ -1322,11 +1325,11 @@ mod tests {
     /// `[hydrolysis] painter`, which wins over the GPU default the
     /// plan names. Nothing in the chain substitutes silently.
     #[test]
-    fn painter_resolution_prefers_the_override_then_the_manifest() {
+    fn painter_resolution_prefers_the_override_then_the_manifest() -> std::io::Result<()> {
         smol::block_on(async {
             let home = tempfile::tempdir().expect("scratch home");
             let host = crate::toolchain::testing::real_toolchain_host(home.path());
-            let (_temporary, project) = fixture_project(&host, "").await;
+            let (_temporary, project) = fixture_project(&host, "").await?;
             assert_eq!(
                 resolve_painter(&project, None),
                 HydrolysisAndroidPainter::Gpu
@@ -1337,7 +1340,7 @@ mod tests {
             );
 
             let (_temporary, project) =
-                fixture_project(&host, "\n[hydrolysis]\npainter = \"hwui\"\n").await;
+                fixture_project(&host, "\n[hydrolysis]\npainter = \"hwui\"\n").await?;
             assert_eq!(
                 resolve_painter(&project, None),
                 HydrolysisAndroidPainter::Hwui
@@ -1346,16 +1349,17 @@ mod tests {
                 resolve_painter(&project, Some(HydrolysisAndroidPainter::Gpu)),
                 HydrolysisAndroidPainter::Gpu
             );
-        });
+            Ok(())
+        })
     }
 
     /// A pinned host without a `preview` module is an explicit error naming
     /// the missing module — never a substitution.
     #[test]
-    fn ensure_preview_host_apk_fails_without_the_preview_module() {
+    fn ensure_preview_host_apk_fails_without_the_preview_module() -> std::io::Result<()> {
         smol::block_on(async {
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
-            let (_temporary, project) = fixture_project(&host, "").await;
+            let (_temporary, project) = fixture_project(&host, "").await?;
 
             let error = ensure_preview_host_apk(&project)
                 .await
@@ -1366,17 +1370,18 @@ mod tests {
                 message.contains("backends/hydrolysis/android/preview"),
                 "the error must name the missing module path: {message}"
             );
-        });
+            Ok(())
+        })
     }
 
     /// The managed host checkout is the `git -C` init/remote/fetch/checkout
     /// sequence the fake `git` materializes; the stamp file then answers the
     /// next scaffold without a fetch at all.
     #[test]
-    fn materialize_android_host_materializes_then_reuses_the_stamped_checkout() {
+    fn materialize_android_host_materializes_then_reuses_the_stamped_checkout() -> std::io::Result<()> {
         smol::block_on(async {
             let (machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu", "hwui"]);
-            let (_temporary, project) = fixture_project(&host, "").await;
+            let (_temporary, project) = fixture_project(&host, "").await?;
 
             let resolved = project
                 .resolved_framework()
@@ -1422,17 +1427,18 @@ mod tests {
                 .await
                 .expect("stamped checkout needs no git");
             assert_eq!(again, checkout);
-        });
+            Ok(())
+        })
     }
 
     /// A painter the pinned checkout does not ship is an error naming the
     /// painter and the missing module — never a substitution, per the plan's
     /// "an unavailable painter errors; it never selects another at runtime".
     #[test]
-    fn an_unavailable_painter_is_an_error_not_a_fallback() {
+    fn an_unavailable_painter_is_an_error_not_a_fallback() -> std::io::Result<()> {
         smol::block_on(async {
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
-            let (_temporary, project) = fixture_project(&host, "").await;
+            let (_temporary, project) = fixture_project(&host, "").await?;
 
             let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
                 .await
@@ -1445,7 +1451,8 @@ mod tests {
                 .to_string();
             assert!(error.contains("hwui"), "{error}");
             assert!(error.contains("never falls back"), "{error}");
-        });
+            Ok(())
+        })
     }
 
     fn rendered_files(outputs: Vec<(PathBuf, Vec<u8>)>) -> BTreeMap<String, String> {
@@ -1519,14 +1526,14 @@ mod tests {
     /// painter, the painter's API floor, its ABI profile filters, R8 keeps,
     /// manifest permissions, and the painter's band mounted in the activity.
     #[test]
-    fn the_scaffold_composites_the_pinned_host_and_gpu_painter() {
+    fn the_scaffold_composites_the_pinned_host_and_gpu_painter() -> std::io::Result<()> {
         smol::block_on(async {
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
             let (_temporary, project) = fixture_project(
                 &host,
                 "\n[permissions]\ninternet = { enable = true, description = \"fixture\" }\n",
             )
-            .await;
+            .await?;
             let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
                 .await
                 .expect("host project dir");
@@ -1624,7 +1631,8 @@ mod tests {
             // `require_aligned_shared_libraries` — the template level only
             // needs to not defeat it.
             assert!(files.contains_key("gradlew"), "gradle wrapper ships");
-        });
+            Ok(())
+        })
     }
 
     /// The application's own graph selects the engine: a `webview` feature
@@ -1655,11 +1663,11 @@ mod tests {
     /// Both assertions run through `HydrolysisBackend::template_context` —
     /// the context the launcher `Cargo.toml` actually renders from.
     #[test]
-    fn the_launcher_manifest_enables_webview_system_for_a_webview_app() {
+    fn the_launcher_manifest_enables_webview_system_for_a_webview_app() -> std::io::Result<()> {
         smol::block_on(async {
             let (_machine, host) =
                 machine_with_staged_host(Path::new("staged"), &["gpu", "webview"]);
-            let (temporary, project) = fixture_project(&host, "").await;
+            let (temporary, project) = fixture_project(&host, "").await?;
             stage_webview_feature(&temporary, &project);
 
             let resolved = project
@@ -1714,7 +1722,8 @@ mod tests {
                 ctx.hydrolysis_android_has_system_webview()
                     .expect("android context carries Android browser answers")
             );
-        });
+            Ok(())
+        })
     }
 
     /// An app that enables the facade `webview` feature composites the pinned
@@ -1722,11 +1731,11 @@ mod tests {
     /// `dependencySubstitution` for the coordinate and the module on the app
     /// classpath. An app without it renders neither line.
     #[test]
-    fn the_scaffold_composites_the_webview_module_for_a_webview_app() {
+    fn the_scaffold_composites_the_webview_module_for_a_webview_app() -> std::io::Result<()> {
         smol::block_on(async {
             let (_machine, host) =
                 machine_with_staged_host(Path::new("staged"), &["gpu", "webview"]);
-            let (temporary, project) = fixture_project(&host, "").await;
+            let (temporary, project) = fixture_project(&host, "").await?;
             stage_webview_feature(&temporary, &project);
 
             let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
@@ -1788,7 +1797,7 @@ mod tests {
             // checkout from the first half out of the way — it is keyed by
             // project and fake-git only overlays into it.
             let (_machine2, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
-            let (temporary2, project2) = fixture_project(&host, "").await;
+            let (temporary2, project2) = fixture_project(&host, "").await?;
             stage_webview_feature(&temporary2, &project2);
             let missing_dir = require_painter_module(&project2, HydrolysisAndroidPainter::Gpu)
                 .await
@@ -1801,16 +1810,17 @@ mod tests {
                 error.to_string().contains("webview"),
                 "the error names the missing module: {error}"
             );
-        });
+            Ok(())
+        })
     }
 
     /// The same project without the `webview` feature renders neither the
     /// substitution nor the dependency.
     #[test]
-    fn a_non_webview_app_composites_no_webview_module() {
+    fn a_non_webview_app_composites_no_webview_module() -> std::io::Result<()> {
         smol::block_on(async {
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
-            let (_temporary, project) = fixture_project(&host, "").await;
+            let (_temporary, project) = fixture_project(&host, "").await?;
             let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
                 .await
                 .expect("host project dir");
@@ -1835,17 +1845,18 @@ mod tests {
                 !gradle.contains("hydrolysis:webview"),
                 "no webview dependency: {gradle}"
             );
-        });
+            Ok(())
+        })
     }
 
     /// Release builds carry only the permissions the project declares: one
     /// declaring none gets no INTERNET in its main manifest, while its debug
     /// source set still declares it for the inspector endpoint.
     #[test]
-    fn only_the_debug_source_set_adds_internet_to_an_undeclaring_project() {
+    fn only_the_debug_source_set_adds_internet_to_an_undeclaring_project() -> std::io::Result<()> {
         smol::block_on(async {
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
-            let (_temporary, project) = fixture_project(&host, "").await;
+            let (_temporary, project) = fixture_project(&host, "").await?;
             let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
                 .await
                 .expect("host project dir");
@@ -1870,7 +1881,8 @@ mod tests {
                 debug_manifest.contains("android:name=\"android.permission.INTERNET\""),
                 "{debug_manifest}"
             );
-        });
+            Ok(())
+        })
     }
 
     /// The generated Gradle script resolves `projectRoot` against the
@@ -1880,11 +1892,11 @@ mod tests {
     /// defect. Canonicalizing the joined path must land back on the project
     /// root, and the rendered script must use this value.
     #[test]
-    fn the_scaffolded_project_root_resolves_against_the_android_dir() {
+    fn the_scaffolded_project_root_resolves_against_the_android_dir() -> std::io::Result<()> {
         smol::block_on(async {
             let home = tempfile::tempdir().expect("scratch home");
             let host = crate::toolchain::testing::real_toolchain_host(home.path());
-            let (_temporary, project) = fixture_project(&host, "").await;
+            let (_temporary, project) = fixture_project(&host, "").await?;
             let android_dir = android_dir(&project.backend_path::<HydrolysisBackend>());
             std::fs::create_dir_all(&android_dir).expect("android dir");
             let host_project_dir = project.root().join("android-host");
@@ -1922,17 +1934,18 @@ mod tests {
                 gradle.contains(&format!("resolve(\"{}\")", entry.project_root)),
                 "the rendered projectRoot uses the android-dir-relative path: {gradle}"
             );
-        });
+            Ok(())
+        })
     }
 
     /// The hwui painter renders its module and dependency coordinates and
     /// ships no GPU band view. Its own API 29 requirement sits under the
     /// framework floor, so the generated `minSdk` is the framework's.
     #[test]
-    fn the_hwui_painter_renders_at_the_framework_floor_and_mounts_no_band() {
+    fn the_hwui_painter_renders_at_the_framework_floor_and_mounts_no_band() -> std::io::Result<()> {
         smol::block_on(async {
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["hwui"]);
-            let (_temporary, project) = fixture_project(&host, "").await;
+            let (_temporary, project) = fixture_project(&host, "").await?;
             let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Hwui)
                 .await
                 .expect("host project dir");
@@ -1970,7 +1983,8 @@ mod tests {
                 !activity.contains("HydrolysisGpuBand"),
                 "no GPU band view exists in the hwui build: {activity}"
             );
-        });
+            Ok(())
+        })
     }
 
     /// The embedded settings include the host checkout as `hydrolysis-host`
@@ -2057,11 +2071,11 @@ mod tests {
     /// declaring the host and painter artifacts at the stamped version, and
     /// `WaterUi.kt` carries the library name and the painter's band.
     #[test]
-    fn hydrolysis_android_embedded_renders_a_publishing_library() {
+    fn hydrolysis_android_embedded_renders_a_publishing_library() -> std::io::Result<()> {
         smol::block_on(async {
             const VERSION: &str = "0.0.0-deadbeefcafe00";
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu", "hwui"]);
-            let (_temporary, project) = fixture_project(&host, "").await;
+            let (_temporary, project) = fixture_project(&host, "").await?;
 
             for painter in [
                 HydrolysisAndroidPainter::Gpu,
@@ -2124,6 +2138,7 @@ mod tests {
                     }
                 }
             }
-        });
+            Ok(())
+        })
     }
 }

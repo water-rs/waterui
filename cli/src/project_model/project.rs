@@ -2055,7 +2055,7 @@ impl Project {
     async fn ensure_git_init(host: &Host, path: &Path) -> Result<(), FailToCreateProject> {
         // Check if already in a git repository
 
-        let mut cmd = host.command("git");
+        let mut cmd = host.command("git").map_err(FailToCreateProject::GitStatus)?;
 
         let is_in_git = command(&mut cmd, host.std_output())
             .args(["rev-parse", "--git-dir"])
@@ -2068,7 +2068,7 @@ impl Project {
 
         if !is_in_git {
             // Initialize a new git repository
-            let mut cmd = host.command("git");
+            let mut cmd = host.command("git").map_err(FailToCreateProject::GitInit)?;
             command(&mut cmd, host.std_output())
                 .args(["init"])
                 .current_dir(path)
@@ -2659,7 +2659,7 @@ async fn cargo_tree(
     locked: bool,
 ) -> eyre::Result<String> {
     let application_manifest = application_manifest(project_root).await?;
-    let mut tree = host.command("cargo");
+    let mut tree = host.command("cargo")?;
     tree.arg("tree")
         .arg("--manifest-path")
         .arg(&application_manifest)
@@ -5832,19 +5832,19 @@ mod local_patch_tests {
         }
     }
 
-    fn local_checkout(machine: &TestMachine) -> PathBuf {
+    fn local_checkout(machine: &TestMachine) -> std::io::Result<PathBuf> {
         let checkout = machine.root().join("waterui");
-        write_local_checkout(&checkout);
-        checkout
+        write_local_checkout(&checkout)?;
+        Ok(checkout)
     }
 
     #[test]
-    fn create_removes_what_it_wrote_when_a_later_step_fails() {
+    fn create_removes_what_it_wrote_when_a_later_step_fails() -> std::io::Result<()> {
         let machine = TestMachine::new();
         machine.install("cargo");
         machine.install("git");
         let host = machine.host::<&str, &str>([]);
-        let checkout = local_checkout(&machine);
+        let checkout = local_checkout(&machine)?;
         let root = machine.root().join("water-example");
         std::fs::write(machine.home().join(".water"), "not a directory")
             .expect("block the Water home directory");
@@ -5864,15 +5864,16 @@ mod local_patch_tests {
             "partial project root remains: {}",
             root.display()
         );
+        Ok(())
     }
 
     #[test]
-    fn discarding_a_draft_removes_the_project_and_returns_the_error() {
+    fn discarding_a_draft_removes_the_project_and_returns_the_error() -> std::io::Result<()> {
         let machine = TestMachine::new();
         machine.install("cargo");
         machine.install("git");
         let host = machine.host::<&str, &str>([]);
-        let checkout = local_checkout(&machine);
+        let checkout = local_checkout(&machine)?;
         let root = machine.root().join("water-example");
 
         let draft = smol::block_on(ProjectDraft::create(
@@ -5895,6 +5896,7 @@ mod local_patch_tests {
             "discarded project cache remains: {}",
             cache.display()
         );
+        Ok(())
     }
 }
 

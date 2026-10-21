@@ -27,10 +27,10 @@ fn gradle_cmd(
     gradlew: &Path,
     backend_path: &Path,
     tasks: &[&str],
-) -> smol::process::Command {
-    let mut cmd = host.command(gradlew);
+) -> std::io::Result<smol::process::Command> {
+    let mut cmd = host.command(gradlew)?;
     cmd.args(tasks).arg("--project-dir").arg(backend_path);
-    cmd
+    Ok(cmd)
 }
 
 /// Run the Gradle wrapper inside `backend_path` on `tasks`, wiring the JDK
@@ -61,7 +61,7 @@ pub(crate) async fn run_gradle_tasks(
 
     // Set JAVA_HOME to Android Studio's bundled JDK to avoid JDK version conflicts
     // (e.g., Homebrew's JDK 25 is not supported by Android Gradle Plugin)
-    let mut cmd = gradle_cmd(host, &gradlew, backend_path, tasks);
+    let mut cmd = gradle_cmd(host, &gradlew, backend_path, tasks)?;
     if let Some(java_home) = Java::detect_home(host).await {
         cmd.env("JAVA_HOME", java_home);
     }

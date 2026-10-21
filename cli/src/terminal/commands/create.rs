@@ -335,7 +335,7 @@ mod tests {
     /// nightly job installs it.
     #[test]
     #[ignore = "builds the generated crate against the enclosing workspace"]
-    fn create_template_web_scaffolds_and_checks() {
+    fn create_template_web_scaffolds_and_checks() -> std::io::Result<()> {
         smol::block_on(async {
             let checkout = crate::pinned_framework::checkout();
             let temp = tempfile::tempdir().expect("tempdir");
@@ -382,7 +382,7 @@ mod tests {
 
             // The branded starter type-checks and bundles.
             let status = waterui_cli::toolchain::Host::current()
-                .command("bun")
+                .command("bun")?
                 .args(["run", "build"])
                 .current_dir(project_path.join("web"))
                 .status()
@@ -395,7 +395,7 @@ mod tests {
             // retry — and the next cached CI run — resume instead of
             // restarting a cold graph every attempt.
             let status = waterui_cli::toolchain::Host::current()
-                .command("cargo")
+                .command("cargo")?
                 .arg("check")
                 .current_dir(&project_path)
                 .env(
@@ -406,7 +406,8 @@ mod tests {
                 .await
                 .expect("cargo check runs");
             assert!(status.success(), "the generated project must check");
-        });
+            Ok(())
+        })
     }
 
     /// The React overlay compiles: `react-ts` scaffolds get a branded
@@ -414,7 +415,7 @@ mod tests {
     /// `PATH`; the nightly job installs it.
     #[test]
     #[ignore = "builds the generated crate against the enclosing workspace"]
-    fn create_template_web_react_frontend_builds() {
+    fn create_template_web_react_frontend_builds() -> std::io::Result<()> {
         smol::block_on(async {
             let checkout = crate::pinned_framework::checkout();
             let temp = tempfile::tempdir().expect("tempdir");
@@ -428,14 +429,15 @@ mod tests {
             assert!(project_path.join("web/public/waterui.svg").is_file());
 
             let status = waterui_cli::toolchain::Host::current()
-                .command("bun")
+                .command("bun")?
                 .args(["run", "build"])
                 .current_dir(project_path.join("web"))
                 .status()
                 .await
                 .expect("bun run build runs");
             assert!(status.success(), "the branded React frontend must build");
-        });
+            Ok(())
+        })
     }
 
     #[derive(Parser)]

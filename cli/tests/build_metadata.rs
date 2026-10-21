@@ -21,8 +21,8 @@ fn run(command: &mut Command) -> Output {
     output
 }
 
-fn git(directory: &Path) -> Command {
-    let mut command = Host::current().std_command("git");
+fn git(directory: &Path) -> std::io::Result<Command> {
+    let mut command = Host::current().std_command("git")?;
     command.arg("-C").arg(directory);
     for variable in [
         "GIT_DIR",
@@ -32,11 +32,11 @@ fn git(directory: &Path) -> Command {
     ] {
         command.env_remove(variable);
     }
-    command
+    Ok(command)
 }
 
 impl Fixture {
-    fn new() -> Self {
+    fn new() -> std::io::Result<Self> {
         let root = tempfile::tempdir().expect("isolated CLI metadata fixture");
         let package = root.path().join("package");
         std::fs::create_dir_all(package.join("src")).expect("fixture source directory");
@@ -53,12 +53,12 @@ impl Fixture {
             std::fs::write(package.join(path), source).expect("fixture input");
         }
         let fixture = Self { root, package };
-        run(fixture.cargo().args(["generate-lockfile", "--offline"]));
-        fixture
+        run(fixture.cargo()?.args(["generate-lockfile", "--offline"]));
+        Ok(fixture)
     }
 
-    fn cargo(&self) -> Command {
-        let mut command = Host::current().std_command(env!("CARGO"));
+    fn cargo(&self) -> std::io::Result<Command> {
+        let mut command = Host::current().std_command(env!("CARGO"))?;
         command
             .current_dir(&self.package)
             .env("CARGO_TARGET_DIR", self.package.join("target"));
@@ -72,14 +72,14 @@ impl Fixture {
         ] {
             command.env_remove(variable);
         }
-        command
+        Ok(command)
     }
 
-    fn initialize(&self) {
-        run(git(&self.package).args(["init", "--template=", "-b", "metadata"]));
+    fn initialize(&self) -> std::io::Result<()> {
+        run(git(&self.package)?.args(["init", "--template=", "-b", "metadata"]));
         let key = self.root.path().join("signing-key");
         run(Host::current()
-            .std_command("ssh-keygen")
+            .std_command("ssh-keygen")?
             .args(["-q", "-t", "ed25519", "-N", "", "-f"])
             .arg(&key));
         for (name, value) in [
@@ -89,97 +89,99 @@ impl Fixture {
             ("gpg.ssh.program", "ssh-keygen"),
             ("commit.gpgsign", "true"),
         ] {
-            run(git(&self.package).args(["config", name, value]));
+            run(git(&self.package)?.args(["config", name, value]));
         }
         let hooks = self.root.path().join("hooks");
         std::fs::create_dir(&hooks).expect("isolated hooks");
-        run(git(&self.package)
-            .args(["config", "core.hooksPath"])
+        run(git(&self.package)?.args(["config", "core.hooksPath"])
             .arg(hooks));
-        run(git(&self.package)
-            .args(["config", "user.signingkey"])
+        run(git(&self.package)?.args(["config", "user.signingkey"])
             .arg(key));
-        run(git(&self.package).args(["add", "."]));
-        self.commit();
+        run(git(&self.package)?.args(["add", "."]));
+        self.commit()
     }
 
-    fn commit(&self) {
-        run(git(&self.package).args([
+    fn commit(&self) -> std::io::Result<()> {
+        run(git(&self.package)?.args([
             "commit",
             "--allow-empty",
             "-S",
             "-m",
             "CLI metadata fixture",
         ]));
+        Ok(())
     }
 
-    fn identity(&self) -> String {
-        let output = run(git(&self.package).args(["rev-parse", "HEAD"]));
-        String::from_utf8(output.stdout)
+    fn identity(&self) -> std::io::Result<String> {
+        let output = run(git(&self.package)?.args(["rev-parse", "HEAD"]));
+        Ok(String::from_utf8(output.stdout)
             .expect("Git identity")
             .trim()
-            .to_owned()
+            .to_owned())
     }
 
-    fn check(&self, expected: &str) {
+    fn check(&self, expected: &str) -> std::io::Result<()> {
         run(self
-            .cargo()
-            .args(["test", "--locked", "--offline"])
+            .cargo()?.args(["test", "--locked", "--offline"])
             .env("EXPECTED_CLI_COMMIT", expected));
+        Ok(())
     }
 }
 
 #[test]
-fn ordinary_branch_updates_refresh_cli_identity() {
-    let fixture = Fixture::new();
-    fixture.initialize();
-    fixture.check(&fixture.identity());
-    fixture.commit();
-    fixture.check(&fixture.identity());
+fn ordinary_branch_updates_refresh_cli_identity() -> std::io::Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.initialize()?;
+    fixture.check(&fixture.identity()?)?;
+    fixture.commit()?;
+    fixture.check(&fixture.identity()?)?;
+    Ok(())
 }
 
 #[test]
-fn linked_branch_updates_refresh_cli_identity() {
-    let mut fixture = Fixture::new();
-    fixture.initialize();
+fn linked_branch_updates_refresh_cli_identity() -> std::io::Result<()> {
+    let mut fixture = Fixture::new()?;
+    fixture.initialize()?;
     let linked = fixture.root.path().join("linked");
-    run(git(&fixture.package)
-        .args(["worktree", "add", "-b", "linked"])
+    run(git(&fixture.package)?.args(["worktree", "add", "-b", "linked"])
         .arg(&linked));
     fixture.package = linked;
-    fixture.check(&fixture.identity());
-    fixture.commit();
-    fixture.check(&fixture.identity());
+    fixture.check(&fixture.identity()?)?;
+    fixture.commit()?;
+    fixture.check(&fixture.identity()?)?;
+    Ok(())
 }
 
 #[test]
-fn packed_ref_updates_refresh_cli_identity() {
-    let mut fixture = Fixture::new();
-    fixture.initialize();
+fn packed_ref_updates_refresh_cli_identity() -> std::io::Result<()> {
+    let mut fixture = Fixture::new()?;
+    fixture.initialize()?;
     let linked = fixture.root.path().join("linked");
-    run(git(&fixture.package)
-        .args(["worktree", "add", "-b", "linked"])
+    run(git(&fixture.package)?.args(["worktree", "add", "-b", "linked"])
         .arg(&linked));
     fixture.package = linked;
-    run(git(&fixture.package).args(["pack-refs", "--all", "--prune"]));
-    fixture.check(&fixture.identity());
-    fixture.commit();
-    run(git(&fixture.package).args(["pack-refs", "--all", "--prune"]));
-    fixture.check(&fixture.identity());
+    run(git(&fixture.package)?.args(["pack-refs", "--all", "--prune"]));
+    fixture.check(&fixture.identity()?)?;
+    fixture.commit()?;
+    run(git(&fixture.package)?.args(["pack-refs", "--all", "--prune"]));
+    fixture.check(&fixture.identity()?)?;
+    Ok(())
 }
 
 #[test]
-fn detached_head_updates_refresh_cli_identity() {
-    let fixture = Fixture::new();
-    fixture.initialize();
-    run(git(&fixture.package).args(["checkout", "--detach"]));
-    fixture.check(&fixture.identity());
-    fixture.commit();
-    fixture.check(&fixture.identity());
+fn detached_head_updates_refresh_cli_identity() -> std::io::Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.initialize()?;
+    run(git(&fixture.package)?.args(["checkout", "--detach"]));
+    fixture.check(&fixture.identity()?)?;
+    fixture.commit()?;
+    fixture.check(&fixture.identity()?)?;
+    Ok(())
 }
 
 #[test]
-fn non_git_package_keeps_unknown_identity() {
-    let fixture = Fixture::new();
-    fixture.check("unknown");
+fn non_git_package_keeps_unknown_identity() -> std::io::Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.check("unknown")?;
+    Ok(())
 }
