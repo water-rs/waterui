@@ -267,7 +267,6 @@ fn stops(stops: &[ColorStop], interpolation: Interpolation) -> std::sync::Arc<[S
 /// `super::image` expression of the same formula, sharing
 /// [`super::image::nearest_texel`]/[`super::image::linear_taps`]' index
 /// math.
-#[cfg(test)]
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
@@ -776,8 +775,8 @@ trait PaintOutput: Sized {
 
 /// The image leaf's scalar evaluation: `outer`'s transform chain, then
 /// `image`'s map, the per-axis extends and the sampling — the same
-/// expression the span kernel evaluates per lane.
-#[cfg(test)]
+/// expression the span kernel evaluates per lane, and the one-pixel
+/// path for spans shorter than one block.
 #[expect(
     clippy::cast_precision_loss,
     reason = "image dimensions are bounded by memory budget"
@@ -1137,7 +1136,14 @@ impl<'a, S: Simd> PaintOutput for PixelSpan<'a, S> {
     )]
     #[inline(always)]
     fn image(self, outer: &PaintData, image: &ImagePaintData) -> Self::Output {
-        super::image::image_span(self.simd, outer, image, self.x0, self.py, self.out)
+        if self.out.len() < super::span::LANES {
+            self.sample(
+                #[inline(always)]
+                |x, y| image_at(outer, image, x, y),
+            )
+        } else {
+            super::image::image_span(self.simd, outer, image, self.x0, self.py, self.out)
+        }
     }
 }
 
