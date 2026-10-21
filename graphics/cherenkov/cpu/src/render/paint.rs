@@ -1031,13 +1031,13 @@ impl PaintOutput for PixelCenter {
     }
 }
 
-/// The mesh and short-run sampling loop, entered through `vectorize`
-/// so it compiles under the level's target features even when it is
-/// not inlined. Debug builds keep it out of line: unoptimized code
-/// gives every inlined body its own stack slots, and inlined next to
-/// every other kind in `PaintData::eval_span` it overflowed the test
-/// stack. Optimized builds inline it, since the optimizer coalesces
-/// the frame and an out-of-line call per span costs short spans.
+/// The mesh and short-run sampling loop. Debug builds keep it out of
+/// line: unoptimized code gives every inlined body its own stack
+/// slots, and inlined next to every other kind in
+/// `PaintData::eval_span` it overflowed the test stack. Optimized
+/// builds inline it into the caller's dispatched `vectorize` region,
+/// since the optimizer coalesces the frame and a call per span costs
+/// short spans.
 #[expect(
     clippy::cast_precision_loss,
     reason = "pixel indices and band offsets are far below 2^24"
@@ -1051,30 +1051,25 @@ impl PaintOutput for PixelCenter {
     ),
     inline(always)
 )]
-fn sample_span<S: Simd>(
-    simd: S,
+fn sample_span(
     x0: usize,
     py: usize,
     out: &mut [MaybeUninit<[f32; 4]>],
     mut evaluate: impl FnMut(f32, f32) -> [f32; 4],
 ) -> &mut [[f32; 4]] {
-    simd.vectorize(
-        #[inline(always)]
-        || {
-            let y = py as f32 + 0.5;
-            let mut x = x0 as f32 + 0.5;
-            for pixel in out.iter_mut() {
-                pixel.write(evaluate(x, y));
-                x += 1.0;
-            }
-            // SAFETY: every element was written by the loop above.
-            unsafe { out.assume_init_mut() }
-        },
-    )
+    let y = py as f32 + 0.5;
+    let mut x = x0 as f32 + 0.5;
+    for pixel in out.iter_mut() {
+        pixel.write(evaluate(x, y));
+        x += 1.0;
+    }
+    // SAFETY: every element was written by the loop above.
+    unsafe { out.assume_init_mut() }
 }
 
-/// The solid fill, entered through `vectorize` for the same reason as
-/// [`sample_span`].
+/// The solid fill, out of line in debug builds for the same reason as
+/// [`sample_span`]. Entered through its own `vectorize`, which
+/// isolates it from the paint evaluators' register pressure.
 #[cfg_attr(debug_assertions, inline(never))]
 #[cfg_attr(
     not(debug_assertions),
@@ -1134,7 +1129,7 @@ impl<'a, S: Simd> PaintOutput for PixelSpan<'a, S> {
     )]
     #[inline(always)]
     fn sample(self, evaluate: impl FnMut(f32, f32) -> [f32; 4]) -> Self::Output {
-        sample_span(self.simd, self.x0, self.py, self.out, evaluate)
+        sample_span(self.x0, self.py, self.out, evaluate)
     }
 
     #[expect(

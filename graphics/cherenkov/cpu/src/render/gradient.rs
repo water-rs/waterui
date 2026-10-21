@@ -1010,10 +1010,7 @@ pub(super) fn linear_span<'a, S: Simd>(
     py: usize,
     out: &'a mut [MaybeUninit<[f32; 4]>],
 ) -> &'a mut [[f32; 4]] {
-    simd.vectorize(
-        #[inline(always)]
-        || super::span::span(simd, &Gradient(LinearEval::new(outer, params)), x0, py, out),
-    )
+    super::span::span(simd, &Gradient(LinearEval::new(outer, params)), x0, py, out)
 }
 
 /// `PaintData::Radial` over `out`: the span driver with the
@@ -1097,8 +1094,5 @@ pub(super) fn sweep_span<'a, S: Simd>(
     py: usize,
     out: &'a mut [MaybeUninit<[f32; 4]>],
 ) -> &'a mut [[f32; 4]] {
-    simd.vectorize(
-        #[inline(always)]
-        || super::span::span(simd, &Gradient(SweepEval::new(outer, params)), x0, py, out),
-    )
+    super::span::span(simd, &Gradient(SweepEval::new(outer, params)), x0, py, out)
 }
