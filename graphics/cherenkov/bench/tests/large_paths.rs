@@ -3,13 +3,18 @@
 //! (`docs/design/2536-coverage-spec.md`).
 //!
 //! Threshold 2 is the absolute ceiling — `flip_mean <= 0.006`,
-//! `flip_max <= 0.15`, `max_local_error <= 0.09` on every path scene — and
-//! threshold 3 says the corpus's worst scene per metric must keep its
-//! identity, so a scene added to the corpus has to stay under the maxima
-//! those ceilings were derived from: `glyph-stroke-dashed`'s `flip_mean`
-//! 0.005326, `stroke-join-continuous-sharp-round`'s `flip_max` 0.135176 and
-//! `stroke-dash-hdr`'s `max_local_error` 0.077068 (section 4.2, dev's 65
-//! path scenes). Both are asserted here, on the stricter of the two.
+//! `flip_max <= 0.15`, `max_local_error <= 0.09` on every path scene.
+//! Threshold 3 says the corpus's worst scene per metric must keep its
+//! identity, so a large-path scene has to stay at or under the value of
+//! the corpus scene holding that metric's section-4.2 maximum:
+//! `glyph-stroke-dashed` for `flip_mean`,
+//! `stroke-join-continuous-sharp-round` for `flip_max` and
+//! `stroke-dash-hdr` for `max_local_error`. Those maxima were measured
+//! once on one machine and would be stale here, so the calibration
+//! scenes are copied into the scratch corpus beside the large-path
+//! scenes and rendered in the same single `cherenkov-bench render`
+//! invocation — the bound is whatever the calibration scene measures on
+//! this adapter and build. Both bounds are asserted on every scene.
 //!
 //! Threshold 1 — no regression against dev per scene — cannot apply to a
 //! scene dev does not have; it starts applying to these scenes once this
@@ -25,6 +30,7 @@
 
 #![cfg(feature = "cherenkov")]
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -43,12 +49,27 @@ const SCENES: &[&str] = &[
     "path-sparse-bounds-evenodd-hdr",
 ];
 
-/// Section 4.3 threshold 2's ceilings, tightened to section 4.2's measured
-/// maxima by threshold 3: a new scene over one of these would take the
-/// corpus's worst-scene identity for that metric.
-const FLIP_MEAN: f64 = 0.005_326;
-const FLIP_MAX: f64 = 0.135_176;
-const MAX_LOCAL_ERROR: f64 = 0.077_068;
+/// Section 4.3 threshold 2's absolute ceilings.
+const FLIP_MEAN_CEILING: f64 = 0.006;
+const FLIP_MAX_CEILING: f64 = 0.15;
+const MAX_LOCAL_ERROR_CEILING: f64 = 0.09;
+
+/// Per metric, the calibration scene that holds its section-4.2 corpus
+/// maximum (threshold 3's bound, measured in this run) and threshold 2's
+/// absolute ceiling.
+const METRIC_BOUNDS: &[(&str, &str, f64)] = &[
+    ("flip_mean", "glyph-stroke-dashed", FLIP_MEAN_CEILING),
+    (
+        "flip_max",
+        "stroke-join-continuous-sharp-round",
+        FLIP_MAX_CEILING,
+    ),
+    (
+        "max_local_error",
+        "stroke-dash-hdr",
+        MAX_LOCAL_ERROR_CEILING,
+    ),
+];
 
 fn corpus() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../scenes/corpus")
@@ -68,8 +89,8 @@ fn copy_dir(src: &Path, dst: &Path) {
     }
 }
 
-/// Renders the large-path scenes with `engine` and holds every one of them
-/// to thresholds 1–3.
+/// Renders the large-path scenes and the calibration scenes in one run
+/// and holds every large-path scene to thresholds 2 and 3.
 #[test]
 fn large_paths_match_the_oracle() {
     let nonce = SystemTime::now()
@@ -84,7 +105,11 @@ fn large_paths_match_the_oracle() {
     let out_dir = base.join("out");
     std::fs::create_dir_all(&corpus_dir).expect("create scratch corpus");
     std::fs::create_dir_all(&out_dir).expect("create report directory");
-    for scene in SCENES {
+    for scene in SCENES
+        .iter()
+        .copied()
+        .chain(METRIC_BOUNDS.iter().map(|&(_, scene, _)| scene))
+    {
         let from = corpus().join(scene);
         assert!(
             from.join("scene.json").is_file(),
@@ -112,39 +137,52 @@ fn large_paths_match_the_oracle() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let mut failures = Vec::new();
-    let mut measured = 0usize;
+    let mut reports = HashMap::new();
     for entry in std::fs::read_dir(&out_dir).expect("read report dir") {
         let path = entry.expect("report entry").path();
         if path.extension().is_some_and(|ext| ext == "json") {
             let report: Value = serde_json::from_slice(&std::fs::read(&path).expect("read report"))
                 .expect("parse report");
-            let metrics = &report["metrics"];
             let scene = report["scene"].as_str().expect("scene name").to_owned();
-            let read = |key: &str| {
-                metrics[key]
-                    .as_f64()
-                    .unwrap_or_else(|| panic!("{scene}: {key}"))
-            };
-            let (mean, max, mle) = (read("flip_mean"), read("flip_max"), read("max_local_error"));
-            measured += 1;
-            if mean > FLIP_MEAN || max > FLIP_MAX || mle > MAX_LOCAL_ERROR {
+            reports.insert(scene, report["metrics"].clone());
+        }
+    }
+    assert_eq!(
+        reports.len(),
+        SCENES.len() + METRIC_BOUNDS.len(),
+        "expected {} render reports, found {}",
+        SCENES.len() + METRIC_BOUNDS.len(),
+        reports.len()
+    );
+
+    let read = |scene: &str, metric: &str| -> f64 {
+        reports
+            .get(scene)
+            .unwrap_or_else(|| panic!("{scene} has no render report"))[metric]
+            .as_f64()
+            .unwrap_or_else(|| panic!("{scene}: {metric}"))
+    };
+    let mut failures = Vec::new();
+    for &(metric, cal_scene, ceiling) in METRIC_BOUNDS {
+        let bound = read(cal_scene, metric);
+        for scene in SCENES {
+            let value = read(scene, metric);
+            if value > ceiling {
                 failures.push(format!(
-                    "{scene}: flip_mean {mean:.6}, flip_max {max:.6}, max_local_error {mle:.6}"
+                    "{scene}: threshold 2 {metric} {value:.6} > ceiling {ceiling:.6}"
+                ));
+            }
+            if value > bound {
+                failures.push(format!(
+                    "{scene}: threshold 3 {metric} {value:.6} > calibration scene \
+                     {cal_scene}'s {bound:.6}"
                 ));
             }
         }
     }
-    assert_eq!(
-        measured,
-        SCENES.len(),
-        "expected {} render reports, found {measured}",
-        SCENES.len()
-    );
     assert!(
         failures.is_empty(),
-        "large-path scenes over thresholds 1-3 (flip_mean {FLIP_MEAN}, flip_max {FLIP_MAX}, \
-         max_local_error {MAX_LOCAL_ERROR}): {}",
+        "large-path scenes over thresholds 2-3: {}",
         failures.join(", ")
     );
     std::fs::remove_dir_all(&base).expect("remove the scratch corpus");
