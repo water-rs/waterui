@@ -39,7 +39,7 @@ on:
       workspace-wide:
         description: >
           `true` when the scope is `workspace` or the affected packages are
-          at least 90% of the Linux-linted workspace members (#3229).
+          at least 70% of the Linux-linted workspace members (#3229, #3246).
         value: ${{ jobs.scope.outputs.workspace-wide }}
       comment-only:
         description: >

@@ -116,10 +116,11 @@ def _members(count):
     return [f"crate-{i}" for i in range(count)] + sorted(LINUX_EXCLUDED)
 
 
-def test_ninety_percent_of_linux_members_is_workspace_wide():
-    # 96 of 101 Linux members (the two Apple crates are not counted).
+def test_a_cherenkov_gpu_scope_is_workspace_wide():
+    # 75 of 101 Linux members, the reach of a cherenkov-gpu change (#3246);
+    # the two Apple crates are not counted.
     members = _members(101)
-    assert is_workspace_wide(members[:96], members)
+    assert is_workspace_wide(members[:75], members)
 
 
 def test_a_small_scope_is_not_workspace_wide():
@@ -130,10 +131,10 @@ def test_a_small_scope_is_not_workspace_wide():
 
 def test_the_threshold_counts_only_linux_members():
     members = _members(100)
-    # 90 of 100 Linux members is exactly the share; 89 is below it. The
+    # 70 of 100 Linux members is exactly the share; 69 is below it. The
     # Apple crates add nothing to either side.
-    assert is_workspace_wide(members[:90], members)
-    assert not is_workspace_wide(members[:89] + sorted(LINUX_EXCLUDED), members)
+    assert is_workspace_wide(members[:70], members)
+    assert not is_workspace_wide(members[:69] + sorted(LINUX_EXCLUDED), members)
 
 
 # ---------------------------------------------------------------------------
