@@ -172,8 +172,8 @@ clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 
 
 [workspace.dependencies]
-aither-core = "0.4"
-aither-mcp = { version = "0.4", default-features = false }
+aither-core = "0.10"
+aither-mcp = { version = "0.10", default-features = false }
 arc-swap = "1.9.2"
 # Held at 2 on purpose. `bincode` 3.0.0 is not a release: it is a name
 # reservation whose entire `lib.rs` is a `compile_error!`, with no dependencies
@@ -368,7 +368,7 @@ quick-xml = "0.42"
 # filesystem, so the rules are not files anything has to install, bundle, or
 # find at runtime; without it MathCAT looks for a `Rules` directory on disk.
 mathcat = { version = "0.7.5", features = ["include-zip"] }
-toml = "1.1.6"
+toml = "1.1.8"
 lyon = "1.0"
 wgpu-hal = { version = "30.0.1", features = ["gles", "metal"] }
 # Must match the `glow` version wgpu-hal links against, or GLES handles from
