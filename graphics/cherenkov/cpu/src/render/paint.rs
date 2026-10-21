@@ -67,22 +67,7 @@ pub enum PaintData {
     /// A registered image pattern.
     Image(Box<ImagePaintData>),
     /// A sweep (conic) gradient.
-    Sweep {
-        /// Device-to-content transform.
-        inv: [f32; 6],
-        /// The centre in content space.
-        center: [f32; 2],
-        /// Start angle in radians.
-        start: f32,
-        /// Angular span in radians, adjusted to `> 0` like the oracle.
-        span: f32,
-        /// Sorted stops.
-        stops: std::sync::Arc<[Stop]>,
-        /// The continuation mode.
-        extend: Extend,
-        /// The interpolation space.
-        interpolation: Interpolation,
-    },
+    Sweep(SweepPaint),
     /// Premultiplied solid colour.
     Solid([f32; 4]),
     /// A linear gradient.
@@ -120,6 +105,26 @@ pub struct RadialPaint {
     /// The circles are identical: the parameter is `-∞` inside `r0` and
     /// `+∞` outside.
     pub identical: bool,
+    /// Sorted stops.
+    pub stops: std::sync::Arc<[Stop]>,
+    /// The continuation mode.
+    pub extend: Extend,
+    /// The interpolation space.
+    pub interpolation: Interpolation,
+}
+
+/// A [`PaintData::Sweep`] payload: the resolved parameters the
+/// evaluators share.
+#[derive(Clone, Debug)]
+pub struct SweepPaint {
+    /// Device-to-content transform.
+    pub inv: [f32; 6],
+    /// The centre in content space.
+    pub center: [f32; 2],
+    /// Start angle in radians.
+    pub start: f32,
+    /// Angular span in radians, adjusted to `> 0` like the oracle.
+    pub span: f32,
     /// Sorted stops.
     pub stops: std::sync::Arc<[Stop]>,
     /// The continuation mode.
@@ -446,7 +451,7 @@ fn extra_paint(
                     "sweep span exceeds raster precision".into(),
                 ));
             }
-            PaintData::Sweep {
+            PaintData::Sweep(SweepPaint {
                 inv: affine_f32(inv),
                 center: [f32_f64(gradient.center.x), f32_f64(gradient.center.y)],
                 start: f32_f64(gradient.start_angle.rem_euclid(std::f64::consts::TAU)),
@@ -454,7 +459,7 @@ fn extra_paint(
                 stops: stops(&gradient.stops, gradient.interpolation),
                 extend: gradient.extend,
                 interpolation: gradient.interpolation,
-            }
+            })
         }
         Paint::Mesh(mesh) => {
             if mesh.points().iter().any(|point| !point.is_finite()) {
@@ -678,7 +683,7 @@ impl PaintData {
             Self::Image(image) => image.inv = affine_f32(image.mapping * transform),
             Self::Linear(linear) => linear.inv = affine_f32(transform),
             Self::Radial(radial) => radial.inv = affine_f32(transform),
-            Self::Sweep { inv, .. } => *inv = affine_f32(transform),
+            Self::Sweep(sweep) => sweep.inv = affine_f32(transform),
         }
         paint
     }
@@ -741,25 +746,7 @@ impl PaintData {
                 };
                 sample_image(&image.image, u, v, image.sampling)
             }),
-            Self::Sweep {
-                inv,
-                center,
-                start,
-                span,
-                stops,
-                extend,
-                interpolation,
-            } => output.sample(|dx, dy| {
-                let (px, py) = apply(*inv, dx, dy);
-                let raw = (py - center[1]).atan2(px - center[0]) - *start;
-                // Lowering normalizes start to [0, TAU]; atan2 is in [-PI, PI].
-                // At most two additions wrap the angle without a per-pixel fmod.
-                let turn = std::f32::consts::TAU;
-                let raw = if raw < -turn { raw + turn } else { raw };
-                let angle = if raw < 0.0 { raw + turn } else { raw };
-                let t = angle / *span;
-                extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
-            }),
+            Self::Sweep(p) => output.sweep(self, p),
 
             Self::Linear(p) => output.linear(self, p),
             Self::Radial(p) => output.radial(self, p),
@@ -802,6 +789,9 @@ trait PaintOutput: Sized {
 
     /// The radial-gradient leaf, `outer` as in [`Self::linear`].
     fn radial(self, outer: &PaintData, params: &RadialPaint) -> Self::Output;
+
+    /// The sweep-gradient leaf, `outer` as in [`Self::linear`].
+    fn sweep(self, outer: &PaintData, params: &SweepPaint) -> Self::Output;
 }
 
 /// The linear leaf's scalar evaluation: `outer`'s transform chain, then
@@ -856,6 +846,38 @@ fn radial_at(outer: &PaintData, params: &RadialPaint, mut x: f32, mut y: f32) ->
         Some(t) => eval_stops(&params.stops, t, params.interpolation),
         None => [0.0; 4],
     }
+}
+
+/// The shared `atan2` on one pixel, for the scalar reference: the
+/// kernel's polynomial at `Fallback` precision, whose multiply-adds
+/// are unfused. It agrees with the dispatched kernel within rounding.
+#[cfg(test)]
+fn atan2_f32(y: f32, x: f32) -> f32 {
+    let simd = fearless_simd::Fallback::new();
+    super::gradient::atan2_span(simd, simd.splat_f32x4(y), simd.splat_f32x4(x))[0]
+}
+
+/// The sweep leaf's scalar reference: `outer`'s transform chain, then
+/// `params`' map, [`atan2_f32`], angular wrap, extend and stops. It
+/// agrees with the span kernel within rounding.
+#[cfg(test)]
+fn sweep_at(outer: &PaintData, params: &SweepPaint, mut x: f32, mut y: f32) -> [f32; 4] {
+    let mut link = outer;
+    while let PaintData::Transformed(inner) = link {
+        (x, y) = apply(inner.inverse_f32, x, y);
+        link = &inner.paint;
+    }
+    let (px, py) = apply(params.inv, x, y);
+    let raw = atan2_f32(py - params.center[1], px - params.center[0]) - params.start;
+    // Lowering normalizes start to [0, TAU]; atan2 is in [-PI, PI].
+    // At most two additions wrap the angle without a per-pixel fmod.
+    let turn = std::f32::consts::TAU;
+    let raw = if raw < -turn { raw + turn } else { raw };
+    let angle = if raw < 0.0 { raw + turn } else { raw };
+    let t = angle / params.span;
+    extend_t(t, params.extend).map_or([0.0; 4], |t| {
+        eval_stops(&params.stops, t, params.interpolation)
+    })
 }
 
 /// Applies each mapping separately, preserving the scalar evaluator's f32
@@ -913,6 +935,16 @@ impl<O: PaintOutput> PaintOutput for TransformedOutput<'_, O> {
     fn radial(self, _outer: &PaintData, params: &RadialPaint) -> Self::Output {
         self.output.radial(self.paint, params)
     }
+
+    /// As [`Self::linear`].
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn sweep(self, _outer: &PaintData, params: &SweepPaint) -> Self::Output {
+        self.output.sweep(self.paint, params)
+    }
 }
 
 #[cfg(test)]
@@ -959,6 +991,15 @@ impl PaintOutput for PixelCenter {
     #[inline(always)]
     fn radial(self, outer: &PaintData, params: &RadialPaint) -> Self::Output {
         radial_at(outer, params, self.dx, self.dy)
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn sweep(self, outer: &PaintData, params: &SweepPaint) -> Self::Output {
+        sweep_at(outer, params, self.dx, self.dy)
     }
 }
 
@@ -1051,6 +1092,15 @@ impl<'a, S: Simd> PaintOutput for PixelSpan<'a, S> {
             super::gradient::radial_span(self.simd, outer, params, self.x0, self.py, self.out)
         }
     }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn sweep(self, outer: &PaintData, params: &SweepPaint) -> Self::Output {
+        super::gradient::sweep_span(self.simd, outer, params, self.x0, self.py, self.out)
+    }
 }
 
 #[cfg(test)]
@@ -1087,6 +1137,12 @@ mod tests {
 
     fn linear() -> LinearGradient {
         let mut gradient = LinearGradient::new((0.0, 0.0), (1024.0, 0.0));
+        gradient.stops = stops();
+        gradient
+    }
+
+    fn sweep() -> SweepGradient {
+        let mut gradient = SweepGradient::new((512.0, 256.0), 0.0, std::f64::consts::TAU);
         gradient.stops = stops();
         gradient
     }
@@ -1348,6 +1404,84 @@ mod tests {
         }
     }
 
+    /// The sweep-gradient matrix the span kernel must match within
+    /// rounding: every extend mode and interpolation space, a non-zero
+    /// start angle and a partial span, an off-axis centre, stops
+    /// sharing one offset, stops outside `[0, 1]`, a single stop and
+    /// none, a transform chain, and inverse maps whose mapped point
+    /// underflows to the centre's `atan2(±0, ±0)` corner or lands in a
+    /// negative quadrant.
+    fn sweep_cases() -> Vec<PaintData> {
+        let lower =
+            |paint: &Paint, inv: Affine| kernels::paint(paint, inv, []).expect("test paints lower");
+        let mut cases = Vec::new();
+        for extend in [Extend::Pad, Extend::Repeat, Extend::Reflect, Extend::None] {
+            for interpolation in [Interpolation::Working, Interpolation::SrgbEncoded] {
+                let mut gradient = sweep();
+                gradient.extend = extend;
+                gradient.interpolation = interpolation;
+                cases.push(lower(&Paint::Sweep(gradient), Affine::IDENTITY));
+            }
+            // A non-zero start and a partial span exercise both wraps.
+            let mut partial = SweepGradient::new((64.0, 8.0), 0.7, 4.0);
+            partial.stops = stops();
+            partial.extend = extend;
+            cases.push(lower(&Paint::Sweep(partial), Affine::IDENTITY));
+        }
+        // Two stops sharing an offset: the zero-span window's `f == 0`.
+        let mut shared = sweep();
+        shared.stops = [
+            (0.0, [0.9, 0.1, 0.2, 1.0]),
+            (0.35, [0.1, 0.8, 0.3, 1.0]),
+            (0.35, [0.6, 0.2, 0.7, 0.5]),
+            (1.0, [0.05, 0.05, 0.4, 1.0]),
+        ]
+        .into_iter()
+        .map(|(offset, color)| ColorStop {
+            offset,
+            color: WorkingColor::new(color),
+        })
+        .collect();
+        cases.push(lower(&Paint::Sweep(shared), Affine::IDENTITY));
+        // Stop offsets outside `[0, 1]` and a single-stop gradient.
+        for offsets in [[-0.5, 0.5, 1.5].as_slice(), &[0.4]] {
+            let mut gradient = sweep();
+            gradient.stops = stops()
+                .into_iter()
+                .zip(offsets)
+                .map(|(mut stop, &offset)| {
+                    stop.offset = offset;
+                    stop
+                })
+                .collect();
+            cases.push(lower(&Paint::Sweep(gradient), Affine::IDENTITY));
+        }
+        cases.push(lower(&Paint::Sweep(sweep()), Affine::IDENTITY));
+        let mut empty = sweep();
+        empty.stops = Vec::new();
+        cases.push(lower(&Paint::Sweep(empty), Affine::IDENTITY));
+        // A transform chain over a sweep leaf.
+        cases.push(lower(
+            &Paint::Transformed(TransformedPaint::new(
+                Paint::Sweep(sweep()),
+                Affine::translate((20.0, 5.0)) * Affine::rotate(0.3),
+            )),
+            Affine::IDENTITY,
+        ));
+        // Inverse scales mapping every device point to the centre or a
+        // negative quadrant: the `atan2(±0, ±0)` and `|y| > |x|`
+        // corners, and a negative start angle.
+        let mut at_centre = SweepGradient::new((0.0, 0.0), -1.0, std::f64::consts::TAU);
+        at_centre.stops = stops();
+        for scale in [0.0, 1e-38, -1e-38] {
+            cases.push(lower(
+                &Paint::Sweep(at_centre.clone()),
+                Affine::scale(scale),
+            ));
+        }
+        cases
+    }
+
     /// Every paint kind the span table covers, lowered through the real
     /// `paint_data`/`CpuImage::decode` path a bench uses.
     fn each_kind() -> Vec<PaintData> {
@@ -1448,6 +1582,7 @@ mod tests {
             .into_iter()
             .chain(linear_cases())
             .chain(radial_cases())
+            .chain(sweep_cases())
         {
             fearless_simd::dispatch!(crate::Level::new(), simd => check(simd, &paint));
             check(fearless_simd::Fallback::new(), &paint);
@@ -1485,6 +1620,37 @@ mod tests {
             .chain(linear_cases())
             .chain(radial_cases())
         {
+            for x0 in 0..=7usize {
+                for len in 0..=67usize {
+                    fearless_simd::dispatch!(crate::Level::new(), simd => check(
+                        simd, &paint, x0, len
+                    ));
+                    check(fearless_simd::Fallback::new(), &paint, x0, len);
+                }
+            }
+        }
+    }
+
+    /// The sweep kernel agrees with the scalar reference to the oracle
+    /// crate's visual tolerance, over every run of length 0-67 at
+    /// offsets 0-7, under the detected level and the scalar fallback.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "pixel indices and band offsets are far below 2^24"
+    )]
+    #[test]
+    fn sweep_span_agrees_with_scalar_reference() {
+        fn check<S: fearless_simd::Simd>(simd: S, paint: &PaintData, x0: usize, len: usize) {
+            let actual = span(simd, paint, x0, len)
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+            let expected = (0..len)
+                .flat_map(|i| scalar_reference(paint, (x0 + i) as f32 + 0.5, PY as f32 + 0.5))
+                .collect::<Vec<_>>();
+            cherenkov_oracle::metrics::assert_close(&actual, &expected);
+        }
+        for paint in sweep_cases() {
             for x0 in 0..=7usize {
                 for len in 0..=67usize {
                     fearless_simd::dispatch!(crate::Level::new(), simd => check(

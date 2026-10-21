@@ -190,7 +190,7 @@ impl Kind {
                     PaintData::Solid(_)
                 ) | (Self::Linear, PaintData::Linear(_))
                     | (Self::Radial | Self::RadialIdentical, PaintData::Radial(_))
-                    | (Self::Sweep, PaintData::Sweep { .. })
+                    | (Self::Sweep, PaintData::Sweep(_))
                     | (
                         Self::ImageNearest | Self::ImageBilinear,
                         PaintData::Image(_)
