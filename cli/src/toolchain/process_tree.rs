@@ -91,9 +91,8 @@ impl ProcessTree {
         }
         // SAFETY: `job` is a fresh handle nothing else owns; the tree closes
         // it exactly once, and closing the last handle kills the members.
-        let tree = Self {
-            job: unsafe { OwnedHandle::from_raw_handle(job) },
-        };
+        let job = unsafe { OwnedHandle::from_raw_handle(job) };
+        let tree = Self { job };
         // SAFETY: an all-zero limit block is the documented starting
         // point; only the kill-on-close flag is set below.
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
