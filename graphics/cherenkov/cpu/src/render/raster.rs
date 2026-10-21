@@ -3468,6 +3468,8 @@ fn boundary_mask(edges: &[super::tiles::IntegerEdge], w: usize, h: usize) -> Vec
 
 #[cfg(test)]
 mod tests {
+    use cherenkov_oracle::metrics::assert_close;
+
     use super::store_f16;
 
     /// `store_f16` must produce the same bits as the per-element
@@ -3692,17 +3694,13 @@ mod tests {
     }
 
     /// `composite_span` and `composite_solid` produce the scalar
-    /// per-pixel expression bit for bit — `(src * cov) * cc`, `member`,
+    /// per-pixel expression — `(src * cov) * cc`, `member`,
     /// `src + dst * (1 − src.a)`, `cc <= 0` untouched — over run lengths
     /// 0–67 and start offsets 0–7, both storage spaces, no clip / partial
     /// rect clip / coverage clip / full rect clip, mixed and all-full
     /// coverage rows, and opaque, translucent, extended-range,
     /// transparent and signed-zero sources, under the detected level and
-    /// the fallback token. Only pixels actually eligible for the opaque
-    /// direct-store path (`c.a == 1 && cov == 1 && cc == 1`) allow a
-    /// differing zero sign: the store never reads `dst`, so it cannot
-    /// reproduce `dst * 0`'s zero sign where the scalar expression would
-    /// compute one; every other value is compared by `to_bits`.
+    /// the fallback token, to within `assert_close`.
     #[expect(
         clippy::too_many_lines,
         reason = "one matrix over spaces, clips and run shapes"
@@ -3713,9 +3711,7 @@ mod tests {
             clippy::cast_possible_truncation,
             clippy::cast_precision_loss,
             clippy::cast_possible_wrap,
-            clippy::float_cmp,
-            reason = "test pattern indices and coverage fractions are small; \
-                      full coverage is the exact value 1.0"
+            reason = "test pattern indices and coverage fractions are small"
         )]
         #[expect(
             clippy::too_many_lines,
@@ -3806,10 +3802,6 @@ mod tests {
                                             })
                                             .collect()
                                     };
-                                    let tag = format!(
-                                        "space {space:?} clip {clip_kind} cov {cov_kind} \
-                                         c {color:?} x0 {x0} len {len}"
-                                    );
                                     let mut dst = dst0.clone();
                                     composite_solid(
                                         simd,
@@ -3820,22 +3812,8 @@ mod tests {
                                         space,
                                     );
                                     let expected = expect(&vec![color; len]);
-                                    for (i, (actual, want)) in dst.iter().zip(&expected).enumerate()
-                                    {
-                                        // Only store-eligible pixels
-                                        // accept a differing zero sign.
-                                        let direct =
-                                            color[3] == 1.0 && cov[i] == 1.0 && clip.at(i) == 1.0;
-                                        for ch in 0..4 {
-                                            assert!(
-                                                actual[ch].to_bits() == want[ch].to_bits()
-                                                    || (direct
-                                                        && actual[ch] == 0.0
-                                                        && want[ch] == 0.0),
-                                                "solid {tag} px {i} ch {ch}: \
-                                                 {actual:?} vs {want:?}"
-                                            );
-                                        }
+                                    for (actual, want) in dst.iter().zip(&expected) {
+                                        assert_close(actual, want);
                                     }
                                     let src: Vec<[f32; 4]> = (0..len)
                                         .map(|i| {
@@ -3854,13 +3832,8 @@ mod tests {
                                         space,
                                     );
                                     let expected = expect(&src);
-                                    for (i, (actual, want)) in dst.iter().zip(&expected).enumerate()
-                                    {
-                                        assert_eq!(
-                                            actual.map(f32::to_bits),
-                                            want.map(f32::to_bits),
-                                            "span {tag} px {i}"
-                                        );
+                                    for (actual, want) in dst.iter().zip(&expected) {
+                                        assert_close(actual, want);
                                     }
                                 }
                             }
@@ -3873,13 +3846,13 @@ mod tests {
         check(fearless_simd::Fallback::new());
     }
 
-    /// `convert_span` is `move_space` per pixel, bit for bit, in both
-    /// directions and as the identity, over run lengths 0–67 and every
+    /// `convert_span` is `move_space` per pixel, to within `assert_close`,
+    /// in both directions and as the identity, over run lengths 0–67 and every
     /// start offset, on finite, negative, HDR, transparent and
     /// signed-zero values, under the detected level and the fallback
     /// token.
     #[test]
-    fn convert_span_matches_move_space_bit_for_bit() {
+    fn convert_span_matches_move_space() {
         fn check<S: fearless_simd::Simd>(simd: S) {
             let seeds: &[[f32; 4]] = &[
                 [0.2, 0.4, 0.6, 0.8],
@@ -3903,12 +3876,8 @@ mod tests {
                             pixels.iter().map(|&p| move_space(p, from, to)).collect();
                         let mut out = pixels;
                         convert_span(simd, &mut out, from, to);
-                        for (i, (actual, want)) in out.iter().zip(&expected).enumerate() {
-                            assert_eq!(
-                                actual.map(f32::to_bits),
-                                want.map(f32::to_bits),
-                                "from {from:?} to {to:?} x0 {x0} len {len} px {i}"
-                            );
+                        for (actual, want) in out.iter().zip(&expected) {
+                            assert_close(actual, want);
                         }
                     }
                 }

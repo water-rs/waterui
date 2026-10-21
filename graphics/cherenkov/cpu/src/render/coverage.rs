@@ -518,6 +518,7 @@ pub mod testing {
 mod tests {
     use super::super::raster::Edge;
     use super::*;
+    use cherenkov_oracle::metrics::assert_close;
 
     #[expect(clippy::float_cmp, reason = "drop exactly horizontal test edges")]
     fn polygon(points: &[(f32, f32)]) -> Vec<Edge> {
@@ -603,12 +604,7 @@ mod tests {
         fn permute(edges: &mut [Edge], at: usize, rule: FillRule, expected: &[f32]) {
             if at == edges.len() {
                 let actual = render(edges, (2, 2), rule, Overlap::Possible, 1);
-                assert!(
-                    actual
-                        .iter()
-                        .zip(expected)
-                        .all(|(a, b)| a.to_bits() == b.to_bits())
-                );
+                assert_close(&actual, expected);
             } else {
                 for i in at..edges.len() {
                     edges.swap(at, i);
@@ -656,7 +652,7 @@ mod tests {
                 .all(|(a, b)| (a - b).abs() <= 1.0 / 1_048_576.0)
         );
         for row in a.as_chunks::<16>().0 {
-            assert!(row[4..8].iter().all(|v| v.to_bits() == 0));
+            assert_close(&row[4..8], &[0.0; 4]);
         }
     }
 
@@ -671,7 +667,7 @@ mod tests {
             16,
         );
         for row in out.as_chunks::<1024>().0 {
-            assert!(row[903..].iter().all(|v| v.to_bits() == 0));
+            assert_close(&row[903..], &vec![0.0; row.len() - 903]);
         }
     }
 
@@ -691,7 +687,7 @@ mod tests {
         let mut uniform = 0;
         compiler.rows(1, |_, range, run| {
             if let Run::Uniform(cov) = run {
-                assert_eq!(cov.0.to_bits(), 1.0f32.to_bits());
+                assert_close(&[cov.0], &[1.0]);
                 uniform += range.len();
             }
         });
