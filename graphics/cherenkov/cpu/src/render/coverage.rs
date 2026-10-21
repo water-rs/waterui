@@ -145,6 +145,7 @@ impl RowCells {
         self.last = 0;
     }
 
+    #[inline]
     fn touch(&mut self, x: usize) -> &mut Cell {
         let word = x / 64;
         let bit = 1u64 << (x % 64);
@@ -155,6 +156,29 @@ impl RowCells {
             self.last = self.last.max(word);
         }
         &mut self.cells[x]
+    }
+
+    /// A vertical integer line has no slope or clipped ramp to integrate.
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::suboptimal_flops,
+        reason = "surface-clamped column; power-of-two scaling is exact and needs no FMA"
+    )]
+    #[inline]
+    fn vertical(&mut self, sign: i32, height: i32, x: i64) {
+        let x = x.clamp(0, (self.width as i64) << 16);
+        let column = (x >> 16) as usize;
+        let fraction = x & (ONE - 1);
+        let height = sign * height;
+        if fraction == 0 {
+            self.touch(column).cover += height;
+        } else {
+            self.touch(column).partial +=
+                (i64::from(height) * (ONE - fraction)) as f32 * (1.0 / 4_294_967_296.0);
+            self.touch(column + 1).cover += height;
+        }
     }
 
     /// Integral of the area to the right of a boundary. Only crossed
@@ -168,6 +192,7 @@ impl RowCells {
         clippy::suboptimal_flops,
         reason = "columns are clamped to the surface; area is rounded once to f32"
     )]
+    #[inline]
     fn boundary(&mut self, sign: i32, height: i32, xt: f64, xb: f64) {
         let (left, right) = (xt.min(xb), xt.max(xb));
         let end_px = (right / 65536.0).clamp(0.0, self.width as f64);
@@ -290,9 +315,28 @@ struct Segment {
 }
 
 impl Segment {
+    #[inline]
+    fn deposit(self, cells: &mut RowCells, sign: i32, top: i32, bottom: i32) {
+        if self.dx == 0 {
+            cells.vertical(sign, bottom - top, self.x0);
+        } else {
+            cells.boundary(sign, bottom - top, self.at(top), self.at(bottom));
+        }
+    }
+
     /// Compare the original rational lines at a half-grid ordinate.
     /// Tile pieces bound both deltas; placement cancels in the difference.
     fn compare(self, other: Self, twice_y: i64) -> std::cmp::Ordering {
+        self.position(other, twice_y)
+            .then_with(|| self.slope_order(other))
+    }
+
+    fn slope_order(self, other: Self) -> std::cmp::Ordering {
+        (i128::from(self.dx) * i128::from(other.dy))
+            .cmp(&(i128::from(other.dx) * i128::from(self.dy)))
+    }
+
+    fn position(self, other: Self, twice_y: i64) -> std::cmp::Ordering {
         let ad = i128::from(self.dy);
         let bd = i128::from(other.dy);
         let ax = i128::from(self.dx);
@@ -300,7 +344,7 @@ impl Segment {
         let distance = 2 * i128::from(self.x0 - other.x0) * ad * bd
             + i128::from(twice_y - 2 * self.y0) * ax * bd
             - i128::from(twice_y - 2 * other.y0) * bx * ad;
-        distance.cmp(&0).then_with(|| (ax * bd).cmp(&(bx * ad)))
+        distance.cmp(&0)
     }
 
     #[expect(
@@ -313,11 +357,8 @@ impl Segment {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct Piece {
-    edge: u32,
-    x0: f64,
-    x1: f64,
     y0: i32,
     y1: i32,
     left: u16,
@@ -405,6 +446,7 @@ impl Compiler {
     ) {
         self.reserve(width, selection.len(), rows.len());
         self.edges.clear();
+        self.pieces.clear();
         self.starts.resize(rows.len(), u32::MAX);
         self.active.clear();
         self.cells.resize(width);
@@ -454,6 +496,9 @@ impl Compiler {
         overlap: Overlap,
         mut emit: impl FnMut(usize, Range<usize>, Run<'_>),
     ) {
+        if overlap == Overlap::Possible {
+            self.pieces.resize(self.edges.len(), Piece::default());
+        }
         for row in 0..height {
             let top = (row as i32) << 16;
             let bottom = top + ONE as i32;
@@ -464,29 +509,25 @@ impl Compiler {
                 self.active.push(start as usize);
                 start = self.edges[start as usize].next;
             }
-            self.pieces.clear();
             for &index in self.active.iter() {
                 let e = self.edges[index];
                 let (a, b) = (
                     e.y0.max(i64::from(top)) as i32,
                     (e.y0 + e.dy).min(i64::from(bottom)) as i32,
                 );
-                let (xa, xb) = (e.at(a), e.at(b));
                 if overlap == Overlap::Disjoint {
-                    self.cells.boundary(e.dir, b - a, xa, xb);
+                    e.deposit(&mut self.cells, e.dir, a, b);
                 } else {
+                    let (xa, xb) = (e.at(a), e.at(b));
                     let left = (xa.min(xb) / 65536.0).clamp(0.0, self.cells.width as f64);
                     let right = (xa.max(xb) / 65536.0).clamp(0.0, self.cells.width as f64);
                     let end = right as u16;
-                    self.pieces.push(Piece {
-                        edge: index as u32,
-                        x0: xa,
-                        x1: xb,
+                    self.pieces[index] = Piece {
                         y0: a - top,
                         y1: b - top,
                         left: left as u16,
                         right: end + u16::from(right > f64::from(end)),
-                    });
+                    };
                 }
             }
             if overlap == Overlap::Possible {
@@ -499,21 +540,20 @@ impl Compiler {
     }
 
     fn ordered(&mut self, rule: FillRule, row: i32) {
-        self.pieces.sort_unstable_by_key(|piece| piece.left);
-        self.active.clear();
         self.active
-            .extend(self.pieces.iter().map(|piece| piece.edge as usize));
+            .sort_unstable_by_key(|&edge| self.pieces[edge].left);
         self.profile.clear();
         self.profile.push((0, 0));
         let mut first = 0;
-        while first < self.pieces.len() {
+        while first < self.active.len() {
             let mut last = first + 1;
-            let mut right = self.pieces[first].right;
-            while last < self.pieces.len() && self.pieces[last].left <= right {
-                right = right.max(self.pieces[last].right);
+            let mut right = self.pieces[self.active[first]].right;
+            while last < self.active.len() && self.pieces[self.active[last]].left <= right {
+                right = right.max(self.pieces[self.active[last]].right);
                 last += 1;
             }
-            let piece = self.pieces[first];
+            let edge = self.edges[self.active[first]];
+            let piece = self.pieces[self.active[first]];
             if last == first + 1
                 && piece.y0 == 0
                 && i64::from(piece.y1) == ONE
@@ -521,11 +561,15 @@ impl Compiler {
             {
                 let winding = &mut self.profile[0].1;
                 let before = inside(*winding, rule);
-                *winding += self.edges[piece.edge as usize].dir;
+                *winding += edge.dir;
                 let after = inside(*winding, rule);
                 if before != after {
-                    self.cells
-                        .boundary(if after { 1 } else { -1 }, piece.y1, piece.x0, piece.x1);
+                    edge.deposit(
+                        &mut self.cells,
+                        if after { 1 } else { -1 },
+                        row,
+                        row + piece.y1,
+                    );
                 }
             } else {
                 self.group(first..last, rule, row);
@@ -536,14 +580,14 @@ impl Compiler {
 
     #[expect(
         clippy::cast_possible_truncation,
-        clippy::too_many_lines,
-        reason = "one strip sweep; exact coincidence is a geometry identity, not a tolerance"
+        reason = "one strip sweep with exact grid events and coincidence"
     )]
     fn group(&mut self, group: Range<usize>, rule: FillRule, row: i32) {
         self.breaks.clear();
         self.breaks.extend(self.profile.iter().map(|&(y, _)| y));
         self.breaks.push(ONE as i32);
-        for piece in &self.pieces[group.clone()] {
+        for &index in &self.active[group.clone()] {
+            let piece = self.pieces[index];
             self.breaks.extend([piece.y0, piece.y1]);
         }
         self.breaks.sort_unstable();
@@ -555,56 +599,22 @@ impl Compiler {
         let mut top = 0;
         while endpoint < self.breaks.len() {
             let mut bottom = self.breaks[endpoint];
-            for i in group.clone() {
-                let a = self.pieces[i];
-                for b in &self.pieces[i + 1..group.end] {
-                    let (lo, hi) = (a.y0.max(b.y0).max(top), a.y1.min(b.y1).min(bottom));
-                    if lo >= hi
-                        || a.x0.min(a.x1) > b.x0.max(b.x1)
-                        || b.x0.min(b.x1) > a.x0.max(a.x1)
-                    {
-                        continue;
-                    }
-                    let sa = self.edges[a.edge as usize];
-                    let sb = self.edges[b.edge as usize];
-                    let ad = i128::from(sa.dy);
-                    let bd = i128::from(sb.dy);
-                    let ax = i128::from(sa.dx);
-                    let bx = i128::from(sb.dx);
-                    let denominator = ax * bd - bx * ad;
-                    if denominator == 0 {
-                        continue;
-                    }
-                    let numerator = i128::from(sb.x0 - sa.x0) * ad * bd
-                        + i128::from(sa.y0 - i64::from(row)) * ax * bd
-                        - i128::from(sb.y0 - i64::from(row)) * bx * ad;
-                    let crossing = if denominator < 0 {
-                        (-numerator).div_euclid(-denominator)
-                    } else {
-                        numerator.div_euclid(denominator)
-                    };
-                    if crossing > i128::from(lo) && crossing < i128::from(hi) {
-                        bottom = crossing as i32;
+            if top == self.breaks[endpoint - 1] {
+                self.order.retain(|&i| self.pieces[i].y1 > top);
+                for &index in &self.active[group.clone()] {
+                    if self.pieces[index].y0 == top {
+                        self.order.push(index);
                     }
                 }
             }
-
-            while profile + 1 < self.profile.len() && self.profile[profile + 1].0 <= top {
-                profile += 1;
-            }
-            let mut winding = self.profile[profile].1;
-            self.order.retain(|&i| self.pieces[i].y1 > top);
-            for i in group.clone() {
-                let p = self.pieces[i];
-                if p.y0 == top {
-                    self.order.push(i);
-                }
-            }
-            let twice_middle = 2 * i64::from(row) + i64::from(top) + i64::from(bottom);
+            // Crossings are floored to the placement grid. The order just
+            // before top + 1 includes all crossings assigned to top, while a
+            // crossing exactly at top + 1 still belongs to the next strip.
+            let twice_after = 2 * (i64::from(row) + i64::from(top) + 1);
             let compare = |a: usize, b: usize| {
-                let (a, b) = (self.pieces[a], self.pieces[b]);
-                let (a, b) = (self.edges[a.edge as usize], self.edges[b.edge as usize]);
-                a.compare(b, twice_middle)
+                let (a, b) = (self.edges[a], self.edges[b]);
+                a.position(b, twice_after)
+                    .then_with(|| b.slope_order(a))
                     .then_with(|| (a.x0, a.y0, a.dx, a.dy).cmp(&(b.x0, b.y0, b.dx, b.dy)))
             };
             for i in 1..self.order.len() {
@@ -616,29 +626,51 @@ impl Compiler {
                 }
                 self.order[j] = value;
             }
+
+            // In an ordered active set, the earliest crossing is between
+            // neighbors. Pairs with non-converging slopes cannot cross.
+            for pair in self.order.windows(2) {
+                let (a, b) = (self.edges[pair[0]], self.edges[pair[1]]);
+                let (ad, bd) = (i128::from(a.dy), i128::from(b.dy));
+                let (ax, bx) = (i128::from(a.dx), i128::from(b.dx));
+                let denominator = ax * bd - bx * ad;
+                if denominator <= 0 {
+                    continue;
+                }
+                let numerator = i128::from(b.x0 - a.x0) * ad * bd
+                    + i128::from(a.y0 - i64::from(row)) * ax * bd
+                    - i128::from(b.y0 - i64::from(row)) * bx * ad;
+                if numerator >= i128::from(top + 1) * denominator
+                    && numerator < i128::from(bottom) * denominator
+                {
+                    bottom = (numerator / denominator) as i32;
+                }
+            }
+
+            while profile + 1 < self.profile.len() && self.profile[profile + 1].0 <= top {
+                profile += 1;
+            }
+            let mut winding = self.profile[profile].1;
             let mut i = 0;
             while i < self.order.len() {
-                let p = self.pieces[self.order[i]];
-                let edge = self.edges[p.edge as usize];
-                let (xa, xb) = (edge.at(row + top), edge.at(row + bottom));
+                let edge = self.edges[self.order[i]];
                 let before = inside(winding, rule);
-                winding += self.edges[p.edge as usize].dir;
+                winding += edge.dir;
                 i += 1;
-                while i < self.order.len() {
-                    let p = self.pieces[self.order[i]];
-                    if !edge
-                        .compare(self.edges[p.edge as usize], twice_middle)
-                        .is_eq()
-                    {
-                        break;
-                    }
-                    winding += self.edges[p.edge as usize].dir;
+                while i < self.order.len()
+                    && edge.compare(self.edges[self.order[i]], twice_after).is_eq()
+                {
+                    winding += self.edges[self.order[i]].dir;
                     i += 1;
                 }
                 let after = inside(winding, rule);
                 if before != after {
-                    self.cells
-                        .boundary(if after { 1 } else { -1 }, bottom - top, xa, xb);
+                    edge.deposit(
+                        &mut self.cells,
+                        if after { 1 } else { -1 },
+                        row + top,
+                        row + bottom,
+                    );
                 }
             }
             if self.next_profile.last().is_none_or(|&(_, w)| w != winding) {

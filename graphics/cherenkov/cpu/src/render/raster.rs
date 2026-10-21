@@ -1440,37 +1440,15 @@ fn composite_solid_in<S: Simd, C: Source, const SRGB: bool>(
     }
 }
 
-/// A non-recursive SIMD boundary for shading. Recursive filter walks
-/// carry only their control state, never an inlined paint evaluator.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the row context travels together"
-)]
-#[inline(never)]
-fn shade_run<S: Simd>(
-    simd: S,
-    dst: &mut [[f32; 4]],
-    cov: Run<'_>,
-    range: Range<usize>,
-    py: usize,
-    w: usize,
-    paint: &PaintData,
-    clip: Option<&ClipRef>,
-    space: cherenkov::BlendSpace,
-    src: &mut [MaybeUninit<[f32; 4]>],
-) {
-    simd.vectorize(|| shade_run_in(simd, dst, cov, range, py, w, paint, clip, space, src));
-}
-
-/// Shades one positive compiler run, preserving its constant/sample source.
+/// Shades one positive compiler run under the dispatched CPU level.
 #[expect(
     clippy::too_many_arguments,
     clippy::inline_always,
     clippy::cast_sign_loss,
-    reason = "the row context travels together under SIMD dispatch"
+    reason = "integer crop inlines into the caller; each pixel kernel has its own SIMD boundary"
 )]
 #[inline(always)]
-fn shade_run_in<S: Simd>(
+fn shade_run<S: Simd>(
     simd: S,
     dst: &mut [[f32; 4]],
     cov: Run<'_>,
@@ -1511,19 +1489,24 @@ fn shade_run_in<S: Simd>(
         );
         return;
     }
-    let mut x = range.start;
-    while x < range.end {
-        let n = (range.end - x).min(SPAN_CHUNK);
-        let src = paint.eval_span(simd, x, py, &mut src[..n]);
-        let clip = ClipRun::new(clip, w, x, py);
-        let dst = &mut dst[x..x + n];
-        match cov.slice(x - range.start..x - range.start + n) {
-            Run::Uniform(c) => composite_span(simd, dst, src, c, clip, space),
-            Run::Samples(c) => composite_span(simd, dst, src, c, clip, space),
-            Run::Slice(c) => composite_span(simd, dst, src, c, clip, space),
-        }
-        x += n;
-    }
+    simd.vectorize(
+        #[inline(always)]
+        || {
+            let mut x = range.start;
+            while x < range.end {
+                let n = (range.end - x).min(SPAN_CHUNK);
+                let src = paint.eval_span(simd, x, py, &mut src[..n]);
+                let clip = ClipRun::new(clip, w, x, py);
+                let dst = &mut dst[x..x + n];
+                match cov.slice(x - range.start..x - range.start + n) {
+                    Run::Uniform(c) => composite_span(simd, dst, src, c, clip, space),
+                    Run::Samples(c) => composite_span(simd, dst, src, c, clip, space),
+                    Run::Slice(c) => composite_span(simd, dst, src, c, clip, space),
+                }
+                x += n;
+            }
+        },
+    );
 }
 
 /// `(draws, edges)` stats for an item list.
