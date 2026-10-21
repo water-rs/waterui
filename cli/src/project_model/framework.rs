@@ -9,7 +9,7 @@ use std::{
 
 use crate::project::Project;
 use crate::project_model::facts::{Disk, Fact, Facts, InputFiles, Scope};
-use crate::toolchain::Host;
+use crate::toolchain::{Host, git};
 use cargo_lock::{Dependency as LockedDependency, Lockfile};
 use cargo_toml::{Dependency, DependencyDetail, PatchSet};
 use eyre::{Result, WrapErr, bail, eyre};
@@ -3537,9 +3537,8 @@ pub(crate) mod test_fixtures {
     /// the `HEAD` revision — the git bookkeeping every repository fixture
     /// shares. `root` must already be a worktree.
     pub fn git_commit_all(root: &Path, message: &str) -> String {
-        let git = |args: &[&str]| -> String {
-            let output = crate::toolchain::Host::current()
-                .std_command("git")
+        let run_git = |args: &[&str]| -> String {
+            let output = git::std_command(&crate::toolchain::Host::current())
                 .arg("-C")
                 .arg(root)
                 .args(args)
@@ -3555,8 +3554,8 @@ pub(crate) mod test_fixtures {
                 .trim()
                 .to_string()
         };
-        git(&["add", "-A"]);
-        git(&[
+        run_git(&["add", "-A"]);
+        run_git(&[
             "-c",
             "user.name=waterui-test",
             "-c",
@@ -3565,7 +3564,7 @@ pub(crate) mod test_fixtures {
             "-qm",
             message,
         ]);
-        git(&["rev-parse", "HEAD"])
+        run_git(&["rev-parse", "HEAD"])
     }
 
     /// A local framework checkout fixture: the repository's own root manifest
@@ -3577,8 +3576,7 @@ pub(crate) mod test_fixtures {
         std::fs::write(root.join("Cargo.toml"), local_checkout_manifest()).expect("manifest");
         let lock = test_lock();
         std::fs::write(root.join("Cargo.lock"), lock.to_string()).expect("lockfile");
-        let status = crate::toolchain::Host::current()
-            .std_command("git")
+        let status = git::std_command(&crate::toolchain::Host::current())
             .arg("-C")
             .arg(root)
             .args(["init", "-q"])
@@ -3691,8 +3689,7 @@ fn validate_rev(rev: &str) -> Result<()> {
 
 /// The `dev` branch head of `repository` — the tip `git ls-remote` reports.
 async fn remote_dev_head(host: &Host, repository: &str, what: &str) -> Result<String> {
-    let output = host
-        .command("git")
+    let output = git::command(host)
         .args(["ls-remote", repository, "refs/heads/dev"])
         .output()
         .await?;
@@ -7301,7 +7298,10 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
         let log = std::fs::read_to_string(machine.root().join("git.log")).unwrap();
         assert!(log.contains("fetch -q --depth=1 origin"), "{log}");
         assert!(
-            log.contains(&format!("git show {}:Cargo.toml", "a".repeat(40))),
+            log.contains(&format!(
+                "git -c core.longpaths=true show {}:Cargo.toml",
+                "a".repeat(40)
+            )),
             "{log}"
         );
         assert!(log.contains("ls-tree -z"), "{log}");

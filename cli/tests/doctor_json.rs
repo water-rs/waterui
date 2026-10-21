@@ -118,7 +118,10 @@ fn doctor_json_emits_typed_item_records_for_every_check() {
                 *id,
                 ids::C_TOOLCHAIN | ids::LINUX_SYSTEM_PACKAGES | ids::GTK4
             );
-            let windows_item = matches!(*id, ids::WINUI | ids::MSVC_BUILD_TOOLS | ids::DXC);
+            let windows_item = matches!(
+                *id,
+                ids::WINUI | ids::MSVC_BUILD_TOOLS | ids::DXC | ids::WINDOWS_LONG_PATHS
+            );
             (apple_item && !cfg!(target_os = "macos"))
                 || (linux_item && !cfg!(target_os = "linux"))
                 || (windows_item && !cfg!(target_os = "windows"))

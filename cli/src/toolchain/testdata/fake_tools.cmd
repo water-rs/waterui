@@ -119,6 +119,9 @@ if /i "%tool%"=="bash" goto :simple_version
 if /i "%tool%"=="brew" goto :exit_ok
 if /i "%tool%"=="vswhere" goto :vswhere
 if /i "%tool%"=="winget" goto :winget
+if /i "%tool%"=="reg" goto :reg
+if /i "%tool%"=="powershell" goto :powershell
+if /i "%tool%"=="pwsh" goto :powershell
 if /i "%tool%"=="apt-get" goto :exit_ok
 if /i "%tool%"=="dnf" goto :exit_ok
 if /i "%tool%"=="zypper" goto :exit_ok
@@ -160,16 +163,30 @@ rem The managed-checkout sequence `git -C <dir> init | remote add | fetch |
 rem checkout` produces: on `checkout`, copy every file the staged
 rem WATERUI_FAKE_GIT_CHECKOUT tree holds into the -C directory, like a
 rem clone's detached checkout. `for /r`, `mkdir` and `copy` are builtins, so
-rem the restricted PATH is still honored.
+rem the restricted PATH is still honored. A failed mkdir/copy exits
+rem nonzero naming the file - no silent partial checkouts. The exit sits
+rem outside the parenthesised blocks: under `cmd /c`, `exit /b` inside a
+rem block does not reach the process exit code.
+rem
+rem Every invocation the CLI spawns leads with `-c core.longpaths=true`;
+rem the leading `-c <key>=<value>` pairs are stripped so git_args/git_cmd
+rem see the subcommand.
 :git
 set "git_dir="
 set "git_prev="
 for %%a in (%*) do (
-    if /i "!git_prev!"=="-C" set "git_dir=%%~a"
+    if "!git_prev!"=="-C" set "git_dir=%%~a"
     set "git_prev=%%~a"
 )
-if "%~1"=="--version" (echo git version 2.43.0 & exit /b 0)
 set "git_args=!args_dequoted!"
+:git_strip_config
+if defined git_args if "!git_args:~0,3!"=="-c " (
+    for /f "tokens=1,2,* delims= " %%x in ("!git_args!") do set "git_args=%%z"
+    goto :git_strip_config
+)
+set "git_cmd="
+for /f "tokens=1 delims= " %%x in ("!git_args!") do set "git_cmd=%%x"
+if "!git_cmd!"=="--version" (echo git version 2.43.0 & exit /b 0)
 call :contains git_args "rev-parse --is-shallow-repository"
 if %errorlevel%==0 (call :respond GIT_SHALLOW & exit /b !errorlevel!)
 call :contains git_args "rev-parse --verify refs/remotes/origin/dev"
@@ -182,17 +199,27 @@ call :contains git_args "merge-base --is-ancestor"
 if %errorlevel%==0 goto :git_merge_base
 call :contains git_args ls-tree
 if %errorlevel%==0 (call :respond_or_empty GIT_ENTRY & exit /b !errorlevel!)
-if "%~1"=="show" (call :respond GIT_FILE & exit /b !errorlevel!)
+if "!git_cmd!"=="show" (call :respond GIT_FILE & exit /b !errorlevel!)
 call :contains git_args checkout
 if %errorlevel%==0 if defined WATERUI_FAKE_GIT_CHECKOUT if defined git_dir (
     for /r "%WATERUI_FAKE_GIT_CHECKOUT%" %%f in (*) do (
         set "git_abs=%%f"
         set "git_rel=!git_abs:%WATERUI_FAKE_GIT_CHECKOUT%\=!"
         for %%d in ("!git_dir!\!git_rel!") do if not exist "%%~dpd" mkdir "%%~dpd"
+        if errorlevel 1 (
+            echo git checkout: cannot create directory for "!git_rel!" 1>&2
+            goto :git_checkout_failed
+        )
         copy /y "!git_abs!" "!git_dir!\!git_rel!" >nul
+        if errorlevel 1 (
+            echo git checkout: cannot copy "!git_rel!" 1>&2
+            goto :git_checkout_failed
+        )
     )
 )
 exit /b 0
+:git_checkout_failed
+exit /b 1
 
 :rustup
 rem Mutable rustup state - one channel/target/component per line in the
@@ -530,4 +557,35 @@ exit /b 0
 :uname
 if "%1"=="-m" (echo %WATERUI_FAKE_UNAME_MACHINE% & exit /b 0)
 echo WaterUITest
+exit /b 0
+:reg
+rem `reg query <key> /v LongPathsEnabled` - the only value modeled. The
+rem state file (the elevated `reg add` the powershell fake models writes
+rem it) wins over the staged WATERUI_FAKE_LONG_PATHS value; an absent
+rem value fails the query like the real tool.
+set "reg_args=!args_dequoted!"
+call :contains reg_args "query"
+if not %errorlevel%==0 exit /b 0
+call :contains reg_args "LongPathsEnabled"
+if not %errorlevel%==0 exit /b 0
+set "reg_val="
+if exist "%HOME%\.fake-long-paths" for /f "usebackq delims=" %%v in ("%HOME%\.fake-long-paths") do set "reg_val=%%v"
+if not defined reg_val set "reg_val=%WATERUI_FAKE_LONG_PATHS%"
+if not defined reg_val (
+    echo ERROR: The system was unable to find the specified registry key or value. 1>&2
+    exit /b 1
+)
+echo.
+echo HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem
+echo     LongPathsEnabled    REG_DWORD    0x!reg_val!
+exit /b 0
+
+:powershell
+rem `doctor --fix` elevates `reg add` through `Start-Process -Verb RunAs`;
+rem land that write in the state file the :reg branch reads so a re-check
+rem observes the repair. WATERUI_FAKE_POWERSHELL_NO_WRITE models a write
+rem that did not land.
+set "ps_args=!args_dequoted!"
+call :contains ps_args "LongPathsEnabled"
+if %errorlevel%==0 if not defined WATERUI_FAKE_POWERSHELL_NO_WRITE (>"%HOME%\.fake-long-paths" echo 1)
 exit /b 0

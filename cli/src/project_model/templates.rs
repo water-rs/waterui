@@ -3194,8 +3194,7 @@ mod tests {
     /// Run `git -C dir args` for a fixture checkout and return its trimmed
     /// stdout.
     fn probe_git(dir: &Path, args: &[&str]) -> String {
-        let output = crate::toolchain::Host::current()
-            .std_command("git")
+        let output = crate::toolchain::git::std_command(&crate::toolchain::Host::current())
             .arg("-C")
             .arg(dir)
             .args(args)

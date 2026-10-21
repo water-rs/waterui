@@ -43,7 +43,7 @@ use crate::{
         self, HydrolysisAndroidPreviewTemplateEntry, HydrolysisAndroidTemplateEntry,
         TemplateContext,
     },
-    toolchain::{Host, ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
+    toolchain::{Host, ToolchainError, git, windows_arm64_llvm::WindowsArm64LlvmToolchain},
 };
 
 /// The painter the Hydrolysis Android host draws with.
@@ -205,7 +205,7 @@ async fn materialize_android_host(
     fs::create_dir_all(&host_dir).await?;
 
     let dir = host_dir.to_string_lossy().into_owned();
-    host.run("git", ["-C", dir.as_str(), "init", "-q"])
+    git::run(host, ["-C", dir.as_str(), "init", "-q"])
         .await
         .wrap_err_with(|| {
             format!(
@@ -213,11 +213,11 @@ async fn materialize_android_host(
                 host_dir.display()
             )
         })?;
-    host.run("git", ["-C", dir.as_str(), "remote", "add", "origin", url])
+    git::run(host, ["-C", dir.as_str(), "remote", "add", "origin", url])
         .await
         .wrap_err("failed to configure the hydrolysis android host remote")?;
-    host.run(
-        "git",
+    git::run(
+        host,
         [
             "-C",
             dir.as_str(),
@@ -233,8 +233,8 @@ async fn materialize_android_host(
     .wrap_err_with(|| {
         format!("failed to fetch the hydrolysis android host at revision {revision} from {url}")
     })?;
-    host.run(
-        "git",
+    git::run(
+        host,
         [
             "-C",
             dir.as_str(),
