@@ -607,7 +607,21 @@ pub mod testing {
     ) -> f64 {
         let candidates: Vec<u32> =
             (0..u32::try_from(segments.len()).expect("test segments fit u32")).collect();
-        let subs = vec![candidates.clone(); super::SUB];
-        super::pixel_area(segments, &candidates, &subs, pixel[0], pixel[1], rule)
+        // Every sub-row band holds every segment.
+        let mut subs = super::Buckets::with_counts(&[candidates.len(); super::SUB]);
+        let mut next = subs.cursors();
+        for band in 0..super::SUB {
+            for &i in &candidates {
+                subs.put(&mut next, band, i);
+            }
+        }
+        super::pixel_area(
+            segments,
+            &candidates,
+            subs.span(0..super::SUB),
+            pixel[0],
+            pixel[1],
+            rule,
+        )
     }
 }
