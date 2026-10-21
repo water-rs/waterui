@@ -167,25 +167,52 @@ impl ManagedTool {
     }
 }
 
+/// The pinned `microsoft/DirectXShaderCompiler` release, without its `v` tag
+/// prefix. `.github/actions/install-dxc/action.yml` pins the same release.
+const DXC_VERSION: &str = "1.8.2505.1";
+/// The date stamp in the pinned DXC release's archive asset names.
+const DXC_ASSET_DATE: &str = "2025_07_14";
+
 /// `dxc` (DirectX Shader Compiler) from the pinned
-/// `microsoft/DirectXShaderCompiler` release.
+/// `microsoft/DirectXShaderCompiler` release, for the host the CLI runs on.
+///
+/// Microsoft publishes a Windows zip and a Linux `x86_64` tarball; every other
+/// host (macOS, other Linux architectures) has no managed release and gets
+/// `None`.
 #[must_use]
-pub fn dxc() -> ManagedTool {
-    let binary = if cfg!(target_arch = "aarch64") {
-        "bin/arm64/dxc.exe"
-    } else if cfg!(target_arch = "x86_64") {
-        "bin/x64/dxc.exe"
-    } else {
-        "bin/x86/dxc.exe"
+pub fn dxc() -> Option<ManagedTool> {
+    let asset_url = |asset: String| {
+        format!(
+            "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v{DXC_VERSION}/{asset}"
+        )
     };
-    ManagedTool {
-        name: "dxc",
-        version: "1.8.2505.1",
-        url: "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2505.1/dxc_2025_07_14.zip"
-            .to_string(),
-        sha256: "9ad895a6b039e3a8f8c22a1009f866800b840a74b50db9218d13319e215ea8a4",
-        binary: binary.to_string(),
-        archive: ArchiveKind::Zip,
+    if cfg!(windows) {
+        let binary = if cfg!(target_arch = "aarch64") {
+            "bin/arm64/dxc.exe"
+        } else if cfg!(target_arch = "x86_64") {
+            "bin/x64/dxc.exe"
+        } else {
+            "bin/x86/dxc.exe"
+        };
+        Some(ManagedTool {
+            name: "dxc",
+            version: DXC_VERSION,
+            url: asset_url(format!("dxc_{DXC_ASSET_DATE}.zip")),
+            sha256: "9ad895a6b039e3a8f8c22a1009f866800b840a74b50db9218d13319e215ea8a4",
+            binary: binary.to_string(),
+            archive: ArchiveKind::Zip,
+        })
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some(ManagedTool {
+            name: "dxc",
+            version: DXC_VERSION,
+            url: asset_url(format!("linux_dxc_{DXC_ASSET_DATE}.x86_64.tar.gz")),
+            sha256: "f2213da1fc99dc8778c8823078e16ba97c7f80f86a1d4520ab1adf4b462bc48c",
+            binary: "bin/dxc".to_string(),
+            archive: ArchiveKind::TarGz,
+        })
+    } else {
+        None
     }
 }
 
@@ -345,8 +372,8 @@ pub fn jdk() -> Option<ManagedTool> {
 /// Every managed tool the CLI can install.
 #[must_use]
 pub fn all() -> Vec<ManagedTool> {
-    let mut tools = vec![dxc()];
-    for tool in [cmake(), sccache(), jdk()].into_iter().flatten() {
+    let mut tools = Vec::new();
+    for tool in [dxc(), cmake(), sccache(), jdk()].into_iter().flatten() {
         tools.push(tool);
     }
     tools
@@ -461,14 +488,15 @@ pub enum ManagedToolError {
 
 #[cfg(test)]
 mod tests {
-    use super::{dxc, managed_tools_path_env};
+    use super::managed_tools_path_env;
     use crate::toolchain::testing::TestMachine;
 
+    #[cfg(any(windows, all(target_os = "linux", target_arch = "x86_64")))]
     #[test]
     fn path_env_prepends_installed_tool_binary_dirs() {
         let machine = TestMachine::new();
         let host = machine.host(Vec::<(String, String)>::new());
-        let dxc = dxc();
+        let dxc = super::dxc().expect("this host has a managed dxc release");
         let binary = dxc
             .install_dir(&host)
             .expect("install dir")
