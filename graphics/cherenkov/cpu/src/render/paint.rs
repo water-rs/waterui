@@ -220,7 +220,7 @@ pub const fn affine_f32(t: Affine) -> [f32; 6] {
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-pub(super) const fn apply(m: [f32; 6], x: f32, y: f32) -> (f32, f32) {
+const fn apply(m: [f32; 6], x: f32, y: f32) -> (f32, f32) {
     (
         m[0].mul_add(x, m[2].mul_add(y, m[4])),
         m[1].mul_add(x, m[3].mul_add(y, m[5])),
@@ -492,7 +492,7 @@ fn extra_paint(
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-pub(super) fn extend_t(t: f32, extend: Extend) -> Option<f32> {
+fn extend_t(t: f32, extend: Extend) -> Option<f32> {
     match extend {
         Extend::Pad => Some(t.clamp(0.0, 1.0)),
         Extend::Repeat => Some(t - t.floor()),
@@ -572,7 +572,7 @@ fn eval_stops(stops: &[Stop], t: f32, interpolation: Interpolation) -> [f32; 4] 
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-pub(super) fn radial_t(px: f32, py: f32, geometry: &RadialGeometry, identical: bool) -> f32 {
+fn radial_t(px: f32, py: f32, geometry: &RadialGeometry, identical: bool) -> f32 {
     let RadialGeometry {
         x0,
         y0,
@@ -620,12 +620,18 @@ pub(super) fn radial_t(px: f32, py: f32, geometry: &RadialGeometry, identical: b
     if disc < 0.0 {
         return f32::NAN;
     }
-    let sq = disc.sqrt();
-    let (r1, r2) = ((-b + sq) / (2.0 * a), (-b - sq) / (2.0 * a));
-    let (hi, lo) = (r1.max(r2), r1.min(r2));
+    // The denominator's sign orders the roots. Evaluate the larger
+    // root first, and only divide for the smaller root if needed.
+    // A NaN larger root also reaches the smaller root, just as max/min
+    // ignore a NaN operand in the vector solver.
+    let sq = disc.sqrt().copysign(a);
+    let den = 2.0 * a;
+    let hi = (-b + sq) / den;
     if hi.mul_add(dr, r0) >= 0.0 {
-        hi * s
-    } else if lo.mul_add(dr, r0) >= 0.0 {
+        return hi * s;
+    }
+    let lo = (-b - sq) / den;
+    if lo.mul_add(dr, r0) >= 0.0 {
         lo * s
     } else {
         f32::NAN
@@ -816,7 +822,6 @@ fn linear_at(outer: &PaintData, params: &LinearPaint, mut x: f32, mut y: f32) ->
 /// `params`' map, `radial_t`, extend and stops — the same expression the
 /// span kernel evaluates per lane, including the no-solution `NaN`
 /// mapping to transparent before extension.
-#[cfg(test)]
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
@@ -1022,7 +1027,11 @@ impl<'a, S: Simd> PaintOutput for PixelSpan<'a, S> {
     )]
     #[inline(always)]
     fn radial(self, outer: &PaintData, params: &RadialPaint) -> Self::Output {
-        super::gradient::radial_span(self.simd, outer, params, self.x0, self.py, self.out)
+        if self.out.len() < super::span::LANES {
+            self.sample(|x, y| radial_at(outer, params, x, y))
+        } else {
+            super::gradient::radial_span(self.simd, outer, params, self.x0, self.py, self.out)
+        }
     }
 }
 
@@ -1217,6 +1226,13 @@ mod tests {
             degenerate.end_radius = 100.0;
             degenerate.extend = extend;
             cases.push(lower(&Paint::Radial(degenerate), Affine::IDENTITY));
+        }
+        // A shrinking radius can reject the larger root and accept
+        // the smaller one, for either sign of the quadratic coefficient.
+        for mut gradient in [radial(), radial_contained()] {
+            std::mem::swap(&mut gradient.start_center, &mut gradient.end_center);
+            std::mem::swap(&mut gradient.start_radius, &mut gradient.end_radius);
+            cases.push(lower(&Paint::Radial(gradient), Affine::IDENTITY));
         }
         // A `Transformed` chain over a radial gradient.
         cases.push(lower(
