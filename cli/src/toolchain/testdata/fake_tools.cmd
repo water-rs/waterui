@@ -468,11 +468,17 @@ exit /b 0
 if "%1 %2"=="list --id" (
     call :list_contains "%WATERUI_FAKE_WINGET_INSTALLED%" "%~3" & exit /b !errorlevel!
 )
+rem A hung install spins in cmd itself: the fake host's PATH holds only
+rem the scratch bin\, so no system tool can stand in for the hang, and
+rem the caller's deadline kills the loop with the job.
 if "%1"=="install" (
-    if defined WATERUI_FAKE_WINGET_HANG ping -n 300 127.0.0.1 >nul
+    if defined WATERUI_FAKE_WINGET_HANG goto :winget_hang
     exit /b 0
 )
 exit /b 2
+
+:winget_hang
+goto :winget_hang
 
 :dpkg_query
 if not "%1"=="-W" exit /b 1
