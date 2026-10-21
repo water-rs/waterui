@@ -439,7 +439,7 @@ impl Compiler {
         &mut self,
         simd: S,
         source: &E,
-        selection: &[usize],
+        selection: &[u32],
         offset: Fixed,
         rows: Range<usize>,
         width: usize,
@@ -767,7 +767,7 @@ mod tests {
     ) -> Vec<f32> {
         let (w, h) = size;
         let mut compiler = Compiler::default();
-        let selection: Vec<_> = (0..edges.len()).collect();
+        let selection: Vec<_> = (0..u32::try_from(edges.len()).unwrap()).collect();
         let mut out = vec![0.0; w * h];
         for top in (0..h).step_by(band) {
             let bottom = (top + band).min(h);

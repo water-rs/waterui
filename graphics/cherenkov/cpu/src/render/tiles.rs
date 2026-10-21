@@ -637,13 +637,13 @@ pub trait EdgeSource: Sync {
     where
         Self: 'a;
     /// Visits a sorted band selection under the renderer's SIMD token.
-    fn selected<S: Simd>(&self, _simd: S, selection: &[usize], mut emit: impl FnMut(IntegerEdge)) {
+    fn selected<S: Simd>(&self, _simd: S, selection: &[u32], mut emit: impl FnMut(IntegerEdge)) {
         let mut cursor = self.cursor();
         if let Some(&first) = selection.first() {
-            cursor.seek(first);
+            cursor.seek(first as usize);
         }
         for &i in selection {
-            emit(cursor.at(i));
+            emit(cursor.at(i as usize));
         }
     }
     /// The list's edge count.
@@ -659,26 +659,24 @@ pub trait EdgeCursor {
     fn seek(&mut self, i: usize);
     /// Decoded edge `i`: a reader is called with ascending indices only.
     fn at(&mut self, i: usize) -> IntegerEdge;
-    /// Exact source-coordinate identity, independent of placement.
-    fn row_key(&mut self, i: usize) -> [u32; 2];
 }
 
 impl EdgeSource for EdgeTiles {
     type Cursor<'a> = TileCursor<'a>;
 
-    fn selected<S: Simd>(&self, simd: S, selection: &[usize], mut emit: impl FnMut(IntegerEdge)) {
+    fn selected<S: Simd>(&self, simd: S, selection: &[u32], mut emit: impl FnMut(IntegerEdge)) {
         let mut cursor = self.cursor();
         if let Some(&first) = selection.first() {
-            cursor.seek(first);
+            cursor.seek(first as usize);
         }
         let mut i = 0;
         while i < selection.len() {
-            let (origin, end, words) = cursor.run(selection[i]);
-            let base = selection[i];
+            let (origin, end, words) = cursor.run(selection[i] as usize);
+            let base = selection[i] as usize;
             let origin = simd.load_array_i32x4([origin[0], origin[1], origin[0], origin[1]]);
-            while i < selection.len() && selection[i] < end {
+            while i < selection.len() && (selection[i] as usize) < end {
                 let [x0, y0, x1, y1] = simd
-                    .as_array_i32x4(decode(simd, origin, words[selection[i] - base]))
+                    .as_array_i32x4(decode(simd, origin, words[selection[i] as usize - base]))
                     .map(|v| i64::from(v) << 8);
                 emit(IntegerEdge { x0, y0, x1, y1 });
                 i += 1;
@@ -696,18 +694,6 @@ impl EdgeSource for EdgeTiles {
 }
 
 impl EdgeCursor for TileCursor<'_> {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "tile coordinates fit i32 before placement"
-    )]
-    fn row_key(&mut self, i: usize) -> [u32; 2] {
-        let edge = self.at(i);
-        [
-            ((edge.y0 >> 8) as i32).cast_unsigned(),
-            ((edge.y1 >> 8) as i32).cast_unsigned(),
-        ]
-    }
-
     fn seek(&mut self, i: usize) {
         self.next = self.tiles.partition_point(|&w| w >> 32 <= i as u64);
         self.end = 0;
@@ -733,10 +719,6 @@ impl EdgeSource for [Edge] {
 }
 
 impl EdgeCursor for &[Edge] {
-    fn row_key(&mut self, i: usize) -> [u32; 2] {
-        [self[i].y0.to_bits(), self[i].y1.to_bits()]
-    }
-
     fn seek(&mut self, _: usize) {}
 
     fn at(&mut self, i: usize) -> IntegerEdge {

@@ -110,7 +110,7 @@ const fn origin_band(oy: i64) -> i64 {
     clippy::cast_possible_truncation,
     reason = "surface dimensions fit u16; coordinates are clamped before conversion"
 )]
-fn edge_bands(e: &IntegerEdge, oy: i64, h: usize, bands: usize) -> (usize, usize) {
+fn edge_bands(e: &IntegerEdge, oy: i64, h: usize, bands: usize) -> (u16, u16) {
     let origin = origin_band(oy);
     let band = BAND_H as i64 * ONE;
     let lo = (e.y0.min(e.y1) + origin).clamp(0, h as i64 * ONE);
@@ -120,7 +120,7 @@ fn edge_bands(e: &IntegerEdge, oy: i64, h: usize, bands: usize) -> (usize, usize
     }
     let first = (lo / band) as usize;
     let last = ((hi + band - 1) / band) as usize;
-    (first.min(last.min(bands)), last.min(bands))
+    (first.min(last.min(bands)) as u16, last.min(bands) as u16)
 }
 
 /// One edge list's contribution to an [`EdgeBins`]: the item it belongs
@@ -163,7 +163,7 @@ pub struct EdgeBins {
     /// Pair-space prefix offsets into `pool`; `pairs + 1` entries.
     off: Vec<usize>,
     /// Edge indices, per `(group, band)` pair.
-    pool: Vec<usize>,
+    pool: Vec<u32>,
     /// Each group's first pair index.
     pair_base: Vec<usize>,
     /// Each group's first reachable band.
@@ -172,13 +172,12 @@ pub struct EdgeBins {
     span: Vec<usize>,
     /// Each group's first index into `edge_spans`.
     span_off: Vec<usize>,
-    /// Each edge's `[first, last)` band span, computed once per edge
-    /// per changed geometry and reused verbatim by the scatter pass.
-    edge_spans: Vec<(usize, usize)>,
-    /// Exact inputs that determine edge membership, independent of paint and x.
+    /// Exact membership, shared by cache validation, counting and scatter.
+    /// A u16 surface height has at most 4096 bands.
+    edge_spans: Vec<(u16, u16)>,
+    /// The placement grid under which the membership was computed.
     grid: Option<(usize, usize)>,
     origins: Vec<i64>,
-    edge_rows: Vec<[u32; 2]>,
 }
 
 impl EdgeBins {
@@ -221,15 +220,15 @@ impl EdgeBins {
                 .span_off
                 .get(g + 1)
                 .copied()
-                .unwrap_or(self.edge_rows.len());
+                .unwrap_or(self.edge_spans.len());
             if end - start != group.edges.len() {
                 return false;
             }
             let mut cursor = group.edges.cursor();
-            self.edge_rows[start..end]
+            self.edge_spans[start..end]
                 .iter()
                 .enumerate()
-                .all(|(i, rows)| *rows == cursor.row_key(i))
+                .all(|(i, span)| *span == edge_bands(&cursor.at(i), group.oy, h, bands))
         })
     }
 
@@ -266,11 +265,10 @@ impl EdgeBins {
         }
         // Each edge's widened band span, once per edge per rebuild.
         self.edge_spans.resize(edges_total, (0, 0));
-        self.edge_rows.resize(edges_total, [0; 2]);
         let workers = rayon::current_thread_index().map_or(1, |_| rayon::current_num_threads());
         let chunk_len = edges_total.div_ceil(workers).max(1);
         let span_off = &self.span_off;
-        let fill_chunk = |chunk: usize, spans: &mut [(usize, usize)], rows: &mut [[u32; 2]]| {
+        let fill_chunk = |chunk: usize, spans: &mut [(u16, u16)]| {
             let start = chunk * chunk_len;
             let first = span_off.partition_point(|&offset| offset <= start) - 1;
             let mut skip = start - span_off[first];
@@ -279,13 +277,11 @@ impl EdgeBins {
                 let count = (group.edges.len() - skip).min(spans.len() - written);
                 let mut cursor = group.edges.cursor();
                 cursor.seek(skip);
-                for ((span, row), i) in spans[written..written + count]
+                for (span, i) in spans[written..written + count]
                     .iter_mut()
-                    .zip(&mut rows[written..written + count])
                     .zip(skip..skip + count)
                 {
                     let edge = cursor.at(i);
-                    *row = cursor.row_key(i);
                     *span = edge_bands(&edge, group.oy, h, bands);
                 }
                 written += count;
@@ -298,15 +294,13 @@ impl EdgeBins {
         if workers == 1 {
             self.edge_spans
                 .chunks_mut(chunk_len)
-                .zip(self.edge_rows.chunks_mut(chunk_len))
                 .enumerate()
-                .for_each(|(chunk, (spans, rows))| fill_chunk(chunk, spans, rows));
+                .for_each(|(chunk, spans)| fill_chunk(chunk, spans));
         } else {
             self.edge_spans
                 .par_chunks_mut(chunk_len)
-                .zip(self.edge_rows.par_chunks_mut(chunk_len))
                 .enumerate()
-                .for_each(|(chunk, (spans, rows))| fill_chunk(chunk, spans, rows));
+                .for_each(|(chunk, spans)| fill_chunk(chunk, spans));
         }
         // Count in pair space. `counts` keeps its high-water length —
         // the `counts[..pairs]` prefix is active and all-zero on entry
@@ -315,7 +309,7 @@ impl EdgeBins {
         for (g, group) in groups.clone().enumerate() {
             for ei in 0..group.edges.len() {
                 let (ef, el) = self.edge_spans[self.span_off[g] + ei];
-                for b in ef.max(group.band0)..el.min(group.band1) {
+                for b in usize::from(ef).max(group.band0)..usize::from(el).min(group.band1) {
                     counts[self.pair_base[g] + (b - group.band0)] += 1;
                 }
             }
@@ -337,9 +331,10 @@ impl EdgeBins {
         for (g, group) in groups.enumerate() {
             for ei in 0..group.edges.len() {
                 let (ef, el) = self.edge_spans[self.span_off[g] + ei];
-                for b in ef.max(group.band0)..el.min(group.band1) {
+                for b in usize::from(ef).max(group.band0)..usize::from(el).min(group.band1) {
                     let p = self.pair_base[g] + (b - group.band0);
-                    self.pool[self.off[p + 1] - counts[p]] = ei;
+                    self.pool[self.off[p + 1] - counts[p]] =
+                        u32::try_from(ei).expect("edge index fits the retained geometry format");
                     counts[p] -= 1;
                 }
             }
@@ -348,7 +343,7 @@ impl EdgeBins {
 
     /// The edge indices of `group` reaching `band`, in original order.
     /// Empty when the group does not reach the band.
-    pub fn at(&self, group: usize, band: usize) -> &[usize] {
+    pub fn at(&self, group: usize, band: usize) -> &[u32] {
         let b0 = self.band0[group];
         if band < b0 || band >= b0 + self.span[group] {
             return &[];
@@ -360,7 +355,7 @@ impl EdgeBins {
     /// The union of `group`'s edge indices over the bands covering
     /// device rows `rows` — deduplicated, back in original edge order —
     /// appended to `out`.
-    pub fn query(&self, group: usize, rows: (usize, usize), out: &mut Vec<usize>) {
+    pub fn query(&self, group: usize, rows: (usize, usize), out: &mut Vec<u32>) {
         let b0 = self.band0[group];
         let covered = rows_bands(rows, b0 + self.span[group]);
         let start = out.len();
@@ -387,14 +382,13 @@ impl EdgeBins {
     /// The retained heap capacity of every table and scratch Vec.
     pub const fn heap_bytes(&self) -> u64 {
         ((self.off.capacity()
-            + self.pool.capacity()
             + self.pair_base.capacity()
             + self.band0.capacity()
             + self.span.capacity()
             + self.span_off.capacity())
             * size_of::<usize>()
-            + self.edge_spans.capacity() * size_of::<(usize, usize)>()
-            + self.edge_rows.capacity() * size_of::<[u32; 2]>()
+            + self.pool.capacity() * size_of::<u32>()
+            + self.edge_spans.capacity() * size_of::<(u16, u16)>()
             + self.origins.capacity() * size_of::<u64>()) as u64
     }
 }
@@ -546,7 +540,7 @@ impl FrameIndex {
 
     /// The indices into draw `item`'s own `edges` reaching band `b`, in
     /// edge order. Empty for non-draw items and bands the draw misses.
-    pub fn edges(&self, b: usize, item: usize) -> &[usize] {
+    pub fn edges(&self, b: usize, item: usize) -> &[u32] {
         let rank = self.draw_rank[item];
         if rank == usize::MAX {
             return &[];
@@ -585,7 +579,7 @@ impl FrameIndex {
     /// The union of draw `item`'s edge indices over the bands covering
     /// device rows `rows` — deduplicated, in edge order — appended to
     /// `out`.
-    pub fn query_edges(&self, item: usize, rows: (usize, usize), out: &mut Vec<usize>) {
+    pub fn query_edges(&self, item: usize, rows: (usize, usize), out: &mut Vec<u32>) {
         let rank = self.draw_rank[item];
         if rank == usize::MAX {
             return;
@@ -670,7 +664,11 @@ mod tests {
                 let hi = i64::try_from(((b + 1) * BAND_H).min(h)).unwrap() * ONE;
                 let expected =
                     e.y0.max(e.y1) + origin + 16 * ONE - 1 > lo && e.y0.min(e.y1) + origin < hi;
-                assert_eq!(index.at(0, b).contains(&ei), expected, "edge {ei} band {b}");
+                assert_eq!(
+                    index.at(0, b).contains(&u32::try_from(ei).unwrap()),
+                    expected,
+                    "edge {ei} band {b}"
+                );
             }
         }
     }
@@ -764,6 +762,9 @@ mod tests {
         assert!(counts.iter().all(|&count| count == 0));
         edges[0].x0 = 9.0;
         assert!(index.matches(std::iter::once(group(&edges)), 4, 64));
+        edges[0].y0 = 3.0;
+        edges[0].y1 = 7.0;
+        assert!(index.matches(std::iter::once(group(&edges)), 4, 64));
         assert!(!index.matches(std::iter::empty::<EdgeGroup<[Edge]>>(), 4, 64));
         assert!(!index.matches(std::iter::once(group(&edges)), 4, 63));
         assert!(!index.matches(
@@ -786,7 +787,7 @@ mod tests {
         edges[0].y1 = 38.0;
         assert!(!index.matches(std::iter::once(group(&edges)), 4, 64));
         index.rebuild(std::iter::once(group(&edges)), &mut counts, 4, 64);
-        assert_eq!(index.at(0, 0), &[0usize; 0]);
+        assert_eq!(index.at(0, 0), &[0u32; 0]);
         assert_eq!(index.at(0, 2), &[0]);
         assert!(index.matches(std::iter::once(group(&edges)), 4, 64));
     }
@@ -865,7 +866,7 @@ mod tests {
             *offset = crate::render::tiles::Fixed::new([0.0, 32.0]);
         }
         index.rebuild(&items, 64);
-        assert_eq!(index.edges(0, 0), &[0usize; 0]);
+        assert_eq!(index.edges(0, 0), &[0u32; 0]);
         assert_eq!(index.edges(2, 0), &[0]);
         assert_eq!(index.edges(0, 1), &[0]);
         items[0] = draw(EdgeTiles::new(
@@ -880,7 +881,7 @@ mod tests {
         ));
         index.rebuild(&items, 64);
         assert_eq!(index.sources.len(), 2);
-        assert_eq!(index.edges(2, 0), &[0usize; 0]);
+        assert_eq!(index.edges(2, 0), &[0u32; 0]);
         assert_eq!(index.edges(3, 0), &[0]);
     }
 
@@ -925,7 +926,10 @@ mod tests {
             );
             for (ei, e) in edges.iter().enumerate() {
                 if kept(e, 7.5, rows.0, rows.1 - rows.0) {
-                    assert!(sel.contains(&ei), "edge {ei} missed in {rows:?}");
+                    assert!(
+                        sel.contains(&u32::try_from(ei).unwrap()),
+                        "edge {ei} missed in {rows:?}"
+                    );
                 }
             }
         }

@@ -72,7 +72,7 @@ struct Buffers {
     /// selection and the edge selection a windowed draw consumes.
     /// Slots keep their capacity across sibling scopes and bands.
     sel_items: Vec<Vec<usize>>,
-    sel_edges: Vec<usize>,
+    sel_edges: Vec<u32>,
     /// The capacity each charged slot has been accounted for, in
     /// cells — a selection's capacity only grows, so the delta is the
     /// heap growth. Index `sel_items.len()` is the outer Vec's charge.
@@ -492,9 +492,10 @@ impl Drop for Scratch<'_> {
     /// recycling — not at the call's end.
     fn drop(&mut self) {
         if let Some(m) = self.meter {
-            let cells =
-                self.buffers.sel_edges_charge + self.buffers.sel_charge.iter().sum::<usize>();
-            let bytes = self.buffers.sel_items_charge as u64 + (cells * size_of::<usize>()) as u64;
+            let bytes = (self.buffers.sel_items_charge
+                + self.buffers.sel_edges_charge * size_of::<u32>()
+                + self.buffers.sel_charge.iter().sum::<usize>() * size_of::<usize>())
+                as u64;
             m.query_live
                 .fetch_sub(bytes, std::sync::atomic::Ordering::Relaxed);
         }
@@ -567,7 +568,7 @@ impl Buffers {
     }
 
     /// The edge-selection buffer, cleared for reuse.
-    fn take_sel_edges(&mut self) -> Vec<usize> {
+    fn take_sel_edges(&mut self) -> Vec<u32> {
         let mut buf = std::mem::take(&mut self.sel_edges);
         buf.clear();
         buf
@@ -575,17 +576,17 @@ impl Buffers {
 
     /// Charges `buf`'s capacity growth to `meter`, right after the
     /// query filled it.
-    fn charge_sel_edges(&mut self, buf: &Vec<usize>, meter: Option<&FrameMeter>) {
+    fn charge_sel_edges(&mut self, buf: &Vec<u32>, meter: Option<&FrameMeter>) {
         if buf.capacity() > self.sel_edges_charge {
             sel_alloc(
-                ((buf.capacity() - self.sel_edges_charge) * size_of::<usize>()) as u64,
+                ((buf.capacity() - self.sel_edges_charge) * size_of::<u32>()) as u64,
                 meter,
             );
             self.sel_edges_charge = buf.capacity();
         }
     }
 
-    fn give_sel_edges(&mut self, buf: Vec<usize>) {
+    fn give_sel_edges(&mut self, buf: Vec<u32>) {
         self.sel_edges = buf;
     }
 }
@@ -2847,7 +2848,7 @@ impl Band<'_> {
         simd: S,
         acc: &mut Compiler,
         stack: &mut Vec<Plane>,
-        (edges, sel, offset): (&EdgeTiles, &[usize], super::tiles::Fixed),
+        (edges, sel, offset): (&EdgeTiles, &[u32], super::tiles::Fixed),
         bbox: crate::render::lower::DrawBox,
         rule: FillRule,
         overlap: Overlap,
