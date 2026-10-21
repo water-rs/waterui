@@ -460,9 +460,9 @@ dependencies = [
 
 [[package]]
 name = "arc-swap"
-version = "1.9.2"
+version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
+checksum = "380962b3d93b99642e50b9febf72c071e97e8b32d86eae9cf4ef582bb960ae6e"
 dependencies = [
  "rustversion",
 ]
@@ -1573,9 +1573,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.6.0"
+version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f74872d07caf508b30a21f6836e7d7016a2eaf7d9ff4f48deaa58cd8a0407630"
+checksum = "877bf67ac8e52449eb2f9e98a344ea163beb70dd1f9eebe3cc5357dcfeaee4df"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1698,7 +1698,7 @@ dependencies = [
  "objc2-metal 0.3.2",
  "peniko",
  "plist",
- "pollster 0.4.0",
+ "pollster 1.0.1",
  "read-fonts 0.41.0",
  "serde",
  "serde_json",
@@ -1782,7 +1782,7 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "objc2-ui-kit 0.3.2",
  "png",
- "pollster 0.4.0",
+ "pollster 1.0.1",
  "proc-macro2",
  "quote",
  "rspirv",
@@ -3630,9 +3630,9 @@ dependencies = [
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.14"
+version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
+checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
 name = "fixed_decimal"
@@ -4633,7 +4633,7 @@ dependencies = [
  "android_logger",
  "approx",
  "async-task",
- "base64 0.22.1",
+ "base64 0.23.1",
  "block2 0.6.2",
  "cfg_aliases",
  "cherenkov",
@@ -4656,7 +4656,7 @@ dependencies = [
  "keyboard-types",
  "kurbo 0.13.1",
  "libc",
- "lru 0.18.5",
+ "lru 0.19.0",
  "nami",
  "native-executor",
  "ndk",
@@ -6202,9 +6202,9 @@ dependencies = [
 
 [[package]]
 name = "lru"
-version = "0.18.5"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef9ac18847474e638e3702b76c65d4eb93428471a74778ef0f1be711717f89b5"
+checksum = "4a9f71e3591c7ec44d3e563e87bf14ddc2bada8519dca046e5b0e560cd004e2d"
 dependencies = [
  "hashbrown 0.17.1",
 ]
@@ -9508,18 +9508,18 @@ dependencies = [
 
 [[package]]
 name = "rquickjs"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7d96fb23e8ff51c8d4772ea84e44b5238543b7d81e9cc23c0219511a8f16482"
+checksum = "a0a22bf72f515cc4189dd7c63d016f6de92a11eee98ddf7dd64794198f6eb34e"
 dependencies = [
  "rquickjs-core",
 ]
 
 [[package]]
 name = "rquickjs-core"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c6dbfedfbf458dc119c21ccd032c7527d185210b11a1ae796cd04106e6db280"
+checksum = "6657979a24d543e5fc66f32cef2f47ca82ce8eb55cec5f7d59a12b7b570bbf24"
 dependencies = [
  "hashbrown 0.17.1",
  "relative-path",
@@ -9528,9 +9528,9 @@ dependencies = [
 
 [[package]]
 name = "rquickjs-sys"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53d0aaff245bed1c6f3c39e477fb6b98d710d9d298bfec7c8dfc589bed0e5cef"
+checksum = "cee271d0eeba64f0915b846cb7ae02e16faf3dfdffdca91731101d9d30fe3423"
 dependencies = [
  "cc",
 ]
@@ -11479,9 +11479,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-panic"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7bf1298a179837099f9309243af3b554e840f7f67f65e9f55294913299bd4cc5"
+checksum = "266defe05fdcc26661f5a5395fc114040b20c44626becc54e8422c6f17d56ed2"
 dependencies = [
  "tracing",
  "tracing-subscriber",
@@ -12333,7 +12333,7 @@ dependencies = [
  "waterkit-video-container",
  "waterkit-video-core",
  "wgpu 30.0.1",
- "wgpu-external-frame 0.4.0",
+ "wgpu-external-frame",
  "yuv",
 ]
 
@@ -12833,7 +12833,7 @@ dependencies = [
  "waterui-watcher-set",
  "waterui-webview",
  "wgpu 30.0.1",
- "wgpu-external-frame 0.3.0",
+ "wgpu-external-frame",
 ]
 
 [[package]]
@@ -12861,7 +12861,7 @@ dependencies = [
  "waterui-watcher-set",
  "waterui-webview",
  "wgpu 30.0.1",
- "wgpu-external-frame 0.3.0",
+ "wgpu-external-frame",
  "xkeysym",
 ]
 
@@ -13007,7 +13007,7 @@ dependencies = [
  "whoami",
  "windows-sys 0.61.2",
  "x509-parser",
- "zenwave 0.6.1",
+ "zenwave 0.7.1",
  "zip 9.0.5",
 ]
 
@@ -13112,7 +13112,7 @@ dependencies = [
  "waterui-core",
  "waterui-testing",
  "wgpu 30.0.1",
- "wgpu-external-frame 0.3.0",
+ "wgpu-external-frame",
 ]
 
 [[package]]
@@ -13479,7 +13479,7 @@ dependencies = [
  "waterui-text",
  "waterui-url",
  "waterui-video",
- "zenwave 0.6.1",
+ "zenwave 0.7.1",
 ]
 
 [[package]]
@@ -13639,7 +13639,7 @@ dependencies = [
  "waterui-ts-engine-quickjs",
  "waterui-ts-schema",
  "windows-sys 0.61.2",
- "zenwave 0.6.1",
+ "zenwave 0.7.1",
 ]
 
 [[package]]
@@ -13696,7 +13696,7 @@ dependencies = [
  "sha2",
  "suiteki",
  "tracing",
- "zenwave 0.6.1",
+ "zenwave 0.7.1",
 ]
 
 [[package]]
@@ -14150,27 +14150,6 @@ version = "30.0.1"
 source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97"
 dependencies = [
  "wgpu-hal 30.0.1",
-]
-
-[[package]]
-name = "wgpu-external-frame"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "911f341938a2bacb3a3f270082e8cd52d3ae51e667a1a9abe8367ea530a317d5"
-dependencies = [
- "ash",
- "glow",
- "libc",
- "libloading 0.9.0",
- "ndk",
- "objc2 0.6.4",
- "objc2-core-foundation",
- "objc2-io-surface",
- "objc2-metal 0.3.2",
- "sync_wrapper",
- "thiserror 2.0.21",
- "wgpu 30.0.1",
- "windows 0.62.2",
 ]
 
 [[package]]
@@ -15469,9 +15448,9 @@ dependencies = [
 
 [[package]]
 name = "zeroize"
-version = "1.9.0"
+version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 
 [[package]]
 name = "zerotrie"
