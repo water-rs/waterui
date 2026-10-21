@@ -79,7 +79,7 @@ pub enum Item {
         edges: EdgeTiles,
         /// The device position of the frame's origin, added to every edge
         /// coordinate.
-        offset: [f32; 2],
+        offset: super::tiles::Fixed,
         /// Device-space bounding box of the placed edges.
         bbox: DrawBox,
         /// The fill rule.
@@ -912,20 +912,21 @@ pub fn harvest(geometry: &mut GeometryCache, content: &ContentData) {
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    reason = "clamped to the target, whose sides fit u16 and f32 exactly"
+    clippy::cast_possible_wrap,
+    reason = "clamped to the target, whose sides fit u16"
 )]
-fn bbox_of(edges: &EdgeTiles, [ox, oy]: [f32; 2], w: usize, h: usize) -> DrawBox {
+fn bbox_of(edges: &EdgeTiles, offset: super::tiles::Fixed, w: usize, h: usize) -> DrawBox {
+    let [ox, oy] = offset.units();
     let [x0, y0, x1, y1] = edges.bounds();
     // Rounded addition is monotonic, so placing the extrema bounds every
     // placed coordinate `e + offset`.
     let (x0, y0, x1, y1) = (x0 + ox, y0 + oy, x1 + ox, y1 + oy);
-    let (w, h) = (w as f32, h as f32);
+    let (w, h) = (w as i64, h as i64);
     DrawBox {
-        x0: x0.floor().clamp(0.0, w) as u16,
-        y0: y0.floor().clamp(0.0, h) as u16,
-        x1: x1.ceil().clamp(0.0, w) as u16,
-        y1: y1.ceil().clamp(0.0, h) as u16,
+        x0: (x0 >> 16).clamp(0, w) as u16,
+        y0: (y0 >> 16).clamp(0, h) as u16,
+        x1: ((x1 + 65535) >> 16).clamp(0, w) as u16,
+        y1: ((y1 + 65535) >> 16).clamp(0, h) as u16,
     }
 }
 
@@ -2648,6 +2649,10 @@ pub fn silhouette_bytes(content: &ContentData) -> u64 {
         .sum()
 }
 
+// Integer placement fits the baseline draw item's padding.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(size_of::<Item>() == 128);
+
 #[cfg(test)]
 mod tests {
     use super::{AnchorScratch, Emission, Item, Lowering, Op, Realization};
@@ -2694,7 +2699,7 @@ mod tests {
         op: &Op,
         transform: Affine,
         cache: &mut Realization<Emission>,
-    ) -> (EdgeTiles, [f32; 2], super::DrawBox, bool) {
+    ) -> (EdgeTiles, super::super::tiles::Fixed, super::DrawBox, bool) {
         let (mut items, mut scratch) = (Vec::new(), AnchorScratch::default());
         let (mut fonts, bitmap_fonts) = (FxHashMap::default(), FxHashMap::default());
         let (mut bitmaps, mut geometry) = (BitmapCache::new(0), GeometryCache::default());
@@ -2739,16 +2744,21 @@ mod tests {
     /// wherever it sits: at a small offset and around 2^20, translated
     /// back, the resolved draws are identical.
     #[test]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "test offsets fit exactly in f64"
+    )]
     fn resolved_geometry_does_not_depend_on_where_the_path_sits() {
         let place = |at: Vec2| {
             let (edges, offset, _, swept) =
                 realize(&zigzag(at), Affine::IDENTITY, &mut Realization::default());
             assert!(swept, "the zigzag overlaps at its joins");
+            let offset = offset.units().map(|v| v as f64 / 65536.0);
             let back = edges
                 .iter()
                 .map(|e| {
                     [(e.x0, offset[0], at.x), (e.y0, offset[1], at.y)]
-                        .map(|(v, o, a)| (f64::from(v) + f64::from(o) - a).to_bits())
+                        .map(|(v, o, a)| (f64::from(v) + o - a).to_bits())
                 })
                 .collect::<Vec<_>>();
             (edges, back)

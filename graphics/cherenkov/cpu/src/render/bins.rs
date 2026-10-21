@@ -10,35 +10,9 @@
 //! own `edges`, so `PushFilter::end`, the top-capture plan and the
 //! window/band split keep their original meaning.
 //!
-//! # Edge span conservatism
-//!
-//! `Band::draw` tests `ey = fl(e.y + dy)` with `dy = fl(oy − y0)` against
-//! a band's rows. Under the standard model `fl(a op b) = (a op b)(1+δ)`,
-//! `|δ| ≤ u = 2⁻²⁴` when the result is normal and `|fl(x) − x| ≤ 2⁻¹⁵⁰`
-//! when it is subnormal:
-//!
-//! ```text
-//! dy = (oy − y0)(1 + δ₁)
-//! ey = (e.y + dy)(1 + δ₂)
-//! ey − (e.y + oy − y0) = e.y·δ₂ + (oy − y0)(δ₁ + δ₂ + δ₁δ₂)
-//! |err| ≤ u·|e.y| + γ₂·|oy − y0| ≤ γ₂·(|e.y| + |oy| + h),  γ₂ = 2u/(1−2u)
-//! ```
-//!
-//! since `u < γ₂` and `|y0| ≤ h` for every surface and window row origin
-//! (filter and capture windows stay inside `0..h`). Cancellation and
-//! arbitrarily large offsets are covered: the bound is on magnitudes,
-//! and `|dy| ≤ (|oy| + h)(1 + u)` independently of how close `e.y + dy`
-//! lands to zero. The edge's device span `[min(e.y) + oy, max(e.y) + oy]`
-//! is widened by `err = γ₂·(|e.y|max + |oy| + h) + 2⁻¹⁴⁹` — the additive
-//! term covering both ops' subnormal cases — and the interval endpoints
-//! are stepped one f64 ulp outward for the f64 arithmetic's own rounding.
-//! Edges are finite by the lowering invariant (`flatten_edges` output is
-//! validated finite), so no non-finite case exists to handle.
-//!
-//! Origins share bins within one band-height translation interval. Edge
-//! bounds cover both ends of that interval; the raster predicate still
-//! rejects candidates outside the actual placed band. The error bound uses
-//! the larger absolute interval endpoint.
+//! Edge spans and placement use exact 2^-16 px integers. Bins cover the
+//! complete band-height translation interval of an origin; draws reject
+//! candidates outside their actual rows. No floating-point error widening.
 //!
 //! # Expanded windows
 //!
@@ -53,18 +27,11 @@ use std::ops::Range;
 use std::sync::atomic::AtomicU64;
 
 use crate::render::lower::Item;
-use crate::render::raster::{BAND_H, Edge};
+use crate::render::raster::BAND_H;
+#[cfg(test)]
+use crate::render::raster::Edge;
 use crate::render::tiles::{EdgeCursor, EdgeSource, EdgeTiles};
-
-/// Half an ulp of one round-to-nearest f32 rounding.
-const U: f64 = f32::EPSILON as f64 / 2.0;
-
-/// `γ₂ = 2u/(1 − 2u)`: the bound of `|δ₁ + δ₂ + δ₁δ₂|` over
-/// `|δᵢ| ≤ u` — `2u + 4u² + … ≥ 2u + u²`.
-const GAMMA2: f64 = 2.0 * U / (1.0 - 2.0 * U);
-
-/// Both rounding steps' subnormal allowance: `2⁻¹⁴⁹ = 2 × 2⁻¹⁵⁰`.
-const SUBNORMAL: f64 = 1.401_298_464_324_817e-45;
+use crate::render::tiles::{IntegerEdge, ONE};
 
 /// Heap metrics of a frame's index and expanded-window query scratch.
 /// `render_bands*` records the index before sharing the meter with workers;
@@ -131,50 +98,28 @@ fn rows_bands((y0, y1): (usize, usize), bands: usize) -> Range<usize> {
     (y0 / BAND_H).min(bands)..y1.div_ceil(BAND_H).min(bands)
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "the fixed raster band height is exactly representable"
-)]
-fn origin_band(oy: f32) -> f64 {
-    (f64::from(oy) / BAND_H as f64).floor() * BAND_H as f64
+#[expect(clippy::cast_possible_wrap, reason = "BAND_H is 16")]
+const fn origin_band(oy: i64) -> i64 {
+    oy.div_euclid(BAND_H as i64 * ONE) * (BAND_H as i64 * ONE)
 }
 
-/// The first and past-last band edge `e` — placed at origin `oy` — can
-/// belong to, under the widened interval described in the module docs.
-///
-/// A band is needed exactly when its rows `[b·BAND_H, b·BAND_H + rows_b)`
-/// can satisfy the draw's predicate, i.e. `b·BAND_H < hi` and
-/// `b·BAND_H + rows_b > lo` for the widened `[lo, hi)`; `rows_b ≤ BAND_H`
-/// makes the uniform `first = ⌊lo/BAND_H⌋` bound safe — a band below it
-/// ends at or under `lo`, so the predicate's `min_ey < rows` fails.
+/// Exact union of edge membership over the origin's translation interval.
 #[expect(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
-    reason = "the widened interval is clamped to the surface range in f64 \
-              before the integer conversions, so every cast is in-range"
+    clippy::cast_possible_truncation,
+    reason = "surface dimensions fit u16; coordinates are clamped before conversion"
 )]
-fn edge_bands(e: &Edge, oy: f32, h: usize, bands: usize) -> (usize, usize) {
-    let (y0, y1) = (f64::from(e.y0), f64::from(e.y1));
-    let (emin, emax) = (y0.min(y1), y0.max(y1));
-    // γ₂·(|e.y|max + |oy| + h) + subnormal allowance; `bound` below is an
-    // upper bound of `|oy − y0|` over every band and window origin.
-    let origin_lo = origin_band(oy);
-    let origin_hi = (origin_lo + BAND_H as f64).next_up();
-    let bound = origin_lo.abs().max(origin_hi.abs()) + h as f64;
-    let err = GAMMA2.mul_add(y0.abs().max(y1.abs()) + bound, SUBNORMAL);
-    // Outward rounding: one f64 ulp at each end covers the f64
-    // arithmetic's own rounding of `emin/emax + oy` and the widened ends.
-    let lo = (emin + origin_lo - err).next_down();
-    let hi = (emax + origin_hi + err).next_up();
-    // Clamp to the surface in f64 before converting: on an unclamped
-    // huge `hi` the `as usize` cast saturates and the offset addition
-    // could wrap. `hi.ceil()` lands the integer band boundary *after*
-    // the upper endpoint, so `last` owns `⌈hi / BAND_H⌉` exactly — a
-    // truncation here would drop the band the predicate still keeps.
-    let (lo, hi) = (lo.clamp(0.0, h as f64), hi.clamp(0.0, h as f64));
-    let first = (lo as usize) / BAND_H;
-    let last = (hi.ceil() as usize).div_ceil(BAND_H);
+fn edge_bands(e: &IntegerEdge, oy: i64, h: usize, bands: usize) -> (usize, usize) {
+    let origin = origin_band(oy);
+    let band = BAND_H as i64 * ONE;
+    let lo = (e.y0.min(e.y1) + origin).clamp(0, h as i64 * ONE);
+    let hi = (e.y0.max(e.y1) + origin + band - 1).clamp(0, h as i64 * ONE);
+    if lo >= hi {
+        return (0, 0);
+    }
+    let first = (lo / band) as usize;
+    let last = ((hi + band - 1) / band) as usize;
     (first.min(last.min(bands)), last.min(bands))
 }
 
@@ -187,7 +132,7 @@ pub struct EdgeGroup<'a, E: EdgeSource + ?Sized> {
     /// The caller retained the same immutable geometry at this group index.
     pub geometry_unchanged: bool,
     /// The draw's device-space y origin.
-    pub oy: f32,
+    pub oy: i64,
     /// First band the owning item reaches.
     pub band0: usize,
     /// Past-last band the owning item reaches.
@@ -232,8 +177,8 @@ pub struct EdgeBins {
     edge_spans: Vec<(usize, usize)>,
     /// Exact inputs that determine edge membership, independent of paint and x.
     grid: Option<(usize, usize)>,
-    origins: Vec<u64>,
-    edge_rows: Vec<[u32; 2]>,
+    origins: Vec<i64>,
+    edge_rows: Vec<[i64; 2]>,
 }
 
 impl EdgeBins {
@@ -250,7 +195,7 @@ impl EdgeBins {
             if g >= self.span.len()
                 || self.band0[g] != group.band0
                 || self.span[g] != group.band1.saturating_sub(group.band0)
-                || self.origins[g] != origin_band(group.oy).to_bits()
+                || self.origins[g] != origin_band(group.oy)
             {
                 return false;
             }
@@ -286,7 +231,7 @@ impl EdgeBins {
                 .enumerate()
                 .all(|(i, rows)| {
                     let edge = cursor.at(i);
-                    *rows == [edge.y0.to_bits(), edge.y1.to_bits()]
+                    *rows == [edge.y0, edge.y1]
                 })
         })
     }
@@ -314,7 +259,7 @@ impl EdgeBins {
         self.span_off.clear();
         let (mut pairs, mut edges_total) = (0usize, 0usize);
         for g in groups.clone() {
-            self.origins.push(origin_band(g.oy).to_bits());
+            self.origins.push(origin_band(g.oy));
             self.pair_base.push(pairs);
             self.band0.push(g.band0);
             self.span.push(g.band1.saturating_sub(g.band0));
@@ -328,7 +273,7 @@ impl EdgeBins {
         let workers = rayon::current_thread_index().map_or(1, |_| rayon::current_num_threads());
         let chunk_len = edges_total.div_ceil(workers).max(1);
         let span_off = &self.span_off;
-        let fill_chunk = |chunk: usize, spans: &mut [(usize, usize)], rows: &mut [[u32; 2]]| {
+        let fill_chunk = |chunk: usize, spans: &mut [(usize, usize)], rows: &mut [[i64; 2]]| {
             let start = chunk * chunk_len;
             let first = span_off.partition_point(|&offset| offset <= start) - 1;
             let mut skip = start - span_off[first];
@@ -343,7 +288,7 @@ impl EdgeBins {
                     .zip(skip..skip + count)
                 {
                     let edge = cursor.at(i);
-                    *row = [edge.y0.to_bits(), edge.y1.to_bits()];
+                    *row = [edge.y0, edge.y1];
                     *span = edge_bands(&edge, group.oy, h, bands);
                 }
                 written += count;
@@ -452,7 +397,7 @@ impl EdgeBins {
             + self.span_off.capacity())
             * size_of::<usize>()
             + self.edge_spans.capacity() * size_of::<(usize, usize)>()
-            + self.edge_rows.capacity() * size_of::<[u32; 2]>()
+            + self.edge_rows.capacity() * size_of::<[i64; 2]>()
             + self.origins.capacity() * size_of::<u64>()) as u64
     }
 }
@@ -563,7 +508,7 @@ impl FrameIndex {
             EdgeGroup {
                 edges,
                 geometry_unchanged: self.source_ids.get(g) == Some(&GeometryIdentity::of(edges)),
-                oy: offset[1],
+                oy: offset.units()[1],
                 band0: reach.start,
                 band1: reach.end,
             }
@@ -662,17 +607,12 @@ impl FrameIndex {
 mod tests {
     use super::*;
 
-    /// The pre-index band predicate, verbatim: an edge stays when its
-    /// two-step float placement intersects the window's rows.
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "mirrors the production predicate's row casts"
-    )]
+    /// The exact placed-edge predicate, independent of the index formula.
+    #[expect(clippy::cast_possible_wrap, reason = "test surfaces are small")]
     fn kept(e: &Edge, oy: f32, y0: usize, rows: usize) -> bool {
-        let dy = oy - y0 as f32;
-        let ey0 = e.y0 + dy;
-        let ey1 = e.y1 + dy;
-        !(ey0.max(ey1) < 0.0 || ey0.min(ey1) >= rows as f32)
+        let e = IntegerEdge::from(*e);
+        let oy = crate::render::tiles::Fixed::new([0.0, f64::from(oy)]).units()[1];
+        e.y0.max(e.y1) + oy > y0 as i64 * ONE && e.y0.min(e.y1) + oy < (y0 + rows) as i64 * ONE
     }
 
     /// `kept` over a band grid of `bands` × `BAND_H` rows.
@@ -699,7 +639,7 @@ mod tests {
             std::iter::once(EdgeGroup {
                 edges,
                 geometry_unchanged: false,
-                oy,
+                oy: crate::render::tiles::Fixed::new([0.0, f64::from(oy)]).units()[1],
                 band0: 0,
                 band1: bands,
             }),
@@ -711,12 +651,15 @@ mod tests {
             let bin = index.at(0, b);
             assert!(bin.windows(2).all(|w| w[0] < w[1]), "bin {b} sorted unique");
         }
+        let origin = origin_band(crate::render::tiles::Fixed::new([0.0, f64::from(oy)]).units()[1]);
         for (ei, e) in edges.iter().enumerate() {
-            for b in kept_bands(e, oy, h, bands) {
-                assert!(
-                    index.at(0, b).contains(&ei),
-                    "edge {ei} {e:?} kept at band {b} but not binned"
-                );
+            let e = IntegerEdge::from(*e);
+            for b in 0..bands {
+                let lo = i64::try_from(b * BAND_H).unwrap() * ONE;
+                let hi = i64::try_from(((b + 1) * BAND_H).min(h)).unwrap() * ONE;
+                let expected =
+                    e.y0.max(e.y1) + origin + 16 * ONE - 1 > lo && e.y0.min(e.y1) + origin < hi;
+                assert_eq!(index.at(0, b).contains(&ei), expected, "edge {ei} band {b}");
             }
         }
     }
@@ -725,7 +668,7 @@ mod tests {
     /// full and partial-band surfaces, including f32 neighbours of band
     /// boundaries and offsets that cancel against edge y.
     #[test]
-    fn bins_cover_the_old_band_predicate() {
+    fn bins_equal_the_integer_interval_predicate() {
         let mut edges = Vec::new();
         for &len in &[0.5f32, 3.0, 15.9, 16.0, 16.1, 61.0, 1e4, -1e4] {
             for &top in &[0.0f32, 15.999_999, 16.0, 16.000_002, -0.5, 63.75] {
@@ -777,7 +720,7 @@ mod tests {
             EdgeGroup {
                 edges,
                 geometry_unchanged: false,
-                oy: 0.0,
+                oy: 0,
                 band0: 0,
                 band1: 4,
             }
@@ -794,10 +737,10 @@ mod tests {
         assert!(index.matches(std::iter::once(group(&edges)), 4, 64));
         index.rebuild(std::iter::once(group(&edges)), &mut counts, 4, 64);
         assert_eq!(index.at(0, 0), &[0]);
-        for oy in [0.0, 0.125, 7.5, 15.999_999] {
+        for oy in [0.0, 0.125, 7.5, 16.0 - 1.0 / 65536.0] {
             assert!(index.matches(
                 std::iter::once(EdgeGroup {
-                    oy,
+                    oy: crate::render::tiles::Fixed::new([0.0, f64::from(oy)]).units()[1],
                     ..group(&edges)
                 }),
                 4,
@@ -814,7 +757,7 @@ mod tests {
         assert!(!index.matches(std::iter::once(group(&edges)), 4, 63));
         assert!(!index.matches(
             std::iter::once(EdgeGroup {
-                oy: 16.0,
+                oy: 16 * ONE,
                 ..group(&edges)
             }),
             4,
@@ -853,7 +796,7 @@ mod tests {
             .map(|pair| EdgeGroup {
                 edges: &edges[pair[0]..pair[1]],
                 geometry_unchanged: false,
-                oy: -2.0,
+                oy: -2 * ONE,
                 band0: 0,
                 band1: 8,
             })
@@ -879,7 +822,7 @@ mod tests {
     fn retained_geometry_checks_placement_and_replacement() {
         let draw = |edges: EdgeTiles| Item::Draw {
             edges,
-            offset: [0.0; 2],
+            offset: crate::render::tiles::Fixed::new([0.0; 2]),
             bbox: crate::render::lower::DrawBox {
                 x0: 0,
                 y0: 0,
@@ -908,7 +851,7 @@ mod tests {
         assert_eq!(index.sources.len(), 1);
         assert_eq!(index.edges(0, 0), &[0]);
         if let Item::Draw { offset, .. } = &mut items[0] {
-            offset[1] = 32.0;
+            *offset = crate::render::tiles::Fixed::new([0.0, 32.0]);
         }
         index.rebuild(&items, 64);
         assert_eq!(index.edges(0, 0), &[0usize; 0]);
@@ -954,7 +897,7 @@ mod tests {
             std::iter::once(EdgeGroup {
                 edges: edges.as_slice(),
                 geometry_unchanged: false,
-                oy: 7.5,
+                oy: 15 * ONE / 2,
                 band0: 0,
                 band1: bands,
             }),
@@ -987,7 +930,7 @@ mod tests {
                 &mut crate::render::tiles::EdgeScratch::default(),
                 std::iter::empty(),
             ),
-            offset: [0.0, 0.0],
+            offset: crate::render::tiles::Fixed::new([0.0, 0.0]),
             bbox: DrawBox {
                 x0: 0,
                 y0,

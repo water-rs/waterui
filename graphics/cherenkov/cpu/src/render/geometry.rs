@@ -39,7 +39,7 @@ use cherenkov::{FillRule, ShapeData};
 use rustc_hash::{FxHashMap, FxHasher};
 
 use super::raster::Edge;
-use super::tiles::{EdgeScratch, EdgeTiles};
+use super::tiles::{EdgeScratch, EdgeTiles, Fixed};
 
 /// One offered draw: its key's span in the frame's word arena, its path
 /// elements when it is one, its retained edges and whether the winding
@@ -237,13 +237,12 @@ pub struct Frame {
     corner: Vec2,
     map: Affine,
     /// The device position of the frame's origin.
-    pub offset: [f32; 2],
+    pub offset: Fixed,
 }
 
 impl Frame {
     /// The frame of `shape`, stroked by `stroke` when set, drawn under
     /// `transform`.
-    #[expect(clippy::cast_possible_truncation, reason = "geometry is f32")]
     pub fn new(shape: &ShapeData, stroke: Option<&kurbo::Stroke>, transform: Affine) -> Self {
         let reach = stroke.map_or(0.0, stroke_reach);
         let bounds = control_bounds(shape).inflate(reach, reach);
@@ -264,7 +263,7 @@ impl Frame {
         Self {
             corner,
             map: Affine::translate(shift) * linear,
-            offset: [at.x as f32, at.y as f32],
+            offset: Fixed::new([at.x, at.y]),
         }
     }
 

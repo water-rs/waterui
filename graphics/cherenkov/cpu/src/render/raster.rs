@@ -3050,6 +3050,7 @@ impl Band<'_> {
     #[expect(
         clippy::cast_precision_loss,
         clippy::too_many_arguments,
+        clippy::cast_possible_wrap,
         reason = "pixel indices and band offsets are far below 2^24"
     )]
     #[expect(
@@ -3062,7 +3063,7 @@ impl Band<'_> {
         simd: S,
         acc: &mut Accum,
         stack: &mut Vec<Plane>,
-        (edges, sel, [ox, oy]): (&EdgeTiles, &[usize], [f32; 2]),
+        (edges, sel, offset): (&EdgeTiles, &[usize], super::tiles::Fixed),
         bbox: crate::render::lower::DrawBox,
         rule: FillRule,
         paint: &PaintData,
@@ -3085,49 +3086,34 @@ impl Band<'_> {
         // inside the guard window `x_lo .. x_hi + 1`.
         acc.set_window(x_lo, x_hi);
         acc.clear_range(y_lo, y_hi);
-        // The frame's origin relative to the band's top row.
-        let dy = oy - self.y0 as f32;
-        let scale = simd.splat_f32x4(crate::render::tiles::DECODE);
-        let shift = simd.load_array_f32x4([ox, dy, ox, dy]);
-        // The band test as two mask compares over `[x0, y0, x1, y1]`:
-        // `all y < 0` or `all y >= bh` — every decoded coordinate is
-        // finite, so the x lanes against ±∞ always hold.
-        let below = simd.load_array_f32x4([f32::INFINITY, 0.0, f32::INFINITY, 0.0]);
-        let above =
-            simd.load_array_f32x4([f32::NEG_INFINITY, bh as f32, f32::NEG_INFINITY, bh as f32]);
+        let [ox, oy] = offset.units();
+        let dy = oy - self.y0 as i64 * super::tiles::ONE;
         let mut cursor = edges.cursor();
-        let mut buf = [const { MaybeUninit::<[f32; 4]>::uninit() }; SPAN_CHUNK];
         for chunk in sel.chunks(SPAN_CHUNK) {
-            // Decode and band-test without a call, compacting the
-            // crossing edges; each tile's origin is built once per run.
-            let mut n = 0usize;
-            let mut i = 0usize;
+            let mut i = 0;
             while i < chunk.len() {
                 let (origin_u, end, words) = cursor.run(chunk[i]);
                 let base = chunk[i];
                 let origin =
                     simd.load_array_i32x4([origin_u[0], origin_u[1], origin_u[0], origin_u[1]]);
                 while i < chunk.len() && chunk[i] < end {
-                    let e = crate::render::tiles::decode(
+                    let e = simd.as_array_i32x4(super::tiles::decode(
                         simd,
                         origin,
                         words[chunk[i] - base],
-                        scale,
-                        shift,
-                    );
-                    if !(simd.all_true_mask32x4(simd.simd_lt_f32x4(e, below))
-                        || simd.all_true_mask32x4(simd.simd_ge_f32x4(e, above)))
-                    {
-                        buf[n & (SPAN_CHUNK - 1)].write(simd.as_array_f32x4(e));
-                        n += 1;
+                    ));
+                    let [x0, y0, x1, y1] = e.map(|v| i64::from(v) << 8);
+                    let (y0, y1) = (y0 + dy, y1 + dy);
+                    if y0.max(y1) > 0 && y0.min(y1) < bh as i64 * super::tiles::ONE {
+                        acc.draw_line(
+                            (x0 + ox) as f32 / 65536.0,
+                            y0 as f32 / 65536.0,
+                            (x1 + ox) as f32 / 65536.0,
+                            y1 as f32 / 65536.0,
+                        );
                     }
                     i += 1;
                 }
-            }
-            // SAFETY: pass 1 wrote `buf[..n]`, and `n <= chunk.len() <=
-            // SPAN_CHUNK`.
-            for e in unsafe { buf[..n].assume_init_ref() } {
-                acc.draw_line(e[0], e[1], e[2], e[3]);
             }
         }
         let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
@@ -3640,7 +3626,7 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
         std::iter::once(EdgeGroup {
             edges,
             geometry_unchanged: false,
-            oy: 0.0,
+            oy: 0,
             band0: 0,
             band1: bands,
         }),

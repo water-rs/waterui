@@ -26,16 +26,13 @@
 //! fail the encoding — the forms a draw retains come from a `Frame` whose
 //! contents sit next to its origin.
 //!
-//! Decoding is `(origin_u + q) as f32 * 2^-8`: the `i32` sum is exact,
-//! the conversion rounds once and the scale by a power of two is exact.
-//! That is bit-identical to `f32::mul_add(q, 2^-8, origin)` — one
-//! rounding of the same exact value — but an integer add, a `cvtsi2ss`
-//! and a multiply on every target, with no libm call on any of them.
+//! Decoding produces exact integer 1/256 px coordinates. Placement widens
+//! them to 2^-16 px units before adding the draw's fixed offset.
 
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 
-use fearless_simd::{Simd, f32x4, i32x4};
+use fearless_simd::{Simd, i32x4};
 
 use super::raster::Edge;
 
@@ -49,8 +46,61 @@ const TILE: f64 = 127.0;
 const UNIT: f64 = 256.0;
 /// A tile's side in units of 1/256 px.
 const TILE_UNITS: i32 = 127 * 256;
-/// `UNIT` as the decode multiplier.
-pub const DECODE: f32 = 1.0 / 256.0;
+/// Placement units per pixel.
+pub const ONE: i64 = 1 << 16;
+
+/// A device translation on the 2^-16 px grid. Splitting whole and
+/// fractional parts keeps a pair in twelve bytes, including negative values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Fixed {
+    whole: [i32; 2],
+    fraction: [u16; 2],
+}
+
+impl Fixed {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "rounding to the placement grid; low bits are an unsigned fraction"
+    )]
+    pub fn new(pixels: [f64; 2]) -> Self {
+        let units = pixels.map(|v| (v * 65536.0).round() as i64);
+        Self {
+            whole: units.map(|v| i32::try_from(v >> 16).expect("placement fits i32 pixels")),
+            fraction: units.map(|v| v as u16),
+        }
+    }
+
+    pub fn units(self) -> [i64; 2] {
+        [0, 1].map(|i| (i64::from(self.whole[i]) << 16) + i64::from(self.fraction[i]))
+    }
+}
+
+/// An edge in placement units. Widening precedes the shift so every
+/// representable retained tile can be placed without losing low bits.
+#[derive(Clone, Copy, Debug)]
+pub struct IntegerEdge {
+    pub x0: i64,
+    pub y0: i64,
+    pub x1: i64,
+    pub y1: i64,
+}
+
+impl From<Edge> for IntegerEdge {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "rounding transient mask geometry to U"
+    )]
+    fn from(e: Edge) -> Self {
+        let at = |v: f32| (f64::from(v) * 65536.0).round() as i64;
+        Self {
+            x0: at(e.x0),
+            y0: at(e.y0),
+            x1: at(e.x1),
+            y1: at(e.y1),
+        }
+    }
+}
 /// Header and bounds words before the tile words.
 const HEAD: usize = 3;
 
@@ -77,14 +127,13 @@ impl QEdge {
 /// tile origin given in units of 1/256 px.
 #[expect(
     clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
     reason = "each word field is exactly one i16 lane; the one-rounding \
               conversion is the decode rule"
 )]
 #[inline]
-fn decode_scalar([ox, oy]: [i32; 2], q: Word) -> Edge {
-    let at = |origin: i32, q: i16| (origin + i32::from(q)) as f32 * DECODE;
-    Edge {
+fn decode_scalar([ox, oy]: [i32; 2], q: Word) -> IntegerEdge {
+    let at = |origin: i32, q: i16| i64::from(origin + i32::from(q)) << 8;
+    IntegerEdge {
         x0: at(ox, q as i16),
         y0: at(oy, (q >> 16) as i16),
         x1: at(ox, (q >> 32) as i16),
@@ -92,12 +141,8 @@ fn decode_scalar([ox, oy]: [i32; 2], q: Word) -> Edge {
     }
 }
 
-/// The decoded edge `[x0, y0, x1, y1]` of the packed word `q`, moved
-/// into the caller's space by `shift`: `(origin_u + q) as f32 * 2^-8 +
-/// shift` as one fused multiply-add. The `i32` sum is exact below 2^24
-/// units and the power-of-two scale is exact, so the fused form rounds
-/// the same exact sum once, as the separate convert, multiply and add
-/// did — six instructions under any SIMD level, no libm call.
+/// Decodes four signed coordinates in 1/256 px units. The caller widens
+/// before converting to placement units and adding its translation.
 #[expect(
     clippy::inline_always,
     clippy::cast_possible_truncation,
@@ -105,13 +150,7 @@ fn decode_scalar([ox, oy]: [i32; 2], q: Word) -> Edge {
               each word field is exactly one packed i16 lane"
 )]
 #[inline(always)]
-pub fn decode<S: Simd>(
-    simd: S,
-    origin: i32x4<S>,
-    q: Word,
-    scale: f32x4<S>,
-    shift: f32x4<S>,
-) -> f32x4<S> {
+pub fn decode<S: Simd>(simd: S, origin: i32x4<S>, q: Word) -> i32x4<S> {
     let v = simd.load_array_i16x8([
         q as i16,
         (q >> 16) as i16,
@@ -127,7 +166,7 @@ pub fn decode<S: Simd>(
     // `vpsrad` — giving `[x0, y0, x1, y1]` as `i32`.
     let q = simd.cvt_from_bytes_i32x4(simd.reinterpret_u8_i16x8(simd.zip_low_i16x8(v, v)));
     let q = simd.shr_i32x4(q, 16);
-    simd.mul_add_f32x4(simd.cvt_f32_i32x4(simd.add_i32x4(q, origin)), scale, shift)
+    simd.add_i32x4(q, origin)
 }
 
 /// A draw's flattened edges in retained, tile-local fixed point, as one
@@ -334,7 +373,7 @@ impl EdgeTiles {
         // Tile-grid extent, tracked as pieces emit; `bounds` is the
         // decoded extrema `bbox_of` reduced over.
         let (mut tx_lo, mut tx_hi, mut ty_lo, mut ty_hi) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
-        let mut bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        let mut bounds = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
         for e in edges {
             split(&e, |tx, ty, q| {
                 tx_lo = tx_lo.min(i32::from(tx));
@@ -344,10 +383,10 @@ impl EdgeTiles {
                 let origin = [i32::from(tx) * TILE_UNITS, i32::from(ty) * TILE_UNITS];
                 let w = q.word();
                 let d = decode_scalar(origin, w);
-                bounds[0] = bounds[0].min(d.x0.min(d.x1));
-                bounds[1] = bounds[1].min(d.y0.min(d.y1));
-                bounds[2] = bounds[2].max(d.x0.max(d.x1));
-                bounds[3] = bounds[3].max(d.y0.max(d.y1));
+                bounds[0] = bounds[0].min((d.x0.min(d.x1) >> 8) as i32);
+                bounds[1] = bounds[1].min((d.y0.min(d.y1) >> 8) as i32);
+                bounds[2] = bounds[2].max((d.x0.max(d.x1) >> 8) as i32);
+                bounds[3] = bounds[3].max((d.y0.max(d.y1) >> 8) as i32);
                 pieces.push((
                     u32::from(tx.cast_unsigned()) << 16 | u32::from(ty.cast_unsigned()),
                     w,
@@ -356,8 +395,12 @@ impl EdgeTiles {
         }
         let n = u32::try_from(pieces.len()).expect("a draw's edges fit u32");
         let write_bounds = |out: &mut [MaybeUninit<Word>]| {
-            out[1].write(u64::from(bounds[0].to_bits()) | u64::from(bounds[1].to_bits()) << 32);
-            out[2].write(u64::from(bounds[2].to_bits()) | u64::from(bounds[3].to_bits()) << 32);
+            out[1].write(
+                u64::from(bounds[0].cast_unsigned()) | u64::from(bounds[1].cast_unsigned()) << 32,
+            );
+            out[2].write(
+                u64::from(bounds[2].cast_unsigned()) | u64::from(bounds[3].cast_unsigned()) << 32,
+            );
         };
         if n == 0 {
             let mut words = Arc::<[Word]>::new_uninit_slice(HEAD);
@@ -445,12 +488,12 @@ impl EdgeTiles {
         clippy::cast_possible_truncation,
         reason = "each bounds field is exactly one packed f32 lane"
     )]
-    pub fn bounds(&self) -> [f32; 4] {
+    pub fn bounds(&self) -> [i64; 4] {
         [
-            f32::from_bits(self.words[1] as u32),
-            f32::from_bits((self.words[1] >> 32) as u32),
-            f32::from_bits(self.words[2] as u32),
-            f32::from_bits((self.words[2] >> 32) as u32),
+            i64::from((self.words[1] as u32).cast_signed()) << 8,
+            i64::from(((self.words[1] >> 32) as u32).cast_signed()) << 8,
+            i64::from((self.words[2] as u32).cast_signed()) << 8,
+            i64::from(((self.words[2] >> 32) as u32).cast_signed()) << 8,
         ]
     }
 
@@ -493,7 +536,9 @@ impl EdgeTiles {
                 i32::from(t as i16) * TILE_UNITS,
                 i32::from((t >> 16) as i16) * TILE_UNITS,
             ];
-            edges[range].iter().map(move |&q| decode_scalar(origin, q))
+            edges[range]
+                .iter()
+                .map(move |&q| float_edge(decode_scalar(origin, q)))
         })
     }
 
@@ -603,7 +648,7 @@ pub trait EdgeCursor {
     /// Places the reader at edge `i` — the first index a scan reads.
     fn seek(&mut self, i: usize);
     /// Decoded edge `i`: a reader is called with ascending indices only.
-    fn at(&mut self, i: usize) -> Edge;
+    fn at(&mut self, i: usize) -> IntegerEdge;
 }
 
 impl EdgeSource for EdgeTiles {
@@ -625,7 +670,7 @@ impl EdgeCursor for TileCursor<'_> {
         self.pos = i;
     }
 
-    fn at(&mut self, i: usize) -> Edge {
+    fn at(&mut self, i: usize) -> IntegerEdge {
         self.position(i);
         decode_scalar(self.origin, self.edges[i])
     }
@@ -646,8 +691,22 @@ impl EdgeSource for [Edge] {
 impl EdgeCursor for &[Edge] {
     fn seek(&mut self, _: usize) {}
 
-    fn at(&mut self, i: usize) -> Edge {
-        self[i]
+    fn at(&mut self, i: usize) -> IntegerEdge {
+        self[i].into()
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "test-only conversion back to pixels"
+)]
+fn float_edge(e: IntegerEdge) -> Edge {
+    Edge {
+        x0: e.x0 as f32 / 65536.0,
+        y0: e.y0 as f32 / 65536.0,
+        x1: e.x1 as f32 / 65536.0,
+        y1: e.y1 as f32 / 65536.0,
     }
 }
 
@@ -728,7 +787,7 @@ mod tests {
             let (ox, oy, range) = tile_at(&tiles, t);
             for i in range {
                 let mut cursor = tiles.cursor();
-                let e = EdgeCursor::at(&mut cursor, i);
+                let e = float_edge(EdgeCursor::at(&mut cursor, i));
                 assert!((0.0..=127.0).contains(&(e.x0 - ox)));
                 assert!((0.0..=127.0).contains(&(e.y0 - oy)));
                 for rel in [e.x1 - ox, e.y1 - oy] {
@@ -758,7 +817,7 @@ mod tests {
         let (ox, oy, ..) = tile_at(&tiles, 0);
         assert_eq!([ox, oy], [127.0, 0.0]);
         let mut cursor = tiles.cursor();
-        let e = EdgeCursor::at(&mut cursor, 0);
+        let e = float_edge(EdgeCursor::at(&mut cursor, 0));
         assert_eq!(e.x0, 127.0);
         assert!((e.y0 - 5.0).abs() <= 1.0 / 512.0);
         // A corner start belongs to the tile at the corner.
@@ -828,7 +887,10 @@ mod tests {
             x1 = x1.max(e.x0.max(e.x1));
             y1 = y1.max(e.y0.max(e.y1));
         }
-        assert_eq!(tiles.bounds(), [x0, y0, x1, y1]);
+        assert_eq!(
+            tiles.bounds(),
+            [x0, y0, x1, y1].map(|v| IntegerEdge::from(edge(v, v, v, v)).x0)
+        );
     }
 
     /// Many disjoint closed rectangles whose sides each cross two tile
