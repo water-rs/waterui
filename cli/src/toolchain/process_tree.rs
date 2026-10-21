@@ -60,13 +60,8 @@ impl ProcessTree {
 #[cfg(windows)]
 #[derive(Debug)]
 pub struct ProcessTree {
-    job: windows_sys::Win32::Foundation::HANDLE,
+    job: std::os::windows::io::OwnedHandle,
 }
-
-// SAFETY: a job handle is a process-wide kernel object with no thread
-// affinity; a guard's drop may hand it to a waiting thread.
-#[cfg(windows)]
-unsafe impl Send for ProcessTree {}
 
 #[cfg(windows)]
 impl ProcessTree {
@@ -78,16 +73,14 @@ impl ProcessTree {
     /// A new job that kills its members on close, with the process `pid`
     /// assigned to it.
     pub fn adopt(pid: u32) -> io::Result<Self> {
-        use windows_sys::Win32::{
-            Foundation::CloseHandle,
-            System::{
-                JobObjects::{
-                    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-                    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-                    SetInformationJobObject,
-                },
-                Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
+        use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+        use windows_sys::Win32::System::{
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+                SetInformationJobObject,
             },
+            Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
         };
 
         // SAFETY: an unnamed job with default security; the null pointers
@@ -96,18 +89,22 @@ impl ProcessTree {
         if job.is_null() {
             return Err(io::Error::last_os_error());
         }
-        let tree = Self { job };
+        // SAFETY: `job` is a fresh handle nothing else owns; the tree closes
+        // it exactly once, and closing the last handle kills the members.
+        let tree = Self {
+            job: unsafe { OwnedHandle::from_raw_handle(job) },
+        };
         // SAFETY: an all-zero limit block is the documented starting
         // point; only the kill-on-close flag is set below.
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         let size = u32::try_from(std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
             .expect("the limit block is far smaller than u32::MAX bytes");
-        // SAFETY: `job` is the live handle created above and `limits` is
-        // a fully initialised block of the size passed.
+        // SAFETY: the job handle is live and `limits` is a fully
+        // initialised block of the size passed.
         let configured = unsafe {
             SetInformationJobObject(
-                job,
+                tree.job.as_raw_handle(),
                 JobObjectExtendedLimitInformation,
                 (&raw const limits).cast(),
                 size,
@@ -122,13 +119,13 @@ impl ProcessTree {
         if process.is_null() {
             return Err(io::Error::last_os_error());
         }
+        // SAFETY: `process` is a fresh handle nothing else owns.
+        let process = unsafe { OwnedHandle::from_raw_handle(process) };
         // SAFETY: both handles are live.
-        let assigned = unsafe { AssignProcessToJobObject(job, process) };
-        let assign_error = io::Error::last_os_error();
-        // SAFETY: `process` was opened above and is closed exactly once.
-        let _ = unsafe { CloseHandle(process) };
+        let assigned =
+            unsafe { AssignProcessToJobObject(tree.job.as_raw_handle(), process.as_raw_handle()) };
         if assigned == 0 {
-            return Err(assign_error);
+            return Err(io::Error::last_os_error());
         }
         Ok(tree)
     }
@@ -137,23 +134,13 @@ impl ProcessTree {
     /// console process observes, so `graceful` selects nothing here; a
     /// caller that wants a grace period escalates to this call after it.
     pub fn signal(&self, graceful: bool) {
+        use std::os::windows::io::AsRawHandle as _;
         use windows_sys::Win32::System::JobObjects::TerminateJobObject;
 
         if graceful {
             return;
         }
-        // SAFETY: `self.job` is a live job handle owned by this value.
-        let _ = unsafe { TerminateJobObject(self.job, 1) };
-    }
-}
-
-#[cfg(windows)]
-impl Drop for ProcessTree {
-    fn drop(&mut self) {
-        use windows_sys::Win32::Foundation::CloseHandle;
-
-        // SAFETY: the handle was created by `adopt` and is closed exactly
-        // once, here; closing the last handle kills the job's members.
-        let _ = unsafe { CloseHandle(self.job) };
+        // SAFETY: the job handle is live for as long as `self`.
+        let _ = unsafe { TerminateJobObject(self.job.as_raw_handle(), 1) };
     }
 }
