@@ -1,7 +1,8 @@
 //! Reference rasterizer and error metrics for the Cherenkov test suite.
 //!
-//! The oracle is deterministic, `f64`, single-threaded and favours clarity
-//! over speed:
+//! The oracle is deterministic, `f64` and favours clarity over speed. Work
+//! is spread across threads only over independent pixels and rows, so no
+//! result depends on the thread count:
 //!
 //! - [`coverage`] computes the *exact area* of each pixel covered by a shape
 //!   (curves flattened to `1e-4` px), for `NonZero` and `EvenOdd` rules;
