@@ -18,7 +18,13 @@ import tempfile
 
 import pytest
 
-from affected import is_prose, manifest_tables
+from affected import (
+    LINUX_EXCLUDED,
+    is_prose,
+    is_workspace_wide,
+    linux_package_args,
+    manifest_tables,
+)
 
 
 def test_top_level_markdown_is_prose():
@@ -94,6 +100,40 @@ def test_manifest_layout_and_comments_do_not_change_the_result():
 
 def test_an_unparseable_manifest_is_not_a_table_set():
     assert manifest_tables("not = [valid") is None
+
+
+def test_apple_crates_are_dropped_from_linux_package_args():
+    assert LINUX_EXCLUDED == {"waterui-apple", "cocoa-ui"}
+    assert (
+        linux_package_args(["cocoa-ui", "waterui-apple", "waterui-core", "waterui"])
+        == "-p waterui-core -p waterui"
+    )
+    assert linux_package_args(["waterui-apple"]) == ""
+    assert linux_package_args([]) == ""
+
+
+def _members(count):
+    return [f"crate-{i}" for i in range(count)] + sorted(LINUX_EXCLUDED)
+
+
+def test_ninety_percent_of_linux_members_is_workspace_wide():
+    # 96 of 101 Linux members (the two Apple crates are not counted).
+    members = _members(101)
+    assert is_workspace_wide(members[:96], members)
+
+
+def test_a_small_scope_is_not_workspace_wide():
+    members = _members(101)
+    assert not is_workspace_wide(members[:10], members)
+    assert not is_workspace_wide([], members)
+
+
+def test_the_threshold_counts_only_linux_members():
+    members = _members(100)
+    # 90 of 100 Linux members is exactly the share; 89 is below it. The
+    # Apple crates add nothing to either side.
+    assert is_workspace_wide(members[:90], members)
+    assert not is_workspace_wide(members[:89] + sorted(LINUX_EXCLUDED), members)
 
 
 # ---------------------------------------------------------------------------
