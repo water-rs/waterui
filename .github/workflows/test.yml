@@ -189,21 +189,20 @@ jobs:
       # must not wait for the nightly to be noticed.
       #
       # The fast gate sweeps only when the affected scope is `workspace` —
-      # a change under no package's directory. A scoped diff gets check +
-      # clippy on the determinator's set (changed crates plus every reverse
-      # dependency that could rebuild differently); a comment-only diff
+      # a change under no package's directory. A scoped diff gets clippy on
+      # the determinator's set (changed crates plus every reverse dependency
+      # that could rebuild differently); a comment-only diff
       # narrows to rustdoc + clippy on the owning crates alone.
       - name: Clippy (workspace)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true'
         # waterui-apple / cocoa-ui compile only on Apple hosts; the macOS legs carry them.
         run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
-      - name: Check and clippy (affected packages)
+      - name: Clippy (affected packages)
         if: inputs.full == false && inputs['comment-only'] == false && inputs.affected != 'workspace' && steps.writer.outputs.sweep != 'true' && steps.linux-scope.outputs.args != ''
         env:
           LINUX_ARGS: ${{ steps.linux-scope.outputs.args }}
         run: |
           read -ra args <<< "${LINUX_ARGS}"
-          cargo check --locked --profile ci-check "${args[@]}" --all-targets --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
           cargo clippy --locked --profile ci-check "${args[@]}" --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       - name: Clippy and rustdoc (comment-only owners)
         if: inputs.full == false && inputs['comment-only'] == true && steps.linux-scope.outputs.args != ''
