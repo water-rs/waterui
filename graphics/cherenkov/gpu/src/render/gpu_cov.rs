@@ -45,7 +45,7 @@ pub const ARGS_NORMAL: u32 = 36;
 const WORKGROUP: u32 = 64;
 const CLASSIFY_WIDTH: u32 = 128;
 /// Decision R2's hard per-frame cap on the coverage buffers' total
-/// size: a bound over it is an explicit `Unsupported`, never a retry.
+/// size; a device whose binding limit is lower caps it further.
 const GPU_COV_MAX_BYTES: u64 = 256 << 20;
 
 /// u32 words of one geometry record in the arena: the device bounds
@@ -197,6 +197,13 @@ pub struct GpuCoverage {
     budget: u64,
     /// `max_storage_buffer_binding_size.min(max_buffer_size)` in words.
     limit_words: u64,
+    /// The per-frame cap on the bound's total size: decision R2's
+    /// `GPU_COV_MAX_BYTES`, lowered to the device's storage-binding limit.
+    /// Every buffer the bound sizes is at most the bound's total, so a
+    /// bound within the cap passes `record_prologue`'s per-buffer limit
+    /// check; a bound over it is an explicit `Unsupported` at `draw`,
+    /// never a retry.
+    max_bytes: u64,
     /// An unrecorded compaction's copy plan. Held until a submit lands
     /// it — a failed or retried commit re-records it rather than
     /// pointing entries at content that never moved.
@@ -237,7 +244,13 @@ pub struct GpuCoverage {
 
 impl GpuCoverage {
     pub fn new(device: &wgpu::Device, budget: u64) -> Self {
-        let limits = device.limits();
+        Self::with_limits(&device.limits(), budget)
+    }
+
+    fn with_limits(limits: &wgpu::Limits, budget: u64) -> Self {
+        let limit = limits
+            .max_storage_buffer_binding_size
+            .min(limits.max_buffer_size);
         Self {
             paths: Vec::new(),
             entries: FxHashMap::default(),
@@ -246,10 +259,8 @@ impl GpuCoverage {
             live_words: 0,
             undrawn_bytes: 0,
             budget,
-            limit_words: limits
-                .max_storage_buffer_binding_size
-                .min(limits.max_buffer_size)
-                / 4,
+            limit_words: limit / 4,
+            max_bytes: limit.min(GPU_COV_MAX_BYTES),
             compaction: None,
             elements: Vec::new(),
             element_sources: Vec::new(),
@@ -472,7 +483,7 @@ impl GpuCoverage {
         let next_tokens = fragment_total.min(cov_total) * 6;
         self.bound_bytes += path_bytes
             + u64::from(next_groups - previous_groups + next_tokens - previous_tokens) * 4;
-        if self.bound_bytes + 18 * 1024 + 128 + 48 > GPU_COV_MAX_BYTES {
+        if self.bound_bytes + 18 * 1024 + 128 + 48 > self.max_bytes {
             return Err(RenderError::Unsupported(
                 "GPU coverage bound exceeds the per-frame cap",
             ));
@@ -1290,7 +1301,7 @@ mod tests {
                 &GpuDraw::new(1, 0, Affine::IDENTITY, large_path, (4096, 4096)),
             )
             .expect("sparse 4096-square capacity");
-        assert!(frame.bound_bytes < GPU_COV_MAX_BYTES);
+        assert!(frame.bound_bytes < frame.max_bytes);
         let huge_path = rectangle(1_000_000);
         let before = frame.paths.len();
         assert!(
@@ -1302,6 +1313,53 @@ mod tests {
                 .is_err()
         );
         assert_eq!(frame.paths.len(), before, "reject before appending a path");
+    }
+
+    #[test]
+    fn draw_refuses_a_bound_over_the_device_binding_limit() {
+        let rectangle = |size: u32| {
+            let edge = f64::from(size);
+            crate::render::path::prepare_gpu(
+                &[
+                    PathEl::MoveTo(Point::new(0.0, 0.0)),
+                    PathEl::LineTo(Point::new(edge, 0.0)),
+                    PathEl::LineTo(Point::new(edge, edge)),
+                    PathEl::LineTo(Point::new(0.0, edge)),
+                    PathEl::ClosePath,
+                ],
+                Affine::IDENTITY,
+                (edge, edge),
+            )
+        };
+        let Some(device) = device() else {
+            return;
+        };
+        let mut probe = GpuCoverage::new(&device, u64::MAX);
+        probe.begin_frame();
+        probe
+            .draw(
+                &device,
+                &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096)),
+            )
+            .expect("fits the device's own limits");
+        // A device whose binding limit sits below this draw's bound, far
+        // under the old fixed 256 MiB cap.
+        let small = wgpu::Limits {
+            max_storage_buffer_binding_size: probe.bound_bytes / 2,
+            ..wgpu::Limits::default()
+        };
+        let mut frame = GpuCoverage::with_limits(&small, u64::MAX);
+        frame.begin_frame();
+        assert!(
+            frame
+                .draw(
+                    &device,
+                    &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096)),
+                )
+                .is_err(),
+            "draw must refuse what record_prologue would reject"
+        );
+        assert_eq!(frame.paths.len(), 0, "reject before appending a path");
     }
 
     fn device() -> Option<wgpu::Device> {
