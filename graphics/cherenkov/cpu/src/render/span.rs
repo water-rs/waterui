@@ -66,6 +66,26 @@ where
     )
 }
 
+/// `f32::clamp` lane-wise against span-constant bounds: each strict
+/// comparison falls through to `v`, so a NaN lane survives the way the
+/// scalar clamp returns it.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+pub(super) fn clamp_span<S, V>(simd: S, v: V, lo: f32, hi: f32) -> V
+where
+    S: Simd,
+    V: SimdFloat<S, Element = f32>,
+    V::Mask: Select<V>,
+{
+    let lo = V::splat(simd, lo);
+    let hi = V::splat(simd, hi);
+    let v = v.simd_lt(lo).select(lo, v);
+    v.simd_gt(hi).select(hi, v)
+}
+
 /// `extend_t` lane-wise: the extended parameter and the mask of lanes
 /// the domain covers — every lane for `Pad`/`Repeat`/`Reflect`, the
 /// `[0, 1]` lanes for `Extend::None`.
@@ -74,7 +94,7 @@ where
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn extend_t_span<S, V>(simd: S, t: V, extend: Extend) -> (V, V::Mask)
+pub(super) fn extend_t_span<S, V>(simd: S, t: V, extend: Extend) -> (V, V::Mask)
 where
     S: Simd,
     V: SimdFloat<S, Element = f32>,
@@ -84,12 +104,7 @@ where
     let one = V::splat(simd, 1.0);
     let all = zero.simd_eq(zero);
     match extend {
-        // f32::clamp: a strict comparison falls through to `t`, so NaN
-        // and the zero sign survive.
-        Extend::Pad => {
-            let t = t.simd_lt(zero).select(zero, t);
-            (t.simd_gt(one).select(one, t), all)
-        }
+        Extend::Pad => (clamp_span(simd, t, 0.0, 1.0), all),
         Extend::Repeat => (t - t.floor(), all),
         // `t − 2·floor(t/2)`: the product is exact, so the one rounding
         // is the subtraction's — what a fused multiply-add would give.
