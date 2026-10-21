@@ -9,13 +9,13 @@
 use std::borrow::Cow;
 use std::path::{Path as FsPath, PathBuf};
 
-use cherenkov::kurbo::{BezPath, PathEl, Stroke};
+use cherenkov::kurbo::{Affine, BezPath, PathEl, Stroke};
 use cherenkov::{
     Draw as _, Engine, FillRule, Fixed, FrameTime, Offscreen, OffscreenFormat, PathRef, Semantic,
     Shape, WorkingColor,
 };
 use cherenkov_oracle::image::F32Image;
-use cherenkov_scene::{Draw as SceneDraw, Item, Paint, Scene, Shape as SceneShape};
+use cherenkov_scene::{Draw as SceneDraw, Item, Layer, Paint, Scene, Shape as SceneShape};
 
 use super::CoverageRoute;
 use crate::{Gpu, GpuConfig};
@@ -27,10 +27,12 @@ const ROUTES: [CoverageRoute; 3] = [
     CoverageRoute::Automatic,
 ];
 
-/// The large-path scenes of #2546: a road network of 1,920 stroke-outline
+/// The large-path scenes of #2546 — a road network of 1,920 stroke-outline
 /// crossings, a dense self-overlapping ring field under both fill rules,
-/// and slivers whose device bounds are the whole surface, in P3-only and
-/// above-SDR-white colours.
+/// and slivers whose device bounds are the whole surface — and the stroke
+/// scenes of #2544: every join and cap kind, dashes, degenerate curves,
+/// hairlines and a skewed root transform, each one stroked path above the
+/// stroke candidate floor. All in P3-only and above-SDR-white colours.
 const SCENES: &[&str] = &[
     "stroke-road-network-p3",
     "stroke-road-network-hdr",
@@ -40,6 +42,34 @@ const SCENES: &[&str] = &[
     "path-dense-overlap-evenodd-hdr",
     "path-sparse-bounds-nonzero-p3",
     "path-sparse-bounds-evenodd-hdr",
+    "stroke-gpu-joins-miter-p3",
+    "stroke-gpu-joins-miter-hdr",
+    "stroke-gpu-joins-bevel-p3",
+    "stroke-gpu-joins-bevel-hdr",
+    "stroke-gpu-joins-round-p3",
+    "stroke-gpu-joins-round-hdr",
+    "stroke-gpu-joins-miter-lim15-p3",
+    "stroke-gpu-joins-miter-lim15-hdr",
+    "stroke-gpu-caps-square-round-p3",
+    "stroke-gpu-caps-square-round-hdr",
+    "stroke-gpu-caps-round-butt-p3",
+    "stroke-gpu-caps-round-butt-hdr",
+    "stroke-gpu-caps-butt-square-p3",
+    "stroke-gpu-caps-butt-square-hdr",
+    "stroke-gpu-dash-p3",
+    "stroke-gpu-dash-hdr",
+    "stroke-gpu-dash-zero-p3",
+    "stroke-gpu-dash-zero-hdr",
+    "stroke-gpu-dash-ties-p3",
+    "stroke-gpu-dash-ties-hdr",
+    "stroke-gpu-dash-dense-p3",
+    "stroke-gpu-dash-dense-hdr",
+    "stroke-gpu-curves-p3",
+    "stroke-gpu-curves-hdr",
+    "stroke-gpu-hairline-w025-p3",
+    "stroke-gpu-hairline-w005-hdr",
+    "stroke-gpu-transformed-p3",
+    "stroke-gpu-transformed-hdr",
 ];
 
 fn corpus() -> PathBuf {
@@ -73,6 +103,24 @@ fn single_draw(scene: &Scene) -> &SceneDraw {
         panic!("a large-path scene is one draw, not {:?}", scene.root.items);
     };
     draw
+}
+
+/// The scene's root-layer transform, which the engine's root layer takes.
+/// A large-path scene's root carries a transform and its one draw and
+/// nothing else; any other root-layer state is a scene this harness does
+/// not describe.
+fn root_transform(scene: &Scene) -> Affine {
+    let rest = Layer {
+        transform: Affine::IDENTITY,
+        items: Vec::new(),
+        ..scene.root.clone()
+    };
+    assert_eq!(
+        rest,
+        Layer::default(),
+        "a large-path scene's root layer carries only a transform and its draw"
+    );
+    scene.root.transform
 }
 
 /// The draw's path and its paint colour as the engine takes them.
@@ -145,6 +193,7 @@ fn render_path(
         .expect("offscreen surface");
     surface.clear_color(clear);
     surface.update(|tx| {
+        tx[surface.root()].transform(root_transform(scene));
         tx[surface.root()].content(surface.record(|c| match stroke {
             None => c.fill(Fixed(shape), ink),
             Some(stroke) => c.stroke(Fixed(shape), stroke.clone(), ink),
@@ -294,6 +343,26 @@ fn check_polygon_coverage(scene: &Scene, name: &str) {
     }
 }
 
+/// One scene's oracle-relative metrics on each of [`ROUTES`].
+fn route_metrics(name: &str) -> [cherenkov_oracle::Metrics; 3] {
+    let scene = Scene::load(&corpus().join(name)).expect("load corpus scene");
+    let reference = cherenkov_oracle::Renderer::new(
+        usize::try_from(scene.width).expect("scene width"),
+        usize::try_from(scene.height).expect("scene height"),
+    )
+    .render(&scene, &corpus().join(name))
+    .expect("oracle render");
+    let images = ROUTES.map(|route| render(&scene, route));
+    let (difference, _) = cherenkov_oracle::metrics::compare(&images[0], &images[1]);
+    tracing::info!(
+        scene = name,
+        flip_mean = difference.flip_mean,
+        max_local_error = difference.max_local_error,
+        "painted route difference (diagnostic)"
+    );
+    images.map(|image| cherenkov_oracle::metrics::compare(&reference, &image).0)
+}
+
 #[test]
 fn gpu_paths_satisfy_polygon_and_scene_oracles() {
     // Section 4.3 thresholds 1–3 against the oracle: the absolute ceilings
@@ -308,25 +377,23 @@ fn gpu_paths_satisfy_polygon_and_scene_oracles() {
     let mut failures = Vec::new();
     // [route][scene] oracle-relative metrics, for threshold 1.
     let mut oracle_metrics: [Vec<f64>; 3] = std::array::from_fn(|_| Vec::new());
+    // Every scene's per-route oracle metrics, written as TOML to the file
+    // `CHERENKOV_ROUTE_METRICS` names: the record a route change is
+    // compared against.
+    let mut record = toml::Table::new();
     for name in SCENES {
-        let scene = Scene::load(&corpus().join(name)).expect("load corpus scene");
-        let reference = cherenkov_oracle::Renderer::new(
-            usize::try_from(scene.width).expect("scene width"),
-            usize::try_from(scene.height).expect("scene height"),
-        )
-        .render(&scene, &corpus().join(name))
-        .expect("oracle render");
-        let images = ROUTES.map(|route| render(&scene, route));
-        let (difference, _) = cherenkov_oracle::metrics::compare(&images[0], &images[1]);
-        tracing::info!(
-            scene = name,
-            flip_mean = difference.flip_mean,
-            max_local_error = difference.max_local_error,
-            "painted route difference (diagnostic)"
-        );
-        for (i, (route, image)) in ROUTES.iter().zip(images).enumerate() {
-            let (metrics, _) = cherenkov_oracle::metrics::compare(&reference, &image);
+        let measured = route_metrics(name);
+        let mut routes = toml::Table::new();
+        for (i, (route, metrics)) in ROUTES.iter().zip(measured).enumerate() {
             oracle_metrics[i].push(metrics.flip_mean);
+            routes.insert(
+                format!("{route:?}"),
+                toml::Value::Table(toml::Table::from_iter([
+                    ("flip_mean".to_owned(), metrics.flip_mean.into()),
+                    ("flip_max".to_owned(), metrics.flip_max.into()),
+                    ("max_local_error".to_owned(), metrics.max_local_error.into()),
+                ])),
+            );
             if metrics.flip_mean > FLIP_MEAN_CEIL
                 || metrics.flip_max > FLIP_MAX_CEIL
                 || metrics.max_local_error > MAX_LOCAL_CEIL
@@ -337,6 +404,14 @@ fn gpu_paths_satisfy_polygon_and_scene_oracles() {
                 ));
             }
         }
+        record.insert((*name).to_owned(), toml::Value::Table(routes));
+    }
+    if let Some(path) = std::env::var_os("CHERENKOV_ROUTE_METRICS") {
+        std::fs::write(
+            path,
+            toml::to_string(&record).expect("serialize the route metrics"),
+        )
+        .expect("write the route metrics");
     }
     for name in [
         "stroke-road-network-p3",

@@ -31,7 +31,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-/// The scenes `generate-corpus` writes for #2546.
+/// The scenes `generate-corpus` writes for #2546, and the stroke scenes
+/// of #2544.
 const SCENES: &[&str] = &[
     "stroke-road-network-p3",
     "stroke-road-network-hdr",
@@ -41,6 +42,34 @@ const SCENES: &[&str] = &[
     "path-dense-overlap-evenodd-hdr",
     "path-sparse-bounds-nonzero-p3",
     "path-sparse-bounds-evenodd-hdr",
+    "stroke-gpu-joins-miter-p3",
+    "stroke-gpu-joins-miter-hdr",
+    "stroke-gpu-joins-bevel-p3",
+    "stroke-gpu-joins-bevel-hdr",
+    "stroke-gpu-joins-round-p3",
+    "stroke-gpu-joins-round-hdr",
+    "stroke-gpu-joins-miter-lim15-p3",
+    "stroke-gpu-joins-miter-lim15-hdr",
+    "stroke-gpu-caps-square-round-p3",
+    "stroke-gpu-caps-square-round-hdr",
+    "stroke-gpu-caps-round-butt-p3",
+    "stroke-gpu-caps-round-butt-hdr",
+    "stroke-gpu-caps-butt-square-p3",
+    "stroke-gpu-caps-butt-square-hdr",
+    "stroke-gpu-dash-p3",
+    "stroke-gpu-dash-hdr",
+    "stroke-gpu-dash-zero-p3",
+    "stroke-gpu-dash-zero-hdr",
+    "stroke-gpu-dash-ties-p3",
+    "stroke-gpu-dash-ties-hdr",
+    "stroke-gpu-dash-dense-p3",
+    "stroke-gpu-dash-dense-hdr",
+    "stroke-gpu-curves-p3",
+    "stroke-gpu-curves-hdr",
+    "stroke-gpu-hairline-w025-p3",
+    "stroke-gpu-hairline-w005-hdr",
+    "stroke-gpu-transformed-p3",
+    "stroke-gpu-transformed-hdr",
 ];
 
 /// Section 4.3 threshold 2's ceilings, tightened to section 4.2's measured
