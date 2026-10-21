@@ -178,7 +178,7 @@ pub struct EdgeBins {
     /// Exact inputs that determine edge membership, independent of paint and x.
     grid: Option<(usize, usize)>,
     origins: Vec<i64>,
-    edge_rows: Vec<[i64; 2]>,
+    edge_rows: Vec<[u32; 2]>,
 }
 
 impl EdgeBins {
@@ -229,10 +229,7 @@ impl EdgeBins {
             self.edge_rows[start..end]
                 .iter()
                 .enumerate()
-                .all(|(i, rows)| {
-                    let edge = cursor.at(i);
-                    *rows == [edge.y0, edge.y1]
-                })
+                .all(|(i, rows)| *rows == cursor.row_key(i))
         })
     }
 
@@ -273,7 +270,7 @@ impl EdgeBins {
         let workers = rayon::current_thread_index().map_or(1, |_| rayon::current_num_threads());
         let chunk_len = edges_total.div_ceil(workers).max(1);
         let span_off = &self.span_off;
-        let fill_chunk = |chunk: usize, spans: &mut [(usize, usize)], rows: &mut [[i64; 2]]| {
+        let fill_chunk = |chunk: usize, spans: &mut [(usize, usize)], rows: &mut [[u32; 2]]| {
             let start = chunk * chunk_len;
             let first = span_off.partition_point(|&offset| offset <= start) - 1;
             let mut skip = start - span_off[first];
@@ -288,7 +285,7 @@ impl EdgeBins {
                     .zip(skip..skip + count)
                 {
                     let edge = cursor.at(i);
-                    *row = [edge.y0, edge.y1];
+                    *row = cursor.row_key(i);
                     *span = edge_bands(&edge, group.oy, h, bands);
                 }
                 written += count;
@@ -397,7 +394,7 @@ impl EdgeBins {
             + self.span_off.capacity())
             * size_of::<usize>()
             + self.edge_spans.capacity() * size_of::<(usize, usize)>()
-            + self.edge_rows.capacity() * size_of::<[i64; 2]>()
+            + self.edge_rows.capacity() * size_of::<[u32; 2]>()
             + self.origins.capacity() * size_of::<u64>()) as u64
     }
 }

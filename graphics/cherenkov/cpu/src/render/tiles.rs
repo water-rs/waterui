@@ -659,6 +659,8 @@ pub trait EdgeCursor {
     fn seek(&mut self, i: usize);
     /// Decoded edge `i`: a reader is called with ascending indices only.
     fn at(&mut self, i: usize) -> IntegerEdge;
+    /// Exact source-coordinate identity, independent of placement.
+    fn row_key(&mut self, i: usize) -> [u32; 2];
 }
 
 impl EdgeSource for EdgeTiles {
@@ -694,6 +696,18 @@ impl EdgeSource for EdgeTiles {
 }
 
 impl EdgeCursor for TileCursor<'_> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "tile coordinates fit i32 before placement"
+    )]
+    fn row_key(&mut self, i: usize) -> [u32; 2] {
+        let edge = self.at(i);
+        [
+            ((edge.y0 >> 8) as i32).cast_unsigned(),
+            ((edge.y1 >> 8) as i32).cast_unsigned(),
+        ]
+    }
+
     fn seek(&mut self, i: usize) {
         self.next = self.tiles.partition_point(|&w| w >> 32 <= i as u64);
         self.end = 0;
@@ -719,6 +733,10 @@ impl EdgeSource for [Edge] {
 }
 
 impl EdgeCursor for &[Edge] {
+    fn row_key(&mut self, i: usize) -> [u32; 2] {
+        [self[i].y0.to_bits(), self[i].y1.to_bits()]
+    }
+
     fn seek(&mut self, _: usize) {}
 
     fn at(&mut self, i: usize) -> IntegerEdge {
