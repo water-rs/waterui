@@ -88,23 +88,7 @@ pub enum PaintData {
     /// A linear gradient.
     Linear(LinearPaint),
     /// A two-point radial gradient.
-    Radial {
-        /// Device-to-content transform.
-        inv: [f32; 6],
-        /// Centres: `x0, y0, x1, y1` in content space.
-        centres: [f32; 4],
-        /// Radii: `r0, r1`.
-        radii: [f32; 2],
-        /// The circles are identical: the parameter is `-∞` inside `r0` and
-        /// `+∞` outside.
-        identical: bool,
-        /// Sorted stops.
-        stops: std::sync::Arc<[Stop]>,
-        /// The continuation mode.
-        extend: Extend,
-        /// The interpolation space.
-        interpolation: Interpolation,
-    },
+    Radial(RadialPaint),
 }
 
 /// A [`PaintData::Linear`] payload: the resolved parameters the
@@ -116,6 +100,28 @@ pub struct LinearPaint {
     /// The projection's span constants; `None` for a degenerate
     /// gradient (`len2 == 0.0`), whose parameter is fixed at 0.
     pub project: Option<Project>,
+    /// Sorted stops.
+    pub stops: std::sync::Arc<[Stop]>,
+    /// The continuation mode.
+    pub extend: Extend,
+    /// The interpolation space.
+    pub interpolation: Interpolation,
+}
+
+/// A [`PaintData::Radial`] payload: the resolved parameters the
+/// evaluators share, with the identical-circles decision made once at
+/// lowering.
+#[derive(Clone, Debug)]
+pub struct RadialPaint {
+    /// Device-to-content transform.
+    pub inv: [f32; 6],
+    /// Centres: `x0, y0, x1, y1` in content space.
+    pub centres: [f32; 4],
+    /// Radii: `r0, r1`.
+    pub radii: [f32; 2],
+    /// The circles are identical: the parameter is `-∞` inside `r0` and
+    /// `+∞` outside.
+    pub identical: bool,
     /// Sorted stops.
     pub stops: std::sync::Arc<[Stop]>,
     /// The continuation mode.
@@ -347,7 +353,7 @@ pub fn paint_data(
             if identical && matches!(g.extend, Extend::Repeat | Extend::Reflect) {
                 return Err(RenderError::IdenticalRadialCircles(g.extend));
             }
-            PaintData::Radial {
+            PaintData::Radial(RadialPaint {
                 inv: affine_f32(inv),
                 centres: [
                     f32_f64(g.start_center.x),
@@ -360,7 +366,7 @@ pub fn paint_data(
                 stops: stops(&g.stops, g.interpolation),
                 extend: g.extend,
                 interpolation: g.interpolation,
-            }
+            })
         }
         _ => return extra_paint(paint, inv, images),
     })
@@ -513,6 +519,7 @@ fn eval_stops(stops: &[Stop], t: f32, interpolation: Interpolation) -> [f32; 4] 
 /// space: the largest root whose radius `r0 + t·dr` is non-negative, `NaN`
 /// when there is none. Identical circles give `-∞` on and inside the circle
 /// and `+∞` outside, as the oracle's `radial_t` does.
+#[cfg(test)]
 #[allow(clippy::many_single_char_names)] // quadratic notation mirrors the spec
 #[expect(
     clippy::inline_always,
@@ -586,9 +593,8 @@ impl PaintData {
             Self::Mesh(mesh) => *mesh = mesh.transformed(transform),
             Self::Image(image) => image.inv = affine_f32(image.mapping * transform),
             Self::Linear(linear) => linear.inv = affine_f32(transform),
-            Self::Radial { inv, .. } | Self::Sweep { inv, .. } => {
-                *inv = affine_f32(transform);
-            }
+            Self::Radial(radial) => radial.inv = affine_f32(transform),
+            Self::Sweep { inv, .. } => *inv = affine_f32(transform),
         }
         paint
     }
@@ -672,23 +678,7 @@ impl PaintData {
             }),
 
             Self::Linear(p) => output.linear(self, p),
-            Self::Radial {
-                inv,
-                centres,
-                radii,
-                identical,
-                stops,
-                extend,
-                interpolation,
-            } => output.sample(|dx, dy| {
-                let (px, py) = apply(*inv, dx, dy);
-                let t = radial_t(px, py, *centres, *radii, *identical);
-                if t.is_nan() {
-                    [0.0; 4]
-                } else {
-                    extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
-                }
-            }),
+            Self::Radial(p) => output.radial(self, p),
         }
     }
 
@@ -725,6 +715,9 @@ trait PaintOutput: Sized {
     /// reached directly it is the leaf itself and the walk finds no
     /// links.
     fn linear(self, outer: &PaintData, params: &LinearPaint) -> Self::Output;
+
+    /// The radial-gradient leaf, `outer` as in [`Self::linear`].
+    fn radial(self, outer: &PaintData, params: &RadialPaint) -> Self::Output;
 }
 
 /// The linear leaf's scalar evaluation: `outer`'s transform chain, then
@@ -746,6 +739,32 @@ fn linear_at(outer: &PaintData, params: &LinearPaint, mut x: f32, mut y: f32) ->
     let t = params.project.map_or(0.0, |p| {
         (py - p.sy).mul_add(p.ddy, (px - p.sx) * p.ddx) / p.len2
     });
+    extend_t(t, params.extend).map_or([0.0; 4], |t| {
+        eval_stops(&params.stops, t, params.interpolation)
+    })
+}
+
+/// The radial leaf's scalar evaluation: `outer`'s transform chain, then
+/// `params`' map, `radial_t`, extend and stops — the same expression the
+/// span kernel evaluates per lane, including the no-solution `NaN`
+/// mapping to transparent before extension.
+#[cfg(test)]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+fn radial_at(outer: &PaintData, params: &RadialPaint, mut x: f32, mut y: f32) -> [f32; 4] {
+    let mut link = outer;
+    while let PaintData::Transformed(inner) = link {
+        (x, y) = apply(inner.inverse_f32, x, y);
+        link = &inner.paint;
+    }
+    let (px, py) = apply(params.inv, x, y);
+    let t = radial_t(px, py, params.centres, params.radii, params.identical);
+    if t.is_nan() {
+        return [0.0; 4];
+    }
     extend_t(t, params.extend).map_or([0.0; 4], |t| {
         eval_stops(&params.stops, t, params.interpolation)
     })
@@ -796,6 +815,16 @@ impl<O: PaintOutput> PaintOutput for TransformedOutput<'_, O> {
     fn linear(self, _outer: &PaintData, params: &LinearPaint) -> Self::Output {
         self.output.linear(self.paint, params)
     }
+
+    /// As [`Self::linear`].
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn radial(self, _outer: &PaintData, params: &RadialPaint) -> Self::Output {
+        self.output.radial(self.paint, params)
+    }
 }
 
 #[cfg(test)]
@@ -833,6 +862,15 @@ impl PaintOutput for PixelCenter {
     #[inline(always)]
     fn linear(self, outer: &PaintData, params: &LinearPaint) -> Self::Output {
         linear_at(outer, params, self.dx, self.dy)
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn radial(self, outer: &PaintData, params: &RadialPaint) -> Self::Output {
+        radial_at(outer, params, self.dx, self.dy)
     }
 }
 
@@ -908,6 +946,15 @@ impl<'a, S: Simd> PaintOutput for PixelSpan<'a, S> {
     #[inline(always)]
     fn linear(self, outer: &PaintData, params: &LinearPaint) -> Self::Output {
         super::gradient::linear_span(self.simd, outer, params, self.x0, self.py, self.out)
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn radial(self, outer: &PaintData, params: &RadialPaint) -> Self::Output {
+        super::gradient::radial_span(self.simd, outer, params, self.x0, self.py, self.out)
     }
 }
 
@@ -1038,6 +1085,103 @@ mod tests {
         cases
     }
 
+    /// A two-point radial with moving centres — `b` and `c` vary per
+    /// lane and the row crosses the cone's no-solution region.
+    fn radial() -> RadialGradient {
+        RadialGradient {
+            start_center: (30.0, 13.5).into(),
+            start_radius: 12.0,
+            end_center: (150.0, 13.5).into(),
+            end_radius: 70.0,
+            stops: stops(),
+            extend: Extend::Pad,
+            interpolation: Interpolation::Working,
+        }
+    }
+
+    /// A radial whose end circle contains the start: `a < 0`, and at
+    /// `px = ±∞` the quadratic's roots split into one infinite and one
+    /// NaN root.
+    fn radial_contained() -> RadialGradient {
+        RadialGradient {
+            start_center: (30.0, 13.5).into(),
+            start_radius: 5.0,
+            end_center: (40.0, 13.5).into(),
+            end_radius: 70.0,
+            stops: stops(),
+            extend: Extend::Pad,
+            interpolation: Interpolation::Working,
+        }
+    }
+
+    /// The radial-gradient matrix the span kernel must match lane for
+    /// lane: every extend mode and interpolation space, the identical-
+    /// circles hard edge, the degenerate `|a| < 1e-12` linear
+    /// fallback, stop lists shared with `linear_cases`, and inverse
+    /// maps carrying the parameter to `±∞` and `NaN` mid-span.
+    fn radial_cases() -> Vec<PaintData> {
+        let lower =
+            |paint: &Paint, inv: Affine| kernels::paint(paint, inv, []).expect("test paints lower");
+        let mut cases = Vec::new();
+        for extend in [Extend::Pad, Extend::Repeat, Extend::Reflect, Extend::None] {
+            for interpolation in [Interpolation::Working, Interpolation::SrgbEncoded] {
+                let mut gradient = radial();
+                gradient.extend = extend;
+                gradient.interpolation = interpolation;
+                cases.push(lower(&Paint::Radial(gradient), Affine::IDENTITY));
+            }
+            // Identical circles: −∞ inside the circle, +∞ outside —
+            // Repeat and Reflect fail at lowering, so only Pad and
+            // None reach the kernel.
+            for edge in [Extend::Pad, Extend::None] {
+                let mut identical = radial();
+                identical.end_center = identical.start_center;
+                identical.end_radius = identical.start_radius;
+                identical.extend = edge;
+                cases.push(lower(&Paint::Radial(identical), Affine::IDENTITY));
+            }
+            // `dcx² + dcy² == dr²`: the quadratic degenerates to the
+            // `-c / b` linear solve.
+            let mut degenerate = radial();
+            degenerate.start_center = (0.0, 0.0).into();
+            degenerate.start_radius = 0.0;
+            degenerate.end_center = (100.0, 0.0).into();
+            degenerate.end_radius = 100.0;
+            degenerate.extend = extend;
+            cases.push(lower(&Paint::Radial(degenerate), Affine::IDENTITY));
+        }
+        // A `Transformed` chain over a radial gradient.
+        cases.push(lower(
+            &Paint::Transformed(TransformedPaint::new(
+                Paint::Radial(radial()),
+                Affine::translate((4.0, -2.0)) * Affine::rotate(0.2),
+            )),
+            Affine::IDENTITY,
+        ));
+        // X-only inverse scales carrying `cx` to finite overflow and
+        // `±∞` mid-span — `b` and `c` overflow per lane, mixing
+        // solvable, unsolvable and infinite-parameter lanes inside one
+        // block, over both circle-containment orders. `1e18`/`1e19`
+        // overflow `4a·(-c)` against a finite `c` — an unfused level's
+        // `a*b + c` would read `NaN` where scalar's fused `fma` reads
+        // `+inf`, so these cases pin the kernel's `fused_mul_add`
+        // contract; `-1e38` on the containing geometry splits the
+        // roots into one `NaN` and one `+∞`, the `max`/`min` NaN case.
+        for scale in [1e18, 1e19, 1e37, 1e38, -1e38] {
+            for base in [radial(), radial_contained()] {
+                for extend in [Extend::Pad, Extend::Repeat, Extend::Reflect, Extend::None] {
+                    let mut gradient = base.clone();
+                    gradient.extend = extend;
+                    cases.push(lower(
+                        &Paint::Radial(gradient),
+                        Affine::scale_non_uniform(scale, 1.0),
+                    ));
+                }
+            }
+        }
+        cases
+    }
+
     /// Every paint kind the span table covers, lowered through the real
     /// `paint_data`/`CpuImage::decode` path a bench uses.
     fn each_kind() -> Vec<PaintData> {
@@ -1132,7 +1276,11 @@ mod tests {
                 }
             }
         }
-        for paint in each_kind().into_iter().chain(linear_cases()) {
+        for paint in each_kind()
+            .into_iter()
+            .chain(linear_cases())
+            .chain(radial_cases())
+        {
             fearless_simd::dispatch!(crate::Level::new(), simd => check(simd, &paint));
             check(fearless_simd::Fallback::new(), &paint);
         }
@@ -1162,7 +1310,11 @@ mod tests {
                 }
             }
         }
-        for paint in each_kind().into_iter().chain(linear_cases()) {
+        for paint in each_kind()
+            .into_iter()
+            .chain(linear_cases())
+            .chain(radial_cases())
+        {
             for x0 in 0..=7usize {
                 for len in 0..=67usize {
                     fearless_simd::dispatch!(crate::Level::new(), simd => check(

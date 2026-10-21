@@ -26,6 +26,7 @@ pub mod present;
 mod projective;
 mod raster;
 mod shadow;
+mod span;
 mod tiles;
 
 // The `testing` feature's surface: the span kernels and the types their
