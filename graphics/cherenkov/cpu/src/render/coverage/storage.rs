@@ -65,17 +65,6 @@ impl<T: Copy> Table<T> {
         }
         self.len = len;
     }
-
-    pub(super) fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) {
-        let mut written = 0;
-        for i in 0..self.len {
-            if keep(&self[i]) {
-                self[written] = self[i];
-                written += 1;
-            }
-        }
-        self.len = written;
-    }
 }
 
 impl<T: Copy> Deref for Table<T> {

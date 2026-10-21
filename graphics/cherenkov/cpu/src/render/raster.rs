@@ -1,6 +1,6 @@
 //! Banded rendering from sparse, winding-resolved coverage runs.
 
-use super::coverage::{Compiler, Overlap, Run, Source};
+use super::coverage::{Compiler, Run, Source};
 use arrayvec::ArrayVec;
 use half::slice::HalfFloatSliceExt;
 use rayon::prelude::*;
@@ -2225,10 +2225,8 @@ fn run<S: Simd>(
                 edges,
                 offset,
                 bbox,
-                rule,
                 paint,
                 clip,
-                overlap,
             } => match mode {
                 EdgeSel::Band(b) => band.draw(
                     simd,
@@ -2236,8 +2234,6 @@ fn run<S: Simd>(
                     stack,
                     (edges, index.edges(b, i), *offset),
                     *bbox,
-                    *rule,
-                    *overlap,
                     paint,
                     clip.as_ref(),
                 ),
@@ -2251,8 +2247,6 @@ fn run<S: Simd>(
                         stack,
                         (edges, &selected, *offset),
                         *bbox,
-                        *rule,
-                        *overlap,
                         paint,
                         clip.as_ref(),
                     );
@@ -2850,8 +2844,6 @@ impl Band<'_> {
         stack: &mut Vec<Plane>,
         (edges, sel, offset): (&EdgeTiles, &[u32], super::tiles::Fixed),
         bbox: crate::render::lower::DrawBox,
-        rule: FillRule,
-        overlap: Overlap,
         paint: &PaintData,
         clip: Option<&ClipRef>,
     ) {
@@ -2864,7 +2856,7 @@ impl Band<'_> {
         acc.prepare(simd, edges, sel, offset, first..last, self.w);
         let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
         let mut src = [const { MaybeUninit::<[f32; 4]>::uninit() }; SPAN_CHUNK];
-        acc.rows(last - first, rule, overlap, |y, range, run| {
+        acc.rows(last - first, |y, range, run| {
             let py = first + y;
             let row = (py - self.y0) * self.w;
             shade_run(
@@ -3375,7 +3367,20 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
     if w == 0 || h == 0 {
         return Vec::new();
     }
-    let overlap = Overlap::of(edges);
+    if cherenkov::lowering::proves_disjoint(edges) {
+        return boundary_mask(edges, w, h);
+    }
+    let raw: Vec<_> = edges
+        .iter()
+        .copied()
+        .map(super::tiles::IntegerEdge::from)
+        .collect();
+    let edges = super::topology::Sweep::default().boundaries(&raw, rule);
+    boundary_mask(edges.as_slice(), w, h)
+}
+
+/// A disjoint proof or topology compilation supplies the visible boundaries.
+fn boundary_mask<E: super::tiles::EdgeSource + ?Sized>(edges: &E, w: usize, h: usize) -> Vec<f32> {
     let bands = h.div_ceil(BAND_H);
     let mut index = EdgeBins::default();
     index.rebuild(
@@ -3396,7 +3401,7 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
         let y0 = band * BAND_H;
         let rows = slice.len()/w;
         fearless_simd::dispatch!(level, simd => compiler.prepare(simd, edges, index.at(0, band), super::tiles::Fixed::default(), y0..y0+rows, w));
-        compiler.rows(rows, rule, overlap, |y, range, run| {
+        compiler.rows(rows, |y, range, run| {
             for (i, x) in range.enumerate() {
                 slice[y*w+x] = run.at(i);
             }

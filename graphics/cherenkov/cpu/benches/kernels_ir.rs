@@ -29,6 +29,41 @@ mod kernels_bench {
 
     use super::cases::{self, Case, Composite, Eval, Kind};
 
+    fn geometry_setup(name: &str) -> cherenkov_cpu::testing::GeometryChange {
+        use cherenkov_scene::{Draw, Item, Layer, Shape};
+        fn stroke(
+            layer: &Layer,
+        ) -> Option<(&cherenkov::kurbo::BezPath, &cherenkov_scene::StrokeStyle)> {
+            layer.items.iter().find_map(|item| match item {
+                Item::Draw(Draw::Stroke {
+                    shape: Shape::Path { path },
+                    stroke,
+                    ..
+                }) => Some((path, stroke)),
+                Item::Layer(layer) => stroke(layer),
+                _ => None,
+            })
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../scenes/perf")
+            .join(name);
+        let scene = cherenkov_scene::Scene::load(&path).expect("generated perf scene");
+        let (path, style) = stroke(&scene.root).expect("road-network has a path stroke");
+        cherenkov_cpu::testing::GeometryChange::new(path.clone(), style.into())
+    }
+
+    #[library_benchmark]
+    #[benches::roads(args = ["road-network-n10", "road-network-n20", "road-network"], setup = geometry_setup)]
+    fn geometry_change(
+        input: cherenkov_cpu::testing::GeometryChange,
+    ) -> cherenkov_cpu::testing::GeometryChange {
+        black_box(
+            input.recompile(black_box(cherenkov::kurbo::Affine::scale_non_uniform(
+                1.01, 0.99,
+            ))),
+        )
+    }
+
     fn eval_setup(case: Case) -> Eval {
         case.eval()
     }
@@ -161,7 +196,8 @@ mod kernels_bench {
             encode,
             decode,
             uniform_store,
-            row_reader
+            row_reader,
+            geometry_change
         ]
     );
 }

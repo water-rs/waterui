@@ -2,9 +2,9 @@
 //! translation-normalized [`Frame`], and the per-frame table that carries it
 //! from a realization about to be dropped to the lowering that replaces it.
 //!
-//! Flattening and the disjointness proof depend on the shape, stroke and
-//! linear transform in its normalized frame. Translations reuse these raw
-//! tiled edges; coverage resolves overlapping windings in each raster band.
+//! Flattening and topology depend on the shape, fill rule, stroke and linear
+//! transform in its normalized frame. Integer-grid translations reuse the
+//! compiled visible boundaries; raster bands only integrate their area.
 //!
 //! A static scene records its content again every frame, which drops every
 //! realization. Before that happens, the retained edges of the realization
@@ -30,12 +30,11 @@ use cherenkov::kurbo::{self, Affine, BezPath, PathEl, Point, Vec2};
 use cherenkov::{FillRule, ShapeData};
 use rustc_hash::{FxHashMap, FxHasher};
 
-use super::coverage::Overlap;
 use super::raster::Edge;
 use super::tiles::{EdgeScratch, EdgeTiles, Fixed};
 
 /// One offered draw: its key's span in the frame's word arena, its path
-/// elements when it is one, its retained edges and the disjointness proof. About 48 bytes, so an insert or a
+/// elements when it is one, and its compiled boundaries. About 48 bytes, so an insert or a
 /// rehash move is a constant-size copy that never calls memcpy.
 struct Entry {
     /// `(start, len)` of the key's words in `GeometryCache::words`.
@@ -44,8 +43,6 @@ struct Entry {
     /// contents stay out of the arena.
     path: Option<Arc<[PathEl]>>,
     edges: EdgeTiles,
-    rule: FillRule,
-    overlap: Overlap,
 }
 
 /// Retained draw geometry offered for the current frame, by content hash. A
@@ -69,19 +66,16 @@ pub struct Offers<'a> {
     reserve: usize,
 }
 
-/// Geometry produced for a draw: its edges in the draw's [`Frame`], the rule
-/// they fill under, and the disjointness proof.
+/// Visible boundaries compiled in the draw's [`Frame`].
 pub struct Resolved {
     pub edges: EdgeTiles,
-    pub rule: FillRule,
-    pub overlap: Overlap,
 }
 
 impl GeometryCache {
     /// The edges of `shape` under `transform` in its [`Frame`] — its outline
     /// stroked by `stroke` when set. An offered entry with the same key is
     /// reused; otherwise `flatten` produces the flattened frame edges and
-    /// their rule, disjointness is tested and the retained form is built
+    /// their rule, topology is compiled and the retained form is built
     /// in `scratch`. `None` means the shape has no area.
     pub fn resolve(
         &self,
@@ -100,16 +94,12 @@ impl GeometryCache {
             {
                 return Some(Resolved {
                     edges: entry.edges.clone(),
-                    rule: entry.rule,
-                    overlap: entry.overlap,
                 });
             }
         }
         let (edges, rule) = flatten()?;
         Some(Resolved {
-            overlap: Overlap::of(&edges),
-            edges: EdgeTiles::new(scratch, edges.iter().copied()),
-            rule,
+            edges: EdgeTiles::compile(scratch, &edges, rule),
         })
     }
 
@@ -162,8 +152,6 @@ impl Offers<'_> {
         stroke: Option<&kurbo::Stroke>,
         transform: Affine,
         edges: &EdgeTiles,
-        rule: FillRule,
-        overlap: Overlap,
     ) {
         let Some(key) = Key::new(shape, stroke, transform) else {
             return;
@@ -186,8 +174,6 @@ impl Offers<'_> {
                 key: (start, len),
                 path,
                 edges: edges.clone(),
-                rule,
-                overlap,
             },
         );
     }

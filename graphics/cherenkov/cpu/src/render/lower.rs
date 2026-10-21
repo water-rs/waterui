@@ -82,15 +82,10 @@ pub enum Item {
         offset: super::tiles::Fixed,
         /// Device-space bounding box of the placed edges.
         bbox: DrawBox,
-        /// The fill rule.
-        rule: FillRule,
         /// The paint evaluator.
         paint: PaintData,
         /// The clip in force.
         clip: Option<ClipRef>,
-        /// The proof carried with retained geometry; possible overlaps
-        /// are resolved by the coverage compiler.
-        overlap: super::coverage::Overlap,
     },
     /// A Gaussian-blurred, axis-aligned rounded box.
     Shadow {
@@ -853,6 +848,100 @@ fn flatten_edges(path: BezPath, tol: f64) -> Vec<Edge> {
     edges
 }
 
+/// Stroke construction shared by realization and geometry-change benchmarks.
+fn compile_stroke(
+    geometry: &GeometryCache,
+    scratch: &mut EdgeScratch,
+    shape: &ShapeData,
+    stroke: &kurbo::Stroke,
+    transform: Affine,
+    frame: &Frame,
+) -> Option<Resolved> {
+    geometry.resolve(shape, Some(stroke), transform, scratch, || {
+        let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
+        let path = match shape {
+            ShapeData::Line(l) => {
+                let mut p = BezPath::new();
+                p.move_to(l.p0);
+                p.line_to(l.p1);
+                p
+            }
+            shape => shape_outline(shape, tol_u)?.0,
+        };
+        let outline = kurbo::stroke(
+            frame.anchored(path),
+            stroke,
+            &kurbo::StrokeOpts::default(),
+            tol_u,
+        );
+        Some((
+            flatten_edges(frame.map(outline), FLATTEN_TOL),
+            FillRule::NonZero,
+        ))
+    })
+}
+
+/// One retained stroke whose next realization changes its linear transform.
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug)]
+pub struct GeometryChange {
+    shape: ShapeData,
+    stroke: kurbo::Stroke,
+    retained: EdgeTiles,
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl GeometryChange {
+    /// Builds the initial realization outside the measured change.
+    ///
+    /// # Panics
+    /// Panics if the supplied benchmark path has no stroke outline.
+    #[must_use]
+    pub fn new(path: BezPath, stroke: kurbo::Stroke) -> Self {
+        let shape = ShapeData::Path {
+            elements: path.into_elements().into(),
+            rule: FillRule::NonZero,
+        };
+        let frame = Frame::new(&shape, Some(&stroke), Affine::IDENTITY);
+        let retained = compile_stroke(
+            &GeometryCache::default(),
+            &mut EdgeScratch::default(),
+            &shape,
+            &stroke,
+            Affine::IDENTITY,
+            &frame,
+        )
+        .expect("benchmark stroke has an outline")
+        .edges;
+        Self {
+            shape,
+            stroke,
+            retained,
+        }
+    }
+
+    /// Measures the production stroke, flatten, quantize and topology path,
+    /// including scratch allocation and replacement of the old boundary stream.
+    ///
+    /// # Panics
+    /// Panics if the transformed benchmark path has no stroke outline.
+    #[must_use]
+    pub fn recompile(mut self, transform: Affine) -> Self {
+        let frame = Frame::new(&self.shape, Some(&self.stroke), transform);
+        self.retained = compile_stroke(
+            &GeometryCache::default(),
+            &mut EdgeScratch::default(),
+            &self.shape,
+            &self.stroke,
+            transform,
+            &frame,
+        )
+        .expect("benchmark stroke has an outline")
+        .edges;
+        self
+    }
+}
+
 /// Offers a draw's geometry before its realization is dropped: a fill
 /// or a stroke realized as one draw.
 fn offer(offers: &mut Offers<'_>, op: &Op, data: &DeviceData<Vec<Item>>) {
@@ -866,23 +955,8 @@ fn offer(offers: &mut Offers<'_>, op: &Op, data: &DeviceData<Vec<Item>>) {
         } => (local, shape, Some(stroke)),
         _ => return,
     };
-    if let [
-        Item::Draw {
-            edges,
-            rule,
-            overlap,
-            ..
-        },
-    ] = data.output.as_slice()
-    {
-        offers.offer(
-            shape,
-            stroke,
-            data.transform * *local,
-            edges,
-            *rule,
-            *overlap,
-        );
+    if let [Item::Draw { edges, .. }] = data.output.as_slice() {
+        offers.offer(shape, stroke, data.transform * *local, edges);
     }
 }
 
@@ -2226,21 +2300,13 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let (mut items, carried) = match cache.data.take() {
             Some(Emission::Draw(data)) => {
                 let carried = match data.output.as_slice() {
-                    [
-                        Item::Draw {
-                            edges,
-                            rule,
-                            overlap,
-                            ..
-                        },
-                    ] if cache.valid
-                        && matches!(op, Op::Fill { .. } | Op::Stroke { .. })
-                        && same_linear(data.transform, self.transform) =>
+                    [Item::Draw { edges, .. }]
+                        if cache.valid
+                            && matches!(op, Op::Fill { .. } | Op::Stroke { .. })
+                            && same_linear(data.transform, self.transform) =>
                     {
                         Some(Resolved {
                             edges: edges.clone(),
-                            rule: *rule,
-                            overlap: *overlap,
                         })
                     }
                     _ => None,
@@ -2362,29 +2428,14 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let transform = self.transform;
         let frame = Frame::new(shape, Some(stroke), transform);
         let resolved = carried.or_else(|| {
-            self.geometry
-                .resolve(shape, Some(stroke), transform, self.edge_scratch, || {
-                    let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
-                    let path = match shape {
-                        ShapeData::Line(l) => {
-                            let mut p = BezPath::new();
-                            p.move_to(l.p0);
-                            p.line_to(l.p1);
-                            p
-                        }
-                        shape => shape_outline(shape, tol_u)?.0,
-                    };
-                    let outline = kurbo::stroke(
-                        frame.anchored(path),
-                        stroke,
-                        &kurbo::StrokeOpts::default(),
-                        tol_u,
-                    );
-                    Some((
-                        flatten_edges(frame.map(outline), FLATTEN_TOL),
-                        FillRule::NonZero,
-                    ))
-                })
+            compile_stroke(
+                self.geometry,
+                self.edge_scratch,
+                shape,
+                stroke,
+                transform,
+                &frame,
+            )
         });
         self.place(&frame, resolved, paint, false);
     }
@@ -2393,12 +2444,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// draw. With `cull`, a draw whose box misses the surface emits
     /// nothing.
     fn place(&mut self, frame: &Frame, resolved: Option<Resolved>, paint: &PaintData, cull: bool) {
-        let Some(Resolved {
-            edges,
-            rule,
-            overlap,
-        }) = resolved
-        else {
+        let Some(Resolved { edges }) = resolved else {
             return;
         };
         if edges.is_empty() {
@@ -2414,10 +2460,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
             edges,
             offset,
             bbox,
-            rule,
             paint,
             clip: self.clip.clone(),
-            overlap,
         });
     }
 
@@ -2684,25 +2728,24 @@ mod tests {
     }
 
     /// `edges` decoded, as exact words.
-    fn bits(edges: &EdgeTiles) -> Vec<[u32; 4]> {
-        edges
-            .iter()
-            .map(|e| [e.x0, e.y0, e.x1, e.y1].map(f32::to_bits))
+    fn bits(edges: &EdgeTiles) -> Vec<[i64; 6]> {
+        use crate::render::tiles::EdgeCursor;
+        let mut cursor = edges.cursor();
+        (0..edges.len())
+            .map(|i| {
+                let e = cursor.at(i);
+                [e.x0, e.y0, e.x1, e.y1, e.top, e.bottom]
+            })
             .collect()
     }
 
     /// The single draw `op` realizes into `cache` under `transform` on a
-    /// 64 × 64 target: its frame edges, offset, box and its overlap classification.
+    /// 64 × 64 target: its compiled boundaries, offset and box.
     fn realize(
         op: &Op,
         transform: Affine,
         cache: &mut Realization<Emission>,
-    ) -> (
-        EdgeTiles,
-        super::super::tiles::Fixed,
-        super::DrawBox,
-        super::super::coverage::Overlap,
-    ) {
+    ) -> (EdgeTiles, super::super::tiles::Fixed, super::DrawBox) {
         let (mut items, mut scratch) = (Vec::new(), AnchorScratch::default());
         let (mut fonts, bitmap_fonts) = (FxHashMap::default(), FxHashMap::default());
         let (mut bitmaps, mut geometry) = (BitmapCache::new(0), GeometryCache::default());
@@ -2732,17 +2775,16 @@ mod tests {
                 edges,
                 offset,
                 bbox,
-                overlap,
                 ..
             },
         ] = data.output.as_slice()
         else {
             unreachable!("the zigzag is one draw");
         };
-        (edges.clone(), *offset, *bbox, *overlap)
+        (edges.clone(), *offset, *bbox)
     }
 
-    /// Translation does not change frame geometry or its proof, even
+    /// Translation does not change the compiled boundary intervals, even
     /// around 2^20 pixels; moving back gives identical placed edges.
     #[test]
     #[expect(
@@ -2751,13 +2793,8 @@ mod tests {
     )]
     fn resolved_geometry_does_not_depend_on_where_the_path_sits() {
         let place = |at: Vec2| {
-            let (edges, offset, _, overlap) =
+            let (edges, offset, _) =
                 realize(&zigzag(at), Affine::IDENTITY, &mut Realization::default());
-            assert_eq!(
-                overlap,
-                super::super::coverage::Overlap::Possible,
-                "the zigzag overlaps at its joins"
-            );
             let offset = offset.units().map(|v| v as f64 / 65536.0);
             let back = edges
                 .iter()
@@ -2788,7 +2825,7 @@ mod tests {
         let mut cache = Realization::default();
         let (first, ..) = realize(&op, Affine::translate((1.25, -3.5)), &mut cache);
         let moved = Affine::translate((-7.75, 4.0));
-        let (reused, offset, bbox, overlap) = realize(&op, moved, &mut cache);
+        let (reused, offset, bbox) = realize(&op, moved, &mut cache);
         assert_eq!(
             first.identity(),
             reused.identity(),
@@ -2800,7 +2837,7 @@ mod tests {
             bits(&reused),
             "a fresh realization resolves differently"
         );
-        assert_eq!((fresh.1, fresh.2, fresh.3), (offset, bbox, overlap));
+        assert_eq!((fresh.1, fresh.2), (offset, bbox));
 
         let (scaled, ..) = realize(&op, Affine::scale(1.5), &mut cache);
         assert_ne!(

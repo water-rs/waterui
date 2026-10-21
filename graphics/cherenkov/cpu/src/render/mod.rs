@@ -28,11 +28,14 @@ mod projective;
 mod raster;
 mod shadow;
 mod tiles;
+mod topology;
 
 // The `testing` feature's surface: the span kernels and the types their
 // signatures name. `render` is a private module, so nothing is reachable
 // without `crate::testing`'s re-export, which does not exist without the
 // feature.
+#[cfg(any(test, feature = "testing"))]
+pub use lower::GeometryChange;
 #[cfg(any(test, feature = "testing"))]
 pub use lower::{ClipMask, ClipRef};
 #[cfg(any(test, feature = "testing"))]

@@ -113,8 +113,8 @@ const fn origin_band(oy: i64) -> i64 {
 fn edge_bands(e: &IntegerEdge, oy: i64, h: usize, bands: usize) -> (u16, u16) {
     let origin = origin_band(oy);
     let band = BAND_H as i64 * ONE;
-    let lo = (e.y0.min(e.y1) + origin).clamp(0, h as i64 * ONE);
-    let hi = (e.y0.max(e.y1) + origin + band - 1).clamp(0, h as i64 * ONE);
+    let lo = (e.top + origin).clamp(0, h as i64 * ONE);
+    let hi = (e.bottom + origin + band - 1).clamp(0, h as i64 * ONE);
     if lo >= hi {
         return (0, 0);
     }
@@ -841,10 +841,8 @@ mod tests {
                 x1: 10,
                 y1: 64,
             },
-            rule: cherenkov::FillRule::NonZero,
             paint: crate::render::paint::PaintData::Solid([0.0; 4]),
             clip: None,
-            overlap: crate::render::coverage::Overlap::Disjoint,
         };
         let geometry = EdgeTiles::new(
             &mut crate::render::tiles::EdgeScratch::default(),
@@ -952,10 +950,8 @@ mod tests {
                 x1: 10,
                 y1,
             },
-            rule: cherenkov::FillRule::NonZero,
             paint: crate::render::paint::PaintData::Solid([0.0; 4]),
             clip: None,
-            overlap: crate::render::coverage::Overlap::Disjoint,
         };
         let items = vec![
             Item::PushIsolate {

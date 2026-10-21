@@ -2,6 +2,8 @@
 //! feature — the same pattern `cherenkov`'s `testing` uses: nothing here
 //! is public API, and without the feature the module does not exist.
 
+pub use crate::render::GeometryChange;
+
 /// The span kernels and the minimum entry points a benchmark needs to
 /// drive them: the real `paint_data` lowering and the real `CpuImage`
 /// decode, so a bench measures data the renderer actually produces.
