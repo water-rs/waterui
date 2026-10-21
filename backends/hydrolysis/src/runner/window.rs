@@ -2,6 +2,7 @@
 //! scene rebuild/refresh/render phases, and input-event dispatch.
 
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::animation::PerpetualAnimation;
 use crate::platform::{GpuSurfaceWindow, PresentationSurface as _};
 use crate::renderer::material::{Blending, WithinWindowLevel};

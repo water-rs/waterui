@@ -991,12 +991,17 @@ where
 }
 
 /// `PaintData::Linear` over `out`: the span driver with the
-/// span-invariant choices [`LinearEval`] decides.
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+/// span-invariant choices [`LinearEval`] decides. Out of line only in
+/// debug builds, for the same reason as `paint::sample_span`.
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        clippy::inline_always,
+        reason = "an optimized build coalesces the frame, and a call per span costs short spans"
+    ),
+    inline(always)
 )]
-#[inline(always)]
 pub(super) fn linear_span<'a, S: Simd>(
     simd: S,
     outer: &PaintData,
@@ -1070,12 +1075,17 @@ where
 }
 
 /// `PaintData::Sweep` over `out`: the span driver with the
-/// span-invariant choices [`SweepEval`] decides.
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+/// span-invariant choices [`SweepEval`] decides. Out of line only in
+/// debug builds, for the same reason as `paint::sample_span`.
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        clippy::inline_always,
+        reason = "an optimized build coalesces the frame, and a call per span costs short spans"
+    ),
+    inline(always)
 )]
-#[inline(always)]
 pub(super) fn sweep_span<'a, S: Simd>(
     simd: S,
     outer: &PaintData,
