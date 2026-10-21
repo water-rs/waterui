@@ -203,14 +203,6 @@ fn bin(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
-fn cross(a: vec2<f32>, b: vec2<f32>) -> f32 { return a.x * b.y - a.y * b.x; }
-// Clipping rounds shared endpoints. Treat determinants within the f32
-// multiply/subtract error envelope as collinear, so reversed overlapping
-// edges still cancel and identical contours retain their multiplicity.
-fn collinear(a: vec2<f32>, b: vec2<f32>) -> bool {
-    return abs(cross(a, b)) <= 4.0 * 1.1920929e-7 * (abs(a.x * b.y) + abs(a.y * b.x));
-}
-
 // Clip one segment to a closed unit cell. Horizontal edges are retained:
 // their left-boundary crossing is an event in the backdrop winding.
 fn clip_piece(s: vec4<f32>, lo: vec2<f32>, hi: vec2<f32>) -> vec4<f32> {
@@ -266,47 +258,60 @@ fn fragment_bins(@builtin(global_invocation_id) gid: vec3<u32>) {
     let d = b - a;
     for (var row = strip * 4u; row < min(strip * 4u + 4u, u32(rect.w)); row += 1u) {
         let y = f32(row);
-        var crossing_column = -1i;
-        var crossing = 0u;
-        if y >= min(a.y, b.y) && y < max(a.y, b.y) {
-            let reverse = a.x > b.x || (a.x == b.x && a.y > b.y);
-            let origin = select(a, b, reverse);
-            let direction = select(d, -d, reverse);
-            // Match clip_forward's operation order and orientation exactly.
-            let x = origin.x + direction.x * ((y - origin.y) / direction.y);
-            crossing_column = i32(floor(x));
-            // At an integer corner, own the crossing in the column the
-            // edge enters above this row boundary, even when it goes left.
-            if x == floor(x) && d.x / d.y < 0.0 { crossing_column -= 1i; }
-            crossing = bitcast<u32>(select(-1i, 1i, d.y > 0.0));
-            if crossing_column < 0i {
-                atomicAdd(&work.words[paths[pi].row_base + row], crossing);
-            }
-        }
+        // The edge's directed crossing of this row's top boundary. Its
+        // column is not decided from the exact crossing point: the cells
+        // read the clipped fragments below, whose column-boundary points
+        // round, and an edge passing within rounding of a pixel corner
+        // reaches the boundary on the other side of it there. A left edge
+        // event then disagrees with the carried winding by one and fills
+        // or empties the whole cell (water-rs/waterui#3158). The crossing
+        // belongs to the cell whose fragment leaves the boundary into the row.
+        let crosses = y >= min(a.y, b.y) && y < max(a.y, b.y);
+        let crossing = bitcast<u32>(select(-1i, 1i, d.y > 0.0));
+        var claimed = !crosses;
         if max(a.y, b.y) < y || min(a.y, b.y) >= y + 1.0 { continue; }
         // Clip to the row before traversing columns: O(touched cells),
         // never the two-dimensional bounding box of a diagonal segment.
         let piece = clip_piece(vec4<f32>(a, b), vec2<f32>(0.0, y), vec2<f32>(rect.z, y + 1.0));
-        if piece.x == -2.0 { continue; }
-        let first = min(u32(floor(min(piece.x, piece.z))), u32(rect.z) - 1u);
-        let last = min(u32(floor(max(piece.x, piece.z))), u32(rect.z) - 1u);
-        for (var col = first; col <= last; col += 1u) {
-            let origin = vec2<f32>(f32(col), y);
-            let clipped = clip_piece(piece, origin, origin + vec2<f32>(1.0));
-            if clipped.x == -2.0 { continue; }
-            let key = paths[pi].grid_base + strip * paths[pi].grid_w + col;
-            let node = atomicAdd(&work.fragment_count, 1u);
-            let dst = params.fragment_base + node * 8u;
-            let local = clipped - vec4<f32>(origin, origin);
-            coverage[dst] = bitcast<u32>(local.x);
-            coverage[dst + 1u] = bitcast<u32>(local.y);
-            coverage[dst + 2u] = bitcast<u32>(local.z);
-            coverage[dst + 3u] = bitcast<u32>(local.w);
-            coverage[dst + 5u] = segment;
-            coverage[dst + 6u] = row % 4u;
-            coverage[dst + 7u] = select(0u, crossing, crossing_column == i32(col));
-            coverage[params.sort_a + node * 2u] = key;
-            coverage[params.sort_a + node * 2u + 1u] = node + 1u;
+        if piece.x != -2.0 {
+            let first = min(u32(floor(min(piece.x, piece.z))), u32(rect.z) - 1u);
+            let last = min(u32(floor(max(piece.x, piece.z))), u32(rect.z) - 1u);
+            for (var col = first; col <= last; col += 1u) {
+                let origin = vec2<f32>(f32(col), y);
+                let clipped = clip_piece(piece, origin, origin + vec2<f32>(1.0));
+                if clipped.x == -2.0 { continue; }
+                let key = paths[pi].grid_base + strip * paths[pi].grid_w + col;
+                let node = atomicAdd(&work.fragment_count, 1u);
+                let dst = params.fragment_base + node * 8u;
+                let local = clipped - vec4<f32>(origin, origin);
+                // Rounding is monotone along the piece, so exactly one
+                // fragment leaves the top boundary; the ones before it lie
+                // on the boundary and carry no winding.
+                let owns = !claimed && local.y != local.w && (local.y == 0.0 || local.w == 0.0);
+                claimed = claimed || owns;
+                coverage[dst] = bitcast<u32>(local.x);
+                coverage[dst + 1u] = bitcast<u32>(local.y);
+                coverage[dst + 2u] = bitcast<u32>(local.z);
+                coverage[dst + 3u] = bitcast<u32>(local.w);
+                coverage[dst + 5u] = segment;
+                coverage[dst + 6u] = row % 4u;
+                coverage[dst + 7u] = select(0u, crossing, owns);
+                coverage[params.sort_a + node * 2u] = key;
+                coverage[params.sort_a + node * 2u + 1u] = node + 1u;
+            }
+        }
+        if !claimed {
+            // The edge leaves the boundary outside the grid: left of it
+            // when the crossing lies at x < 0 or the in-grid piece runs
+            // along the boundary to the left edge, else right of it,
+            // where no column reads it.
+            let reverse = a.x > b.x || (a.x == b.x && a.y > b.y);
+            let origin = select(a, b, reverse);
+            let direction = select(d, -d, reverse);
+            let x = origin.x + direction.x * ((y - origin.y) / direction.y);
+            if x < 0.0 || (piece.x != -2.0 && min(piece.x, piece.z) == 0.0) {
+                atomicAdd(&work.words[paths[pi].row_base + row], crossing);
+            }
         }
     }
 }
@@ -315,12 +320,8 @@ fn fragment(node: u32) -> vec4<f32> {
     let base = params.fragment_base + (node - 1u) * 8u;
     return bitcast<vec4<f32>>(vec4<u32>(coverage[base], coverage[base + 1u], coverage[base + 2u], coverage[base + 3u]));
 }
-// Determine coincident lines from the original segments, before independent
-// cell clipping rounds their endpoints in different directions.
-fn same_line(left: u32, right: u32) -> bool {
-    let a = segments[coverage[params.fragment_base + (left - 1u) * 8u + 5u]];
-    let b = segments[coverage[params.fragment_base + (right - 1u) * 8u + 5u]];
-    return collinear(a.zw - a.xy, b.zw - b.xy) && collinear(b.xy - a.xy, a.zw - a.xy);
+fn segment_of(node: u32) -> u32 {
+    return coverage[params.fragment_base + (node - 1u) * 8u + 5u];
 }
 fn next_fragment(node: u32) -> u32 {
     return coverage[params.fragment_base + (node - 1u) * 8u + 4u];
@@ -362,6 +363,60 @@ fn left_area(head: u32, seed: i32, rule: u32) -> f32 {
     return area;
 }
 
+// A non-horizontal fragment's line at the cell's top and bottom edges: the
+// key that orders it among the cell's other fragments.
+fn line_key(s: vec4<f32>) -> vec2<f32> {
+    let slope = (s.z - s.x) / (s.w - s.y);
+    return vec2<f32>(s.x - s.y * slope, s.x + (1.0 - s.y) * slope);
+}
+
+// Integrating each fragment's transition against the winding on its left
+// telescopes to the cell's area only when, at every height, "left of" is a
+// strict total order of the fragments there that both fragments of each
+// pair agree on. Rounding brings fragments within an ulp of each other —
+// stroke outlines retrace offset lines, so several distinct segments can
+// clip to one line — and a relation judged per fragment, or a tolerance
+// that calls two fragments one line, breaks either property: a transition
+// is then applied twice or never (water-rs/waterui#3158). Lines are
+// therefore ordered by comparing their keys, which every fragment computes
+// with the same function, so the order is transitive; equal keys are one
+// line, ordered by segment; and two lines whose order differs at the top
+// and the bottom swap at one height, computed for the pair in segment order
+// so both fragments read the same bits.
+struct Order {
+    // `other` lies left of the edge above `swap`.
+    above: bool,
+    // `other` lies left of the edge below `swap`.
+    below: bool,
+    // The height where the order swaps, F_INF when it does not.
+    swap: f32,
+}
+
+fn order(node: u32, key: vec2<f32>, other: u32, other_key: vec2<f32>) -> Order {
+    let tie = segment_of(other) < segment_of(node);
+    // Ordered at an edge of the cell; a tie there defers to the other edge.
+    let top = select(
+        other_key.x < key.x,
+        other_key.y < key.y || (other_key.y == key.y && tie),
+        other_key.x == key.x,
+    );
+    let bottom = select(
+        other_key.y < key.y,
+        other_key.x < key.x || (other_key.x == key.x && tie),
+        other_key.y == key.y,
+    );
+    var swap = F_INF;
+    if top != bottom {
+        // The lines cross inside the cell: solve in segment order.
+        let first = select(key, other_key, tie);
+        let second = select(other_key, key, tie);
+        let g0 = second.x - first.x;
+        let g1 = second.y - first.y;
+        swap = g0 / (g0 - g1);
+    }
+    return Order(top, bottom, swap);
+}
+
 // Each fragment integrates its own boundary contribution. The next dispatch
 // reduces those contributions in linked-list order.
 fn edge_area(node: u32, head: u32, seed: i32, rule: u32) -> f32 {
@@ -370,6 +425,7 @@ fn edge_area(node: u32, head: u32, seed: i32, rule: u32) -> f32 {
     let a = edge.xy;
     let d = edge.zw - a;
     if d.y == 0.0 { return 0.0; }
+    let key = line_key(edge);
     var t = 0.0;
     while t < 1.0 {
         var end = 1.0;
@@ -377,48 +433,40 @@ fn edge_area(node: u32, head: u32, seed: i32, rule: u32) -> f32 {
         while other != 0u {
             if other != node {
                 let s = fragment(other);
-                let v = s.zw - s.xy;
-                let q = s.xy - a;
-                let denominator = cross(d, v);
-                if !same_line(node, other) && denominator != 0.0 {
-                    let hit = cross(q, v) / denominator;
-                    let u = cross(q, d) / denominator;
-                    if hit > t && u >= 0.0 && u <= 1.0 { end = min(end, hit); }
-                } else if same_line(node, other) {
-                    // Coincident edges change multiplicity at endpoints.
-                    let u = (s.y - a.y) / d.y;
-                    let v_end = (s.w - a.y) / d.y;
-                    if u > t { end = min(end, u); }
-                    if v_end > t { end = min(end, v_end); }
+                var hit = F_INF;
+                if s.y == s.w {
+                    // A horizontal edge carries no transition, but where it
+                    // crosses this one the winding on its left changes.
+                    let x = key.x + (key.y - key.x) * s.y;
+                    if x >= min(s.x, s.z) && x <= max(s.x, s.z) {
+                        hit = (s.y - a.y) / d.y;
+                    }
+                } else {
+                    let swap = order(node, key, other, line_key(s)).swap;
+                    if swap != F_INF { hit = (swap - a.y) / d.y; }
                 }
+                if hit > t && hit < end { end = hit; }
             }
             other = next_fragment(other);
         }
         let midpoint = a + d * ((t + end) * 0.5);
         var winding = left_winding(head, seed, midpoint.y);
-        var transition = select(-1i, 1i, d.y > 0.0);
-        var owner = node;
         other = head;
         while other != 0u {
             if other != node {
                 let s = fragment(other);
                 if midpoint.y >= min(s.y, s.w) && midpoint.y < max(s.y, s.w) {
-                    let delta = select(-1i, 1i, s.w > s.y);
-                    let x = s.x + (midpoint.y - s.y) * (s.z - s.x) / (s.w - s.y);
-                    if same_line(node, other) {
-                        transition += delta;
-                        owner = min(owner, other);
-                    } else if x < midpoint.x {
-                        winding += delta;
+                    let o = order(node, key, other, line_key(s));
+                    if select(o.below, o.above, midpoint.y < o.swap) {
+                        winding += select(-1i, 1i, s.w > s.y);
                     }
                 }
             }
             other = next_fragment(other);
         }
-        if owner == node {
-            let change = inside(winding + transition, rule) - inside(winding, rule);
-            area += change * (1.0 - midpoint.x) * abs(d.y) * (end - t);
-        }
+        let transition = select(-1i, 1i, d.y > 0.0);
+        let change = inside(winding + transition, rule) - inside(winding, rule);
+        area += change * (1.0 - midpoint.x) * abs(d.y) * (end - t);
         t = end;
     }
     return area;

@@ -455,6 +455,102 @@ fn gpu_boundary_cells_integrate_fill_rule_regions() {
     }
 }
 
+/// Stroke-outline polygons the GPU route used to misrender
+/// (water-rs/waterui#3158): a butt cap whose edge passes within rounding of
+/// a pixel corner, and two outlines that retrace an offset line, so distinct
+/// segments clip to one line in a cell. Each is its own path, so its grid —
+/// and with it the f32 rounding the cells see — is the one the outline had.
+#[test]
+fn gpu_coverage_matches_rounding_degenerate_outlines() {
+    const SIZE: (u32, u32) = (320, 160);
+    const POLYGONS: [&[(f32, f32)]; 3] = [
+        &[
+            (3.515_190_4, 139.125_38),
+            (9.515_19, 135.799_53),
+            (10.484_81, 137.548_77),
+            (4.484_809_4, 140.874_62),
+        ],
+        &[
+            (10.815_504, 3.474_928_6),
+            (17.248_934, 4.561_709),
+            (14.892_125, 6.918_518),
+            (14.951_047, 5.162_539_5),
+            (15.799_575, 6.011_067_4),
+            (14.892_125, 6.918_518),
+        ],
+        &[
+            (306.657_75, 141.152_2),
+            (305.458_37, 141.112_95),
+            (305.581_54, 137.350_5),
+            (292.057, 149.402_47),
+            (305.458_37, 141.112_95),
+            (305.505_8, 139.664_28),
+        ],
+    ];
+    let engine = Engine::<Gpu>::new(GpuConfig {
+        coverage_route: Some(CoverageRoute::Gpu),
+        ..GpuConfig::default()
+    })
+    .expect("GPU coverage test adapter");
+    let surface = engine
+        .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16), || {})
+        .expect("coverage test surface");
+    surface.clear_color(WorkingColor::new([0.0; 4]));
+    let mut oracle = cherenkov_oracle::coverage::Coverage::new(SIZE.0 as usize, SIZE.1 as usize);
+    let paths = POLYGONS.map(|polygon| {
+        let points: Vec<(f64, f64)> = polygon
+            .iter()
+            .map(|&(x, y)| (f64::from(x), f64::from(y)))
+            .collect();
+        oracle.add_polyline(&points, true);
+        let mut path = BezPath::new();
+        path.move_to(points[0]);
+        for &point in &points[1..] {
+            path.line_to(point);
+        }
+        path.close_path();
+        path
+    });
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|canvas| {
+            for path in paths {
+                canvas.fill(
+                    Fixed(RuledPath {
+                        elements: path.into_iter().collect(),
+                        rule: FillRule::NonZero,
+                    }),
+                    WorkingColor::new([1.0; 4]),
+                );
+            }
+        }));
+    });
+    engine
+        .render(FrameTime::now())
+        .expect("GPU outline coverage");
+    let image = surface.readback().expect("coverage pixels");
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the oracle's f64 coverage compares as f32 pixels"
+    )]
+    let reference = F32Image {
+        width: SIZE.0,
+        height: SIZE.1,
+        pixels: oracle
+            .finish(cherenkov_scene::FillRule::NonZero)
+            .into_iter()
+            .map(|area| [area as f32; 4])
+            .collect(),
+    };
+    cherenkov_oracle::metrics::assert_images_match(
+        &reference,
+        &F32Image {
+            width: SIZE.0,
+            height: SIZE.1,
+            pixels: image.pixels,
+        },
+    );
+}
+
 /// Sparse full interiors, translucent painter ordering and repeated frames
 /// share the same GPU batch without reusing stale indirect emissions.
 #[test]
