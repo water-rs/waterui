@@ -14,7 +14,7 @@ nextest-filtering = "0.22"
 nextest-metadata = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "1"
+toml = "1.1.8"
 
 # Standalone: the root workspace excludes .github, so this tool builds with
 # its own lockfile and never joins the graph it measures.

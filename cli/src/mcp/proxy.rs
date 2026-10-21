@@ -397,6 +397,7 @@ async fn drive_child(mut transport: ChildTransport, mut child: Child, calls: Rec
             CallToolParams {
                 name: call.name.to_owned(),
                 arguments: call.arguments,
+                meta: None,
             },
         );
         let result = match transport.request(request).await {
