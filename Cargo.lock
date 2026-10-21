@@ -1660,7 +1660,7 @@ dependencies = [
  "cherenkov-record",
  "crossbeam-channel",
  "filtrate-core",
- "kurbo 0.13.1",
+ "kurbo",
  "libm",
  "nami",
  "parley",
@@ -1688,7 +1688,7 @@ dependencies = [
  "filtrate",
  "glifo",
  "half",
- "kurbo 0.13.1",
+ "kurbo",
  "libc",
  "nami",
  "ndk-sys",
@@ -1733,7 +1733,7 @@ dependencies = [
  "filtrate-core",
  "gungraun",
  "half",
- "kurbo 0.13.1",
+ "kurbo",
  "libc",
  "nami",
  "png",
@@ -1763,7 +1763,7 @@ dependencies = [
  "gloo-timers 0.3.0",
  "half",
  "js-sys",
- "kurbo 0.13.1",
+ "kurbo",
  "libc",
  "libtest-mimic",
  "naga 30.0.1",
@@ -1808,7 +1808,7 @@ dependencies = [
  "cherenkov-scene",
  "cherenkov-stroke",
  "half",
- "kurbo 0.13.1",
+ "kurbo",
  "libm",
  "png",
  "rayon",
@@ -1824,7 +1824,7 @@ version = "0.0.0"
 dependencies = [
  "color",
  "filtrate-core",
- "kurbo 0.13.1",
+ "kurbo",
  "nami",
  "nami-core",
  "rustc-hash 2.1.3",
@@ -1841,7 +1841,7 @@ dependencies = [
  "blake3",
  "fontique",
  "half",
- "kurbo 0.13.1",
+ "kurbo",
  "libm",
  "parley",
  "png",
@@ -2121,7 +2121,7 @@ dependencies = [
  "block2 0.6.2",
  "dispatch2",
  "keyboard-types",
- "kurbo 0.12.0",
+ "kurbo",
  "libc",
  "libtest-mimic",
  "mach2 0.7.0",
@@ -4670,7 +4670,7 @@ dependencies = [
  "jni 0.21.1",
  "js-sys",
  "keyboard-types",
- "kurbo 0.13.1",
+ "kurbo",
  "libc",
  "lru 0.19.0",
  "nami",
@@ -5857,17 +5857,6 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kurbo"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce9729cc38c18d86123ab736fd2e7151763ba226ac2490ec092d1dd148825e32"
-dependencies = [
- "arrayvec",
- "euclid",
- "smallvec",
-]
-
-[[package]]
-name = "kurbo"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b60dfc32f652b926df6192e55525b16d186c69d47876c3ead4da5cc9f8450e2"
@@ -6855,7 +6844,7 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d15d89a677ebfdd18f7085dabaff2fef8a17e127c79b77f869cab2854bc024d5"
 dependencies = [
- "kurbo 0.13.1",
+ "kurbo",
 ]
 
 [[package]]
@@ -8325,7 +8314,7 @@ checksum = "839c8299360d2e998bdb106dc0a6cd71dcc5f4df51df1b620361bf50e283cca6"
 dependencies = [
  "bytemuck",
  "color",
- "kurbo 0.13.1",
+ "kurbo",
  "linebender_resource_handle",
  "smallvec",
 ]
@@ -10624,7 +10613,7 @@ version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "695b5790b3131dafa99b3bbfd25a216edb3d216dad9ca208d4657bfb8f2abc3d"
 dependencies = [
- "kurbo 0.13.1",
+ "kurbo",
  "siphasher",
 ]
 
@@ -11725,7 +11714,7 @@ checksum = "e3e29e3e199888d594edd191c5917a2d5c1893b8bf20076c2bf4df7a40a2ee71"
 dependencies = [
  "dpi",
  "keyboard-types",
- "kurbo 0.13.1",
+ "kurbo",
 ]
 
 [[package]]
@@ -11875,7 +11864,7 @@ dependencies = [
  "fontdb",
  "harfrust",
  "imagesize",
- "kurbo 0.13.1",
+ "kurbo",
  "log",
  "pico-args",
  "roxmltree 0.21.1",
@@ -12698,7 +12687,7 @@ dependencies = [
  "dispatch2",
  "executor-core",
  "futures",
- "kurbo 0.13.1",
+ "kurbo",
  "libc",
  "libtest-mimic",
  "native-executor",
@@ -12788,7 +12777,7 @@ dependencies = [
 name = "waterui-backend-core"
 version = "0.5.2"
 dependencies = [
- "kurbo 0.13.1",
+ "kurbo",
  "nami",
  "num-traits",
  "tracing",
@@ -12805,7 +12794,7 @@ source = "git+https://github.com/water-rs/barcode?branch=dev#6a33701aedc1ca3533d
 dependencies = [
  "barcoders",
  "fast_qr",
- "kurbo 0.13.1",
+ "kurbo",
  "nami",
  "thiserror 2.0.21",
  "waterui-core",
@@ -12861,7 +12850,7 @@ dependencies = [
  "executor-core",
  "futures",
  "keycode",
- "kurbo 0.13.1",
+ "kurbo",
  "libloading 0.9.0",
  "nami",
  "num-traits",
@@ -12887,7 +12876,7 @@ version = "0.2.0"
 source = "git+https://github.com/water-rs/canvas?branch=dev#60b0ac8165a13351b7abe888d7aa7aef35f993c4"
 dependencies = [
  "image",
- "kurbo 0.13.1",
+ "kurbo",
  "nami",
  "parley",
  "tracing",
@@ -13395,7 +13384,7 @@ dependencies = [
  "geo-types",
  "getrandom 0.2.17",
  "image",
- "kurbo 0.13.1",
+ "kurbo",
  "lru 0.16.4",
  "maplibre-expr",
  "mvt-reader",
@@ -13422,7 +13411,7 @@ name = "waterui-math"
 version = "0.2.0"
 source = "git+https://github.com/water-rs/math?branch=dev#7cf269a89f99bfe99f1ff51e9af5a603b7def353"
 dependencies = [
- "kurbo 0.13.1",
+ "kurbo",
  "mathcat",
  "nami",
  "parley",
@@ -13588,7 +13577,7 @@ dependencies = [
  "hydrolysis",
  "hydrolysis-m3",
  "image",
- "kurbo 0.13.1",
+ "kurbo",
  "pollster 1.0.1",
  "serde",
  "serde_json",
