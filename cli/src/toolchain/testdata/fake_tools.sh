@@ -604,7 +604,7 @@ reg)
         query)
             _reg_val="${WATERUI_FAKE_LONG_PATHS-}"
             if [ -f "$HOME/.fake-long-paths" ]; then
-                while IFS= read -r _reg_val; do :; done < "$HOME/.fake-long-paths"
+                IFS= read -r _reg_val < "$HOME/.fake-long-paths"
             fi
             if [ -n "$_reg_val" ]; then
                 printf '\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\FileSystem\n'
