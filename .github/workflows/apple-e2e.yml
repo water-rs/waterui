@@ -200,7 +200,7 @@ jobs:
       # This job builds under the dated stable pinned below (the header
       # explains why), and rustup ranks this variable above the project's
       # file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
@@ -213,7 +213,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           targets: aarch64-apple-ios-sim
           cache: "false"
 
@@ -296,7 +296,7 @@ jobs:
       # This job builds under the dated stable pinned below (the header
       # explains why), and rustup ranks this variable above the project's
       # file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
@@ -309,7 +309,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           cache: "false"
 
       - name: Install the Metal toolchain
@@ -656,7 +656,7 @@ jobs:
       # This job builds under the dated stable pinned below (the header
       # explains why), and rustup ranks this variable above the project's
       # file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
       # Packages the repository's own ios_test_host fixture in dev profile —
       # not one of the release examples build-ios packages — so it keeps its
       # own toolchain and target dir.
@@ -672,7 +672,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           targets: aarch64-apple-ios-sim
           # run-ios-device-tests.sh verifies the packaged archive's exports
           # with the llvm-nm shipped by this toolchain.
@@ -888,7 +888,7 @@ jobs:
       # This job builds under the dated stable pinned below (the header
       # explains why), and rustup ranks this variable above the project's
       # file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
       # Packages a generated hello-world playground rather than a discovered
       # example, so it keeps its own toolchain and target dir.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -903,7 +903,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           targets: aarch64-apple-ios-sim
           cache: "false"
 

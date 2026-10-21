@@ -5390,7 +5390,7 @@ impl GpuRenderer {
                         &self.config,
                         &self.pipeline_layout,
                         self.pipeline_cache.as_ref(),
-                        &module,
+                        &shaders::wgsl_engine_programs(&module),
                         format,
                         CoveragePass::Painter(false),
                     )
@@ -11063,7 +11063,7 @@ impl GpuRenderer {
                 &self.config,
                 &self.pipeline_layout,
                 self.pipeline_cache.as_ref(),
-                module,
+                &shaders::wgsl_engine_programs(module),
                 RENDER_FORMATS[format_i],
                 CoveragePass::Painter(replace),
             )

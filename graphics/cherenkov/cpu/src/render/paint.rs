@@ -1031,6 +1031,88 @@ impl PaintOutput for PixelCenter {
     }
 }
 
+/// The mesh and short-run sampling loop. Debug builds keep it out of
+/// line: unoptimized code gives every inlined body its own stack
+/// slots, and inlined next to every other kind in
+/// `PaintData::eval_span` it overflowed the test stack. Optimized
+/// builds inline it into the caller's dispatched `vectorize` region,
+/// since the optimizer coalesces the frame and a call per span costs
+/// short spans.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "pixel indices and band offsets are far below 2^24"
+)]
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        clippy::inline_always,
+        reason = "an optimized build coalesces the frame, and a call per span costs short spans"
+    ),
+    inline(always)
+)]
+fn sample_span(
+    x0: usize,
+    py: usize,
+    out: &mut [MaybeUninit<[f32; 4]>],
+    mut evaluate: impl FnMut(f32, f32) -> [f32; 4],
+) -> &mut [[f32; 4]] {
+    let y = py as f32 + 0.5;
+    let mut x = x0 as f32 + 0.5;
+    for pixel in out.iter_mut() {
+        pixel.write(evaluate(x, y));
+        x += 1.0;
+    }
+    // SAFETY: every element was written by the loop above.
+    unsafe { out.assume_init_mut() }
+}
+
+/// The solid fill, out of line in debug builds for the same reason as
+/// [`sample_span`]. Entered through its own `vectorize`, which
+/// isolates it from the paint evaluators' register pressure.
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        clippy::inline_always,
+        reason = "an optimized build coalesces the frame, and a call per span costs short spans"
+    ),
+    inline(always)
+)]
+fn solid_span<S: Simd>(simd: S, c: [f32; 4], out: &mut [MaybeUninit<[f32; 4]>]) -> &mut [[f32; 4]] {
+    simd.vectorize(
+        #[inline(always)]
+        || {
+            let planes = simd.combine_f32x8(
+                simd.combine_f32x4(simd.splat_f32x4(c[0]), simd.splat_f32x4(c[1])),
+                simd.combine_f32x4(simd.splat_f32x4(c[2]), simd.splat_f32x4(c[3])),
+            );
+            let mut block = [0.0f32; 16];
+            simd.store_interleaved_128_f32x16(planes, &mut block);
+            let count = out.len();
+            let mut pos = 0;
+            while pos + 4 <= count {
+                // SAFETY: `out[pos..pos + 4]` is four contiguous
+                // `MaybeUninit<[f32; 4]>` — 16 floats — and `block`
+                // holds those 16 initialised floats.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        block.as_ptr(),
+                        out[pos..].as_mut_ptr().cast::<f32>(),
+                        16,
+                    );
+                }
+                pos += 4;
+            }
+            for px in &mut out[pos..] {
+                px.write(c);
+            }
+            // SAFETY: the four-pixel stores and scalar tail initialized every element.
+            unsafe { out.assume_init_mut() }
+        },
+    )
+}
+
 struct PixelSpan<'a, S> {
     simd: S,
     x0: usize,
@@ -1042,23 +1124,12 @@ impl<'a, S: Simd> PaintOutput for PixelSpan<'a, S> {
     type Output = &'a mut [[f32; 4]];
 
     #[expect(
-        clippy::cast_precision_loss,
-        reason = "pixel indices and band offsets are far below 2^24"
-    )]
-    #[expect(
         clippy::inline_always,
         reason = "compiled under the dispatched CPU level"
     )]
     #[inline(always)]
-    fn sample(self, mut evaluate: impl FnMut(f32, f32) -> [f32; 4]) -> Self::Output {
-        let y = self.py as f32 + 0.5;
-        let mut x = self.x0 as f32 + 0.5;
-        for pixel in self.out.iter_mut() {
-            pixel.write(evaluate(x, y));
-            x += 1.0;
-        }
-        // SAFETY: every element was written by the loop above.
-        unsafe { self.out.assume_init_mut() }
+    fn sample(self, evaluate: impl FnMut(f32, f32) -> [f32; 4]) -> Self::Output {
+        sample_span(self.x0, self.py, self.out, evaluate)
     }
 
     #[expect(
@@ -1067,33 +1138,7 @@ impl<'a, S: Simd> PaintOutput for PixelSpan<'a, S> {
     )]
     #[inline(always)]
     fn solid(self, c: [f32; 4]) -> Self::Output {
-        let Self { simd, out, .. } = self;
-        let planes = simd.combine_f32x8(
-            simd.combine_f32x4(simd.splat_f32x4(c[0]), simd.splat_f32x4(c[1])),
-            simd.combine_f32x4(simd.splat_f32x4(c[2]), simd.splat_f32x4(c[3])),
-        );
-        let mut block = [0.0f32; 16];
-        simd.store_interleaved_128_f32x16(planes, &mut block);
-        let count = out.len();
-        let mut pos = 0;
-        while pos + 4 <= count {
-            // SAFETY: `out[pos..pos + 4]` is four contiguous
-            // `MaybeUninit<[f32; 4]>` — 16 floats — and `block`
-            // holds those 16 initialised floats.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    block.as_ptr(),
-                    out[pos..].as_mut_ptr().cast::<f32>(),
-                    16,
-                );
-            }
-            pos += 4;
-        }
-        for px in &mut out[pos..] {
-            px.write(c);
-        }
-        // SAFETY: the four-pixel stores and scalar tail initialized every element.
-        unsafe { out.assume_init_mut() }
+        solid_span(self.simd, c, self.out)
     }
 
     #[expect(
