@@ -27,6 +27,7 @@ pub mod present;
 mod projective;
 mod raster;
 mod shadow;
+mod span;
 mod tiles;
 mod topology;
 
