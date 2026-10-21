@@ -92,7 +92,7 @@ fn clip_to_rect(s: Segment, x0: f64, y0: f64, x1: f64, y1: f64) -> Option<Segmen
 fn pixel_area(
     segs: &[Segment],
     cand: &[u32],
-    subs: &[Vec<u32>],
+    subs: Span<'_>,
     x0: f64,
     y0: f64,
     rule: FillRule,
@@ -152,7 +152,7 @@ fn pixel_area(
     }
     if inside_segs.is_empty() {
         // Uniformly covered or empty: decide by the centre's winding.
-        let w = winding_at(segs, &subs[sub_of(y0 + 0.5, y0)], x0 + 0.5, y0 + 0.5);
+        let w = winding_at(segs, subs.get(sub_of(y0 + 0.5, y0)), x0 + 0.5, y0 + 0.5);
         return f64::from(inside(w, rule));
     }
     crit_ys.sort_by(f64::total_cmp);
@@ -185,7 +185,7 @@ fn pixel_area(
         xs.sort_by(|a, b| a.0.total_cmp(&b.0));
         // Wind from the pixel's left edge; crossings strictly right of it
         // are already counted by `seed_winding`.
-        let mut wind = seed_winding(segs, &subs[sub_of(ymid, y0)], x0, ymid);
+        let mut wind = seed_winding(segs, subs.get(sub_of(ymid, y0)), x0, ymid);
         let mut xprev = x0;
         let mut i = 0;
         while i < xs.len() {
@@ -316,21 +316,57 @@ impl Coverage {
     #[must_use]
     #[expect(
         clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "pixel indices are far below 2^53; row indices are clamped to bounds"
+        reason = "pixel indices are far below 2^53"
     )]
     pub fn finish(&self, rule: FillRule) -> Vec<f64> {
-        // `rows[r]` lists, in original order, the segments whose y range
-        // overlaps `[r - EPS, r + 1 + EPS]` — a superset of the segments
-        // that can contribute to any computation in the row.
         let (w, h) = (self.width, self.height);
         let mut out = vec![0.0; w * h];
         if h == 0 || w == 0 {
             return out;
         }
-        let mut cells: Vec<Vec<u32>> = (0..w * h).map(|_| Vec::new()).collect();
-        let mut subs: Vec<Vec<u32>> = (0..h * SUB).map(|_| Vec::new()).collect();
+        // Count each bucket's entries, then lay the buckets out back to
+        // back at exactly that size and fill them in a second identical
+        // pass, so no bucket ever grows.
+        let mut cell_counts = vec![0; w * h];
+        let mut sub_counts = vec![0; h * SUB];
+        self.index(&mut |cell, _| cell_counts[cell] += 1, &mut |sub, _| {
+            sub_counts[sub] += 1;
+        });
+        let mut cells = Buckets::with_counts(&cell_counts);
+        let mut subs = Buckets::with_counts(&sub_counts);
+        let (mut cell_next, mut sub_next) = (cells.cursors(), subs.cursors());
+        self.index(
+            &mut |cell, i| cells.put(&mut cell_next, cell, i),
+            &mut |sub, i| {
+                subs.put(&mut sub_next, sub, i);
+            },
+        );
+        out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+            let row_subs = subs.span(y * SUB..(y + 1) * SUB);
+            let row_has_subs = !row_subs.is_empty();
+            for (x, px) in row.iter_mut().enumerate() {
+                let cand = cells.get(y * w + x);
+                if cand.is_empty() && !row_has_subs {
+                    continue;
+                }
+                *px = pixel_area(&self.segs, cand, row_subs, x as f64, y as f64, rule);
+            }
+        });
+        out
+    }
+
+    /// Report, in segment order, every pixel cell (`y * width + x`) whose
+    /// padded bounding box a segment's intersects to `cell`, and every
+    /// sub-row band (`row * SUB + band`) its y range overlaps to `sub`, each
+    /// with the segment's index — the two indexes of [`Coverage::finish`].
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "pixel indices are far below 2^53; row indices are clamped to bounds"
+    )]
+    fn index(&self, cell: &mut impl FnMut(usize, u32), sub: &mut impl FnMut(usize, u32)) {
+        let (w, h) = (self.width, self.height);
         for (i, &s) in self.segs.iter().enumerate() {
             let (xmin, xmax) = (s.0.min(s.2), s.0.max(s.2));
             let (ymin, ymax) = (s.1.min(s.3), s.1.max(s.3));
@@ -355,7 +391,7 @@ impl Coverage {
             let cy1 = ((ymax + EPS).floor().max(0.0) as usize).min(h - 1);
             for cy in cy0..=cy1 {
                 for cx in cx0..=cx1 {
-                    cells[cy * w + cx].push(i);
+                    cell(cy * w + cx, i);
                 }
             }
             // Rows the segment can contribute a scanline crossing to,
@@ -369,22 +405,78 @@ impl Coverage {
                 let b0 = (((ymin - r as f64) * SUB_F).floor() as isize).clamp(0, SUB_I - 1);
                 let b1 = (((ymax - r as f64) * SUB_F).ceil() as isize - 1).clamp(0, SUB_I - 1);
                 for b in b0..=b1 {
-                    subs[r * SUB + b as usize].push(i);
+                    sub(r * SUB + b as usize, i);
                 }
             }
         }
-        out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
-            let row_subs = &subs[y * SUB..(y + 1) * SUB];
-            let row_has_subs = row_subs.iter().any(|v| !v.is_empty());
-            for (x, px) in row.iter_mut().enumerate() {
-                let cand = &cells[y * w + x];
-                if cand.is_empty() && !row_has_subs {
-                    continue;
-                }
-                *px = pixel_area(&self.segs, cand, row_subs, x as f64, y as f64, rule);
-            }
-        });
-        out
+    }
+}
+
+/// Segment indices grouped into numbered buckets, stored back to back:
+/// bucket `k` is `items[start[k]..start[k + 1]]`.
+struct Buckets {
+    start: Vec<usize>,
+    items: Vec<u32>,
+}
+
+impl Buckets {
+    /// Buckets of `counts[k]` entries each, to be filled through
+    /// [`Buckets::put`].
+    fn with_counts(counts: &[usize]) -> Self {
+        let mut start = Vec::with_capacity(counts.len() + 1);
+        let mut total = 0;
+        start.push(total);
+        for &count in counts {
+            total += count;
+            start.push(total);
+        }
+        Self {
+            start,
+            items: vec![0; total],
+        }
+    }
+
+    /// Each bucket's next free slot, for [`Buckets::put`].
+    fn cursors(&self) -> Vec<usize> {
+        self.start[..self.start.len() - 1].to_vec()
+    }
+
+    /// Append segment `i` to bucket `k`.
+    fn put(&mut self, cursors: &mut [usize], k: usize, i: u32) {
+        self.items[cursors[k]] = i;
+        cursors[k] += 1;
+    }
+
+    /// Bucket `k`.
+    fn get(&self, k: usize) -> &[u32] {
+        &self.items[self.start[k]..self.start[k + 1]]
+    }
+
+    /// The consecutive buckets `range`, as buckets of their own.
+    fn span(&self, range: std::ops::Range<usize>) -> Span<'_> {
+        Span {
+            start: &self.start[range.start..=range.end],
+            items: &self.items,
+        }
+    }
+}
+
+/// A run of consecutive buckets: one pixel row's sub-row bands.
+#[derive(Clone, Copy)]
+struct Span<'a> {
+    start: &'a [usize],
+    items: &'a [u32],
+}
+
+impl<'a> Span<'a> {
+    /// Bucket `k` of the run.
+    fn get(self, k: usize) -> &'a [u32] {
+        &self.items[self.start[k]..self.start[k + 1]]
+    }
+
+    /// Whether every bucket of the run is empty.
+    fn is_empty(self) -> bool {
+        self.start.first() == self.start.last()
     }
 }
 
