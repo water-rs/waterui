@@ -13,9 +13,6 @@ const FLATTEN: f32 = 0.02;
 
 const KIND_GLYPH: u32 = 4u;
 const KIND_SPAN: u32 = 5u;
-const KIND_REGION: u32 = 6u;
-const PAINT_SOLID: u32 = 0u;
-const FLAG_CELL_BUFFER: u32 = 0x80u;
 
 const F_INF: f32 = 3.4e38;
 const F_NINF: f32 = -3.4e38;
@@ -46,25 +43,21 @@ struct GpuPath {
     grid_base: u32,
     texel_base: u32,
     inst_base: u32,
-    args_base: u32,
     rule: u32,
     grid_w: u32,
     grid_h: u32,
-    instance_cap: u32,
-    cell_cap: u32,
     row_base: u32,
-    _pad: array<u32, 2>,
+    _pad: u32,
     affine: vec4<f32>,
     translate: vec2<f32>,
-    surface: vec2<f32>,
+    clip_hi: vec2<f32>,
     tile_base: u32,
     bound_y: f32,
     rect_x: f32,
     rect_y: f32,
     rect_w: u32,
     rect_h: u32,
-    _pad2: vec2<f32>,
-    template_: array<vec4<u32>, 17>,
+    clip_lo: vec2<f32>,
 }
 
 struct Params {
@@ -72,7 +65,6 @@ struct Params {
     row_total: u32,
     strip_total: u32,
     path_count: u32,
-    inst_origin: u32,
     tile_total: u32,
     classify_width: u32,
     grid_total: u32,
@@ -87,7 +79,8 @@ struct Params {
     tokens: u32,
     sorted: u32,
     radix_pass: u32,
-    texel_words: u32,
+    // Uniform structs round up to 16 bytes: the binding is 80.
+    _pad: vec2<u32>,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -95,9 +88,10 @@ struct Params {
 @group(0) @binding(2) var<storage, read_write> paths: array<GpuPath>;
 @group(0) @binding(3) var<storage, read_write> segments: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read_write> coverage: array<u32>;
-@group(0) @binding(5) var<storage, read_write> texels: array<u32>;
-@group(0) @binding(6) var<storage, read_write> instances: array<vec4<u32>>;
-@group(0) @binding(8) var<storage, read_write> args: array<u32>;
+// The coverage arena: one block per entry — a count header, the emitted
+// 32-byte geometry records, then the packed R8 texels (water-rs/waterui#3081).
+@group(0) @binding(5) var<storage, read_write> arena: array<u32>;
+@group(0) @binding(7) var<storage, read_write> args: array<u32, 12>;
 struct Work {
     bin_count: atomic<u32>,
     fragment_count: atomic<u32>,
@@ -105,7 +99,7 @@ struct Work {
     fragments: u32,
     words: array<atomic<u32>>,
 }
-@group(0) @binding(7) var<storage, read_write> work: Work;
+@group(0) @binding(6) var<storage, read_write> work: Work;
 
 fn ordered(value: f32) -> u32 {
     let bits = bitcast<u32>(value);
@@ -128,12 +122,14 @@ fn cubic_at(p0: vec2<f32>, c0: vec2<f32>, c1: vec2<f32>, p1: vec2<f32>, t: f32) 
 }
 
 // The coverage grid rect the CPU sweep derives: the segment bbox
-// inflated by 1 px and clipped to the surface, floored and ceiled.
+// inflated by 1 px and clipped to the generation frame's clip —
+// `[0, surface]` for a clipped path, the same rect shifted by −offset
+// for a retained placement-relative one (water-rs/waterui#3081).
 fn grid_rect(pi: u32) -> vec4<f32> {
-    let x0 = max(unordered(atomicLoad(&paths[pi].atom[0])) - 1.0, 0.0);
-    let y0 = max(unordered(atomicLoad(&paths[pi].atom[1])) - 1.0, 0.0);
-    let x1 = min(unordered(atomicLoad(&paths[pi].atom[2])) + 1.0, paths[pi].surface.x);
-    let y1 = min(unordered(atomicLoad(&paths[pi].atom[3])) + 1.0, paths[pi].surface.y);
+    let x0 = max(unordered(atomicLoad(&paths[pi].atom[0])) - 1.0, paths[pi].clip_lo.x);
+    let y0 = max(unordered(atomicLoad(&paths[pi].atom[1])) - 1.0, paths[pi].clip_lo.y);
+    let x1 = min(unordered(atomicLoad(&paths[pi].atom[2])) + 1.0, paths[pi].clip_hi.x);
+    let y1 = min(unordered(atomicLoad(&paths[pi].atom[3])) + 1.0, paths[pi].clip_hi.y);
     let gx = floor(x0);
     let gy = floor(y0);
     let w = max(ceil(x1) - gx, 0.0);
@@ -460,7 +456,7 @@ fn prepare_dispatch(@builtin(local_invocation_index) lane: u32) {
     }
     if lane == 2u { count = ((fragments + 16383u) / 16384u) * 16u * 64u; }
     let groups = (count + 63u) / 64u;
-    let base = params.path_count * 13u + lane * 3u;
+    let base = lane * 3u;
     args[base] = min(groups, 256u);
     args[base + 1u] = (groups + 255u) / 256u;
     args[base + 2u] = 1u;
@@ -909,37 +905,29 @@ fn classify(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
-// Copy the 17-vec4 template into an instance slot and stamp bounds, uv
-// and kind on it.
-fn emit_instance(pi: u32, slot: u32, bounds: vec4<f32>, uv: vec2<u32>, kind: u32, interior: u32) {
-    let dst = (params.inst_origin + paths[pi].inst_base + slot) * 17u;
-    for (var k = 0u; k < 17u; k = k + 1u) {
-        instances[dst + k] = paths[pi].template_[k];
-    }
-    instances[dst + 2u] = bitcast<vec4<u32>>(bounds);
-    var kind_ = kind;
-    if kind == KIND_GLYPH {
-        instances[dst + 3u].x = bitcast<u32>(f32(interior & 65535u));
-        instances[dst + 3u].y = bitcast<u32>(f32(interior >> 16u));
-        // Buffer-backed cells: uv.x the cell's u32 word offset, uv.y
-        // its pixel width; the top-byte flag switches the fetch.
-        instances[dst + 14u] = vec4<u32>(bitcast<u32>(f32(uv.x)), bitcast<u32>(f32(uv.y)), instances[dst + 14u].z, instances[dst + 14u].w);
-        instances[dst + 16u].w = instances[dst + 16u].w | (FLAG_CELL_BUFFER << 24u);
-        if interior != 0u && instances[dst + 16u].y == PAINT_SOLID {
-            kind_ = KIND_REGION;
-            instances[dst + 16u].z = interior;
-        }
-    }
-    instances[dst + 16u].x = kind_;
+// One emitted span or cell's 32-byte geometry record in the path's
+// arena block: the device bounds vec4, then the block-relative texel
+// offset, pixel width, packed interior run and kind before the draw's
+// REGION promotion — the vertex stage joins these to the draw's anchor.
+fn emit_geometry(pi: u32, slot: u32, bounds: vec4<f32>, uv: vec2<u32>, kind: u32, interior: u32) {
+    let dst = paths[pi].inst_base + slot * 8u;
+    arena[dst] = bitcast<u32>(bounds.x);
+    arena[dst + 1u] = bitcast<u32>(bounds.y);
+    arena[dst + 2u] = bitcast<u32>(bounds.z);
+    arena[dst + 3u] = bitcast<u32>(bounds.w);
+    arena[dst + 4u] = uv.x;
+    arena[dst + 5u] = uv.y;
+    arena[dst + 6u] = interior;
+    arena[dst + 7u] = kind;
 }
 
 fn emit_span(pi: u32, path_i: u32, rect: vec4<f32>, x0: u32, x1: u32, sy: u32, sh: u32) {
     let slot = atomicAdd(&paths[path_i].atom[4], 1u);
     let b = vec4<f32>(rect.x + f32(x0), rect.y + f32(sy), rect.x + f32(x1), rect.y + f32(sy + sh));
-    emit_instance(pi, slot, b, vec2<u32>(0u), KIND_SPAN, 0u);
+    emit_geometry(pi, slot, b, vec2<u32>(0u), KIND_SPAN, 0u);
 }
 
-// Classification only reserves a cell's instance slot and texel words;
+// Classification only reserves a cell's geometry slot and texel words;
 // `fill_cells` writes the texels with one workgroup per cell, so a strip's
 // cells no longer serialize behind its owner invocation.
 fn emit_cell(pi: u32, path_i: u32, rect: vec4<f32>, x0: u32, x1: u32, y0: u32, y1: u32, interior: u32) {
@@ -949,7 +937,7 @@ fn emit_cell(pi: u32, path_i: u32, rect: vec4<f32>, x0: u32, x1: u32, y0: u32, y
     let words = (stored_width * (y1 - y0) + 3u) / 4u;
     let tex_off = atomicAdd(&paths[path_i].atom[6], words);
     let b = vec4<f32>(rect.x + f32(x0), rect.y + f32(y0), rect.x + f32(x1), rect.y + f32(y1));
-    emit_instance(pi, slot, b, vec2<u32>(paths[pi].texel_base + tex_off, cw), KIND_GLYPH, interior);
+    emit_geometry(pi, slot, b, vec2<u32>(tex_off, cw), KIND_GLYPH, interior);
 }
 
 // Compact the per-path instance counts into a dispatch domain. Geometry
@@ -962,7 +950,7 @@ fn prepare_cells(@builtin(local_invocation_index) lane: u32) {
         atomicStore(&paths[pi].atom[7], total);
         total += atomicLoad(&paths[pi].atom[4]);
     }
-    let base = params.path_count * 13u + 9u;
+    let base = 9u;
     args[base] = min(total, 256u);
     args[base + 1u] = (total + 255u) / 256u;
     args[base + 2u] = 1u;
@@ -981,19 +969,20 @@ fn fill_cells(@builtin(workgroup_id) gid: vec3<u32>, @builtin(local_invocation_i
     let pi = lo;
     let local = i - atomicLoad(&paths[pi].atom[7]);
     if local >= atomicLoad(&paths[pi].atom[4]) { return; }
-    let dst = (params.inst_origin + paths[pi].inst_base + local) * 17u;
-    if instances[dst + 16u].x == KIND_SPAN { return; }
+    let dst = paths[pi].inst_base + local * 8u;
+    if arena[dst + 7u] == KIND_SPAN { return; }
     let rect = grid_rect(pi);
-    let bounds = bitcast<vec4<f32>>(instances[dst + 2u]);
+    let bounds = vec4<f32>(
+        bitcast<f32>(arena[dst]), bitcast<f32>(arena[dst + 1u]),
+        bitcast<f32>(arena[dst + 2u]), bitcast<f32>(arena[dst + 3u]));
     let x0 = u32(bounds.x - rect.x);
     let y0 = u32(bounds.y - rect.y);
     let ch = u32(bounds.w - rect.y) - y0;
-    let origin = bitcast<vec2<f32>>(instances[dst + 14u].xy);
-    let interior = bitcast<vec2<f32>>(instances[dst + 3u].xy);
-    let interior_start = u32(interior.x);
-    let interior_end = u32(interior.y);
-    let stored_width = u32(origin.y) - (interior_end - interior_start);
-    let tex = u32(origin.x);
+    let interior = vec2<u32>(arena[dst + 6u] & 0xffffu, arena[dst + 6u] >> 16u);
+    let interior_start = interior.x;
+    let interior_end = interior.y;
+    let stored_width = arena[dst + 5u] - (interior_end - interior_start);
+    let tex = paths[pi].texel_base + arena[dst + 4u];
     let words = (stored_width * ch + 3u) / 4u;
     // Each lane walks a contiguous range so adjacent writes reuse the sparse
     // cursor without traversing columns assigned to other lanes.
@@ -1038,99 +1027,20 @@ fn fill_cells(@builtin(workgroup_id) gid: vec3<u32>, @builtin(local_invocation_i
                 packed |= q << (lane * 8u);
             }
         }
-        texels[tex + word] = packed;
+        arena[tex + word] = packed;
     }
 }
 
-// ---- indirect arguments ----------------------------------------------------
+// ---- block headers ---------------------------------------------------------
 
-// One invocation per path: write the draw arguments of each phase —
-// opaque (8 vertices, vertex-pulled), partial (6 quad indices) and the
-// ordinary vertex-pulled quad (6). Spans and cells share one dense
-// instance range, so every draw covers it whole.
+// One invocation per path: the block's count word supplies the frame's
+// per-draw indirect records through the prologue's 4-byte copies
+// (water-rs/waterui#3081).
 @compute @workgroup_size(64)
-fn emit_args(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn emit_counts(@builtin(global_invocation_id) gid: vec3<u32>) {
     if invocation(gid) >= params.path_count {
         return;
     }
-    let n = atomicLoad(&paths[invocation(gid)].atom[4]);
     let pi = invocation(gid);
-    let base = paths[pi].args_base;
-    let si = params.inst_origin + paths[pi].inst_base;
-    // opaque: draw_indirect(8, n, 0, si)
-    args[base] = 8u;
-    args[base + 1u] = n;
-    args[base + 2u] = 0u;
-    args[base + 3u] = si;
-    // partial: draw_indexed_indirect(6, n, 0, 0, si)
-    args[base + 4u] = 6u;
-    args[base + 5u] = n;
-    args[base + 6u] = 0u;
-    args[base + 7u] = 0u;
-    args[base + 8u] = si;
-    // normal: draw_indirect(6, n, 0, si)
-    args[base + 9u] = 6u;
-    args[base + 10u] = n;
-    args[base + 11u] = 0u;
-    args[base + 12u] = si;
-}
-
-// Cached geometry uses two vec4s per reserved instance, after one count
-// header per path. Paint, clipping, depth and frame addresses stay current.
-@compute @workgroup_size(64)
-fn store_cache(@builtin(workgroup_id) gid: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
-    let i = gid.x + gid.y * 256u;
-    var pi = 0u;
-    var hi = params.path_count;
-    while pi + 1u < hi {
-        let mid = (pi + hi) / 2u;
-        if atomicLoad(&paths[mid].atom[7]) <= i { pi = mid; } else { hi = mid; }
-    }
-    let local = i - atomicLoad(&paths[pi].atom[7]);
-    let count = atomicLoad(&paths[pi].atom[4]);
-    if local >= count { return; }
-    let slot = paths[pi].inst_base + local;
-    let src = (params.inst_origin + slot) * 17u;
-    let dst = params.path_count + slot * 2u;
-    let kind = instances[src + 16u].x;
-    let uv = bitcast<vec2<f32>>(instances[src + 14u].xy);
-    let interior = bitcast<vec2<f32>>(instances[src + 3u].xy);
-    let packed = u32(interior.x) | (u32(interior.y) << 16u);
-    if lane == 0u {
-        if local == 0u { segments[pi] = bitcast<vec4<f32>>(vec4<u32>(count, 0u, 0u, 0u)); }
-        segments[dst] = bitcast<vec4<f32>>(instances[src + 2u]);
-        segments[dst + 1u] = bitcast<vec4<f32>>(vec4<u32>(u32(uv.x), u32(uv.y), packed, kind));
-    }
-    if kind == KIND_SPAN { return; }
-    let bounds = bitcast<vec4<f32>>(instances[src + 2u]);
-    let words = ((u32(uv.y) - (u32(interior.y) - u32(interior.x))) * u32(bounds.w - bounds.y) + 3u) / 4u;
-    for (var word = lane; word < words; word += 64u) {
-        coverage[u32(uv.x) + word] = texels[u32(uv.x) + word];
-    }
-}
-
-@compute @workgroup_size(64)
-fn replay_cache(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = invocation(gid);
-    var pi = 0u;
-    var hi = params.path_count;
-    while pi + 1u < hi {
-        let mid = (pi + hi) / 2u;
-        if paths[mid].inst_base <= i { pi = mid; } else { hi = mid; }
-    }
-    let local = i - paths[pi].inst_base;
-    let count = bitcast<vec4<u32>>(segments[pi]).x;
-    if local == 0u { atomicStore(&paths[pi].atom[4], count); }
-    if local >= count { return; }
-    let src = params.path_count + i * 2u;
-    let shift = bitcast<vec2<f32>>(vec2<u32>(paths[pi]._pad[0], paths[pi]._pad[1]));
-    let bounds = segments[src] + shift.xyxy;
-    let data = bitcast<vec4<u32>>(segments[src + 1u]);
-    emit_instance(pi, local, bounds, data.xy, select(KIND_GLYPH, KIND_SPAN, data.w == KIND_SPAN), data.z);
-}
-
-@compute @workgroup_size(64)
-fn replay_texels(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = invocation(gid);
-    if i < params.texel_words { texels[i] = coverage[i]; }
+    arena[paths[pi].inst_base - 4u] = atomicLoad(&paths[pi].atom[4]);
 }

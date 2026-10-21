@@ -188,7 +188,7 @@ impl Kind {
                 (
                     Self::SolidOpaque | Self::SolidTranslucent,
                     PaintData::Solid(_)
-                ) | (Self::Linear, PaintData::Linear { .. })
+                ) | (Self::Linear, PaintData::Linear(_))
                     | (
                         Self::Radial,
                         PaintData::Radial {

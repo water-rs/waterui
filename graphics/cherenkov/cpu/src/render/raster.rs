@@ -1499,11 +1499,16 @@ fn shade_run_in<S: Simd>(
     if let PaintData::Solid(color) = paint {
         let clip = ClipRun::new(clip, w, range.start, py);
         let dst = &mut dst[range];
-        match cov {
-            Run::Uniform(c) => composite_solid(simd, dst, c, clip, *color, space),
-            Run::Samples(c) => composite_solid(simd, dst, c, clip, *color, space),
-            Run::Slice(c) => composite_solid(simd, dst, c, clip, *color, space),
-        }
+        let color = *color;
+        // Isolate the solid kernel from the paint evaluators' register pressure.
+        simd.vectorize(
+            #[inline(always)]
+            || match cov {
+                Run::Uniform(c) => composite_solid(simd, dst, c, clip, color, space),
+                Run::Samples(c) => composite_solid(simd, dst, c, clip, color, space),
+                Run::Slice(c) => composite_solid(simd, dst, c, clip, color, space),
+            },
+        );
         return;
     }
     let mut x = range.start;

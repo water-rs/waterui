@@ -496,21 +496,6 @@ const COVERAGE: Fixed = Fixed {
     metallib: COVERAGE_METALLIB,
     entries: &[
         wgpu::PassthroughShaderEntryPoint {
-            name: Cow::Borrowed("store_cache"),
-            workgroup_size: (64, 1, 1),
-            workgroup_memory_sizes: std::borrow::Cow::Borrowed(&[]),
-        },
-        wgpu::PassthroughShaderEntryPoint {
-            name: Cow::Borrowed("replay_cache"),
-            workgroup_size: (64, 1, 1),
-            workgroup_memory_sizes: std::borrow::Cow::Borrowed(&[]),
-        },
-        wgpu::PassthroughShaderEntryPoint {
-            name: Cow::Borrowed("replay_texels"),
-            workgroup_size: (64, 1, 1),
-            workgroup_memory_sizes: std::borrow::Cow::Borrowed(&[]),
-        },
-        wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("prepare_cells"),
             workgroup_size: (64, 1, 1),
             workgroup_memory_sizes: std::borrow::Cow::Borrowed(&[]),
@@ -591,7 +576,7 @@ const COVERAGE: Fixed = Fixed {
             workgroup_memory_sizes: std::borrow::Cow::Borrowed(&[]),
         },
         wgpu::PassthroughShaderEntryPoint {
-            name: Cow::Borrowed("emit_args"),
+            name: Cow::Borrowed("emit_counts"),
             workgroup_size: (64, 1, 1),
             workgroup_memory_sizes: std::borrow::Cow::Borrowed(&[]),
         },
