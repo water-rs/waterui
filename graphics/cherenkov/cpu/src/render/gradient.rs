@@ -242,7 +242,7 @@ where
 #[inline(always)]
 fn premul_pixel<S: Simd>(simd: S, c: f32x4<S>, working: bool) -> f32x4<S> {
     if working {
-        let premul = c * simd.splat_f32x4(c[3]);
+        let premul = c * simd.splat_f32x4(c.to_array()[3]);
         // Lane 3 holds `a·a`; restore `a` itself.
         mask32x4::from_slice(simd, &[0, 0, 0, -1]).select(c, premul)
     } else {
@@ -881,7 +881,8 @@ where
     {
         return simd.splat_f32x4(0.0);
     }
-    let (t, active) = X::lane(simd, t[0]);
+    let [t, ..]: [f32; 4] = t.into();
+    let (t, active) = X::lane(simd, t);
     if !active {
         return simd.splat_f32x4(0.0);
     }

@@ -1561,9 +1561,10 @@ fn shade_run<S: Simd>(
         let dst = &mut dst[range];
         let color = *color;
         // Isolate the solid kernel from the paint evaluators' register pressure.
+        // Capture the span context by value across the SIMD boundary.
         simd.vectorize(
             #[inline(always)]
-            || match cov {
+            move || match cov {
                 Run::Uniform(c) => composite_solid(simd, dst, c, clip, color, space),
                 Run::Samples(c) => composite_solid(simd, dst, c, clip, color, space),
                 Run::Slice(c) => composite_solid(simd, dst, c, clip, color, space),
@@ -1573,7 +1574,7 @@ fn shade_run<S: Simd>(
     }
     simd.vectorize(
         #[inline(always)]
-        || {
+        move || {
             let mut x = range.start;
             while x < range.end {
                 let n = (range.end - x).min(SPAN_CHUNK);
