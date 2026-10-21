@@ -15,6 +15,9 @@ use crate::render::raster::Raster;
 use crate::render::raster::{self, Band, BandRaster};
 use cherenkov::RenderError;
 
+pub mod stroke;
+use stroke::{DashTable, GpuStrokeRecord, StrokeParams};
+
 /// Coverage strip height in device rows.
 pub const STRIP_H: usize = 4;
 
@@ -106,6 +109,15 @@ pub enum CoverageRoute {
 
 /// Keep ordinary UI geometry out of the GPU preparation pass.
 pub const GPU_ROUTE_MIN_ELEMENTS: usize = 4096;
+
+/// Source elements from which a stroked path is a GPU candidate: half of
+/// [`GPU_ROUTE_MIN_ELEMENTS`], because the stroke expands on the GPU and the
+/// outline is two to five times its source (water-rs/waterui#2544).
+#[expect(
+    dead_code,
+    reason = "lowering selects the compute stroker in a later change of #2544"
+)]
+pub const GPU_STROKE_MIN_ELEMENTS: usize = GPU_ROUTE_MIN_ELEMENTS / 2;
 
 /// A coverage grid over an integer device-space rect.
 pub struct Coverage {
@@ -411,8 +423,27 @@ pub struct GpuElement {
 /// A compute path and the capacity bound derived from those same elements.
 #[derive(Clone)]
 pub struct GpuPath {
-    /// Local curve records consumed by the flatten kernel.
+    /// Local curve records consumed by the flatten kernel. Empty for a
+    /// stroke, which has `strokes` instead.
     pub elements: Arc<[GpuElement]>,
+    /// Stroke records consumed by the compute stroker. Empty for a fill.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the dispatch reads it in a later change of #2544")
+    )]
+    pub strokes: Arc<[GpuStrokeRecord]>,
+    /// The stroke's per-path parameters; zero for a fill.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the dispatch reads it in a later change of #2544")
+    )]
+    pub stroke: StrokeParams,
+    /// A dashed stroke's pattern and capacities.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the dispatch reads it in a later change of #2544")
+    )]
+    pub dash: Option<Arc<DashTable>>,
     /// The device hull under the encoding raster.
     hull: Rect,
     /// The encoding raster's translation: [`GpuPath::placed`] moves the
@@ -513,6 +544,20 @@ fn wang_segments(kind: u32, p0: Point, a: Point, b: Point, p1: Point) -> usize {
     (second / (8.0 * FLATTEN)).sqrt().ceil().max(1.0) as usize
 }
 
+/// Whether every point of an element is finite in f32, locally and under
+/// `raster`. An element with a point that is not carries no geometry: the
+/// sweep's `clip_x` and the oracle drop such segments, so encoders skip it
+/// while the cursor still advances to its end. `kurbo::dash` emits a NaN
+/// start for a dash that begins at an open subpath's end, which
+/// `kurbo::stroke` widens into an all-NaN contour; one uploaded NaN poisons
+/// the kernel's device bbox, and `classify` never returns
+/// (water-rs/waterui#3156).
+#[expect(clippy::cast_possible_truncation, reason = "device coords are f32")]
+pub fn encodable(raster: Affine, points: &[Point]) -> bool {
+    let finite = |p: Point| (p.x as f32).is_finite() && (p.y as f32).is_finite();
+    points.iter().all(|&p| finite(p) && finite(raster * p))
+}
+
 /// The element walk state of [`gpu_bound`]: the encoded records so far,
 /// the running bounds and the subpath cursor.
 struct GpuEncode {
@@ -537,15 +582,7 @@ impl GpuEncode {
             return;
         }
         let points = [self.last, a, b, p1];
-        // An element with a point that is not finite in f32 carries no
-        // geometry: the sweep's `clip_x` and the oracle drop such segments,
-        // so it is skipped while the cursor still advances to `p1`.
-        // `kurbo::dash` emits a NaN start for a dash that begins at an open
-        // subpath's end, which `kurbo::stroke` widens into an all-NaN
-        // contour; one uploaded NaN poisons the kernel's device bbox, and
-        // `classify` never returns (water-rs/waterui#3156).
-        let finite = |p: Point| (p.x as f32).is_finite() && (p.y as f32).is_finite();
-        if !points.iter().all(|&p| finite(p) && finite(self.raster * p)) {
+        if !encodable(self.raster, &points) {
             self.last = p1;
             return;
         }
@@ -658,6 +695,9 @@ pub fn prepare_gpu(elements: &[PathEl], raster: Affine, surface: (f64, f64)) -> 
     let origin = Vec2::new(e, f);
     GpuPath {
         elements: out.into(),
+        strokes: Arc::from([]),
+        stroke: StrokeParams::default(),
+        dash: None,
         bound,
         hull,
         origin,

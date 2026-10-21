@@ -32,6 +32,7 @@ mod resolve;
 pub mod shaders;
 mod shadow;
 mod space_convert;
+mod stroke_abi;
 pub mod surface_control;
 mod upload;
 
