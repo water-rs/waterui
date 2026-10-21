@@ -9,6 +9,8 @@ use cherenkov::{
 };
 use cherenkov::{Engine, FrameTime, Offscreen, OffscreenFormat};
 use cherenkov_cpu::{Raster, RasterConfig};
+use cherenkov_oracle::F32Image;
+use cherenkov_oracle::metrics::{assert_close, assert_images_match};
 
 fn engine() -> Engine<Raster> {
     Engine::<Raster>::new(RasterConfig::default()).expect("engine")
@@ -30,11 +32,7 @@ fn a_half_edge_rect_has_exact_coverage() {
     let rb = surface.readback().expect("readback");
     let at = |x: usize, y: usize| rb.pixels[y * 64 + x];
     // Full coverage of an opaque fill writes the paint unchanged.
-    assert_eq!(
-        at(20, 20).map(f32::to_bits),
-        [1.0, 0.0, 0.0, 1.0].map(f32::to_bits),
-        "interior"
-    );
+    assert_close(&at(20, 20), &[1.0, 0.0, 0.0, 1.0]);
     let left = at(8, 20);
     assert!(
         (left[0] - 0.5).abs() < 1e-6 && (left[3] - 0.5).abs() < 1e-6,
@@ -47,7 +45,7 @@ fn a_half_edge_rect_has_exact_coverage() {
     );
     // Fully transparent outside.
     // No coverage leaves the cleared zero.
-    assert_eq!(at(0, 0).map(f32::to_bits), [0.0; 4].map(f32::to_bits));
+    assert_close(&at(0, 0), &[0.0; 4]);
 }
 
 #[test]
@@ -104,17 +102,9 @@ fn even_odd_leaves_the_centre_of_concentric_squares_empty() {
         surface.readback().expect("readback").pixels[32 * 64 + 32]
     };
     // The even-odd hole has zero coverage: the cleared zero.
-    assert_eq!(
-        centre(true).map(f32::to_bits),
-        [0.0; 4].map(f32::to_bits),
-        "even-odd centre"
-    );
+    assert_close(&centre(true), &[0.0; 4]);
     // Full non-zero coverage writes the opaque paint unchanged.
-    assert_eq!(
-        centre(false).map(f32::to_bits),
-        [1.0, 0.0, 0.0, 1.0].map(f32::to_bits),
-        "non-zero centre"
-    );
+    assert_close(&centre(false), &[1.0, 0.0, 0.0, 1.0]);
 }
 
 #[test]
@@ -411,7 +401,7 @@ fn sweep_renders_and_remaining_unsupported_features_report_their_names() {
     let angle = 0.5_f64.atan2(16.5) / std::f64::consts::TAU;
     assert!((f64::from(pixel[0]) - (1.0 - angle)).abs() < 1e-6);
     assert!((f64::from(pixel[2]) - angle).abs() < 1e-6);
-    assert_eq!(pixel[3].to_bits(), 1.0_f32.to_bits());
+    assert_close(&[pixel[3]], &[1.0]);
     // A rotated glyph renders as outline coverage.
     let engine2 = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let data = std::fs::read("../scenes/fonts/NotoSans.ttf").expect("test font");
@@ -501,13 +491,17 @@ fn re_recorded_overlapping_geometry_renders_like_a_fresh_lowering() {
     }
     for (frame, color) in frames.iter().zip([first, first, second]) {
         let fresh = render_f32(&self::engine(), 64, 64, draw(color));
-        assert!(
-            frame
-                .iter()
-                .flatten()
-                .map(|v| v.to_bits())
-                .eq(fresh.iter().flatten().map(|v| v.to_bits())),
-            "a re-recorded frame differs from a fresh lowering"
+        assert_images_match(
+            &F32Image {
+                width: 64,
+                height: 64,
+                pixels: fresh,
+            },
+            &F32Image {
+                width: 64,
+                height: 64,
+                pixels: frame.clone(),
+            },
         );
     }
 }

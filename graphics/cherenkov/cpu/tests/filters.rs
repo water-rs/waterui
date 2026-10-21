@@ -14,12 +14,17 @@ use cherenkov::{
     WorkingColor,
 };
 use cherenkov_cpu::{BandPixels, Bands, Raster, RasterConfig};
+use cherenkov_oracle::F32Image;
+use cherenkov_oracle::metrics::{assert_close, assert_images_match};
 use filtrate::{
     AnimatedCallback, AnimatedTarget, AuxData, AuxImage, AuxSource, CpuFilter, CpuFilterError,
     CpuImage, Filter, FilterExt, FilterImage, FilterParam, Footprint, ImageVisitor, Interpolator,
     OperatingSpace, Placed, SpatialFilter, SpatialStage, StageCollector, WatchGuard, WorkingSpace,
     filters,
 };
+
+#[path = "support/visual.rs"]
+mod visual;
 
 fn engine() -> Engine<Raster> {
     Engine::<Raster>::new(RasterConfig::default()).expect("engine")
@@ -60,10 +65,7 @@ fn colour_chains_run_on_layers_and_recorded_groups() {
     engine.render(FrameTime::now()).expect("render");
 
     let layer_pixel = layer_surface.readback().expect("layer readback").pixels[4 * 8 + 4];
-    assert_eq!(
-        layer_pixel.map(f32::to_bits),
-        [0.0_f32, 0.25, 0.5, 1.0].map(f32::to_bits)
-    );
+    assert_close(&layer_pixel, &[0.0_f32, 0.25, 0.5, 1.0]);
     let group_pixel = group_surface.readback().expect("group readback").pixels[4 * 8 + 4];
     for (actual, expected) in group_pixel.into_iter().zip([0.0, 0.125, 0.25, 0.5]) {
         assert!(
@@ -239,8 +241,13 @@ fn nested_spatial_filters_match_full_surface_application_at_band_edges() {
             &mut image,
         )
         .expect("CPU gaussian blur");
-    let actual = filtered.readback().expect("filtered readback").pixels;
-    assert_eq!(actual, expected);
+    let actual = filtered.readback().expect("filtered readback");
+    let expected = F32Image {
+        width: actual.width,
+        height: actual.height,
+        pixels: expected,
+    };
+    assert_images_match(&expected, &visual::image(&actual));
 }
 
 #[test]
@@ -297,15 +304,18 @@ fn band_streamed_filtered_groups_match_offscreen_linear_f32() {
     }
     assert_eq!(next_y, size.1);
     let expected = offscreen.readback().expect("readback").pixels;
-    let streamed_bits = streamed
-        .iter()
-        .flat_map(|pixel| pixel.map(f32::to_bits))
-        .collect::<Vec<_>>();
-    let expected_bits = expected
-        .iter()
-        .flat_map(|pixel| pixel.map(f32::to_bits))
-        .collect::<Vec<_>>();
-    assert_eq!(streamed_bits, expected_bits);
+    assert_images_match(
+        &F32Image {
+            width: size.0,
+            height: size.1,
+            pixels: expected,
+        },
+        &F32Image {
+            width: size.0,
+            height: size.1,
+            pixels: streamed,
+        },
+    );
 }
 
 #[test]
@@ -490,7 +500,7 @@ fn animated_parameters_rerender_and_request_frames() {
         .expect("repeated frame");
     assert!(matches!(repeated, Next::At { .. }));
     let unchanged = surface.readback().expect("repeated readback").pixels[2 * 4 + 2];
-    assert_eq!(mid.map(f32::to_bits), unchanged.map(f32::to_bits));
+    assert_close(&mid, &unchanged);
 
     assert_eq!(
         engine

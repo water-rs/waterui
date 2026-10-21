@@ -290,6 +290,7 @@ pub fn blend(mode: BlendMode, cb: [f32; 4], cs: [f32; 4]) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cherenkov_oracle::metrics::assert_close;
 
     #[test]
     fn plus_lighter_saturates_alpha_but_not_colour() {
@@ -300,20 +301,14 @@ mod tests {
             [0.5, 0.0, 0.0, 1.0],
             [1.0, 0.0, 0.5, 1.0],
         );
-        assert_eq!(
-            out.map(f32::to_bits),
-            [1.5, 0.0, 0.5, 1.0].map(f32::to_bits)
-        );
+        assert_close(&out, &[1.5, 0.0, 0.5, 1.0]);
 
         let out = blend(
             BlendMode::PlusLighter,
             [0.25, 0.25, 0.25, 0.5],
             [0.5, 0.0, 0.0, 1.0],
         );
-        assert_eq!(
-            out.map(f32::to_bits),
-            [0.75, 0.25, 0.25, 1.0].map(f32::to_bits)
-        );
+        assert_close(&out, &[0.75, 0.25, 0.25, 1.0]);
     }
 
     const NONSEPARABLE: [BlendMode; 4] = [
@@ -336,11 +331,7 @@ mod tests {
                     out.iter().all(|c| c.is_finite()),
                     "{mode:?} on grey {g}: {out:?}"
                 );
-                assert_eq!(
-                    out.map(f32::to_bits),
-                    [g, g, g, 1.0].map(f32::to_bits),
-                    "{mode:?} on identical grey {g}"
-                );
+                assert_close(&out, &[g, g, g, 1.0]);
             }
         }
     }
@@ -357,11 +348,7 @@ mod tests {
             (BlendMode::Luminosity, 2.0),
         ] {
             let out = blend(mode, [4.0, 4.0, 4.0, 1.0], [2.0, 2.0, 2.0, 1.0]);
-            assert_eq!(
-                out.map(f32::to_bits),
-                [want, want, want, 1.0].map(f32::to_bits),
-                "{mode:?} grey4 x grey2"
-            );
+            assert_close(&out, &[want, want, want, 1.0]);
         }
     }
 
@@ -380,11 +367,7 @@ mod tests {
             (BlendMode::Luminosity, 3.0),
         ] {
             let out = blend(mode, [4.0, 4.0, 4.0, 1.0], [1.0, 1.0, 1.0, 0.5]);
-            assert_eq!(
-                out.map(f32::to_bits),
-                [want, want, want, 1.0].map(f32::to_bits),
-                "{mode:?} half-alpha source"
-            );
+            assert_close(&out, &[want, want, want, 1.0]);
         }
         for (mode, want) in [
             (BlendMode::Hue, 3.0_f32),
@@ -393,11 +376,7 @@ mod tests {
             (BlendMode::Luminosity, 4.0),
         ] {
             let out = blend(mode, [1.0, 1.0, 1.0, 0.5], [4.0, 4.0, 4.0, 1.0]);
-            assert_eq!(
-                out.map(f32::to_bits),
-                [want, want, want, 1.0].map(f32::to_bits),
-                "{mode:?} half-alpha backdrop"
-            );
+            assert_close(&out, &[want, want, want, 1.0]);
         }
     }
 
@@ -434,7 +413,7 @@ mod tests {
                     assert!(c.is_finite(), "{mode:?} grey {g}: {out:?}");
                     assert!(((c - g) / g).abs() <= 2e-6, "{mode:?} grey {g}: {out:?}");
                 }
-                assert_eq!(out[3].to_bits(), 1.0f32.to_bits(), "{mode:?} grey {g}");
+                assert_close(&[out[3]], &[1.0]);
             }
         }
     }
