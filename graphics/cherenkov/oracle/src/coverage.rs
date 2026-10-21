@@ -498,3 +498,24 @@ mod tests {
         crate::metrics::assert_close(&actual, &expected);
     }
 }
+
+/// Independent per-pixel coverage for renderer tests.
+#[cfg(feature = "testing")]
+pub mod testing {
+    /// Exact area of one pixel in a flattened polygon, without the image
+    /// rasterizer's spatial index. Intended for independent compiler tests.
+    ///
+    /// # Panics
+    /// If the segment count exceeds u32.
+    #[must_use]
+    pub fn pixel_area(
+        segments: &[(f64, f64, f64, f64)],
+        pixel: [f64; 2],
+        rule: cherenkov_scene::FillRule,
+    ) -> f64 {
+        let candidates: Vec<u32> =
+            (0..u32::try_from(segments.len()).expect("test segments fit u32")).collect();
+        let subs = vec![candidates.clone(); super::SUB];
+        super::pixel_area(segments, &candidates, &subs, pixel[0], pixel[1], rule)
+    }
+}
