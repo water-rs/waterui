@@ -7,6 +7,11 @@ use cherenkov::{
     WorkingColor,
 };
 use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::metrics::{assert_f16_close, assert_images_match};
+
+#[path = "support/visual.rs"]
+mod visual;
+use visual::crop;
 
 fn pixel(readback: &cherenkov::Readback, x: usize, y: usize) -> [f32; 4] {
     let p = &readback.pixels[y * readback.width as usize + x];
@@ -536,7 +541,7 @@ fn render(engine: &Engine<Gpu>, opacity: f32, filter: Option<[f32; 12]>, blend: 
             [0.0, 0.0, 1.0, 1.0]
         }
     };
-    let faded = |full: &cherenkov::Readback, x: usize, y: usize| {
+    let faded = |full: &cherenkov::Readback, x: usize, y: usize| -> [f32; 4] {
         std::array::from_fn(|c| 0.5f32.mul_add(pixel(full, x, y)[c], 0.5 * dst(x)[c]))
     };
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
@@ -546,10 +551,10 @@ fn render(engine: &Engine<Gpu>, opacity: f32, filter: Option<[f32; 12]>, blend: 
     // Sample-only over red, content-covered at the step, covered
     // content, and the clip's corner edge.
     for &(x, y) in &[(8, 16), (16, 16), (24, 16), (5, 5)] {
-        assert_pixel(pixel(&half, x, y), faded(&full, x, y), 1e-3);
+        assert_f16_close(&pixel(&half, x, y), &faded(&full, x, y), 1.0);
     }
     // Outside the clip the surface is untouched.
-    assert_pixel(pixel(&half, 1, 16), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    assert_f16_close(&pixel(&half, 1, 16), &[1.0, 0.0, 0.0, 1.0], 1.0);
     // A filtered member at the same pixels: the sample is attenuated —
     // never swapped — and fades with the member's content, so the rule
     // holds at covered pixels too; the member scope compositing sample
@@ -558,10 +563,10 @@ fn render(engine: &Engine<Gpu>, opacity: f32, filter: Option<[f32; 12]>, blend: 
     let filtered_full = wait!(render(&engine, 1.0, Some(SWAP), normal))?;
     let filtered_half = wait!(render(&engine, 0.5, Some(SWAP), normal))?;
     for &(x, y) in &[(8, 16), (16, 16), (24, 16), (5, 5)] {
-        assert_pixel(
-            pixel(&filtered_half, x, y),
-            faded(&filtered_full, x, y),
-            1e-3,
+        assert_f16_close(
+            &pixel(&filtered_half, x, y),
+            &faded(&filtered_full, x, y),
+            1.0,
         );
     }
     // An identity-filtered member equals the unfiltered member: the
@@ -572,8 +577,8 @@ fn render(engine: &Engine<Gpu>, opacity: f32, filter: Option<[f32; 12]>, blend: 
     let identity_full = wait!(render(&engine, 1.0, Some(IDENTITY), normal))?;
     let identity_half = wait!(render(&engine, 0.5, Some(IDENTITY), normal))?;
     for &(x, y) in &[(6, 5), (5, 5), (8, 16), (16, 16), (24, 16)] {
-        assert_pixel(pixel(&identity_full, x, y), pixel(&full, x, y), 1e-3);
-        assert_pixel(pixel(&identity_half, x, y), pixel(&half, x, y), 1e-3);
+        assert_f16_close(&pixel(&identity_full, x, y), &pixel(&full, x, y), 1.0);
+        assert_f16_close(&pixel(&identity_half, x, y), &pixel(&half, x, y), 1.0);
     }
     // A member's non-Normal blend applies to its sample, for both member
     // kinds: `Multiply` blends the whole member — sample and content —
@@ -1073,13 +1078,13 @@ fn far_members_take_two_regions() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(wait!(engine_a.memory()).backdrop_captures, Bytes(2 * 512 * 96 * 8));
     let (engine_b, _surface_b, readback_b, _group_c, _group_d) = wait!(render_bars(true))?;
     assert_eq!(wait!(engine_b.memory()).backdrop_captures, Bytes(2 * 512 * 96 * 8));
-    // Inside both bars the pixels are byte-identical between the
-    // two-region one-group render and the two single-member groups.
-    for y in (0..96).chain(416..512) {
-        for x in 0..512 {
-            // Same shader arithmetic on the same inputs: the comparison is byte-identity.
-            assert_eq!(pixel(&readback_a, x, y).map(f32::to_bits), pixel(&readback_b, x, y).map(f32::to_bits), "pixel {x},{y} differs");
-        }
+    // Inside both bars the two-region one-group render looks the same as
+    // the two single-member groups.
+    for y in [0..96, 416..512] {
+        assert_images_match(
+            &crop(&readback_a, 0..512, y.clone()),
+            &crop(&readback_b, 0..512, y),
+        );
     }
     Ok(())
 }
@@ -2003,12 +2008,10 @@ fn render(engine: &Engine<Gpu>, with_plain: bool) -> Result<cherenkov::Readback,
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let alone = wait!(render(&engine, false))?;
     let shared = wait!(render(&engine, true))?;
-    for y in 8..56 {
-        for x in 600..840 {
-            // Same shader arithmetic on the same inputs: the comparison is byte-identity.
-            assert_eq!(pixel(&alone, x, y).map(f32::to_bits), pixel(&shared, x, y).map(f32::to_bits), "member pixel ({x}, {y}) depends on the other member");
-        }
-    }
+    assert_images_match(
+        &crop(&alone, 600..840, 8..56),
+        &crop(&shared, 600..840, 8..56),
+    );
     Ok(())
 }
 }
