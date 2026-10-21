@@ -33,7 +33,7 @@ libc = "0.2"
 
 [dev-dependencies]
 cherenkov = { path = "..", features = ["testing"] }
-cherenkov-oracle = { path = "../oracle" }
+cherenkov-oracle = { path = "../oracle", features = ["testing"] }
 cherenkov-scene = { path = "../scene" }
 cherenkov-shader = { path = "../shader", features = ["eval"] }
 filtrate = { path = "../../filtrate" }

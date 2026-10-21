@@ -832,7 +832,7 @@ mod tests {
             rule: cherenkov::FillRule::NonZero,
             paint: crate::render::paint::PaintData::Solid([0.0; 4]),
             clip: None,
-            swept: false,
+            overlap: crate::render::coverage::Overlap::Disjoint,
         };
         let geometry = EdgeTiles::new(
             &mut crate::render::tiles::EdgeScratch::default(),
@@ -940,7 +940,7 @@ mod tests {
             rule: cherenkov::FillRule::NonZero,
             paint: crate::render::paint::PaintData::Solid([0.0; 4]),
             clip: None,
-            swept: false,
+            overlap: crate::render::coverage::Overlap::Disjoint,
         };
         let items = vec![
             Item::PushIsolate {

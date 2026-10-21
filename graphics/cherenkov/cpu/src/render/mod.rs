@@ -7,6 +7,7 @@ mod bins;
 mod bitmap;
 mod blend;
 mod colr;
+mod coverage;
 mod filter;
 mod font;
 mod geometry;
@@ -37,7 +38,7 @@ pub use lower::{ClipMask, ClipRef};
 #[cfg(any(test, feature = "testing"))]
 pub use paint::{PaintData, paint_data};
 #[cfg(any(test, feature = "testing"))]
-pub use raster::{Accum, ClipRun, Edge, composite_span};
+pub use raster::{ClipRun, Edge, composite_span};
 #[cfg(any(test, feature = "testing"))]
 pub use raster::{composite_solid, convert_span};
 

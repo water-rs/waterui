@@ -88,10 +88,9 @@ pub enum Item {
         paint: PaintData,
         /// The clip in force.
         clip: Option<ClipRef>,
-        /// Whether the winding sweep produced or confirmed `edges`;
-        /// carried with the geometry when it is offered to the lowering
-        /// that replaces dropped content.
-        swept: bool,
+        /// The proof carried with retained geometry; possible overlaps
+        /// are resolved by the coverage compiler.
+        overlap: super::coverage::Overlap,
     },
     /// A Gaussian-blurred, axis-aligned rounded box.
     Shadow {
@@ -850,23 +849,6 @@ fn flatten_edges(path: BezPath, tol: f64) -> Vec<Edge> {
     edges
 }
 
-/// Resolves overlapping windings: edges whose winding can overlap are
-/// replaced by boundary edges whose winding is 0 or 1 everywhere, drawn
-/// under `NonZero`; otherwise the edges and rule are returned untouched.
-pub fn resolve_edges(edges: Vec<Edge>, rule: FillRule) -> (Vec<Edge>, FillRule) {
-    cherenkov::lowering::resolve_winding(&edges, rule)
-        .into_resolved()
-        .map_or((edges, rule), |resolved| {
-            (
-                resolved
-                    .into_iter()
-                    .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 })
-                    .collect(),
-                FillRule::NonZero,
-            )
-        })
-}
-
 /// Offers a draw's geometry before its realization is dropped: a fill
 /// or a stroke realized as one draw.
 fn offer(offers: &mut Offers<'_>, op: &Op, data: &DeviceData<Vec<Item>>) {
@@ -882,11 +864,21 @@ fn offer(offers: &mut Offers<'_>, op: &Op, data: &DeviceData<Vec<Item>>) {
     };
     if let [
         Item::Draw {
-            edges, rule, swept, ..
+            edges,
+            rule,
+            overlap,
+            ..
         },
     ] = data.output.as_slice()
     {
-        offers.offer(shape, stroke, data.transform * *local, edges, *rule, *swept);
+        offers.offer(
+            shape,
+            stroke,
+            data.transform * *local,
+            edges,
+            *rule,
+            *overlap,
+        );
     }
 }
 
@@ -1681,7 +1673,6 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let tol_u = FLATTEN_TOL / sm;
         let (path, rule) = shape_outline(shape, tol_u)?;
         let edges = flatten_edges(self.transform * path, FLATTEN_TOL);
-        let (edges, rule) = resolve_edges(edges, rule);
         let mut mask = self.pool.install(|| coverage_mask(&edges, rule, w, h));
         if let Some(current) = &self.clip {
             for (i, m) in mask.iter_mut().enumerate() {
@@ -2233,7 +2224,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 let carried = match data.output.as_slice() {
                     [
                         Item::Draw {
-                            edges, rule, swept, ..
+                            edges,
+                            rule,
+                            overlap,
+                            ..
                         },
                     ] if cache.valid
                         && matches!(op, Op::Fill { .. } | Op::Stroke { .. })
@@ -2242,7 +2236,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                         Some(Resolved {
                             edges: edges.clone(),
                             rule: *rule,
-                            swept: *swept,
+                            overlap: *overlap,
                         })
                     }
                     _ => None,
@@ -2395,7 +2389,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// draw. With `cull`, a draw whose box misses the surface emits
     /// nothing.
     fn place(&mut self, frame: &Frame, resolved: Option<Resolved>, paint: &PaintData, cull: bool) {
-        let Some(Resolved { edges, rule, swept }) = resolved else {
+        let Some(Resolved {
+            edges,
+            rule,
+            overlap,
+        }) = resolved
+        else {
             return;
         };
         if edges.is_empty() {
@@ -2414,7 +2413,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             rule,
             paint,
             clip: self.clip.clone(),
-            swept,
+            overlap,
         });
     }
 
@@ -2693,13 +2692,17 @@ mod tests {
     }
 
     /// The single draw `op` realizes into `cache` under `transform` on a
-    /// 64 × 64 target: its frame edges, offset, box and whether it was
-    /// swept.
+    /// 64 × 64 target: its frame edges, offset, box and its overlap classification.
     fn realize(
         op: &Op,
         transform: Affine,
         cache: &mut Realization<Emission>,
-    ) -> (EdgeTiles, super::super::tiles::Fixed, super::DrawBox, bool) {
+    ) -> (
+        EdgeTiles,
+        super::super::tiles::Fixed,
+        super::DrawBox,
+        super::super::coverage::Overlap,
+    ) {
         let (mut items, mut scratch) = (Vec::new(), AnchorScratch::default());
         let (mut fonts, bitmap_fonts) = (FxHashMap::default(), FxHashMap::default());
         let (mut bitmaps, mut geometry) = (BitmapCache::new(0), GeometryCache::default());
@@ -2729,20 +2732,18 @@ mod tests {
                 edges,
                 offset,
                 bbox,
-                swept,
+                overlap,
                 ..
             },
         ] = data.output.as_slice()
         else {
             unreachable!("the zigzag is one draw");
         };
-        (edges.clone(), *offset, *bbox, *swept)
+        (edges.clone(), *offset, *bbox, *overlap)
     }
 
-    /// The sweep's absolute epsilon and coordinate-scaled error bound see
-    /// frame coordinates, so the same path resolves to the same geometry
-    /// wherever it sits: at a small offset and around 2^20, translated
-    /// back, the resolved draws are identical.
+    /// Translation does not change frame geometry or its proof, even
+    /// around 2^20 pixels; moving back gives identical placed edges.
     #[test]
     #[expect(
         clippy::cast_precision_loss,
@@ -2750,9 +2751,13 @@ mod tests {
     )]
     fn resolved_geometry_does_not_depend_on_where_the_path_sits() {
         let place = |at: Vec2| {
-            let (edges, offset, _, swept) =
+            let (edges, offset, _, overlap) =
                 realize(&zigzag(at), Affine::IDENTITY, &mut Realization::default());
-            assert!(swept, "the zigzag overlaps at its joins");
+            assert_eq!(
+                overlap,
+                super::super::coverage::Overlap::Possible,
+                "the zigzag overlaps at its joins"
+            );
             let offset = offset.units().map(|v| v as f64 / 65536.0);
             let back = edges
                 .iter()
@@ -2783,7 +2788,7 @@ mod tests {
         let mut cache = Realization::default();
         let (first, ..) = realize(&op, Affine::translate((1.25, -3.5)), &mut cache);
         let moved = Affine::translate((-7.75, 4.0));
-        let (reused, offset, bbox, swept) = realize(&op, moved, &mut cache);
+        let (reused, offset, bbox, overlap) = realize(&op, moved, &mut cache);
         assert_eq!(
             first.identity(),
             reused.identity(),
@@ -2795,7 +2800,7 @@ mod tests {
             bits(&reused),
             "a fresh realization resolves differently"
         );
-        assert_eq!((fresh.1, fresh.2, fresh.3), (offset, bbox, swept));
+        assert_eq!((fresh.1, fresh.2, fresh.3), (offset, bbox, overlap));
 
         let (scaled, ..) = realize(&op, Affine::scale(1.5), &mut cache);
         assert_ne!(

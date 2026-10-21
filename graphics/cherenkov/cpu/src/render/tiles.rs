@@ -486,7 +486,7 @@ impl EdgeTiles {
     /// recorded at build time — the extrema `bbox_of` reduced per edge.
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "each bounds field is exactly one packed f32 lane"
+        reason = "each bounds field is exactly one packed i32 lane"
     )]
     pub fn bounds(&self) -> [i64; 4] {
         [
@@ -636,6 +636,16 @@ pub trait EdgeSource: Sync {
     type Cursor<'a>: EdgeCursor
     where
         Self: 'a;
+    /// Visits a sorted band selection under the renderer's SIMD token.
+    fn selected<S: Simd>(&self, _simd: S, selection: &[usize], mut emit: impl FnMut(IntegerEdge)) {
+        let mut cursor = self.cursor();
+        if let Some(&first) = selection.first() {
+            cursor.seek(first);
+        }
+        for &i in selection {
+            emit(cursor.at(i));
+        }
+    }
     /// The list's edge count.
     fn len(&self) -> usize;
     /// A reader positioned at the start of the list.
@@ -653,6 +663,26 @@ pub trait EdgeCursor {
 
 impl EdgeSource for EdgeTiles {
     type Cursor<'a> = TileCursor<'a>;
+
+    fn selected<S: Simd>(&self, simd: S, selection: &[usize], mut emit: impl FnMut(IntegerEdge)) {
+        let mut cursor = self.cursor();
+        if let Some(&first) = selection.first() {
+            cursor.seek(first);
+        }
+        let mut i = 0;
+        while i < selection.len() {
+            let (origin, end, words) = cursor.run(selection[i]);
+            let base = selection[i];
+            let origin = simd.load_array_i32x4([origin[0], origin[1], origin[0], origin[1]]);
+            while i < selection.len() && selection[i] < end {
+                let [x0, y0, x1, y1] = simd
+                    .as_array_i32x4(decode(simd, origin, words[selection[i] - base]))
+                    .map(|v| i64::from(v) << 8);
+                emit(IntegerEdge { x0, y0, x1, y1 });
+                i += 1;
+            }
+        }
+    }
 
     fn len(&self) -> usize {
         Self::len(self)

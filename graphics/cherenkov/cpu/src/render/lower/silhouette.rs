@@ -1,5 +1,5 @@
 //! Coverage convolution for silhouettes without an analytic shadow form.
-use super::{FLATTEN_TOL, Item, Lowering, coverage_mask, flatten_edges, resolve_edges};
+use super::{FLATTEN_TOL, Item, Lowering, coverage_mask, flatten_edges};
 use crate::names;
 use crate::render::{glyph::GlyphMask, paint::PaintData};
 use cherenkov::lowering::shadow::{capture_padding, gaussian_taps, spread_taps};
@@ -64,7 +64,6 @@ impl Lowering<'_, '_> {
             * self.transform
             * Affine::translate(shadow.offset);
         let edges = flatten_edges(placement * path, FLATTEN_TOL);
-        let (edges, rule) = resolve_edges(edges, rule);
         // Every parallel pass installs on the renderer's pool: the
         // closures capture only the bound locals — `Send` inputs — never
         // `self` (its borrowed fields are not `Send`).

@@ -19,7 +19,7 @@ pub mod kernels {
     use crate::Level;
     use crate::render::paint_data;
 
-    pub use crate::render::{Accum, ClipMask, ClipRef, ClipRun, CpuImage, Edge, PaintData};
+    pub use crate::render::{ClipMask, ClipRef, ClipRun, CpuImage, Edge, PaintData};
     pub use cherenkov::BlendSpace;
 
     /// Lowers `paint` into [`PaintData`] exactly as the renderer does:
