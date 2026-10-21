@@ -310,15 +310,17 @@ fn gpu_paths_satisfy_polygon_and_scene_oracles() {
     let mut oracle_metrics: [Vec<f64>; 3] = std::array::from_fn(|_| Vec::new());
     for name in SCENES {
         let scene = Scene::load(&corpus().join(name)).expect("load corpus scene");
-        let reference = cherenkov_oracle::Renderer::new(
-            usize::try_from(scene.width).expect("scene width"),
-            usize::try_from(scene.height).expect("scene height"),
-        )
-        .render(&scene, &corpus().join(name))
-        .expect("oracle render");
+        let reference = cherenkov_oracle::metrics::Reference::new(
+            &cherenkov_oracle::Renderer::new(
+                usize::try_from(scene.width).expect("scene width"),
+                usize::try_from(scene.height).expect("scene height"),
+            )
+            .render(&scene, &corpus().join(name))
+            .expect("oracle render"),
+        );
         let images = ROUTES.map(|route| render(&scene, route));
         for (i, (route, image)) in ROUTES.iter().zip(images).enumerate() {
-            let (metrics, _) = cherenkov_oracle::metrics::compare(&reference, &image);
+            let metrics = reference.metrics(&image);
             oracle_metrics[i].push(metrics.flip_mean);
             if metrics.flip_mean > FLIP_MEAN_CEIL
                 || metrics.flip_max > FLIP_MAX_CEIL
