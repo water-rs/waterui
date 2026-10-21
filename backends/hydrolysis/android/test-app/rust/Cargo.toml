@@ -18,7 +18,7 @@ waterui = { workspace = true, features = ["gpu"] }
 waterui-core.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
-jni = "0.21.1"
+jni.workspace = true
 
 [lints]
 workspace = true
