@@ -315,6 +315,14 @@ struct Segment {
 }
 
 impl Segment {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "magnitude bounds the conversion error"
+    )]
+    fn magnitude(&self) -> f64 {
+        (self.x0 as f64).abs() + (self.dx as f64).abs() + 1.0
+    }
+
     #[inline]
     fn deposit(&self, cells: &mut RowCells, sign: i32, top: i32, bottom: i32) {
         if self.dx == 0 {
@@ -363,6 +371,36 @@ struct Piece {
     y1: i32,
     left: u16,
     right: u16,
+    /// Signed (start + 1) of an open visible boundary; zero means hidden.
+    opened: i32,
+    position: f64,
+    end_position: f64,
+}
+
+/// Certify the sign only when the forward-error intervals are disjoint.
+/// An overlapping interval is decided by the exact integer determinant.
+fn separated(left: f64, right: f64, error: f64) -> Option<std::cmp::Ordering> {
+    let delta = left - right;
+    if delta > error {
+        Some(std::cmp::Ordering::Greater)
+    } else if delta < -error {
+        Some(std::cmp::Ordering::Less)
+    } else {
+        None
+    }
+}
+
+impl Piece {
+    /// Integrate only when visibility changes, not at unrelated strip events.
+    fn visibility(&mut self, edge: &Segment, cells: &mut RowCells, sign: i32, y: i32, row: i32) {
+        let previous = self.opened.signum();
+        if previous != sign {
+            if previous != 0 {
+                edge.deposit(cells, previous, row + self.opened.abs() - 1, row + y);
+            }
+            self.opened = sign * (y + 1);
+        }
+    }
 }
 
 /// A row's exact grid events, sorted by consuming a three-level bitset.
@@ -421,6 +459,7 @@ pub struct Compiler {
     width: usize,
     capacity: usize,
     height: usize,
+    order_error: f64,
     edges: Table<Segment>,
     starts: Table<u32>,
     active: Table<usize>,
@@ -505,6 +544,7 @@ impl Compiler {
         self.starts.resize(rows.len(), u32::MAX);
         self.active.clear();
         self.cells.resize(width);
+        self.order_error = 0.0;
         let [ox, oy] = offset.units();
         let top = rows.start as i64 * ONE;
         let bottom = rows.end as i64 * ONE;
@@ -525,7 +565,7 @@ impl Compiler {
             let first_row = ((ya - top) / ONE) as usize;
             let next = self.starts[first_row];
             self.starts[first_row] = self.edges.len() as u32;
-            self.edges.push(Segment {
+            let segment = Segment {
                 x0,
                 y0: y0 - top,
                 dx: x1 - x0,
@@ -533,8 +573,16 @@ impl Compiler {
                 slope: (x1 - x0) as f64 / (y1 - y0) as f64,
                 dir,
                 next,
-            });
+            };
+            self.order_error = self.order_error.max(segment.magnitude());
+            self.edges.push(segment);
         });
+        // For a point on a segment, |(y-y0)*dx/dy| <= |dx|. The four
+        // integer-to-f64 conversions, division, multiplication and addition
+        // incur less than 8u*(|x0|+|dx|+1), u=EPSILON/2. This pair bound
+        // includes subtraction and rounding the bound itself. It determines
+        // only separation, never coincidence.
+        self.order_error *= 16.0 * f64::EPSILON;
     }
 
     #[expect(
@@ -594,6 +642,9 @@ impl Compiler {
                         y1: b - top,
                         left: left as u16,
                         right: end + u16::from(right > f64::from(end)),
+                        opened: 0,
+                        position: 0.0,
+                        end_position: 0.0,
                     };
                 }
             }
@@ -678,6 +729,7 @@ impl Compiler {
 
     #[expect(
         clippy::cast_possible_truncation,
+        clippy::too_many_lines,
         reason = "one strip sweep with exact grid events and coincidence"
     )]
     fn group(&mut self, group: Range<usize>, rule: FillRule, row: i32) {
@@ -699,7 +751,14 @@ impl Compiler {
         while endpoint < self.breaks.len() {
             let mut bottom = self.breaks[endpoint];
             if top == self.breaks[endpoint - 1] {
-                self.order.retain(|&i| self.pieces[i].y1 > top);
+                self.order.retain(|&i| {
+                    if self.pieces[i].y1 > top {
+                        true
+                    } else {
+                        self.pieces[i].visibility(&self.edges[i], &mut self.cells, 0, top, row);
+                        false
+                    }
+                });
                 for &index in &self.active[group.clone()] {
                     if self.pieces[index].y0 == top {
                         self.order.push(index);
@@ -710,11 +769,22 @@ impl Compiler {
             // before top + 1 includes all crossings assigned to top, while a
             // crossing exactly at top + 1 still belongs to the next strip.
             let twice_after = 2 * (i64::from(row) + i64::from(top) + 1);
+            for &index in self.order.iter() {
+                self.pieces[index].position = self.edges[index].at(row + top + 1);
+                self.pieces[index].end_position = self.edges[index].at(row + bottom);
+            }
             let compare = |a: usize, b: usize| {
-                let (a, b) = (self.edges[a], self.edges[b]);
-                a.position(b, twice_after)
-                    .then_with(|| b.slope_order(a))
-                    .then_with(|| (a.x0, a.y0, a.dx, a.dy).cmp(&(b.x0, b.y0, b.dx, b.dy)))
+                separated(
+                    self.pieces[a].position,
+                    self.pieces[b].position,
+                    self.order_error,
+                )
+                .unwrap_or_else(|| {
+                    let (a, b) = (self.edges[a], self.edges[b]);
+                    a.position(b, twice_after)
+                        .then_with(|| b.slope_order(a))
+                        .then_with(|| (a.x0, a.y0, a.dx, a.dy).cmp(&(b.x0, b.y0, b.dx, b.dy)))
+                })
             };
             for i in 1..self.order.len() {
                 let value = self.order[i];
@@ -729,6 +799,14 @@ impl Compiler {
             // In an ordered active set, the earliest crossing is between
             // neighbors. Pairs with non-converging slopes cannot cross.
             for pair in self.order.windows(2) {
+                if separated(
+                    self.pieces[pair[0]].end_position,
+                    self.pieces[pair[1]].end_position,
+                    self.order_error,
+                ) == Some(std::cmp::Ordering::Less)
+                {
+                    continue;
+                }
                 let (a, b) = (self.edges[pair[0]], self.edges[pair[1]]);
                 let (ad, bd) = (i128::from(a.dy), i128::from(b.dy));
                 let (ax, bx) = (i128::from(a.dx), i128::from(b.dx));
@@ -752,25 +830,33 @@ impl Compiler {
             let mut winding = self.profile[profile].1;
             let mut i = 0;
             while i < self.order.len() {
-                let edge = self.edges[self.order[i]];
+                let index = self.order[i];
+                let edge = self.edges[index];
                 let before = inside(winding, rule);
                 winding += edge.dir;
                 i += 1;
                 while i < self.order.len()
+                    && separated(
+                        self.pieces[index].position,
+                        self.pieces[self.order[i]].position,
+                        self.order_error,
+                    )
+                    .is_none()
                     && edge.compare(self.edges[self.order[i]], twice_after).is_eq()
                 {
-                    winding += self.edges[self.order[i]].dir;
+                    let index = self.order[i];
+                    winding += self.edges[index].dir;
+                    self.pieces[index].visibility(&self.edges[index], &mut self.cells, 0, top, row);
                     i += 1;
                 }
                 let after = inside(winding, rule);
-                if before != after {
-                    edge.deposit(
-                        &mut self.cells,
-                        if after { 1 } else { -1 },
-                        row + top,
-                        row + bottom,
-                    );
-                }
+                self.pieces[index].visibility(
+                    &edge,
+                    &mut self.cells,
+                    i32::from(after) - i32::from(before),
+                    top,
+                    row,
+                );
             }
             if self.next_profile.last().is_none_or(|&(_, w)| w != winding) {
                 self.next_profile.push((top, winding));
@@ -779,6 +865,9 @@ impl Compiler {
             if top == self.breaks[endpoint] {
                 endpoint += 1;
             }
+        }
+        for &index in self.order.iter() {
+            self.pieces[index].visibility(&self.edges[index], &mut self.cells, 0, ONE as i32, row);
         }
         std::mem::swap(&mut self.profile, &mut self.next_profile);
     }
@@ -847,6 +936,49 @@ pub mod testing {
 mod tests {
     use super::super::raster::Edge;
     use super::*;
+
+    #[test]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "exercise rounded estimates against exact determinants"
+    )]
+    fn certified_positions_match_integer_order() {
+        let mut seed = 0x2820_u64;
+        let mut random = || {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            seed
+        };
+        for _ in 0..20_000 {
+            let x0 = i64::try_from(random() >> 9).unwrap() - (1_i64 << 54);
+            let dx = i64::try_from(random() >> 32).unwrap() - (1_i64 << 31);
+            let dy = i64::try_from(random() >> 32).unwrap() + 1;
+            let a = Segment {
+                x0,
+                y0: -(dy / 2),
+                dx,
+                dy,
+                slope: dx as f64 / dy as f64,
+                dir: 1,
+                next: u32::MAX,
+            };
+            let shift = i64::try_from(random() % 17).unwrap() - 8;
+            let delta = i64::try_from(random() >> 32).unwrap() - (1_i64 << 31);
+            for (shift, delta) in [(0, 0), (shift, -2 * shift), (shift, delta), (delta, shift)] {
+                let b = Segment {
+                    x0: a.x0 + shift,
+                    dx: a.dx + delta,
+                    slope: (a.dx + delta) as f64 / dy as f64,
+                    ..a
+                };
+                let error = a.magnitude().max(b.magnitude()) * (16.0 * f64::EPSILON);
+                for y in [0, 1] {
+                    if let Some(order) = separated(a.at(y), b.at(y), error) {
+                        assert_eq!(order, a.position(b, 2 * i64::from(y)));
+                    }
+                }
+            }
+        }
+    }
 
     #[expect(clippy::float_cmp, reason = "drop exactly horizontal test edges")]
     fn polygon(points: &[(f32, f32)]) -> Vec<Edge> {
