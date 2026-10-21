@@ -274,12 +274,15 @@ impl Coverage {
         }
     }
 
-    /// Accumulate the boundary segment `(x0,y0)-(x1,y1)`. Horizontal or
-    /// degenerate segments carry no area.
+    /// Accumulate the boundary segment `(x0,y0)-(x1,y1)`.
+    ///
+    /// Every segment is kept, however short: the winding count's half-open
+    /// crossing rule pairs crossings only along an unbroken chain of
+    /// shared endpoints, and dropping a sliver between two neighbours
+    /// leaves one crossing unpaired on every scanline through its y range,
+    /// which inks the whole row from the left edge. A zero-length segment
+    /// crosses no scanline and carries no area.
     pub fn add_line(&mut self, x0: f64, y0: f64, x1: f64, y1: f64) {
-        if (x0 - x1).abs() <= EPS && (y0 - y1).abs() <= EPS {
-            return;
-        }
         self.segs.push((x0, y0, x1, y1));
     }
 
@@ -440,5 +443,58 @@ mod tests {
                 assert!(v >= 1.0 - 1e-9, "reverse={reverse} (16,{y}) = {v}");
             }
         }
+    }
+
+    /// One round-capped dash from kurbo's stroke outline, a 1.5 px wide
+    /// capsule whose cap-to-side vertices lie at y = 51.5 and 56.5 — on the
+    /// sample rows of pixel rows 51 and 56. The flattened top cap's last
+    /// point before its end lands an ulp away from it, so the outline
+    /// carries a sliver segment straddling y = 51.5. Every pixel's coverage
+    /// must match the capsule's exact area, and no row may be inked away
+    /// from it.
+    #[test]
+    fn a_sample_row_through_a_vertex_covers_only_the_shape() {
+        const R: f64 = 0.75;
+        // The quarter-circle cubic handle, 4/3 (sqrt 2 - 1) r.
+        const K: f64 = R * 4.0 / 3.0 * (std::f64::consts::SQRT_2 - 1.0);
+        const W: usize = 128;
+        const H: usize = 96;
+        let (cx, top, bottom) = (70.0, 51.5, 56.5);
+        let mut path = kurbo::BezPath::new();
+        path.move_to((cx - R, bottom));
+        path.line_to((cx - R, top));
+        path.curve_to((cx - R, top - K), (cx - K, top - R), (cx, top - R));
+        path.curve_to((cx + K, top - R), (cx + R, top - K), (cx + R, top));
+        path.line_to((cx + R, bottom));
+        path.curve_to((cx + R, bottom + K), (cx + K, bottom + R), (cx, bottom + R));
+        path.curve_to((cx - K, bottom + R), (cx - R, bottom + K), (cx - R, bottom));
+        let shape = cherenkov_scene::Shape::Path { path };
+        let mut coverage = Coverage::new(W, H);
+        for (x0, y0, x1, y1) in crate::path::edges(&crate::path::shape_polylines(
+            &shape,
+            kurbo::Affine::IDENTITY,
+        )) {
+            coverage.add_line(x0, y0, x1, y1);
+        }
+        let actual = coverage.finish(FillRule::NonZero);
+
+        // The capsule spans x in [69.25, 70.75] and is symmetric about
+        // x = 70, so pixel columns 69 and 70 each hold half of a row's
+        // area: the integral of the half-width over the row. `g` is the
+        // antiderivative of the cap's half-width sqrt(r² - t²).
+        let g = |t: f64| 0.5 * t.mul_add(t.mul_add(-t, R * R).sqrt(), R * R * (t / R).asin());
+        let half_row = |y: f64| {
+            let cap_top = g((y + 1.0 - top).clamp(-R, 0.0)) - g((y - top).clamp(-R, 0.0));
+            let cap_bottom = g((y + 1.0 - bottom).clamp(0.0, R)) - g((y - bottom).clamp(0.0, R));
+            let side = R * ((y + 1.0).min(bottom) - y.max(top)).max(0.0);
+            cap_top + side + cap_bottom
+        };
+        let mut expected = vec![0.0; W * H];
+        for y in 0..H {
+            let area = half_row(f64::from(u32::try_from(y).expect("a small row index")));
+            expected[y * W + 69] = area;
+            expected[y * W + 70] = area;
+        }
+        crate::metrics::assert_close(&actual, &expected);
     }
 }
