@@ -539,6 +539,7 @@ async fn install_android_artifact(
 ) -> Result<(), FailToRun> {
     let install_output = host
         .command(adb.path())
+        .map_err(|error| FailToRun::Install(eyre!("Failed to install APK: {error}")))?
         .args(["-s", device_id, "install", "-r"])
         .arg(artifact_path)
         .stdout(Stdio::piped())
@@ -740,6 +741,7 @@ async fn reverse_dev_server_port(
 ) -> Result<(), FailToRun> {
     let output = host
         .command(adb.path())
+        .map_err(|error| FailToRun::Launch(eyre!("Failed to run `adb reverse`: {error}")))?
         .args(crate::web::adb_reverse_args(device_id, port))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -765,6 +767,7 @@ async fn launch_android_app(
 ) -> Result<(), FailToRun> {
     let output = host
         .command(adb.path())
+        .map_err(|error| FailToRun::Launch(eyre!("Failed to launch app: {error}")))?
         .args(&start_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1356,9 +1359,16 @@ fn start_android_log_stream(
     // Build logcat command with PID filter and minimum priority
     let pid_arg = format!("--pid={pid}");
     #[cfg(unix)]
-    let mut cmd = host.command_in_own_process_group(adb.path());
+    let logcat = host.command_in_own_process_group(adb.path());
     #[cfg(not(unix))]
-    let mut cmd = host.command(adb.path());
+    let logcat = host.command(adb.path());
+    let mut cmd = match logcat {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            tracing::warn!("Failed to spawn logcat: {e}");
+            return (runtime_event_rx, None);
+        }
+    };
     cmd.args(["-s", device_id, "logcat", "-v", "threadtime"])
         .arg(pid_arg)
         .arg(format!("*:{priority}"))
@@ -1619,7 +1629,7 @@ impl AndroidEmulator {
         } else {
             // Start the emulator process (don't wait for it here, we'll poll for readiness).
             // Use std::process::Command so we can isolate process-group behavior.
-            let mut emulator_cmd = host.std_command(&emulator_path);
+            let mut emulator_cmd = host.std_command(&emulator_path)?;
             emulator_cmd
                 .arg("-avd")
                 .arg(&self.avd_name)

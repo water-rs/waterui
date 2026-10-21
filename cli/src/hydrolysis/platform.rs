@@ -844,7 +844,7 @@ async fn build_hydrolysis_web_bundle(
     )
     .await?;
 
-    let mut wasm_pack_cmd = host.command(wasm_pack);
+    let mut wasm_pack_cmd = host.command(wasm_pack)?;
     let wasm_pack_cmd = command(&mut wasm_pack_cmd, host.std_output());
     wasm_pack_cmd
         .current_dir(backend_path)

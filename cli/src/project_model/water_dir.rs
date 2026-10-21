@@ -919,9 +919,9 @@ pub fn spawn_build_cache_cleanup(
     let executable = crate::toolchain::Host::current_exe()
         .wrap_err("Failed to locate the running water executable for build-cache cleanup")?;
     #[cfg(unix)]
-    let mut command = host.command_in_own_process_group(&executable);
+    let mut command = host.command_in_own_process_group(&executable)?;
     #[cfg(not(unix))]
-    let mut command = host.command(&executable);
+    let mut command = host.command(&executable)?;
     let mut child = command
         .arg("gc")
         .arg("build-cache")

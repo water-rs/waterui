@@ -2146,10 +2146,10 @@ mod tests {
     /// A local checkout declares `apple-backend-path` but has no crate there:
     /// the staged source is missing, and no remote source substitutes for it.
     #[test]
-    fn declared_local_apple_backend_missing_its_crate_is_an_error() {
+    fn declared_local_apple_backend_missing_its_crate_is_an_error() -> std::io::Result<()> {
         let directory = tempdir().unwrap();
         let root = directory.path().join("waterui");
-        write_local_checkout(&root);
+        write_local_checkout(&root)?;
         let mut context = ctx(
             Some(root.clone()),
             Some(PathBuf::from("managed_backends/apple")),
@@ -2167,6 +2167,7 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(error.contains("backends/apple"), "{error}");
+        Ok(())
     }
 
     /// The scaffolded `gradle-wrapper.properties` renders the framework's
@@ -3193,9 +3194,9 @@ mod tests {
 
     /// Run `git -C dir args` for a fixture checkout and return its trimmed
     /// stdout.
-    fn probe_git(dir: &Path, args: &[&str]) -> String {
+    fn probe_git(dir: &Path, args: &[&str]) -> std::io::Result<String> {
         let output = crate::toolchain::Host::current()
-            .std_command("git")
+            .std_command("git")?
             .arg("-C")
             .arg(dir)
             .args(args)
@@ -3206,10 +3207,10 @@ mod tests {
             "git {args:?} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        String::from_utf8(output.stdout)
+        Ok(String::from_utf8(output.stdout)
             .expect("git stdout is utf-8")
             .trim()
-            .to_string()
+            .to_string())
     }
 
     /// The channel path answers through real `cargo metadata`: a
@@ -3220,12 +3221,16 @@ mod tests {
     /// resolved revisions yield their own tables, and an unresolvable probe
     /// fails instead of forwarding the unfiltered set.
     #[test]
-    fn resolved_forward_tables_reads_the_resolved_package_from_cargo_metadata() {
+    fn resolved_forward_tables_reads_the_resolved_package_from_cargo_metadata()
+    -> std::io::Result<()> {
         let tempdir = tempdir().expect("temporary probe fixture dir");
 
         // A committed `waterui-apple` checkout returns the revision a channel
         // manifest pins on.
-        let write_backend = |dir_name: &str, version: &str, features: &[&str]| {
+        let write_backend = |dir_name: &str,
+                             version: &str,
+                             features: &[&str]|
+         -> std::io::Result<(String, String)> {
             let dir = tempdir.path().join(dir_name);
             write_fixture_crate(&dir, "waterui-apple", features);
             // The pinned revision must carry the declared version.
@@ -3234,9 +3239,9 @@ mod tests {
                 .expect("fixture manifest")
                 .replace("0.0.0", version);
             std::fs::write(&manifest_path, manifest).expect("fixture manifest");
-            probe_git(&dir, &["init", "-b", "fixture"]);
-            let rev = crate::framework::test_fixtures::git_commit_all(&dir, "fixture");
-            (format!("file://{}", dir.display()), rev)
+            probe_git(&dir, &["init", "-b", "fixture"])?;
+            let rev = crate::framework::test_fixtures::git_commit_all(&dir, "fixture")?;
+            Ok((format!("file://{}", dir.display()), rev))
         };
 
         let manifest_for = |git_url: &str, rev: &str| {
@@ -3269,7 +3274,7 @@ mod tests {
             ("apple-0.5.2", "0.5.2", vec!["map", "media"]),
             ("apple-0.6.0", "0.6.0", vec!["map", "media", "inspector"]),
         ] {
-            let (git_url, rev) = write_backend(dir_name, version, &features);
+            let (git_url, rev) = write_backend(dir_name, version, &features)?;
             let manifest = manifest_for(&git_url, &rev);
             let tables = smol::block_on(super::resolved_forward_tables(
                 &host,
@@ -3307,6 +3312,7 @@ mod tests {
             error.to_string().contains("resolve"),
             "the error must name the resolution that failed: {error}"
         );
+        Ok(())
     }
 
     /// A fake checkout patching `waterui-core` to its own `core/`, and a
