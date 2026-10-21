@@ -152,7 +152,7 @@ harness = false
 workspace = true
 
 [package.metadata.cargo-machete]
-# `rspirv` is used by `build_tile_spirv.rs`, a file `build.rs` pulls in as a
-# module — cargo-machete does not follow `mod` declarations out of a build
-# script, so the genuine use is invisible to it.
-ignored = ["rspirv"]
+# These are used only by the build script and the files it pulls in as
+# modules (`build_tile_spirv.rs`, `build_dxil.rs`); cargo-machete does not
+# see those uses, so it reports the genuine build dependencies as unused.
+ignored = ["proc-macro2", "quote", "rspirv"]
