@@ -1452,6 +1452,7 @@ fn shade_run<S: Simd>(
 #[expect(
     clippy::too_many_arguments,
     clippy::inline_always,
+    clippy::cast_sign_loss,
     reason = "the row context travels together under SIMD dispatch"
 )]
 #[inline(always)]
@@ -1467,6 +1468,20 @@ fn shade_run_in<S: Simd>(
     space: cherenkov::BlendSpace,
     src: &mut [MaybeUninit<[f32; 4]>],
 ) {
+    let (range, cov, clip) = if let Some(ClipMask::Rect(rect)) = clip.map(AsRef::as_ref) {
+        if py < rect.y0.max(0) as usize || py >= rect.y1.max(0) as usize {
+            return;
+        }
+        let start = range.start.max(rect.x0.max(0) as usize);
+        let end = range.end.min(rect.x1.max(0) as usize);
+        if start >= end {
+            return;
+        }
+        let cov = cov.slice(start - range.start..end - range.start);
+        (start..end, cov, None)
+    } else {
+        (range, cov, clip)
+    };
     if let PaintData::Solid(color) = paint {
         let clip = ClipRun::new(clip, w, range.start, py);
         let dst = &mut dst[range];
