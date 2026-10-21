@@ -957,6 +957,7 @@ impl Lowerer<'_> {
         ops: &mut Vec<Op>,
         source: Option<usize>,
     ) -> Result<(), RenderError> {
+        cherenkov::lowering::check_dashes(stroke)?;
         let hw = stroke.width / 2.0;
         let general = match shape {
             ShapeData::Path { .. } => true,
@@ -1402,4 +1403,97 @@ fn clip_shape(shape: &ShapeData) -> Result<ClipShape, RenderError> {
             _ => None,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use cherenkov::WorkingColor;
+    use cherenkov::kurbo::Ellipse;
+
+    use super::*;
+
+    /// `stroke` against empty registries, as `draw` dispatches a
+    /// `Command::Stroke`.
+    fn lower_stroke(shape: &ShapeData, stroke: &kurbo::Stroke) -> Result<(), RenderError> {
+        let (mut pending, fonts, images) = (Vec::new(), FxHashMap::default(), FxHashMap::default());
+        let lowerer = Lowerer {
+            pending: &mut pending,
+            fonts: &fonts,
+            images: &images,
+        };
+        let mut ops = Vec::new();
+        lowerer.stroke(
+            Affine::IDENTITY,
+            shape,
+            stroke,
+            &Paint::Solid(WorkingColor::WHITE),
+            &mut ops,
+            None,
+        )
+    }
+
+    /// One shape per route `stroke` selects: the general outline path, the
+    /// line box path, and the offset and distance analytic strokes.
+    fn route_shapes() -> [ShapeData; 4] {
+        let mut path = kurbo::BezPath::new();
+        path.move_to((4.0, 4.0));
+        path.line_to((12.0, 12.0));
+        [
+            ShapeData::Path {
+                elements: path.into_elements().into(),
+                rule: FillRule::NonZero,
+            },
+            ShapeData::Line(Line::new((0.0, 0.0), (8.0, 0.0))),
+            ShapeData::Rect(Rect::new(0.0, 0.0, 8.0, 8.0)),
+            ShapeData::Ellipse(Ellipse::new((4.0, 4.0), (8.0, 3.0), 0.0)),
+        ]
+    }
+
+    /// A negative or non-finite dash entry is rejected before the lowering
+    /// picks a route, so every shape reports the same error.
+    #[test]
+    fn a_negative_or_nonfinite_dash_entry_errors_on_every_route() {
+        for entry in [-1.0, f64::NEG_INFINITY, f64::NAN, f64::INFINITY] {
+            let mut stroke = kurbo::Stroke::new(2.0);
+            stroke.dash_pattern.extend([4.0, entry]);
+            for shape in route_shapes() {
+                assert!(
+                    matches!(lower_stroke(&shape, &stroke), Err(RenderError::Render(_))),
+                    "dash entry {entry} on {shape:?}"
+                );
+            }
+        }
+    }
+
+    /// A dash pattern whose entries sum to zero is rejected on every
+    /// route.
+    #[test]
+    fn a_dash_pattern_summing_to_zero_errors_on_every_route() {
+        let mut stroke = kurbo::Stroke::new(2.0);
+        stroke.dash_pattern.extend([0.0, 0.0]);
+        for shape in route_shapes() {
+            assert!(
+                matches!(lower_stroke(&shape, &stroke), Err(RenderError::Render(_))),
+                "zero-sum pattern on {shape:?}"
+            );
+        }
+    }
+
+    /// A non-finite dash offset is rejected on every route, dashed or not.
+    #[test]
+    fn a_nonfinite_dash_offset_errors_on_every_route() {
+        for offset in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for pattern in [Vec::new(), vec![4.0, 2.0]] {
+                let mut stroke = kurbo::Stroke::new(2.0);
+                stroke.dash_offset = offset;
+                stroke.dash_pattern.extend(pattern.iter().copied());
+                for shape in route_shapes() {
+                    assert!(
+                        matches!(lower_stroke(&shape, &stroke), Err(RenderError::Render(_))),
+                        "dash offset {offset}, {pattern:?} on {shape:?}"
+                    );
+                }
+            }
+        }
+    }
 }

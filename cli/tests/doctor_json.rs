@@ -39,7 +39,7 @@ fn assert_item_schema(item: &DoctorItemRecord) {
 }
 
 #[test]
-fn doctor_json_emits_typed_item_records_for_every_check() {
+fn doctor_json_emits_typed_item_records_for_every_check() -> std::io::Result<()> {
     let home = tempfile::tempdir().expect("scratch home for the child process");
     // `web-package-manager` only emits inside a project declaring `[web]`;
     // run the child in one so `ids::ALL` is covered exhaustively.
@@ -59,7 +59,7 @@ fn doctor_json_emits_typed_item_records_for_every_check() {
         .with_env("HOME", home.path())
         .with_env("USERPROFILE", home.path())
         .with_cwd(project.path())
-        .std_command(env!("CARGO_BIN_EXE_water"))
+        .std_command(env!("CARGO_BIN_EXE_water"))?
         .args(["--json", "doctor"])
         .env_remove("RUST_LOG")
         .output()
@@ -130,4 +130,5 @@ fn doctor_json_emits_typed_item_records_for_every_check() {
         })
         .collect();
     assert_eq!(skipped_ids, expected_skipped);
+    Ok(())
 }

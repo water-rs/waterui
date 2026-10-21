@@ -2367,7 +2367,10 @@ Automatic meson installation failed: {install_err}\n\n{}",
         } else {
             None
         };
-        let mut cmd = self.host.command("cargo");
+        let mut cmd = self
+            .host
+            .command("cargo")
+            .map_err(RustBuildError::FailToExecuteCargoBuild)?;
         // A `--bin` unit always builds through `cargo rustc`: link flags for
         // the final crate (`final_rustc_args`) can then be passed after `--`,
         // where they reach only the selected unit's compilation and leave
@@ -3662,7 +3665,9 @@ async fn clean_cargo_package(
     package: &str,
     target_dir: &Path,
 ) -> Result<(), RustBuildError> {
-    let mut command = host.command("cargo");
+    let mut command = host
+        .command("cargo")
+        .map_err(RustBuildError::FailToExecuteCargoBuild)?;
     command
         .arg("clean")
         .arg("-p")
@@ -4320,7 +4325,8 @@ mod tests {
     /// resolves it from Cargo's `compiler-artifact` report rather than a
     /// bare `<profile>/<name>` guess.
     #[test]
-    fn same_named_projects_resolve_their_own_artifacts_in_one_shared_target() {
+    fn same_named_projects_resolve_their_own_artifacts_in_one_shared_target() -> std::io::Result<()>
+    {
         use crate::project_model::project_types::{CrateName, generated_crate_name};
 
         smol::block_on(async {
@@ -4366,7 +4372,7 @@ mod tests {
             );
             for (artifact, marker) in artifacts.iter().zip(["first", "second"]) {
                 let ran = crate::toolchain::Host::current()
-                    .std_command(artifact)
+                    .std_command(artifact)?
                     .output()
                     .expect("the resolved artifact executes");
                 assert_eq!(
@@ -4375,7 +4381,8 @@ mod tests {
                     "the artifact is this project's binary, not the sibling's"
                 );
             }
-        });
+            Ok(())
+        })
     }
 
     /// Two same-named crates in different directories share one Cargo
@@ -4386,7 +4393,7 @@ mod tests {
     /// unit, and the resolved artifact is the variant-stable
     /// `deps/<name>-<marker>` link of the `executable` this run reported.
     #[test]
-    fn binary_artifact_is_the_output_of_the_build_that_just_ran() {
+    fn binary_artifact_is_the_output_of_the_build_that_just_ran() -> std::io::Result<()> {
         let temporary = tempdir().expect("tempdir");
         let shared_target = temporary.path().join("shared-target");
         let package = "demo-hydrolysis-deadbeef";
@@ -4433,7 +4440,7 @@ mod tests {
                 // variant — running it checks the slot carries this
                 // build's output whether the unit compiled or stayed fresh.
                 let ran = crate::toolchain::Host::current()
-                    .command(&artifact)
+                    .command(&artifact)?
                     .output()
                     .await
                     .expect("the resolved artifact executes");
@@ -4452,7 +4459,8 @@ mod tests {
                 artifacts[0], artifacts[2],
                 "the same variant relinks to the same marked path"
             );
-        });
+            Ok(())
+        })
     }
 
     /// The resolved binary artifact is the variant-stable
@@ -4461,7 +4469,7 @@ mod tests {
     /// rebuild of the same crate relinks the same marked path to the new
     /// run's bytes — never keeping the earlier build's.
     #[test]
-    fn binary_artifact_is_the_variant_stable_marked_link() {
+    fn binary_artifact_is_the_variant_stable_marked_link() -> std::io::Result<()> {
         let temporary = tempdir().expect("tempdir");
         let shared_target = temporary.path().join("shared-target");
         let package = "demo-hydrolysis-deadbeef";
@@ -4519,7 +4527,7 @@ mod tests {
                 );
 
                 let ran = crate::toolchain::Host::current()
-                    .command(&artifact)
+                    .command(&artifact)?
                     .output()
                     .await
                     .expect("the resolved artifact executes");
@@ -4534,7 +4542,8 @@ mod tests {
                 artifacts[0], artifacts[1],
                 "the same build variant resolves the same marked path"
             );
-        });
+            Ok(())
+        })
     }
 
     /// `marked_binary_artifact` hard-links the reported uplift to

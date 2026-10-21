@@ -466,6 +466,20 @@ impl Host {
             .without_env("CARGO_BUILD_TARGET_DIR")
     }
 
+    /// A host whose environment carries no compiler wrapper: `RUSTC_WRAPPER`
+    /// and its config spelling `CARGO_BUILD_RUSTC_WRAPPER` are both removed.
+    ///
+    /// Test fixtures that redirect the home directory strip these too: the
+    /// developer's wrapper is configured for the real home, and sccache on
+    /// Windows panics resolving its config directory under a scratch
+    /// `USERPROFILE`, failing every `cargo` the fixture spawns
+    /// (water-rs/waterui#3124). The real CLI keeps honoring the wrapper.
+    #[must_use]
+    pub fn without_compile_wrapper(&self) -> Self {
+        self.without_env("RUSTC_WRAPPER")
+            .without_env("CARGO_BUILD_RUSTC_WRAPPER")
+    }
+
     /// Every environment variable on this host, in map order.
     ///
     /// For resolvers that take the whole environment at once rather than
@@ -484,16 +498,20 @@ impl Host {
     /// feeds or forwards input sets `.stdin(...)` on the returned command
     /// explicitly. Other stdio is left to the caller — see
     /// `crate::utils::command` for the CLI's capture/inherit policy.
-    #[must_use]
-    pub fn command(&self, program: impl AsRef<OsStr>) -> Command {
+    ///
+    /// # Errors
+    /// - [`io::ErrorKind::NotFound`] when `program` is a bare name that no
+    ///   executable on this host's `PATH` provides. A program given as a
+    ///   path is used as given.
+    pub fn command(&self, program: impl AsRef<OsStr>) -> io::Result<Command> {
         withhold_std_handles_from_children();
-        let mut command = Command::new(self.resolve_program(program.as_ref()));
+        let mut command = Command::new(self.resolve_program(program.as_ref())?);
         command
             .env_clear()
             .envs(&self.env)
             .current_dir(&self.cwd)
             .stdin(Stdio::null());
-        command
+        Ok(command)
     }
 
     /// A [`std::process::Command`] that runs `program` under this host.
@@ -501,16 +519,20 @@ impl Host {
     /// Same environment, working directory and null-stdin default as
     /// [`Host::command`], for the places that need synchronous or `std`-only
     /// command features (process groups, spawning from a non-async thread).
-    #[must_use]
-    pub fn std_command(&self, program: impl AsRef<OsStr>) -> std::process::Command {
+    ///
+    /// # Errors
+    /// - [`io::ErrorKind::NotFound`] when `program` is a bare name that no
+    ///   executable on this host's `PATH` provides. A program given as a
+    ///   path is used as given.
+    pub fn std_command(&self, program: impl AsRef<OsStr>) -> io::Result<std::process::Command> {
         withhold_std_handles_from_children();
-        let mut command = std::process::Command::new(self.resolve_program(program.as_ref()));
+        let mut command = std::process::Command::new(self.resolve_program(program.as_ref())?);
         command
             .env_clear()
             .envs(&self.env)
             .current_dir(&self.cwd)
             .stdin(Stdio::null());
-        command
+        Ok(command)
     }
 
     /// A [`std::process::Command`] that runs `program` under this host with
@@ -523,14 +545,20 @@ impl Host {
     /// launchers that take the TTY over entirely. The
     /// `std` type is returned so callers that `exec` or group the child can;
     /// async callers wrap it with `smol::process::Command::from`.
-    #[must_use]
-    pub fn interactive_command(&self, program: impl AsRef<OsStr>) -> std::process::Command {
-        let mut command = self.std_command(program);
+    ///
+    /// # Errors
+    /// - [`io::ErrorKind::NotFound`] when `program` is a bare name that no
+    ///   executable on this host's `PATH` provides.
+    pub fn interactive_command(
+        &self,
+        program: impl AsRef<OsStr>,
+    ) -> io::Result<std::process::Command> {
+        let mut command = self.std_command(program)?;
         command
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        command
+        Ok(command)
     }
 
     /// A [`std::process::Command`] that inherits the terminal for output but
@@ -541,11 +569,17 @@ impl Host {
     /// never reads stdin — `water bench` running `cargo nextest` — in
     /// contrast to [`Host::interactive_command`], which owns the whole
     /// terminal.
-    #[must_use]
-    pub fn monitored_command(&self, program: impl AsRef<OsStr>) -> std::process::Command {
-        let mut command = self.std_command(program);
+    ///
+    /// # Errors
+    /// - [`io::ErrorKind::NotFound`] when `program` is a bare name that no
+    ///   executable on this host's `PATH` provides.
+    pub fn monitored_command(
+        &self,
+        program: impl AsRef<OsStr>,
+    ) -> io::Result<std::process::Command> {
+        let mut command = self.std_command(program)?;
         command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
-        command
+        Ok(command)
     }
 
     /// A [`Command`] that spawns `program` as the leader of a new process
@@ -559,14 +593,17 @@ impl Host {
     /// termination path the supervisor cannot order or count. The group
     /// boundary exists only on Unix, where `std` lowers `process_group(0)`
     /// to `setpgid` in the child before `exec`.
+    ///
+    /// # Errors
+    /// - [`io::ErrorKind::NotFound`] when `program` is a bare name that no
+    ///   executable on this host's `PATH` provides.
     #[cfg(unix)]
-    #[must_use]
-    pub fn command_in_own_process_group(&self, program: impl AsRef<OsStr>) -> Command {
+    pub fn command_in_own_process_group(&self, program: impl AsRef<OsStr>) -> io::Result<Command> {
         use std::os::unix::process::CommandExt as _;
 
-        let mut command = self.std_command(program);
+        let mut command = self.std_command(program)?;
         command.process_group(0);
-        Command::from(command)
+        Ok(Command::from(command))
     }
 
     /// Spawn `program` with `args` under this host, capturing output.
@@ -664,7 +701,11 @@ impl Host {
             .collect::<Vec<_>>();
         tracing::debug!(program = %program_name, ?args, "spawning");
         let started = std::time::Instant::now();
-        let mut command = self.std_command(program);
+        let spawn_error = |source| CommandError::Spawn {
+            program: program_name.clone(),
+            source,
+        };
+        let mut command = self.std_command(program).map_err(spawn_error)?;
         command.args(&args);
         if deadline.is_some() {
             ProcessTree::lead(&mut command);
@@ -677,17 +718,11 @@ impl Host {
         if input.is_some() {
             command.stdin(Stdio::piped());
         }
-        let mut child = command.spawn().map_err(|source| CommandError::Spawn {
-            program: program_name.clone(),
-            source,
-        })?;
+        let mut child = command.spawn().map_err(spawn_error)?;
         let tree = deadline
             .map(|_| ProcessTree::adopt(child.id()))
             .transpose()
-            .map_err(|source| CommandError::Spawn {
-                program: program_name.clone(),
-                source,
-            })?;
+            .map_err(spawn_error)?;
         let feed = feed_child_stdin(input.zip(child.stdin.take()));
 
         let echo = self.std_output;
@@ -719,29 +754,20 @@ impl Host {
                     let stdout = stdout_task.await.unwrap_or_default();
                     let stderr = stderr_task.await.unwrap_or_default();
                     return Err(CommandError::TimedOut {
-                        program: program_name,
+                        program: program_name.clone(),
                         after,
                         report: failure_report(&stdout, &stderr),
                     });
                 }
             }
         };
-        let status = status.map_err(|source| CommandError::Spawn {
-            program: program_name.clone(),
-            source,
-        })?;
+        let status = status.map_err(spawn_error)?;
         input_fed.map_err(|source| CommandError::Input {
             program: program_name.clone(),
             source,
         })?;
-        let stdout = stdout_task.await.map_err(|source| CommandError::Spawn {
-            program: program_name.clone(),
-            source,
-        })?;
-        let stderr = stderr_task.await.map_err(|source| CommandError::Spawn {
-            program: program_name.clone(),
-            source,
-        })?;
+        let stdout = stdout_task.await.map_err(spawn_error)?;
+        let stderr = stderr_task.await.map_err(spawn_error)?;
         tracing::debug!(
             program = %program_name,
             %status,
@@ -818,7 +844,7 @@ impl Host {
         command: &MetadataCommand,
     ) -> Result<String, cargo_metadata::Error> {
         let invocation = command.cargo_command();
-        let mut cargo = self.command("cargo");
+        let mut cargo = self.command("cargo")?;
         cargo.args(invocation.get_args()).kill_on_drop(true);
         if let Some(dir) = invocation.get_current_dir() {
             cargo.current_dir(dir);
@@ -868,7 +894,12 @@ impl Host {
             .map(|argument| argument.as_ref().to_os_string())
             .collect::<Vec<_>>();
         tracing::debug!(program = %program_name, ?args, "spawning detached");
-        let resolved = self.resolve_program(program.as_ref());
+        let resolved =
+            self.resolve_program(program.as_ref())
+                .map_err(|source| CommandError::Spawn {
+                    program: program_name.clone(),
+                    source,
+                })?;
         let env = self.env.clone();
         let cwd = self.cwd.clone();
         let status = unblock(move || detached::run(&resolved, &args, &env, &cwd))
@@ -883,21 +914,34 @@ impl Host {
 
     /// Resolve a bare program name against this host's `PATH`.
     ///
-    /// `CreateProcess` searches the *parent's* `PATH`, never the child's, so
-    /// passing a bare name through `env_clear` + `envs` would miss tools that
-    /// exist only on this host — exactly what fake-tool tests install.
-    /// Resolving here makes `command`/`std_command`/`output` agree with
-    /// [`Host::which`] on every platform. Paths (anything with a separator)
-    /// and names this host cannot resolve pass through unchanged, so a spawn
-    /// error still names what the caller asked for.
-    fn resolve_program(&self, program: &OsStr) -> OsString {
+    /// `CreateProcess` resolves a bare name itself — against the *parent's*
+    /// `PATH` and then the Windows system directories — so passing a name
+    /// through would both miss tools that exist only on this host (exactly
+    /// what fake-tool tests install) and let a name the host does not
+    /// declare run the real tool out of `C:\Windows\System32`
+    /// (water-rs/waterui#3142). Resolving here makes
+    /// `command`/`std_command`/`output` agree with [`Host::which`] on every
+    /// platform: a program given as a path (anything with a separator) is
+    /// used as given, while a bare name the host cannot resolve is an
+    /// error, never passed to the OS to search outside the host's `PATH`.
+    ///
+    /// # Errors
+    /// - [`io::ErrorKind::NotFound`] when `program` is a bare name that no
+    ///   executable on this host's `PATH` provides.
+    fn resolve_program(&self, program: &OsStr) -> io::Result<OsString> {
         let path = Path::new(program);
         if path.components().count() > 1 {
-            return program.to_os_string();
+            return Ok(program.to_os_string());
         }
         let paths = self.joined_path();
         which::which_in(program, paths, &self.cwd)
-            .map_or_else(|_| program.to_os_string(), PathBuf::into_os_string)
+            .map(PathBuf::into_os_string)
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("`{}` is not on the host's PATH", program.to_string_lossy()),
+                )
+            })
     }
 
     /// The declared `PATH` re-joined after empty-component filtering.
@@ -1232,6 +1276,26 @@ mod tests {
         });
     }
 
+    /// A bare name the host's `PATH` cannot resolve fails at command
+    /// construction — never passed to the OS, which on Windows would find
+    /// the real tool in the system directories (water-rs/waterui#3142).
+    #[test]
+    fn command_rejects_a_bare_name_the_host_path_cannot_resolve() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        for program in [
+            "definitely-not-a-tool-xyz",
+            // A tool that exists on every real system must still be
+            // missing on a declared host that does not install it.
+            if cfg!(windows) { "cmd" } else { "sh" },
+        ] {
+            let error = host
+                .std_command(program)
+                .expect_err("a program missing from the host's PATH must not build a command");
+            assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{program}");
+        }
+    }
+
     #[test]
     fn spawned_children_see_the_declared_environment() {
         let machine = TestMachine::new();
@@ -1256,6 +1320,7 @@ mod tests {
         smol::block_on(async {
             let mut child = host
                 .command_in_own_process_group("/bin/sleep")
+                .expect("/bin/sleep is a path, so resolution always succeeds")
                 .arg("60")
                 .kill_on_drop(true)
                 .spawn()

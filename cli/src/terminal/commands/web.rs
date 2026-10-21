@@ -60,7 +60,7 @@ pub async fn create_vite(
 ) -> Result<()> {
     let spinner = shell.spinner("Scaffolding the Vite frontend...");
     let status = package_manager
-        .create_vite(host, dir, template)
+        .create_vite(host, dir, template)?
         .current_dir(parent)
         .status()
         .await?;
@@ -107,7 +107,7 @@ pub async fn install_dependencies(
 ) -> Result<()> {
     let spinner = shell.spinner("Installing frontend dependencies...");
     let status = package_manager
-        .install(host)
+        .install(host)?
         .current_dir(dir)
         .status()
         .await?;
@@ -135,8 +135,8 @@ pub async fn move_entries_to_web(
     for entry in entries {
         let source = root.join(entry);
         let dest = root.join("web").join(entry);
-        if git_tracked(host, root, entry).await {
-            let status = git::command(host)
+        if git_tracked(host, root, entry).await? {
+            let status = git::command(host)?
                 .args(["mv"])
                 .arg(entry)
                 .arg(Path::new("web").join(entry))
@@ -154,8 +154,11 @@ pub async fn move_entries_to_web(
 }
 
 /// Whether `entry` is tracked in the git work tree at `root`.
-async fn git_tracked(host: &Host, root: &Path, entry: &Path) -> bool {
-    git::command(host)
+///
+/// # Errors
+/// - [`std::io::ErrorKind::NotFound`] when `git` is not on the host's `PATH`.
+async fn git_tracked(host: &Host, root: &Path, entry: &Path) -> std::io::Result<bool> {
+    Ok(git::command(host)?
         .args(["ls-files", "--error-unmatch", "--"])
         .arg(entry)
         .current_dir(root)
@@ -163,7 +166,7 @@ async fn git_tracked(host: &Host, root: &Path, entry: &Path) -> bool {
         .stderr(Stdio::null())
         .status()
         .await
-        .is_ok_and(|status| status.success())
+        .is_ok_and(|status| status.success()))
 }
 
 /// Copy a frontend project into `dest`, skipping `node_modules` and `.git`.

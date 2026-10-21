@@ -13621,6 +13621,7 @@ dependencies = [
  "waterui-ts-engine-jsc",
  "waterui-ts-engine-quickjs",
  "waterui-ts-schema",
+ "windows-sys 0.61.2",
  "zenwave 0.6.1",
 ]
 

@@ -9,6 +9,7 @@
 
 use std::{
     ffi::{OsStr, OsString},
+    io,
     process::Output,
 };
 
@@ -46,19 +47,23 @@ fn argv(args: impl IntoIterator<Item = impl AsRef<OsStr>>) -> Vec<OsString> {
 
 /// A `git` [`Command`] on `host` with [`CONFIG_ARGS`] applied; the caller
 /// appends the subcommand and its arguments.
-#[must_use]
-pub fn command(host: &Host) -> Command {
-    let mut command = host.command("git");
+///
+/// # Errors
+/// - [`io::ErrorKind::NotFound`] when `git` is not on the host's `PATH`.
+pub fn command(host: &Host) -> io::Result<Command> {
+    let mut command = host.command("git")?;
     command.args(CONFIG_ARGS);
-    command
+    Ok(command)
 }
 
 /// [`command`] for the synchronous call sites.
-#[must_use]
-pub fn std_command(host: &Host) -> std::process::Command {
-    let mut command = host.std_command("git");
+///
+/// # Errors
+/// - [`io::ErrorKind::NotFound`] when `git` is not on the host's `PATH`.
+pub fn std_command(host: &Host) -> io::Result<std::process::Command> {
+    let mut command = host.std_command("git")?;
     command.args(CONFIG_ARGS);
-    command
+    Ok(command)
 }
 
 /// `git` `args` on `host` under [`CONFIG_ARGS`]; [`Host::run`]'s contract.
@@ -249,9 +254,15 @@ mod host_tests {
         let log = machine.file("git.log", "");
         let host = machine.host([("WATERUI_FAKE_LOG", log.as_os_str())]);
         smol::block_on(super::run(&host, ["status"])).expect("fake git run");
-        smol::block_on(super::command(&host).arg("status").status())
-            .expect("fake git command status");
+        smol::block_on(
+            super::command(&host)
+                .expect("the fake git is on the host's PATH")
+                .arg("status")
+                .status(),
+        )
+        .expect("fake git command status");
         super::std_command(&host)
+            .expect("the fake git is on the host's PATH")
             .arg("status")
             .status()
             .expect("fake git std_command status");

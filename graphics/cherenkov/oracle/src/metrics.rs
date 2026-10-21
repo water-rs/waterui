@@ -580,6 +580,92 @@ pub fn write_heatmap(
     Ok(())
 }
 
+/// `flip_mean` ceiling of [`assert_images_match`]: the mean FLIP error two
+/// routes to the same pixels may show.
+pub const FLIP_MEAN_LIMIT: f64 = 0.006;
+
+/// `flip_max` ceiling of [`assert_images_match`]: the worst per-pixel FLIP
+/// error two routes to the same pixels may show.
+pub const FLIP_MAX_LIMIT: f64 = 0.15;
+
+/// `max_local_error` ceiling of [`assert_images_match`]: the worst 3×3
+/// box-filtered per-channel difference two routes to the same pixels may show.
+pub const LOCAL_ERROR_LIMIT: f64 = 0.09;
+
+/// The per-value bound scale of [`assert_close`]:
+/// `|a - e| <= CLOSE_TOLERANCE * max(1, |e|)` — `2^-12`, relative above one
+/// in magnitude and absolute below.
+pub const CLOSE_TOLERANCE: f64 = 1.0 / 4096.0;
+
+/// Assert two renders of the same scene are visually equivalent.
+///
+/// Runs [`compare`] and panics unless `flip_mean <= FLIP_MEAN_LIMIT`,
+/// `flip_max <= FLIP_MAX_LIMIT` and `max_local_error <= LOCAL_ERROR_LIMIT`.
+/// On failure the message names all three metrics and the FLIP heat map is
+/// written to a temp path the message prints.
+///
+/// # Panics
+/// When the images' dimensions differ or `compare`'s metrics exceed the
+/// ceilings above.
+#[track_caller]
+pub fn assert_images_match(reference: &F32Image, test: &F32Image) {
+    assert_eq!(
+        (reference.width, reference.height),
+        (test.width, test.height),
+        "image dimensions differ"
+    );
+    let (m, heat) = compare(reference, test);
+    if m.flip_mean <= FLIP_MEAN_LIMIT
+        && m.flip_max <= FLIP_MAX_LIMIT
+        && m.max_local_error <= LOCAL_ERROR_LIMIT
+    {
+        return;
+    }
+    let caller = std::panic::Location::caller();
+    let file = caller.file().rsplit(['/', '\\']).next().unwrap_or("image");
+    let path = std::env::temp_dir().join(format!("cherenkov-flip-{file}-{}.png", caller.line()));
+    let note = match write_heatmap(&heat, reference.width, reference.height, &path) {
+        Ok(()) => format!("heat map written to {}", path.display()),
+        Err(e) => format!("could not write the heat map to {}: {e}", path.display()),
+    };
+    panic!(
+        "images differ: flip_mean {} (limit {FLIP_MEAN_LIMIT}), flip_max {} \
+         (limit {FLIP_MAX_LIMIT}), max_local_error {} (limit \
+         {LOCAL_ERROR_LIMIT}); {note}",
+        m.flip_mean, m.flip_max, m.max_local_error
+    );
+}
+
+/// Assert two kernel outputs too small to compare as images are visually
+/// equivalent.
+///
+/// Every element `i` must satisfy
+/// `|actual[i] - expected[i]| <= CLOSE_TOLERANCE * max(1, |expected[i]|)`,
+/// a `2^-12` bound that is relative above one in magnitude and absolute
+/// below.
+///
+/// # Panics
+/// When the slices' lengths differ, or at the first element outside the
+/// bound — the message names its index, both values and the bound.
+#[track_caller]
+pub fn assert_close<T: Copy + Into<f64>>(actual: &[T], expected: &[T]) {
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "slice lengths differ: {} actual vs {} expected",
+        actual.len(),
+        expected.len()
+    );
+    for (i, (&a, &e)) in actual.iter().zip(expected).enumerate() {
+        let (a, e) = (a.into(), e.into());
+        let bound = CLOSE_TOLERANCE * e.abs().max(1.0);
+        assert!(
+            (a - e).abs() <= bound,
+            "index {i}: |{a} - {e}| exceeds {bound}"
+        );
+    }
+}
+
 // The 256-entry magma LUT (from `FLIP.h` MapMagma, BSD-3-Clause NVlabs/flip).
 #[allow(clippy::unreadable_literal, reason = "verbatim LUT from FLIP.h")]
 const MAGMA: [[f64; 3]; 256] = include!("magma_table.rs");

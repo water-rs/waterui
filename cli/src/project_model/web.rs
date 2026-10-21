@@ -53,11 +53,14 @@ impl PackageManager {
 
     /// `<pm> install` — installs the dependencies of the current directory.
     /// Interactive: installers prompt on the terminal, so it inherits stdio.
-    #[must_use]
-    pub fn install(self, host: &Host) -> Command {
-        let mut command = Command::from(host.interactive_command(self.binary()));
+    ///
+    /// # Errors
+    /// - [`std::io::ErrorKind::NotFound`] when the manager's binary is not on
+    ///   the host's `PATH`.
+    pub fn install(self, host: &Host) -> std::io::Result<Command> {
+        let mut command = Command::from(host.interactive_command(self.binary())?);
         command.arg("install");
-        command
+        Ok(command)
     }
 
     /// `<pm> create vite <dir>`; npm names its initializer `vite@latest`.
@@ -67,9 +70,17 @@ impl PackageManager {
     /// which skips Vite's interactive framework picker. The command is
     /// interactive either way — the picker reads the user's terminal when it
     /// runs.
-    #[must_use]
-    pub fn create_vite(self, host: &Host, dir: &str, template: Option<&str>) -> Command {
-        let mut command = Command::from(host.interactive_command(self.binary()));
+    ///
+    /// # Errors
+    /// - [`std::io::ErrorKind::NotFound`] when the manager's binary is not on
+    ///   the host's `PATH`.
+    pub fn create_vite(
+        self,
+        host: &Host,
+        dir: &str,
+        template: Option<&str>,
+    ) -> std::io::Result<Command> {
+        let mut command = Command::from(host.interactive_command(self.binary())?);
         command.arg("create");
         match self {
             Self::Npm => command.arg("vite@latest"),
@@ -84,7 +95,7 @@ impl PackageManager {
             }
             command.args(["--template", template]);
         }
-        command
+        Ok(command)
     }
 
     /// Whether the manager's binary resolves on `host`'s `PATH`.
@@ -447,7 +458,7 @@ impl WebDevServer {
         let pm = package_manager.binary();
         // `std::process::Command`, not `smol`'s: the child must lead its own
         // process group so the guard's drop can signal the whole tree.
-        let mut command = host.std_command(pm);
+        let mut command = host.std_command(pm)?;
         command.arg("run").arg(script).current_dir(root);
         if expose_on_lan {
             // npm needs `--` to forward args to the script; bun, pnpm and
@@ -1317,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn command_arg_vectors() {
+    fn command_arg_vectors() -> std::io::Result<()> {
         let args = |command: &Command| -> Vec<String> {
             std::iter::once(command.get_program().to_string_lossy().into_owned())
                 .chain(
@@ -1327,32 +1338,51 @@ mod tests {
                 )
                 .collect()
         };
-        let host =
-            crate::toolchain::testing::TestMachine::new().host(Vec::<(String, String)>::new());
+        let machine = crate::toolchain::testing::TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        // The constructed command names the binary the host's `PATH`
+        // resolved — the fake tools the machine installs.
+        let pnpm = machine.install("pnpm").display().to_string();
+        let yarn = machine.install("yarn").display().to_string();
+        let bun = machine.install("bun").display().to_string();
+        let npm = machine.install("npm").display().to_string();
         assert_eq!(
-            args(&PackageManager::Pnpm.install(&host)),
-            ["pnpm", "install"]
+            args(&PackageManager::Pnpm.install(&host)?),
+            [pnpm, "install".to_owned()]
         );
         assert_eq!(
-            args(&PackageManager::Yarn.create_vite(&host, "web", None)),
-            ["yarn", "create", "vite", "web"]
-        );
-        assert_eq!(
-            args(&PackageManager::Bun.create_vite(&host, "web", Some("react-ts"))),
-            ["bun", "create", "vite", "web", "--template", "react-ts"]
-        );
-        assert_eq!(
-            args(&PackageManager::Npm.create_vite(&host, "web", Some("vanilla-ts"))),
+            args(&PackageManager::Yarn.create_vite(&host, "web", None)?),
             [
-                "npm",
-                "create",
-                "vite@latest",
-                "web",
-                "--",
-                "--template",
-                "vanilla-ts"
+                yarn,
+                "create".to_owned(),
+                "vite".to_owned(),
+                "web".to_owned()
             ]
         );
+        assert_eq!(
+            args(&PackageManager::Bun.create_vite(&host, "web", Some("react-ts"))?),
+            [
+                bun,
+                "create".to_owned(),
+                "vite".to_owned(),
+                "web".to_owned(),
+                "--template".to_owned(),
+                "react-ts".to_owned()
+            ]
+        );
+        assert_eq!(
+            args(&PackageManager::Npm.create_vite(&host, "web", Some("vanilla-ts"))?),
+            [
+                npm,
+                "create".to_owned(),
+                "vite@latest".to_owned(),
+                "web".to_owned(),
+                "--".to_owned(),
+                "--template".to_owned(),
+                "vanilla-ts".to_owned()
+            ]
+        );
+        Ok(())
     }
 
     #[test]
@@ -1623,11 +1653,11 @@ mod tests {
     /// `water` itself.
     #[test]
     #[cfg(unix)]
-    fn process_tree_signals_the_grandchild_and_refuses_a_shared_group() {
+    fn process_tree_signals_the_grandchild_and_refuses_a_shared_group() -> std::io::Result<()> {
         use std::os::unix::process::CommandExt as _;
 
         let mut leader = crate::toolchain::Host::current()
-            .std_command("sh")
+            .std_command("sh")?
             .args(["-c", "sleep 30 & wait"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1643,7 +1673,7 @@ mod tests {
         );
 
         let mut shared = crate::toolchain::Host::current()
-            .std_command("sh")
+            .std_command("sh")?
             .args(["-c", "exit 0"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1652,6 +1682,7 @@ mod tests {
         let refused = ProcessTree::adopt(shared.id());
         let _ = shared.wait();
         assert!(refused.is_err(), "a child in our own group must be refused");
+        Ok(())
     }
 
     #[test]

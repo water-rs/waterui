@@ -8,7 +8,7 @@ use std::ops::Range;
 use kurbo::Affine;
 use smallvec::SmallVec;
 
-use crate::{BlendMode, Command, Dirty, DisplayList, FillRule, Group, ShapeData};
+use crate::{BlendMode, Command, Dirty, DisplayList, FillRule, Group, RenderError, ShapeData};
 
 mod disjoint;
 pub mod projective;
@@ -36,6 +36,29 @@ pub fn shape_outline(shape: &ShapeData, tolerance: f64) -> Option<(kurbo::BezPat
             Some((kurbo::BezPath::from_vec(elements.to_vec()), *rule))
         }
     }
+}
+
+/// Reject a `stroke` whose dash state is not a meaningful pattern.
+///
+/// A negative or non-finite pattern entry, a pattern whose entries sum to
+/// zero, and a non-finite dash offset are invalid input. `kurbo::stroke`
+/// feeds every non-empty pattern to `dash_iter` unchecked, so each
+/// backend validates before lowering selects a route.
+///
+/// # Errors
+/// Returns [`RenderError::Render`] for an invalid dash pattern or a
+/// non-finite dash offset.
+pub fn check_dashes(stroke: &kurbo::Stroke) -> Result<(), RenderError> {
+    let pattern = &stroke.dash_pattern;
+    if pattern.iter().any(|dash| !dash.is_finite() || *dash < 0.0)
+        || (!pattern.is_empty() && pattern.iter().sum::<f64>() <= 0.0)
+    {
+        return Err(RenderError::Render("invalid dash pattern".into()));
+    }
+    if !stroke.dash_offset.is_finite() {
+        return Err(RenderError::Render("non-finite dash offset".into()));
+    }
+    Ok(())
 }
 
 /// A backend operation whose scope indices can be relocated during a patch.

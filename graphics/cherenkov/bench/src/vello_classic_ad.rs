@@ -15,7 +15,9 @@ use cherenkov_scene::Feature;
 use peniko::Brush;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Fill;
-use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene as VelloScene};
+use vello::{
+    AaConfig, AaSupport, BumpReadback, RenderParams, Renderer, RendererOptions, Scene as VelloScene,
+};
 
 use crate::convert::{self, Prepared};
 use crate::memory::{AdapterMemory, Reading, wgpu29_allocator, wgpu29_vk_memory_budget};
@@ -168,6 +170,52 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
     }
 }
 
+/// One measured render: `render_to_texture` bracketed by the standalone
+/// drain/timestamp markers, returning the bump-allocator feedback ticket
+/// it issues.
+///
+/// GPU time comes from timestamps written in standalone submissions after
+/// a full queue drain — on job-scheduled tiled GPUs a timestamp inside the
+/// same submission runs concurrently with the render and brackets an empty
+/// interval. This serializes CPU and GPU for the measured frame.
+fn render_measured(
+    gpu: &Gpu,
+    renderer: &mut Renderer,
+    scene: &VelloScene,
+    target: &Target,
+    params: &RenderParams,
+) -> Result<(Option<BumpReadback>, Option<f64>, f64), BenchError> {
+    drain_and_stamp(gpu, 0)?;
+    let render_at = Instant::now();
+    let ticket = renderer
+        .render_to_texture(&gpu.device, &gpu.queue, scene, &target.view, params)
+        .map_err(|e| BenchError::Gpu(format!("vello render: {e}")))?;
+    drain_and_stamp(gpu, 1)?;
+    let gpu_seconds = resolve_timestamps(gpu)?;
+    Ok((ticket, gpu_seconds, render_at.elapsed().as_secs_f64()))
+}
+
+/// Whether `ticket`'s render overflowed its bump buffers — the feedback
+/// [`Renderer::render_to_texture`] hands the caller to resolve. Dropping
+/// the ticket unresolved is not an option here: this build's vello fork
+/// `unwrap`s the map callback's send, so a discarded ticket panics on the
+/// next device poll, and an unverified overflow would pass a truncated
+/// frame off as rendered. `None` issues no feedback (the CPU pipeline)
+/// and cannot overflow.
+fn bump_overflowed(
+    gpu: &Gpu,
+    renderer: &mut Renderer,
+    ticket: Option<BumpReadback>,
+) -> Result<bool, BenchError> {
+    let Some(ticket) = ticket else {
+        return Ok(false);
+    };
+    let overflowed = renderer
+        .verify_bump_readbacks(&gpu.device, vec![ticket])
+        .map_err(|e| BenchError::Gpu(format!("vello bump readback: {e}")))?;
+    Ok(!overflowed.is_empty())
+}
+
 impl Engine for VelloClassic {
     fn info(&self) -> &EngineInfo {
         &self.info
@@ -275,25 +323,28 @@ impl Engine for VelloClassic {
             height: target.height,
             antialiasing_method: AaConfig::Area,
         };
-        // GPU time: bracket the render with timestamps written in
-        // standalone submissions after a full queue drain — on
-        // job-scheduled tiled GPUs a timestamp inside the same submission
-        // runs concurrently with the render and brackets an empty
-        // interval. This serializes CPU and GPU for the measured frame.
-        drain_and_stamp(&self.gpu, 0)?;
-        let render_at = Instant::now();
-        renderer
-            .render_to_texture(
-                &self.gpu.device,
-                &self.gpu.queue,
-                scene,
-                &target.view,
-                &params,
-            )
-            .map_err(|e| BenchError::Gpu(format!("vello render: {e}")))?;
-        drain_and_stamp(&self.gpu, 1)?;
-        let gpu_seconds = resolve_timestamps(&self.gpu)?;
-        let render_seconds = render_at.elapsed().as_secs_f64();
+        let (ticket, mut gpu_seconds, mut render_seconds) =
+            render_measured(&self.gpu, renderer, scene, target, &params)?;
+        // The bump-allocator feedback verifies outside the measured
+        // interval, once the closing drain has given its download time to
+        // resolve. An overflowed render produced a truncated frame, so the
+        // identical scene re-renders once against the sizes the renderer
+        // grew to cover the reported demand — that re-render is the
+        // measured sample. Still overflowing after the growth round means
+        // the size accounting failed the scene; that is an error, not a
+        // retry.
+        if bump_overflowed(&self.gpu, renderer, ticket)? {
+            let retry = render_measured(&self.gpu, renderer, scene, target, &params)?;
+            if bump_overflowed(&self.gpu, renderer, retry.0)? {
+                return Err(BenchError::Engine(format!(
+                    "vello-classic: the scene still overflows the grown bump \
+                     buffers after one re-render ({}x{})",
+                    target.width, target.height
+                )));
+            }
+            gpu_seconds = retry.1;
+            render_seconds = retry.2;
+        }
         let readback_at = Instant::now();
         let image = if readback_flag {
             Some(readback(&self.gpu, target)?)

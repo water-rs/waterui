@@ -3536,9 +3536,9 @@ pub(crate) mod test_fixtures {
     /// Commit all of `root`'s content under the fixture identity and return
     /// the `HEAD` revision — the git bookkeeping every repository fixture
     /// shares. `root` must already be a worktree.
-    pub fn git_commit_all(root: &Path, message: &str) -> String {
-        let run_git = |args: &[&str]| -> String {
-            let output = git::std_command(&crate::toolchain::Host::current())
+    pub fn git_commit_all(root: &Path, message: &str) -> std::io::Result<String> {
+        let run_git = |args: &[&str]| -> std::io::Result<String> {
+            let output = git::std_command(&crate::toolchain::Host::current())?
                 .arg("-C")
                 .arg(root)
                 .args(args)
@@ -3549,12 +3549,12 @@ pub(crate) mod test_fixtures {
                 "git {args:?} failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            String::from_utf8(output.stdout)
+            Ok(String::from_utf8(output.stdout)
                 .expect("git output is utf-8")
                 .trim()
-                .to_string()
+                .to_string())
         };
-        run_git(&["add", "-A"]);
+        run_git(&["add", "-A"])?;
         run_git(&[
             "-c",
             "user.name=waterui-test",
@@ -3563,7 +3563,7 @@ pub(crate) mod test_fixtures {
             "commit",
             "-qm",
             message,
-        ]);
+        ])?;
         run_git(&["rev-parse", "HEAD"])
     }
 
@@ -3571,26 +3571,27 @@ pub(crate) mod test_fixtures {
     /// and a lock naming the workspace crates, inside a git worktree. Like the
     /// repository today it carries no backend gitlink: both backend pins are
     /// literals in the manifest.
-    pub fn write_local_checkout(root: &Path) {
+    pub fn write_local_checkout(root: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(root).expect("checkout dir");
         std::fs::write(root.join("Cargo.toml"), local_checkout_manifest()).expect("manifest");
         let lock = test_lock();
         std::fs::write(root.join("Cargo.lock"), lock.to_string()).expect("lockfile");
-        let status = git::std_command(&crate::toolchain::Host::current())
+        let status = git::std_command(&crate::toolchain::Host::current())?
             .arg("-C")
             .arg(root)
             .args(["init", "-q"])
             .status()
             .expect("git must run");
         assert!(status.success(), "git init failed");
-        let _ = git_commit_all(root, "init");
+        git_commit_all(root, "init")?;
+        Ok(())
     }
 
     /// A checkout whose manifest declares no `apple-backend-path` — a
     /// revision from before the backend's return, carrying no native Apple
     /// crate.
-    pub fn write_apple_pathless_checkout(root: &Path) {
-        write_local_checkout(root);
+    pub fn write_apple_pathless_checkout(root: &Path) -> std::io::Result<()> {
+        write_local_checkout(root)?;
         let manifest_path = root.join("Cargo.toml");
         let mut manifest: toml::Value =
             toml::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
@@ -3599,6 +3600,7 @@ pub(crate) mod test_fixtures {
             .unwrap()
             .remove("apple-backend-path");
         std::fs::write(manifest_path, toml::to_string(&manifest).unwrap()).unwrap();
+        Ok(())
     }
 
     /// The manifest a local checkout fixture carries: the framework's own
@@ -3689,7 +3691,7 @@ fn validate_rev(rev: &str) -> Result<()> {
 
 /// The `dev` branch head of `repository` — the tip `git ls-remote` reports.
 async fn remote_dev_head(host: &Host, repository: &str, what: &str) -> Result<String> {
-    let output = git::command(host)
+    let output = git::command(host)?
         .args(["ls-remote", repository, "refs/heads/dev"])
         .output()
         .await?;
@@ -7152,10 +7154,10 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
     }
 
     #[test]
-    fn declared_apple_backend_path_resolves_without_a_gitlink() {
+    fn declared_apple_backend_path_resolves_without_a_gitlink() -> std::io::Result<()> {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("waterui");
-        write_local_checkout(&root);
+        write_local_checkout(&root)?;
 
         let framework = smol::block_on(ResolvedFramework::for_local_checkout(
             &crate::toolchain::Host::current(),
@@ -7164,6 +7166,7 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
         .unwrap();
         assert_eq!(framework.member_path(APPLE_BACKEND), Some("backends/apple"));
         assert!(framework.git_source().is_none());
+        Ok(())
     }
 
     /// A checkout from before the backend's return declares no
@@ -7172,10 +7175,10 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
     /// old gitlink or a separate repository — and names the missing key and
     /// the ways forward.
     #[test]
-    fn a_checkout_without_a_member_declaration_is_rejected() {
+    fn a_checkout_without_a_member_declaration_is_rejected() -> std::io::Result<()> {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("waterui");
-        write_apple_pathless_checkout(&root);
+        write_apple_pathless_checkout(&root)?;
 
         let error = smol::block_on(ResolvedFramework::for_local_checkout(
             &crate::toolchain::Host::current(),
@@ -7193,13 +7196,14 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
             error.contains(&format!("<{FRAMEWORK_MEMBERS_CLI_VERSION}' --locked")),
             "{error}"
         );
+        Ok(())
     }
 
     #[test]
-    fn local_checkout_resolves_from_its_own_manifest() {
+    fn local_checkout_resolves_from_its_own_manifest() -> std::io::Result<()> {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("waterui");
-        write_local_checkout(&root);
+        write_local_checkout(&root)?;
         let framework = smol::block_on(ResolvedFramework::for_local_checkout(
             &crate::toolchain::Host::current(),
             &root,
@@ -7226,6 +7230,7 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
         );
         assert_eq!(framework.scaffold_value("waterui-version"), "0.4.1");
         assert!(framework.git_source().is_none());
+        Ok(())
     }
 
     #[test]

@@ -43,6 +43,14 @@ executor-core = { workspace = true, optional = true }
 blocking = { workspace = true, optional = true }
 futures-lite = { workspace = true, optional = true }
 
+# On Windows the store's atomic write ends in `MoveFileExW` with
+# MOVEFILE_WRITE_THROUGH — a rename that is itself durable. The directory
+# `sync_all` used on other platforms cannot be made there: opening a
+# directory takes FILE_FLAG_BACKUP_SEMANTICS, which `fs::File::open` never
+# passes.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", default-features = false, features = ["Win32_Storage_FileSystem"], optional = true }
+
 # The HTTP client is `zenwave`, with the per-target TLS split every fetching
 # crate in the workspace uses: the platform's own TLS on Apple, rustls
 # everywhere else that has a socket, and the browser's fetch on wasm.
@@ -71,6 +79,7 @@ ota = [
     "dep:blocking",
     "dep:futures-lite",
     "dep:zenwave",
+    "dep:windows-sys",
 ]
 
 # Apple platforms use the system JavaScriptCore — zero added binary size.

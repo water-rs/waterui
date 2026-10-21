@@ -229,10 +229,10 @@ mod tests {
     /// manifest — the same `compiler-artifact` stream scan
     /// [`crate::build::app_library_artifact`] applies to a real target build,
     /// so these tests read exactly the artifact a `water` build produces.
-    fn built_lib_fixture(fixture: &Path, extra_args: &[&str]) -> PathBuf {
+    fn built_lib_fixture(fixture: &Path, extra_args: &[&str]) -> std::io::Result<PathBuf> {
         let output = crate::toolchain::Host::current()
             .without_cargo_target_dir()
-            .std_command("cargo")
+            .std_command("cargo")?
             .args(["build", "--lib", "--message-format=json-render-diagnostics"])
             .args(extra_args)
             .current_dir(fixture)
@@ -243,18 +243,18 @@ mod tests {
             "the fixture build must succeed:\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        crate::build::app_library_artifact(
+        Ok(crate::build::app_library_artifact(
             &crate::build::compiler_artifacts(&output.stdout).expect("cargo messages parse"),
             &fixture.join("Cargo.toml"),
         )
         .expect("the artifact scan parses")
-        .expect("cargo reported a library artifact for the fixture")
+        .expect("cargo reported a library artifact for the fixture"))
     }
 
     #[test]
-    fn reads_meta_records_and_exports_from_built_rlib() {
+    fn reads_meta_records_and_exports_from_built_rlib() -> std::io::Result<()> {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meta_static");
-        let rlib = built_lib_fixture(&fixture, &[]);
+        let rlib = built_lib_fixture(&fixture, &[])?;
         let symbols = ArtifactSymbols::read(&rlib).expect("rlib should parse");
         let previews = symbols.leaves_with_prefix("waterui_preview_");
         assert_eq!(previews, ["waterui_preview_meta_static_probe"]);
@@ -265,6 +265,7 @@ mod tests {
             b"dir probe",
             "a `.wmeta` record answers with its payload field, not the record"
         );
+        Ok(())
     }
 
     /// The same fixture built for `wasm32-unknown-unknown`: an rlib there is
@@ -273,9 +274,9 @@ mod tests {
     /// data segments the `object` reader does not expose back to a section
     /// index, so this format covers enumeration only.
     #[test]
-    fn reads_meta_static_names_from_wasm_rlib() {
+    fn reads_meta_static_names_from_wasm_rlib() -> std::io::Result<()> {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meta_static");
-        let rlib = built_lib_fixture(&fixture, &["--target", "wasm32-unknown-unknown"]);
+        let rlib = built_lib_fixture(&fixture, &["--target", "wasm32-unknown-unknown"])?;
         let symbols = ArtifactSymbols::read(&rlib).expect("wasm rlib should parse");
         let previews = symbols.leaves_with_prefix("waterui_preview_");
         assert_eq!(previews, ["waterui_preview_meta_static_probe"]);
@@ -284,20 +285,22 @@ mod tests {
             ["waterui_meta_test_dir_probe"],
             "the wasm rlib must enumerate the meta static names"
         );
+        Ok(())
     }
 
     /// `#[used]` is linker-retained (`no_dead_strip` on Mach-O), so every
     /// `waterui_meta_*` static is `#[cfg(debug_assertions)]`: a release rlib
     /// must carry none.
     #[test]
-    fn release_rlib_carries_no_meta_statics() {
+    fn release_rlib_carries_no_meta_statics() -> std::io::Result<()> {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meta_static");
-        let rlib = built_lib_fixture(&fixture, &["--release"]);
+        let rlib = built_lib_fixture(&fixture, &["--release"])?;
         let symbols = ArtifactSymbols::read(&rlib).expect("release rlib should parse");
         assert!(
             symbols.leaves_with_prefix("waterui_meta_").is_empty(),
             "a release rlib must not carry waterui_meta_* statics"
         );
+        Ok(())
     }
 
     /// The `web_meta` fixture staged against the pinned framework: its sources
@@ -465,11 +468,11 @@ mod tests {
     /// compile that belongs to the nightly job.
     #[test]
     #[ignore = "builds the fixture against the enclosing workspace"]
-    fn reads_include_web_mount_meta_from_built_rlib() {
+    fn reads_include_web_mount_meta_from_built_rlib() -> std::io::Result<()> {
         futures_lite::future::block_on(async {
             let (fixture, _restage_guard) = web_meta_fixture();
             let project = fixture.join("crate");
-            let rlib = built_lib_fixture(&project, &[]);
+            let rlib = built_lib_fixture(&project, &[])?;
             let symbols = ArtifactSymbols::read(&rlib).expect("rlib should parse");
             let meta = symbols
                 .bundle_mount_meta("waterui_meta_bundle_web")
@@ -488,6 +491,7 @@ mod tests {
                         .expect("web root")
                 )
             );
-        });
+            Ok(())
+        })
     }
 }
