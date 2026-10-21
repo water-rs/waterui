@@ -536,6 +536,19 @@ impl GpuEncode {
         if kind == 0 && p1 == self.last {
             return;
         }
+        let points = [self.last, a, b, p1];
+        // An element with a point that is not finite in f32 carries no
+        // geometry: the sweep's `clip_x` and the oracle drop such segments,
+        // so it is skipped while the cursor still advances to `p1`.
+        // `kurbo::dash` emits a NaN start for a dash that begins at an open
+        // subpath's end, which `kurbo::stroke` widens into an all-NaN
+        // contour; one uploaded NaN poisons the kernel's device bbox, and
+        // `classify` never returns (water-rs/waterui#3156).
+        let finite = |p: Point| (p.x as f32).is_finite() && (p.y as f32).is_finite();
+        if !points.iter().all(|&p| finite(p) && finite(self.raster * p)) {
+            self.last = p1;
+            return;
+        }
         // The subdivision count is measured on the device-space control
         // hull; the element itself is uploaded in local space for the
         // kernel to transform.
@@ -552,7 +565,6 @@ impl GpuEncode {
             dev = dev.union_pt(self.raster * b);
         }
         *hull = hull.union(dev);
-        let points = [self.last, a, b, p1];
         let short;
         let points: &[Point] = match kind {
             0 => {
@@ -1974,6 +1986,37 @@ mod tests {
         let (emitted, rasters) = emit(&coverage, &mut arena).unwrap();
         assert_eq!(emitted.cells.len(), 1);
         assert_eq!(rasters[0].0, 3, "the cell spans only the uploaded coverage");
+    }
+
+    /// A non-finite contour, as `kurbo::dash` emits for a dash that starts
+    /// at an open subpath's end, encodes to nothing: the elements and the
+    /// bound are those of the path without it (water-rs/waterui#3156).
+    #[test]
+    fn a_non_finite_contour_encodes_to_nothing() {
+        let square = [
+            PathEl::MoveTo(Point::new(10.0, 10.0)),
+            PathEl::LineTo(Point::new(90.0, 10.0)),
+            PathEl::LineTo(Point::new(90.0, 90.0)),
+            PathEl::LineTo(Point::new(10.0, 90.0)),
+            PathEl::ClosePath,
+        ];
+        let nan = Point::new(f64::NAN, f64::NAN);
+        let mut poisoned = vec![
+            PathEl::MoveTo(nan),
+            PathEl::LineTo(nan),
+            PathEl::CurveTo(nan, nan, nan),
+            PathEl::ClosePath,
+        ];
+        poisoned.extend(square);
+        let raster = Affine::scale(1.5);
+        let clean = prepare_gpu(&square, raster, (256.0, 256.0));
+        let encoded = prepare_gpu(&poisoned, raster, (256.0, 256.0));
+        assert_eq!(
+            bytemuck::cast_slice::<GpuElement, u32>(&encoded.elements),
+            bytemuck::cast_slice::<GpuElement, u32>(&clean.elements),
+        );
+        let bound = |b: GpuBound| (b.segments, b.bins, b.fragments, b.texels, b.rect);
+        assert_eq!(bound(encoded.bound), bound(clean.bound));
     }
 }
 
