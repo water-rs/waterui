@@ -45,7 +45,7 @@ pub const ARGS_NORMAL: u32 = 36;
 const WORKGROUP: u32 = 64;
 const CLASSIFY_WIDTH: u32 = 128;
 /// Decision R2's hard per-frame cap on the coverage buffers' total
-/// size; a device whose binding limit is lower caps it further.
+/// size: a bound over it is an explicit `Unsupported`, never a retry.
 const GPU_COV_MAX_BYTES: u64 = 256 << 20;
 
 /// u32 words of one geometry record in the arena: the device bounds
@@ -197,13 +197,6 @@ pub struct GpuCoverage {
     budget: u64,
     /// `max_storage_buffer_binding_size.min(max_buffer_size)` in words.
     limit_words: u64,
-    /// The per-frame cap on the bound's total size: decision R2's
-    /// `GPU_COV_MAX_BYTES`, lowered to the device's storage-binding limit.
-    /// Every buffer the bound sizes is at most the bound's total, so a
-    /// bound within the cap passes `record_prologue`'s per-buffer limit
-    /// check; a bound over it is an explicit `Unsupported` at `draw`,
-    /// never a retry.
-    max_bytes: u64,
     /// An unrecorded compaction's copy plan. Held until a submit lands
     /// it — a failed or retried commit re-records it rather than
     /// pointing entries at content that never moved.
@@ -229,8 +222,10 @@ pub struct GpuCoverage {
     fragment_total: u32,
     /// Row winding counters across all paths.
     row_total: u32,
-    /// The R2 bound's accumulated byte size — the cap's denominator.
-    bound_bytes: u64,
+    /// The R2 bound accumulated over the frame's draws, split by the
+    /// buffer each term sizes: the total is the cap's denominator, each
+    /// buffer is compared with the device binding limit.
+    bound: BufferBounds,
     /// The coverage arena: geometry records and texels, one block per entry.
     arena: CoverageArena,
     /// The prologue went into some surface's encoder already.
@@ -240,6 +235,60 @@ pub struct GpuCoverage {
     args_layout: Option<wgpu::BindGroupLayout>,
     pipes: Option<Pipes>,
     buffers: Option<Buffers>,
+}
+
+/// The R2 bound of a frame's draws, split by the buffer each term sizes.
+/// `record_prologue` and the output checks compare each bound buffer, not
+/// the sum, with the device binding limit; the sum is decision R2's cap.
+#[derive(Clone, Copy, Default)]
+struct BufferBounds {
+    elements: u64,
+    paths: u64,
+    segments: u64,
+    /// The coverage scratch: bins, fragments, sort, groups, tokens, tiles.
+    scratch: u64,
+    /// The work-item buffer: row windings and strip/tile items.
+    work: u64,
+    /// The coverage arena blocks the frame allocates.
+    arena: u64,
+    /// Records outside any binding-limited buffer.
+    unbound: u64,
+}
+
+impl BufferBounds {
+    const fn add(&mut self, other: &Self) {
+        self.elements += other.elements;
+        self.paths += other.paths;
+        self.segments += other.segments;
+        self.scratch += other.scratch;
+        self.work += other.work;
+        self.arena += other.arena;
+        self.unbound += other.unbound;
+    }
+
+    const fn total(&self) -> u64 {
+        self.elements
+            + self.paths
+            + self.segments
+            + self.scratch
+            + self.work
+            + self.arena
+            + self.unbound
+    }
+
+    fn largest(&self) -> u64 {
+        [
+            self.elements,
+            self.paths,
+            self.segments,
+            self.scratch,
+            self.work,
+            self.arena,
+        ]
+        .into_iter()
+        .max()
+        .expect("six buffers")
+    }
 }
 
 impl GpuCoverage {
@@ -260,7 +309,6 @@ impl GpuCoverage {
             undrawn_bytes: 0,
             budget,
             limit_words: limit / 4,
-            max_bytes: limit.min(GPU_COV_MAX_BYTES),
             compaction: None,
             elements: Vec::new(),
             element_sources: Vec::new(),
@@ -274,7 +322,7 @@ impl GpuCoverage {
             bin_total: 0,
             fragment_total: 0,
             row_total: 0,
-            bound_bytes: 0,
+            bound: BufferBounds::default(),
             arena: CoverageArena::new(),
             encoded: false,
             layout: None,
@@ -305,7 +353,7 @@ impl GpuCoverage {
         self.bin_total = 0;
         self.fragment_total = 0;
         self.row_total = 0;
-        self.bound_bytes = 0;
+        self.bound = BufferBounds::default();
         self.generated = 0;
         self.entries.retain(|_, e| e.generated);
         self.live_words = self.entries.values().map(|e| u64::from(e.words)).sum();
@@ -465,29 +513,36 @@ impl GpuCoverage {
             ))?;
         let previous_groups = group_words(self.fragment_total, self.cov_total);
         let next_groups = group_words(fragment_total, cov_total);
-        let path_bytes = to64(elements.len()) * (std::mem::size_of::<GpuElement>() as u64)
-            + to64(bound.segments) * 16
-            + to64(bound.bins) * 12
-            + to64(bound.fragments) * 40
-            + to64(bound.fragments.div_ceil(64)) * 64
-            + to64(strips) * 12
-            + to64(rows) * 4
-            + to64(bound.texels.div_ceil(4) + bound.cell_cap) * 4
-            + to64(bound.instance_cap) * u64::from(GEOMETRY_WORDS) * 4
-            + 16
-            + u64::from(ARGS_WORDS) * 4
-            + (PATH_WORDS as u64) * 4
-            + to64(strips) * (1 + to64(bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize))) * 8
-            + to64(strips * bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize)) * 16;
+        let tiles = to64(strips * bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize));
         let previous_tokens = self.fragment_total.min(self.cov_total) * 6;
         let next_tokens = fragment_total.min(cov_total) * 6;
-        self.bound_bytes += path_bytes
-            + u64::from(next_groups - previous_groups + next_tokens - previous_tokens) * 4;
-        if self.bound_bytes + 18 * 1024 + 128 + 48 > self.max_bytes {
+        let mut next = self.bound;
+        next.add(&BufferBounds {
+            elements: to64(elements.len()) * (std::mem::size_of::<GpuElement>() as u64),
+            segments: to64(bound.segments) * 16,
+            scratch: to64(bound.bins) * 12
+                + to64(bound.fragments) * 40
+                + to64(bound.fragments.div_ceil(64)) * 64
+                + to64(strips) * 12
+                + tiles * 16
+                + u64::from(next_groups - previous_groups + next_tokens - previous_tokens) * 4,
+            work: to64(rows) * 4 + (to64(strips) + tiles) * 8,
+            paths: (PATH_WORDS as u64) * 4,
+            arena: to64(bound.texels.div_ceil(4) + bound.cell_cap) * 4
+                + to64(bound.instance_cap) * u64::from(GEOMETRY_WORDS) * 4,
+            unbound: 16 + u64::from(ARGS_WORDS) * 4,
+        });
+        if next.total() + 18 * 1024 + 128 + 48 > GPU_COV_MAX_BYTES {
             return Err(RenderError::Unsupported(
                 "GPU coverage bound exceeds the per-frame cap",
             ));
         }
+        if next.largest() > self.limit_words * 4 {
+            return Err(RenderError::Unsupported(
+                "GPU coverage bound exceeds the device buffer limit",
+            ));
+        }
+        self.bound = next;
         let record = u32::try_from(self.paths.len()).expect("path count fits u32");
         let elem_base = self.element_total;
         let geometry_slots = u32::try_from(bound.instance_cap).expect("instance cap fits u32");
@@ -1301,7 +1356,7 @@ mod tests {
                 &GpuDraw::new(1, 0, Affine::IDENTITY, large_path, (4096, 4096)),
             )
             .expect("sparse 4096-square capacity");
-        assert!(frame.bound_bytes < frame.max_bytes);
+        assert!(frame.bound.total() < GPU_COV_MAX_BYTES);
         let huge_path = rectangle(1_000_000);
         let before = frame.paths.len();
         assert!(
@@ -1342,10 +1397,10 @@ mod tests {
                 &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096)),
             )
             .expect("fits the device's own limits");
-        // A device whose binding limit sits below this draw's bound, far
-        // under the old fixed 256 MiB cap.
+        // A device whose binding limit sits below the largest single
+        // buffer's bound of this draw, far under the 256 MiB cap.
         let small = wgpu::Limits {
-            max_storage_buffer_binding_size: probe.bound_bytes / 2,
+            max_storage_buffer_binding_size: probe.bound.largest() / 2,
             ..wgpu::Limits::default()
         };
         let mut frame = GpuCoverage::with_limits(&small, u64::MAX);
@@ -1360,6 +1415,21 @@ mod tests {
             "draw must refuse what record_prologue would reject"
         );
         assert_eq!(frame.paths.len(), 0, "reject before appending a path");
+        // A limit above every single buffer's bound but below their sum:
+        // the frame fits each binding, so it is accepted.
+        assert!(probe.bound.largest() < probe.bound.total());
+        let between = wgpu::Limits {
+            max_storage_buffer_binding_size: probe.bound.largest(),
+            ..wgpu::Limits::default()
+        };
+        let mut frame = GpuCoverage::with_limits(&between, u64::MAX);
+        frame.begin_frame();
+        frame
+            .draw(
+                &device,
+                &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096)),
+            )
+            .expect("every buffer fits the binding limit");
     }
 
     fn device() -> Option<wgpu::Device> {
