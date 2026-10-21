@@ -144,10 +144,6 @@ where
 ///
 /// # Panics
 /// If rendering fails, pixels differ, or unchanged commands are rebuilt.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the browser twin of the native equivalence routine above; keeping them line-parallel outweighs the limit"
-)]
 pub async fn equivalence<R: Renderer>(renderer: &mut R, font: FontData)
 where
     R::Target: From<Offscreen>,
