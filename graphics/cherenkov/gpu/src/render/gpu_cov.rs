@@ -18,6 +18,7 @@ use cherenkov::RenderError;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
+use crate::render::bindings;
 use crate::render::glyph::GpuDraw;
 use crate::render::instance::Instance;
 use crate::render::path::{CoverageKey, GpuElement, GpuPath};
@@ -1126,20 +1127,14 @@ impl GpuCoverage {
         if self.pipes.is_some() {
             return;
         }
-        let entries = super::layout_entries(crate::render::bindings::COVERAGE_GROUP0);
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("gpu coverage"),
-            entries: &entries
-                .iter()
-                .filter(|entry| entry.binding != 7)
-                .copied()
-                .collect::<Vec<_>>(),
+            entries: &super::layout_entries(bindings::COVERAGE_MAIN_GROUP0),
         });
         let args_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("gpu coverage argument writes"),
-            entries: &entries,
+            entries: &super::layout_entries(bindings::COVERAGE_GROUP0),
         });
-        let module = delivery.coverage_module(device);
         let pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("gpu coverage"),
             bind_group_layouts: &[Some(&layout)],
@@ -1150,19 +1145,31 @@ impl GpuCoverage {
             bind_group_layouts: &[Some(&args_layout)],
             immediate_size: 0,
         });
-        let make = |entry: &'static str| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(entry),
-                layout: Some(if matches!(entry, "prepare_dispatch" | "prepare_cells") {
-                    &args_pipe_layout
-                } else {
-                    &pipe_layout
-                }),
-                module: &module,
-                entry_point: Some(entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
+        let mut kernels: Vec<_> = delivery
+            .coverage_programs(device)
+            .into_iter()
+            .map(|program| {
+                let pipeline_layout = match program.layout {
+                    super::programs::ComputeLayout::CoverageMain => &pipe_layout,
+                    super::programs::ComputeLayout::CoverageArguments => &args_pipe_layout,
+                };
+                let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(program.entry),
+                    layout: Some(pipeline_layout),
+                    module: &program.module,
+                    entry_point: Some(program.entry),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                });
+                (program.entry, pipeline)
             })
+            .collect();
+        let mut make = |entry: &str| {
+            let at = kernels
+                .iter()
+                .position(|(name, _)| *name == entry)
+                .unwrap_or_else(|| panic!("`{entry}` is a coverage kernel"));
+            kernels.swap_remove(at).1
         };
         self.pipes = Some(Pipes {
             prepare_dispatch: make("prepare_dispatch"),
@@ -1183,6 +1190,11 @@ impl GpuCoverage {
             fill_cells: make("fill_cells"),
             emit_counts: make("emit_counts"),
         });
+        let missing: Vec<_> = kernels.iter().map(|(name, _)| *name).collect();
+        assert!(
+            missing.is_empty(),
+            "coverage kernels without a pipe: {missing:?}"
+        );
         self.layout = Some(layout);
         self.args_layout = Some(args_layout);
     }

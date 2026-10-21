@@ -104,8 +104,10 @@ half = "2"
 filtrate-core = { version = "0.2.0", path = "../../filtrate/core" }
 # The WGSL engine shaders are compiled once at build time (issue #57), at
 # the naga version wgpu 30 links.
-naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out"] }
+naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }
 rspirv = "0.13"
+proc-macro2 = { version = "1", default-features = false }
+quote = { version = "1", default-features = false }
 # `UNION_MAX_MEMBERS` comes from `../record/src/union_cap.rs` via `#[path]` —
 # the same file `cherenkov::BackdropUnion::MAX_MEMBERS` reads — so the
 # build script never depends on the engine crate.
@@ -137,6 +139,11 @@ nami = { version = "0.13", default-features = false, features = ["std", "kurbo"]
 # `tests/planes.rs` runs its cases on the process main thread.
 libtest-mimic = "0.8.2"
 
+[target.'cfg(windows)'.dev-dependencies]
+# The Windows in-crate parity test forwards wgpu-hal's HLSL debug log through tracing.
+tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
+
 [[test]]
 name = "planes"
 harness = false
@@ -145,7 +152,7 @@ harness = false
 workspace = true
 
 [package.metadata.cargo-machete]
-# `rspirv` is used by `build_tile_spirv.rs`, a file `build.rs` pulls in as a
-# module — cargo-machete does not follow `mod` declarations out of a build
-# script, so the genuine use is invisible to it.
-ignored = ["rspirv"]
+# These are used only by the build script and the files it pulls in as
+# modules (`build_tile_spirv.rs`, `build_dxil.rs`); cargo-machete does not
+# see those uses, so it reports the genuine build dependencies as unused.
+ignored = ["proc-macro2", "quote", "rspirv"]
