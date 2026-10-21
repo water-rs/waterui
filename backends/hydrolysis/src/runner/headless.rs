@@ -1,6 +1,7 @@
 //! Pump-based headless runtime for tests, snapshots and offscreen rendering.
 
 use super::*;
+use crate::animation::PerpetualAnimation;
 use crate::renderer::MenuShortcutRegistry;
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility::{
@@ -865,15 +866,31 @@ impl HeadlessRuntime {
     /// with their own timeout rather than trusting one settled probe.
     #[must_use]
     pub fn is_settled(&self) -> bool {
+        self.is_quiescent(PerpetualAnimation::Counts)
+    }
+
+    /// [`Self::is_settled`] except that repeat-forever animations (an
+    /// indeterminate spinner, a repeating morph) do not count: whether any
+    /// work remains that will finish on its own.
+    #[must_use]
+    pub fn is_settled_except_perpetual(&self) -> bool {
+        self.is_quiescent(PerpetualAnimation::Ignored)
+    }
+
+    fn is_quiescent(&self, perpetual: PerpetualAnimation) -> bool {
+        let scheduled = |renderer: &HydrolysisRenderer| match perpetual {
+            PerpetualAnimation::Counts => renderer.has_scheduled_semantic_work(),
+            PerpetualAnimation::Ignored => renderer.has_finite_semantic_work(),
+        };
         !self.runtime.platform.has_pending_events()
             && !self.local_executor.has_pending()
             && self.pending_window_queue.borrow().is_empty()
-            && !self.runtime.mode.is_pending()
-            && !self.runtime.renderer.has_scheduled_semantic_work()
+            && !self.runtime.mode.is_pending_with(perpetual)
+            && !scheduled(&self.runtime.renderer)
             && self.popup_windows.iter().all(|popup| {
-                !popup.mode.is_pending()
+                !popup.mode.is_pending_with(perpetual)
                     && !popup.platform.has_pending_events()
-                    && !popup.renderer.has_scheduled_semantic_work()
+                    && !scheduled(&popup.renderer)
             })
     }
 

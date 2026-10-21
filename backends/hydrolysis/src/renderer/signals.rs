@@ -654,8 +654,18 @@ impl SemanticCore {
     }
 
     pub fn animations_active(&self) -> bool {
+        self.animations_active_with(PerpetualAnimation::Counts)
+    }
+
+    /// [`Self::animations_active`] with a choice of whether repeat-forever
+    /// animations count.
+    pub(crate) fn animations_active_with(&self, perpetual: PerpetualAnimation) -> bool {
         let now = self.frame_instant;
-        self.animation_controller.has_active(now)
+        let controller_active = match perpetual {
+            PerpetualAnimation::Counts => self.animation_controller.has_active(now),
+            PerpetualAnimation::Ignored => self.animation_controller.has_finite_active(now),
+        };
+        controller_active
             || self.has_pending_interaction_releases(now)
             || self.navigation.slots.values().any(|slot| {
                 slot.transition
