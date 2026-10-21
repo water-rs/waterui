@@ -34,8 +34,8 @@ use cherenkov::{Extend, Interpolation};
 use fearless_simd::{Select, Simd, SimdFloat, SimdMask, f32x4, f32x16};
 
 use super::paint::{
-    LinearPaint, PaintData, Project, RADIAL_RESCALE_ABOVE, RadialPaint, Stop, apply, extend_t,
-    radial_t, to_premul,
+    LinearPaint, PaintData, Project, RADIAL_RESCALE_ABOVE, RadialGeometry, RadialPaint, Stop,
+    apply, extend_t, radial_t, to_premul,
 };
 use super::span::{
     ExtendSpan, LANES, NoneSpan, PadSpan, ReflectSpan, RepeatSpan, SpanKernel, apply_span,
@@ -403,21 +403,23 @@ struct RadialEval<'a> {
 }
 
 impl<'a> RadialEval<'a> {
-    /// Decides the quadratic's `a` in the scalar expression's rounding
-    /// — `|a| < 1e-12` selects the linear fallback, `identical`
-    /// short-circuits to the ±∞ edge — over the shared base.
+    /// Selects the form from the prepared coefficients: `|a| < 1e-12`
+    /// selects the linear solve, `identical` the ±∞ edge.
     #[expect(
         clippy::inline_always,
         reason = "compiled under the dispatched CPU level so mul_add is one instruction"
     )]
     #[inline(always)]
     fn new(outer: &'a PaintData, params: &'a RadialPaint) -> Self {
-        let (r0, dr) = (params.radii[0], params.radii[1] - params.radii[0]);
-        let (dcx, dcy) = (
-            params.centres[2] - params.centres[0],
-            params.centres[3] - params.centres[1],
-        );
-        let a = dr.mul_add(-dr, dcy.mul_add(dcy, dcx * dcx));
+        let RadialGeometry {
+            x0,
+            y0,
+            r0,
+            dr,
+            dcx,
+            dcy,
+            a,
+        } = params.geometry;
         Self {
             base: SpanBase::new(
                 outer,
@@ -426,8 +428,8 @@ impl<'a> RadialEval<'a> {
                 params.extend,
                 params.interpolation,
             ),
-            x0: params.centres[0],
-            y0: params.centres[1],
+            x0,
+            y0,
             r0,
             dr,
             dcx,
@@ -917,7 +919,7 @@ fn radial_short_span<'a, S: Simd>(
             link = &inner.paint;
         }
         let (cx, cy) = apply(params.inv, cx, cy);
-        let t = radial_t(cx, cy, params.centres, params.radii, params.identical);
+        let t = radial_t(cx, cy, &params.geometry, params.identical);
         let mut color = simd.splat_f32x4(0.0);
         if !t.is_nan()
             && let Some(t) = extend_t(t, params.extend)

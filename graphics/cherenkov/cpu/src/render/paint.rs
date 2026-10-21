@@ -115,10 +115,8 @@ pub struct LinearPaint {
 pub struct RadialPaint {
     /// Device-to-content transform.
     pub inv: [f32; 6],
-    /// Centres: `x0, y0, x1, y1` in content space.
-    pub centres: [f32; 4],
-    /// Radii: `r0, r1`.
-    pub radii: [f32; 2],
+    /// The circle equation's paint-invariant coefficients.
+    pub geometry: RadialGeometry,
     /// The circles are identical: the parameter is `-∞` inside `r0` and
     /// `+∞` outside.
     pub identical: bool,
@@ -136,6 +134,42 @@ pub struct RadialPaint {
 /// is the plain expression; above it, unscaled, `px²` and `4a·c`
 /// overflow (near 1.8e19 and earlier) and the pixel drops out.
 pub(super) const RADIAL_RESCALE_ABOVE: f32 = 65536.0;
+
+/// The two-circle equation, prepared once when the paint is lowered.
+#[derive(Clone, Copy, Debug)]
+pub struct RadialGeometry {
+    /// Start centre's x coordinate.
+    pub x0: f32,
+    /// Start centre's y coordinate.
+    pub y0: f32,
+    /// Start radius.
+    pub r0: f32,
+    /// Radius delta.
+    pub dr: f32,
+    /// Centre delta's x coordinate.
+    pub dcx: f32,
+    /// Centre delta's y coordinate.
+    pub dcy: f32,
+    /// Quadratic coefficient `dc·dc - dr²`.
+    pub a: f32,
+}
+
+impl RadialGeometry {
+    fn new(centres: [f32; 4], radii: [f32; 2]) -> Self {
+        let (x0, y0) = (centres[0], centres[1]);
+        let (dcx, dcy) = (centres[2] - x0, centres[3] - y0);
+        let (r0, dr) = (radii[0], radii[1] - radii[0]);
+        Self {
+            x0,
+            y0,
+            r0,
+            dr,
+            dcx,
+            dcy,
+            a: dr.mul_add(-dr, dcy.mul_add(dcy, dcx * dcx)),
+        }
+    }
+}
 
 /// The non-degenerate linear projection's span constants.
 #[derive(Clone, Copy, Debug)]
@@ -362,13 +396,15 @@ pub fn paint_data(
             }
             PaintData::Radial(RadialPaint {
                 inv: affine_f32(inv),
-                centres: [
-                    f32_f64(g.start_center.x),
-                    f32_f64(g.start_center.y),
-                    f32_f64(g.end_center.x),
-                    f32_f64(g.end_center.y),
-                ],
-                radii: [f32_f64(g.start_radius), f32_f64(g.end_radius)],
+                geometry: RadialGeometry::new(
+                    [
+                        f32_f64(g.start_center.x),
+                        f32_f64(g.start_center.y),
+                        f32_f64(g.end_center.x),
+                        f32_f64(g.end_center.y),
+                    ],
+                    [f32_f64(g.start_radius), f32_f64(g.end_radius)],
+                ),
                 identical,
                 stops: stops(&g.stops, g.interpolation),
                 extend: g.extend,
@@ -528,28 +564,35 @@ fn eval_stops(stops: &[Stop], t: f32, interpolation: Interpolation) -> [f32; 4] 
 /// and `+∞` outside, as the oracle's `radial_t` does.
 #[allow(clippy::many_single_char_names)] // quadratic notation mirrors the spec
 #[expect(
+    clippy::suboptimal_flops,
+    reason = "f32 squares are exact in f64, so the circle test needs no fused operation"
+)]
+#[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-pub(super) fn radial_t(
-    px: f32,
-    py: f32,
-    centres: [f32; 4],
-    radii: [f32; 2],
-    identical: bool,
-) -> f32 {
-    let (px, py) = (px - centres[0], py - centres[1]);
-    let (r0, dr) = (radii[0], radii[1] - radii[0]);
+pub(super) fn radial_t(px: f32, py: f32, geometry: &RadialGeometry, identical: bool) -> f32 {
+    let RadialGeometry {
+        x0,
+        y0,
+        r0,
+        dr,
+        dcx,
+        dcy,
+        a,
+    } = *geometry;
+    let (px, py) = (px - x0, py - y0);
     if identical {
-        return if px.hypot(py) <= r0 {
+        // Squaring f32 coordinates in f64 cannot overflow. Comparing
+        // squared distances avoids both a square root and a libm call.
+        let (px, py, radius) = (f64::from(px), f64::from(py), f64::from(r0));
+        return if radius >= 0.0 && px * px + py * py <= radius * radius {
             f32::NEG_INFINITY
         } else {
             f32::INFINITY
         };
     }
-    let (dcx, dcy) = (centres[2] - centres[0], centres[3] - centres[1]);
-    let a = dr.mul_add(-dr, dcy.mul_add(dcy, dcx * dcx));
     // The span kernel's lane scale: past `RADIAL_RESCALE_ABOVE` the
     // solve runs on `p/s` and `r0/s`, so `b`, `c` and the discriminant
     // stay finite, and the root is scaled back.
@@ -786,7 +829,7 @@ fn radial_at(outer: &PaintData, params: &RadialPaint, mut x: f32, mut y: f32) ->
         link = &inner.paint;
     }
     let (px, py) = apply(params.inv, x, y);
-    let t = radial_t(px, py, params.centres, params.radii, params.identical);
+    let t = radial_t(px, py, &params.geometry, params.identical);
     if t.is_nan() {
         return [0.0; 4];
     }
