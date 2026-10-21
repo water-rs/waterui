@@ -236,7 +236,7 @@ toml = "1.1.8"
 workspace = true
 
 [dev-dependencies]
-syn = { version = "2", features = ["full"] }
+syn = { version = "3.0.9", default-features = false, features = ["parsing", "full"] }
 
 [package.metadata.cargo-machete]
 ignored = ["roxmltree"]

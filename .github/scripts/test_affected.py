@@ -149,8 +149,12 @@ TOOL = REPO / ".github/tools/affected/target/release/affected"
 def _commit_with(edits):
     """Commit `edits` on top of HEAD and return the sha, without touching
     the worktree: a temp index, read-tree, update-index, write-tree,
-    commit-tree."""
+    commit-tree. The commit carries its own identity, since a CI runner has
+    none configured."""
     env = dict(os.environ)
+    for role in ("AUTHOR", "COMMITTER"):
+        env[f"GIT_{role}_NAME"] = "affected test"
+        env[f"GIT_{role}_EMAIL"] = "affected-test@invalid"
     with tempfile.NamedTemporaryFile(prefix="affected-idx-", delete=False) as handle:
         env["GIT_INDEX_FILE"] = handle.name
     subprocess.check_call(["git", "read-tree", "HEAD"], env=env, cwd=REPO)
@@ -177,6 +181,7 @@ def _commit_with(edits):
     sha = (
         subprocess.check_output(
             ["git", "commit-tree", tree, "-p", "HEAD", "-m", "affected test"],
+            env=env,
             cwd=REPO,
         )
         .strip()
@@ -298,7 +303,7 @@ def test_dropping_a_testing_edge_flags_the_rule():
     result = _fixture_check({manifest: text.replace(edge, "")})
     assert result.returncode == 1
     assert (
-        'extra (their tests do not link waterui-testing): ["waterui-controls"]'
+        'extra (their tests link no consumer crate): ["waterui-controls"]'
         in result.stderr
     )
 
@@ -312,7 +317,7 @@ def test_gaining_a_testing_edge_flags_the_rule():
     result = _fixture_check({manifest: text + edge})
     assert result.returncode == 1
     assert (
-        'missing (their tests link waterui-testing): ["waterui-meta"]'
+        'missing (their tests link a consumer crate): ["waterui-meta"]'
         in result.stderr
     )
 

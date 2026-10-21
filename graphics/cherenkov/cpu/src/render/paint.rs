@@ -9,7 +9,7 @@ use cherenkov::{ColorStop, Extend, Interpolation, Paint};
 use rustc_hash::FxHashMap;
 
 use cherenkov::RenderError;
-use fearless_simd::Simd;
+use fearless_simd::{Simd, SimdInterleaved, f32x4};
 use filtrate_core::space::{
     P3_TO_SRGB, SRGB_TO_P3, from_srgb, srgb_decode, srgb_encode, to_srgb, transform,
 };
@@ -1083,12 +1083,14 @@ fn solid_span<S: Simd>(simd: S, c: [f32; 4], out: &mut [MaybeUninit<[f32; 4]>]) 
     simd.vectorize(
         #[inline(always)]
         || {
-            let planes = simd.combine_f32x8(
-                simd.combine_f32x4(simd.splat_f32x4(c[0]), simd.splat_f32x4(c[1])),
-                simd.combine_f32x4(simd.splat_f32x4(c[2]), simd.splat_f32x4(c[3])),
-            );
+            let planes = [
+                simd.splat_f32x4(c[0]),
+                simd.splat_f32x4(c[1]),
+                simd.splat_f32x4(c[2]),
+                simd.splat_f32x4(c[3]),
+            ];
             let mut block = [0.0f32; 16];
-            simd.store_interleaved_128_f32x16(planes, &mut block);
+            f32x4::store_four_interleaved(planes, &mut block);
             let count = out.len();
             let mut pos = 0;
             while pos + 4 <= count {
