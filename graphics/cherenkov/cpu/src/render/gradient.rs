@@ -11,7 +11,9 @@
 //!
 //! [`project_span`], [`eval_stops_span`] and [`premul_span`] are
 //! generic over the vector width: `f32x16` for a full block, `f32x4`
-//! for the driver's one-pixel path. Radials shorter than one block
+//! for the driver's one-pixel path. Sweeps evaluate [`atan2_span`], a
+//! polynomial `atan2` with a stated error bound, in place of
+//! `f32::atan2`, which has no vector form. Radials shorter than one block
 //! solve scalar points without constructing block state; both paths
 //! agree within visual rounding tolerance. Each kind decides
 //! its span-invariant state once into a [`SpanEval`]; `eval_block`,
@@ -35,7 +37,7 @@ use fearless_simd::{Select, Simd, SimdFloat, SimdMask, f32x4, f32x16};
 
 use super::paint::{
     LinearPaint, PaintData, Project, RADIAL_RESCALE_ABOVE, RadialGeometry, RadialPaint, Stop,
-    to_premul,
+    SweepPaint, to_premul,
 };
 use super::span::{
     ExtendSpan, LANES, NoneSpan, PadSpan, ReflectSpan, RepeatSpan, SpanKernel, apply_span,
@@ -166,6 +168,67 @@ where
         V::splat(simd, p.ddy),
         (cx - V::splat(simd, p.sx)) * V::splat(simd, p.ddx),
     ) / V::splat(simd, p.len2)
+}
+
+/// `atan2` lane-wise: `f32::atan2` has no vector form, so the sweep
+/// kernel evaluates this polynomial at every width and a pixel never
+/// depends on its lane. Cephes' single-precision `atan` reduction:
+/// `t ∈ [0, 1]` from |min|/|max|, `t > tan(π/8)` folded through
+/// `(t − 1)/(t + 1)` with a π/4 bias, the four-coefficient minimax on
+/// `|u| ≤ tan(π/8)`, then the quadrant rebuilt from the arguments'
+/// signs. The IEEE corners fall out of the same selects: `±0`/`±π` for
+/// a zero pair, `±π/4`/`±3π/4` for `±∞,±∞`, NaN in gives NaN out. The
+/// absolute error is under 3×10⁻⁷ rad (≈1.1 ulp at π), as measured
+/// over the domain; `f32::atan2` itself is good to ≈0.5 ulp.
+#[expect(
+    clippy::many_single_char_names,
+    reason = "x/y/t/u/z/r are the atan2 reduction's own names"
+)]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+pub(super) fn atan2_span<S, V>(simd: S, y: V, x: V) -> V
+where
+    S: Simd,
+    V: SimdFloat<S, Element = f32>,
+    V::Mask: Select<V>,
+{
+    let zero = V::splat(simd, 0.0);
+    let one = V::splat(simd, 1.0);
+    let (ax, ay) = (x.abs(), y.abs());
+    let (lo, hi) = (ax.min(ay), ax.max(ay));
+    // `lo / hi` is NaN when both are ∞ — atan(±1) — or both are 0;
+    // the first is corrected here, the second below.
+    let t = lo
+        .simd_eq(V::splat(simd, f32::INFINITY))
+        .select(one, lo / hi);
+    let big = t.simd_gt(V::splat(simd, 0.414_213_57));
+    let u = big.select((t - one) / (t + one), t);
+    let z = u * u;
+    // atan(u) = u + u³·P(u²), P the cephes f32 coefficients.
+    let p = V::splat(simd, 8.053_744_5e-2)
+        .mul_add(z, V::splat(simd, -1.387_768_5e-1))
+        .mul_add(z, V::splat(simd, 1.997_771_1e-1))
+        .mul_add(z, V::splat(simd, -3.333_295e-1));
+    let mut r =
+        (u * z).mul_add(p, u) + big.select(V::splat(simd, std::f32::consts::FRAC_PI_4), zero);
+    r = ay
+        .simd_gt(ax)
+        .select(V::splat(simd, std::f32::consts::FRAC_PI_2) - r, r);
+    r = x
+        .simd_lt(zero)
+        .select(V::splat(simd, std::f32::consts::PI) - r, r);
+    let r = r.copysign(y);
+    // atan2(±0, ±0): ±π for a negative-signed x, ±0 otherwise.
+    let corner = x
+        .simd_lt(zero)
+        .select(V::splat(simd, std::f32::consts::PI), zero)
+        .copysign(y);
+    let r = hi.simd_eq(zero).select(corner, r);
+    // NaN in either argument gives NaN, whatever min/max picked.
+    (!(x.simd_eq(x)) | !(y.simd_eq(y))).select(V::splat(simd, f32::NAN), r)
 }
 
 /// `premul_span`'s working-space arm on one pixel's channel vector:
@@ -353,6 +416,83 @@ impl<'a, S: Simd> SpanEval<'a, S> for LinearEval<'a> {
             Some(p) => project_span(simd, &p, cx, cy),
             None => V::splat(simd, 0.0),
         }
+    }
+    #[inline(always)]
+    fn solvable<V>(&self, _t: V) -> Option<V::Mask>
+    where
+        V: SimdFloat<S, Element = f32>,
+    {
+        None
+    }
+}
+
+/// The span-invariant sweep evaluation, decided once per span: the
+/// shared base and the centre, start angle and angular span — lowering
+/// normalized the start to `[0, TAU)` and the span to a positive finite
+/// value.
+#[derive(Clone, Copy)]
+struct SweepEval<'a> {
+    /// The shared span-invariant state.
+    base: SpanBase<'a>,
+    /// The centre in content space.
+    center: [f32; 2],
+    /// Start angle in radians.
+    start: f32,
+    /// Angular span in radians.
+    span: f32,
+}
+
+impl<'a> SweepEval<'a> {
+    /// The sweep constants over the shared base.
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
+    fn new(outer: &'a PaintData, params: &'a SweepPaint) -> Self {
+        Self {
+            base: SpanBase::new(
+                outer,
+                params.inv,
+                &params.stops,
+                params.extend,
+                params.interpolation,
+            ),
+            center: params.center,
+            start: params.start,
+            span: params.span,
+        }
+    }
+}
+
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+impl<'a, S: Simd> SpanEval<'a, S> for SweepEval<'a> {
+    #[inline(always)]
+    fn base(&self) -> &SpanBase<'a> {
+        &self.base
+    }
+    #[inline(always)]
+    fn parameter<V>(&self, simd: S, cx: V, cy: V) -> V
+    where
+        V: SimdFloat<S, Element = f32>,
+        V::Mask: Select<V>,
+    {
+        let zero = V::splat(simd, 0.0);
+        let turn = V::splat(simd, std::f32::consts::TAU);
+        let raw = atan2_span(
+            simd,
+            cy - V::splat(simd, self.center[1]),
+            cx - V::splat(simd, self.center[0]),
+        ) - V::splat(simd, self.start);
+        // At most two additions take the angle to [0, TAU).
+        let raw = raw
+            .simd_lt(V::splat(simd, -std::f32::consts::TAU))
+            .select(raw + turn, raw);
+        let angle = raw.simd_lt(zero).select(raw + turn, raw);
+        angle / V::splat(simd, self.span)
     }
     #[inline(always)]
     fn solvable<V>(&self, _t: V) -> Option<V::Mask>
@@ -922,4 +1062,22 @@ where
             )
         },
     )
+}
+
+/// `PaintData::Sweep` over `out`: the span driver with the
+/// span-invariant choices [`SweepEval`] decides.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+pub(super) fn sweep_span<'a, S: Simd>(
+    simd: S,
+    outer: &PaintData,
+    params: &SweepPaint,
+    x0: usize,
+    py: usize,
+    out: &'a mut [MaybeUninit<[f32; 4]>],
+) -> &'a mut [[f32; 4]] {
+    super::span::span(simd, &SweepEval::new(outer, params), x0, py, out)
 }
