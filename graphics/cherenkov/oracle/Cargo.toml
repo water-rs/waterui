@@ -14,6 +14,7 @@ testing = []
 workspace = true
 
 [dependencies]
+cherenkov-record = { version = "0.0.0", path = "../record" }
 cherenkov-scene = { path = "../scene" }
 half = "2"
 kurbo = "0.13"

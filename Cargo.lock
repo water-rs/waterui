@@ -1724,6 +1724,7 @@ dependencies = [
  "arrayvec",
  "cherenkov",
  "cherenkov-oracle",
+ "cherenkov-record",
  "cherenkov-scene",
  "cherenkov-shader",
  "divan",
@@ -1804,6 +1805,7 @@ dependencies = [
 name = "cherenkov-oracle"
 version = "0.0.0"
 dependencies = [
+ "cherenkov-record",
  "cherenkov-scene",
  "half",
  "kurbo 0.13.1",

@@ -1,5 +1,6 @@
 //! Flattening of `kurbo` paths into polylines of `(f64, f64)` points, and
-//! expansion of strokes into outlines with `kurbo::stroke`.
+//! expansion of strokes into outlines with
+//! [`cherenkov_record::stroke::stroke_outline`].
 
 use cherenkov_scene::{Shape, StrokeStyle};
 use kurbo::{Affine, BezPath, PathEl, Point};
@@ -51,7 +52,7 @@ pub fn stroke_polylines_device(shape: &Shape, style: &StrokeStyle, tf: Affine) -
     let sm = sigma_max(tf).max(1e-12);
     let tol_u = SEGMENT_TOLERANCE / sm;
     let stroke: kurbo::Stroke = style.into();
-    let outline = kurbo::stroke(
+    let outline = cherenkov_record::stroke::stroke_outline(
         shape.to_path_at(tol_u),
         &stroke,
         &kurbo::StrokeOpts::default(),
@@ -121,7 +122,8 @@ pub fn flatten(path: &BezPath) -> Vec<Polyline> {
 pub fn stroke_polylines(path: &BezPath, style: &StrokeStyle) -> Vec<Polyline> {
     let stroke: kurbo::Stroke = style.into();
     let opts = kurbo::StrokeOpts::default();
-    let outline = kurbo::stroke(path.clone(), &stroke, &opts, FLATTEN_TOLERANCE);
+    let outline =
+        cherenkov_record::stroke::stroke_outline(path.clone(), &stroke, &opts, FLATTEN_TOLERANCE);
     flatten(&outline)
 }
 

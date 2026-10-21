@@ -42,6 +42,7 @@ pub mod record;
 pub mod resource;
 pub mod shape;
 pub mod size;
+pub mod stroke;
 pub mod style;
 pub mod surface;
 pub mod target;
