@@ -15,7 +15,6 @@
 //! loops instead, and where clippy suggests the combinator silence it
 //! with an `expect` stating this reason.
 
-use std::any::TypeId;
 use std::mem::MaybeUninit;
 
 use cherenkov::Extend;
@@ -34,44 +33,6 @@ const SHORT_SPAN: usize = 9;
 /// path: the block's fixed cost is already paid.
 const SHORT_TAIL: usize = 8;
 
-/// `a·b + c` with the scalar evaluator's single fused rounding on every
-/// level — the level's `mul_add` where it fuses (NEON, AVX2), per-lane
-/// `f32::mul_add` elsewhere: an unfused level's separate product rounds
-/// a finite `a·b` to `±∞`, and `a·b + c` then yields `NaN` where the
-/// fused expression stays `±∞` — which of those a lane sees decides
-/// whether a pixel paints at all, not just its last bit. The fallback
-/// is an explicit loop, not `from_fn`, per the no-closure rule above.
-///
-/// The branch tests the token's type, not `simd.level()`: a `Fallback`
-/// token reports the compile-time baseline level, which is NEON on
-/// aarch64 and AVX2 on a statically AVX2 x86 build, while its own
-/// `mul_add` stays unfused. The comparison folds away per
-/// monomorphization.
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
-)]
-#[inline(always)]
-pub(super) fn fused_mul_add<S, V>(simd: S, a: V, b: V, c: V) -> V
-where
-    S: Simd,
-    V: SimdFloat<S, Element = f32>,
-{
-    #[cfg(target_arch = "aarch64")]
-    if TypeId::of::<S>() == TypeId::of::<fearless_simd::Neon>() {
-        return a.mul_add(b, c);
-    }
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if TypeId::of::<S>() == TypeId::of::<fearless_simd::Avx2>() {
-        return a.mul_add(b, c);
-    }
-    let mut out = V::splat(simd, 0.0);
-    for i in 0..V::N {
-        out[i] = a[i].mul_add(b[i], c[i]);
-    }
-    out
-}
-
 /// What the span driver needs of a kind: one [`LANES`]-wide block from
 /// device x-centres `xs` on row `dy`'s centre, and the one-pixel path
 /// for what the blocks leave. `'a` is the borrowed-parameters lifetime
@@ -85,8 +46,10 @@ pub(super) trait SpanKernel<'a, S: Simd> {
     fn run(&self, simd: S, x: f32, y: f32, out: &mut [MaybeUninit<[f32; 4]>]);
 }
 
-/// `apply` lane-wise: the same two [`fused_mul_add`]s per lane — the
-/// scalar expression's single-rounding map.
+/// `apply` lane-wise: the same two multiply-adds per lane, through the
+/// level's own `mul_add` — fused on NEON and AVX2, a separate product
+/// and sum elsewhere; the difference is a last-bit rounding no viewer
+/// can see.
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
@@ -98,18 +61,8 @@ where
     V: SimdFloat<S, Element = f32>,
 {
     (
-        fused_mul_add(
-            simd,
-            V::splat(simd, m[0]),
-            x,
-            fused_mul_add(simd, V::splat(simd, m[2]), y, V::splat(simd, m[4])),
-        ),
-        fused_mul_add(
-            simd,
-            V::splat(simd, m[1]),
-            x,
-            fused_mul_add(simd, V::splat(simd, m[3]), y, V::splat(simd, m[5])),
-        ),
+        V::splat(simd, m[0]).mul_add(x, V::splat(simd, m[2]).mul_add(y, V::splat(simd, m[4]))),
+        V::splat(simd, m[1]).mul_add(x, V::splat(simd, m[3]).mul_add(y, V::splat(simd, m[5]))),
     )
 }
 
@@ -138,13 +91,10 @@ where
             (t.simd_gt(one).select(one, t), all)
         }
         Extend::Repeat => (t - t.floor(), all),
+        // `t − 2·floor(t/2)`: the product is exact, so the one rounding
+        // is the subtraction's — what a fused multiply-add would give.
         Extend::Reflect => {
-            let m = fused_mul_add(
-                simd,
-                (t * V::splat(simd, 0.5)).floor(),
-                V::splat(simd, -2.0),
-                t,
-            );
+            let m = t - (t * V::splat(simd, 0.5)).floor() * V::splat(simd, 2.0);
             (m.simd_gt(one).select(V::splat(simd, 2.0) - m, m), all)
         }
         Extend::None => (t, t.simd_ge(zero) & t.simd_le(one)),
@@ -154,8 +104,7 @@ where
 /// `extend` folded to a constant per instantiation: `block` is
 /// [`extend_t_span`] at `LANES`, `lane` the same extension on one
 /// scalar parameter — the modes' strict compares are exact in scalar
-/// code, and `Reflect`'s multiply-add is `f32::mul_add`, the same
-/// fused rounding [`fused_mul_add`] gives the block lanes.
+/// code, and `Reflect`'s `t − 2·floor(t/2)` is exact in both.
 pub(super) trait ExtendSpan<S: Simd> {
     /// [`extend_t_span`] at block width.
     fn block(simd: S, t: f32x16<S>) -> (f32x16<S>, mask32x16<S>);
@@ -191,9 +140,12 @@ extend_span!(RepeatSpan, Extend::Repeat, |_simd, t| {
     (t - t.floor(), true)
 });
 extend_span!(ReflectSpan, Extend::Reflect, |_simd, t| {
-    // `floor(t·½)·(−2) + t` — `f32::mul_add`, the same fused rounding
-    // the block lanes' `fused_mul_add` gives on every level.
-    let m = (-2.0f32).mul_add((t * 0.5).floor(), t);
+    // The block's `t − 2·floor(t/2)`, exact as there.
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "the product is exact, so mul_add rounds identically; without the level's fma feature f32::mul_add is a libm call"
+    )]
+    let m = t - (t * 0.5).floor() * 2.0;
     (if m > 1.0 { 2.0 - m } else { m }, true)
 });
 extend_span!(NoneSpan, Extend::None, |_simd, t| {

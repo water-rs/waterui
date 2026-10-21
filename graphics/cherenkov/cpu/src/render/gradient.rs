@@ -3,17 +3,17 @@
 //! projection and `extend_t`/`eval_stops`' vector counterparts — the
 //! same expressions the scalar path evaluates per pixel. Each lane
 //! depends only on its own column, never on its position in the span,
-//! and agrees with `PaintData::eval` to within rounding: every vector
-//! multiply-add goes through [`super::span::fused_mul_add`], the scalar
-//! evaluator's single fused rounding on every level — an unfused
-//! level's `a*b + c` can flip `±∞` to `NaN`, which changes whether a
-//! pixel paints, not just its last bit.
+//! and agrees with `PaintData::eval` to within what a viewer can see:
+//! every multiply-add is the level's own `mul_add`, fused on NEON and
+//! AVX2 and a separate product and sum elsewhere. No expression depends
+//! on the fused rounding to stay finite — the radial quadratic rescales
+//! lanes whose content point would overflow its terms.
 //!
 //! [`project_span`], [`eval_stops_span`] and [`premul_span`] are
 //! generic over the vector width: `f32x16` for a full block, `f32x4`
-//! for a short span's one-pixel path. The ops are the same at every
-//! width — `fused_mul_add` fuses at both — so a lone pixel agrees with
-//! the block lanes bit for bit. Each kind decides
+//! for a short span's one-pixel path. The level's ops are the same at
+//! every width, so a lone pixel agrees with the block lanes bit for
+//! bit. Each kind decides
 //! its span-invariant state once into a [`SpanEval`]; `eval_block`,
 //! `eval_pixel` and the [`SpanKernel`] blanket impl are generic over
 //! it — one kernel body shared by every gradient kind. The
@@ -33,10 +33,11 @@ use std::mem::MaybeUninit;
 use cherenkov::{Extend, Interpolation};
 use fearless_simd::{Select, Simd, SimdFloat, SimdMask, f32x4, f32x16};
 
-use super::paint::{LinearPaint, PaintData, Project, RadialPaint, Stop, to_premul};
+use super::paint::{
+    LinearPaint, PaintData, Project, RADIAL_RESCALE_ABOVE, RadialPaint, Stop, to_premul,
+};
 use super::span::{
     ExtendSpan, LANES, NoneSpan, PadSpan, ReflectSpan, RepeatSpan, SpanKernel, apply_span,
-    fused_mul_add,
 };
 
 /// `eval_stops`' window walk lane-wise over `t`, returning
@@ -87,9 +88,7 @@ where
         };
         for (i, out) in mixed.iter_mut().enumerate() {
             *out = inside.select(
-                fused_mul_add(
-                    simd,
-                    f,
+                f.mul_add(
                     V::splat(simd, b.color[i] - a.color[i]),
                     V::splat(simd, a.color[i]),
                 ),
@@ -149,8 +148,8 @@ where
 }
 
 /// The projection lane-wise — `((cy − sy)·ddy + (cx − sx)·ddx) / len2`
-/// — the scalar evaluator's expression: one [`fused_mul_add`], one
-/// `mul`, one `div`. Called only for a non-degenerate gradient;
+/// — the scalar evaluator's expression: one `mul_add`, one `mul`, one
+/// `div`. Called only for a non-degenerate gradient;
 /// [`LinearEval`] decides `len2 == 0.0`.
 #[expect(
     clippy::inline_always,
@@ -162,9 +161,7 @@ where
     S: Simd,
     V: SimdFloat<S, Element = f32>,
 {
-    fused_mul_add(
-        simd,
-        cy - V::splat(simd, p.sy),
+    (cy - V::splat(simd, p.sy)).mul_add(
         V::splat(simd, p.ddy),
         (cx - V::splat(simd, p.sx)) * V::splat(simd, p.ddx),
     ) / V::splat(simd, p.len2)
@@ -193,7 +190,7 @@ fn premul_pixel<S: Simd>(simd: S, c: f32x4<S>, working: bool) -> f32x4<S> {
 /// flow is scalar — `t ≤ first` / `t ≥ last` first, then the first
 /// matching window, the NaN fall-through to the last stop — `f` is the
 /// exactly rounded scalar quotient, and the window mix is one
-/// four-channel `fused_mul_add`, the block lane's expression. `stops`
+/// four-channel `mul_add`, the block lane's expression. `stops`
 /// holds at least two entries.
 #[expect(
     clippy::inline_always,
@@ -220,7 +217,7 @@ fn eval_stops_pixel<S: Simd>(simd: S, stops: &[Stop], t: f32, working: bool) -> 
             };
             let a4 = simd.load_array_f32x4(a.color);
             let b4 = simd.load_array_f32x4(b.color);
-            let mixed = fused_mul_add(simd, simd.splat_f32x4(f), b4 - a4, a4);
+            let mixed = simd.splat_f32x4(f).mul_add(b4 - a4, a4);
             return premul_pixel(simd, mixed, working);
         }
     }
@@ -292,9 +289,10 @@ trait SpanEval<'a, S: Simd> {
         V: SimdFloat<S, Element = f32>,
         V::Mask: Select<V>;
     /// The lanes whose parameter is solvable, tested before extension:
-    /// radial's no-solution `NaN`. A kind whose parameter cannot be
-    /// NaN on its own covers every lane.
-    fn solvable<V>(&self, simd: S, t: V) -> V::Mask
+    /// radial's no-solution `NaN`. `None` for a kind whose parameter
+    /// has no such case — a compile-time fact, so its block and pixel
+    /// paths carry no mask and no branch.
+    fn solvable<V>(&self, t: V) -> Option<V::Mask>
     where
         V: SimdFloat<S, Element = f32>;
 }
@@ -356,11 +354,11 @@ impl<'a, S: Simd> SpanEval<'a, S> for LinearEval<'a> {
         }
     }
     #[inline(always)]
-    fn solvable<V>(&self, simd: S, _t: V) -> V::Mask
+    fn solvable<V>(&self, _t: V) -> Option<V::Mask>
     where
         V: SimdFloat<S, Element = f32>,
     {
-        V::splat(simd, 0.0).simd_eq(V::splat(simd, 0.0))
+        None
     }
 }
 
@@ -467,20 +465,28 @@ impl<'a, S: Simd> SpanEval<'a, S> for RadialEval<'a> {
         )
     }
     #[inline(always)]
-    fn solvable<V>(&self, _simd: S, t: V) -> V::Mask
+    fn solvable<V>(&self, t: V) -> Option<V::Mask>
     where
         V: SimdFloat<S, Element = f32>,
     {
         // The scalar evaluator's `t.is_nan()` gate, lane-wise.
-        t.simd_eq(t)
+        Some(t.simd_eq(t))
     }
 }
 
 /// `radial_t` lane-wise over `p − centre₀`, the scalar evaluator's
-/// expressions with its rounding: identical circles give ±∞ by
-/// `hypot(p) ≤ r0`; otherwise `b` and `c` per lane feed the linear
-/// solve or the quadratic, keeping the largest root whose radius
-/// `r0 + t·dr` is non-negative — `NaN` when there is none.
+/// expressions: identical circles give ±∞ by `hypot(p) ≤ r0`;
+/// otherwise `b` and `c` per lane feed the linear solve or the
+/// quadratic, keeping the largest root whose radius `r0 + t·dr` is
+/// non-negative — `NaN` when there is none.
+///
+/// The solves run at lane scale `s`: `1` while `max(|px|, |py|)` is at
+/// most [`RADIAL_RESCALE_ABOVE`], that bound beyond it. Dividing `p`
+/// and `r0` by `s` scales `b` by `1/s`, `c` and the discriminant by
+/// `1/s²` and every root by `1/s`, so no term overflows for a finite
+/// content point — unscaled, `px²` overflows f32 near 1.8e19 and
+/// `4a·c` before that, and the pixel paints nothing where the oracle
+/// paints. At `s = 1` the expressions are unchanged.
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
@@ -493,40 +499,38 @@ where
     V::Mask: Select<V>,
 {
     let zero = V::splat(simd, 0.0);
+    let one = V::splat(simd, 1.0);
     let nan = V::splat(simd, f32::NAN);
-    let r0 = V::splat(simd, eval.r0);
+    let hi = px.abs().max(py.abs());
     if matches!(eval.form, RadialForm::Identical) {
         // `f32::hypot` lane-wise: `hi·sqrt(1 + (lo/hi)²)`. `hi == 0`
         // is 0, and an infinite component already reads as `> r0`.
-        let hi = px.abs().max(py.abs());
         let lo = px.abs().min(py.abs());
         let r = lo / hi;
-        let h = hi * fused_mul_add(simd, r, r, V::splat(simd, 1.0)).sqrt();
+        let h = hi * r.mul_add(r, one).sqrt();
         let h = hi.simd_eq(zero).select(zero, h);
-        return h.simd_le(r0).select(
+        return h.simd_le(V::splat(simd, eval.r0)).select(
             V::splat(simd, f32::NEG_INFINITY),
             V::splat(simd, f32::INFINITY),
         );
     }
+    let s = hi
+        .simd_gt(V::splat(simd, RADIAL_RESCALE_ABOVE))
+        .select(hi, one);
+    let (px, py, r0) = (px / s, py / s, V::splat(simd, eval.r0) / s);
     let dr = V::splat(simd, eval.dr);
-    // b = -2·(r0·dr + dcx·px + dcy·py), c = px² + py² − r0².
-    let inner = fused_mul_add(
-        simd,
-        V::splat(simd, eval.dcy),
-        py,
-        V::splat(simd, eval.dcx) * px,
-    );
-    let b = V::splat(simd, -2.0) * fused_mul_add(simd, r0, dr, inner);
-    let c = fused_mul_add(simd, r0, -r0, fused_mul_add(simd, py, py, px * px));
+    // b = -2·(r0·dr + dcx·px + dcy·py), c = px² + py² − r0², at scale s.
+    let inner = V::splat(simd, eval.dcy).mul_add(py, V::splat(simd, eval.dcx) * px);
+    let b = V::splat(simd, -2.0) * r0.mul_add(dr, inner);
+    let c = r0.mul_add(-r0, py.mul_add(py, px * px));
     if matches!(eval.form, RadialForm::Degenerate) {
         let t = -c / b;
         // |b| < 1e-12 has no solution; `t·dr + r0 ≥ 0` keeps the
-        // solve's radius non-negative.
-        let ok =
-            b.abs().simd_ge(V::splat(simd, 1e-12)) & fused_mul_add(simd, t, dr, r0).simd_ge(zero);
-        return ok.select(t, nan);
+        // solve's radius non-negative — both scale-free.
+        let ok = (b * s).abs().simd_ge(V::splat(simd, 1e-12)) & t.mul_add(dr, r0).simd_ge(zero);
+        return ok.select(t * s, nan);
     }
-    let disc = fused_mul_add(simd, V::splat(simd, eval.a4), -c, b * b);
+    let disc = V::splat(simd, eval.a4).mul_add(-c, b * b);
     let sq = disc.sqrt();
     let den = V::splat(simd, eval.a2);
     let r1 = (-b + sq) / den;
@@ -538,13 +542,11 @@ where
     // radius_ok(hi) ? hi : radius_ok(lo) ? lo : NaN. A negative
     // discriminant's `NaN` roots already fail the `≥ 0` test, so the
     // discriminant select only mirrors the scalar early return.
-    let t = fused_mul_add(simd, hi, dr, r0).simd_ge(zero).select(
-        hi,
-        fused_mul_add(simd, lo, dr, r0)
-            .simd_ge(zero)
-            .select(lo, nan),
-    );
-    disc.simd_lt(zero).select(nan, t)
+    let t = hi
+        .mul_add(dr, r0)
+        .simd_ge(zero)
+        .select(hi, lo.mul_add(dr, r0).simd_ge(zero).select(lo, nan));
+    disc.simd_lt(zero).select(nan, t * s)
 }
 
 /// One `LANES`-wide block from device x-centres `xs` on row `dy`'s
@@ -552,6 +554,10 @@ where
 /// extend mode as a runtime choice on one block copy and the
 /// span-decided stops — premultiplied channels, zero where
 /// `Extend::None` leaves the domain or the parameter has no solution.
+#[expect(
+    clippy::option_if_let_else,
+    reason = "a map_or closure is compiled without the level's target features"
+)]
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
@@ -572,14 +578,17 @@ where
     let (cx, cy) = apply_span(simd, base.inv, cx, cy);
     let zero = simd.splat_f32x16(0.0);
     let t = eval.parameter(simd, cx, cy);
-    let solvable = eval.solvable(simd, t);
+    let solvable = eval.solvable(t);
     let (t, active) = match base.extend {
         Extend::Pad => PadSpan::block(simd, t),
         Extend::Repeat => RepeatSpan::block(simd, t),
         Extend::Reflect => ReflectSpan::block(simd, t),
         Extend::None => NoneSpan::block(simd, t),
     };
-    let active = active & solvable;
+    let active = match solvable {
+        Some(solvable) => active & solvable,
+        None => active,
+    };
     let mut px = match base.stops {
         Ok(stops) => premul_span(simd, eval_stops_span(simd, stops, t), base.working),
         Err(c) => [
@@ -598,7 +607,7 @@ where
 /// One pixel of the block expression in channel-vector form: the
 /// base's chain — present only in the `CHAINED` instantiation — and
 /// `inv` applied through `apply_span`'s `f32x4` lane, the same
-/// `fused_mul_add` arithmetic the block lanes get;
+/// arithmetic the block lanes get;
 /// the scalar extend and early-exit stop search, one four-channel mix
 /// and premultiply, zero where `Extend::None` leaves the domain or the
 /// parameter has no solution.
@@ -625,7 +634,9 @@ where
     let (cx, cy) = apply_span(simd, base.inv, cx, cy);
     let t = eval.parameter(simd, cx, cy);
     // `solvable`'s lane 0 — the splat point makes every lane identical.
-    if eval.solvable(simd, t)[0] == 0 {
+    if let Some(solvable) = eval.solvable(t)
+        && solvable[0] == 0
+    {
         return simd.splat_f32x4(0.0);
     }
     let (t, active) = X::lane(simd, t[0]);

@@ -130,6 +130,13 @@ pub struct RadialPaint {
     pub interpolation: Interpolation,
 }
 
+/// The content-space distance from the start centre past which the
+/// radial solve divides the point and `r0` by that distance: below it
+/// every term of the quadratic is far from f32 overflow and the solve
+/// is the plain expression; above it, unscaled, `px²` and `4a·c`
+/// overflow (near 1.8e19 and earlier) and the pixel drops out.
+pub(super) const RADIAL_RESCALE_ABOVE: f32 = 65536.0;
+
 /// The non-degenerate linear projection's span constants.
 #[derive(Clone, Copy, Debug)]
 pub struct Project {
@@ -537,16 +544,22 @@ fn radial_t(px: f32, py: f32, centres: [f32; 4], radii: [f32; 2], identical: boo
         };
     }
     let (dcx, dcy) = (centres[2] - centres[0], centres[3] - centres[1]);
-    let radius_ok = |t: f32| t.mul_add(dr, r0) >= 0.0;
     let a = dr.mul_add(-dr, dcy.mul_add(dcy, dcx * dcx));
+    // The span kernel's lane scale: past `RADIAL_RESCALE_ABOVE` the
+    // solve runs on `p/s` and `r0/s`, so `b`, `c` and the discriminant
+    // stay finite, and the root is scaled back.
+    let m = px.abs().max(py.abs());
+    let s = if m > RADIAL_RESCALE_ABOVE { m } else { 1.0 };
+    let (px, py, r0) = (px / s, py / s, r0 / s);
+    let radius_ok = |t: f32| t.mul_add(dr, r0) >= 0.0;
     let b = -2.0 * r0.mul_add(dr, dcy.mul_add(py, dcx * px));
     let c = r0.mul_add(-r0, py.mul_add(py, px * px));
     if a.abs() < 1e-12 {
-        if b.abs() < 1e-12 {
+        if (b * s).abs() < 1e-12 {
             return f32::NAN;
         }
         let t = -c / b;
-        return if radius_ok(t) { t } else { f32::NAN };
+        return if radius_ok(t) { t * s } else { f32::NAN };
     }
     let disc = (4.0 * a).mul_add(-c, b * b);
     if disc < 0.0 {
@@ -556,9 +569,9 @@ fn radial_t(px: f32, py: f32, centres: [f32; 4], radii: [f32; 2], identical: boo
     let (r1, r2) = ((-b + sq) / (2.0 * a), (-b - sq) / (2.0 * a));
     let (hi, lo) = (r1.max(r2), r1.min(r2));
     if radius_ok(hi) {
-        hi
+        hi * s
     } else if radius_ok(lo) {
-        lo
+        lo * s
     } else {
         f32::NAN
     }
@@ -1158,16 +1171,13 @@ mod tests {
             )),
             Affine::IDENTITY,
         ));
-        // X-only inverse scales carrying `cx` to finite overflow and
-        // `±∞` mid-span — `b` and `c` overflow per lane, mixing
-        // solvable, unsolvable and infinite-parameter lanes inside one
-        // block, over both circle-containment orders. `1e18`/`1e19`
-        // overflow `4a·(-c)` against a finite `c` — an unfused level's
-        // `a*b + c` would read `NaN` where scalar's fused `fma` reads
-        // `+inf`, so these cases pin the kernel's `fused_mul_add`
-        // contract; `-1e38` on the containing geometry splits the
-        // roots into one `NaN` and one `+∞`, the `max`/`min` NaN case.
-        for scale in [1e18, 1e19, 1e37, 1e38, -1e38] {
+        // X-only inverse scales carrying `cx` past every unscaled
+        // term's f32 range and to `±∞` mid-span, mixing rescaled,
+        // unsolvable and infinite-parameter lanes inside one block,
+        // over both circle-containment orders; `-1e38` on the
+        // containing geometry splits the roots into one `NaN` and one
+        // `+∞`, the `max`/`min` NaN case.
+        for scale in RADIAL_SCALES {
             for base in [radial(), radial_contained()] {
                 for extend in [Extend::Pad, Extend::Repeat, Extend::Reflect, Extend::None] {
                     let mut gradient = base.clone();
@@ -1180,6 +1190,65 @@ mod tests {
             }
         }
         cases
+    }
+
+    /// The device→content x scales of the large-scale radial cases.
+    const RADIAL_SCALES: [f64; 5] = [1e18, 1e19, 1e37, 1e38, -1e38];
+
+    /// At content scales where the unscaled quadratic's terms overflow
+    /// f32, a radial pixel paints exactly where the f64 oracle's
+    /// parameter exists — over every pixel whose f32 content point is
+    /// finite, under the detected level and the scalar fallback.
+    #[test]
+    fn radial_large_scale_paints_where_the_oracle_does() {
+        #[expect(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            reason = "pixel indices are far below 2^24, and the f32 product is the kernel's own content point"
+        )]
+        fn check<S: fearless_simd::Simd>(
+            simd: S,
+            paint: &PaintData,
+            oracle: &cherenkov_scene::RadialGradient,
+            scale: f64,
+        ) {
+            let pixels = span(simd, paint, 0, REFERENCE_LEN);
+            let y = PY as f64 + 0.5;
+            for (x, px) in pixels.iter().enumerate() {
+                let x = x as f64 + 0.5;
+                if !((scale as f32) * (x as f32)).is_finite() {
+                    continue;
+                }
+                let t = cherenkov_oracle::paint::radial_t((scale * x, y).into(), oracle);
+                assert_eq!(
+                    px[3] > 0.0,
+                    !t.is_nan(),
+                    "scale {scale:e}, {oracle:?}, x={x}: alpha {} where the oracle's t is {t}",
+                    px[3]
+                );
+            }
+        }
+        for scale in RADIAL_SCALES {
+            for base in [radial(), radial_contained()] {
+                let paint = kernels::paint(
+                    &Paint::Radial(base.clone()),
+                    Affine::scale_non_uniform(scale, 1.0),
+                    [],
+                )
+                .expect("test paints lower");
+                let oracle = cherenkov_scene::RadialGradient {
+                    center0: (base.start_center.x, base.start_center.y).into(),
+                    r0: base.start_radius,
+                    center1: (base.end_center.x, base.end_center.y).into(),
+                    r1: base.end_radius,
+                    stops: Vec::new(),
+                    extend: cherenkov_scene::Extend::Pad,
+                    interpolation: cherenkov_scene::ColorSpace::default(),
+                };
+                fearless_simd::dispatch!(crate::Level::new(), simd => check(simd, &paint, &oracle, scale));
+                check(fearless_simd::Fallback::new(), &paint, &oracle, scale);
+            }
+        }
     }
 
     /// Every paint kind the span table covers, lowered through the real
@@ -1287,7 +1356,9 @@ mod tests {
     }
 
     /// `eval_span` agrees with per-pixel `eval` at the pixel centre to
-    /// within `1e-5 * max(1, |scalar|)` per channel, over every run of
+    /// within half an 8-bit step, `max(1, |scalar|) / 510` per channel —
+    /// no visible difference, whether or not the level fuses its
+    /// multiply-adds as the scalar evaluator does — over every run of
     /// length 0-67 starting at offsets 0-7, under the detected level and
     /// the scalar fallback.
     #[expect(
@@ -1295,12 +1366,12 @@ mod tests {
         reason = "pixel indices and band offsets are far below 2^24"
     )]
     #[test]
-    fn eval_span_agrees_with_scalar_eval_within_rounding() {
+    fn eval_span_agrees_with_scalar_eval_within_half_a_step() {
         fn check<S: fearless_simd::Simd>(simd: S, paint: &PaintData, x0: usize, len: usize) {
             for (i, px) in span(simd, paint, x0, len).iter().enumerate() {
                 let scalar = scalar_reference(paint, (x0 + i) as f32 + 0.5, PY as f32 + 0.5);
                 for c in 0..4 {
-                    let tolerance = 1e-5 * scalar[c].abs().max(1.0);
+                    let tolerance = scalar[c].abs().max(1.0) / 510.0;
                     assert!(
                         (px[c] - scalar[c]).abs() <= tolerance,
                         "paint {paint:?}, run x0={x0} len={len}, pixel {i} channel {c}: span {} scalar {}",

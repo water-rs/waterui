@@ -2,8 +2,6 @@
 
 use fearless_simd::{Simd, f32x4};
 
-use super::span::fused_mul_add;
-
 /// One in-box y sample's horizontal interval and Gaussian weight.
 #[derive(Clone, Copy, Default)]
 pub(super) struct Sample {
@@ -13,9 +11,9 @@ pub(super) struct Sample {
 }
 
 /// The existing Abramowitz–Stegun 7.1.26 polynomial, with a library vector
-/// exponential. Every multiply-add goes through [`fused_mul_add`]: NEON and
-/// AVX2 use the native fused instruction, other levels the scalar formula's
-/// per-lane fused operation. Remainders use this same kernel.
+/// exponential. Every multiply-add is the level's own `mul_add`: fused on
+/// NEON and AVX2, a separate product and sum elsewhere. Remainders use this
+/// same kernel.
 ///
 /// The published approximation error does not include f32 rounding. A
 /// dense native-level check against f64 erf measured 4.77e-7 maximum absolute
@@ -35,11 +33,11 @@ pub(super) fn erf4<S: Simd>(simd: S, x: f32x4<S>) -> f32x4<S> {
     let splat = |v| simd.splat_f32x4(v);
     let one = splat(1.0);
     let a = simd.abs_f32x4(x);
-    let t = simd.div_f32x4(one, fused_mul_add(simd, splat(0.327_591_1), a, one));
-    let p = fused_mul_add(simd, splat(1.061_405_429), t, splat(-1.453_152_027));
-    let p = fused_mul_add(simd, p, t, splat(1.421_413_741));
-    let p = fused_mul_add(simd, p, t, splat(-0.284_496_736));
-    let p = fused_mul_add(simd, p, t, splat(0.254_829_592));
+    let t = simd.div_f32x4(one, simd.mul_add_f32x4(splat(0.327_591_1), a, one));
+    let p = simd.mul_add_f32x4(splat(1.061_405_429), t, splat(-1.453_152_027));
+    let p = simd.mul_add_f32x4(p, t, splat(1.421_413_741));
+    let p = simd.mul_add_f32x4(p, t, splat(-0.284_496_736));
+    let p = simd.mul_add_f32x4(p, t, splat(0.254_829_592));
     let argument = simd.mul_f32x4(simd.neg_f32x4(a), a);
     // The typed array is the boundary between runtime-dispatched arithmetic
     // and wide's maintained exponential implementation; no approximation is
