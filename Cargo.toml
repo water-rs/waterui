@@ -658,11 +658,11 @@ filtrate-derive = { path = "graphics/filtrate/derive" }
 # canonical-location fix at `glifo-canonical-location` — without it, an
 # explicit all-default location (`[0, 0, …]`) never matched a stored hint
 # entry and every glyph run repaid a HintingInstance reconfigure.
-vello = { git = "https://github.com/lexoliu/vello", rev = "76292095f408cf04b901023c2053f8d424652f06" }
-vello_hybrid = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
-vello_common = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
-vello_sparse_shaders = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
-glifo = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
+vello = { git = "https://github.com/lexoliu/vello", branch = "perf/1262-bump-sizing" }
+vello_hybrid = { git = "https://github.com/lexoliu/vello", branch = "glifo-canonical-location" }
+vello_common = { git = "https://github.com/lexoliu/vello", branch = "glifo-canonical-location" }
+vello_sparse_shaders = { git = "https://github.com/lexoliu/vello", branch = "glifo-canonical-location" }
+glifo = { git = "https://github.com/lexoliu/vello", branch = "glifo-canonical-location" }
 
 # wgpu 30.0.1's Metal backend reads the address of the kCGColorSpace* globals
 # instead of their value and crashes in CGColorSpaceCreateWithName whenever a
