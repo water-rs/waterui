@@ -317,13 +317,6 @@ fn gpu_paths_satisfy_polygon_and_scene_oracles() {
         .render(&scene, &corpus().join(name))
         .expect("oracle render");
         let images = ROUTES.map(|route| render(&scene, route));
-        let (difference, _) = cherenkov_oracle::metrics::compare(&images[0], &images[1]);
-        tracing::info!(
-            scene = name,
-            flip_mean = difference.flip_mean,
-            max_local_error = difference.max_local_error,
-            "painted route difference (diagnostic)"
-        );
         for (i, (route, image)) in ROUTES.iter().zip(images).enumerate() {
             let (metrics, _) = cherenkov_oracle::metrics::compare(&reference, &image);
             oracle_metrics[i].push(metrics.flip_mean);

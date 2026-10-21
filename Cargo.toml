@@ -555,6 +555,15 @@ debug = "line-tables-only"
 debug = false
 opt-level = 2
 
+# cherenkov-oracle is a workspace member, so the wildcard override above does
+# not reach it: the dev-inherited `test` profile builds it at opt-level 0,
+# where one HDR-FLIP compare costs ~100 s against ~8 s release-built
+# (water-rs/waterui#3159). It gets the same optimized-dependency treatment,
+# and `test` inherits the override through `dev`.
+[profile.dev.package.cherenkov-oracle]
+debug = false
+opt-level = 2
+
 [profile.ci-check]
 inherits = "dev"
 debug = false
