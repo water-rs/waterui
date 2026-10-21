@@ -149,8 +149,12 @@ TOOL = REPO / ".github/tools/affected/target/release/affected"
 def _commit_with(edits):
     """Commit `edits` on top of HEAD and return the sha, without touching
     the worktree: a temp index, read-tree, update-index, write-tree,
-    commit-tree."""
+    commit-tree. The commit carries its own identity, since a CI runner has
+    none configured."""
     env = dict(os.environ)
+    for role in ("AUTHOR", "COMMITTER"):
+        env[f"GIT_{role}_NAME"] = "affected test"
+        env[f"GIT_{role}_EMAIL"] = "affected-test@invalid"
     with tempfile.NamedTemporaryFile(prefix="affected-idx-", delete=False) as handle:
         env["GIT_INDEX_FILE"] = handle.name
     subprocess.check_call(["git", "read-tree", "HEAD"], env=env, cwd=REPO)
@@ -177,6 +181,7 @@ def _commit_with(edits):
     sha = (
         subprocess.check_output(
             ["git", "commit-tree", tree, "-p", "HEAD", "-m", "affected test"],
+            env=env,
             cwd=REPO,
         )
         .strip()
