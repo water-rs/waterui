@@ -10229,6 +10229,14 @@ impl GpuRenderer {
     /// warns and opens another window; a whole window with zero retirements
     /// is a wedged queue and fails as [`RenderError::Timeout`]. Device loss
     /// still surfaces immediately as [`RenderError::DeviceLost`].
+    ///
+    /// A timed-out wait abandons a submission that may never retire, and
+    /// wgpu destroys a queue only after its work completes: dropping the
+    /// queue's last handle waits for idle without a bound. The renderer
+    /// therefore leaks one handle on a timeout, which keeps the queue
+    /// alive until the process exits, so no later drop of the engine or
+    /// of a host's [`SharedDevice`](crate::interop::SharedDevice) clones
+    /// can wait on the abandoned submission (water-rs/waterui#3157).
     #[cfg(not(target_arch = "wasm32"))]
     fn wait(
         &self,
@@ -10249,6 +10257,11 @@ impl GpuRenderer {
             },
             || self.tracker.retired(),
         )
+        .inspect_err(|error| {
+            if matches!(error, RenderError::Timeout { .. }) {
+                std::mem::forget(self.queue.clone());
+            }
+        })
     }
 
     #[cfg(target_arch = "wasm32")]
