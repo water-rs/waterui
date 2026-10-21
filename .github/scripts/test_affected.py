@@ -298,7 +298,7 @@ def test_dropping_a_testing_edge_flags_the_rule():
     result = _fixture_check({manifest: text.replace(edge, "")})
     assert result.returncode == 1
     assert (
-        'extra (their tests do not link waterui-testing): ["waterui-controls"]'
+        'extra (their tests link no consumer crate): ["waterui-controls"]'
         in result.stderr
     )
 
@@ -312,7 +312,7 @@ def test_gaining_a_testing_edge_flags_the_rule():
     result = _fixture_check({manifest: text + edge})
     assert result.returncode == 1
     assert (
-        'missing (their tests link waterui-testing): ["waterui-meta"]'
+        'missing (their tests link a consumer crate): ["waterui-meta"]'
         in result.stderr
     )
 
