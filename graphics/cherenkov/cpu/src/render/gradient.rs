@@ -11,9 +11,9 @@
 //!
 //! [`project_span`], [`eval_stops_span`] and [`premul_span`] are
 //! generic over the vector width: `f32x16` for a full block, `f32x4`
-//! for a short span's one-pixel path. The level's ops are the same at
-//! every width, so a lone pixel agrees with the block lanes bit for
-//! bit. Each kind decides
+//! for the driver's one-pixel path. Radials shorter than one block
+//! solve scalar points without constructing block state; both paths
+//! agree within visual rounding tolerance. Each kind decides
 //! its span-invariant state once into a [`SpanEval`]; `eval_block`,
 //! `eval_pixel` and the [`SpanKernel`] blanket impl are generic over
 //! it — one kernel body shared by every gradient kind. The
@@ -34,7 +34,8 @@ use cherenkov::{Extend, Interpolation};
 use fearless_simd::{Select, Simd, SimdFloat, SimdMask, f32x4, f32x16};
 
 use super::paint::{
-    LinearPaint, PaintData, Project, RADIAL_RESCALE_ABOVE, RadialPaint, Stop, to_premul,
+    LinearPaint, PaintData, Project, RADIAL_RESCALE_ABOVE, RadialPaint, Stop, apply, extend_t,
+    radial_t, to_premul,
 };
 use super::span::{
     ExtendSpan, LANES, NoneSpan, PadSpan, ReflectSpan, RepeatSpan, SpanKernel, apply_span,
@@ -861,7 +862,8 @@ pub(super) fn linear_span<'a, S: Simd>(
 }
 
 /// `PaintData::Radial` over `out`: the span driver with the
-/// span-invariant choices [`RadialEval`] decides. The form is
+/// span-invariant choices [`RadialEval`] decides for full blocks.
+/// Short runs solve scalar points before that setup. The block form is
 /// unswitched once per span — each arm runs a span body generic over
 /// the variant's [`RadialSolve`] type, so neither the block loop nor
 /// the one-pixel loop re-tests it.
@@ -878,12 +880,61 @@ pub(super) fn radial_span<'a, S: Simd>(
     py: usize,
     out: &'a mut [MaybeUninit<[f32; 4]>],
 ) -> &'a mut [[f32; 4]] {
+    if out.len() < LANES {
+        return radial_short_span(simd, outer, params, x0, py, out);
+    }
     let eval = RadialEval::new(outer, params);
     match eval.form {
         RadialForm::Identical => radial_span_form::<S, IdenticalSolve>(simd, eval, x0, py, out),
         RadialForm::Degenerate => radial_span_form::<S, DegenerateSolve>(simd, eval, x0, py, out),
         RadialForm::Quadratic => radial_span_form::<S, QuadraticSolve>(simd, eval, x0, py, out),
     }
+}
+
+/// A short radial run needs no block state or second SIMD dispatch.
+/// Solve one point at a time and interpolate its four channels together.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "device coordinates are below 2^24"
+)]
+#[expect(clippy::inline_always, reason = "inherits the dispatched CPU level")]
+#[inline(always)]
+fn radial_short_span<'a, S: Simd>(
+    simd: S,
+    outer: &PaintData,
+    params: &RadialPaint,
+    x0: usize,
+    py: usize,
+    out: &'a mut [MaybeUninit<[f32; 4]>],
+) -> &'a mut [[f32; 4]] {
+    let mut x = x0 as f32 + 0.5;
+    let y = py as f32 + 0.5;
+    for pixel in out.iter_mut() {
+        let (mut cx, mut cy) = (x, y);
+        let mut link = outer;
+        while let PaintData::Transformed(inner) = link {
+            (cx, cy) = apply(inner.inverse_f32, cx, cy);
+            link = &inner.paint;
+        }
+        let (cx, cy) = apply(params.inv, cx, cy);
+        let t = radial_t(cx, cy, params.centres, params.radii, params.identical);
+        let mut color = simd.splat_f32x4(0.0);
+        if !t.is_nan()
+            && let Some(t) = extend_t(t, params.extend)
+        {
+            let working = params.interpolation == Interpolation::Working;
+            color = match &*params.stops {
+                [] => color,
+                [stop] => premul_pixel(simd, simd.load_array_f32x4(stop.color), working),
+                stops => eval_stops_pixel(simd, stops, t, working),
+            };
+        }
+        // SAFETY: the store initializes all four channels of this pixel.
+        simd.store_array_f32x4(color, unsafe { &mut *pixel.as_mut_ptr() });
+        x += 1.0;
+    }
+    // SAFETY: the loop initializes every output pixel.
+    unsafe { out.assume_init_mut() }
 }
 
 /// One form's span body, entered through `vectorize` so it compiles
