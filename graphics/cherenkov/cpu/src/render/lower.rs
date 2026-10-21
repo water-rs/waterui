@@ -38,6 +38,72 @@ pub struct IRect {
     pub y1: i32,
 }
 
+impl IRect {
+    /// This rectangle grown by `rx` on both x sides and `ry` on both y sides.
+    #[must_use]
+    pub const fn grow(self, rx: i32, ry: i32) -> Self {
+        Self {
+            x0: self.x0 - rx,
+            y0: self.y0 - ry,
+            x1: self.x1 + rx,
+            y1: self.y1 + ry,
+        }
+    }
+
+    /// The part shared with `other`; empty when they do not overlap.
+    #[must_use]
+    pub const fn intersect(self, other: Self) -> Self {
+        Self {
+            x0: if self.x0 > other.x0 {
+                self.x0
+            } else {
+                other.x0
+            },
+            y0: if self.y0 > other.y0 {
+                self.y0
+            } else {
+                other.y0
+            },
+            x1: if self.x1 < other.x1 {
+                self.x1
+            } else {
+                other.x1
+            },
+            y1: if self.y1 < other.y1 {
+                self.y1
+            } else {
+                other.y1
+            },
+        }
+    }
+
+    /// Whether the rectangle covers no pixel.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.x0 >= self.x1 || self.y0 >= self.y1
+    }
+
+    /// Width in pixels, 0 when empty.
+    #[must_use]
+    pub const fn width(self) -> usize {
+        if self.is_empty() {
+            0
+        } else {
+            (self.x1 - self.x0).cast_unsigned() as usize
+        }
+    }
+
+    /// Height in pixels, 0 when empty.
+    #[must_use]
+    pub const fn height(self) -> usize {
+        if self.is_empty() {
+            0
+        } else {
+            (self.y1 - self.y0).cast_unsigned() as usize
+        }
+    }
+}
+
 /// A draw's device-space bounding box within its raster target
 /// (x ∈ `[x0, x1)`, y ∈ `[y0, y1)`). A target is at most `MAX_SURFACE`
 /// (16384) texels on a side, so `u16` holds every edge, and the compact box
@@ -116,7 +182,8 @@ pub enum Item {
         /// The clip in force.
         clip: Option<ClipRef>,
     },
-    /// Owned convolved silhouette coverage in surface coordinates.
+    /// Owned convolved silhouette coverage: the mask covers the shadow's
+    /// footprint within the surface, positioned by its `left` and `top`.
     Silhouette {
         /// Completed immutable coverage, retained with its command.
         slot: crate::render::glyph::GlyphSlot,
@@ -1732,12 +1799,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 && let ClipMask::Rect(cur) = current.as_ref()
                 && let Some(r) = integer_edges(new_rect)
             {
-                return Some(Arc::new(ClipMask::Rect(IRect {
-                    x0: cur.x0.max(r.x0),
-                    y0: cur.y0.max(r.y0),
-                    x1: cur.x1.min(r.x1),
-                    y1: cur.y1.min(r.y1),
-                })));
+                return Some(Arc::new(ClipMask::Rect(cur.intersect(r))));
             }
         } else if new_is_rect {
             return integer_edges(new_rect).map(|r| Arc::new(ClipMask::Rect(r)));
@@ -2890,5 +2952,50 @@ mod tests {
             ),
             capacity
         );
+    }
+
+    /// A silhouette's retained mask covers the shadow's footprint within the
+    /// surface, and a shadow that cannot reach the surface retains nothing.
+    #[test]
+    fn a_silhouette_mask_covers_only_the_shadow_footprint() {
+        let lower = |centre: (f64, f64)| {
+            let (mut items, mut scratch) = (Vec::new(), AnchorScratch::default());
+            let (mut fonts, bitmap_fonts) = (FxHashMap::default(), FxHashMap::default());
+            let (mut bitmaps, mut geometry) = (BitmapCache::new(0), GeometryCache::default());
+            let mut edge_scratch = crate::render::tiles::EdgeScratch::default();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .expect("lowering test pool");
+            let mut lowering = Lowering::new(
+                (&mut items, &mut scratch),
+                (1024, 1024),
+                None,
+                FrameId::new(0),
+                &mut fonts,
+                &bitmap_fonts,
+                (&mut bitmaps, &mut geometry, &mut edge_scratch),
+                crate::Level::new(),
+                &pool,
+            );
+            let shape = ShapeData::Ellipse(kurbo::Ellipse::new(centre, (20.0, 12.0), 0.0));
+            let shadow =
+                cherenkov::Shadow::new(2.0, cherenkov::WorkingColor::BLACK).offset((3.0, 4.0));
+            lowering.silhouette(&shape, &shadow).expect("silhouette");
+            items
+        };
+        let items = lower((512.0, 512.0));
+        let [Item::Silhouette { slot, .. }] = items.as_slice() else {
+            unreachable!("one silhouette");
+        };
+        let mask = slot.get().expect("mask is set");
+        let (left, top) = (i64::from(mask.left), i64::from(mask.top));
+        let (w, h) = (i64::from(mask.w), i64::from(mask.h));
+        assert!(left >= 0 && top >= 0 && left + w <= 1024 && top + h <= 1024);
+        assert!(left <= 495 && top <= 504 && left + w >= 535 && top + h >= 528);
+        let pad = 2 * (6 * 2 + 5);
+        assert!(w <= 40 + pad && h <= 24 + pad, "{w} x {h}");
+        assert_eq!(mask.cov.len(), mask.w as usize * mask.h as usize);
+        assert!(lower((-200.0, 512.0)).is_empty());
     }
 }
