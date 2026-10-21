@@ -97,6 +97,20 @@ retries = { backoff = "fixed", count = 2, delay = "1s" }
 filter = 'package(waterui-cli)'
 retries = { backoff = "fixed", count = 2, delay = "1s" }
 
+# `release_build_stages_include_bundle_mounts` builds a scaffolded app in
+# release from a cold target directory, because no other test in the ignored
+# suite builds in release. That is the same build the fresh-user leg's
+# `water package` times: 451 s on macOS and 822 s on Windows in nightly run
+# 39610385085, where this test took 478 s on macOS and never finished within
+# the general 600 s ceiling on Windows. The ceiling follows the measured build.
+[[profile.default.overrides]]
+filter = 'package(waterui-cli) and test(release_build_stages_include_bundle_mounts)'
+slow-timeout = { period = "300s", terminate-after = 4 }
+
+[[profile.ci.overrides]]
+filter = 'package(waterui-cli) and test(release_build_stages_include_bundle_mounts)'
+slow-timeout = { period = "300s", terminate-after = 4 }
+
 # The large-path gates of water-rs/waterui#2546 are legitimately slow: each
 # renders the eight large-path corpus scenes — up to 10k flattened segments
 # over a 1024x768 surface — twice over, and `large_paths` also computes the
