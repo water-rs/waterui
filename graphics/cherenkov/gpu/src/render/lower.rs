@@ -723,7 +723,9 @@ pub struct EmissionStorage {
 struct PreparedGpu {
     content: u64,
     linear: [u64; 4],
-    local_bounds: Rect,
+    /// The outline's local bounding box, which a shader paint's frame
+    /// reads. `None` for a compute stroke, which has no outline on the CPU.
+    local_bounds: Option<Rect>,
     path: path::GpuPath,
 }
 
@@ -4164,20 +4166,36 @@ impl<'a> Lowering<'a> {
             .get(&index)
             .is_none_or(|entry| entry.content != content || entry.linear != linear_bits)
         {
-            let local_path = outline.build(tolerance);
-            cached.insert(
-                index,
-                PreparedGpu {
-                    content,
-                    linear: linear_bits,
-                    local_bounds: kurbo::Shape::bounding_box(&local_path),
-                    path: path::prepare_gpu(
-                        local_path.elements(),
-                        Affine::new([linear[0], linear[1], linear[2], linear[3], 0.0, 0.0]),
-                        (f64::from(self.width), f64::from(self.height)),
-                    ),
-                },
-            );
+            let surface = (f64::from(self.width), f64::from(self.height));
+            let linear_affine = Affine::new([linear[0], linear[1], linear[2], linear[3], 0.0, 0.0]);
+            let prepared = match outline {
+                OutlineRef::Stroke { shape, stroke }
+                    if !matches!(paint, ResolvedPaint::Shader(_)) =>
+                {
+                    PreparedGpu {
+                        content,
+                        linear: linear_bits,
+                        local_bounds: None,
+                        path: path::stroke::prepare(
+                            shape,
+                            stroke,
+                            linear_affine,
+                            tolerance,
+                            surface,
+                        )?,
+                    }
+                }
+                _ => {
+                    let local_path = outline.build(tolerance);
+                    PreparedGpu {
+                        content,
+                        linear: linear_bits,
+                        local_bounds: Some(kurbo::Shape::bounding_box(&local_path)),
+                        path: path::prepare_gpu(local_path.elements(), linear_affine, surface),
+                    }
+                }
+            };
+            cached.insert(index, prepared);
         }
         let prepared = cached
             .get(&index)
@@ -4197,7 +4215,8 @@ impl<'a> Lowering<'a> {
                     cached
                         .get(&index)
                         .expect("prepared GPU geometry")
-                        .local_bounds,
+                        .local_bounds
+                        .expect("a shader-painted stroke keeps its kurbo outline"),
                     raster,
                 )?,
             ),
@@ -4637,8 +4656,14 @@ impl<'a> Lowering<'a> {
                         paint,
                         glyphs,
                     )?,
-                    outline @ OutlineRef::Stroke { .. } => {
+                    outline @ OutlineRef::Stroke { shape, stroke } => {
                         let tolerance = path::FLATTEN / path::sigma_max(self.transform).max(1e-12);
+                        if self.has_compute
+                            && self.coverage_route == path::CoverageRoute::Gpu
+                            && !matches!(paint, ResolvedPaint::Shader(_))
+                        {
+                            return self.stroke_gpu(*rule, shape, stroke, paint, tolerance);
+                        }
                         self.path(
                             outline.content(tolerance),
                             *rule,
@@ -4661,6 +4686,36 @@ impl<'a> Lowering<'a> {
             } => self.bitmap_glyph(*local, *font, *glyph, *size, glyphs)?,
             _ => unreachable!("scope is composed, never realized as a leaf"),
         }
+        Ok(())
+    }
+
+    /// The forced GPU route of a stroke: the compute stroker consumes the
+    /// centerline under the full transform (water-rs/waterui#2544).
+    #[cold]
+    #[inline(never)]
+    fn stroke_gpu(
+        &mut self,
+        rule: FillRule,
+        shape: &ShapeData,
+        stroke: &kurbo::Stroke,
+        paint: &ResolvedPaint,
+        tolerance: f64,
+    ) -> Result<(), RenderError> {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "surface sizes fit u32"
+        )]
+        let surface = (self.width as u32, self.height as u32);
+        let prepared = path::stroke::prepare(
+            shape,
+            stroke,
+            self.transform,
+            tolerance,
+            (f64::from(surface.0), f64::from(surface.1)),
+        )?;
+        let content = path::hash_stroke(shape, stroke, tolerance);
+        self.emit_gpu_path(rule, content, prepared, paint, None, surface);
         Ok(())
     }
 
@@ -6149,7 +6204,13 @@ mod tests {
         reason = "three coverage-route cases, the GPU one over three frames"
     )]
     fn automatic_coverage_retains_gpu_emissions() {
-        use std::sync::Arc;
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Kind {
+            Fill,
+            Stroke,
+            Dashed,
+            ShaderStroke,
+        }
 
         let (device, _queue) = device_and_queue().expect("coverage test device");
         let atlas = Atlas::new(&device, u64::MAX);
@@ -6165,29 +6226,94 @@ mod tests {
             bitmaps: &bitmaps,
             content: &content,
         };
-        for (has_compute, rectangles, gpu) in
-            [(true, 1, false), (true, 1024, true), (false, 1024, false)]
-        {
-            let mut geometry = BezPath::new();
-            for index in 0..rectangles {
-                let x = f64::from(index % 32) * 3.0;
-                let y = f64::from(index / 32) * 3.0;
-                geometry.move_to((x, y));
-                geometry.line_to((x + 2.0, y));
-                geometry.line_to((x + 2.0, y + 2.0));
-                geometry.line_to((x, y + 2.0));
-                geometry.close_path();
-            }
-            let elements = geometry.into_iter().collect::<Vec<_>>();
-            let op = Op::Path {
-                local: Affine::IDENTITY,
-                rule: FillRule::NonZero,
-                gpu_candidate: elements.len() >= path::GPU_ROUTE_MIN_ELEMENTS,
-                outline: super::super::prepared::Outline::Fill {
-                    content: path::hash_elements(&elements, FillRule::NonZero as u64),
-                    elements: elements.into(),
-                },
-                paint: ResolvedPaint::Solid([1.0; 4]),
+        // Fills and strokes of a large path take the GPU route when the
+        // device computes; a stroke ships its centerline as records, and a
+        // shader-painted stroke keeps its kurbo outline on the fill route.
+        // `frames` is 3 where the leaf retains: a hit, then a translation.
+        for (has_compute, kind, large, gpu) in [
+            (true, Kind::Fill, false, false),
+            (true, Kind::Fill, true, true),
+            (false, Kind::Fill, true, false),
+            (true, Kind::Stroke, true, true),
+            (true, Kind::Stroke, false, false),
+            (false, Kind::Stroke, true, false),
+            (true, Kind::Dashed, true, true),
+            (true, Kind::Dashed, false, false),
+            (false, Kind::Dashed, true, false),
+            (true, Kind::ShaderStroke, true, true),
+        ] {
+            let op = match kind {
+                Kind::Fill => {
+                    let rectangles = if large { 1024 } else { 1 };
+                    let mut geometry = BezPath::new();
+                    for index in 0..rectangles {
+                        let x = f64::from(index % 32) * 3.0;
+                        let y = f64::from(index / 32) * 3.0;
+                        geometry.move_to((x, y));
+                        geometry.line_to((x + 2.0, y));
+                        geometry.line_to((x + 2.0, y + 2.0));
+                        geometry.line_to((x, y + 2.0));
+                        geometry.close_path();
+                    }
+                    let elements = geometry.into_iter().collect::<Vec<_>>();
+                    Op::Path {
+                        local: Affine::IDENTITY,
+                        rule: FillRule::NonZero,
+                        gpu_candidate: elements.len() >= path::GPU_ROUTE_MIN_ELEMENTS,
+                        outline: super::super::prepared::Outline::Fill {
+                            content: path::hash_elements(&elements, FillRule::NonZero as u64),
+                            elements: elements.into(),
+                        },
+                        paint: ResolvedPaint::Solid([1.0; 4]),
+                    }
+                }
+                Kind::Stroke | Kind::Dashed | Kind::ShaderStroke => {
+                    let lines = if large { 2100 } else { 8 };
+                    let mut geometry = BezPath::new();
+                    geometry.move_to((0.0, 0.0));
+                    for index in 0..lines {
+                        let x = f64::from(index % 40) * 3.0;
+                        let y = f64::from(index % 2).mul_add(1.5, f64::from(index / 40) * 2.0);
+                        geometry.line_to((x, y));
+                    }
+                    let shape = ShapeData::Path {
+                        elements: geometry.into_iter().collect(),
+                        rule: FillRule::NonZero,
+                    };
+                    let mut stroke = kurbo::Stroke::new(1.0);
+                    if kind == Kind::Dashed {
+                        stroke = stroke.with_dashes(0.5, [3.0, 2.0]);
+                    }
+                    let ShapeData::Path { elements, .. } = &shape else {
+                        unreachable!("the stroked shape is a path")
+                    };
+                    Op::Path {
+                        local: Affine::IDENTITY,
+                        rule: FillRule::NonZero,
+                        gpu_candidate: elements.len() >= path::GPU_STROKE_MIN_ELEMENTS,
+                        outline: super::super::prepared::Outline::Stroke { shape, stroke },
+                        paint: if kind == Kind::ShaderStroke {
+                            ResolvedPaint::Shader(Box::new(
+                                super::super::prepared::ResolvedShader {
+                                    source: cherenkov::ShaderPaint {
+                                        shader: cherenkov::ShaderId::new(1),
+                                        uniforms: Vec::new(),
+                                    },
+                                    sampling: Affine::IDENTITY,
+                                },
+                            ))
+                        } else {
+                            ResolvedPaint::Solid([1.0; 4])
+                        },
+                    }
+                }
+            };
+            // A shader paint reads device bounds, so a translation does not
+            // re-place it: it is checked for its route on one frame.
+            let frames = if gpu && kind != Kind::ShaderStroke {
+                3
+            } else {
+                1
             };
             let mut cache = Realization::default();
             let mut retained = ContentData::new(cherenkov::Picture::record(|_| {}));
@@ -6198,7 +6324,7 @@ mod tests {
             // re-pushes its draw record — the coverage entry joins at
             // commit, not here — and its third, translated, re-places
             // the emission in place (#3081).
-            for iteration in 0..if gpu { 3 } else { 1 } {
+            for iteration in 0..frames {
                 retained.storage.retain_gpu_paths(std::slice::from_ref(&op));
                 let mut frame = Frame::default();
                 let mut anchors = AnchorScratch::default();
@@ -6234,7 +6360,7 @@ mod tests {
                 assert_eq!(
                     tasks,
                     usize::from(gpu),
-                    "compute={has_compute}, rectangles={rectangles}"
+                    "compute={has_compute}, kind={kind:?}, large={large}"
                 );
                 assert_eq!(lowering.paths_rasterized(), u32::from(!gpu));
                 assert!(cache.valid, "every leaf's emission retains");
@@ -6246,24 +6372,33 @@ mod tests {
                         1,
                         "the draw's anchor retains like any instance"
                     );
+                    let prepared = &retained.storage.gpu_paths[&0];
+                    let draw_path = &emission.gpu.as_ref().expect("gpu draw").path;
                     assert!(
-                        Arc::ptr_eq(
-                            &emission.gpu.as_ref().expect("gpu draw").path.elements,
-                            &retained.storage.gpu_paths[&0].path.elements
-                        ),
+                        Arc::ptr_eq(&draw_path.elements, &prepared.path.elements)
+                            && Arc::ptr_eq(&draw_path.strokes, &prepared.path.strokes),
                         "the retained draw shares the prepared geometry"
                     );
+                    // A compute stroke ships records and no outline; a
+                    // fill, or a shader-painted stroke, ships elements.
+                    let compute_stroke = matches!(kind, Kind::Stroke | Kind::Dashed);
+                    assert_eq!(prepared.path.strokes.is_empty(), !compute_stroke);
+                    assert_eq!(prepared.path.elements.is_empty(), compute_stroke);
+                    assert_eq!(prepared.path.dash.is_some(), kind == Kind::Dashed);
+                    assert_eq!(prepared.local_bounds.is_some(), !compute_stroke);
+                    let geometry = if compute_stroke {
+                        Arc::as_ptr(&prepared.path.strokes).cast::<u8>()
+                    } else {
+                        Arc::as_ptr(&prepared.path.elements).cast::<u8>()
+                    };
                     if iteration > 0 {
-                        assert!(
-                            Arc::ptr_eq(
-                                previous_geometry.as_ref().expect("prepared geometry"),
-                                &retained.storage.gpu_paths[&0].path.elements
-                            ),
+                        assert_eq!(
+                            previous_geometry.expect("prepared geometry"),
+                            geometry,
                             "a leaf hit rebuilds no prepared geometry"
                         );
                     }
-                    previous_geometry =
-                        Some(Arc::clone(&retained.storage.gpu_paths[&0].path.elements));
+                    previous_geometry = Some(geometry);
                     let draw = emission.gpu.as_ref().expect("gpu draw");
                     if moved {
                         assert!(

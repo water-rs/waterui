@@ -113,10 +113,6 @@ pub const GPU_ROUTE_MIN_ELEMENTS: usize = 4096;
 /// Source elements from which a stroked path is a GPU candidate: half of
 /// [`GPU_ROUTE_MIN_ELEMENTS`], because the stroke expands on the GPU and the
 /// outline is two to five times its source (water-rs/waterui#2544).
-#[expect(
-    dead_code,
-    reason = "lowering selects the compute stroker in a later change of #2544"
-)]
 pub const GPU_STROKE_MIN_ELEMENTS: usize = GPU_ROUTE_MIN_ELEMENTS / 2;
 
 /// A coverage grid over an integer device-space rect.

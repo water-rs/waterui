@@ -239,7 +239,9 @@ fn emit_join_side(c: ptr<function, Chain>, r: StrokeRecord, tp: vec2<f32>, bwd: 
     // JOIN_ROUND: the arc side turns with the tangent, the other side takes
     // the bevel chord in as many equal pieces.
     let k = r.aux.x & 0xffffu;
-    let phi = atan2(cr, dt);
+    // Not `atan2(cr, dt)`: it is wrong at `dt == 0` (perpendicular tangents)
+    // on the fast-math shader path, and turned that round join into a bevel.
+    let phi = select(-1.0, 1.0, cr > 0.0) * acos(clamp(dt / length(vec2<f32>(cr, dt)), -1.0, 1.0));
     let v0 = prev.local - p0;
     let arc = bwd == (phi <= 0.0);
     for (var j = 1u; j < k; j += 1u) {

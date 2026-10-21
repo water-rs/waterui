@@ -973,7 +973,7 @@ impl Lowerer<'_> {
                 local: ambient,
                 rule: FillRule::NonZero,
                 gpu_candidate: matches!(shape, ShapeData::Path { elements, .. }
-                    if elements.len() >= path::GPU_ROUTE_MIN_ELEMENTS),
+                    if elements.len() >= path::GPU_STROKE_MIN_ELEMENTS),
                 outline: source.map_or_else(
                     || Outline::Stroke {
                         shape: shape.clone(),

@@ -71,7 +71,7 @@ pub struct StrokeParams {
     pub start_cap: u32,
     /// The end cap, one of the `CAP_*` codes.
     pub end_cap: u32,
-    /// The chord count of a round cap, `arc_chords(pi, tol)`.
+    /// The chord count of a round cap, `arc_chords(pi, tol / 2)`.
     pub k_cap: u32,
 }
 
@@ -126,13 +126,6 @@ const FIELD_MAX: u32 = 0xFFFF;
 /// [`GpuPath::placed`]), the full transform from the forced route. `tol` is
 /// the value `OutlineRef::content` and `build` use. The centerline is read
 /// once, and no `BezPath` is built for the outline or for dashes.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "lowering selects the compute stroker in a later change of #2544"
-    )
-)]
 pub fn prepare(
     shape: &ShapeData,
     stroke: &Stroke,
@@ -782,7 +775,7 @@ impl<'a> Encoder<'a> {
 
     /// The walk of design section 6.2, following kurbo's `stroke_undashed`.
     fn walk(&mut self, path: &BezPath) -> Result<(), RenderError> {
-        self.k_cap = arc_chords(PI, self.tol, self.hw)?;
+        self.k_cap = arc_chords(PI, self.tol / 2.0, self.hw)?;
         for el in path.iter() {
             let p0 = self.last_pt;
             // An element with a non-finite point is skipped, the cursor still
@@ -877,7 +870,7 @@ impl<'a> Encoder<'a> {
             match style {
                 Join::Bevel => (JOIN_BEVEL, 0),
                 Join::Miter => (JOIN_MITER, 0),
-                Join::Round => (JOIN_ROUND, arc_chords(phi, self.tol, self.hw)?),
+                Join::Round => (JOIN_ROUND, arc_chords(phi, self.tol / 2.0, self.hw)?),
             }
         };
         self.pending = Some(JoinRec {
@@ -917,10 +910,18 @@ impl<'a> Encoder<'a> {
         };
         subdivide(regular, ctx, 0, &mut subs)?;
         let last = subs.len() - 1;
+        let mut prev_t1 = tan0;
         for (k, sub) in subs.into_iter().enumerate() {
             let (mut t0, mut t1) = tangents_cubic(sub.cubic);
             if k == 0 {
                 t0 = tan0;
+            } else {
+                // An interior boundary is classified like any vertex: a
+                // smooth one resolves to `SHARED`, a reversal (an exact
+                // cusp) gets a round join.
+                self.last_pt = sub.cubic.p0;
+                self.last_tan = prev_t1;
+                self.join(t0, Join::Round)?;
             }
             if k == last {
                 t1 = tan1;
@@ -944,6 +945,7 @@ impl<'a> Encoder<'a> {
                 p1: sub.cubic.p3,
                 t1,
             })?;
+            prev_t1 = t1;
         }
         self.last_pt = c.p3;
         Ok(())

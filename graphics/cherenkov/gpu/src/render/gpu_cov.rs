@@ -1873,8 +1873,10 @@ mod tests {
         let cases = stroke_cases();
         // More than 16384 dashed records, so the frame's `dash_blocks`
         // exceeds 64 and `dash_scan_blocks` carries across chunks. The
-        // bevel join and a frame of its own keep the bound under the
-        // 128 MiB binding limit.
+        // bevel join, butt caps and a frame of its own keep the bound under
+        // the 128 MiB binding limit: kurbo's default round caps on each of
+        // its ~13,000 dashes would otherwise dominate the bound.
+        // Round caps on dashes are covered by the cases above.
         let mut long = kurbo::BezPath::new();
         long.move_to((0.0, 0.0));
         for k in 1..=17_000u32 {
@@ -1884,6 +1886,7 @@ mod tests {
             long,
             kurbo::Stroke::new(2.0)
                 .with_join(kurbo::Join::Bevel)
+                .with_caps(kurbo::Cap::Butt)
                 .with_dashes(0.0, [5.0, 3.0]),
         )];
         // The default device's binding limit bounds one frame, so the cases

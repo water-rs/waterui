@@ -139,9 +139,13 @@ constrains summation order and precision for no visual gain).
 
 Fill rules, stroke joins, caps, miter limits, dashes and hairlines are
 properties of the *geometry*, resolved before any coverage is computed.
-They are therefore identical on both routes by construction, and the
-GPU route must consume the same expanded outline rather than re-deriving
-it:
+Their semantics are kurbo's on both routes, as the oracle renders them.
+The CPU route expands strokes with `kurbo::stroke`. The GPU route may
+expand them in compute (water-rs/waterui#2544), and is held to visual
+equivalence under section 4.3: within the error budget of section 1.2,
+except at kurbo's discontinuities (the miter limit, a dash boundary on a
+vertex or a subpath end), where an f32 decision may differ from kurbo's
+f64 one for inputs within f32 rounding of the discontinuity:
 
 - **Fill rules.** `FillRule::NonZero` and `FillRule::EvenOdd` only. The
   fold is section 1.1 step 7; after `resolve_winding` returns `Some`,
@@ -151,6 +155,12 @@ it:
   (start/end independently), dash pattern and dash offset are kurbo's
   semantics, not Cherenkov's. The oracle calls the same kurbo function
   (`oracle/src/path.rs`), which is why stroke scenes compare at all.
+  The compute expansion realizes them as follows. Every interior
+  sub-piece boundary of a subdivided cubic is classified through the
+  ordinary join path, so a smooth boundary is shared and a reversal (an
+  exact cusp) gets a round join. Round joins and caps flatten the true
+  circle with sagitta `tol / 2`. A round join's arc side is chosen from
+  an angle evaluated with `acos`, not `atan2`, which has no `x = 0` case.
 - **Tolerance scaling.** Stroke expansion happens in user space, so the
   device tolerance is divided by `sigma_max(transform)` — the largest
   singular value of the affine's linear part (`path.rs:40`, documented
@@ -165,8 +175,9 @@ it:
   are drawn by `KIND_FILL`/`KIND_STROKE_DIST` SDF instances, not by
   coverage cells. The GPU coverage route changes nothing there.
 
-The contract: the GPU route receives the expanded outline in device space
-— the output of step 2 in section 1.1 — and is responsible for steps 3
+The contract: the GPU route receives either the expanded outline (fills
+and shader-painted strokes) and is responsible for steps 3 through 8, or
+the stroke's centerline as encoder records and is responsible for steps 2
 through 8. Flattening moves to the GPU with #2543; the tolerance, and the
 `sigma_max` scaling that derives the user-space stroke tolerance from it,
 are unchanged, so the flattened geometry the kernel integrates is the
