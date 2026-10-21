@@ -1209,10 +1209,12 @@ mod tests {
         );
         write_vendor_stub(&waterui_root.join("backends/hydrolysis"), "hydrolysis", &[]);
         let revision = git_commit_all(&waterui_root, "stage member crates")?;
-        Ok(crate::framework::test_fixtures::stable_checkout_framework_at(
-            &format!("file://{}", waterui_root.display()),
-            &revision,
-        ))
+        Ok(
+            crate::framework::test_fixtures::stable_checkout_framework_at(
+                &format!("file://{}", waterui_root.display()),
+                &revision,
+            ),
+        )
     }
 
     /// A minimal project whose `Water.toml` records the stable framework
@@ -1378,7 +1380,8 @@ mod tests {
     /// sequence the fake `git` materializes; the stamp file then answers the
     /// next scaffold without a fetch at all.
     #[test]
-    fn materialize_android_host_materializes_then_reuses_the_stamped_checkout() -> std::io::Result<()> {
+    fn materialize_android_host_materializes_then_reuses_the_stamped_checkout()
+    -> std::io::Result<()> {
         smol::block_on(async {
             let (machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu", "hwui"]);
             let (_temporary, project) = fixture_project(&host, "").await?;

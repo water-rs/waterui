@@ -2055,7 +2055,9 @@ impl Project {
     async fn ensure_git_init(host: &Host, path: &Path) -> Result<(), FailToCreateProject> {
         // Check if already in a git repository
 
-        let mut cmd = host.command("git").map_err(FailToCreateProject::GitStatus)?;
+        let mut cmd = host
+            .command("git")
+            .map_err(FailToCreateProject::GitStatus)?;
 
         let is_in_git = command(&mut cmd, host.std_output())
             .args(["rev-parse", "--git-dir"])

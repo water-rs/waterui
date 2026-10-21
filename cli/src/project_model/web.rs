@@ -1352,7 +1352,12 @@ mod tests {
         );
         assert_eq!(
             args(&PackageManager::Yarn.create_vite(&host, "web", None)?),
-            [yarn, "create".to_owned(), "vite".to_owned(), "web".to_owned()]
+            [
+                yarn,
+                "create".to_owned(),
+                "vite".to_owned(),
+                "web".to_owned()
+            ]
         );
         assert_eq!(
             args(&PackageManager::Bun.create_vite(&host, "web", Some("react-ts"))?),
@@ -1648,8 +1653,7 @@ mod tests {
     /// `water` itself.
     #[test]
     #[cfg(unix)]
-    fn process_tree_signals_the_grandchild_and_refuses_a_shared_group() -> std::io::Result<()>
-    {
+    fn process_tree_signals_the_grandchild_and_refuses_a_shared_group() -> std::io::Result<()> {
         use std::os::unix::process::CommandExt as _;
 
         let mut leader = crate::toolchain::Host::current()

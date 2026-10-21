@@ -375,7 +375,11 @@ fn assert_dist_satisfies_needed(executable: &Path, dist: &Path) {
 
 /// A command that runs `executable` on `host` with `library_dir` on the
 /// platform loader's search path.
-fn command_with_library_dir(host: &Host, executable: &Path, library_dir: &Path) -> std::io::Result<Command> {
+fn command_with_library_dir(
+    host: &Host,
+    executable: &Path,
+    library_dir: &Path,
+) -> std::io::Result<Command> {
     let mut command = host.std_command(executable)?;
     if cfg!(windows) {
         let mut paths = vec![library_dir.to_path_buf()];
@@ -409,7 +413,11 @@ fn assert_staged_binary_runs(host: &Host, executable: &Path, dist: &Path) -> std
 /// Run `executable` where it already lives, with `runtime_dir` — the profile
 /// directory it sits in — on the loader search path, the way `water mcp`
 /// spawns the binary it just staged.
-fn assert_binary_runs_in_place(host: &Host, executable: &Path, runtime_dir: &Path) -> std::io::Result<()> {
+fn assert_binary_runs_in_place(
+    host: &Host,
+    executable: &Path,
+    runtime_dir: &Path,
+) -> std::io::Result<()> {
     let output = command_with_library_dir(host, executable, runtime_dir)?
         .output()
         .expect("launch rebuilt binary");

@@ -959,12 +959,8 @@ mod tests {
             String::from("http://10.0.0.2:5173/"),
         );
 
-        let command = physical_device_launch_command(
-            &host,
-            "ABC123-SELECTOR",
-            "com.example.app",
-            &options,
-        )?;
+        let command =
+            physical_device_launch_command(&host, "ABC123-SELECTOR", "com.example.app", &options)?;
         let args: Vec<String> = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())

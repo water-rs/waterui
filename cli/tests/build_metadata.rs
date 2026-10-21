@@ -93,9 +93,11 @@ impl Fixture {
         }
         let hooks = self.root.path().join("hooks");
         std::fs::create_dir(&hooks).expect("isolated hooks");
-        run(git(&self.package)?.args(["config", "core.hooksPath"])
+        run(git(&self.package)?
+            .args(["config", "core.hooksPath"])
             .arg(hooks));
-        run(git(&self.package)?.args(["config", "user.signingkey"])
+        run(git(&self.package)?
+            .args(["config", "user.signingkey"])
             .arg(key));
         run(git(&self.package)?.args(["add", "."]));
         self.commit()
@@ -122,7 +124,8 @@ impl Fixture {
 
     fn check(&self, expected: &str) -> std::io::Result<()> {
         run(self
-            .cargo()?.args(["test", "--locked", "--offline"])
+            .cargo()?
+            .args(["test", "--locked", "--offline"])
             .env("EXPECTED_CLI_COMMIT", expected));
         Ok(())
     }
@@ -143,7 +146,8 @@ fn linked_branch_updates_refresh_cli_identity() -> std::io::Result<()> {
     let mut fixture = Fixture::new()?;
     fixture.initialize()?;
     let linked = fixture.root.path().join("linked");
-    run(git(&fixture.package)?.args(["worktree", "add", "-b", "linked"])
+    run(git(&fixture.package)?
+        .args(["worktree", "add", "-b", "linked"])
         .arg(&linked));
     fixture.package = linked;
     fixture.check(&fixture.identity()?)?;
@@ -157,7 +161,8 @@ fn packed_ref_updates_refresh_cli_identity() -> std::io::Result<()> {
     let mut fixture = Fixture::new()?;
     fixture.initialize()?;
     let linked = fixture.root.path().join("linked");
-    run(git(&fixture.package)?.args(["worktree", "add", "-b", "linked"])
+    run(git(&fixture.package)?
+        .args(["worktree", "add", "-b", "linked"])
         .arg(&linked));
     fixture.package = linked;
     run(git(&fixture.package)?.args(["pack-refs", "--all", "--prune"]));

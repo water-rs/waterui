@@ -3221,26 +3221,28 @@ mod tests {
     /// resolved revisions yield their own tables, and an unresolvable probe
     /// fails instead of forwarding the unfiltered set.
     #[test]
-    fn resolved_forward_tables_reads_the_resolved_package_from_cargo_metadata(
-    ) -> std::io::Result<()> {
+    fn resolved_forward_tables_reads_the_resolved_package_from_cargo_metadata()
+    -> std::io::Result<()> {
         let tempdir = tempdir().expect("temporary probe fixture dir");
 
         // A committed `waterui-apple` checkout returns the revision a channel
         // manifest pins on.
-        let write_backend =
-            |dir_name: &str, version: &str, features: &[&str]| -> std::io::Result<(String, String)> {
-                let dir = tempdir.path().join(dir_name);
-                write_fixture_crate(&dir, "waterui-apple", features);
-                // The pinned revision must carry the declared version.
-                let manifest_path = dir.join("Cargo.toml");
-                let manifest = std::fs::read_to_string(&manifest_path)
-                    .expect("fixture manifest")
-                    .replace("0.0.0", version);
-                std::fs::write(&manifest_path, manifest).expect("fixture manifest");
-                probe_git(&dir, &["init", "-b", "fixture"])?;
-                let rev = crate::framework::test_fixtures::git_commit_all(&dir, "fixture")?;
-                Ok((format!("file://{}", dir.display()), rev))
-            };
+        let write_backend = |dir_name: &str,
+                             version: &str,
+                             features: &[&str]|
+         -> std::io::Result<(String, String)> {
+            let dir = tempdir.path().join(dir_name);
+            write_fixture_crate(&dir, "waterui-apple", features);
+            // The pinned revision must carry the declared version.
+            let manifest_path = dir.join("Cargo.toml");
+            let manifest = std::fs::read_to_string(&manifest_path)
+                .expect("fixture manifest")
+                .replace("0.0.0", version);
+            std::fs::write(&manifest_path, manifest).expect("fixture manifest");
+            probe_git(&dir, &["init", "-b", "fixture"])?;
+            let rev = crate::framework::test_fixtures::git_commit_all(&dir, "fixture")?;
+            Ok((format!("file://{}", dir.display()), rev))
+        };
 
         let manifest_for = |git_url: &str, rev: &str| {
             let mut manifest = cargo_toml::Manifest::<()> {

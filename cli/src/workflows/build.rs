@@ -4325,8 +4325,8 @@ mod tests {
     /// resolves it from Cargo's `compiler-artifact` report rather than a
     /// bare `<profile>/<name>` guess.
     #[test]
-    fn same_named_projects_resolve_their_own_artifacts_in_one_shared_target(
-    ) -> std::io::Result<()> {
+    fn same_named_projects_resolve_their_own_artifacts_in_one_shared_target() -> std::io::Result<()>
+    {
         use crate::project_model::project_types::{CrateName, generated_crate_name};
 
         smol::block_on(async {
