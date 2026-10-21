@@ -23,7 +23,7 @@ use crate::render::shadow;
 use crate::render::tiles::EdgeTiles;
 use crate::{Band as BandOut, BandPixels};
 use cherenkov::OffscreenFormat;
-use fearless_simd::{Simd, f32x4};
+use fearless_simd::{Simd, SimdBase, SimdInterleaved, f32x4};
 use filtrate_core::space::{P3_TO_SRGB, SRGB_TO_P3, srgb_decode, srgb_encode};
 use filtrate_core::{CpuFilterError, CpuImage, WorkingSpace};
 
@@ -625,12 +625,13 @@ fn shadow_coverage4<S: Simd>(
     for (j, c) in centres.iter_mut().enumerate().take(lanes) {
         *c = (x0 + j) as f32 + 0.5 - cx;
     }
-    simd.as_array_f32x4(shadow::integral4(
+    shadow::integral4(
         simd,
-        simd.load_array_f32x4(centres),
+        f32x4::load_array(simd, centres),
         inv_sqrt2_sigma,
         samples,
-    ))
+    )
+    .to_array()
 }
 
 /// The shadow's premultiplied source at coverage `cov` under clip `cc`.
@@ -1215,9 +1216,9 @@ impl<'a> ClipRun<'a> {
 )]
 #[inline(always)]
 fn matrix_pixel<S: Simd>(simd: S, m: &[[f32; 3]; 3], rgb: [f32; 4]) -> f32x4<S> {
-    let col0 = simd.load_array_f32x4([m[0][0], m[1][0], m[2][0], 0.0]);
-    let col1 = simd.load_array_f32x4([m[0][1], m[1][1], m[2][1], 0.0]);
-    let col2 = simd.load_array_f32x4([m[0][2], m[1][2], m[2][2], 0.0]);
+    let col0 = f32x4::load_array(simd, [m[0][0], m[1][0], m[2][0], 0.0]);
+    let col1 = f32x4::load_array(simd, [m[0][1], m[1][1], m[2][1], 0.0]);
+    let col2 = f32x4::load_array(simd, [m[0][2], m[1][2], m[2][2], 0.0]);
     simd.add_f32x4(
         simd.add_f32x4(
             simd.mul_f32x4(col0, simd.splat_f32x4(rgb[0])),
@@ -1240,18 +1241,23 @@ fn convert_packed<S: Simd, const ENCODE: bool>(simd: S, pixel: [f32; 4]) -> [f32
     if alpha == 0.0 {
         return [0.0; 4];
     }
-    let straight = simd.as_array_f32x4(simd.div_f32x4(
-        simd.load_array_f32x4([pixel[0], pixel[1], pixel[2], 0.0]),
-        simd.splat_f32x4(alpha),
-    ));
+    let straight = simd
+        .div_f32x4(
+            f32x4::load_array(simd, [pixel[0], pixel[1], pixel[2], 0.0]),
+            simd.splat_f32x4(alpha),
+        )
+        .to_array();
     let linear = if ENCODE {
-        let rgb = simd.as_array_f32x4(matrix_pixel(simd, &P3_TO_SRGB, straight));
-        simd.load_array_f32x4([
-            srgb_encode(rgb[0]),
-            srgb_encode(rgb[1]),
-            srgb_encode(rgb[2]),
-            0.0,
-        ])
+        let rgb = matrix_pixel(simd, &P3_TO_SRGB, straight).to_array();
+        f32x4::load_array(
+            simd,
+            [
+                srgb_encode(rgb[0]),
+                srgb_encode(rgb[1]),
+                srgb_encode(rgb[2]),
+                0.0,
+            ],
+        )
     } else {
         matrix_pixel(
             simd,
@@ -1264,7 +1270,7 @@ fn convert_packed<S: Simd, const ENCODE: bool>(simd: S, pixel: [f32; 4]) -> [f32
             ],
         )
     };
-    let out = simd.as_array_f32x4(simd.mul_f32x4(linear, simd.splat_f32x4(alpha)));
+    let out = simd.mul_f32x4(linear, simd.splat_f32x4(alpha)).to_array();
     [out[0], out[1], out[2], alpha]
 }
 
@@ -1328,18 +1334,21 @@ fn blend_packed<S: Simd, const SRGB: bool>(
         return;
     }
     let scaled = simd.mul_f32x4(
-        simd.mul_f32x4(simd.load_array_f32x4(src), simd.splat_f32x4(coverage)),
+        simd.mul_f32x4(f32x4::load_array(simd, src), simd.splat_f32x4(coverage)),
         simd.splat_f32x4(clip),
     );
     let scaled = if SRGB {
-        simd.load_array_f32x4(convert_packed::<S, true>(simd, simd.as_array_f32x4(scaled)))
+        f32x4::load_array(simd, convert_packed::<S, true>(simd, scaled.to_array()))
     } else {
         scaled
     };
-    let inverse = simd.splat_f32x4(1.0 - simd.as_array_f32x4(scaled)[3]);
-    *dst = simd.as_array_f32x4(
-        simd.add_f32x4(scaled, simd.mul_f32x4(simd.load_array_f32x4(*dst), inverse)),
-    );
+    let inverse = simd.splat_f32x4(1.0 - scaled.to_array()[3]);
+    *dst = simd
+        .add_f32x4(
+            scaled,
+            simd.mul_f32x4(f32x4::load_array(simd, *dst), inverse),
+        )
+        .to_array();
 }
 
 /// The clip's presence is selected once per span; every pixel remains
@@ -1442,13 +1451,9 @@ pub fn composite_solid<S: Simd, C: Source>(
     reason = "compiled under the dispatched CPU level"
 )]
 #[inline(always)]
-fn store_solid_block<S: Simd>(simd: S, planes: [f32x4<S>; 4], pixels: &mut [[f32; 4]; 4]) {
-    let packed = simd.combine_f32x8(
-        simd.combine_f32x4(planes[0], planes[1]),
-        simd.combine_f32x4(planes[2], planes[3]),
-    );
+fn store_solid_block<S: Simd>(planes: [f32x4<S>; 4], pixels: &mut [[f32; 4]; 4]) {
     // SAFETY: `[[f32; 4]; 4]` is layout-identical to `[f32; 16]`.
-    simd.store_interleaved_128_f32x16(packed, unsafe {
+    f32x4::store_four_interleaved(planes, unsafe {
         &mut *pixels.as_mut_ptr().cast::<[f32; 16]>()
     });
 }
@@ -1482,7 +1487,7 @@ fn composite_solid_in<S: Simd, C: Source, const SRGB: bool>(
     if opaque && cov.full() && clip.clip.is_none() {
         let (groups, tail) = dst.as_chunks_mut::<4>();
         for group in groups {
-            store_solid_block(simd, stored_planes, group);
+            store_solid_block(stored_planes, group);
         }
         for pixel in tail {
             *pixel = stored;
@@ -1499,7 +1504,7 @@ fn composite_solid_in<S: Simd, C: Source, const SRGB: bool>(
             }
             let (groups, tail) = dst[start..pos].as_chunks_mut::<4>();
             for group in groups {
-                store_solid_block(simd, stored_planes, group);
+                store_solid_block(stored_planes, group);
             }
             for pixel in tail {
                 *pixel = stored;
@@ -1556,9 +1561,10 @@ fn shade_run<S: Simd>(
         let dst = &mut dst[range];
         let color = *color;
         // Isolate the solid kernel from the paint evaluators' register pressure.
+        // Capture the span context by value across the SIMD boundary.
         simd.vectorize(
             #[inline(always)]
-            || match cov {
+            move || match cov {
                 Run::Uniform(c) => composite_solid(simd, dst, c, clip, color, space),
                 Run::Samples(c) => composite_solid(simd, dst, c, clip, color, space),
                 Run::Slice(c) => composite_solid(simd, dst, c, clip, color, space),
@@ -1568,7 +1574,7 @@ fn shade_run<S: Simd>(
     }
     simd.vectorize(
         #[inline(always)]
-        || {
+        move || {
             let mut x = range.start;
             while x < range.end {
                 let n = (range.end - x).min(SPAN_CHUNK);
