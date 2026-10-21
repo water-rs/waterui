@@ -152,7 +152,7 @@ mod tests {
     }
 
     /// An install that never returns is killed at its deadline and reported
-    /// as `TimedOut`; the fake's child dies with the tree, so nothing is
+    /// as `TimedOut`; the fake dies with its process tree, so nothing is
     /// left running.
     #[test]
     fn hung_install_times_out() {
