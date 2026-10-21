@@ -43,15 +43,15 @@ pub struct ImagePaintData {
     /// Content-to-image mapping retained at f64 precision.
     mapping: Affine,
     /// Device-to-image-pixel-space transform.
-    inv: [f32; 6],
+    pub(super) inv: [f32; 6],
     /// The registered image.
-    image: std::sync::Arc<super::image::CpuImage>,
+    pub(super) image: std::sync::Arc<super::image::CpuImage>,
     /// Horizontal continuation.
-    extend_x: Extend,
+    pub(super) extend_x: Extend,
     /// Vertical continuation.
-    extend_y: Extend,
+    pub(super) extend_y: Extend,
     /// Sampling.
-    sampling: cherenkov::Sampling,
+    pub(super) sampling: cherenkov::Sampling,
 }
 
 /// A resolved paint: the inverse device-to-content transform plus the
@@ -263,13 +263,11 @@ fn stops(stops: &[ColorStop], interpolation: Interpolation) -> std::sync::Arc<[S
 
 /// Samples an image at pixel-space `(u, v)` — the oracle's
 /// `sample_image` in f32 (centre-based: texel centres at integer + 0.5).
-#[expect(
-    clippy::many_single_char_names,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    reason = "u/v/w/h/x/y are the natural names; texel coordinates are clamped before indexing"
-)]
+/// The scalar evaluator's image arm; the span kernel is the lane-wise
+/// `super::image` expression of the same formula, sharing
+/// [`super::image::nearest_texel`]/[`super::image::linear_taps`]' index
+/// math.
+#[cfg(test)]
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
@@ -282,27 +280,19 @@ fn sample_image(
     sampling: cherenkov::Sampling,
 ) -> [f32; 4] {
     let (w, h) = (img.width as usize, img.height as usize);
-    let at = |x: usize, y: usize| img.pixels[y.min(h - 1) * w + x.min(w - 1)];
     match sampling {
         cherenkov::Sampling::Nearest => {
-            let x = (u - 0.5).round().clamp(0.0, w as f32 - 1.0) as usize;
-            let y = (v - 0.5).round().clamp(0.0, h as f32 - 1.0) as usize;
-            at(x, y)
+            img.pixels[super::image::nearest_texel(v, h) * w + super::image::nearest_texel(u, w)]
         }
         cherenkov::Sampling::Linear => {
-            // Clamp the *sample coordinate* into texel-centre space before
-            // taking the fraction: outside the border texels every tap must
-            // collapse onto the edge texel, not blend inward with a flipped
-            // weight.
-            let fx = (u - 0.5).clamp(0.0, w as f32 - 1.0);
-            let fy = (v - 0.5).clamp(0.0, h as f32 - 1.0);
-            let x0 = fx.floor() as usize;
-            let y0 = fy.floor() as usize;
-            let x1 = (x0 + 1).min(w - 1);
-            let y1 = (y0 + 1).min(h - 1);
-            let tx = fx - x0 as f32;
-            let ty = fy - y0 as f32;
-            let (c00, c10, c01, c11) = (at(x0, y0), at(x1, y0), at(x0, y1), at(x1, y1));
+            let (x0, x1, tx) = super::image::linear_taps(u, w);
+            let (y0, y1, ty) = super::image::linear_taps(v, h);
+            let (c00, c10, c01, c11) = (
+                img.pixels[y0 * w + x0],
+                img.pixels[y0 * w + x1],
+                img.pixels[y1 * w + x0],
+                img.pixels[y1 * w + x1],
+            );
             let mut out = [0.0; 4];
             for i in 0..4 {
                 let top = tx.mul_add(c10[i] - c00[i], c00[i]);
@@ -722,10 +712,6 @@ impl PaintData {
     }
 
     #[expect(
-        clippy::cast_precision_loss,
-        reason = "image dimensions are bounded by memory budget"
-    )]
-    #[expect(
         clippy::inline_always,
         reason = "compiled under the dispatched CPU level"
     )]
@@ -735,17 +721,7 @@ impl PaintData {
             Self::Transformed(..) => unreachable!("evaluate resolves the transform chain"),
             Self::Solid(c) => output.solid(*c),
             Self::Mesh(mesh) => output.sample(|dx, dy| mesh.eval(dx, dy)),
-            Self::Image(image) => output.sample(|dx, dy| {
-                let (qx, qy) = apply(image.inv, dx, dy);
-                let (iw, ih) = (image.image.width as f32, image.image.height as f32);
-                let Some(u) = extend_t(qx / iw, image.extend_x).map(|t| t * iw) else {
-                    return [0.0; 4];
-                };
-                let Some(v) = extend_t(qy / ih, image.extend_y).map(|t| t * ih) else {
-                    return [0.0; 4];
-                };
-                sample_image(&image.image, u, v, image.sampling)
-            }),
+            Self::Image(image) => output.image(self, image),
             Self::Sweep(p) => output.sweep(self, p),
 
             Self::Linear(p) => output.linear(self, p),
@@ -792,6 +768,40 @@ trait PaintOutput: Sized {
 
     /// The sweep-gradient leaf, `outer` as in [`Self::linear`].
     fn sweep(self, outer: &PaintData, params: &SweepPaint) -> Self::Output;
+
+    /// The image leaf, `outer` supplying the `Transformed` chain as in
+    /// [`PaintOutput::linear`].
+    fn image(self, outer: &PaintData, image: &ImagePaintData) -> Self::Output;
+}
+
+/// The image leaf's scalar evaluation: `outer`'s transform chain, then
+/// `image`'s map, the per-axis extends and the sampling — the same
+/// expression the span kernel evaluates per lane.
+#[cfg(test)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "image dimensions are bounded by memory budget"
+)]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn image_at(outer: &PaintData, image: &ImagePaintData, mut x: f32, mut y: f32) -> [f32; 4] {
+    let mut link = outer;
+    while let PaintData::Transformed(inner) = link {
+        (x, y) = apply(inner.inverse_f32, x, y);
+        link = &inner.paint;
+    }
+    let (qx, qy) = apply(image.inv, x, y);
+    let (iw, ih) = (image.image.width as f32, image.image.height as f32);
+    let Some(u) = extend_t(qx / iw, image.extend_x).map(|t| t * iw) else {
+        return [0.0; 4];
+    };
+    let Some(v) = extend_t(qy / ih, image.extend_y).map(|t| t * ih) else {
+        return [0.0; 4];
+    };
+    sample_image(&image.image, u, v, image.sampling)
 }
 
 /// The linear leaf's scalar evaluation: `outer`'s transform chain, then
@@ -945,6 +955,16 @@ impl<O: PaintOutput> PaintOutput for TransformedOutput<'_, O> {
     fn sweep(self, _outer: &PaintData, params: &SweepPaint) -> Self::Output {
         self.output.sweep(self.paint, params)
     }
+
+    /// As [`Self::linear`].
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn image(self, _outer: &PaintData, image: &ImagePaintData) -> Self::Output {
+        self.output.image(self.paint, image)
+    }
 }
 
 #[cfg(test)]
@@ -1000,6 +1020,15 @@ impl PaintOutput for PixelCenter {
     #[inline(always)]
     fn sweep(self, outer: &PaintData, params: &SweepPaint) -> Self::Output {
         sweep_at(outer, params, self.dx, self.dy)
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn image(self, outer: &PaintData, image: &ImagePaintData) -> Self::Output {
+        image_at(outer, image, self.dx, self.dy)
     }
 }
 
@@ -1101,6 +1130,15 @@ impl<'a, S: Simd> PaintOutput for PixelSpan<'a, S> {
     fn sweep(self, outer: &PaintData, params: &SweepPaint) -> Self::Output {
         super::gradient::sweep_span(self.simd, outer, params, self.x0, self.py, self.out)
     }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn image(self, outer: &PaintData, image: &ImagePaintData) -> Self::Output {
+        super::image::image_span(self.simd, outer, image, self.x0, self.py, self.out)
+    }
 }
 
 #[cfg(test)]
@@ -1147,17 +1185,27 @@ mod tests {
         gradient
     }
 
-    /// A deterministic 64×64 `Rgba8` upload.
-    fn upload() -> ImageUpload {
-        let mut data = Vec::with_capacity(64 * 64 * 4);
-        for y in 0..64u8 {
-            for x in 0..64u8 {
-                data.extend_from_slice(&[x * 4, y * 4, (x + y) * 2, 255]);
+    /// A deterministic `width`×`height` `LinearP3` upload whose texels
+    /// all differ.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "texel bytes are taken mod 256"
+    )]
+    fn upload(width: u32, height: u32) -> ImageUpload {
+        let mut data = Vec::with_capacity(width as usize * height as usize * 4);
+        for y in 0..height {
+            for x in 0..width {
+                data.extend_from_slice(&[
+                    (x * 37 % 256) as u8,
+                    (y * 53 % 256) as u8,
+                    ((x + y) * 19 % 256) as u8,
+                    255,
+                ]);
             }
         }
         ImageUpload {
-            width: 64,
-            height: 64,
+            width,
+            height,
             data: data.into(),
             color_space: ImageColorSpace::LinearP3,
             premultiplied: false,
@@ -1482,10 +1530,118 @@ mod tests {
         cases
     }
 
+    const STRIP_W: ImageId = ImageId::new(2);
+    const STRIP_H: ImageId = ImageId::new(3);
+    const SINGLE: ImageId = ImageId::new(4);
+
+    /// Image paints over the 64×64 image and the degenerate 1×1, 8×1
+    /// and 1×8 images: one transform whose sample coordinates cross
+    /// every image edge on the test row, under four extend pairs
+    /// covering each mode on each axis; the transform shapes under
+    /// pad; the degenerate images under all four modes — both
+    /// samplings each.
+    fn image_cases() -> Vec<PaintData> {
+        let uploads = [
+            (IMAGE.raw(), upload(64, 64)),
+            (STRIP_W.raw(), upload(8, 1)),
+            (STRIP_H.raw(), upload(1, 8)),
+            (SINGLE.raw(), upload(1, 1)),
+        ];
+        let images: Vec<_> = uploads
+            .iter()
+            .map(|(id, up)| (*id, Arc::new(kernels::image(up).unwrap())))
+            .collect();
+        let lower =
+            |paint: &Paint| kernels::paint(paint, Affine::IDENTITY, images.clone()).unwrap();
+        let pattern = |image: ImageId,
+                       transform: Affine,
+                       extend_x: Extend,
+                       extend_y: Extend,
+                       sampling: Sampling| {
+            Paint::Image(ImagePattern {
+                image,
+                transform,
+                extend_x,
+                extend_y,
+                sampling,
+            })
+        };
+        let mut paints = Vec::new();
+        // One transform whose sample coordinates cross all four image
+        // edges on the test row — u ∈ [-101, 141], v ∈ [-112, 92] —
+        // under four extend pairs covering each mode on each axis.
+        let all_edges = Affine::translate((40.0, 13.5))
+            * Affine::scale(0.25)
+            * Affine::rotate(-0.7)
+            * Affine::translate((-20.0, 10.0));
+        for (extend_x, extend_y) in [
+            (Extend::Pad, Extend::Repeat),
+            (Extend::Repeat, Extend::Reflect),
+            (Extend::Reflect, Extend::None),
+            (Extend::None, Extend::Pad),
+        ] {
+            for sampling in [Sampling::Nearest, Sampling::Linear] {
+                paints.push(lower(&pattern(
+                    IMAGE, all_edges, extend_x, extend_y, sampling,
+                )));
+            }
+        }
+        // Transform shapes under pad.
+        for transform in [
+            Affine::IDENTITY,
+            Affine::scale(0.25),
+            Affine::scale(4.0),
+            Affine::rotate(0.3),
+            Affine::skew(0.3, -0.2),
+            Affine::translate((-3.0, -3.0)),
+            Affine::translate((4.0, 4.0)) * Affine::rotate(0.17) * Affine::scale(0.5),
+        ] {
+            for sampling in [Sampling::Nearest, Sampling::Linear] {
+                paints.push(lower(&pattern(
+                    IMAGE,
+                    transform,
+                    Extend::Pad,
+                    Extend::Pad,
+                    sampling,
+                )));
+            }
+        }
+        // Degenerate images under all four modes: every lane collapses
+        // to the one texel or the edge row/column.
+        for (id, transform) in [
+            (SINGLE, Affine::scale(0.5)),
+            (STRIP_W, Affine::rotate(0.2)),
+            (STRIP_H, Affine::rotate(0.2)),
+            (STRIP_W, Affine::IDENTITY),
+        ] {
+            for extend in [Extend::Pad, Extend::Repeat, Extend::Reflect, Extend::None] {
+                for sampling in [Sampling::Nearest, Sampling::Linear] {
+                    paints.push(lower(&pattern(id, transform, extend, extend, sampling)));
+                }
+            }
+        }
+        // A `Transformed` image paint lowers through the same Image
+        // variant after the transform folds into the mapping.
+        paints.push(lower(&Paint::Transformed(TransformedPaint::new(
+            pattern(
+                IMAGE,
+                Affine::scale(1024.0 / 64.0),
+                Extend::Pad,
+                Extend::Pad,
+                Sampling::Linear,
+            ),
+            Affine::rotate(0.3) * Affine::translate((2.0, -1.0)),
+        ))));
+        paints
+    }
+
     /// Every paint kind the span table covers, lowered through the real
     /// `paint_data`/`CpuImage::decode` path a bench uses.
     fn each_kind() -> Vec<PaintData> {
-        let images = [(IMAGE.raw(), Arc::new(kernels::image(&upload()).unwrap()))];
+        let images = [(
+            IMAGE.raw(),
+            Arc::new(kernels::image(&upload(64, 64)).unwrap()),
+        )];
         let lower =
             |paint: &Paint| kernels::paint(paint, Affine::IDENTITY, images.clone()).unwrap();
         let radial = RadialGradient {
@@ -1556,25 +1712,35 @@ mod tests {
         paint.eval_span(simd, x0, PY, &mut out).to_vec()
     }
 
+    /// `assert_close` over two spans' flattened pixels, naming the
+    /// paint and the run when a channel exceeds the visual bound.
+    #[track_caller]
+    fn assert_spans_close(
+        actual: &[[f32; 4]],
+        expected: &[[f32; 4]],
+        paint: &PaintData,
+        x0: usize,
+        len: usize,
+    ) {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cherenkov_oracle::metrics::assert_close(actual.as_flattened(), expected.as_flattened());
+        }));
+        assert!(result.is_ok(), "paint {paint:?}, run x0={x0} len={len}");
+    }
+
     /// A pixel never visibly depends on its lane or the span's alignment:
-    /// every sub-span agrees within half an 8-bit step with a reference
-    /// span covering x in 0..80, over every run of length 0-67 starting at
-    /// offsets 0-7, under the detected level and the scalar fallback.
+    /// every sub-span agrees with a reference span covering x in 0..80
+    /// within `assert_close`'s visual bound, over every run of length
+    /// 0-67 starting at offsets 0-7, under the detected level and the
+    /// scalar fallback.
     #[test]
     fn eval_span_is_alignment_invariant() {
         fn check<S: fearless_simd::Simd>(simd: S, paint: &PaintData) {
             let reference = span(simd, paint, 0, REFERENCE_LEN);
             for x0 in 0..=7usize {
                 for len in 0..=67usize {
-                    for (i, px) in span(simd, paint, x0, len).iter().enumerate() {
-                        for c in 0..4 {
-                            let expected = reference[x0 + i][c];
-                            assert!(
-                                (px[c] - expected).abs() <= expected.abs().max(1.0) / 510.0,
-                                "paint {paint:?}, run x0={x0} len={len}, pixel {i} channel {c}"
-                            );
-                        }
-                    }
+                    let sub = span(simd, paint, x0, len);
+                    assert_spans_close(&sub, &reference[x0..x0 + len], paint, x0, len);
                 }
             }
         }
@@ -1583,42 +1749,36 @@ mod tests {
             .chain(linear_cases())
             .chain(radial_cases())
             .chain(sweep_cases())
+            .chain(image_cases())
         {
             fearless_simd::dispatch!(crate::Level::new(), simd => check(simd, &paint));
             check(fearless_simd::Fallback::new(), &paint);
         }
     }
 
-    /// `eval_span` agrees with per-pixel `eval` at the pixel centre to
-    /// within half an 8-bit step, `max(1, |scalar|) / 510` per channel —
-    /// no visible difference, whether or not the level fuses its
-    /// multiply-adds as the scalar evaluator does — over every run of
-    /// length 0-67 starting at offsets 0-7, under the detected level and
-    /// the scalar fallback.
+    /// `eval_span` agrees with per-pixel `eval` at the pixel centre
+    /// within `assert_close`'s visual bound — no visible difference,
+    /// whether or not the level fuses its multiply-adds as the scalar
+    /// evaluator does — over every run of length 0-67 starting at
+    /// offsets 0-7, under the detected level and the scalar fallback.
     #[expect(
         clippy::cast_precision_loss,
         reason = "pixel indices and band offsets are far below 2^24"
     )]
     #[test]
-    fn eval_span_agrees_with_scalar_eval_within_half_a_step() {
+    fn eval_span_agrees_with_scalar_eval_within_rounding() {
         fn check<S: fearless_simd::Simd>(simd: S, paint: &PaintData, x0: usize, len: usize) {
-            for (i, px) in span(simd, paint, x0, len).iter().enumerate() {
-                let scalar = scalar_reference(paint, (x0 + i) as f32 + 0.5, PY as f32 + 0.5);
-                for c in 0..4 {
-                    let tolerance = scalar[c].abs().max(1.0) / 510.0;
-                    assert!(
-                        (px[c] - scalar[c]).abs() <= tolerance,
-                        "paint {paint:?}, run x0={x0} len={len}, pixel {i} channel {c}: span {} scalar {}",
-                        px[c],
-                        scalar[c]
-                    );
-                }
-            }
+            let sub = span(simd, paint, x0, len);
+            let scalars: Vec<[f32; 4]> = (0..len)
+                .map(|i| scalar_reference(paint, (x0 + i) as f32 + 0.5, PY as f32 + 0.5))
+                .collect();
+            assert_spans_close(&sub, &scalars, paint, x0, len);
         }
         for paint in each_kind()
             .into_iter()
             .chain(linear_cases())
             .chain(radial_cases())
+            .chain(image_cases())
         {
             for x0 in 0..=7usize {
                 for len in 0..=67usize {
