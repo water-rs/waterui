@@ -863,6 +863,112 @@ fn corner_inset(r: f32, dy: f32) -> f32 {
     r - (r * r - dd * dd).max(0.0).sqrt()
 }
 
+/// The shadow kernel's four-lane coverage at `x0`: one pixel centre per
+/// lane, each computed independently as `(x as f32 + 0.5) - cx`; a 1–3-lane
+/// tail pads with the first lane's valid centre and its outputs are never
+/// read.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "pixel indices and band offsets are far below 2^24"
+)]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+fn shadow_coverage4<S: Simd>(
+    simd: S,
+    cx: f32,
+    inv_sqrt2_sigma: f32,
+    x0: usize,
+    lanes: usize,
+    samples: &[shadow::Sample],
+) -> [f32; 4] {
+    let mut centres = [(x0 as f32 + 0.5) - cx; 4];
+    for (j, c) in centres.iter_mut().enumerate().take(lanes) {
+        *c = (x0 + j) as f32 + 0.5 - cx;
+    }
+    simd.as_array_f32x4(shadow::integral4(
+        simd,
+        simd.load_array_f32x4(centres),
+        inv_sqrt2_sigma,
+        samples,
+    ))
+}
+
+/// The shadow's premultiplied source at coverage `cov` under clip `cc`.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+fn shadow_src(color: &[f32; 4], cov: f32, cc: f32) -> [f32; 4] {
+    let cov = cov.clamp(0.0, 1.0);
+    [
+        color[0] * cov * cc,
+        color[1] * cov * cc,
+        color[2] * cov * cc,
+        color[3] * cov * cc,
+    ]
+}
+
+/// Composites the edge columns `from..to` of shadow row `y` — the columns
+/// whose x-integral does not saturate — under `clip_mask`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the row's shared context travels together"
+)]
+#[expect(
+    clippy::option_if_let_else,
+    reason = "a map_or closure inside the vectorize body is compiled without \
+              the dispatched level's target features"
+)]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+fn shadow_edge<S: Simd>(
+    simd: S,
+    dst: &mut [[f32; 4]],
+    w: usize,
+    y: usize,
+    py: usize,
+    cx: f32,
+    inv_sqrt2_sigma: f32,
+    clip_mask: Option<&[f32]>,
+    color: &[f32; 4],
+    space: cherenkov::BlendSpace,
+    from: usize,
+    to: usize,
+    samples: &[shadow::Sample],
+) {
+    let mut x = from;
+    while x < to {
+        let lanes = (to - x).min(4);
+        for (j, cov) in shadow_coverage4(simd, cx, inv_sqrt2_sigma, x, lanes, samples)
+            .into_iter()
+            .enumerate()
+            .take(lanes)
+        {
+            if cov <= 0.0 {
+                continue;
+            }
+            let x = x + j;
+            let cc = match clip_mask {
+                Some(m) => m[py * w + x],
+                None => 1.0,
+            };
+            if cc <= 0.0 {
+                continue;
+            }
+            let src = shadow_src(color, cov, cc);
+            dst[y * w + x] = src_over(dst[y * w + x], member(src, space));
+        }
+        x += 4;
+    }
+}
+
 /// The clip coverage of `(px, py)`: 1/0 for the rect fast path, the mask
 /// sample otherwise.
 #[expect(
@@ -3267,129 +3373,147 @@ impl Band<'_> {
             weight: 1.0,
         }];
         let mut samples = [shadow::Sample::default(); SHADOW_N];
-        // One pixel centre per lane, each computed independently as
-        // `(x as f32 + 0.5) - cx`; a 1–3-lane tail pads with the first
-        // lane's valid centre and its outputs are never read.
-        let coverage4 = |x0: usize, lanes: usize, samples: &[shadow::Sample]| {
-            let mut centres = [(x0 as f32 + 0.5) - cx; 4];
-            for (j, c) in centres.iter_mut().enumerate().take(lanes) {
-                *c = (x0 + j) as f32 + 0.5 - cx;
-            }
-            simd.as_array_f32x4(shadow::integral4(
-                simd,
-                simd.load_array_f32x4(centres),
-                inv_sqrt2_sigma,
-                samples,
-            ))
-        };
-        for y in y_lo..y_hi {
-            let py_i = self.y0 + y;
-            let py = py_i as f32 + 0.5 - cy;
-            // The row's sample table: left/right x-edges per in-box
-            // sample, their weights, the interior-coverage sum `s`, and
-            // the most-inset edges bounding the interior zone.
-            let mut n = 0_usize;
-            let mut s = 0.0_f32;
-            let mut flat = true;
-            let (mut xlm, mut xrm) = (f32::MIN, f32::MAX);
-            for (d, w) in dy.iter().zip(gw.iter()) {
-                let yi = py + d;
-                if yi.abs() > half[1] {
-                    continue;
-                }
-                let (rl, rr) = if yi < 0.0 {
-                    (radii[0], radii[1])
-                } else {
-                    (radii[3], radii[2])
-                };
-                let ay = yi.abs();
-                samples[n] = shadow::Sample {
-                    left: -half[0] + corner_inset(rl, ay - (half[1] - rl)),
-                    right: half[0] - corner_inset(rr, ay - (half[1] - rr)),
-                    weight: *w,
-                };
-                flat &= samples[n].left == -half[0] && samples[n].right == half[0];
-                xlm = xlm.max(samples[n].left);
-                xrm = xrm.min(samples[n].right);
-                s += w;
-                n += 1;
-            }
-            if n == 0 || s <= 0.0 {
-                continue;
-            }
-            let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
-            if flat {
-                // Separable: `cov = x_term[px] * s` across the row.
-                let t = x_term.get_or_insert_with(|| {
-                    let mut term = Vec::with_capacity(cx_hi - cx_lo);
-                    let mut x = cx_lo;
-                    while x < cx_hi {
-                        let lanes = (cx_hi - x).min(4);
-                        for cov in coverage4(x, lanes, &flat_sample).into_iter().take(lanes) {
-                            term.push(cov);
-                        }
-                        x += 4;
-                    }
-                    term
-                });
-                for x in cx_lo..cx_hi {
-                    let cov = t[x - cx_lo] * s;
-                    if cov <= 0.0 {
-                        continue;
-                    }
-                    let cc = clip_mask.map_or(1.0, |m| m[py_i * self.w + x]);
-                    if cc <= 0.0 {
-                        continue;
-                    }
-                    let src = color.map(|v| v * cov.clamp(0.0, 1.0) * cc);
-                    dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
-                }
-                continue;
-            }
-            // Interior columns: `px >= xlm + margin` saturates every
-            // `erf((xl-px)*is)` at -1 and `px <= xrm - margin` saturates
-            // every `erf((xr-px)*is)` at +1, so `cov = s` for all of them.
-            let x_in_lo = usize::try_from((cx + xlm + margin - 0.5).ceil() as i32)
-                .unwrap_or(0)
-                .clamp(cx_lo, cx_hi);
-            let x_in_hi = usize::try_from((cx + xrm - margin + 0.5).floor() as i32 + 1)
-                .unwrap_or(0)
-                .clamp(x_in_lo, cx_hi);
-            let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
-            let edge = |dst: &mut [[f32; 4]], f: usize, t: usize| {
-                let mut x = f;
-                while x < t {
-                    let lanes = (t - x).min(4);
-                    for (j, cov) in coverage4(x, lanes, &samples[..n])
-                        .into_iter()
-                        .enumerate()
-                        .take(lanes)
-                    {
-                        if cov <= 0.0 {
+        // The per-pixel quadrature runs inside `vectorize` so it compiles
+        // under the dispatched level's target features — a second closure
+        // on this path (a `map_or` or `get_or_insert_with` body) would be
+        // compiled without them and call the FMA intrinsic out of line.
+        simd.vectorize(
+            #[inline(always)]
+            || {
+                for y in y_lo..y_hi {
+                    let py_i = self.y0 + y;
+                    let py = py_i as f32 + 0.5 - cy;
+                    // The row's sample table: left/right x-edges per in-box
+                    // sample, their weights, the interior-coverage sum `s`, and
+                    // the most-inset edges bounding the interior zone.
+                    let mut n = 0_usize;
+                    let mut s = 0.0_f32;
+                    let mut flat = true;
+                    let (mut xlm, mut xrm) = (f32::MIN, f32::MAX);
+                    for (d, w) in dy.iter().zip(gw.iter()) {
+                        let yi = py + d;
+                        if yi.abs() > half[1] {
                             continue;
                         }
-                        let x = x + j;
-                        let cc = clip_mask.map_or(1.0, |m| m[py_i * self.w + x]);
+                        let (rl, rr) = if yi < 0.0 {
+                            (radii[0], radii[1])
+                        } else {
+                            (radii[3], radii[2])
+                        };
+                        let ay = yi.abs();
+                        samples[n] = shadow::Sample {
+                            left: -half[0] + corner_inset(rl, ay - (half[1] - rl)),
+                            right: half[0] - corner_inset(rr, ay - (half[1] - rr)),
+                            weight: *w,
+                        };
+                        flat &= samples[n].left == -half[0] && samples[n].right == half[0];
+                        xlm = xlm.max(samples[n].left);
+                        xrm = xrm.min(samples[n].right);
+                        s += w;
+                        n += 1;
+                    }
+                    if n == 0 || s <= 0.0 {
+                        continue;
+                    }
+                    let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
+                    if flat {
+                        // Separable: `cov = x_term[px] * s` across the row.
+                        if x_term.is_none() {
+                            let mut term = Vec::with_capacity(cx_hi - cx_lo);
+                            let mut x = cx_lo;
+                            while x < cx_hi {
+                                let lanes = (cx_hi - x).min(4);
+                                for cov in shadow_coverage4(
+                                    simd,
+                                    cx,
+                                    inv_sqrt2_sigma,
+                                    x,
+                                    lanes,
+                                    &flat_sample,
+                                )
+                                .into_iter()
+                                .take(lanes)
+                                {
+                                    term.push(cov);
+                                }
+                                x += 4;
+                            }
+                            x_term = Some(term);
+                        }
+                        let Some(t) = x_term.as_deref() else {
+                            unreachable!("x_term is filled above")
+                        };
+                        for x in cx_lo..cx_hi {
+                            let cov = t[x - cx_lo] * s;
+                            if cov <= 0.0 {
+                                continue;
+                            }
+                            let cc = match clip_mask {
+                                Some(m) => m[py_i * self.w + x],
+                                None => 1.0,
+                            };
+                            if cc <= 0.0 {
+                                continue;
+                            }
+                            let src = shadow_src(color, cov, cc);
+                            dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
+                        }
+                        continue;
+                    }
+                    // Interior columns: `px >= xlm + margin` saturates every
+                    // `erf((xl-px)*is)` at -1 and `px <= xrm - margin` saturates
+                    // every `erf((xr-px)*is)` at +1, so `cov = s` for all of them.
+                    let x_in_lo = usize::try_from((cx + xlm + margin - 0.5).ceil() as i32)
+                        .unwrap_or(0)
+                        .clamp(cx_lo, cx_hi);
+                    let x_in_hi = usize::try_from((cx + xrm - margin + 0.5).floor() as i32 + 1)
+                        .unwrap_or(0)
+                        .clamp(x_in_lo, cx_hi);
+                    let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
+                    shadow_edge(
+                        simd,
+                        dst,
+                        self.w,
+                        y,
+                        py_i,
+                        cx,
+                        inv_sqrt2_sigma,
+                        clip_mask,
+                        color,
+                        space,
+                        cx_lo,
+                        x_in_lo,
+                        &samples[..n],
+                    );
+                    for x in x_in_lo..x_in_hi {
+                        let cc = match clip_mask {
+                            Some(m) => m[py_i * self.w + x],
+                            None => 1.0,
+                        };
                         if cc <= 0.0 {
                             continue;
                         }
-                        let src = color.map(|v| v * cov.clamp(0.0, 1.0) * cc);
+                        let src = shadow_src(color, s, cc);
                         dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
                     }
-                    x += 4;
+                    shadow_edge(
+                        simd,
+                        dst,
+                        self.w,
+                        y,
+                        py_i,
+                        cx,
+                        inv_sqrt2_sigma,
+                        clip_mask,
+                        color,
+                        space,
+                        x_in_hi,
+                        cx_hi,
+                        &samples[..n],
+                    );
                 }
-            };
-            edge(&mut *dst, cx_lo, x_in_lo);
-            for x in x_in_lo..x_in_hi {
-                let cc = clip_mask.map_or(1.0, |m| m[py_i * self.w + x]);
-                if cc <= 0.0 {
-                    continue;
-                }
-                let src = color.map(|v| v * s.clamp(0.0, 1.0) * cc);
-                dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
-            }
-            edge(&mut *dst, x_in_hi, cx_hi);
-        }
+            },
+        );
     }
 
     /// Composites `capture`'s rows over the band's top inside `bounds`,
