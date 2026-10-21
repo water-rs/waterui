@@ -14,7 +14,9 @@ use storage::Table;
 #[cfg(test)]
 use cherenkov::FillRule;
 
-use super::tiles::{EdgeSource, Fixed, IntegerEdge, ONE};
+#[cfg(test)]
+use super::tiles::IntegerEdge;
+use super::tiles::{EdgeTiles, Fixed, ONE};
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -370,7 +372,7 @@ impl Compiler {
         }
     }
 
-    /// Read only the supplied band selection, never the source's other edges.
+    /// Query only visible intervals intersecting the actual translated rows.
     #[expect(
         clippy::cast_possible_wrap,
         clippy::cast_precision_loss,
@@ -379,16 +381,8 @@ impl Compiler {
         clippy::suboptimal_flops,
         reason = "surface dimensions fit u16; band-local ordinates fit i32"
     )]
-    pub fn prepare<E: EdgeSource + ?Sized, S: fearless_simd::Simd>(
-        &mut self,
-        simd: S,
-        source: &E,
-        selection: &[u32],
-        offset: Fixed,
-        rows: Range<usize>,
-        width: usize,
-    ) {
-        self.reserve(width, selection.len(), rows.len());
+    pub fn prepare(&mut self, source: &EdgeTiles, offset: Fixed, rows: Range<usize>, width: usize) {
+        self.reserve(width, source.vertical_capacity(rows.len() > 16), rows.len());
         self.verticals.clear();
         for cells in &mut self.cells[..rows.len()] {
             cells.resize(width);
@@ -396,63 +390,45 @@ impl Compiler {
         let [ox, oy] = offset.units();
         let top = rows.start as i64 * ONE;
         let bottom = rows.end as i64 * ONE;
-        source.selected(
-            simd,
-            selection,
-            |IntegerEdge {
-                 x0,
-                 y0,
-                 x1,
-                 y1,
-                 top: start,
-                 bottom: end,
-             }| {
-                let (ya, yb) = ((start + oy).max(top), (end + oy).min(bottom));
-                if ya >= yb {
+        source.visit(top - oy, bottom - oy, |edge| {
+            let ya = (edge.top() + oy).max(top);
+            let yb = (edge.bottom + oy).min(bottom);
+            let dir = edge.sign();
+            let x = edge.x + ox as f64;
+            let mut row = ((ya - top) / ONE) as usize;
+            let mut a = ya;
+            if edge.slope == 0.0 {
+                if x >= width as f64 * 65536.0 {
                     return;
                 }
-                let (x0, y0, x1, y1, dir) = if y0 < y1 {
-                    (x0 + ox, y0 + oy, x1 + ox, y1 + oy, 1)
-                } else {
-                    (x1 + ox, y1 + oy, x0 + ox, y0 + oy, -1)
-                };
-                if x0.min(x1) >= width as i64 * ONE {
-                    return;
-                }
-                let (x0, x1) = if x0.max(x1) <= 0 { (0, 0) } else { (x0, x1) };
-                let mut row = ((ya - top) / ONE) as usize;
-                let mut a = ya;
-                if x0 == x1 {
-                    self.verticals.push(Vertical {
-                        x: x0,
-                        top: ya,
-                        bottom: yb,
-                        sign: dir,
-                    });
-                    for y in [ya, ya + ONE - 1, yb, yb + ONE - 1] {
-                        let row = ((y - top) / ONE) as usize;
-                        if row < rows.len() {
-                            self.cells[row].changed = true;
-                        }
-                    }
-                } else {
-                    let slope = (x1 - x0) as f64 / (y1 - y0) as f64;
-                    let mut xt = (a - y0) as f64 * slope + x0 as f64;
-                    while a < yb {
-                        let b = (top + (row + 1) as i64 * ONE).min(yb);
-                        let xb = (b - y0) as f64 * slope + x0 as f64;
-                        self.cells[row].changed = true;
-                        self.cells[row].boundary(dir, (b - a) as i32, xt, xb);
-                        row += 1;
-                        a = b;
-                        xt = xb;
-                    }
+                self.verticals.push(Vertical {
+                    x: x as i64,
+                    top: ya,
+                    bottom: yb,
+                    sign: dir,
+                });
+                for y in [ya, ya + ONE - 1, yb, yb + ONE - 1] {
+                    let row = ((y - top) / ONE) as usize;
                     if row < rows.len() {
                         self.cells[row].changed = true;
                     }
                 }
-            },
-        );
+            } else {
+                let mut xt = (ya - oy - edge.top()) as f64 * edge.slope + x;
+                while a < yb {
+                    let b = (top + (row + 1) as i64 * ONE).min(yb);
+                    let xb = (b - a) as f64 * edge.slope + xt;
+                    self.cells[row].changed = true;
+                    self.cells[row].boundary(dir, (b - a) as i32, xt, xb);
+                    row += 1;
+                    a = b;
+                    xt = xb;
+                }
+                if row < rows.len() {
+                    self.cells[row].changed = true;
+                }
+            }
+        });
         let mut next = rows.len();
         for row in (0..rows.len()).rev() {
             self.cells[row].next = next;
@@ -567,19 +543,11 @@ mod tests {
         } else {
             raw
         };
-        let edges = boundaries.as_slice();
-        let selection: Vec<_> = (0..u32::try_from(edges.len()).unwrap()).collect();
+        let edges = EdgeTiles::from_boundaries(&boundaries);
         let mut out = vec![0.0; w * h];
         for top in (0..h).step_by(band) {
             let bottom = (top + band).min(h);
-            compiler.prepare(
-                fearless_simd::Fallback::new(),
-                edges,
-                &selection,
-                Fixed::default(),
-                top..bottom,
-                w,
-            );
+            compiler.prepare(&edges, Fixed::default(), top..bottom, w);
             compiler.rows(bottom - top, |row, range, run| {
                 for (i, x) in range.enumerate() {
                     out[(top + row) * w + x] = run.at(i);
@@ -712,9 +680,10 @@ mod tests {
         let edges = polygon(&[(1.0, 0.0), (63.0, 0.0), (63.0, 1.0), (1.0, 1.0)]);
         let mut compiler = Compiler::default();
         compiler.prepare(
-            fearless_simd::Fallback::new(),
-            edges.as_slice(),
-            &[0, 1],
+            &EdgeTiles::new(
+                &mut super::super::tiles::EdgeScratch::default(),
+                edges.into_iter(),
+            ),
             Fixed::default(),
             0..1,
             64,

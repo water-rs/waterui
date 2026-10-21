@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cherenkov::FillRule;
 
-use crate::render::bins::{EdgeBins, EdgeGroup, FrameIndex, FrameMeter};
+use crate::render::bins::{FrameIndex, FrameMeter};
 use crate::render::lower::{
     BoxClip, CaptureItem, ClipMask, ClipRef, FrameFilter, IRect, Item, SampleEffect, SdfEffect,
     SdfKind, UnionSample,
@@ -68,19 +68,15 @@ struct Buffers {
     coverage: Vec<Compiler>,
     /// Live colour-buffer bytes and their peak for the current band.
     meter: Meter,
-    /// Expanded-window query scratch: each `run` depth's item
-    /// selection and the edge selection a windowed draw consumes.
+    /// Expanded-window query scratch: each `run` depth's item selection.
     /// Slots keep their capacity across sibling scopes and bands.
     sel_items: Vec<Vec<usize>>,
-    sel_edges: Vec<u32>,
     /// The capacity each charged slot has been accounted for, in
     /// cells — a selection's capacity only grows, so the delta is the
     /// heap growth. Index `sel_items.len()` is the outer Vec's charge.
     sel_charge: Vec<usize>,
     /// `sel_items`'s own allocation, charged at capacity.
     sel_items_charge: usize,
-    /// `sel_edges`'s allocation, charged at capacity.
-    sel_edges_charge: usize,
 }
 
 struct BandScratch<'a> {
@@ -473,10 +469,8 @@ impl<'a> Scratch<'a> {
                 coverage: Vec::new(),
                 meter: Meter::default(),
                 sel_items: Vec::new(),
-                sel_edges: Vec::new(),
                 sel_charge: Vec::new(),
                 sel_items_charge: 0,
-                sel_edges_charge: 0,
             },
             captures: Captures::default(),
             meter,
@@ -493,7 +487,6 @@ impl Drop for Scratch<'_> {
     fn drop(&mut self) {
         if let Some(m) = self.meter {
             let bytes = (self.buffers.sel_items_charge
-                + self.buffers.sel_edges_charge * size_of::<u32>()
                 + self.buffers.sel_charge.iter().sum::<usize>() * size_of::<usize>())
                 as u64;
             m.query_live
@@ -565,29 +558,6 @@ impl Buffers {
     /// charge was taken when the buffer filled.
     fn give_sel_items(&mut self, depth: usize, buf: Vec<usize>) {
         self.sel_items[depth] = buf;
-    }
-
-    /// The edge-selection buffer, cleared for reuse.
-    fn take_sel_edges(&mut self) -> Vec<u32> {
-        let mut buf = std::mem::take(&mut self.sel_edges);
-        buf.clear();
-        buf
-    }
-
-    /// Charges `buf`'s capacity growth to `meter`, right after the
-    /// query filled it.
-    fn charge_sel_edges(&mut self, buf: &Vec<u32>, meter: Option<&FrameMeter>) {
-        if buf.capacity() > self.sel_edges_charge {
-            sel_alloc(
-                ((buf.capacity() - self.sel_edges_charge) * size_of::<u32>()) as u64,
-                meter,
-            );
-            self.sel_edges_charge = buf.capacity();
-        }
-    }
-
-    fn give_sel_edges(&mut self, buf: Vec<u32>) {
-        self.sel_edges = buf;
     }
 }
 
@@ -1729,7 +1699,6 @@ fn shade_plain(
         index,
         index.items(b),
         items.len(),
-        EdgeSel::Band(b),
         &mut band,
         acc,
         scratch.stack,
@@ -1800,7 +1769,6 @@ fn shade_windowed(
         index,
         &sel,
         last + 1,
-        EdgeSel::Window,
         &mut band,
         acc,
         scratch.stack,
@@ -1847,7 +1815,6 @@ fn shade_windowed(
         index,
         &all[start..],
         items.len(),
-        EdgeSel::Band(y0 / BAND_H),
         &mut band,
         acc,
         scratch.stack,
@@ -2147,17 +2114,6 @@ const fn slice_len(w: usize, bh: usize) -> usize {
     w * bh
 }
 
-/// How a `run` level resolves a draw's edge selection for its rows:
-/// the aligned band's index slice borrowed, or an expanded window's
-/// merged query into the depth's scratch.
-#[derive(Clone, Copy)]
-enum EdgeSel {
-    /// The aligned surface band's bins.
-    Band(usize),
-    /// An expanded window covering `band.y0 .. band.y0 + bh`.
-    Window,
-}
-
 /// `run` exactly once per dispatched CPU level: the band passes and
 /// `run`'s own recursion enter through this boundary, so `run`'s
 /// `#[inline(always)]` body exists once per level rather than once per
@@ -2173,7 +2129,6 @@ fn run_at(
     index: &FrameIndex,
     sel: &[usize],
     limit: usize,
-    mode: EdgeSel,
     band: &mut Band<'_>,
     acc: &mut Compiler,
     stack: &mut Vec<Plane>,
@@ -2181,7 +2136,7 @@ fn run_at(
     ctx: &mut FrameCtx<'_>,
     depth: usize,
 ) -> Result<(), cherenkov::RenderError> {
-    fearless_simd::dispatch!(level, simd => run(simd, items, index, sel, limit, mode, band, acc, stack, buffers, ctx, depth))
+    fearless_simd::dispatch!(level, simd => run(simd, items, index, sel, limit, band, acc, stack, buffers, ctx, depth))
 }
 
 #[expect(
@@ -2203,7 +2158,6 @@ fn run<S: Simd>(
     index: &FrameIndex,
     sel: &[usize],
     limit: usize,
-    mode: EdgeSel,
     band: &mut Band<'_>,
     acc: &mut Compiler,
     stack: &mut Vec<Plane>,
@@ -2227,32 +2181,15 @@ fn run<S: Simd>(
                 bbox,
                 paint,
                 clip,
-            } => match mode {
-                EdgeSel::Band(b) => band.draw(
-                    simd,
-                    acc,
-                    stack,
-                    (edges, index.edges(b, i), *offset),
-                    *bbox,
-                    paint,
-                    clip.as_ref(),
-                ),
-                EdgeSel::Window => {
-                    let mut selected = buffers.take_sel_edges();
-                    index.query_edges(i, (band.y0, band.y0 + bh), &mut selected);
-                    buffers.charge_sel_edges(&selected, ctx.meter);
-                    band.draw(
-                        simd,
-                        acc,
-                        stack,
-                        (edges, &selected, *offset),
-                        *bbox,
-                        paint,
-                        clip.as_ref(),
-                    );
-                    buffers.give_sel_edges(selected);
-                }
-            },
+            } => band.draw(
+                simd,
+                acc,
+                stack,
+                (edges, *offset),
+                *bbox,
+                paint,
+                clip.as_ref(),
+            ),
             Item::PushIsolate { space } => stack.push(Plane {
                 buf: buffers.take_color(slice_len(band.w, bh)),
                 space: *space,
@@ -2318,7 +2255,6 @@ fn run<S: Simd>(
                         index,
                         &nested,
                         scope_end,
-                        EdgeSel::Window,
                         &mut filter_band,
                         &mut filter_acc,
                         &mut filter_stack,
@@ -2825,9 +2761,8 @@ struct Band<'a> {
 }
 
 impl Band<'_> {
-    /// Rasterizes one draw item — its `sel` edges, indexes into the
-    /// frame edge list in original order, placed at `offset` — into the
-    /// top isolation buffer.
+    /// Queries and rasterizes one draw's visible boundaries, placed at
+    /// `offset`, into the top isolation buffer.
     #[expect(
         clippy::too_many_arguments,
         reason = "the draw context travels together"
@@ -2842,7 +2777,7 @@ impl Band<'_> {
         simd: S,
         acc: &mut Compiler,
         stack: &mut Vec<Plane>,
-        (edges, sel, offset): (&EdgeTiles, &[u32], super::tiles::Fixed),
+        (edges, offset): (&EdgeTiles, super::tiles::Fixed),
         bbox: crate::render::lower::DrawBox,
         paint: &PaintData,
         clip: Option<&ClipRef>,
@@ -2853,7 +2788,7 @@ impl Band<'_> {
         if first >= last {
             return;
         }
-        acc.prepare(simd, edges, sel, offset, first..last, self.w);
+        acc.prepare(edges, offset, first..last, self.w);
         let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
         let mut src = [const { MaybeUninit::<[f32; 4]>::uninit() }; SPAN_CHUNK];
         acc.rows(last - first, |y, range, run| {
@@ -3368,7 +3303,12 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
         return Vec::new();
     }
     if cherenkov::lowering::proves_disjoint(edges) {
-        return boundary_mask(edges, w, h);
+        let raw: Vec<_> = edges
+            .iter()
+            .copied()
+            .map(super::tiles::IntegerEdge::from)
+            .collect();
+        return boundary_mask(&raw, w, h);
     }
     let raw: Vec<_> = edges
         .iter()
@@ -3380,33 +3320,22 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
 }
 
 /// A disjoint proof or topology compilation supplies the visible boundaries.
-fn boundary_mask<E: super::tiles::EdgeSource + ?Sized>(edges: &E, w: usize, h: usize) -> Vec<f32> {
-    let bands = h.div_ceil(BAND_H);
-    let mut index = EdgeBins::default();
-    index.rebuild(
-        std::iter::once(EdgeGroup {
-            edges,
-            geometry_unchanged: false,
-            oy: 0,
-            band0: 0,
-            band1: bands,
-        }),
-        &mut Vec::new(),
-        bands,
-        h,
-    );
+fn boundary_mask(edges: &[super::tiles::IntegerEdge], w: usize, h: usize) -> Vec<f32> {
+    let edges = EdgeTiles::from_boundaries(edges);
     let mut mask = vec![0.0; w * h];
-    let level = crate::Level::new();
-    mask.par_chunks_mut(BAND_H*w).enumerate().for_each_init(Compiler::default, |compiler, (band, slice)| {
-        let y0 = band * BAND_H;
-        let rows = slice.len()/w;
-        fearless_simd::dispatch!(level, simd => compiler.prepare(simd, edges, index.at(0, band), super::tiles::Fixed::default(), y0..y0+rows, w));
-        compiler.rows(rows, |y, range, run| {
-            for (i, x) in range.enumerate() {
-                slice[y*w+x] = run.at(i);
-            }
-        });
-    });
+    mask.par_chunks_mut(BAND_H * w).enumerate().for_each_init(
+        Compiler::default,
+        |compiler, (band, slice)| {
+            let y0 = band * BAND_H;
+            let rows = slice.len() / w;
+            compiler.prepare(&edges, super::tiles::Fixed::default(), y0..y0 + rows, w);
+            compiler.rows(rows, |y, range, run| {
+                for (i, x) in range.enumerate() {
+                    slice[y * w + x] = run.at(i);
+                }
+            });
+        },
+    );
     mask
 }
 

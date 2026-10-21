@@ -2728,13 +2728,18 @@ mod tests {
     }
 
     /// `edges` decoded, as exact words.
-    fn bits(edges: &EdgeTiles) -> Vec<[i64; 6]> {
-        use crate::render::tiles::EdgeCursor;
-        let mut cursor = edges.cursor();
-        (0..edges.len())
-            .map(|i| {
-                let e = cursor.at(i);
-                [e.x0, e.y0, e.x1, e.y1, e.top, e.bottom]
+    fn bits(edges: &EdgeTiles) -> Vec<[u64; 5]> {
+        edges
+            .boundaries()
+            .iter()
+            .map(|e| {
+                [
+                    e.top().cast_unsigned(),
+                    e.bottom.cast_unsigned(),
+                    e.x.to_bits(),
+                    e.slope.to_bits(),
+                    u64::from(e.sign().cast_unsigned()),
+                ]
             })
             .collect()
     }
