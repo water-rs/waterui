@@ -1083,6 +1083,8 @@ pub struct GpuRenderer {
     shader_delivery: shaders::ShaderDelivery,
     shaders: paint::Registry,
     filters: filter::Registry,
+    /// The filter pipelines every registered effect on this device shares.
+    filter_pipelines: filtrate::PipelineCache,
     /// The silhouette-morphology pipeline — `None` until a frame actually
     /// composes a shadow, so shadow-free engines pay nothing (#170).
     shadow_blur: Option<shadow::Blur>,
@@ -2825,6 +2827,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             shaders: paint::Registry::default(),
             backdrop_shaders: FxHashMap::default(),
             filters: filter::Registry::default(),
+            filter_pipelines: filtrate::PipelineCache::new(),
             shadow_blur: None,
             resolve: None,
             reduce: None,
@@ -3183,6 +3186,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         backdrop_shaders: FxHashMap::default(),
         lazy_modules: FxHashMap::default(),
         filters: filter::Registry::default(),
+        filter_pipelines: filtrate::PipelineCache::new(),
         shadow_blur: None,
         resolve: None,
         reduce: None,
@@ -9892,6 +9896,7 @@ impl GpuRenderer {
                         queue: &self.queue,
                         input_format: capture.texture.format(),
                         output_format: capture.texture.format(),
+                        pipelines: &self.filter_pipelines,
                     },
                     filter::Scope {
                         target: capture,
@@ -10952,6 +10957,7 @@ impl GpuRenderer {
                         queue: &self.queue,
                         input_format: format,
                         output_format: format,
+                        pipelines: &self.filter_pipelines,
                     },
                 )
                 .await?;

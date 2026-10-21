@@ -155,6 +155,8 @@ pub struct FilteredState {
     effects: EffectSlot,
     /// The GPU runtime.
     runtime: GpuRuntime,
+    /// The pipeline caches every filtered view's effects share, per device.
+    pipelines: Rc<crate::gpu_runtime::FilterPipelines>,
     /// The host-owned effect clock — `frame_clock` on the ffi state. It
     /// measures effect time only; it does not drive presentation.
     frame_clock: RefCell<EffectFrameClock>,
@@ -1332,6 +1334,7 @@ fn spawn_setup(state: &Rc<FilteredState>) {
     let setup_generation = Rc::clone(&state.setup_generation);
     let weak = Sendable(Rc::downgrade(state));
     let runtime = state.runtime.clone();
+    let pipelines = Rc::clone(&state.pipelines);
     let fire_redraw: EffectRedrawCallback = Arc::new(redraw_callback_for(state));
     *state.setup_task.borrow_mut() = Some(spawn_local(async move {
         // Setup retries until it completes on the context that is still the
@@ -1348,10 +1351,12 @@ fn spawn_setup(state: &Rc<FilteredState>) {
             }
             let device = context.device();
             let queue = context.queue();
+            let cache = pipelines.cache(&context);
             let outcome = {
                 let ctx = EffectContext {
                     device,
                     queue,
+                    pipelines: &cache,
                     input_format: PRESENTATION_FORMAT,
                     output_format: PRESENTATION_FORMAT,
                 };
@@ -2008,7 +2013,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let child_view = cocoa_ui::view::retain_base(mounted.view());
         build_filtered_parts(
             mtm,
-            runtime,
+            GpuServices {
+                runtime,
+                pipelines: crate::gpu_runtime::filter_pipelines(ctx.env()),
+            },
             &view,
             &child_view,
             Some(mounted),
@@ -2017,6 +2025,14 @@ pub fn install(dispatcher: &mut Dispatcher) {
         )
         .leaf
     });
+}
+
+/// The device-wide services a filtered view mounts against.
+struct GpuServices {
+    /// The GPU runtime.
+    runtime: GpuRuntime,
+    /// The pipeline caches the environment's filtered views share.
+    pipelines: Rc<crate::gpu_runtime::FilterPipelines>,
 }
 
 /// The built filtered leaf and the owned pieces its settlement paths keep —
@@ -2055,13 +2071,14 @@ struct FilteredParts {
 )]
 fn build_filtered_parts(
     mtm: MainThreadMarker,
-    runtime: GpuRuntime,
+    services: GpuServices,
     view: &Retained<HostView>,
     child_view: &PlatformView,
     mounted: Option<Mounted>,
     effects: Vec<Box<dyn ErasedEffect>>,
     guard_list: Vec<ParamGuards>,
 ) -> FilteredParts {
+    let GpuServices { runtime, pipelines } = services;
     // `setupContentView`/`hideUnfilteredContent`: the unfiltered child
     // sits underneath and hidden — hidden as a *view*, because
     // `cacheDisplay` walks the view tree and ignores a hidden backing
@@ -2138,6 +2155,7 @@ fn build_filtered_parts(
             device: RefCell::new(device),
             effects: Rc::new(RefCell::new(None)),
             runtime,
+            pipelines,
             frame_clock: RefCell::new(EffectFrameClock::new()),
             timeline_parked: Cell::new(true),
             setup_generation: Rc::new(Cell::new(None)),
@@ -2330,7 +2348,7 @@ pub mod native_test {
 
     use super::{
         CAMetalLayer, CapturableSurface, CaptureError, DrawableFrame, ErasedEffect, FilteredParts,
-        FilteredState, GpuRuntime, HostView, MetalPresenter, MetalTexture, NativeLeaf,
+        FilteredState, GpuRuntime, GpuServices, HostView, MetalPresenter, MetalTexture, NativeLeaf,
         PlatformView, Rc, RefCell, Retained, build_filtered_parts, fmt, output_pixel_format,
         render_frame, settle_capture_failure, wgpu,
     };
@@ -2526,7 +2544,10 @@ pub mod native_test {
         cocoa_ui::view::add_subview(&view, child_view);
         build_filtered_parts(
             mtm,
-            runtime.clone(),
+            GpuServices {
+                runtime: runtime.clone(),
+                pipelines: Rc::new(crate::gpu_runtime::FilterPipelines::new()),
+            },
             &view,
             child_view,
             None,

@@ -20,6 +20,8 @@ use waterui_backend_core::Environment;
 use waterui_graphics::cherenkov::{Engine, FrameScope, FrameTime, RenderError, SurfaceId};
 #[cfg(feature = "gpu_surface")]
 use waterui_graphics::cherenkov_gpu::Gpu;
+#[cfg(feature = "gpu_surface")]
+use waterui_graphics::filtrate::PipelineCache;
 use waterui_graphics::gpu::GpuRuntime;
 #[cfg(feature = "gpu_surface")]
 use waterui_graphics::gpu::{HostedLayerError, SharedGpuContext};
@@ -59,6 +61,7 @@ pub unsafe fn prepare(env: *mut Environment, then: impl FnOnce() + 'static) {
             // `SceneView` shares one engine per context generation.
             crate::presentation_time::PresentationTime::install(env);
             env.insert(Rc::new(SceneEngine::new()));
+            env.insert(Rc::new(FilterPipelines::new()));
         }
         then();
     })
@@ -505,6 +508,58 @@ impl SceneEngine {
 pub fn scene_engine(env: &Environment) -> Rc<SceneEngine> {
     env.get::<Rc<SceneEngine>>()
         .expect("scene engine is not installed in the WaterUI environment")
+        .clone()
+}
+
+/// The filter pipeline cache owner installed beside the runtime.
+///
+/// One [`PipelineCache`] per exact [`SharedGpuContext`] generation, shared by
+/// every mounted filtered view, so identical effect chains compile their
+/// pipelines once per device. A new context generation replaces the cache: a
+/// pipeline of a lost device is unusable on its successor.
+#[cfg(feature = "gpu_surface")]
+#[derive(Debug, Default)]
+pub struct FilterPipelines {
+    /// The cache of the context generation last seen.
+    current: RefCell<Option<(u64, Rc<PipelineCache>)>>,
+}
+
+#[cfg(feature = "gpu_surface")]
+impl FilterPipelines {
+    /// An owner with no cache yet.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            current: RefCell::new(None),
+        }
+    }
+
+    /// The cache for `context`'s device.
+    pub fn cache(&self, context: &SharedGpuContext) -> Rc<PipelineCache> {
+        let generation = context.generation();
+        let mut current = self.current.borrow_mut();
+        match current.as_ref() {
+            Some((cached, cache)) if *cached == generation => Rc::clone(cache),
+            _ => {
+                let cache = Rc::new(PipelineCache::new());
+                *current = Some((generation, Rc::clone(&cache)));
+                cache
+            }
+        }
+    }
+}
+
+/// The environment's shared filter pipeline cache owner.
+///
+/// # Panics
+///
+/// When no owner was installed — [`prepare`] installs it beside the runtime
+/// before any filtered view mounts.
+#[cfg(feature = "gpu_surface")]
+#[must_use]
+pub fn filter_pipelines(env: &Environment) -> Rc<FilterPipelines> {
+    env.get::<Rc<FilterPipelines>>()
+        .expect("filter pipelines are not installed in the WaterUI environment")
         .clone()
 }
 
