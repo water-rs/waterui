@@ -9,7 +9,7 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
 
-use aither_core::llm::tool::{Tool, ToolResult};
+use aither_core::llm::tool::{Tool, ToolContext, ToolResult};
 use eyre::{Context as _, Result, bail};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -265,7 +265,11 @@ impl Tool for PreviewTool {
         "preview".into()
     }
 
-    async fn call(&self, args: Self::Arguments) -> aither_core::Result<Self::Res> {
+    async fn call(
+        &self,
+        args: Self::Arguments,
+        _cx: ToolContext,
+    ) -> aither_core::Result<Self::Res> {
         Ok(Box::pin(self.render(args)).await)
     }
 }

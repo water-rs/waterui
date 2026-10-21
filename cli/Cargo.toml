@@ -76,9 +76,9 @@ serde_json = "1.0"
 schemars = { version = "1.2", features = ["derive"] }
 smol = "2.0.2"
 target-lexicon = "0.13.5"
-thiserror = "2.0.20"
+thiserror = "2.0.21"
 jiff = { version = "0.2", features = ["serde"] }
-toml = "1.1.5"
+toml = "1.1.8"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 semver = "1.0"
@@ -115,7 +115,7 @@ sysinfo = { version = "0.39", default-features = false, features = ["system"] } 
 # ZIP archive extraction. Every archive the CLI reads or writes — Android SDK
 # packages, browser runtimes, asset catalogs — is stored or deflated, so the
 # bzip2/lzma/zstd/xz/ppmd/AES codecs `default` also pulls are never reached.
-zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 # Gzipped-tar extraction for managed tools whose upstream releases ship
 # `.tar.gz` (sccache on Linux and macOS).
 flate2 = "1"
@@ -138,8 +138,8 @@ waterui-meta.workspace = true
 waterui-preview-protocol.workspace = true
 waterui-inspector-protocol.workspace = true
 waterui-mcp-protocol.workspace = true
-aither-core = "0.4"
-aither-mcp = { version = "0.4", default-features = false, features = ["server"] }
+aither-core = "0.10"
+aither-mcp = { version = "0.10", default-features = false, features = ["server"] }
 # Decodes the base64 image payloads a `tools/call` response carries back from
 # the MCP child (screenshots).
 base64 = "0.23"
@@ -166,7 +166,7 @@ axoupdater = "0.10.2"
 # smol-based CLI does not run; self-update calls drive it on a scratch
 # current-thread runtime. `net`/`time` are what reqwest needs the reactor to
 # actually drive.
-tokio = { version = "1.48", default-features = false, features = ["rt", "net", "time"] }
+tokio = { version = "1.54", default-features = false, features = ["rt", "net", "time"] }
 
 [features]
 default = ["svg-icons"]
@@ -175,7 +175,7 @@ default = ["svg-icons"]
 svg-icons = ["dep:resvg"]
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
-zenwave = { version = "0.6.1", default-features = false, features = ["hyper-backend", "native-tls"] }
+zenwave = { version = "0.7.1", default-features = false, features = ["hyper-backend", "native-tls"] }
 core-graphics = "0.25"
 core-foundation = "0.10"
 # `confstr(_CS_DARWIN_USER_TEMP_DIR)`: the per-user temp directory `std` falls
@@ -195,13 +195,13 @@ nix = { version = "0.31", features = ["process", "signal", "user"] }
 # `pngio` covers the PNG-encoded family members this CLI writes; the `jp2io`
 # default would pull a whole JPEG 2000 decoder (hayro-jpeg2000) for entries we
 # never read or emit.
-icns = { version = "0.4", default-features = false, features = ["pngio"] }
+icns = { version = "0.5", default-features = false, features = ["pngio"] }
 # Device provisioning pairs a provisioning profile with the development
 # certificate it names: `security find-certificate` PEMs are parsed for the
 # subject organizational unit (the team ID) and the profile's
 # `DeveloperCertificates` are matched against `find-identity` SHA-1s.
 x509-parser = "0.18"
-sha1 = "0.10"
+sha1 = "0.11"
 # A `.mobileprovision` is a CMS SignedData envelope around a plist; decoding
 # it in-process keeps the device-signing path off `security cms -D` output
 # parsing.
@@ -227,10 +227,10 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [target.'cfg(not(target_vendor = "apple"))'.dependencies]
-zenwave = { version = "0.6.1", default-features = false, features = ["hyper-backend", "rustls"] }
+zenwave = { version = "0.7.1", default-features = false, features = ["hyper-backend", "rustls"] }
 
 [build-dependencies]
-toml = "1.1.5"
+toml = "1.1.8"
 
 [lints]
 workspace = true

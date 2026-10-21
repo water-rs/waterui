@@ -10,7 +10,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aither_core::llm::tool::{Tool, ToolResult, Tools};
+use aither_core::llm::tool::{Tool, ToolContext, ToolResult, Tools};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +43,7 @@ macro_rules! session_tool {
             fn call(
                 &self,
                 args: Self::Arguments,
+                _cx: ToolContext,
             ) -> impl Future<Output = aither_core::Result<Self::Res>> + Send {
                 let dispatch = self.0.clone();
                 async move { Ok(dispatch.$method(args).await) }
