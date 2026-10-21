@@ -18,7 +18,7 @@
 use std::mem::MaybeUninit;
 
 use cherenkov::Extend;
-use fearless_simd::{Select, Simd, SimdFloat, f32x4, f32x16, mask32x16};
+use fearless_simd::{Select, Simd, SimdBase, SimdFloat, SimdInterleaved, f32x4, f32x16, mask32x16};
 
 /// Lanes per span-kernel block; a run's remainder goes through the
 /// one-pixel path or one padded block.
@@ -172,17 +172,19 @@ fn lane4<S: Simd>(simd: S, v: f32x16<S>, k: usize) -> f32x4<S> {
 
 /// The interleaved sixteen-float group holding lanes `4k..4k+4` of a
 /// block's premultiplied channels — pixels `4k..4k+4`, ready for
-/// [`Simd::store_interleaved_128_f32x16`].
+/// [`SimdInterleaved::store_four_interleaved`].
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level"
 )]
 #[inline(always)]
-fn block_group<S: Simd>(simd: S, px: &[f32x16<S>; 4], k: usize) -> f32x16<S> {
-    simd.combine_f32x8(
-        simd.combine_f32x4(lane4(simd, px[0], k), lane4(simd, px[1], k)),
-        simd.combine_f32x4(lane4(simd, px[2], k), lane4(simd, px[3], k)),
-    )
+fn block_group<S: Simd>(simd: S, px: &[f32x16<S>; 4], k: usize) -> [f32x4<S>; 4] {
+    [
+        lane4(simd, px[0], k),
+        lane4(simd, px[1], k),
+        lane4(simd, px[2], k),
+        lane4(simd, px[3], k),
+    ]
 }
 
 /// The premultiplied channels of a block transposed into `stage` as
@@ -196,7 +198,7 @@ fn block_group<S: Simd>(simd: S, px: &[f32x16<S>; 4], k: usize) -> f32x16<S> {
 #[inline(always)]
 fn store_block<S: Simd>(simd: S, px: [f32x16<S>; 4], stage: &mut [f32; 64]) {
     for (k, group) in stage.as_chunks_mut::<16>().0.iter_mut().enumerate() {
-        simd.store_interleaved_128_f32x16(block_group(simd, &px, k), group);
+        f32x4::store_four_interleaved(block_group(simd, &px, k), group);
     }
 }
 
@@ -220,10 +222,10 @@ unsafe fn store_quarter<S: Simd, const K: usize>(
     if count >= 4 {
         // SAFETY: the caller supplies at least `count` writable pixels.
         let group = unsafe { &mut *out.cast::<[f32; 16]>() };
-        simd.store_interleaved_128_f32x16(block_group(simd, px, K), group);
+        f32x4::store_four_interleaved(block_group(simd, px, K), group);
     } else if count != 0 {
         let mut stage = [0.0f32; 16];
-        simd.store_interleaved_128_f32x16(block_group(simd, px, K), &mut stage);
+        f32x4::store_four_interleaved(block_group(simd, px, K), &mut stage);
         let dst = out.cast::<f32>();
         // SAFETY: `stage` is initialized and `count * 4` floats fit
         // in the caller's remainder.
@@ -292,9 +294,13 @@ where
     let mut base = 0;
     if out.len() >= SHORT_SPAN {
         let dy = simd.splat_f32x16((py as i64) as f32 + 0.5);
-        let ramp = simd.load_array_f32x16([
-            0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5, 13.5, 14.5, 15.5,
-        ]);
+        let ramp = f32x16::load_array(
+            simd,
+            [
+                0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5, 13.5, 14.5,
+                15.5,
+            ],
+        );
         // One `block` call site: the run's full blocks and a padded
         // remainder share one inlined f32x16 block body.
         loop {
