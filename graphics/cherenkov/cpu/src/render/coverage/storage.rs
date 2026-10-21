@@ -78,30 +78,6 @@ impl<T: Copy> Table<T> {
     }
 }
 
-impl<T: Copy + PartialEq> Table<T> {
-    pub(super) fn dedup(&mut self) {
-        if self.len == 0 {
-            return;
-        }
-        let mut written = 1;
-        for i in 1..self.len {
-            if self[i] != self[written - 1] {
-                self[written] = self[i];
-                written += 1;
-            }
-        }
-        self.len = written;
-    }
-}
-
-impl<T: Copy> Extend<T> for Table<T> {
-    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
-        for value in iter {
-            self.push(value);
-        }
-    }
-}
-
 impl<T: Copy> Deref for Table<T> {
     type Target = [T];
     fn deref(&self) -> &[T] {

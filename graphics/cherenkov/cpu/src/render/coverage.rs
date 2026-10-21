@@ -316,7 +316,7 @@ struct Segment {
 
 impl Segment {
     #[inline]
-    fn deposit(self, cells: &mut RowCells, sign: i32, top: i32, bottom: i32) {
+    fn deposit(&self, cells: &mut RowCells, sign: i32, top: i32, bottom: i32) {
         if self.dx == 0 {
             cells.vertical(sign, bottom - top, self.x0);
         } else {
@@ -365,6 +365,55 @@ struct Piece {
     right: u16,
 }
 
+/// A row's exact grid events, sorted by consuming a three-level bitset.
+/// Only occupied words are visited or cleared, regardless of the gaps.
+#[derive(Debug, Default)]
+struct RowEvents {
+    words: Table<u64>,
+    occupied: u32,
+}
+
+impl RowEvents {
+    const LEAVES: usize = (1_usize << 16) / 64 + 1;
+    const WORDS: usize = Self::LEAVES + Self::LEAVES.div_ceil(64);
+
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "row event ordinates are in 0..=65536"
+    )]
+    fn insert(&mut self, y: i32) {
+        let y = y as usize;
+        let word = y / 64;
+        self.words[word] |= 1 << (y % 64);
+        self.words[Self::LEAVES + word / 64] |= 1 << (word % 64);
+        self.occupied |= 1 << (word / 64);
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "row event ordinates fit i32"
+    )]
+    fn drain(&mut self, out: &mut Table<i32>) {
+        out.clear();
+        let mut occupied = std::mem::take(&mut self.occupied);
+        while occupied != 0 {
+            let group = occupied.trailing_zeros() as usize;
+            occupied &= occupied - 1;
+            let mut words = std::mem::take(&mut self.words[Self::LEAVES + group]);
+            while words != 0 {
+                let word = group * 64 + words.trailing_zeros() as usize;
+                words &= words - 1;
+                let mut bits = std::mem::take(&mut self.words[word]);
+                while bits != 0 {
+                    out.push((word * 64 + bits.trailing_zeros() as usize) as i32);
+                    bits &= bits - 1;
+                }
+            }
+        }
+    }
+}
+
 /// All storage belongs to one raster worker and is reused across draws.
 #[derive(Debug, Default)]
 pub struct Compiler {
@@ -376,6 +425,8 @@ pub struct Compiler {
     starts: Table<u32>,
     active: Table<usize>,
     pieces: Table<Piece>,
+    columns: Table<[u32; 2]>,
+    events: RowEvents,
     order: Table<usize>,
     breaks: Table<i32>,
     profile: Table<(i32, i32)>,
@@ -402,6 +453,8 @@ impl Compiler {
         let len = words(n, size_of::<Segment>())
             + words(self.height, size_of::<u32>())
             + words(n, size_of::<Piece>())
+            + row
+            + RowEvents::WORDS
             + 2 * words(n, size_of::<usize>())
             + words(4 * n + 2, size_of::<i32>())
             + 2 * words(2 * n + 1, size_of::<(i32, i32)>())
@@ -417,6 +470,8 @@ impl Compiler {
             self.edges = Table::bind(&mut remaining, n);
             self.starts = Table::bind(&mut remaining, self.height);
             self.pieces = Table::bind(&mut remaining, n);
+            self.columns = Table::bind(&mut remaining, row);
+            self.events.words = Table::bind(&mut remaining, RowEvents::WORDS);
             self.active = Table::bind(&mut remaining, n);
             self.order = Table::bind(&mut remaining, n);
             self.breaks = Table::bind(&mut remaining, 4 * n + 2);
@@ -498,8 +553,11 @@ impl Compiler {
     ) {
         if overlap == Overlap::Possible {
             self.pieces.resize(self.edges.len(), Piece::default());
+            self.columns.resize(self.cells.width + 1, [u32::MAX; 2]);
+            self.events.words.resize(RowEvents::WORDS, 0);
         }
-        for row in 0..height {
+        let mut row = 0;
+        while row < height {
             let top = (row as i32) << 16;
             let bottom = top + ONE as i32;
             self.active
@@ -509,12 +567,21 @@ impl Compiler {
                 self.active.push(start as usize);
                 start = self.edges[start as usize].next;
             }
+            let mut repeat_end = height;
             for &index in self.active.iter() {
-                let e = self.edges[index];
+                let e = &self.edges[index];
                 let (a, b) = (
                     e.y0.max(i64::from(top)) as i32,
                     (e.y0 + e.dy).min(i64::from(bottom)) as i32,
                 );
+                // Vertical boundaries have identical integrals in every
+                // complete row until an edge starts or ends. Shade those
+                // rows from one compilation, without retaining a mask.
+                if e.dx != 0 || a != top || b != bottom {
+                    repeat_end = row + 1;
+                } else {
+                    repeat_end = repeat_end.min(((e.y0 + e.dy) >> 16) as usize);
+                }
                 if overlap == Overlap::Disjoint {
                     e.deposit(&mut self.cells, e.dir, a, b);
                 } else {
@@ -533,22 +600,53 @@ impl Compiler {
             if overlap == Overlap::Possible {
                 self.ordered(rule, top);
             }
+            let next = (row + 1..repeat_end)
+                .find(|&next| self.starts[next] != u32::MAX)
+                .unwrap_or(repeat_end);
             self.cells.read(overlap == Overlap::Disjoint, |range, run| {
-                emit(row, range, run);
+                for y in row..next {
+                    emit(y, range.clone(), run);
+                }
             });
+            row = next;
         }
     }
 
     fn ordered(&mut self, rule: FillRule, row: i32) {
-        self.active
-            .sort_unstable_by_key(|&edge| self.pieces[edge].left);
+        let mut first_column = self.cells.width;
+        let mut last_column = 0;
+        for &index in self.active.iter() {
+            let piece = self.pieces[index];
+            let column = usize::from(piece.left);
+            // A zero-width boundary precedes the positive-width envelopes
+            // starting here, so grouping is independent of insertion order.
+            let bucket = usize::from(piece.left != piece.right);
+            let head = &mut self.columns[column][bucket];
+            // The start-row link has already been consumed for active edges.
+            self.edges[index].next = *head;
+            *head = u32::try_from(index).expect("compiler edge index fits u32");
+            first_column = first_column.min(column);
+            last_column = last_column.max(column);
+        }
+        self.active.clear();
+        for column in first_column..=last_column {
+            for bucket in 0..2 {
+                let mut index = std::mem::replace(&mut self.columns[column][bucket], u32::MAX);
+                while index != u32::MAX {
+                    self.active.push(index as usize);
+                    index = self.edges[index as usize].next;
+                }
+            }
+        }
         self.profile.clear();
         self.profile.push((0, 0));
         let mut first = 0;
         while first < self.active.len() {
             let mut last = first + 1;
             let mut right = self.pieces[self.active[first]].right;
-            while last < self.active.len() && self.pieces[self.active[last]].left <= right {
+            // Pixel envelopes are half-open. Touching at an integer column
+            // shares only the winding profile, not a cell's boundary area.
+            while last < self.active.len() && self.pieces[self.active[last]].left < right {
                 right = right.max(self.pieces[self.active[last]].right);
                 last += 1;
             }
@@ -583,15 +681,16 @@ impl Compiler {
         reason = "one strip sweep with exact grid events and coincidence"
     )]
     fn group(&mut self, group: Range<usize>, rule: FillRule, row: i32) {
-        self.breaks.clear();
-        self.breaks.extend(self.profile.iter().map(|&(y, _)| y));
-        self.breaks.push(ONE as i32);
+        for &(y, _) in self.profile.iter() {
+            self.events.insert(y);
+        }
+        self.events.insert(ONE as i32);
         for &index in &self.active[group.clone()] {
             let piece = self.pieces[index];
-            self.breaks.extend([piece.y0, piece.y1]);
+            self.events.insert(piece.y0);
+            self.events.insert(piece.y1);
         }
-        self.breaks.sort_unstable();
-        self.breaks.dedup();
+        self.events.drain(&mut self.breaks);
         self.next_profile.clear();
         self.order.clear();
         let mut profile = 0;
