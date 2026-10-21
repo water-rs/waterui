@@ -84,13 +84,13 @@ pub struct FrameIndex {
     /// counting writes it up, the scatter reads it back down to zero,
     /// so it never needs a clearing pass.
     counts: Vec<usize>,
-    verticals: [usize; 2],
+    verticals: Option<[usize; 2]>,
 }
 
 impl FrameIndex {
-    /// Upper bound on transient vertical intervals in a band or window.
-    pub fn coverage_capacity(&self, windowed: bool) -> usize {
-        self.verticals[usize::from(windowed)]
+    /// Vertical scratch bound for draws; sloped-only draws still need rows.
+    pub fn coverage_capacity(&self, windowed: bool) -> Option<usize> {
+        self.verticals.map(|counts| counts[usize::from(windowed)])
     }
 
     /// Rebuilds the bins for `items` over the band grid of an `h`-row
@@ -104,15 +104,16 @@ impl FrameIndex {
         // the active prefix and all-zero on entry (the tail stayed
         // zero from the last scatter).
         self.counts.resize(self.counts.len().max(bands), 0);
-        self.verticals = [0; 2];
+        self.verticals = None;
         // One item walk: per-band counts and vertical scratch bounds.
         for item in items {
             for b in rows_bands(item_rows(item, h), bands) {
                 self.counts[b] += 1;
             }
             if let Item::Draw { edges, .. } = item {
-                self.verticals[0] = self.verticals[0].max(edges.vertical_capacity(false));
-                self.verticals[1] = self.verticals[1].max(edges.vertical_capacity(true));
+                let verticals = self.verticals.get_or_insert([0; 2]);
+                verticals[0] = verticals[0].max(edges.vertical_capacity(false));
+                verticals[1] = verticals[1].max(edges.vertical_capacity(true));
             }
         }
         // Prefix sums over the active prefix: read `counts`, write

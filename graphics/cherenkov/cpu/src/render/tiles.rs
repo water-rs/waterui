@@ -132,7 +132,6 @@ pub struct EdgeTiles {
 #[derive(Default)]
 pub struct EdgeScratch {
     decoded: Vec<IntegerEdge>,
-    prepared: Vec<Boundary>,
     ends: Vec<i64>,
     sweep: super::topology::Sweep,
 }
@@ -140,7 +139,6 @@ pub struct EdgeScratch {
 impl EdgeScratch {
     pub(crate) fn heap_bytes(&self) -> u64 {
         (self.decoded.capacity() * size_of::<IntegerEdge>()
-            + self.prepared.capacity() * size_of::<Boundary>()
             + self.ends.capacity() * size_of::<i64>()
             + self.sweep.heap_bytes()) as u64
     }
@@ -284,12 +282,17 @@ impl EdgeTiles {
                 ));
             });
         }
-        scratch.prepared.clear();
+        let mut bounds = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
+        for e in &scratch.decoded {
+            bounds[0] = bounds[0].min(e.x0.min(e.x1));
+            bounds[1] = bounds[1].min(e.y0.min(e.y1));
+            bounds[2] = bounds[2].max(e.x0.max(e.x1));
+            bounds[3] = bounds[3].max(e.y0.max(e.y1));
+        }
         if let Some(rule) = rule {
             scratch.sweep.compile(&scratch.decoded, rule);
-            scratch
-                .prepared
-                .extend(scratch.sweep.output.iter().map(|visible| {
+            Self::finish(
+                scratch.sweep.output.iter().map(|visible| {
                     let mut e = scratch.decoded[visible.source];
                     if (e.y0 < e.y1) != (visible.sign > 0) {
                         std::mem::swap(&mut e.x0, &mut e.x1);
@@ -298,60 +301,65 @@ impl EdgeTiles {
                     e.top = visible.top;
                     e.bottom = visible.bottom;
                     Boundary::new(e)
-                }));
+                }),
+                &mut scratch.ends,
+                bounds,
+            )
         } else {
-            scratch
-                .prepared
-                .extend(scratch.decoded.iter().copied().map(Boundary::new));
+            Self::finish(
+                scratch.decoded.iter().copied().map(Boundary::new),
+                &mut scratch.ends,
+                bounds,
+            )
         }
-        let mut bounds = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
-        for e in &scratch.decoded {
-            bounds[0] = bounds[0].min(e.x0.min(e.x1));
-            bounds[1] = bounds[1].min(e.y0.min(e.y1));
-            bounds[2] = bounds[2].max(e.x0.max(e.x1));
-            bounds[3] = bounds[3].max(e.y0.max(e.y1));
-        }
-        Self::finish(&mut scratch.prepared, &mut scratch.ends, bounds)
     }
 
     /// Transient masks already carry exact placement-grid edges.
     pub fn from_boundaries(edges: &[IntegerEdge]) -> Self {
-        let mut prepared: Vec<_> = edges
+        let prepared = edges
             .iter()
             .copied()
             .filter(|e| e.top < e.bottom)
-            .map(Boundary::new)
-            .collect();
-        Self::finish(&mut prepared, &mut Vec::new(), [0; 4])
+            .map(Boundary::new);
+        Self::finish(prepared, &mut Vec::new(), [0; 4])
     }
 
-    fn finish(prepared: &mut [Boundary], ends: &mut Vec<i64>, bounds: [i64; 4]) -> Self {
-        prepared.sort_unstable_by_key(|b| b.top());
-        let (band, window) = intervals::vertical_capacity(prepared, ends);
-        let count = prepared.len();
+    fn finish(
+        mut prepared: impl Iterator<Item = Boundary> + Clone,
+        ends: &mut Vec<i64>,
+        bounds: [i64; 4],
+    ) -> Self {
+        let count = prepared.clone().count();
         let nodes = intervals::leaves(count) * 2;
         let mut words = Arc::<[Word]>::new_uninit_slice(HEAD + count * 4 + nodes);
         let out = Arc::get_mut(&mut words).expect("fresh allocation");
-        out[0].write(u64::try_from(count).expect("boundary count fits u64"));
-        out[1].write(
-            u64::from(u32::try_from(band).expect("band count fits u32"))
-                | u64::from(u32::try_from(window).expect("interval count fits u32")) << 32,
-        );
-        for (slot, value) in out[2..HEAD].iter_mut().zip(bounds) {
+        let (head, data) = out.split_at_mut(HEAD);
+        let (payload, tree) = data.split_at_mut(count * 4);
+        head[0].write(u64::try_from(count).expect("boundary count fits u64"));
+        for (slot, value) in head[2..].iter_mut().zip(bounds) {
             slot.write(value.cast_unsigned());
         }
-        // SAFETY: Boundary is repr(C), consists of four initialized eight-byte
-        // fields, and has the same alignment as Word. Both slices are disjoint.
+        // Initialize through checked word slices before viewing the payload as
+        // boundaries; iterator length is not relied on for memory safety.
+        for slot in payload.as_chunks_mut::<4>().0 {
+            let boundary = prepared.next().expect("exact boundary count");
+            for (word, value) in slot.iter_mut().zip(boundary.words()) {
+                word.write(value);
+            }
+        }
+        // SAFETY: Boundary is repr(C), consists of four eight-byte fields,
+        // and has the same alignment as Word. The loop above initializes the
+        // entire payload. The tree and payload are disjoint.
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                prepared.as_ptr(),
-                out.as_mut_ptr().add(HEAD).cast::<Boundary>(),
-                count,
+            let prepared =
+                std::slice::from_raw_parts_mut(payload.as_mut_ptr().cast::<Boundary>(), count);
+            prepared.sort_unstable_by_key(|b| b.top());
+            let (band, window) = intervals::vertical_capacity(prepared, ends);
+            head[1].write(
+                u64::from(u32::try_from(band).expect("band count fits u32"))
+                    | u64::from(u32::try_from(window).expect("interval count fits u32")) << 32,
             );
-            let tree = std::slice::from_raw_parts_mut(
-                out.as_mut_ptr().add(HEAD + count * 4).cast::<Word>(),
-                nodes,
-            );
+            let tree = std::slice::from_raw_parts_mut(tree.as_mut_ptr().cast::<Word>(), nodes);
             intervals::tree(tree, prepared);
         }
         Self {

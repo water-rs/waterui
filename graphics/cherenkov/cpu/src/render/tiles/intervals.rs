@@ -42,6 +42,15 @@ impl Boundary {
     pub const fn sign(self) -> i32 {
         1 - 2 * (self.top_sign & 1) as i32
     }
+
+    pub const fn words(self) -> [Word; 4] {
+        [
+            self.top_sign.cast_unsigned(),
+            self.bottom.cast_unsigned(),
+            self.x.to_bits(),
+            self.slope.to_bits(),
+        ]
+    }
 }
 
 pub const fn leaves(count: usize) -> usize {

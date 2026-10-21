@@ -456,9 +456,9 @@ impl Meter {
 
 impl<'a> Scratch<'a> {
     /// An empty working set; buffers grow to band size on first use.
-    pub fn new(meter: Option<&'a FrameMeter>, width: usize, edges: usize) -> Self {
+    pub fn new(meter: Option<&'a FrameMeter>, width: usize, edges: Option<usize>) -> Self {
         let mut coverage = Compiler::default();
-        if edges > 0 {
+        if let Some(edges) = edges {
             coverage.reserve(width, edges, BAND_H);
         }
         Self {
@@ -1896,7 +1896,7 @@ fn for_each_band<T: Send>(
     output: &mut [T],
     w: usize,
     h: usize,
-    edges: usize,
+    edges: Option<usize>,
     meter: &FrameMeter,
     shade_band: impl Fn(usize, &mut [T], &mut Scratch<'_>) -> Result<(), cherenkov::RenderError> + Sync,
 ) -> Result<(), cherenkov::RenderError> {
@@ -2235,8 +2235,11 @@ fn run<S: Simd>(
                 let top = band.y0.saturating_sub(*apron);
                 let bottom = y1.saturating_add(*apron).min(h);
                 let mut window = buffers.take_color(band.w * (bottom - top));
-                let coverage =
-                    buffers.take_coverage(band.w, index.coverage_capacity(true), bottom - top);
+                let coverage = buffers.take_coverage(
+                    band.w,
+                    index.coverage_capacity(true).unwrap_or(0),
+                    bottom - top,
+                );
                 let mut nested = buffers.take_sel_items(depth, ctx.meter);
                 index.query_items(i + 1..scope_end, (top, bottom), &mut nested);
                 buffers.charge_sel_items(depth, &nested, ctx.meter);
