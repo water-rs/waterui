@@ -1032,15 +1032,25 @@ impl PaintOutput for PixelCenter {
 }
 
 /// The mesh and short-run sampling loop, entered through `vectorize`
-/// so it compiles under the level's target features even though it is
-/// not inlined — `#[inline(never)]` keeps this body out of
-/// `PaintData::eval_span`'s debug stack frame, where inlined next to
-/// every other kind it overflowed the test stack.
+/// so it compiles under the level's target features even when it is
+/// not inlined. Debug builds keep it out of line: unoptimized code
+/// gives every inlined body its own stack slots, and inlined next to
+/// every other kind in `PaintData::eval_span` it overflowed the test
+/// stack. Optimized builds inline it, since the optimizer coalesces
+/// the frame and an out-of-line call per span costs short spans.
 #[expect(
     clippy::cast_precision_loss,
     reason = "pixel indices and band offsets are far below 2^24"
 )]
-#[inline(never)]
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        clippy::inline_always,
+        reason = "an optimized build coalesces the frame, and a call per span costs short spans"
+    ),
+    inline(always)
+)]
 fn sample_span<S: Simd>(
     simd: S,
     x0: usize,
@@ -1065,7 +1075,15 @@ fn sample_span<S: Simd>(
 
 /// The solid fill, entered through `vectorize` for the same reason as
 /// [`sample_span`].
-#[inline(never)]
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        clippy::inline_always,
+        reason = "an optimized build coalesces the frame, and a call per span costs short spans"
+    ),
+    inline(always)
+)]
 fn solid_span<S: Simd>(simd: S, c: [f32; 4], out: &mut [MaybeUninit<[f32; 4]>]) -> &mut [[f32; 4]] {
     simd.vectorize(
         #[inline(always)]
