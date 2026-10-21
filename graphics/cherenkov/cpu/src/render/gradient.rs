@@ -992,11 +992,7 @@ where
 
 /// `PaintData::Linear` over `out`: the span driver with the
 /// span-invariant choices [`LinearEval`] decides.
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
-)]
-#[inline(always)]
+#[inline(never)]
 pub(super) fn linear_span<'a, S: Simd>(
     simd: S,
     outer: &PaintData,
@@ -1005,7 +1001,10 @@ pub(super) fn linear_span<'a, S: Simd>(
     py: usize,
     out: &'a mut [MaybeUninit<[f32; 4]>],
 ) -> &'a mut [[f32; 4]] {
-    super::span::span(simd, &Gradient(LinearEval::new(outer, params)), x0, py, out)
+    simd.vectorize(
+        #[inline(always)]
+        || super::span::span(simd, &Gradient(LinearEval::new(outer, params)), x0, py, out),
+    )
 }
 
 /// `PaintData::Radial` over `out`: the span driver with the
@@ -1071,11 +1070,7 @@ where
 
 /// `PaintData::Sweep` over `out`: the span driver with the
 /// span-invariant choices [`SweepEval`] decides.
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
-)]
-#[inline(always)]
+#[inline(never)]
 pub(super) fn sweep_span<'a, S: Simd>(
     simd: S,
     outer: &PaintData,
@@ -1084,5 +1079,8 @@ pub(super) fn sweep_span<'a, S: Simd>(
     py: usize,
     out: &'a mut [MaybeUninit<[f32; 4]>],
 ) -> &'a mut [[f32; 4]] {
-    super::span::span(simd, &Gradient(SweepEval::new(outer, params)), x0, py, out)
+    simd.vectorize(
+        #[inline(always)]
+        || super::span::span(simd, &Gradient(SweepEval::new(outer, params)), x0, py, out),
+    )
 }
