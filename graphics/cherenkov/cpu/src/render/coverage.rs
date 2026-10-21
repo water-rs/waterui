@@ -5,7 +5,11 @@
 //! Column carry is integer strip height, never a floating-point prefix sum:
 //! untouched exterior columns are exactly zero and full interiors exactly one.
 
+mod storage;
+
+use std::mem::MaybeUninit;
 use std::ops::Range;
+use storage::Table;
 
 use cherenkov::FillRule;
 
@@ -30,12 +34,16 @@ impl Overlap {
 /// Coverage supplied to the compositing kernels, without materializing
 /// constant interiors. Implementations are monomorphized in the span loops.
 pub trait Source: Copy {
+    fn check_len(self, len: usize);
     fn at(self, i: usize) -> f32;
     fn full(self) -> bool;
     fn slice(self, range: Range<usize>) -> Self;
 }
 
 impl Source for &[f32] {
+    fn check_len(self, len: usize) {
+        assert_eq!(self.len(), len, "composite coverage length mismatch");
+    }
     fn at(self, i: usize) -> f32 {
         self[i]
     }
@@ -51,6 +59,7 @@ impl Source for &[f32] {
 pub struct Uniform(pub f32);
 
 impl Source for Uniform {
+    fn check_len(self, _: usize) {}
     fn at(self, _: usize) -> f32 {
         self.0
     }
@@ -76,6 +85,9 @@ struct Cell {
 pub struct Samples<'a>(&'a [Cell]);
 
 impl Source for Samples<'_> {
+    fn check_len(self, len: usize) {
+        assert_eq!(self.0.len(), len, "composite coverage length mismatch");
+    }
     fn at(self, i: usize) -> f32 {
         self.0[i].partial
     }
@@ -115,8 +127,8 @@ impl Run<'_> {
 /// write, carry on consumption; no draw clears its bounding-box area.
 #[derive(Debug, Default)]
 struct RowCells {
-    cells: Vec<Cell>,
-    touched: Vec<u64>,
+    cells: Table<Cell>,
+    touched: Table<u64>,
     first: usize,
     last: usize,
     width: usize,
@@ -158,18 +170,19 @@ impl RowCells {
     )]
     fn boundary(&mut self, sign: i32, height: i32, xt: f64, xb: f64) {
         let (left, right) = (xt.min(xb), xt.max(xb));
-        let end = (right / 65536.0).ceil().clamp(0.0, self.width as f64) as usize;
-        let start = (left / 65536.0).floor().clamp(0.0, self.width as f64) as usize;
+        let end_px = (right / 65536.0).clamp(0.0, self.width as f64);
+        let end = end_px as usize + usize::from(end_px > (end_px as usize) as f64);
+        let start = (left / 65536.0).clamp(0.0, self.width as f64) as usize;
         let signed_height = sign * height;
         if right <= 0.0
             || left >= self.width as f64 * 65536.0
-            || left == right && left % 65536.0 == 0.0
+            || left == right && left == start as f64 * 65536.0
         {
             self.touch(end).cover += signed_height;
             return;
         }
         let end = end.max(start + usize::from(left == right));
-        if end <= start + 1 {
+        if end <= start + 1 && left >= start as f64 * 65536.0 && right <= end as f64 * 65536.0 {
             if start < self.width {
                 let twice_area =
                     f64::from(signed_height) * (2.0 * (start as f64 + 1.0) * 65536.0 - xt - xb);
@@ -265,7 +278,7 @@ impl RowCells {
 
 /// The original integer line, rebased in y only. Retaining its slope
 /// avoids introducing a new line at every band and row cut.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Segment {
     x0: i64,
     y0: i64,
@@ -273,6 +286,7 @@ struct Segment {
     dy: i64,
     slope: f64,
     dir: i32,
+    next: u32,
 }
 
 impl Segment {
@@ -291,58 +305,93 @@ impl Segment {
 
     #[expect(
         clippy::cast_precision_loss,
+        clippy::suboptimal_flops,
         reason = "placed coordinates and differences fit the f64 significand"
     )]
     fn at(self, y: i32) -> f64 {
-        ((i64::from(y) - self.y0) as f64).mul_add(self.slope, self.x0 as f64)
+        (i64::from(y) - self.y0) as f64 * self.slope + self.x0 as f64
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Piece {
-    edge: usize,
+    edge: u32,
     x0: f64,
     x1: f64,
     y0: i32,
     y1: i32,
-}
-
-impl Piece {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "pixel envelope of finite bounded geometry"
-    )]
-    fn left(self) -> i64 {
-        (self.x0.min(self.x1) / 65536.0).floor() as i64
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "pixel envelope of finite bounded geometry"
-    )]
-    fn right(self) -> i64 {
-        (self.x0.max(self.x1) / 65536.0).ceil() as i64
-    }
+    left: u16,
+    right: u16,
 }
 
 /// All storage belongs to one raster worker and is reused across draws.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Compiler {
-    edges: Vec<Segment>,
-    starts: Vec<usize>,
-    active: Vec<usize>,
-    pieces: Vec<Piece>,
-    order: Vec<usize>,
-    breaks: Vec<i32>,
-    profile: Vec<(i32, i32)>,
-    next_profile: Vec<(i32, i32)>,
+    storage: Vec<MaybeUninit<u64>>,
+    width: usize,
+    capacity: usize,
+    height: usize,
+    edges: Table<Segment>,
+    starts: Table<u32>,
+    active: Table<usize>,
+    pieces: Table<Piece>,
+    order: Table<usize>,
+    breaks: Table<i32>,
+    profile: Table<(i32, i32)>,
+    next_profile: Table<(i32, i32)>,
     cells: RowCells,
 }
 
 impl Compiler {
+    /// Reserves one allocation for the largest band selection in a pass.
+    pub fn reserve(&mut self, width: usize, edges: usize, height: usize) {
+        if width <= self.width
+            && edges <= self.capacity
+            && height <= self.height
+            && !self.storage.is_empty()
+        {
+            return;
+        }
+        self.width = self.width.max(width);
+        self.capacity = self.capacity.max(edges);
+        self.height = self.height.max(height);
+        let n = self.capacity;
+        let row = self.width + 1;
+        let words = |count: usize, size: usize| (count * size).div_ceil(8);
+        let len = words(n, size_of::<Segment>())
+            + words(self.height, size_of::<u32>())
+            + words(n, size_of::<Piece>())
+            + 2 * words(n, size_of::<usize>())
+            + words(4 * n + 2, size_of::<i32>())
+            + 2 * words(2 * n + 1, size_of::<(i32, i32)>())
+            + words(row, size_of::<Cell>())
+            + row.div_ceil(64);
+        self.storage.resize(len, MaybeUninit::uninit());
+        let mut remaining = self.storage.as_mut_slice();
+        // SAFETY: every table element has alignment at most u64.
+        // bind partitions the live allocation into
+        // disjoint tables. Only reserve resizes it, rebinding every table before
+        // any subsequent use; no table reference survives this exclusive call.
+        unsafe {
+            self.edges = Table::bind(&mut remaining, n);
+            self.starts = Table::bind(&mut remaining, self.height);
+            self.pieces = Table::bind(&mut remaining, n);
+            self.active = Table::bind(&mut remaining, n);
+            self.order = Table::bind(&mut remaining, n);
+            self.breaks = Table::bind(&mut remaining, 4 * n + 2);
+            self.profile = Table::bind(&mut remaining, 2 * n + 1);
+            self.next_profile = Table::bind(&mut remaining, 2 * n + 1);
+            self.cells.cells = Table::bind(&mut remaining, row);
+            self.cells.touched = Table::bind(&mut remaining, row.div_ceil(64));
+        }
+    }
+
     /// Read only the supplied band selection, never the source's other edges.
     #[expect(
         clippy::cast_possible_wrap,
         clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
         reason = "surface dimensions fit u16; band-local ordinates fit i32"
     )]
     pub fn prepare<E: EdgeSource + ?Sized, S: fearless_simd::Simd>(
@@ -354,8 +403,9 @@ impl Compiler {
         rows: Range<usize>,
         width: usize,
     ) {
+        self.reserve(width, selection.len(), rows.len());
         self.edges.clear();
-        self.starts.clear();
+        self.starts.resize(rows.len(), u32::MAX);
         self.active.clear();
         self.cells.resize(width);
         let [ox, oy] = offset.units();
@@ -375,6 +425,9 @@ impl Compiler {
                 return;
             }
             let (x0, x1) = if x0.max(x1) <= 0 { (0, 0) } else { (x0, x1) };
+            let first_row = ((ya - top) / ONE) as usize;
+            let next = self.starts[first_row];
+            self.starts[first_row] = self.edges.len() as u32;
             self.edges.push(Segment {
                 x0,
                 y0: y0 - top,
@@ -382,15 +435,16 @@ impl Compiler {
                 dy: y1 - y0,
                 slope: (x1 - x0) as f64 / (y1 - y0) as f64,
                 dir,
+                next,
             });
         });
-        self.starts.extend(0..self.edges.len());
-        self.starts.sort_unstable_by_key(|&i| self.edges[i].y0);
     }
 
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
         reason = "band rows and pixel units fit i32"
     )]
     pub fn rows(
@@ -400,19 +454,18 @@ impl Compiler {
         overlap: Overlap,
         mut emit: impl FnMut(usize, Range<usize>, Run<'_>),
     ) {
-        let mut start = 0;
         for row in 0..height {
             let top = (row as i32) << 16;
             let bottom = top + ONE as i32;
             self.active
                 .retain(|&i| self.edges[i].y0 + self.edges[i].dy > i64::from(top));
-            while start < self.starts.len() && self.edges[self.starts[start]].y0 < i64::from(bottom)
-            {
-                self.active.push(self.starts[start]);
-                start += 1;
+            let mut start = std::mem::replace(&mut self.starts[row], u32::MAX);
+            while start != u32::MAX {
+                self.active.push(start as usize);
+                start = self.edges[start as usize].next;
             }
             self.pieces.clear();
-            for &index in &self.active {
+            for &index in self.active.iter() {
                 let e = self.edges[index];
                 let (a, b) = (
                     e.y0.max(i64::from(top)) as i32,
@@ -422,12 +475,17 @@ impl Compiler {
                 if overlap == Overlap::Disjoint {
                     self.cells.boundary(e.dir, b - a, xa, xb);
                 } else {
+                    let left = (xa.min(xb) / 65536.0).clamp(0.0, self.cells.width as f64);
+                    let right = (xa.max(xb) / 65536.0).clamp(0.0, self.cells.width as f64);
+                    let end = right as u16;
                     self.pieces.push(Piece {
-                        edge: index,
+                        edge: index as u32,
                         x0: xa,
                         x1: xb,
                         y0: a - top,
                         y1: b - top,
+                        left: left as u16,
+                        right: end + u16::from(right > f64::from(end)),
                     });
                 }
             }
@@ -441,75 +499,96 @@ impl Compiler {
     }
 
     fn ordered(&mut self, rule: FillRule, row: i32) {
-        self.pieces.sort_unstable_by(|a, b| {
-            a.left()
-                .cmp(&b.left())
-                .then_with(|| a.x0.total_cmp(&b.x0))
-                .then_with(|| a.x1.total_cmp(&b.x1))
-                .then(a.y0.cmp(&b.y0))
-                .then(a.y1.cmp(&b.y1))
-        });
+        self.pieces.sort_unstable_by_key(|piece| piece.left);
+        self.active.clear();
+        self.active
+            .extend(self.pieces.iter().map(|piece| piece.edge as usize));
         self.profile.clear();
         self.profile.push((0, 0));
         let mut first = 0;
         while first < self.pieces.len() {
             let mut last = first + 1;
-            let mut right = self.pieces[first].right();
-            while last < self.pieces.len() && self.pieces[last].left() <= right {
-                right = right.max(self.pieces[last].right());
+            let mut right = self.pieces[first].right;
+            while last < self.pieces.len() && self.pieces[last].left <= right {
+                right = right.max(self.pieces[last].right);
                 last += 1;
             }
-            self.group(first..last, rule, row);
+            let piece = self.pieces[first];
+            if last == first + 1
+                && piece.y0 == 0
+                && i64::from(piece.y1) == ONE
+                && self.profile.len() == 1
+            {
+                let winding = &mut self.profile[0].1;
+                let before = inside(*winding, rule);
+                *winding += self.edges[piece.edge as usize].dir;
+                let after = inside(*winding, rule);
+                if before != after {
+                    self.cells
+                        .boundary(if after { 1 } else { -1 }, piece.y1, piece.x0, piece.x1);
+                }
+            } else {
+                self.group(first..last, rule, row);
+            }
             first = last;
         }
     }
 
     #[expect(
         clippy::cast_possible_truncation,
+        clippy::too_many_lines,
         reason = "one strip sweep; exact coincidence is a geometry identity, not a tolerance"
     )]
     fn group(&mut self, group: Range<usize>, rule: FillRule, row: i32) {
         self.breaks.clear();
         self.breaks.extend(self.profile.iter().map(|&(y, _)| y));
         self.breaks.push(ONE as i32);
-        for i in group.clone() {
-            let a = self.pieces[i];
-            self.breaks.extend([a.y0, a.y1]);
-            for b in &self.pieces[i + 1..group.end] {
-                let (lo, hi) = (a.y0.max(b.y0), a.y1.min(b.y1));
-                if lo >= hi || a.x0.min(a.x1) > b.x0.max(b.x1) || b.x0.min(b.x1) > a.x0.max(a.x1) {
-                    continue;
-                }
-                let sa = self.edges[a.edge];
-                let sb = self.edges[b.edge];
-                let ad = i128::from(sa.dy);
-                let bd = i128::from(sb.dy);
-                let ax = i128::from(sa.dx);
-                let bx = i128::from(sb.dx);
-                let denominator = ax * bd - bx * ad;
-                if denominator == 0 {
-                    continue;
-                }
-                let numerator = i128::from(sb.x0 - sa.x0) * ad * bd
-                    + i128::from(sa.y0 - i64::from(row)) * ax * bd
-                    - i128::from(sb.y0 - i64::from(row)) * bx * ad;
-                let crossing = if denominator < 0 {
-                    (-numerator).div_euclid(-denominator)
-                } else {
-                    numerator.div_euclid(denominator)
-                };
-                if crossing > i128::from(lo) && crossing < i128::from(hi) {
-                    self.breaks.push(crossing as i32);
-                }
-            }
+        for piece in &self.pieces[group.clone()] {
+            self.breaks.extend([piece.y0, piece.y1]);
         }
         self.breaks.sort_unstable();
         self.breaks.dedup();
         self.next_profile.clear();
         self.order.clear();
         let mut profile = 0;
-        for strip in self.breaks.windows(2) {
-            let (top, bottom) = (strip[0], strip[1]);
+        let mut endpoint = 1;
+        let mut top = 0;
+        while endpoint < self.breaks.len() {
+            let mut bottom = self.breaks[endpoint];
+            for i in group.clone() {
+                let a = self.pieces[i];
+                for b in &self.pieces[i + 1..group.end] {
+                    let (lo, hi) = (a.y0.max(b.y0).max(top), a.y1.min(b.y1).min(bottom));
+                    if lo >= hi
+                        || a.x0.min(a.x1) > b.x0.max(b.x1)
+                        || b.x0.min(b.x1) > a.x0.max(a.x1)
+                    {
+                        continue;
+                    }
+                    let sa = self.edges[a.edge as usize];
+                    let sb = self.edges[b.edge as usize];
+                    let ad = i128::from(sa.dy);
+                    let bd = i128::from(sb.dy);
+                    let ax = i128::from(sa.dx);
+                    let bx = i128::from(sb.dx);
+                    let denominator = ax * bd - bx * ad;
+                    if denominator == 0 {
+                        continue;
+                    }
+                    let numerator = i128::from(sb.x0 - sa.x0) * ad * bd
+                        + i128::from(sa.y0 - i64::from(row)) * ax * bd
+                        - i128::from(sb.y0 - i64::from(row)) * bx * ad;
+                    let crossing = if denominator < 0 {
+                        (-numerator).div_euclid(-denominator)
+                    } else {
+                        numerator.div_euclid(denominator)
+                    };
+                    if crossing > i128::from(lo) && crossing < i128::from(hi) {
+                        bottom = crossing as i32;
+                    }
+                }
+            }
+
             while profile + 1 < self.profile.len() && self.profile[profile + 1].0 <= top {
                 profile += 1;
             }
@@ -524,7 +603,7 @@ impl Compiler {
             let twice_middle = 2 * i64::from(row) + i64::from(top) + i64::from(bottom);
             let compare = |a: usize, b: usize| {
                 let (a, b) = (self.pieces[a], self.pieces[b]);
-                let (a, b) = (self.edges[a.edge], self.edges[b.edge]);
+                let (a, b) = (self.edges[a.edge as usize], self.edges[b.edge as usize]);
                 a.compare(b, twice_middle)
                     .then_with(|| (a.x0, a.y0, a.dx, a.dy).cmp(&(b.x0, b.y0, b.dx, b.dy)))
             };
@@ -540,17 +619,20 @@ impl Compiler {
             let mut i = 0;
             while i < self.order.len() {
                 let p = self.pieces[self.order[i]];
-                let edge = self.edges[p.edge];
+                let edge = self.edges[p.edge as usize];
                 let (xa, xb) = (edge.at(row + top), edge.at(row + bottom));
                 let before = inside(winding, rule);
-                winding += self.edges[p.edge].dir;
+                winding += self.edges[p.edge as usize].dir;
                 i += 1;
                 while i < self.order.len() {
                     let p = self.pieces[self.order[i]];
-                    if !edge.compare(self.edges[p.edge], twice_middle).is_eq() {
+                    if !edge
+                        .compare(self.edges[p.edge as usize], twice_middle)
+                        .is_eq()
+                    {
                         break;
                     }
-                    winding += self.edges[p.edge].dir;
+                    winding += self.edges[p.edge as usize].dir;
                     i += 1;
                 }
                 let after = inside(winding, rule);
@@ -561,6 +643,10 @@ impl Compiler {
             }
             if self.next_profile.last().is_none_or(|&(_, w)| w != winding) {
                 self.next_profile.push((top, winding));
+            }
+            top = bottom;
+            if top == self.breaks[endpoint] {
+                endpoint += 1;
             }
         }
         std::mem::swap(&mut self.profile, &mut self.next_profile);
@@ -576,18 +662,20 @@ const fn inside(winding: i32, rule: FillRule) -> bool {
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing {
-    use super::{RowCells, Run};
+    use super::{Compiler, Run};
 
     /// A prepared sparse row; construction is outside the measured region.
     #[derive(Debug)]
-    pub struct RowReader(RowCells);
+    pub struct RowReader(Compiler);
 
     impl RowReader {
         /// Repeated fractional boundaries separated by constant interiors.
         #[must_use]
         #[expect(clippy::cast_precision_loss, reason = "benchmark row widths fit u16")]
         pub fn new(width: usize) -> Self {
-            let mut cells = RowCells::default();
+            let mut compiler = Compiler::default();
+            compiler.reserve(width, 0, 0);
+            let cells = &mut compiler.cells;
             cells.resize(width);
             for x in (0..width).step_by(64) {
                 cells.boundary(
@@ -603,14 +691,14 @@ pub mod testing {
                     ((x + 48).min(width) as f64) * 65536.0,
                 );
             }
-            Self(cells)
+            Self(compiler)
         }
 
         /// Consumes the row and returns its integrated area.
         #[expect(clippy::cast_precision_loss, reason = "benchmark run lengths fit u16")]
         pub fn read(&mut self) -> f32 {
             let mut sum = 0.0;
-            self.0.read(false, |range, run| {
+            self.0.cells.read(false, |range, run| {
                 if let Run::Uniform(c) = run {
                     sum = (range.len() as f32).mul_add(c.0, sum);
                 } else {
@@ -813,7 +901,7 @@ mod tests {
         let mut seed = 0x2820_u32;
         let mut random = || {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            f32::from((seed >> 24) as u8) / 32.0
+            f32::from((seed >> 24) as u8) / 32.0 - 2.0
         };
         for _ in 0..40 {
             let points: Vec<_> = (0..7).map(|_| (random(), random())).collect();

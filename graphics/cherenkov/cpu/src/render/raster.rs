@@ -83,6 +83,12 @@ struct Buffers {
     sel_edges_charge: usize,
 }
 
+struct BandScratch<'a> {
+    stack: &'a mut Vec<Plane>,
+    buffers: &'a mut Buffers,
+    captures: &'a mut Captures,
+}
+
 /// Live pixel-buffer accounting: pixels held across a band's run.
 #[derive(Default)]
 struct Meter {
@@ -454,9 +460,13 @@ impl Meter {
 
 impl<'a> Scratch<'a> {
     /// An empty working set; buffers grow to band size on first use.
-    pub fn new(meter: Option<&'a FrameMeter>) -> Self {
+    pub fn new(meter: Option<&'a FrameMeter>, width: usize, edges: usize) -> Self {
+        let mut coverage = Compiler::default();
+        if edges > 0 {
+            coverage.reserve(width, edges, BAND_H);
+        }
         Self {
-            coverage: Compiler::default(),
+            coverage,
             stack: Vec::new(),
             buffers: Buffers {
                 free: Vec::new(),
@@ -507,8 +517,10 @@ impl Buffers {
         self.free.push(buf);
     }
 
-    fn take_coverage(&mut self) -> Compiler {
-        self.coverage.pop().unwrap_or_default()
+    fn take_coverage(&mut self, width: usize, edges: usize, height: usize) -> Compiler {
+        let mut compiler = self.coverage.pop().unwrap_or_default();
+        compiler.reserve(width, edges, height);
+        compiler
     }
 
     fn give_coverage(&mut self, buf: Compiler) {
@@ -1305,6 +1317,7 @@ pub fn composite_span<S: Simd, C: Source>(
     space: cherenkov::BlendSpace,
 ) {
     assert_eq!(dst.len(), src.len(), "composite run length mismatch");
+    cov.check_len(dst.len());
     match (
         space == cherenkov::BlendSpace::SrgbEncoded,
         clip.clip.is_some(),
@@ -1336,6 +1349,7 @@ pub fn composite_solid<S: Simd, C: Source>(
     color: [f32; 4],
     space: cherenkov::BlendSpace,
 ) {
+    cov.check_len(dst.len());
     if space == cherenkov::BlendSpace::SrgbEncoded {
         composite_solid_in::<S, C, true>(simd, dst, cov, clip, color);
     } else {
@@ -1589,7 +1603,12 @@ fn shade(
         .iter()
         .rev()
         .find_map(|(i, rows)| rows.as_ref().map(|_| *i));
-    let coverage = std::mem::take(&mut scratch.coverage);
+    let coverage = &mut scratch.coverage;
+    let mut pass = BandScratch {
+        stack: &mut scratch.stack,
+        buffers: &mut scratch.buffers,
+        captures: &mut scratch.captures,
+    };
     let result = if let Some(last) = last_capture {
         shade_windowed(
             level,
@@ -1602,7 +1621,7 @@ fn shade(
             h,
             (window, last),
             coverage,
-            (scratch, &top),
+            (&mut pass, &top),
             meter,
         )
     } else {
@@ -1615,7 +1634,7 @@ fn shade(
             surface,
             h,
             coverage,
-            (scratch, &top),
+            (&mut pass, &top),
             meter,
         )
     };
@@ -1703,20 +1722,19 @@ fn shade_plain(
     w: usize,
     surface: (usize, usize),
     h: usize,
-    coverage: Compiler,
-    (scratch, top): (&mut Scratch<'_>, &[(usize, Option<CaptureRows>)]),
+    acc: &mut Compiler,
+    (scratch, top): (&mut BandScratch<'_>, &[(usize, Option<CaptureRows>)]),
     meter: Option<&FrameMeter>,
 ) -> Result<(), cherenkov::RenderError> {
     let (y0, _) = surface;
     let b = y0 / BAND_H;
-    let mut acc = coverage;
     let mut band = Band {
         fb: slice,
         w,
         y0,
         space: cherenkov::BlendSpace::Linear,
     };
-    let result = run_at(
+    run_at(
         level,
         items,
         index,
@@ -1724,21 +1742,19 @@ fn shade_plain(
         items.len(),
         EdgeSel::Band(b),
         &mut band,
-        &mut acc,
-        &mut scratch.stack,
-        &mut scratch.buffers,
+        acc,
+        scratch.stack,
+        scratch.buffers,
         &mut FrameCtx {
             level,
             surface,
             h,
-            captures: &mut scratch.captures,
+            captures: scratch.captures,
             top,
             meter,
         },
         0,
-    );
-    scratch.coverage = acc;
-    result
+    )
 }
 
 /// The band's pass with top-level captures: `run` over the expanded
@@ -1768,8 +1784,8 @@ fn shade_windowed(
     surface: (usize, usize),
     h: usize,
     ((win0, win1), last): ((usize, usize), usize),
-    coverage: Compiler,
-    (scratch, top): (&mut Scratch<'_>, &[(usize, Option<CaptureRows>)]),
+    acc: &mut Compiler,
+    (scratch, top): (&mut BandScratch<'_>, &[(usize, Option<CaptureRows>)]),
     meter: Option<&FrameMeter>,
 ) -> Result<(), cherenkov::RenderError> {
     let (y0, y1) = surface;
@@ -1778,7 +1794,6 @@ fn shade_windowed(
     let rows = win1 - win0;
     let mut window = scratch.buffers.take_color(w * rows);
     window.fill(clear);
-    let mut acc = coverage;
     let mut band = Band {
         fb: &mut window,
         w,
@@ -1798,14 +1813,14 @@ fn shade_windowed(
         last + 1,
         EdgeSel::Window,
         &mut band,
-        &mut acc,
-        &mut scratch.stack,
-        &mut scratch.buffers,
+        acc,
+        scratch.stack,
+        scratch.buffers,
         &mut FrameCtx {
             level,
             surface,
             h,
-            captures: &mut scratch.captures,
+            captures: scratch.captures,
             top,
             meter,
         },
@@ -1817,7 +1832,7 @@ fn shade_windowed(
         // and each live isolation buffer shrinks to band size.
         let first = (y0 - win0) * w;
         slice.copy_from_slice(&window[first..first + w * bh]);
-        for plane in &mut scratch.stack {
+        for plane in scratch.stack.iter_mut() {
             let mut cropped = scratch.buffers.take_color(w * bh);
             cropped.copy_from_slice(&plane.buf[first..first + w * bh]);
             scratch
@@ -1826,10 +1841,7 @@ fn shade_windowed(
         }
     }
     scratch.buffers.give_color(window);
-    if let Err(error) = first_pass {
-        scratch.coverage = acc;
-        return Err(error);
-    }
+    first_pass?;
     let mut band = Band {
         fb: slice,
         w,
@@ -1840,7 +1852,7 @@ fn shade_windowed(
     // top-level capture.
     let all = index.items(y0 / BAND_H);
     let start = all.partition_point(|&i| i <= last);
-    let result = run_at(
+    run_at(
         level,
         items,
         index,
@@ -1848,21 +1860,19 @@ fn shade_windowed(
         items.len(),
         EdgeSel::Band(y0 / BAND_H),
         &mut band,
-        &mut acc,
-        &mut scratch.stack,
-        &mut scratch.buffers,
+        acc,
+        scratch.stack,
+        scratch.buffers,
         &mut FrameCtx {
             level,
             surface,
             h,
-            captures: &mut scratch.captures,
+            captures: scratch.captures,
             top,
             meter,
         },
         0,
-    );
-    scratch.coverage = acc;
-    result
+    )
 }
 
 /// A pass's exclusive output, split only by unique atomic band claims.
@@ -1930,6 +1940,7 @@ fn for_each_band<T: Send>(
     output: &mut [T],
     w: usize,
     h: usize,
+    edges: usize,
     meter: &FrameMeter,
     shade_band: impl Fn(usize, &mut [T], &mut Scratch<'_>) -> Result<(), cherenkov::RenderError> + Sync,
 ) -> Result<(), cherenkov::RenderError> {
@@ -1944,7 +1955,7 @@ fn for_each_band<T: Send>(
         let Some((mut index, mut band)) = queue.claim() else {
             return Ok(());
         };
-        let mut scratch = Scratch::new(Some(meter));
+        let mut scratch = Scratch::new(Some(meter), w, edges);
         loop {
             shade_band(index * BAND_H, band, &mut scratch)?;
             match queue.claim() {
@@ -1979,22 +1990,29 @@ pub fn render_bands(
     let meter = &*meter;
     let index = &*index;
     let stats = stats(items);
-    for_each_band(fb, w, h, meter, |y0, band, scratch| {
-        shade(
-            level,
-            items,
-            index,
-            clear,
-            band,
-            w,
-            y0,
-            h,
-            scratch,
-            peak,
-            has_backdrop,
-            Some(meter),
-        )
-    })?;
+    for_each_band(
+        fb,
+        w,
+        h,
+        index.coverage_capacity(has_backdrop),
+        meter,
+        |y0, band, scratch| {
+            shade(
+                level,
+                items,
+                index,
+                clear,
+                band,
+                w,
+                y0,
+                h,
+                scratch,
+                peak,
+                has_backdrop,
+                Some(meter),
+            )
+        },
+    )?;
     Ok(stats)
 }
 
@@ -2021,28 +2039,35 @@ pub fn render_bands_f16(
     let meter = &*meter;
     let index = &*index;
     let stats = stats(items);
-    for_each_band(out, w, h, meter, |y0, out_slice, scratch| {
-        let mut band_px = scratch.buffers.take_color(out_slice.len());
-        let result = shade(
-            level,
-            items,
-            index,
-            clear,
-            &mut band_px,
-            w,
-            y0,
-            h,
-            scratch,
-            peak,
-            has_backdrop,
-            Some(meter),
-        );
-        if result.is_ok() {
-            store_f16(out_slice, &band_px);
-        }
-        scratch.buffers.give_color(band_px);
-        result
-    })?;
+    for_each_band(
+        out,
+        w,
+        h,
+        index.coverage_capacity(has_backdrop),
+        meter,
+        |y0, out_slice, scratch| {
+            let mut band_px = scratch.buffers.take_color(out_slice.len());
+            let result = shade(
+                level,
+                items,
+                index,
+                clear,
+                &mut band_px,
+                w,
+                y0,
+                h,
+                scratch,
+                peak,
+                has_backdrop,
+                Some(meter),
+            );
+            if result.is_ok() {
+                store_f16(out_slice, &band_px);
+            }
+            scratch.buffers.give_color(band_px);
+            result
+        },
+    )?;
     Ok(stats)
 }
 
@@ -2071,7 +2096,7 @@ pub fn render_bands_stream(
     let (w, h) = size;
     meter.record_index(index.heap_bytes());
     let meter = &*meter;
-    let mut scratch = Scratch::new(Some(meter));
+    let mut scratch = Scratch::new(Some(meter), w, index.coverage_capacity(has_backdrop));
     let mut band_px = scratch.buffers.take_color(w * h.min(BAND_H));
     let mut y0 = 0;
     while y0 < h {
@@ -2290,7 +2315,8 @@ fn run<S: Simd>(
                 let top = band.y0.saturating_sub(*apron);
                 let bottom = y1.saturating_add(*apron).min(h);
                 let mut window = buffers.take_color(band.w * (bottom - top));
-                let coverage = buffers.take_coverage();
+                let coverage =
+                    buffers.take_coverage(band.w, index.coverage_capacity(true), bottom - top);
                 let mut nested = buffers.take_sel_items(depth, ctx.meter);
                 index.query_items(i + 1..scope_end, (top, bottom), &mut nested);
                 buffers.charge_sel_items(depth, &nested, ctx.meter);

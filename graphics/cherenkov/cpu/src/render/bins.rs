@@ -435,6 +435,20 @@ pub struct FrameIndex {
 }
 
 impl FrameIndex {
+    /// Largest selection consumed by a compiler in this pass.
+    pub fn coverage_capacity(&self, windowed: bool) -> usize {
+        if windowed {
+            self.sources.iter().map(EdgeTiles::len).max().unwrap_or(0)
+        } else {
+            self.edges
+                .off
+                .windows(2)
+                .map(|pair| pair[1] - pair[0])
+                .max()
+                .unwrap_or(0)
+        }
+    }
+
     /// Rebuilds the bins for `items` over the band grid of an `h`-row
     /// surface. Called once per `render_bands*` before the parallel
     /// band pass reads the tables.
