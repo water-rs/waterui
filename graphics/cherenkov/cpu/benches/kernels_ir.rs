@@ -18,8 +18,10 @@
 //! cargo bench -p cherenkov-cpu --features testing --bench kernels_ir
 //! ```
 
+#[cfg(not(target_arch = "wasm32"))]
 mod cases;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod kernels_bench {
     use std::hint::black_box;
     use std::mem::MaybeUninit;
@@ -137,7 +139,14 @@ mod kernels_bench {
     );
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 use gungraun::main;
+#[cfg(not(target_arch = "wasm32"))]
 use kernels_bench::kernels;
 
+#[cfg(not(target_arch = "wasm32"))]
 main!(library_benchmark_groups = kernels);
+
+// `harness = false` still needs a `main` to link on wasm32.
+#[cfg(target_arch = "wasm32")]
+fn main() {}
