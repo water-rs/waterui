@@ -58,8 +58,10 @@ pub struct ImagePaintData {
 /// parameters the evaluator needs.
 #[derive(Clone, Debug)]
 pub enum PaintData {
-    /// A shared prepared paint and its shape-to-paint coordinate map.
-    Transformed(std::sync::Arc<Self>, Affine),
+    /// A shared prepared paint, its shape-to-paint coordinate map and
+    /// that map's f32 conversion behind the link's `Arc`, stored so
+    /// evaluators never reconvert.
+    Transformed(std::sync::Arc<TransformedPaint>),
     /// Prepared bilinear patches shared across placements.
     Mesh(super::mesh::Mesh),
     /// A registered image pattern.
@@ -84,18 +86,7 @@ pub enum PaintData {
     /// Premultiplied solid colour.
     Solid([f32; 4]),
     /// A linear gradient.
-    Linear {
-        /// Device-to-content transform.
-        inv: [f32; 6],
-        /// Start and end points in content space.
-        end_points: [f32; 4],
-        /// Sorted stops.
-        stops: std::sync::Arc<[Stop]>,
-        /// The continuation mode.
-        extend: Extend,
-        /// The interpolation space.
-        interpolation: Interpolation,
-    },
+    Linear(LinearPaint),
     /// A two-point radial gradient.
     Radial {
         /// Device-to-content transform.
@@ -114,6 +105,52 @@ pub enum PaintData {
         /// The interpolation space.
         interpolation: Interpolation,
     },
+}
+
+/// A [`PaintData::Linear`] payload: the resolved parameters the
+/// evaluators share, with the projection decided once at lowering.
+#[derive(Clone, Debug)]
+pub struct LinearPaint {
+    /// Device-to-content transform.
+    pub inv: [f32; 6],
+    /// The projection's span constants; `None` for a degenerate
+    /// gradient (`len2 == 0.0`), whose parameter is fixed at 0.
+    pub project: Option<Project>,
+    /// Sorted stops.
+    pub stops: std::sync::Arc<[Stop]>,
+    /// The continuation mode.
+    pub extend: Extend,
+    /// The interpolation space.
+    pub interpolation: Interpolation,
+}
+
+/// The non-degenerate linear projection's span constants.
+#[derive(Clone, Copy, Debug)]
+pub struct Project {
+    /// The start point in content space.
+    pub sx: f32,
+    /// The start point's y.
+    pub sy: f32,
+    /// The start-to-end x delta.
+    pub ddx: f32,
+    /// The start-to-end y delta.
+    pub ddy: f32,
+    /// The line's squared length.
+    pub len2: f32,
+}
+
+/// A [`PaintData::Transformed`] link's payload: the prepared inner
+/// paint and its shape-to-paint coordinate map in both precisions.
+/// Kept behind the variant's `Arc` so `PaintData` — and the lowered
+/// item embedding it — stays a pointer wide.
+#[derive(Clone, Debug)]
+pub struct TransformedPaint {
+    /// The prepared inner paint.
+    pub paint: PaintData,
+    /// The shape-to-paint coordinate map.
+    pub inverse: Affine,
+    /// `inverse` converted to f32 once at lowering.
+    pub inverse_f32: [f32; 6],
 }
 
 /// An affine as six f32 coefficients `[a, b, c, d, e, f]`.
@@ -271,24 +308,40 @@ pub fn paint_data(
                 return paint_data(inner, inv, images);
             }
             let inner = paint_data(inner, Affine::IDENTITY, images)?;
-            PaintData::Transformed(std::sync::Arc::new(inner), inverse * inv)
+            let inverse = inverse * inv;
+            PaintData::Transformed(std::sync::Arc::new(TransformedPaint {
+                paint: inner,
+                inverse,
+                inverse_f32: affine_f32(inverse),
+            }))
         }
         Paint::Solid(c) => {
             let [r, g, b, a] = c.components;
             PaintData::Solid([r * a, g * a, b * a, a])
         }
-        Paint::Linear(g) => PaintData::Linear {
-            inv: affine_f32(inv),
-            end_points: [
+        Paint::Linear(g) => {
+            let (sx, sy, ex, ey) = (
                 f32_f64(g.start.x),
                 f32_f64(g.start.y),
                 f32_f64(g.end.x),
                 f32_f64(g.end.y),
-            ],
-            stops: stops(&g.stops, g.interpolation),
-            extend: g.extend,
-            interpolation: g.interpolation,
-        },
+            );
+            let (ddx, ddy) = (ex - sx, ey - sy);
+            let len2 = ddy.mul_add(ddy, ddx * ddx);
+            PaintData::Linear(LinearPaint {
+                inv: affine_f32(inv),
+                project: (len2 != 0.0).then_some(Project {
+                    sx,
+                    sy,
+                    ddx,
+                    ddy,
+                    len2,
+                }),
+                stops: stops(&g.stops, g.interpolation),
+                extend: g.extend,
+                interpolation: g.interpolation,
+            })
+        }
         Paint::Radial(g) => {
             let identical = g.has_identical_circles();
             if identical && matches!(g.extend, Extend::Repeat | Extend::Reflect) {
@@ -526,11 +579,14 @@ impl PaintData {
     pub fn transformed(&self, transform: Affine) -> Self {
         let mut paint = self.clone();
         match &mut paint {
-            Self::Transformed(inner, inverse) => return inner.transformed(*inverse * transform),
+            Self::Transformed(link) => {
+                return link.paint.transformed(link.inverse * transform);
+            }
             Self::Solid(_) => {}
             Self::Mesh(mesh) => *mesh = mesh.transformed(transform),
             Self::Image(image) => image.inv = affine_f32(image.mapping * transform),
-            Self::Linear { inv, .. } | Self::Radial { inv, .. } | Self::Sweep { inv, .. } => {
+            Self::Linear(linear) => linear.inv = affine_f32(transform),
+            Self::Radial { inv, .. } | Self::Sweep { inv, .. } => {
                 *inv = affine_f32(transform);
             }
         }
@@ -558,8 +614,8 @@ impl PaintData {
     fn evaluate<O: PaintOutput>(&self, output: O) -> O::Output {
         if matches!(self, Self::Transformed(..)) {
             let mut leaf = self;
-            while let Self::Transformed(inner, _) = leaf {
-                leaf = inner;
+            while let Self::Transformed(link) = leaf {
+                leaf = &link.paint;
             }
             leaf.evaluate_leaf(TransformedOutput {
                 output,
@@ -615,22 +671,7 @@ impl PaintData {
                 extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
             }),
 
-            Self::Linear {
-                inv,
-                end_points,
-                stops,
-                extend,
-                interpolation,
-            } => output.linear(
-                self,
-                Linear {
-                    inv: *inv,
-                    end_points: *end_points,
-                    stops,
-                    extend: *extend,
-                    interpolation: *interpolation,
-                },
-            ),
+            Self::Linear(p) => output.linear(self, p),
             Self::Radial {
                 inv,
                 centres,
@@ -683,23 +724,7 @@ trait PaintOutput: Sized {
     /// chain whose inverses apply before `params.inv` — for a leaf
     /// reached directly it is the leaf itself and the walk finds no
     /// links.
-    fn linear(self, outer: &PaintData, params: Linear<'_>) -> Self::Output;
-}
-
-/// The resolved `PaintData::Linear` fields a `linear` output consumes,
-/// named so the span kernel and the scalar evaluator share them.
-#[derive(Clone, Copy)]
-pub(super) struct Linear<'a> {
-    /// Device-to-content transform.
-    pub(super) inv: [f32; 6],
-    /// Start and end points in content space.
-    pub(super) end_points: [f32; 4],
-    /// Sorted stops.
-    pub(super) stops: &'a [Stop],
-    /// The continuation mode.
-    pub(super) extend: Extend,
-    /// The interpolation space.
-    pub(super) interpolation: Interpolation,
+    fn linear(self, outer: &PaintData, params: &LinearPaint) -> Self::Output;
 }
 
 /// The linear leaf's scalar evaluation: `outer`'s transform chain, then
@@ -711,23 +736,18 @@ pub(super) struct Linear<'a> {
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn linear_at(outer: &PaintData, params: &Linear<'_>, mut x: f32, mut y: f32) -> [f32; 4] {
+fn linear_at(outer: &PaintData, params: &LinearPaint, mut x: f32, mut y: f32) -> [f32; 4] {
     let mut link = outer;
-    while let PaintData::Transformed(inner, inverse) = link {
-        (x, y) = apply(affine_f32(*inverse), x, y);
-        link = inner;
+    while let PaintData::Transformed(inner) = link {
+        (x, y) = apply(inner.inverse_f32, x, y);
+        link = &inner.paint;
     }
     let (px, py) = apply(params.inv, x, y);
-    let (sx, sy, ex, ey) = params.end_points.into();
-    let (ddx, ddy) = (ex - sx, ey - sy);
-    let len2 = ddy.mul_add(ddy, ddx * ddx);
-    let t = if len2 == 0.0 {
-        0.0
-    } else {
-        (py - sy).mul_add(ddy, (px - sx) * ddx) / len2
-    };
+    let t = params.project.map_or(0.0, |p| {
+        (py - p.sy).mul_add(p.ddy, (px - p.sx) * p.ddx) / p.len2
+    });
     extend_t(t, params.extend).map_or([0.0; 4], |t| {
-        eval_stops(params.stops, t, params.interpolation)
+        eval_stops(&params.stops, t, params.interpolation)
     })
 }
 
@@ -749,9 +769,9 @@ impl<O: PaintOutput> PaintOutput for TransformedOutput<'_, O> {
     fn sample(self, mut evaluate: impl FnMut(f32, f32) -> [f32; 4]) -> Self::Output {
         self.output.sample(|mut x, mut y| {
             let mut paint = self.paint;
-            while let PaintData::Transformed(inner, inverse) = paint {
-                (x, y) = apply(affine_f32(*inverse), x, y);
-                paint = inner;
+            while let PaintData::Transformed(inner) = paint {
+                (x, y) = apply(inner.inverse_f32, x, y);
+                paint = &inner.paint;
             }
             evaluate(x, y)
         })
@@ -773,7 +793,7 @@ impl<O: PaintOutput> PaintOutput for TransformedOutput<'_, O> {
         reason = "compiled under the dispatched CPU level"
     )]
     #[inline(always)]
-    fn linear(self, _outer: &PaintData, params: Linear<'_>) -> Self::Output {
+    fn linear(self, _outer: &PaintData, params: &LinearPaint) -> Self::Output {
         self.output.linear(self.paint, params)
     }
 }
@@ -811,8 +831,8 @@ impl PaintOutput for PixelCenter {
         reason = "compiled under the dispatched CPU level"
     )]
     #[inline(always)]
-    fn linear(self, outer: &PaintData, params: Linear<'_>) -> Self::Output {
-        linear_at(outer, &params, self.dx, self.dy)
+    fn linear(self, outer: &PaintData, params: &LinearPaint) -> Self::Output {
+        linear_at(outer, params, self.dx, self.dy)
     }
 }
 
@@ -836,8 +856,11 @@ impl<'a, S: Simd> PaintOutput for PixelSpan<'a, S> {
     )]
     #[inline(always)]
     fn sample(self, mut evaluate: impl FnMut(f32, f32) -> [f32; 4]) -> Self::Output {
-        for (i, pixel) in self.out.iter_mut().enumerate() {
-            pixel.write(evaluate((self.x0 + i) as f32 + 0.5, self.py as f32 + 0.5));
+        let y = self.py as f32 + 0.5;
+        let mut x = self.x0 as f32 + 0.5;
+        for pixel in self.out.iter_mut() {
+            pixel.write(evaluate(x, y));
+            x += 1.0;
         }
         // SAFETY: every element was written by the loop above.
         unsafe { self.out.assume_init_mut() }
@@ -883,8 +906,8 @@ impl<'a, S: Simd> PaintOutput for PixelSpan<'a, S> {
         reason = "compiled under the dispatched CPU level"
     )]
     #[inline(always)]
-    fn linear(self, outer: &PaintData, params: Linear<'_>) -> Self::Output {
-        super::gradient::linear_span(self.simd, outer, &params, self.x0, self.py, self.out)
+    fn linear(self, outer: &PaintData, params: &LinearPaint) -> Self::Output {
+        super::gradient::linear_span(self.simd, outer, params, self.x0, self.py, self.out)
     }
 }
 
@@ -1068,9 +1091,9 @@ mod tests {
     }
 
     fn scalar_reference(paint: &PaintData, x: f32, y: f32) -> [f32; 4] {
-        if let PaintData::Transformed(inner, inverse) = paint {
-            let (x, y) = super::apply(super::affine_f32(*inverse), x, y);
-            scalar_reference(inner, x, y)
+        if let PaintData::Transformed(link) = paint {
+            let (x, y) = super::apply(link.inverse_f32, x, y);
+            scalar_reference(&link.paint, x, y)
         } else {
             paint.eval(x, y)
         }

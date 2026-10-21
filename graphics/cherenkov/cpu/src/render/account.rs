@@ -6,7 +6,7 @@ use std::mem::size_of;
 use cherenkov::kurbo::PathEl;
 
 use super::lower::{ContentData, Emission, Item, clip_bytes};
-use super::paint::PaintData;
+use super::paint::{PaintData, TransformedPaint};
 use super::prepared::Op;
 
 /// The categories `memory()` reports; the sums feed the report table.
@@ -154,13 +154,14 @@ fn paint_bytes(paint: &cherenkov::Paint) -> u64 {
 /// pixels are counted against `images`, not here.
 fn paint_data_bytes(paint: &PaintData) -> u64 {
     match paint {
-        PaintData::Linear { stops, .. }
-        | PaintData::Radial { stops, .. }
-        | PaintData::Sweep { stops, .. } => (stops.len() * size_of::<super::paint::Stop>()) as u64,
+        PaintData::Linear(linear) => (linear.stops.len() * size_of::<super::paint::Stop>()) as u64,
+        PaintData::Radial { stops, .. } | PaintData::Sweep { stops, .. } => {
+            (stops.len() * size_of::<super::paint::Stop>()) as u64
+        }
         PaintData::Mesh(mesh) => mesh.heap_bytes(),
         PaintData::Image(data) => size_of_val(&**data) as u64,
-        PaintData::Transformed(inner, _) => {
-            size_of::<PaintData>() as u64 + paint_data_bytes(inner.as_ref())
+        PaintData::Transformed(link) => {
+            size_of::<TransformedPaint>() as u64 + paint_data_bytes(&link.paint)
         }
         PaintData::Solid(_) => 0,
     }
