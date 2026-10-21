@@ -1,6 +1,6 @@
 //! Four-pixel evaluation of the existing analytic shadow quadrature.
 
-use fearless_simd::{Simd, f32x4};
+use fearless_simd::{Simd, SimdBase, f32x4};
 
 /// One in-box y sample's horizontal interval and Gaussian weight.
 #[derive(Clone, Copy, Default)]
@@ -42,12 +42,10 @@ pub(super) fn erf4<S: Simd>(simd: S, x: f32x4<S>) -> f32x4<S> {
     // The typed array is the boundary between runtime-dispatched arithmetic
     // and wide's maintained exponential implementation; no approximation is
     // copied into the renderer.
-    let exponential: [f32; 4] = wide::f32x4::from(simd.as_array_f32x4(argument))
-        .exp()
-        .into();
-    let exponential = simd.load_array_f32x4(exponential);
+    let exponential: [f32; 4] = wide::f32x4::from(argument.to_array()).exp().into();
+    let exponential = f32x4::load_array(simd, exponential);
     let y = simd.sub_f32x4(one, simd.mul_f32x4(simd.mul_f32x4(p, t), exponential));
-    let sign = simd.load_array_f32x4(simd.as_array_f32x4(x).map(f32::signum));
+    let sign = f32x4::load_array(simd, x.to_array().map(f32::signum));
     simd.mul_f32x4(sign, y)
 }
 

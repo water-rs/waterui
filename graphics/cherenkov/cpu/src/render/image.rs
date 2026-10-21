@@ -23,7 +23,7 @@ use std::mem::MaybeUninit;
 use cherenkov::{
     Extend, ImageColorSpace, ImageFormat, ImageUpload, ResourceError, Sampling, srgb_decode,
 };
-use fearless_simd::{Select, Simd, SimdFloat, f32x4, f32x16, u32x16};
+use fearless_simd::{Select, Simd, SimdBase, SimdFloat, SimdInterleaved, f32x4, f32x16, u32x16};
 
 use super::paint::{ImagePaintData, PaintData};
 use super::span::{
@@ -317,11 +317,7 @@ pub(super) fn linear_taps(d: f32, dim: usize) -> (usize, usize, f32) {
 fn deinterleave_block<S: Simd>(simd: S, stage: &[f32; 64]) -> [f32x16<S>; 4] {
     let mut quarters = [[simd.splat_f32x4(0.0); 4]; 4];
     for (k, group) in stage.as_chunks::<16>().0.iter().enumerate() {
-        let group = simd.load_interleaved_128_f32x16(group);
-        let (lo, hi) = simd.split_f32x16(group);
-        let (q0, q1) = simd.split_f32x8(lo);
-        let (q2, q3) = simd.split_f32x8(hi);
-        quarters[k] = [q0, q1, q2, q3];
+        quarters[k] = f32x4::load_four_interleaved(simd, group);
     }
     let mut px = [simd.splat_f32x16(0.0); 4];
     for (ch, out) in px.iter_mut().enumerate() {
@@ -344,13 +340,8 @@ fn deinterleave_block<S: Simd>(simd: S, stage: &[f32; 64]) -> [f32x16<S>; 4] {
 #[inline(always)]
 fn gather_block<S: Simd>(simd: S, img: &CpuImage, idx: u32x16<S>) -> [f32x16<S>; 4] {
     let mut stage = [0.0f32; 64];
-    for (slot, i) in stage
-        .as_chunks_mut::<4>()
-        .0
-        .iter_mut()
-        .zip(simd.as_array_ref_u32x16(&idx))
-    {
-        *slot = img.pixels[*i as usize];
+    for (slot, i) in stage.as_chunks_mut::<4>().0.iter_mut().zip(idx.to_array()) {
+        *slot = img.pixels[i as usize];
     }
     deinterleave_block(simd, &stage)
 }
@@ -467,18 +458,19 @@ fn extend_lane<S: Simd>(simd: S, t: f32, extend: Extend) -> (f32, bool) {
 fn sample_pixel<S: Simd>(simd: S, img: &CpuImage, u: f32, v: f32, sampling: Sampling) -> f32x4<S> {
     let (w, h) = (img.width as usize, img.height as usize);
     match sampling {
-        Sampling::Nearest => {
-            simd.load_array_f32x4(img.pixels[nearest_texel(v, h) * w + nearest_texel(u, w)])
-        }
+        Sampling::Nearest => f32x4::load_array(
+            simd,
+            img.pixels[nearest_texel(v, h) * w + nearest_texel(u, w)],
+        ),
         Sampling::Linear => {
             let (x0, x1, fx) = linear_taps(u, w);
             let (y0, y1, fy) = linear_taps(v, h);
             let tx = simd.splat_f32x4(fx);
             let ty = simd.splat_f32x4(fy);
-            let c00 = simd.load_array_f32x4(img.pixels[y0 * w + x0]);
-            let c10 = simd.load_array_f32x4(img.pixels[y0 * w + x1]);
-            let c01 = simd.load_array_f32x4(img.pixels[y1 * w + x0]);
-            let c11 = simd.load_array_f32x4(img.pixels[y1 * w + x1]);
+            let c00 = f32x4::load_array(simd, img.pixels[y0 * w + x0]);
+            let c10 = f32x4::load_array(simd, img.pixels[y0 * w + x1]);
+            let c01 = f32x4::load_array(simd, img.pixels[y1 * w + x0]);
+            let c11 = f32x4::load_array(simd, img.pixels[y1 * w + x1]);
             let top = tx.mul_add(c10 - c00, c00);
             let bot = tx.mul_add(c11 - c01, c01);
             ty.mul_add(bot - top, top)
@@ -565,8 +557,8 @@ fn eval_pixel<S: Simd, const CHAINED: bool>(
         }
     }
     let (cx, cy) = apply_span(simd, eval.inv, cx, cy);
-    let (tx, in_x) = extend_lane(simd, cx[0] / eval.iw, eval.extend_x);
-    let (ty, in_y) = extend_lane(simd, cy[0] / eval.ih, eval.extend_y);
+    let (tx, in_x) = extend_lane(simd, cx.to_array()[0] / eval.iw, eval.extend_x);
+    let (ty, in_y) = extend_lane(simd, cy.to_array()[0] / eval.ih, eval.extend_y);
     if !(in_x && in_y) {
         return simd.splat_f32x4(0.0);
     }
@@ -589,9 +581,7 @@ fn eval_pixels<S: Simd, const CHAINED: bool>(
 ) {
     for px in out.iter_mut() {
         // SAFETY: the store writes all four lanes of `px`.
-        simd.store_array_f32x4(eval_pixel::<S, CHAINED>(simd, eval, x, y), unsafe {
-            &mut *px.as_mut_ptr()
-        });
+        eval_pixel::<S, CHAINED>(simd, eval, x, y).store_array(unsafe { &mut *px.as_mut_ptr() });
         x += 1.0;
     }
 }
