@@ -51,14 +51,15 @@ pub(super) fn scale_binding(pass: &PassPlan) -> u32 {
 pub(super) const ENTRY_POINT: &str = "main";
 
 /// Adds `pass`'s fragment entry point, and the bindings it reads, to a copy
-/// of the composed module, and validates the result.
+/// of the composed module, and validates the result. Returns the module and
+/// its WGSL, which identifies the pass's shader to the pipeline cache.
 pub(super) fn pass_module(
     composed: &Module,
     capabilities: Capabilities,
     index: usize,
     pass: &PassPlan,
     resizes_output: bool,
-) -> Result<Module, EffectSetupError> {
+) -> Result<(Module, String), EffectSetupError> {
     let mut module = composed.clone();
     let segment = module
         .functions
@@ -143,11 +144,13 @@ pub(super) fn pass_module(
         incoming_ray_payload: None,
     });
 
-    validate(&module, capabilities).map_err(|error| EffectSetupError::PassValidation {
+    let invalid = |error: cherenkov_shader::EmitError| EffectSetupError::PassValidation {
         pass: index,
         message: error.to_string(),
-    })?;
-    Ok(module)
+    };
+    let info = validate(&module, capabilities).map_err(invalid)?;
+    let wgsl = cherenkov_shader::wgsl(&module, &info).map_err(invalid)?;
+    Ok((module, wgsl))
 }
 
 fn fragment_pixel(module: &mut Module, builder: &mut FunctionBuilder) -> Handle<Expression> {

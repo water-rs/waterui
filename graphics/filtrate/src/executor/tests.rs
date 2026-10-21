@@ -19,9 +19,9 @@ use crate::{
     AnimatedCallback, AnimatedTarget, AuxSource, ColorFilter, ColorStage, CpuFilter, CpuImage,
     CpuKernel, Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput,
     EffectRenderError, EffectSetupError, Filter, FilterExt, FilterParam, Footprint, ImageVisitor,
-    Interpolator, OperatingSpace, ParamArray, ParamSource, Placed, ShaderEffect, ShapeInput,
-    ShapeTextures, SpatialFilter, SpatialStage, StageCollector, WatchGuard, WorkingSpace, filters,
-    kind,
+    Interpolator, OperatingSpace, ParamArray, ParamSource, PipelineCache, Placed, ShaderEffect,
+    ShapeInput, ShapeTextures, SpatialFilter, SpatialStage, StageCollector, WatchGuard,
+    WorkingSpace, filters, kind,
 };
 use filtrate_core::space::{
     P3_TO_SRGB, SRGB_TO_P3, from_srgb, srgb_decode, srgb_encode, to_srgb, transform,
@@ -1002,6 +1002,7 @@ fn a_divergent_distortion_scale_spans_the_extent() {
 struct TestGpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    pipelines: PipelineCache,
 }
 
 fn create_test_device() -> TestGpu {
@@ -1018,7 +1019,11 @@ fn create_test_device() -> TestGpu {
     let (device, queue) =
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
             .expect("filter GPU tests require a working device");
-    TestGpu { device, queue }
+    TestGpu {
+        device,
+        queue,
+        pipelines: PipelineCache::new(),
+    }
 }
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -1245,6 +1250,7 @@ fn setup_format<E: Effect>(
     let ctx = EffectContext {
         device: &gpu.device,
         queue: &gpu.queue,
+        pipelines: &gpu.pipelines,
         input_format,
         output_format,
     };
@@ -1262,6 +1268,7 @@ fn setup_unfilterable<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static>(
     let ctx = EffectContext {
         device: &gpu.device,
         queue: &gpu.queue,
+        pipelines: &gpu.pipelines,
         input_format,
         output_format,
     };
@@ -1275,6 +1282,7 @@ fn setup_folded<F: Filter>(gpu: &TestGpu, executor: &mut Executor<F>) {
     let ctx = EffectContext {
         device: &gpu.device,
         queue: &gpu.queue,
+        pipelines: &gpu.pipelines,
         input_format: FORMAT,
         output_format: FORMAT,
     };
@@ -1378,6 +1386,25 @@ fn gpu_color_filter_executes_and_writes_output() {
         &rgba8_image(size, &[64, 64, 64, 255].repeat(64)),
         &rgba8_image(size, &output),
     );
+}
+
+#[test]
+fn gpu_identical_effects_share_pipelines() {
+    let gpu = create_test_device();
+    let chain = || filters::Saturation(1.4_f32).then(filters::HueRotation(60.0_f32));
+    let mut first = Executor::new(chain());
+    setup(&gpu, &mut first);
+    let pipelines = gpu.pipelines.count();
+    assert!(pipelines > 0);
+    // Parameters are uniforms, not part of the compiled pipeline.
+    let mut second =
+        Executor::new(filters::Saturation(0.5_f32).then(filters::HueRotation(10.0_f32)));
+    setup(&gpu, &mut second);
+    assert_eq!(gpu.pipelines.count(), pipelines);
+    // A different target format is a different pipeline.
+    let mut other = Executor::new(chain());
+    setup_format(&gpu, &mut other, FORMAT, wgpu::TextureFormat::Bgra8Unorm);
+    assert!(gpu.pipelines.count() > pipelines);
 }
 
 #[test]
@@ -1740,6 +1767,7 @@ fn setup_error<F: Filter>(gpu: &TestGpu, executor: &mut Executor<F>) -> EffectSe
     let ctx = EffectContext {
         device: &gpu.device,
         queue: &gpu.queue,
+        pipelines: &gpu.pipelines,
         input_format: FORMAT,
         output_format: FORMAT,
     };
@@ -2889,6 +2917,7 @@ fn setup_shader_effect(
     let ctx = EffectContext {
         device: &gpu.device,
         queue: &gpu.queue,
+        pipelines: &gpu.pipelines,
         input_format,
         output_format: FORMAT,
     };
@@ -3073,6 +3102,7 @@ fn gpu_shader_effect_sampling_requires_a_filterable_input() {
     let ctx = EffectContext {
         device: &gpu.device,
         queue: &gpu.queue,
+        pipelines: &gpu.pipelines,
         input_format: unfilterable,
         output_format: FORMAT,
     };
