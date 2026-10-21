@@ -1708,29 +1708,54 @@ fn composite_runs<S: Simd>(
     space: cherenkov::BlendSpace,
     src: &mut [MaybeUninit<[f32; 4]>],
 ) {
+    if let PaintData::Solid(c) = paint {
+        let c = *c;
+        // The solid kernel runs in a function of its own, entered through
+        // `vectorize`, so its register allocation never depends on the span
+        // evaluators the other arm inlines, and it compiles under the
+        // level's target features.
+        simd.vectorize(
+            #[inline(always)]
+            || {
+                nonzero_chunks(cov, |x, n| {
+                    composite_solid(
+                        simd,
+                        &mut dst[x0 + x..x0 + x + n],
+                        &cov[x..x + n],
+                        ClipRun::new(clip, w, x0 + x, py),
+                        c,
+                        space,
+                    );
+                });
+            },
+        );
+    } else {
+        nonzero_chunks(cov, |x, n| {
+            composite_span(
+                simd,
+                &mut dst[x0 + x..x0 + x + n],
+                paint.eval_span(simd, x0 + x, py, &mut src[..n]),
+                &cov[x..x + n],
+                ClipRun::new(clip, w, x0 + x, py),
+                space,
+            );
+        });
+    }
+}
+
+/// Calls `f(x, n)` for each piece `x..x + n` of at most `SPAN_CHUNK`
+/// pixels of every nonzero run of `cov`.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn nonzero_chunks(cov: &[f32], mut f: impl FnMut(usize, usize)) {
     nonzero_runs(cov, |r0, r1| {
         let mut x = r0;
         while x < r1 {
             let n = (r1 - x).min(SPAN_CHUNK);
-            let clip = ClipRun::new(clip, w, x0 + x, py);
-            match paint {
-                PaintData::Solid(c) => composite_solid(
-                    simd,
-                    &mut dst[x0 + x..x0 + x + n],
-                    &cov[x..x + n],
-                    clip,
-                    *c,
-                    space,
-                ),
-                _ => composite_span(
-                    simd,
-                    &mut dst[x0 + x..x0 + x + n],
-                    paint.eval_span(simd, x0 + x, py, &mut src[..n]),
-                    &cov[x..x + n],
-                    clip,
-                    space,
-                ),
-            }
+            f(x, n);
             x += n;
         }
     });
