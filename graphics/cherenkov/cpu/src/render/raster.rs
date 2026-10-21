@@ -460,10 +460,10 @@ impl Meter {
 
 impl<'a> Scratch<'a> {
     /// An empty working set; buffers grow to band size on first use.
-    pub fn new(meter: Option<&'a FrameMeter>, width: usize, edges: usize) -> Self {
+    pub fn new(meter: Option<&'a FrameMeter>, width: usize, edges: bool) -> Self {
         let mut coverage = Compiler::default();
-        if edges > 0 {
-            coverage.reserve(width, edges, BAND_H);
+        if edges {
+            coverage.reserve(width, BAND_H);
         }
         Self {
             coverage,
@@ -518,9 +518,9 @@ impl Buffers {
         self.free.push(buf);
     }
 
-    fn take_coverage(&mut self, width: usize, edges: usize, height: usize) -> Compiler {
+    fn take_coverage(&mut self, width: usize, height: usize) -> Compiler {
         let mut compiler = self.coverage.pop().unwrap_or_default();
-        compiler.reserve(width, edges, height);
+        compiler.reserve(width, height);
         compiler
     }
 
@@ -1929,7 +1929,7 @@ fn for_each_band<T: Send>(
     output: &mut [T],
     w: usize,
     h: usize,
-    edges: usize,
+    edges: bool,
     meter: &FrameMeter,
     shade_band: impl Fn(usize, &mut [T], &mut Scratch<'_>) -> Result<(), cherenkov::RenderError> + Sync,
 ) -> Result<(), cherenkov::RenderError> {
@@ -1979,29 +1979,22 @@ pub fn render_bands(
     let meter = &*meter;
     let index = &*index;
     let stats = stats(items);
-    for_each_band(
-        fb,
-        w,
-        h,
-        index.coverage_capacity(has_backdrop),
-        meter,
-        |y0, band, scratch| {
-            shade(
-                level,
-                items,
-                index,
-                clear,
-                band,
-                w,
-                y0,
-                h,
-                scratch,
-                peak,
-                has_backdrop,
-                Some(meter),
-            )
-        },
-    )?;
+    for_each_band(fb, w, h, index.has_edges(), meter, |y0, band, scratch| {
+        shade(
+            level,
+            items,
+            index,
+            clear,
+            band,
+            w,
+            y0,
+            h,
+            scratch,
+            peak,
+            has_backdrop,
+            Some(meter),
+        )
+    })?;
     Ok(stats)
 }
 
@@ -2032,7 +2025,7 @@ pub fn render_bands_f16(
         out,
         w,
         h,
-        index.coverage_capacity(has_backdrop),
+        index.has_edges(),
         meter,
         |y0, out_slice, scratch| {
             let mut band_px = scratch.buffers.take_color(out_slice.len());
@@ -2085,7 +2078,7 @@ pub fn render_bands_stream(
     let (w, h) = size;
     meter.record_index(index.heap_bytes());
     let meter = &*meter;
-    let mut scratch = Scratch::new(Some(meter), w, index.coverage_capacity(has_backdrop));
+    let mut scratch = Scratch::new(Some(meter), w, index.has_edges());
     let mut band_px = scratch.buffers.take_color(w * h.min(BAND_H));
     let mut y0 = 0;
     while y0 < h {
@@ -2298,8 +2291,7 @@ fn run<S: Simd>(
                 let top = band.y0.saturating_sub(*apron);
                 let bottom = y1.saturating_add(*apron).min(h);
                 let mut window = buffers.take_color(band.w * (bottom - top));
-                let coverage =
-                    buffers.take_coverage(band.w, index.coverage_capacity(true), bottom - top);
+                let coverage = buffers.take_coverage(band.w, bottom - top);
                 let mut nested = buffers.take_sel_items(depth, ctx.meter);
                 index.query_items(i + 1..scope_end, (top, bottom), &mut nested);
                 buffers.charge_sel_items(depth, &nested, ctx.meter);

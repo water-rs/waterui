@@ -700,8 +700,25 @@ impl<'a> TileCursor<'a> {
         reason = "packed endpoint distances are u32 lanes"
     )]
     fn limit(&mut self, i: usize, mut edge: IntegerEdge) -> IntegerEdge {
-        while self.cut < self.cuts.len() && self.cuts[self.cut] < i as u64 {
+        if self.cut < self.cuts.len() && self.cuts[self.cut] < i as u64 {
             self.cut += 2;
+            let mut lo = self.cut / 2;
+            let mut hi = lo;
+            let mut step = 1;
+            while hi < self.cuts.len() / 2 && self.cuts[hi * 2] < i as u64 {
+                lo = hi + 1;
+                hi = (hi + step).min(self.cuts.len() / 2);
+                step *= 2;
+            }
+            while lo < hi {
+                let middle = lo + (hi - lo) / 2;
+                if self.cuts[middle * 2] < i as u64 {
+                    lo = middle + 1;
+                } else {
+                    hi = middle;
+                }
+            }
+            self.cut = lo * 2;
         }
         if self.cut < self.cuts.len() && self.cuts[self.cut] == i as u64 {
             let limits = self.cuts[self.cut + 1];

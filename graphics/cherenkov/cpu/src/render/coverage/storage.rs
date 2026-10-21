@@ -5,13 +5,13 @@ use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
 #[derive(Debug)]
-pub(super) struct Table<T: Copy> {
+pub(super) struct Table<T> {
     data: NonNull<T>,
     len: usize,
     capacity: usize,
 }
 
-impl<T: Copy> Default for Table<T> {
+impl<T> Default for Table<T> {
     fn default() -> Self {
         Self {
             data: NonNull::dangling(),
@@ -23,13 +23,15 @@ impl<T: Copy> Default for Table<T> {
 
 // SAFETY: tables have one owner, and the backing allocation moves with
 // that owner. No reference survives a compiler operation or crosses workers.
-unsafe impl<T: Copy + Send> Send for Table<T> {}
+unsafe impl<T: Send> Send for Table<T> {}
 
-impl<T: Copy> Table<T> {
+impl<T> Table<T> {
     /// # Safety
     /// The supplied allocation outlives this table and is not resized while
     /// it is used. T has alignment at most u64, and its portion is disjoint
-    /// from all other tables. Only the initialized prefix is exposed.
+    /// from all other tables. Elements must not require destruction: the
+    /// backing allocation is released without running their destructors.
+    /// Only the initialized prefix is exposed.
     #[expect(
         clippy::mut_mut,
         reason = "advances the caller's remaining allocation slice"
@@ -45,10 +47,6 @@ impl<T: Copy> Table<T> {
         }
     }
 
-    pub(super) const fn clear(&mut self) {
-        self.len = 0;
-    }
-
     pub(super) const fn push(&mut self, value: T) {
         assert!(self.len < self.capacity, "coverage table capacity exceeded");
         // SAFETY: this slot is in the bound allocation and becomes initialized
@@ -59,7 +57,10 @@ impl<T: Copy> Table<T> {
         self.len += 1;
     }
 
-    pub(super) const fn resize(&mut self, len: usize, value: T) {
+    pub(super) const fn resize(&mut self, len: usize, value: T)
+    where
+        T: Copy,
+    {
         while self.len < len {
             self.push(value);
         }
@@ -67,7 +68,7 @@ impl<T: Copy> Table<T> {
     }
 }
 
-impl<T: Copy> Deref for Table<T> {
+impl<T> Deref for Table<T> {
     type Target = [T];
     fn deref(&self) -> &[T] {
         // SAFETY: the table's initialized prefix belongs to its live owner.
@@ -75,7 +76,7 @@ impl<T: Copy> Deref for Table<T> {
     }
 }
 
-impl<T: Copy> DerefMut for Table<T> {
+impl<T> DerefMut for Table<T> {
     fn deref_mut(&mut self) -> &mut [T] {
         // SAFETY: tables are disjoint and this borrow is exclusive.
         unsafe { std::slice::from_raw_parts_mut(self.data.as_ptr(), self.len) }

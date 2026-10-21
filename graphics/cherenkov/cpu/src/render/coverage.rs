@@ -187,33 +187,37 @@ impl RowCells {
     #[inline]
     fn boundary(&mut self, sign: i32, height: i32, xt: f64, xb: f64) {
         let (left, right) = (xt.min(xb), xt.max(xb));
-        let end_px = (right / 65536.0).clamp(0.0, self.width as f64);
-        let end = end_px as usize + usize::from(end_px > (end_px as usize) as f64);
-        let start = (left / 65536.0).clamp(0.0, self.width as f64) as usize;
         let signed_height = sign * height;
-        if right <= 0.0
-            || left >= self.width as f64 * 65536.0
-            || left == right && left == start as f64 * 65536.0
-        {
-            self.touch(end).cover += signed_height;
+        if right <= 0.0 {
+            self.touch(0).cover += signed_height;
             return;
         }
+        if left >= self.width as f64 * 65536.0 {
+            self.touch(self.width).cover += signed_height;
+            return;
+        }
+        // Most retained intervals fit a single pixel. Their trapezoid
+        // needs neither the general ramp nor an upper-column conversion.
+        // SAFETY: max(left, 0) is finite and in [0, width*65536); the
+        // surface width fits u16, so it fits usize on supported targets.
+        let start = unsafe { left.max(0.0).to_int_unchecked::<usize>() } >> 16;
+        if left >= 0.0 && right <= (start + 1) as f64 * 65536.0 {
+            let twice_area =
+                f64::from(signed_height) * (2.0 * (start as f64 + 1.0) * 65536.0 - xt - xb);
+            self.touch(start).partial += twice_area as f32 * (1.0 / 8_589_934_592.0);
+            self.touch(start + 1).cover += signed_height;
+            return;
+        }
+        let end_px = (right / 65536.0).clamp(0.0, self.width as f64);
+        let end = end_px as usize + usize::from(end_px > (end_px as usize) as f64);
         let end = end.max(start + usize::from(left == right));
-        if end <= start + 1 && left >= start as f64 * 65536.0 && right <= end as f64 * 65536.0 {
-            if start < self.width {
-                let twice_area =
-                    f64::from(signed_height) * (2.0 * (start as f64 + 1.0) * 65536.0 - xt - xb);
-                self.touch(start).partial += twice_area as f32 * (1.0 / 8_589_934_592.0);
-            }
-        } else {
-            let scale = f64::from(signed_height) / (65536.0 * (right - left));
-            for x in start..end {
-                let lo = (x as f64 * 65536.0).max(left);
-                let hi = ((x as f64 + 1.0) * 65536.0).min(right);
-                let ramp = (hi - lo) * ((lo - left) + (hi - left)) * 0.5;
-                let full = ((x as f64 + 1.0) * 65536.0 - hi) * (right - left);
-                self.touch(x).partial += ((ramp + full) * scale / 65536.0) as f32;
-            }
+        let scale = f64::from(signed_height) / (65536.0 * (right - left));
+        for x in start..end {
+            let lo = (x as f64 * 65536.0).max(left);
+            let hi = ((x as f64 + 1.0) * 65536.0).min(right);
+            let ramp = (hi - lo) * ((lo - left) + (hi - left)) * 0.5;
+            let full = ((x as f64 + 1.0) * 65536.0 - hi) * (right - left);
+            self.touch(x).partial += ((ramp + full) * scale / 65536.0) as f32;
         }
         self.touch(end).cover += signed_height;
     }
@@ -287,84 +291,45 @@ impl RowCells {
     }
 }
 
-/// The original integer line, rebased in y only. Retaining its slope
-/// avoids introducing a new line at every band and row cut.
-#[derive(Clone, Copy, Debug)]
-struct Segment {
-    x0: i64,
-    y0: i64,
-    dx: i64,
-    slope: f64,
-    dir: i32,
-    next: u32,
-    start: i64,
-    end: i64,
-}
-
-impl Segment {
-    #[inline]
-    fn deposit(&self, cells: &mut RowCells, sign: i32, top: i32, bottom: i32) {
-        if self.dx == 0 {
-            cells.vertical(sign, bottom - top, self.x0);
-        } else {
-            cells.boundary(sign, bottom - top, self.at(top), self.at(bottom));
-        }
-    }
-
-    #[expect(
-        clippy::cast_precision_loss,
-        clippy::suboptimal_flops,
-        reason = "placed coordinates and differences fit the f64 significand"
-    )]
-    fn at(self, y: i32) -> f64 {
-        (i64::from(y) - self.y0) as f64 * self.slope + self.x0 as f64
-    }
-}
-
-/// All storage belongs to one raster worker and is reused across draws.
+/// A worker's sparse band rows. Boundaries are decoded and integrated once,
+/// without staging another edge representation or maintaining active lists.
 #[derive(Debug, Default)]
 pub struct Compiler {
     storage: Vec<MaybeUninit<u64>>,
     width: usize,
-    capacity: usize,
     height: usize,
-    edges: Table<Segment>,
-    starts: Table<u32>,
-    active: u32,
-    cells: RowCells,
+    cells: Table<RowCells>,
 }
 
 impl Compiler {
-    /// Reserves one allocation for the largest band selection in a pass.
-    pub fn reserve(&mut self, width: usize, edges: usize, height: usize) {
-        if width <= self.width
-            && edges <= self.capacity
-            && height <= self.height
-            && !self.storage.is_empty()
-        {
+    /// Reserves one allocation for a band or filter window.
+    pub fn reserve(&mut self, width: usize, height: usize) {
+        if width <= self.width && height <= self.height && !self.storage.is_empty() {
             return;
         }
         self.width = self.width.max(width);
-        self.capacity = self.capacity.max(edges);
         self.height = self.height.max(height);
-        let n = self.capacity;
         let row = self.width + 1;
         let words = |count: usize, size: usize| (count * size).div_ceil(8);
-        let len = words(n, size_of::<Segment>())
-            + words(self.height, size_of::<u32>())
-            + words(row, size_of::<Cell>())
-            + row.div_ceil(64);
+        let len = words(self.height, size_of::<RowCells>())
+            + self.height * (words(row, size_of::<Cell>()) + row.div_ceil(64));
         self.storage.resize(len, MaybeUninit::uninit());
         let mut remaining = self.storage.as_mut_slice();
         // SAFETY: every table element has alignment at most u64.
         // bind partitions the live allocation into
         // disjoint tables. Only reserve resizes it, rebinding every table before
         // any subsequent use; no table reference survives this exclusive call.
+        // RowCells contains only non-owning tables and scalar state, so none
+        // of the bound elements needs destruction before rebinding.
         unsafe {
-            self.edges = Table::bind(&mut remaining, n);
-            self.starts = Table::bind(&mut remaining, self.height);
-            self.cells.cells = Table::bind(&mut remaining, row);
-            self.cells.touched = Table::bind(&mut remaining, row.div_ceil(64));
+            self.cells = Table::bind(&mut remaining, self.height);
+            for _ in 0..self.height {
+                self.cells.push(RowCells {
+                    cells: Table::bind(&mut remaining, row),
+                    touched: Table::bind(&mut remaining, row.div_ceil(64)),
+                    ..RowCells::default()
+                });
+            }
         }
     }
 
@@ -374,6 +339,7 @@ impl Compiler {
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
+        clippy::suboptimal_flops,
         reason = "surface dimensions fit u16; band-local ordinates fit i32"
     )]
     pub fn prepare<E: EdgeSource + ?Sized, S: fearless_simd::Simd>(
@@ -385,11 +351,10 @@ impl Compiler {
         rows: Range<usize>,
         width: usize,
     ) {
-        self.reserve(width, selection.len(), rows.len());
-        self.edges.clear();
-        self.starts.resize(rows.len(), u32::MAX);
-        self.active = u32::MAX;
-        self.cells.resize(width);
+        self.reserve(width, rows.len());
+        for cells in &mut self.cells[..rows.len()] {
+            cells.resize(width);
+        }
         let [ox, oy] = offset.units();
         let top = rows.start as i64 * ONE;
         let bottom = rows.end as i64 * ONE;
@@ -404,94 +369,47 @@ impl Compiler {
                  top: start,
                  bottom: end,
              }| {
+                let (ya, yb) = ((start + oy).max(top), (end + oy).min(bottom));
+                if ya >= yb {
+                    return;
+                }
                 let (x0, y0, x1, y1, dir) = if y0 < y1 {
                     (x0 + ox, y0 + oy, x1 + ox, y1 + oy, 1)
                 } else {
                     (x1 + ox, y1 + oy, x0 + ox, y0 + oy, -1)
                 };
-                let (ya, yb) = ((start + oy).max(top), (end + oy).min(bottom));
-                if ya >= yb {
-                    return;
-                }
                 if x0.min(x1) >= width as i64 * ONE {
                     return;
                 }
                 let (x0, x1) = if x0.max(x1) <= 0 { (0, 0) } else { (x0, x1) };
-                let first_row = ((ya - top) / ONE) as usize;
-                let next = self.starts[first_row];
-                self.starts[first_row] = self.edges.len() as u32;
-                let segment = Segment {
-                    x0,
-                    y0: y0 - top,
-                    dx: x1 - x0,
-                    slope: (x1 - x0) as f64 / (y1 - y0) as f64,
-                    dir,
-                    next,
-                    start: ya - top,
-                    end: yb - top,
-                };
-                self.edges.push(segment);
+                let mut row = ((ya - top) / ONE) as usize;
+                let mut a = ya;
+                if x0 == x1 {
+                    while a < yb {
+                        let b = (top + (row + 1) as i64 * ONE).min(yb);
+                        self.cells[row].vertical(dir, (b - a) as i32, x0);
+                        row += 1;
+                        a = b;
+                    }
+                } else {
+                    let slope = (x1 - x0) as f64 / (y1 - y0) as f64;
+                    let mut xt = (a - y0) as f64 * slope + x0 as f64;
+                    while a < yb {
+                        let b = (top + (row + 1) as i64 * ONE).min(yb);
+                        let xb = (b - y0) as f64 * slope + x0 as f64;
+                        self.cells[row].boundary(dir, (b - a) as i32, xt, xb);
+                        row += 1;
+                        a = b;
+                        xt = xb;
+                    }
+                }
             },
         );
     }
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        clippy::cast_sign_loss,
-        reason = "band rows and pixel units fit i32"
-    )]
     pub fn rows(&mut self, height: usize, mut emit: impl FnMut(usize, Range<usize>, Run<'_>)) {
-        let mut row = 0;
-        while row < height {
-            let top = (row as i32) << 16;
-            let bottom = top + ONE as i32;
-            let mut start = std::mem::replace(&mut self.starts[row], u32::MAX);
-            while start != u32::MAX {
-                let edge = &mut self.edges[start as usize];
-                let next = edge.next;
-                edge.next = self.active;
-                self.active = start;
-                start = next;
-            }
-            let mut repeat_end = height;
-            let mut index = self.active;
-            let mut previous = u32::MAX;
-            while index != u32::MAX {
-                let e = self.edges[index as usize];
-                if e.end <= i64::from(top) {
-                    if previous == u32::MAX {
-                        self.active = e.next;
-                    } else {
-                        self.edges[previous as usize].next = e.next;
-                    }
-                } else {
-                    let (a, b) = (
-                        e.start.max(i64::from(top)) as i32,
-                        e.end.min(i64::from(bottom)) as i32,
-                    );
-                    // Vertical boundaries have identical integrals in every
-                    // complete row until an edge starts or ends. Shade those
-                    // rows from one compilation, without retaining a mask.
-                    if e.dx != 0 || a != top || b != bottom {
-                        repeat_end = row + 1;
-                    } else {
-                        repeat_end = repeat_end.min((e.end >> 16) as usize);
-                    }
-                    e.deposit(&mut self.cells, e.dir, a, b);
-                    previous = index;
-                }
-                index = e.next;
-            }
-            let next = (row + 1..repeat_end)
-                .find(|&next| self.starts[next] != u32::MAX)
-                .unwrap_or(repeat_end);
-            self.cells.read(|range, run| {
-                for y in row..next {
-                    emit(y, range.clone(), run);
-                }
-            });
-            row = next;
+        for (row, cells) in self.cells[..height].iter_mut().enumerate() {
+            cells.read(|range, run| emit(row, range, run));
         }
     }
 }
@@ -510,8 +428,8 @@ pub mod testing {
         #[expect(clippy::cast_precision_loss, reason = "benchmark row widths fit u16")]
         pub fn new(width: usize) -> Self {
             let mut compiler = Compiler::default();
-            compiler.reserve(width, 0, 0);
-            let cells = &mut compiler.cells;
+            compiler.reserve(width, 1);
+            let cells = &mut compiler.cells[0];
             cells.resize(width);
             for x in (0..width).step_by(64) {
                 cells.boundary(
@@ -534,7 +452,7 @@ pub mod testing {
         #[expect(clippy::cast_precision_loss, reason = "benchmark run lengths fit u16")]
         pub fn read(&mut self) -> f32 {
             let mut sum = 0.0;
-            self.0.cells.read(|range, run| {
+            self.0.cells[0].read(|range, run| {
                 if let Run::Uniform(c) = run {
                     sum = (range.len() as f32).mul_add(c.0, sum);
                 } else {
