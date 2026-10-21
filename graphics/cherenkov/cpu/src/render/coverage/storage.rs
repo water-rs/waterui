@@ -26,6 +26,10 @@ impl<T> Default for Table<T> {
 unsafe impl<T: Send> Send for Table<T> {}
 
 impl<T> Table<T> {
+    pub(super) const fn clear(&mut self) {
+        self.len = 0;
+    }
+
     /// # Safety
     /// The supplied allocation outlives this table and is not resized while
     /// it is used. T has alignment at most u64, and its portion is disjoint
