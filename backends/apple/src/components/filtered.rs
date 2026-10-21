@@ -2348,7 +2348,7 @@ pub mod native_test {
 
     use super::{
         CAMetalLayer, CapturableSurface, CaptureError, DrawableFrame, ErasedEffect, FilteredParts,
-        FilteredState, GpuRuntime, HostView, MetalPresenter, MetalTexture, NativeLeaf,
+        FilteredState, GpuRuntime, GpuServices, HostView, MetalPresenter, MetalTexture, NativeLeaf,
         PlatformView, Rc, RefCell, Retained, build_filtered_parts, fmt, output_pixel_format,
         render_frame, settle_capture_failure, wgpu,
     };
