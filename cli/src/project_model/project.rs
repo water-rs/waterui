@@ -18,7 +18,7 @@ use crate::framework::{
     CheckoutMember, FrameworkChannel, ResolvedFramework, local_checkout_members,
     validate_resolved_cli,
 };
-use crate::toolchain::Host;
+use crate::toolchain::{Host, git};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenMode {
@@ -2055,9 +2055,7 @@ impl Project {
     async fn ensure_git_init(host: &Host, path: &Path) -> Result<(), FailToCreateProject> {
         // Check if already in a git repository
 
-        let mut cmd = host
-            .command("git")
-            .map_err(FailToCreateProject::GitStatus)?;
+        let mut cmd = git::command(host).map_err(FailToCreateProject::GitStatus)?;
 
         let is_in_git = command(&mut cmd, host.std_output())
             .args(["rev-parse", "--git-dir"])
@@ -2070,7 +2068,7 @@ impl Project {
 
         if !is_in_git {
             // Initialize a new git repository
-            let mut cmd = host.command("git").map_err(FailToCreateProject::GitInit)?;
+            let mut cmd = git::command(host).map_err(FailToCreateProject::GitInit)?;
             command(&mut cmd, host.std_output())
                 .args(["init"])
                 .current_dir(path)

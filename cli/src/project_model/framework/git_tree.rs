@@ -2,7 +2,7 @@
 
 use eyre::{Result, WrapErr as _, bail, eyre};
 
-use crate::toolchain::Host;
+use crate::toolchain::{Host, git};
 
 #[derive(Debug)]
 pub(super) struct FrameworkTree {
@@ -16,12 +16,11 @@ impl FrameworkTree {
         let directory = tempfile::Builder::new()
             .prefix("waterui-framework-")
             .tempdir_in(host.temp_dir())?;
-        let git = host.clone().with_cwd(directory.path());
-        git.run("git", ["init", "-q"]).await?;
-        git.run("git", ["remote", "add", "origin", repository])
-            .await?;
+        let repo = host.clone().with_cwd(directory.path());
+        git::run(&repo, ["init", "-q"]).await?;
+        git::run(&repo, ["remote", "add", "origin", repository]).await?;
         if revision.len() == 40 {
-            git.run("git", ["fetch", "-q", "--depth=1", "origin", revision])
+            git::run(&repo, ["fetch", "-q", "--depth=1", "origin", revision])
                 .await
                 .wrap_err_with(|| {
                     format!("could not fetch revision {revision} from {repository}")
@@ -29,8 +28,8 @@ impl FrameworkTree {
         } else {
             // Upload-pack accepts full object IDs, not abbreviations. The
             // complete dev history is needed to resolve an abbreviated pin.
-            git.run(
-                "git",
+            git::run(
+                &repo,
                 [
                     "fetch",
                     "-q",
@@ -40,17 +39,16 @@ impl FrameworkTree {
             )
             .await?;
         }
-        let revision = git
-            .run(
-                "git",
-                ["rev-parse", "--verify", &format!("{revision}^{{commit}}")],
-            )
-            .await
-            .wrap_err_with(|| {
-                format!("--rev {revision} does not name a unique commit in {repository}")
-            })?
-            .trim()
-            .to_owned();
+        let revision = git::run(
+            &repo,
+            ["rev-parse", "--verify", &format!("{revision}^{{commit}}")],
+        )
+        .await
+        .wrap_err_with(|| {
+            format!("--rev {revision} does not name a unique commit in {repository}")
+        })?
+        .trim()
+        .to_owned();
         super::validate_revision(&revision)?;
         Ok(Self {
             directory,
@@ -59,10 +57,8 @@ impl FrameworkTree {
     }
 
     pub(super) async fn ensure_dev_ancestor(&self, host: &Host) -> Result<()> {
-        let git = host.clone().with_cwd(self.directory.path());
-        let shallow = git
-            .run("git", ["rev-parse", "--is-shallow-repository"])
-            .await?;
+        let repo = host.clone().with_cwd(self.directory.path());
+        let shallow = git::run(&repo, ["rev-parse", "--is-shallow-repository"]).await?;
         let shallow = match shallow.trim() {
             "true" => true,
             "false" => false,
@@ -73,27 +69,26 @@ impl FrameworkTree {
             args.push("--depth=1");
         }
         args.extend(["origin", "refs/heads/dev:refs/remotes/origin/dev"]);
-        git.run("git", args).await?;
-        let head = git
-            .run(
-                "git",
-                ["rev-parse", "--verify", "refs/remotes/origin/dev^{commit}"],
-            )
-            .await?;
+        git::run(&repo, args).await?;
+        let head = git::run(
+            &repo,
+            ["rev-parse", "--verify", "refs/remotes/origin/dev^{commit}"],
+        )
+        .await?;
         let head = head.trim();
         super::validate_revision(head)?;
-        if self.is_ancestor(&git, head).await? {
+        if self.is_ancestor(&repo, head).await? {
             return Ok(());
         }
         if shallow {
             // A shallow boundary can hide a real ancestor. Only a complete
             // history can prove rejection; do not treat exit 1 as final yet.
-            git.run(
-                "git",
+            git::run(
+                &repo,
                 ["fetch", "-q", "--unshallow", "origin", "refs/heads/dev"],
             )
             .await?;
-            if self.is_ancestor(&git, head).await? {
+            if self.is_ancestor(&repo, head).await? {
                 return Ok(());
             }
         }
@@ -103,10 +98,9 @@ impl FrameworkTree {
         )
     }
 
-    async fn is_ancestor(&self, git: &Host, head: &str) -> Result<bool> {
-        let output = git
-            .output("git", ["merge-base", "--is-ancestor", &self.revision, head])
-            .await?;
+    async fn is_ancestor(&self, host: &Host, head: &str) -> Result<bool> {
+        let output =
+            git::output(host, ["merge-base", "--is-ancestor", &self.revision, head]).await?;
         match output.status.code() {
             Some(0) => Ok(true),
             Some(1) => Ok(false),
@@ -118,11 +112,11 @@ impl FrameworkTree {
     }
 
     pub(super) async fn file(&self, host: &Host, path: &str) -> Result<Vec<u8>> {
-        let output = host
-            .clone()
-            .with_cwd(self.directory.path())
-            .output("git", ["show", &format!("{}:{path}", self.revision)])
-            .await?;
+        let output = git::output(
+            &host.clone().with_cwd(self.directory.path()),
+            ["show", &format!("{}:{path}", self.revision)],
+        )
+        .await?;
         if !output.status.success() {
             bail!(
                 "could not read {path} at {}: {}",
@@ -134,21 +128,18 @@ impl FrameworkTree {
     }
 
     async fn entry(&self, host: &Host, path: &str) -> Result<Option<(String, String)>> {
-        let output = host
-            .clone()
-            .with_cwd(self.directory.path())
-            .run(
-                "git",
-                [
-                    "--literal-pathspecs",
-                    "ls-tree",
-                    "-z",
-                    &self.revision,
-                    "--",
-                    path,
-                ],
-            )
-            .await?;
+        let output = git::run(
+            &host.clone().with_cwd(self.directory.path()),
+            [
+                "--literal-pathspecs",
+                "ls-tree",
+                "-z",
+                &self.revision,
+                "--",
+                path,
+            ],
+        )
+        .await?;
         let entry = output.strip_suffix('\0').unwrap_or(&output);
         if entry.contains('\0') {
             bail!("git returned multiple tree entries for {path}");

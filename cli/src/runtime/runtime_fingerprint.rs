@@ -8,7 +8,7 @@ use tracing::info;
 
 use crate::runtime_compat::{runtime_fingerprint_root_dirs, runtime_fingerprint_root_files};
 use crate::templates::scaffold_template_digest;
-use crate::toolchain::Host;
+use crate::toolchain::{Host, git};
 
 #[expect(
     clippy::redundant_pub_crate,
@@ -71,8 +71,7 @@ fn compute_git_fingerprint(host: &Host, root: &Path, runtime_identity: &str) -> 
         );
     }
 
-    let head = host
-        .std_command("git")?
+    let head = git::std_command(host)?
         .arg("-C")
         .arg(root)
         .arg("rev-parse")
@@ -151,8 +150,7 @@ fn git_output<'a>(
     args: impl IntoIterator<Item = &'a str>,
     what: &str,
 ) -> Result<Vec<u8>> {
-    let output = host
-        .std_command("git")?
+    let output = git::std_command(host)?
         .arg("-C")
         .arg(root)
         .args(args)
@@ -167,8 +165,7 @@ fn git_output<'a>(
 }
 
 fn is_git_work_tree(host: &Host, root: &Path) -> std::io::Result<bool> {
-    let inside_work_tree = host
-        .std_command("git")?
+    let inside_work_tree = git::std_command(host)?
         .arg("-C")
         .arg(root)
         .arg("rev-parse")
@@ -318,8 +315,7 @@ mod tests {
 
         let clone_dir = tempdir().expect("clone dir");
         let cloned_repo = clone_dir.path().join("repo");
-        let status = Host::current()
-            .std_command("git")?
+        let status = git::std_command(&Host::current())?
             .arg("clone")
             .arg(dir.path())
             .arg(&cloned_repo)
@@ -379,8 +375,7 @@ mod tests {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let status = Host::current()
-            .std_command("git")?
+        let status = git::std_command(&Host::current())?
             .arg("-C")
             .arg(root)
             .args(args)

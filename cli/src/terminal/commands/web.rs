@@ -11,7 +11,7 @@ use walkdir::WalkDir;
 
 use crate::shell::Shell;
 use crate::{note, success, warn};
-use waterui_cli::toolchain::Host;
+use waterui_cli::toolchain::{Host, git};
 use waterui_cli::web::{self, PackageManager};
 
 /// The `create`/`init` package-manager prompt, asked once; `initial` is the
@@ -136,8 +136,7 @@ pub async fn move_entries_to_web(
         let source = root.join(entry);
         let dest = root.join("web").join(entry);
         if git_tracked(host, root, entry).await? {
-            let status = host
-                .command("git")?
+            let status = git::command(host)?
                 .args(["mv"])
                 .arg(entry)
                 .arg(Path::new("web").join(entry))
@@ -159,8 +158,7 @@ pub async fn move_entries_to_web(
 /// # Errors
 /// - [`std::io::ErrorKind::NotFound`] when `git` is not on the host's `PATH`.
 async fn git_tracked(host: &Host, root: &Path, entry: &Path) -> std::io::Result<bool> {
-    Ok(host
-        .command("git")?
+    Ok(git::command(host)?
         .args(["ls-files", "--error-unmatch", "--"])
         .arg(entry)
         .current_dir(root)
