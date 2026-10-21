@@ -935,12 +935,7 @@ fn compile_stroke(
             }
             shape => shape_outline(shape, tol_u)?.0,
         };
-        let outline = kurbo::stroke(
-            frame.anchored(path),
-            stroke,
-            &kurbo::StrokeOpts::default(),
-            tol_u,
-        );
+        let outline = cherenkov_stroke::stroke(frame.anchored(path), stroke, tol_u);
         Some((
             flatten_edges(frame.map(outline), FLATTEN_TOL),
             FillRule::NonZero,

@@ -1,0 +1,14 @@
+[package]
+name = "cherenkov-stroke"
+version = "0.0.0"
+description = "Stroke expansion that splits cubic Beziers at cusps before kurbo strokes them"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+kurbo = { version = "0.13.1", default-features = false, features = ["std"] }
+num-bigint = { version = "0.4.8", default-features = false }

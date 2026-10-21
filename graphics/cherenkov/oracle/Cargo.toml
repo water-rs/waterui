@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 cherenkov-scene = { path = "../scene" }
+cherenkov-stroke = { version = "0.0.0", path = "../stroke" }
 half = "2"
 kurbo = "0.13"
 libm = "0.2"
