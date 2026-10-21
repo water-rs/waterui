@@ -21,20 +21,41 @@ use std::sync::Arc;
 use crate::render::bindings;
 use crate::render::glyph::GpuDraw;
 use crate::render::instance::Instance;
+use crate::render::path::stroke::{DashTable, GpuStrokeRecord};
 use crate::render::path::{CoverageKey, GpuElement, GpuPath};
+use crate::render::stroke_abi::{
+    LIST_WORDS, RECORD_WORDS, SCAN_BLOCK, SLOT_WORDS, SLOTS, STAGE_WORDS,
+};
 
 /// The divisor taking the engine's GPU budget to the retained-but-undrawn
 /// coverage share (water-rs/waterui#3081).
 pub const BUDGET_SHARE: u64 = 8;
 /// u32 words of one `GpuPath` record on the device.
-const PATH_WORDS: usize = 36;
+const PATH_WORDS: usize = 48;
 /// u32 words of `Params`.
-const PARAMS_WORDS: usize = 20;
+const PARAMS_WORDS: usize = 28;
+/// `Params` blocks the buffer holds, one per 256 bytes (the dynamic offset
+/// stride): the radix passes (at most eight), then the two scan operations.
+const PARAMS_BLOCKS: u64 = 10;
+/// The first of the two scan operations' `Params` blocks.
+const SCAN_PARAMS_BLOCK: u32 = 8;
+/// Bytes between `Params` blocks.
+const PARAMS_STRIDE: u32 = 256;
 /// u32 words of indirect arguments per GPU draw: `draw_indirect` (4) +
 /// `draw_indexed_indirect` (5) + `draw_indirect` (4) = 13.
 pub const ARGS_WORDS: u32 = 13;
 /// u32 words of dispatch-domain arguments in `args`.
-const DISPATCH_ARGS_WORDS: u64 = 12;
+const DISPATCH_ARGS_WORDS: u64 = 15;
+/// Byte offset of the dash fragment dispatch in `args`.
+const ARGS_DASH: u64 = 48;
+/// u32 words of per-record scratch the dash passes keep (`dash_words`).
+const DASH_RECORD_WORDS: u32 = 8;
+/// u32 words of one block of the dash scans (`scan_words`).
+const SCAN_BLOCK_WORDS: u32 = 4;
+/// One stroke record is `RECORD_WORDS` words, the layout the kernels read.
+const _: () = assert!(std::mem::size_of::<GpuStrokeRecord>() == RECORD_WORDS as usize * 4);
+/// A scan block is 64 lanes of four records, the shape `stroke.wgsl` scans.
+const _: () = assert!(SCAN_BLOCK == 64 * 4);
 /// Byte offset of a draw's opaque-phase `draw_indirect` record.
 pub const ARGS_OPAQUE: u32 = 0;
 /// Byte offset of its partial-phase `draw_indexed_indirect` record.
@@ -163,6 +184,17 @@ struct Pipes {
     classify: wgpu::ComputePipeline,
     fill_cells: wgpu::ComputePipeline,
     emit_counts: wgpu::ComputePipeline,
+    stroke_vertices: wgpu::ComputePipeline,
+    stroke_emit: wgpu::ComputePipeline,
+    dash_length: wgpu::ComputePipeline,
+    dash_scan_reduce: wgpu::ComputePipeline,
+    dash_scan_blocks: wgpu::ComputePipeline,
+    dash_scan_apply: wgpu::ComputePipeline,
+    dash_fragments: wgpu::ComputePipeline,
+    dash_args: wgpu::ComputePipeline,
+    dash_emit: wgpu::ComputePipeline,
+    bin_strokes: wgpu::ComputePipeline,
+    bin_dashes: wgpu::ComputePipeline,
 }
 
 /// The frame's coverage scratch buffers, sized exactly by the R2 bound.
@@ -172,6 +204,8 @@ struct Buffers {
     paths: wgpu::Buffer,
     segments: wgpu::Buffer,
     coverage: wgpu::Buffer,
+    /// The stroke records, then the dash tables.
+    strokes: wgpu::Buffer,
     args: wgpu::Buffer,
     work: wgpu::Buffer,
 }
@@ -205,6 +239,23 @@ pub struct GpuCoverage {
     elements: Vec<GpuElement>,
     element_sources: Vec<Arc<[GpuElement]>>,
     element_total: u32,
+    /// Compute stroker input: the stroke records of all paths concatenated,
+    /// undashed paths first (dashed records form one contiguous range).
+    strokes: Vec<GpuStrokeRecord>,
+    /// Each path's stroke records, in apply order (empty for a fill).
+    stroke_sources: Vec<Arc<[GpuStrokeRecord]>>,
+    /// Each path's dash table, in apply order.
+    dash_sources: Vec<Option<Arc<DashTable>>>,
+    /// The dash tables' words behind the stroke records.
+    dashes: Vec<u32>,
+    /// Stroke records across all paths, and the dashed ones among them.
+    stroke_total: u32,
+    dash_total: u32,
+    /// Staging entries and compacted fragments the dashed paths bound.
+    stage_total: u32,
+    list_total: u32,
+    /// Words of dash tables across all dashed paths.
+    dash_table_words: u32,
     /// `(path, strip)` items uploaded after atomic counters and row windings.
     work: Vec<[u32; 2]>,
     /// One GPU draw per applied `GpuPath`, in apply order.
@@ -254,6 +305,15 @@ impl GpuCoverage {
             elements: Vec::new(),
             element_sources: Vec::new(),
             element_total: 0,
+            strokes: Vec::new(),
+            stroke_sources: Vec::new(),
+            dash_sources: Vec::new(),
+            dashes: Vec::new(),
+            stroke_total: 0,
+            dash_total: 0,
+            stage_total: 0,
+            list_total: 0,
+            dash_table_words: 0,
             work: Vec::new(),
             draws: Vec::new(),
             draw_args: Vec::new(),
@@ -286,6 +346,15 @@ impl GpuCoverage {
         self.elements.clear();
         self.element_sources.clear();
         self.element_total = 0;
+        self.strokes.clear();
+        self.stroke_sources.clear();
+        self.dash_sources.clear();
+        self.dashes.clear();
+        self.stroke_total = 0;
+        self.dash_total = 0;
+        self.stage_total = 0;
+        self.list_total = 0;
+        self.dash_table_words = 0;
         self.work.clear();
         self.draws.clear();
         self.draw_args.clear();
@@ -325,6 +394,7 @@ impl GpuCoverage {
                 + b.paths.size()
                 + b.segments.size()
                 + b.coverage.size()
+                + b.strokes.size()
                 + b.args.size()
                 + b.work.size()
         }) + self.arena.buffer.as_ref().map_or(0, wgpu::Buffer::size)
@@ -341,6 +411,10 @@ impl GpuCoverage {
             + self.paths.capacity() * std::mem::size_of::<[u32; PATH_WORDS]>()
             + self.elements.capacity() * std::mem::size_of::<GpuElement>()
             + self.element_sources.capacity() * std::mem::size_of::<Arc<[GpuElement]>>()
+            + self.strokes.capacity() * std::mem::size_of::<GpuStrokeRecord>()
+            + self.stroke_sources.capacity() * std::mem::size_of::<Arc<[GpuStrokeRecord]>>()
+            + self.dash_sources.capacity() * std::mem::size_of::<Option<Arc<DashTable>>>()
+            + self.dashes.capacity() * std::mem::size_of::<u32>()
             + self.work.capacity() * std::mem::size_of::<[u32; 2]>()
             + self.draws.capacity() * std::mem::size_of::<Draw>()
             + self.draw_args.capacity() * std::mem::size_of::<u32>()) as u64
@@ -434,7 +508,12 @@ impl GpuCoverage {
             return Ok(u32::try_from(self.draws.len() - 1).expect("draw count fits u32"));
         }
         let GpuPath {
-            elements, bound, ..
+            elements,
+            strokes,
+            stroke,
+            dash,
+            bound,
+            ..
         } = prepared;
         // Decision R2: the bound sizes everything, so over the cap is a
         // fail, not a resize.
@@ -467,7 +546,8 @@ impl GpuCoverage {
             + u64::from(ARGS_WORDS) * 4
             + (PATH_WORDS as u64) * 4
             + to64(strips) * (1 + to64(bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize))) * 8
-            + to64(strips * bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize)) * 16;
+            + to64(strips * bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize)) * 16
+            + stroke_bytes(strokes.len(), dash.as_deref());
         let previous_tokens = self.fragment_total.min(self.cov_total) * 6;
         let next_tokens = fragment_total.min(cov_total) * 6;
         self.bound_bytes += path_bytes
@@ -515,10 +595,39 @@ impl GpuCoverage {
         words[27] = clip[3].to_bits();
         words[34] = clip[0].to_bits();
         words[35] = clip[1].to_bits();
+        // The compute stroker's path parameters. `stroke_base` is written at
+        // dispatch, where the record order is known; a fill leaves all zero.
+        if !strokes.is_empty() {
+            words[37] = stroke.half_width.to_bits();
+            words[38] = stroke.miter_limit.to_bits();
+            words[39] = stroke.start_cap
+                | stroke.end_cap << 2
+                | u32::from(dash.as_deref().is_some_and(|dash| dash.merge_start)) << 4
+                | stroke.k_cap << 8;
+            words[40] = u32::MAX;
+            words[44] = self.stage_total;
+        }
+        if let Some(dash) = dash.as_deref() {
+            words[40] = self.dash_table_words;
+            words[41] = u32::try_from(dash.cum.len() - 1).expect("dash entries fit u32");
+            [words[42], words[43]] = dash.phase;
+        }
 
         self.paths.push(words);
         self.element_total += u32::try_from(elements.len()).expect("elements fit u32");
         self.element_sources.push(Arc::clone(elements));
+        let records = u32::try_from(strokes.len()).expect("stroke records fit u32");
+        // The R2 cap above bounds the records far below `u32::MAX`.
+        self.stroke_total += records;
+        self.stroke_sources.push(Arc::clone(strokes));
+        if let Some(dash) = dash {
+            self.dash_total += records;
+            self.stage_total += u32::try_from(dash.stage_total).expect("staging fits u32");
+            self.list_total += u32::try_from(dash.fragments).expect("fragments fit u32");
+            self.dash_table_words +=
+                u32::try_from(dash.cum.len() * 2).expect("dash table fits u32");
+        }
+        self.dash_sources.push(dash.clone());
         self.entries.insert(
             key,
             Entry {
@@ -846,7 +955,23 @@ impl GpuCoverage {
             }
         }
         let tile_total = u32::try_from(self.work.len()).expect("work count fits u32") - strip_total;
-        let bin_base = 0;
+        // The compute stroker's scratch precedes the bins: the vertex slots,
+        // then the dashed passes' per-record words, scan blocks, staging and
+        // compacted list. It is empty in a frame without strokes, which
+        // leaves every later region where it was (design section 8). Dashed
+        // records are the contiguous tail of the record order (7.4).
+        let scratch = self.stroke_scratch();
+        let StrokeScratch {
+            stroke_total,
+            dash_total,
+            dash_first,
+            dash_blocks,
+            dash_words_base,
+            scan_words_base,
+            staging_base,
+            list_base,
+            bin_base,
+        } = scratch;
         let fragment_base = bin_base + self.bin_total * 3;
         let sorted = fragment_base + self.fragment_total * 8;
         let groups = sorted + self.fragment_total * 2;
@@ -885,7 +1010,15 @@ impl GpuCoverage {
             tokens,
             sorted,
             0,
+            stroke_total,
+            dash_total,
+            dash_first,
+            dash_blocks,
             0,
+            dash_words_base,
+            scan_words_base,
+            staging_base,
+            list_base,
             0,
         ];
         let cov_words = u64::from(
@@ -898,11 +1031,15 @@ impl GpuCoverage {
         let limit = limits
             .max_storage_buffer_binding_size
             .min(limits.max_buffer_size);
-        let work_header_bytes = u64::from(4 + self.row_total) * 4;
+        let work_header_bytes = u64::from(5 + self.row_total) * 4;
+        let strokes_bytes = (u64::from(stroke_total) * u64::from(RECORD_WORDS)
+            + u64::from(self.dash_table_words))
+            * 4;
         let work_bytes = work_header_bytes + self.work.len() as u64 * 8;
         let sizes = [
             scratch_bytes,
             u64::from(self.element_total) * 48,
+            strokes_bytes,
             self.paths.len() as u64 * PATH_WORDS as u64 * 4,
             u64::from(self.seg_total) * 16,
             DISPATCH_ARGS_WORDS * 4,
@@ -916,13 +1053,20 @@ impl GpuCoverage {
 
         let seg_words = u64::from(self.seg_total).max(1);
         let previous = self.buffers.as_ref();
-        let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+        // Tests read the buffers back; the runtime never does.
+        let storage = wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | if cfg!(test) {
+                wgpu::BufferUsages::COPY_SRC
+            } else {
+                wgpu::BufferUsages::empty()
+            };
         let buffers = Buffers {
             params: sized_buffer(
                 device,
                 previous.map(|b| &b.params),
                 "cov params",
-                8 * 256,
+                PARAMS_BLOCKS * u64::from(PARAMS_STRIDE),
                 wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             ),
             elements: sized_buffer(
@@ -953,6 +1097,13 @@ impl GpuCoverage {
                 cov_words * 4,
                 storage,
             ),
+            strokes: sized_buffer(
+                device,
+                previous.map(|b| &b.strokes),
+                "cov strokes",
+                strokes_bytes.next_multiple_of(16).max(16),
+                storage,
+            ),
             args: sized_buffer(
                 device,
                 previous.map(|b| &b.args),
@@ -969,12 +1120,23 @@ impl GpuCoverage {
             ),
         };
 
-        for radix_pass in 0..radix_pass_count {
+        for radix_pass in 0..radix_pass_count.max(1) {
             let mut block = params;
             block[17] = radix_pass;
             queue.write_buffer(
                 &buffers.params,
-                u64::from(radix_pass) * 256,
+                u64::from(radix_pass * PARAMS_STRIDE),
+                bytemuck::cast_slice(&block),
+            );
+        }
+        // The two scan operations of the dash passes read their operation
+        // from a block of their own (design section 7.4.2).
+        for op in 0..2 {
+            let mut block = params;
+            block[22] = op;
+            queue.write_buffer(
+                &buffers.params,
+                u64::from((SCAN_PARAMS_BLOCK + op) * PARAMS_STRIDE),
                 bytemuck::cast_slice(&block),
             );
         }
@@ -987,6 +1149,36 @@ impl GpuCoverage {
                 }));
         }
         queue.write_buffer(&buffers.elements, 0, bytemuck::cast_slice(&self.elements));
+        // Undashed paths' records first, dashed ones after (7.4); the dash
+        // tables follow in apply order, where `draw` assigned their offsets.
+        for dashed in [false, true] {
+            for (index, source) in self.stroke_sources.iter().enumerate() {
+                if self.dash_sources[index].is_some() != dashed {
+                    continue;
+                }
+                let path_i = u32::try_from(index).expect("path index");
+                if !source.is_empty() {
+                    self.paths[index][36] =
+                        u32::try_from(self.strokes.len()).expect("stroke records fit u32");
+                }
+                self.strokes
+                    .extend(source.iter().copied().map(|mut record| {
+                        record.head[2] = path_i;
+                        record
+                    }));
+            }
+        }
+        for dash in self.dash_sources.iter().flatten() {
+            for &[integer, fraction] in &*dash.cum {
+                self.dashes.extend([integer, fraction]);
+            }
+        }
+        queue.write_buffer(&buffers.strokes, 0, bytemuck::cast_slice(&self.strokes));
+        queue.write_buffer(
+            &buffers.strokes,
+            self.strokes.len() as u64 * std::mem::size_of::<GpuStrokeRecord>() as u64,
+            bytemuck::cast_slice(&self.dashes),
+        );
         queue.write_buffer(
             &buffers.work,
             work_header_bytes,
@@ -1036,6 +1228,10 @@ impl GpuCoverage {
             },
             wgpu::BindGroupEntry {
                 binding: 7,
+                resource: buffers.strokes.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
                 resource: buffers.args.as_entire_binding(),
             },
         ];
@@ -1044,7 +1240,7 @@ impl GpuCoverage {
             layout,
             entries: &entries
                 .iter()
-                .filter(|entry| entry.binding != 7)
+                .filter(|entry| entry.binding != 8)
                 .cloned()
                 .collect::<Vec<_>>(),
         });
@@ -1066,8 +1262,50 @@ impl GpuCoverage {
             pass.set_bind_group(0, &bind, &[0]);
             pass.set_pipeline(&pipes.flatten);
             dispatch(&mut pass, params[0]);
+            if stroke_total > 0 {
+                pass.set_pipeline(&pipes.stroke_vertices);
+                dispatch(&mut pass, stroke_total);
+                pass.set_pipeline(&pipes.stroke_emit);
+                dispatch(&mut pass, stroke_total);
+            }
+            if dash_total > 0 {
+                // Lengths, their per-subpath prefix, the dashes of every
+                // record, then the fragment and chord offsets that compact
+                // them (7.4); the scans read their operation from the
+                // `Params` block at the offset they are bound with.
+                let scan = |pass: &mut wgpu::ComputePass<'_>, op: u32| {
+                    pass.set_bind_group(0, &bind, &[(SCAN_PARAMS_BLOCK + op) * PARAMS_STRIDE]);
+                    pass.set_pipeline(&pipes.dash_scan_reduce);
+                    dispatch(pass, dash_blocks * WORKGROUP);
+                    pass.set_pipeline(&pipes.dash_scan_blocks);
+                    pass.dispatch_workgroups(1, 1, 1);
+                    pass.set_pipeline(&pipes.dash_scan_apply);
+                    dispatch(pass, dash_blocks * WORKGROUP);
+                    pass.set_bind_group(0, &bind, &[0]);
+                };
+                pass.set_pipeline(&pipes.dash_length);
+                dispatch(&mut pass, dash_total);
+                scan(&mut pass, 0);
+                pass.set_pipeline(&pipes.dash_fragments);
+                dispatch(&mut pass, dash_total);
+                scan(&mut pass, 1);
+                pass.set_bind_group(0, &args_bind, &[0]);
+                pass.set_pipeline(&pipes.dash_args);
+                pass.dispatch_workgroups(1, 1, 1);
+                pass.set_bind_group(0, &bind, &[0]);
+                pass.set_pipeline(&pipes.dash_emit);
+                pass.dispatch_workgroups_indirect(&buffers.args, ARGS_DASH);
+            }
             pass.set_pipeline(&pipes.bin);
             dispatch(&mut pass, params[0]);
+            if stroke_total > 0 {
+                pass.set_pipeline(&pipes.bin_strokes);
+                dispatch(&mut pass, stroke_total);
+            }
+            if dash_total > 0 {
+                pass.set_pipeline(&pipes.bin_dashes);
+                pass.dispatch_workgroups_indirect(&buffers.args, ARGS_DASH);
+            }
             pass.set_bind_group(0, &args_bind, &[0]);
             pass.set_pipeline(&pipes.prepare_dispatch);
             pass.dispatch_workgroups(1, 1, 1);
@@ -1078,7 +1316,7 @@ impl GpuCoverage {
             pass.set_pipeline(&pipes.prepare_dispatch);
             pass.dispatch_workgroups(1, 1, 1);
             for radix_pass in 0..radix_pass_count {
-                pass.set_bind_group(0, &bind, &[radix_pass * 256]);
+                pass.set_bind_group(0, &bind, &[radix_pass * PARAMS_STRIDE]);
                 pass.set_pipeline(&pipes.radix_count);
                 pass.dispatch_workgroups_indirect(&buffers.args, 12);
                 pass.set_pipeline(&pipes.radix_scan_blocks);
@@ -1189,6 +1427,17 @@ impl GpuCoverage {
             classify: make("classify"),
             fill_cells: make("fill_cells"),
             emit_counts: make("emit_counts"),
+            stroke_vertices: make("stroke_vertices"),
+            stroke_emit: make("stroke_emit"),
+            dash_length: make("dash_length"),
+            dash_scan_reduce: make("dash_scan_reduce"),
+            dash_scan_blocks: make("dash_scan_blocks"),
+            dash_scan_apply: make("dash_scan_apply"),
+            dash_fragments: make("dash_fragments"),
+            dash_args: make("dash_args"),
+            dash_emit: make("dash_emit"),
+            bin_strokes: make("bin_strokes"),
+            bin_dashes: make("bin_dashes"),
         });
         let missing: Vec<_> = kernels.iter().map(|(name, _)| *name).collect();
         assert!(
@@ -1198,6 +1447,65 @@ impl GpuCoverage {
         self.layout = Some(layout);
         self.args_layout = Some(args_layout);
     }
+}
+
+/// Where the compute stroker's scratch regions sit at the start of the
+/// `coverage` buffer, in words: the vertex slots, the dashed passes'
+/// per-record words and scan blocks, the fragment staging and the compacted
+/// list, then the bins (design section 8). A frame without strokes has no
+/// region, so every later region stays where it was.
+#[derive(Clone, Copy, Debug)]
+struct StrokeScratch {
+    stroke_total: u32,
+    dash_total: u32,
+    /// Absolute index of the first dashed record; dashed records are the
+    /// contiguous tail of the record order (7.4).
+    dash_first: u32,
+    dash_blocks: u32,
+    dash_words_base: u32,
+    scan_words_base: u32,
+    staging_base: u32,
+    list_base: u32,
+    bin_base: u32,
+}
+
+impl GpuCoverage {
+    const fn stroke_scratch(&self) -> StrokeScratch {
+        let (stroke_total, dash_total) = (self.stroke_total, self.dash_total);
+        let dash_blocks = dash_total.div_ceil(SCAN_BLOCK);
+        let dash_words_base = stroke_total * SLOTS * SLOT_WORDS;
+        let scan_words_base = dash_words_base + dash_total * DASH_RECORD_WORDS;
+        let staging_base = scan_words_base + dash_blocks * SCAN_BLOCK_WORDS;
+        let list_base = staging_base + self.stage_total * STAGE_WORDS;
+        StrokeScratch {
+            stroke_total,
+            dash_total,
+            dash_first: stroke_total - dash_total,
+            dash_blocks,
+            dash_words_base,
+            scan_words_base,
+            staging_base,
+            list_base,
+            bin_base: list_base + self.list_total * LIST_WORDS,
+        }
+    }
+}
+
+/// The scratch bytes a stroke path's records bound (design section 8): the
+/// records and their vertex scratch, and for a dashed path the per-record dash
+/// words, the staging and list entries, the scan blocks and the table.
+fn stroke_bytes(records: usize, dash: Option<&DashTable>) -> u64 {
+    let to64 = |n: usize| u64::try_from(n).expect("bound fits u64");
+    let vertices = u64::from(SLOTS * SLOT_WORDS) * 4;
+    let mut bytes = to64(records) * (std::mem::size_of::<GpuStrokeRecord>() as u64 + vertices);
+    if let Some(dash) = dash {
+        bytes += to64(records) * u64::from(DASH_RECORD_WORDS) * 4
+            + to64(dash.stage_total) * u64::from(STAGE_WORDS) * 4
+            + to64(dash.fragments) * u64::from(LIST_WORDS) * 4
+            + to64(records.div_ceil(SCAN_BLOCK as usize)) * u64::from(SCAN_BLOCK_WORDS) * 4
+            + to64(dash.cum.len()) * 8;
+    }
+    bytes
 }
 
 /// Boundary records use the smaller of sorted-fragment indices and logical
@@ -1246,6 +1554,7 @@ fn sized_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::stroke_abi::{CLOSE, FRAG_START_CAP};
     use kurbo::{Affine, PathEl, Point};
 
     #[test]
@@ -1315,5 +1624,497 @@ mod tests {
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
             .ok()
             .map(|(device, _)| device)
+    }
+
+    /// A device that takes the build's shader delivery, with default limits:
+    /// the compute stroker's layout must fit the baseline storage-buffer
+    /// count.
+    fn delivery_device() -> Option<(
+        wgpu::Device,
+        wgpu::Queue,
+        crate::render::shaders::ShaderDelivery,
+    )> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let adapter = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()))
+            .into_iter()
+            .next()?;
+        let backend = adapter.get_info().backend;
+        let required_features = match backend {
+            wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => {
+                wgpu::Features::PASSTHROUGH_SHADERS
+            }
+            _ => wgpu::Features::empty(),
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features,
+            ..wgpu::DeviceDescriptor::default()
+        }))
+        .ok()?;
+        let delivery = crate::render::shaders::delivery(backend, &device)
+            .expect("the device takes passthrough");
+        Some((device, queue, delivery))
+    }
+
+    fn read_back(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        copies: &[(&wgpu::Buffer, u64, u64)],
+        encoder: wgpu::CommandEncoder,
+    ) -> Vec<Vec<u32>> {
+        let mut encoder = encoder;
+        let targets: Vec<wgpu::Buffer> = copies
+            .iter()
+            .map(|&(_, _, size)| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("stroke readback"),
+                    size,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                })
+            })
+            .collect();
+        for (&(source, offset, size), target) in copies.iter().zip(&targets) {
+            encoder.copy_buffer_to_buffer(source, offset, target, 0, size);
+        }
+        queue.submit([encoder.finish()]);
+        for target in &targets {
+            target.map_async(wgpu::MapMode::Read, .., |result| {
+                result.expect("map readback");
+            });
+        }
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(120)),
+            })
+            .expect("the stroke kernels finish");
+        targets
+            .iter()
+            .map(|target| {
+                let words =
+                    bytemuck::cast_slice(&target.get_mapped_range(..).expect("mapped range"))
+                        .to_vec();
+                target.unmap();
+                words
+            })
+            .collect()
+    }
+
+    fn unordered(value: u32) -> f32 {
+        f32::from_bits(if value & 0x8000_0000 == 0 {
+            !value
+        } else {
+            value ^ 0x8000_0000
+        })
+    }
+
+    /// Strokes of every shape the encoder has to survive, as
+    /// `(centerline, stroke)`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a table of the shapes and styles the encoder has to survive"
+    )]
+    fn stroke_cases() -> Vec<(kurbo::BezPath, kurbo::Stroke)> {
+        use kurbo::{BezPath, Cap, Join, Stroke};
+        let mut cases = Vec::new();
+        let zigzag = |scale: f64| {
+            let mut path = BezPath::new();
+            path.move_to((60.0, 80.0));
+            path.line_to((140.0 * scale, 90.0));
+            path.line_to((90.0, 200.0 * scale));
+            path.line_to((200.0, 160.0));
+            path.line_to((200.0, 160.0));
+            path.line_to((120.0, 150.0));
+            path
+        };
+        let curvy = || {
+            let mut path = BezPath::new();
+            path.move_to((50.0, 300.0));
+            path.curve_to((150.0, 180.0), (90.0, 420.0), (260.0, 300.0));
+            path.quad_to((300.0, 200.0), (340.0, 330.0));
+            path
+        };
+        let cusp = || {
+            let mut path = BezPath::new();
+            path.move_to((100.0, 100.0));
+            path.curve_to((220.0, 220.0), (100.0, 220.0), (220.0, 100.0));
+            path
+        };
+        let looped = || {
+            let mut path = BezPath::new();
+            path.move_to((100.0, 100.0));
+            path.curve_to((260.0, 260.0), (40.0, 260.0), (200.0, 100.0));
+            path
+        };
+        let degenerate = || {
+            let mut path = BezPath::new();
+            path.move_to((100.0, 100.0));
+            path.curve_to((100.0, 100.0), (200.0, 140.0), (240.0, 100.0));
+            path.curve_to((300.0, 100.0), (180.0, 100.0), (260.0, 100.0));
+            path
+        };
+        let closed = |side: f64| {
+            let mut path = BezPath::new();
+            path.move_to((100.0, 100.0));
+            path.line_to((100.0 + side, 100.0));
+            path.line_to((100.0 + side, side.mul_add(0.5, 100.0)));
+            path.line_to((100.0, side.mul_add(0.5, 100.0)));
+            path.close_path();
+            path
+        };
+        let triangle = || {
+            let mut path = BezPath::new();
+            path.move_to((100.0, 100.0));
+            path.line_to((300.0, 120.0));
+            path.line_to((120.0, 130.0));
+            path.close_path();
+            path
+        };
+        let reversal = || {
+            let mut path = BezPath::new();
+            path.move_to((100.0, 100.0));
+            path.line_to((250.0, 100.0));
+            path.line_to((150.0, 100.0));
+            path
+        };
+        let joins = [Join::Bevel, Join::Miter, Join::Round];
+        let caps = [Cap::Butt, Cap::Square, Cap::Round];
+        for (n, &join) in joins.iter().enumerate() {
+            for (m, &cap) in caps.iter().enumerate() {
+                let width = [0.4, 7.0, 31.0][(n + m) % 3];
+                let mut stroke = Stroke::new(width)
+                    .with_join(join)
+                    .with_miter_limit([1.0, 4.0, 10.0][n]);
+                stroke.start_cap = cap;
+                stroke.end_cap = caps[(m + 1) % 3];
+                for path in [
+                    zigzag(1.0),
+                    zigzag(0.5),
+                    curvy(),
+                    cusp(),
+                    looped(),
+                    degenerate(),
+                    closed(120.0),
+                    triangle(),
+                    reversal(),
+                ] {
+                    cases.push((path, stroke.clone()));
+                }
+            }
+        }
+        let patterns: [(&[f64], f64); 7] = [
+            (&[20.0, 10.0], 0.0),
+            (&[15.0], 4.0),
+            (&[0.0, 3.0, 6.0, 2.0], 0.0),
+            (&[8.0, 0.0, 4.0, 4.0], 1.0),
+            (&[12.0, 5.0, 3.0], 7.0),
+            (&[0.5, 0.5], 0.25),
+            (&[40.0, 25.0], 33.0),
+        ];
+        for (n, &(pattern, offset)) in patterns.iter().enumerate() {
+            for (m, &cap) in caps.iter().enumerate() {
+                let stroke = Stroke::new([1.5, 6.0, 20.0][m])
+                    .with_join(joins[(n + m) % 3])
+                    .with_caps(cap)
+                    .with_dashes(offset, pattern.iter().copied());
+                for path in [
+                    zigzag(1.0),
+                    curvy(),
+                    cusp(),
+                    looped(),
+                    degenerate(),
+                    closed(120.0),
+                ] {
+                    cases.push((path, stroke.clone()));
+                }
+            }
+        }
+        // Ties on an integer rectangle, a merged and an unmerged closed
+        // subpath. Offset 20 makes the dashes of [20, 10] end at s = 30k,
+        // on the rectangle's vertices.
+        for offset in [0.0, 5.0, 20.0, 25.0] {
+            let mut path = BezPath::new();
+            path.move_to((100.0, 100.0));
+            path.line_to((220.0, 100.0));
+            path.line_to((220.0, 160.0));
+            path.line_to((100.0, 160.0));
+            path.close_path();
+            cases.push((path, Stroke::new(4.0).with_dashes(offset, [20.0, 10.0])));
+        }
+        cases
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one frame's setup, readback and assertions"
+    )]
+    fn stroke_segments_close_and_fit_their_bound() {
+        use crate::render::path::{FLATTEN, sigma_max};
+        use cherenkov::ShapeData;
+        use std::collections::HashMap;
+
+        // The used-versus-allocated numbers below are the over-allocation
+        // evidence design section 6.6 asks for; they must be visible on a
+        // plain `--no-capture` run.
+        let _tracing = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_test_writer()
+                .with_max_level(tracing::level_filters::LevelFilter::DEBUG)
+                .finish(),
+        );
+        let Some((device, queue, delivery)) = delivery_device() else {
+            return;
+        };
+        let started = std::time::Instant::now();
+        let cases = stroke_cases();
+        // More than 16384 dashed records, so the frame's `dash_blocks`
+        // exceeds 64 and `dash_scan_blocks` carries across chunks. The
+        // bevel join and a frame of its own keep the bound under the
+        // 128 MiB binding limit.
+        let mut long = kurbo::BezPath::new();
+        long.move_to((0.0, 0.0));
+        for k in 1..=17_000u32 {
+            long.line_to((f64::from(k % 2) * 6.0, f64::from((k / 2) % 256) * 0.5));
+        }
+        let singles = [(
+            long,
+            kurbo::Stroke::new(2.0)
+                .with_join(kurbo::Join::Bevel)
+                .with_dashes(0.0, [5.0, 3.0]),
+        )];
+        // The default device's binding limit bounds one frame, so the cases
+        // go through in several.
+        let mut index = 0usize;
+        for chunk in cases.chunks(24).chain(singles.chunks(1)) {
+            let mut frame = GpuCoverage::new(&device, u64::MAX);
+            frame.begin_frame();
+            let mut kept = Vec::new();
+            for (path, stroke) in chunk {
+                let raster = Affine::translate((8.0, 8.0))
+                    * Affine::scale(if index.is_multiple_of(2) { 1.0 } else { 1.5 });
+                index += 1;
+                let shape = ShapeData::Path {
+                    elements: path.elements().into(),
+                    rule: cherenkov::FillRule::NonZero,
+                };
+                let gpu = crate::render::path::stroke::prepare(
+                    &shape,
+                    stroke,
+                    raster,
+                    FLATTEN / sigma_max(raster).max(1e-12),
+                    (1024.0, 1024.0),
+                )
+                .expect("the stroke encodes");
+                if gpu.strokes.is_empty() {
+                    continue;
+                }
+                let content = u64::try_from(index).expect("case index") + 1;
+                // The draw is placement-relative, so its bound is the one
+                // the kernels' bbox lies in.
+                let draw = GpuDraw::new(content, 0, raster, gpu, (1024, 1024));
+                frame
+                    .draw(&device, &draw)
+                    .unwrap_or_else(|error| panic!("case {index} draws: {error:?}"));
+                kept.push((index, draw.path));
+            }
+            frame.ensure(&device);
+            // A NaN tail past `seg_total` catches a chord written beyond
+            // the last path's segments: `dispatch` reuses a large enough
+            // buffer as is, so the tail sits inside the bound buffer.
+            // The other buffers are stubs `sized_buffer` replaces.
+            let guard = u64::from(frame.seg_total).max(1) * 16 + 256 * 16;
+            let stub = |label| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(label),
+                    size: 4,
+                    usage: wgpu::BufferUsages::STORAGE
+                        | wgpu::BufferUsages::COPY_DST
+                        | wgpu::BufferUsages::COPY_SRC
+                        | wgpu::BufferUsages::UNIFORM
+                        | wgpu::BufferUsages::INDIRECT,
+                    mapped_at_creation: false,
+                })
+            };
+            frame.buffers = Some(Buffers {
+                segments: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("cov segments"),
+                    size: guard,
+                    usage: wgpu::BufferUsages::STORAGE
+                        | wgpu::BufferUsages::COPY_DST
+                        | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                }),
+                params: stub("cov params"),
+                elements: stub("cov elements"),
+                paths: stub("cov paths"),
+                coverage: stub("cov scratch"),
+                strokes: stub("cov strokes"),
+                args: stub("cov args"),
+                work: stub("cov work"),
+            });
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            frame
+                .record_prologue(&device, &queue, &mut encoder, delivery, None)
+                .expect("the prologue records");
+            let buffers = frame.buffers.as_ref().expect("buffers sized");
+            // Every slot starts as NaN, so an unwritten chord cannot pass as
+            // geometry.
+            let nan = vec![0x7fc0_0000u32; usize::try_from(buffers.segments.size() / 4).unwrap()];
+            queue.write_buffer(&buffers.segments, 0, bytemuck::cast_slice(&nan));
+            let scratch = frame.stroke_scratch();
+            let path_bytes = frame.paths.len() as u64 * PATH_WORDS as u64 * 4;
+            let region_bytes = u64::from(scratch.bin_base) * 4;
+            let copies = [
+                (&buffers.segments, 0, buffers.segments.size()),
+                (&buffers.coverage, 0, region_bytes.max(4)),
+                (&buffers.work, 0, 20),
+                (&buffers.paths, 0, path_bytes),
+            ];
+            let words = read_back(&device, &queue, &copies, encoder);
+            let [segments, region, work, paths] = &words[..] else {
+                unreachable!("four readbacks")
+            };
+            let (bins_used, fragments_used) = (work[0], work[1]);
+            let bins_bound: usize = kept.iter().map(|(_, gpu)| gpu.bound.bins).sum();
+            let fragments_bound: usize = kept.iter().map(|(_, gpu)| gpu.bound.fragments).sum();
+            assert!(
+                (bins_used as usize) <= bins_bound,
+                "bins {bins_used} > {bins_bound}"
+            );
+            assert!(
+                (fragments_used as usize) <= fragments_bound,
+                "fragments {fragments_used} > {fragments_bound}"
+            );
+            tracing::debug!(
+                bins_used,
+                bins_bound,
+                fragments_used,
+                fragments_bound,
+                "stroke bins"
+            );
+            let mut chord_used_total = 0usize;
+            let mut chord_bound_total = 0usize;
+            let mut staged_used = 0usize;
+            let mut staged_bound = 0usize;
+            for (path_index, (case, gpu)) in kept.iter().enumerate() {
+                let record = &paths[path_index * PATH_WORDS..(path_index + 1) * PATH_WORDS];
+                let seg_base = record[10] as usize;
+                let seg_bound = record[11] as usize;
+                assert_eq!(seg_bound, gpu.bound.segments);
+                let dashed = gpu.dash.as_deref();
+                let first = record[36] as usize;
+                let count = gpu.strokes.len();
+                // Chords the kernels wrote for this path.
+                let written = if let Some(dash) = dashed {
+                    let mut chords = 0usize;
+                    let mut fragments = 0usize;
+                    let mut dash_count = 0usize;
+                    staged_bound += dash.stage_total;
+                    for rel in 0..count {
+                        let j = first + rel - scratch.dash_first as usize;
+                        let w = scratch.dash_words_base as usize + j * DASH_RECORD_WORDS as usize;
+                        let staged = region[w + 4] as usize;
+                        let stage_cap = frame.strokes[first + rel].head[1] as usize;
+                        assert!(
+                            staged <= stage_cap,
+                            "case {case}: record {rel} staged {staged} > {stage_cap}"
+                        );
+                        fragments += staged;
+                        chords += region[w + 5] as usize;
+                        let head = frame.strokes[first + rel].head;
+                        let stage_first = (record[44] + head[3]) as usize;
+                        for k in 0..staged {
+                            let at = scratch.staging_base as usize
+                                + (stage_first + k) * STAGE_WORDS as usize;
+                            if region[at + 2] & FRAG_START_CAP != 0 || head[0] & CLOSE != 0 {
+                                dash_count += 1;
+                            }
+                        }
+                    }
+                    assert!(
+                        fragments <= dash.fragments,
+                        "case {case}: fragments {fragments} > {}",
+                        dash.fragments
+                    );
+                    assert!(
+                        chords <= seg_bound,
+                        "case {case}: chords {chords} > {seg_bound}"
+                    );
+                    assert!(
+                        dash_count <= dash.dashes,
+                        "case {case}: dashes {dash_count} > {}",
+                        dash.dashes
+                    );
+                    staged_used += fragments;
+                    tracing::debug!(
+                        case,
+                        fragments,
+                        fragment_bound = dash.fragments,
+                        staged_bound = dash.stage_total,
+                        dashes = dash_count,
+                        dash_bound = dash.dashes,
+                        chords,
+                        chord_bound = seg_bound,
+                        "dashed stroke"
+                    );
+                    chords
+                } else {
+                    tracing::debug!(case, chords = seg_bound, "undashed stroke");
+                    seg_bound
+                };
+                chord_used_total += written;
+                chord_bound_total += seg_bound;
+                let mut balance: HashMap<(u32, u32), i64> = HashMap::new();
+                for slot in seg_base..seg_base + seg_bound {
+                    let chord = &segments[slot * 4..slot * 4 + 4];
+                    if slot < seg_base + written {
+                        assert!(
+                            chord.iter().all(|&bits| f32::from_bits(bits).is_finite()),
+                            "case {case}: chord slot {} is not finite",
+                            slot - seg_base
+                        );
+                        *balance.entry((chord[0], chord[1])).or_default() += 1;
+                        *balance.entry((chord[2], chord[3])).or_default() -= 1;
+                    } else {
+                        assert!(
+                            chord.iter().all(|&bits| f32::from_bits(bits).is_nan()),
+                            "case {case}: slot {} past the written chords was touched",
+                            slot - seg_base
+                        );
+                    }
+                }
+                assert!(
+                    balance.values().all(|&n| n == 0),
+                    "case {case}: chords do not close"
+                );
+                let [x0, y0, x1, y1] = [0, 1, 2, 3].map(|a| unordered(record[a]));
+                let rect = gpu.bound.rect;
+                assert!(
+                    x0 >= rect[0] && y0 >= rect[1] && x1 <= rect[2] && y1 <= rect[3],
+                    "case {case}: bbox ({x0}, {y0}, {x1}, {y1}) outside {rect:?}"
+                );
+            }
+            // The NaN tail past `seg_total` must be untouched.
+            assert!(
+                segments[frame.seg_total as usize * 4..]
+                    .iter()
+                    .all(|&word| f32::from_bits(word).is_nan()),
+                "a chord wrote past the last path's segments"
+            );
+            tracing::debug!(
+                chord_used_total,
+                chord_bound_total,
+                staged_used,
+                staged_bound,
+                cases = kept.len(),
+                elapsed = ?started.elapsed(),
+                "stroke chords"
+            );
+        }
     }
 }

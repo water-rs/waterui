@@ -38,6 +38,10 @@ mod dxil;
 mod metal;
 #[path = "src/render/programs.rs"]
 mod programs;
+/// The stroke record ABI the compute stroker's kernels share with the CPU
+/// encoder: rendered into the WGSL prelude of the `coverage` module.
+#[path = "src/render/stroke_abi.rs"]
+mod stroke_abi;
 
 mod build_tile_spirv;
 #[path = "build_tile.rs"]
@@ -50,6 +54,7 @@ mod tile;
 mod union_cap;
 
 use std::env;
+use std::fmt::Write as _;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
@@ -203,7 +208,7 @@ const UNCHECKED: naga::proc::BoundsCheckPolicies = naga::proc::BoundsCheckPolici
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    for shared in ["bindings", "programs"] {
+    for shared in ["bindings", "programs", "stroke_abi"] {
         println!(
             "cargo::rerun-if-changed={}",
             manifest.join(format!("src/render/{shared}.rs")).display()
@@ -227,6 +232,7 @@ fn main() {
         reduce,
         shadow,
         coverage,
+        stroke,
         native,
         tile,
         space_convert,
@@ -243,6 +249,7 @@ fn main() {
         "reduce",
         "shadow",
         "coverage",
+        "stroke",
         "external_native",
         "composite/tile",
         "space_convert",
@@ -278,6 +285,10 @@ fn main() {
         union_cap::UNION_MAX_MEMBERS
     );
     std::fs::write(out_dir.join("union_max_members.wgsl"), &union_max).unwrap();
+    // The coverage module is the stroke ABI prelude, `coverage.wgsl` and the
+    // compute stroker's kernels, in that order. Its spec lands in `OUT_DIR`
+    // like every other, and the runtime's WGSL delivery reads that file.
+    let coverage = format!("{}\n{coverage}\n{stroke}", stroke_prelude());
     let stripped = Stripped::new(&shader, &shared);
     let specs = module_specs(&Modules {
         shared: &shared,
@@ -304,6 +315,107 @@ fn main() {
     });
 
     compile_specs(&out_dir, &specs);
+}
+
+/// The stroke ABI as WGSL: every `stroke_abi` constant as a `u32` `const`,
+/// and the 8-point Gauss-Legendre rule the dashed arc lengths integrate with.
+/// The Rust constants are the only definition of the values.
+fn stroke_prelude() -> String {
+    macro_rules! abi {
+        ($($name:ident),* $(,)?) => {
+            [$((stringify!($name), stroke_abi::$name)),*]
+        };
+    }
+    let constants = abi![
+        RECORD_WORDS,
+        PIECE_MASK,
+        PIECE_LINE,
+        PIECE_CURVE,
+        PIECE_POINT_ARC,
+        PIECE_JOIN_ONLY,
+        JOIN_SHIFT,
+        JOIN_MASK,
+        JOIN_START,
+        JOIN_SHARED,
+        JOIN_BEVEL,
+        JOIN_MITER,
+        JOIN_ROUND,
+        CAP_START,
+        CAP_END,
+        CLOSE,
+        LINEAR_END,
+        SLOTS,
+        SLOT_FS,
+        SLOT_BS,
+        SLOT_FE,
+        SLOT_BE,
+        SLOT_WORDS,
+        N_OFF_MAX,
+        N_LEN_MAX,
+        CAP_BUTT,
+        CAP_SQUARE,
+        CAP_ROUND,
+        FRAG_JOIN,
+        FRAG_START_CAP,
+        FRAG_END_CAP,
+        FRAG_RECORD_SHIFT,
+        STAGE_WORDS,
+        LIST_WORDS,
+        SCAN_BLOCK,
+    ];
+    let mut prelude = String::from("// The stroke ABI, rendered from `stroke_abi.rs`.\n");
+    for (name, value) in constants {
+        writeln!(prelude, "const {name}: u32 = {value}u;").expect("write to a String");
+    }
+    let (nodes, weights): (Vec<_>, Vec<_>) = gauss_legendre_8().into_iter().unzip();
+    let list = |values: Vec<f64>| {
+        values
+            .iter()
+            .map(|v| format!("{v:.12}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    writeln!(
+        prelude,
+        "const GL_NODES: array<f32, 8> = array<f32, 8>({});\n\
+         const GL_WEIGHTS: array<f32, 8> = array<f32, 8>({});",
+        list(nodes),
+        list(weights)
+    )
+    .expect("write to a String");
+    prelude
+}
+
+/// The 8-point Gauss-Legendre nodes and weights on `[-1, 1]`, by Newton's
+/// iteration on the Legendre polynomial from its Chebyshev-like starting
+/// roots.
+fn gauss_legendre_8() -> Vec<(f64, f64)> {
+    const N: u32 = 8;
+    let n = f64::from(N);
+    let mut rule = Vec::with_capacity(N as usize);
+    for i in 0..N / 2 {
+        let mut z = (std::f64::consts::PI * (f64::from(i) + 0.75) / (n + 0.5)).cos();
+        let derivative = loop {
+            let (mut p1, mut p2) = (1.0_f64, 0.0_f64);
+            for j in 1..=N {
+                let p3 = p2;
+                p2 = p1;
+                let j = f64::from(j);
+                p1 = (j - 1.0).mul_add(-p3, 2.0f64.mul_add(j, -1.0) * z * p2) / j;
+            }
+            let pp = n * z.mul_add(p1, -p2) / z.mul_add(z, -1.0);
+            let next = z - p1 / pp;
+            if (next - z).abs() < 1e-15 {
+                break pp;
+            }
+            z = next;
+        };
+        let weight = 2.0 / (z.mul_add(-z, 1.0) * derivative * derivative);
+        rule.push((-z, weight));
+        rule.push((z, weight));
+    }
+    rule.sort_by(|a, b| a.0.total_cmp(&b.0));
+    rule
 }
 
 /// The WGSL module sources `module_specs` splices into `Spec`s.

@@ -230,7 +230,7 @@ pub mod spirv {
     pub const SHADOW: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.spv"));
     /// The space fragment plus `space_convert.wgsl`.
     pub const SPACE_CONVERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/space_convert.spv"));
-    /// `coverage.wgsl`.
+    /// The stroke ABI prelude, `coverage.wgsl` and `stroke.wgsl`.
     pub const COVERAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/coverage.spv"));
     /// `external_native.spv` — the Vulkan native module: `vs_main`,
     /// `fs_external` and `fs_external_format`, with the external-format
@@ -502,7 +502,7 @@ const SPACE_CONVERT: Fixed = Fixed {
 };
 
 const COVERAGE: Fixed = Fixed {
-    wgsl: include_str!("coverage.wgsl"),
+    wgsl: include_str!(concat!(env!("OUT_DIR"), "/coverage.wgsl")),
     #[cfg(cherenkov_spirv)]
     spirv: spirv::COVERAGE,
     metallib: COVERAGE_METALLIB,

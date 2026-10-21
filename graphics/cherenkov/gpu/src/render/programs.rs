@@ -116,4 +116,16 @@ pub const COVERAGE: &[Program] = &[
     kernel("classify"),
     kernel("fill_cells"),
     kernel("emit_counts"),
+    // The compute stroker (water-rs/waterui#2544).
+    kernel("stroke_vertices"),
+    kernel("stroke_emit"),
+    kernel("dash_length"),
+    kernel("dash_scan_reduce"),
+    kernel("dash_scan_blocks"),
+    kernel("dash_scan_apply"),
+    kernel("dash_fragments"),
+    argument_kernel("dash_args"),
+    kernel("dash_emit"),
+    kernel("bin_strokes"),
+    kernel("bin_dashes"),
 ];

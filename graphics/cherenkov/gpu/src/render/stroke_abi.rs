@@ -4,10 +4,6 @@
 //! into a WGSL prelude. The Rust constants are the only definition.
 
 /// u32 words of one stroke record: six `vec4`s.
-#[expect(
-    dead_code,
-    reason = "read by the stroke kernels' WGSL prelude, not by the encoder"
-)]
 pub const RECORD_WORDS: u32 = 24;
 // `head.x` bit fields
 /// Mask of the piece kind, bits 0-1.
@@ -45,10 +41,6 @@ pub const SLOT_BS: u32 = 1;
 pub const SLOT_FE: u32 = 2;
 pub const SLOT_BE: u32 = 3;
 /// u32 words of vertex scratch per slot: local xy, device xy.
-#[expect(
-    dead_code,
-    reason = "read by the stroke kernels' WGSL prelude, not by the encoder"
-)]
 pub const SLOT_WORDS: u32 = 4;
 /// Largest offset chord count of one CURVE piece side.
 pub const N_OFF_MAX: u32 = 32;
@@ -58,38 +50,33 @@ pub const N_LEN_MAX: u32 = 16;
 pub const CAP_BUTT: u32 = 0;
 pub const CAP_SQUARE: u32 = 1;
 pub const CAP_ROUND: u32 = 2;
-// dash fragment flags (staging word 2)
+// dash fragment flags (staging word 2, bits below `FRAG_RECORD_SHIFT`)
 /// The dash covers the record's start vertex.
-#[expect(
+#[allow(
     dead_code,
-    reason = "read by the stroke kernels' WGSL prelude, not by the encoder"
+    reason = "read by the WGSL prelude build.rs renders, which compiles this file as its own module"
 )]
 pub const FRAG_JOIN: u32 = 1;
-#[expect(
+#[allow(
     dead_code,
-    reason = "read by the stroke kernels' WGSL prelude, not by the encoder"
+    reason = "read by the WGSL prelude build.rs renders, which compiles this file as its own module"
 )]
 pub const FRAG_START_CAP: u32 = 2;
-#[expect(
+#[allow(
     dead_code,
-    reason = "read by the stroke kernels' WGSL prelude, not by the encoder"
+    reason = "read by the WGSL prelude build.rs renders, which compiles this file as its own module"
 )]
 pub const FRAG_END_CAP: u32 = 4;
-/// u32 words per staged fragment: `t_a`, `t_b`, flags, chords.
-#[expect(
+/// Staging word 2 carries the fragment's dashed-record index above the flags,
+/// so `dash_emit` and `bin_dashes` find the record without a search.
+#[allow(
     dead_code,
-    reason = "read by the stroke kernels' WGSL prelude, not by the encoder"
+    reason = "read by the WGSL prelude build.rs renders, which compiles this file as its own module"
 )]
+pub const FRAG_RECORD_SHIFT: u32 = 3;
+/// u32 words per staged fragment: `t_a`, `t_b`, flags and record, chords.
 pub const STAGE_WORDS: u32 = 4;
 /// u32 words per compacted fragment: stage index, path-relative output slot.
-#[expect(
-    dead_code,
-    reason = "read by the stroke kernels' WGSL prelude, not by the encoder"
-)]
 pub const LIST_WORDS: u32 = 2;
 /// Records per arc-length / offset scan block.
-#[expect(
-    dead_code,
-    reason = "read by the stroke kernels' WGSL prelude, not by the encoder"
-)]
 pub const SCAN_BLOCK: u32 = 256;

@@ -17,8 +17,8 @@ use std::sync::Arc;
 use cherenkov::{RenderError, ShapeData};
 use kurbo::common::solve_quadratic;
 use kurbo::{
-    Affine, BezPath, Cap, CubicBez, Join, ParamCurve, ParamCurveDeriv, ParamCurveNearest, PathEl,
-    Point, QuadBez, Rect, Stroke, Vec2,
+    Affine, BezPath, Cap, CubicBez, Join, ParamCurve, ParamCurveArclen, ParamCurveDeriv,
+    ParamCurveNearest, PathEl, Point, QuadBez, Rect, Stroke, Vec2,
 };
 
 use super::{GpuBound, GpuPath, encodable, shape_path, sigma_max};
@@ -51,9 +51,11 @@ pub struct GpuStrokeRecord {
     pub p: [f32; 4],
     /// `(P1.x, P1.y, T1.x, T1.y)`: end centre and tangent.
     pub q: [f32; 4],
-    /// CURVE: the sub-cubic's `(p1, p2)`. `POINT_ARC`: `(psi, 0, 0, 0)`.
-    /// Dashed LINE: the length in fixed point as two u32 bit patterns
-    /// (integer part, fraction), then 0, 0.
+    /// CURVE: the sub-cubic's `(p1, p2)`. `POINT_ARC`: `(psi, 0, 0, 0)`,
+    /// or `(psi, length)` for a dashed one: the sub-cubic's f64 arc
+    /// length in fixed point as two u32 bit patterns. Dashed LINE: the
+    /// length in fixed point as two u32 bit patterns (integer part,
+    /// fraction), then 0, 0.
     pub c: [f32; 4],
 }
 
@@ -104,6 +106,10 @@ const POLYGON_MARGIN: f64 = 1.0 / 1_048_576.0;
 /// Positions and periods are fixed point with 32 fractional bits, so they must
 /// stay below `2^31` user units.
 const FIXED_LIMIT: f64 = 2_147_483_648.0;
+
+/// Accuracy of the f64 arc length a dashed `POINT_ARC` carries in `c.yz`:
+/// below the `2^-32` fixed-point unit.
+const POINT_ARC_LENGTH_ACCURACY: f64 = 1e-10;
 
 /// Subdivision depth at which a curve is declared not to converge.
 const MAX_DEPTH: u32 = 24;
@@ -685,6 +691,21 @@ fn polygon_length(piece: &Piece) -> f64 {
     }
 }
 
+/// The exact f64 arc length a dashed piece's record carries in fixed
+/// point (design section 6.6): a LINE's control polygon is its length;
+/// a `POINT_ARC` stores its sub-cubic's so the section-3 drift bound
+/// holds at cusps too.
+fn dash_piece_length(piece: &Piece, polygon: f64, dashed: bool) -> Option<f64> {
+    if !dashed {
+        return None;
+    }
+    match piece.body {
+        Body::Line => Some(polygon),
+        Body::PointArc { cubic, .. } => Some(cubic.arclen(POINT_ARC_LENGTH_ACCURACY)),
+        _ => None,
+    }
+}
+
 /// The cap chord counts and the bound row of a cap style.
 struct CapRow {
     chords: usize,
@@ -1056,13 +1077,17 @@ impl<'a> Encoder<'a> {
         } else {
             (0, 0)
         };
-        // A dashed line carries its length in fixed point (design section 6.6).
-        let c = if self.dash.is_some() && matches!(piece.body, Body::Line) {
-            let [integer, fraction] = fixed(polygon);
-            [f32::from_bits(integer), f32::from_bits(fraction), 0.0, 0.0]
-        } else {
-            c
-        };
+        // A dashed LINE carries its length in `c.xy`, a dashed POINT_ARC
+        // its sub-cubic's in `c.yz` (design section 6.6).
+        let c = dash_piece_length(piece, polygon, self.dash.is_some()).map_or(c, |length| {
+            let [integer, fraction] = fixed(length);
+            let (x, y) = (f32::from_bits(integer), f32::from_bits(fraction));
+            if matches!(piece.body, Body::Line) {
+                [x, y, 0.0, 0.0]
+            } else {
+                [c[0], x, y, c[3]]
+            }
+        });
         let [p0x, p0y] = f32x2(piece.p0);
         let [t0x, t0y] = f32x2v(piece.t0);
         let [p1x, p1y] = f32x2(piece.p1);
@@ -1211,6 +1236,17 @@ impl<'a> Encoder<'a> {
         let last = self.records.len() - 1;
         if let Some(plan) = &self.dash {
             if self.subpath_polygon >= FIXED_LIMIT {
+                return Err(RenderError::Unsupported("dashed subpath too long"));
+            }
+            // `dash_fragments` computes `u1 = φ + s0 + L` and a following
+            // boundary `b` up to a period past `u1`, so a subpath's
+            // positions must stay below `2^32 - P` in the kernel's `2^-32`
+            // fixed point or they wrap.
+            let [pi, pf] = fixed(plan.period);
+            let [li, lf] = fixed(self.subpath_polygon);
+            let period = u128::from(pi) << 32 | u128::from(pf);
+            let length = u128::from(li) << 32 | u128::from(lf);
+            if period + length >= (1u128 << 64) - period {
                 return Err(RenderError::Unsupported("dashed subpath too long"));
             }
             let (first_rel, last_rel) = (
@@ -2076,6 +2112,28 @@ mod tests {
             merged += usize::from(table.merge_start);
         }
         assert!(merged > 10, "the rule must be exercised both ways");
+    }
+
+    #[test]
+    fn dash_rejects_fixed_point_overflow() {
+        // A period just under the `2^31` limit: `dash_fragments`'s `u1`
+        // and the next boundary `b` wrap the 64-bit fixed point once a
+        // subpath's control-polygon length reaches `2^32 - P`, which the
+        // `2^31` checks alone let through.
+        let stroke = Stroke::new(1.0).with_dashes(0.0, [FIXED_LIMIT - 200.0, 100.0]);
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((200.0, 0.0));
+        assert!(matches!(
+            prepare(&shape(&path), &stroke, Affine::IDENTITY, FLATTEN, SURFACE),
+            Err(RenderError::Unsupported(_))
+        ));
+        // Just below the sum the same stroke still encodes.
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((100.0, 0.0));
+        let gpu = encode(&path, &stroke, Affine::IDENTITY);
+        assert!(gpu.dash.is_some());
     }
 
     #[test]

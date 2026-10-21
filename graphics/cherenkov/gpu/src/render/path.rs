@@ -427,22 +427,10 @@ pub struct GpuPath {
     /// stroke, which has `strokes` instead.
     pub elements: Arc<[GpuElement]>,
     /// Stroke records consumed by the compute stroker. Empty for a fill.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the dispatch reads it in a later change of #2544")
-    )]
     pub strokes: Arc<[GpuStrokeRecord]>,
     /// The stroke's per-path parameters; zero for a fill.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the dispatch reads it in a later change of #2544")
-    )]
     pub stroke: StrokeParams,
     /// A dashed stroke's pattern and capacities.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the dispatch reads it in a later change of #2544")
-    )]
     pub dash: Option<Arc<DashTable>>,
     /// The device hull under the encoding raster.
     hull: Rect,
