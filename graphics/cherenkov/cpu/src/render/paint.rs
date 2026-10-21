@@ -506,6 +506,11 @@ fn extend_t(t: f32, extend: Extend) -> Option<f32> {
 
 /// Premultiplies interpolation-space straight components into linear P3.
 #[expect(
+    clippy::inline_always,
+    reason = "keep premultiplication inside the dispatched per-pixel loop"
+)]
+#[inline(always)]
+#[expect(
     clippy::many_single_char_names,
     reason = "r/g/b/a are the channel names"
 )]
@@ -823,6 +828,10 @@ fn linear_at(outer: &PaintData, params: &LinearPaint, mut x: f32, mut y: f32) ->
 /// span kernel evaluates per lane, including the no-solution `NaN`
 /// mapping to transparent before extension.
 #[expect(
+    clippy::option_if_let_else,
+    reason = "keep stop interpolation inside the dispatched target features, without a closure boundary"
+)]
+#[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
@@ -838,9 +847,10 @@ fn radial_at(outer: &PaintData, params: &RadialPaint, mut x: f32, mut y: f32) ->
     if t.is_nan() {
         return [0.0; 4];
     }
-    extend_t(t, params.extend).map_or([0.0; 4], |t| {
-        eval_stops(&params.stops, t, params.interpolation)
-    })
+    match extend_t(t, params.extend) {
+        Some(t) => eval_stops(&params.stops, t, params.interpolation),
+        None => [0.0; 4],
+    }
 }
 
 /// Applies each mapping separately, preserving the scalar evaluator's f32
@@ -1028,7 +1038,10 @@ impl<'a, S: Simd> PaintOutput for PixelSpan<'a, S> {
     #[inline(always)]
     fn radial(self, outer: &PaintData, params: &RadialPaint) -> Self::Output {
         if self.out.len() < super::span::LANES {
-            self.sample(|x, y| radial_at(outer, params, x, y))
+            self.sample(
+                #[inline(always)]
+                |x, y| radial_at(outer, params, x, y),
+            )
         } else {
             super::gradient::radial_span(self.simd, outer, params, self.x0, self.py, self.out)
         }
