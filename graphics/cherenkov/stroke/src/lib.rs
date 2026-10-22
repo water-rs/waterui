@@ -30,8 +30,35 @@ use kurbo::{BezPath, CubicBez, PathEl, Point, Stroke, StrokeOpts};
 /// non-zero dash goes through the same cusp-splitting stroke as an undashed
 /// path. The dash pattern must be valid: finite and non-negative entries
 /// with a positive sum, and a finite offset.
+///
+/// # Panics
+///
+/// Panics, naming the offending element, if the outline holds a non-finite
+/// point: a finite input and a valid style never produce one, so it marks a
+/// defect in the input or in the expansion.
 #[must_use]
 pub fn stroke(path: impl IntoIterator<Item = PathEl>, style: &Stroke, tolerance: f64) -> BezPath {
+    let outline = stroke_expanded(path, style, tolerance);
+    for (ix, el) in outline.elements().iter().enumerate() {
+        let points: &[Point] = match el {
+            PathEl::MoveTo(p) | PathEl::LineTo(p) => core::slice::from_ref(p),
+            PathEl::QuadTo(a, b) => &[*a, *b],
+            PathEl::CurveTo(a, b, c) => &[*a, *b, *c],
+            PathEl::ClosePath => &[],
+        };
+        assert!(
+            points.iter().all(|p| p.x.is_finite() && p.y.is_finite()),
+            "cherenkov_stroke::stroke produced a non-finite point in outline element {ix}: {el:?}"
+        );
+    }
+    outline
+}
+
+fn stroke_expanded(
+    path: impl IntoIterator<Item = PathEl>,
+    style: &Stroke,
+    tolerance: f64,
+) -> BezPath {
     if style.dash_pattern.is_empty() {
         return stroke_undashed(path, style, tolerance);
     }
@@ -157,6 +184,16 @@ mod tests {
     fn exact_half_cusp_splits_at_one_half() {
         let c = cubic([(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, -1.0)]);
         assert_eq!(cusp::parameter(&c), Some(0.5));
+    }
+
+    #[test]
+    #[should_panic(expected = "non-finite point in outline element")]
+    fn a_non_finite_outline_point_panics() {
+        let path = [
+            PathEl::MoveTo(Point::new(0.0, 0.0)),
+            PathEl::LineTo(Point::new(f64::NAN, 1.0)),
+        ];
+        let _ = stroke(path, &Stroke::new(1.0), 0.01);
     }
 
     #[test]
