@@ -57,7 +57,22 @@ pub mod kernels {
         py: usize,
         out: &'a mut [MaybeUninit<[f32; 4]>],
     ) -> &'a mut [[f32; 4]] {
-        fearless_simd::dispatch!(level, simd => paint.eval_span(simd, x0, py, out))
+        #[expect(
+            clippy::inline_always,
+            reason = "evaluated under the dispatched CPU level"
+        )]
+        #[inline(always)]
+        fn eval<'a, S: fearless_simd::Simd>(
+            simd: S,
+            (paint, x0, py, out): (&PaintData, usize, usize, &'a mut [MaybeUninit<[f32; 4]>]),
+        ) -> &'a mut [[f32; 4]] {
+            paint.eval_span(simd, x0, py, out)
+        }
+
+        // Move the arguments into vectorize together, rather than capturing
+        // references to the scalar coordinates and loading them again inside it.
+        let args = (paint, x0, py, out);
+        fearless_simd::dispatch!(level, simd => eval(simd, args))
     }
 
     /// `crate::render::composite_span` under `level`'s dispatch.
@@ -82,9 +97,23 @@ pub mod kernels {
         color: [f32; 4],
         space: BlendSpace,
     ) {
-        fearless_simd::dispatch!(level, simd => {
+        #[expect(
+            clippy::inline_always,
+            reason = "evaluated under the dispatched CPU level"
+        )]
+        #[inline(always)]
+        fn composite<S: fearless_simd::Simd>(
+            simd: S,
+            (dst, cov): (&mut [[f32; 4]], &[f32]),
+            clip: ClipRun<'_>,
+            color: [f32; 4],
+            space: BlendSpace,
+        ) {
             crate::render::composite_solid(simd, dst, cov, clip, color, space);
-        });
+        }
+
+        let args = (dst, cov);
+        fearless_simd::dispatch!(level, simd => composite(simd, args, clip, color, space));
     }
 
     /// Uniform coverage through the production solid kernel.

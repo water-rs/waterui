@@ -94,9 +94,10 @@ SCENE_ASSET_OWNERS = {"cherenkov-oracle", "cherenkov-gpu", "cherenkov-cpu"}
 LINUX_EXCLUDED = {"waterui-apple", "cocoa-ui"}
 
 # A pull request whose affected packages are at least this share of the
-# Linux-linted members compiles nearly the whole workspace, so it gets the
-# 30-minute lint budget instead of the 10-minute scoped gate (#3229).
-WORKSPACE_WIDE_SHARE = 0.9
+# Linux-linted members re-checks most of the workspace, so it gets the
+# 30-minute lint budget instead of the 10-minute scoped gate (#3229). A
+# cherenkov-gpu change reaches about 74% and overran the scoped gate (#3246).
+WORKSPACE_WIDE_SHARE = 0.7
 
 
 def linux_package_args(names):

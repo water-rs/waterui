@@ -1,6 +1,5 @@
-//! Stroke expansion shared by the CPU route and the oracle: `kurbo::stroke`
-//! behind a dashing pass of our own that gives zero-length dashes the SVG 2
-//! meaning.
+//! Dashing ahead of [`crate::stroke`]'s outline expansion, with the SVG 2
+//! meaning for zero-length dashes.
 //!
 //! A zero-length dash draws both of its caps at its point: a disc of the
 //! stroke's half width for round caps, a square of side `width` centred on
@@ -8,51 +7,30 @@
 //! nothing for butt caps. A dash on a vertex takes the tangent of the
 //! segment that starts there, and one at the end of an open subpath the
 //! incoming tangent. `kurbo::dash` leaves a dot only where f64 rounding in
-//! its `DashIterator::step` leaves a roughly 1e-15 segment behind, so
-//! neither route can rely on it. Dashes of non-zero length are cut with the
-//! same arclength arithmetic and subsegments as kurbo and stroked by
-//! `kurbo::stroke`.
+//! its `DashIterator::step` leaves a roughly 1e-15 segment behind, so the
+//! walk below cuts the dashes itself with the same arclength arithmetic and
+//! subsegments as kurbo and reports the zero-length ones as [`Dot`]s.
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use kurbo::{
     Affine, Arc, BezPath, Cap, CubicBez, Line, ParamCurve, ParamCurveArclen, PathEl, PathSeg,
-    Point, QuadBez, Stroke, StrokeOpts, Vec2,
+    Point, QuadBez, Stroke, Vec2,
 };
 
 /// kurbo's dash arclength accuracy, which also bounds how far from a vertex
 /// a zero-length dash still counts as on it.
 const DASH_ACCURACY: f64 = 1e-6;
 
-/// Expand `path` stroked with `style` into its outline.
-///
-/// A style without a dash pattern is `kurbo::stroke` unchanged. The dash
-/// pattern must be valid: finite and non-negative entries with a positive
-/// sum, and a finite offset.
-#[must_use]
-pub fn stroke_outline(
-    path: impl IntoIterator<Item = PathEl>,
-    style: &Stroke,
-    opts: &StrokeOpts,
-    tolerance: f64,
-) -> BezPath {
-    if style.dash_pattern.is_empty() {
-        return kurbo::stroke(path, style, opts, tolerance);
-    }
-    let dashed = Dasher::new(&style.dash_pattern, style.dash_offset).dash(path);
-    let mut undashed = style.clone();
-    undashed.dash_pattern.clear();
-    undashed.dash_offset = 0.0;
-    let mut outline = kurbo::stroke(dashed.dashes, &undashed, opts, tolerance);
-    for dot in &dashed.dots {
-        dot.append_caps(style, tolerance, &mut outline);
-    }
-    outline
+/// Cut `path` into dashes under `pattern` at `offset`: the non-zero dashes
+/// as a path for the outline stroke, and the zero-length ones as [`Dot`]s.
+pub fn dash(path: impl IntoIterator<Item = PathEl>, pattern: &[f64], offset: f64) -> Dashed {
+    Dasher::new(pattern, offset).dash(path)
 }
 
 /// A zero-length dash: its point and the unit tangent of the path there.
 #[derive(Clone, Copy, Debug)]
-struct Dot {
+pub struct Dot {
     center: Point,
     tangent: Vec2,
 }
@@ -72,7 +50,7 @@ impl Dot {
     /// The contour is the start cap's half shape behind the point joined to
     /// the end cap's half shape ahead of it, in the frame whose x axis is
     /// the tangent.
-    fn append_caps(self, style: &Stroke, tolerance: f64, out: &mut BezPath) {
+    pub fn append_caps(self, style: &Stroke, tolerance: f64, out: &mut BezPath) {
         if style.start_cap == Cap::Butt && style.end_cap == Cap::Butt {
             return;
         }
@@ -118,11 +96,11 @@ fn cap_half(local: &mut BezPath, cap: Cap, x_extent: f64, to_y: f64, tolerance: 
     }
 }
 
-/// The result of dashing: the non-zero dashes as a path for
-/// `kurbo::stroke`, and the zero-length ones.
-struct Dashed {
-    dashes: BezPath,
-    dots: Vec<Dot>,
+/// The result of dashing: the non-zero dashes as a path for the outline
+/// stroke, and the zero-length ones.
+pub struct Dashed {
+    pub dashes: BezPath,
+    pub dots: Vec<Dot>,
 }
 
 /// A dash being collected: its start and the elements after it.
@@ -445,9 +423,10 @@ fn emit(path: &mut BezPath, dash: &OpenDash) {
 
 #[cfg(test)]
 mod tests {
-    use kurbo::{Join, Shape as _};
+    use kurbo::{Join, Shape as _, StrokeOpts};
 
     use super::*;
+    use crate::stroke;
 
     const TOL: f64 = 0.01;
 
@@ -466,7 +445,7 @@ mod tests {
     }
 
     fn outline(path: &BezPath, style: &Stroke) -> BezPath {
-        stroke_outline(path.iter(), style, &StrokeOpts::default(), TOL)
+        stroke(path.iter(), style, TOL)
     }
 
     /// The dots of `path` under `style`, ordered by position along x.

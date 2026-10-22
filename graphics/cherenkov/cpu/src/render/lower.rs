@@ -935,12 +935,7 @@ fn compile_stroke(
             }
             shape => shape_outline(shape, tol_u)?.0,
         };
-        let outline = cherenkov_record::stroke::stroke_outline(
-            frame.anchored(path),
-            stroke,
-            &kurbo::StrokeOpts::default(),
-            tol_u,
-        );
+        let outline = cherenkov_stroke::stroke(frame.anchored(path), stroke, tol_u);
         Some((
             flatten_edges(frame.map(outline), FLATTEN_TOL),
             FillRule::NonZero,
@@ -2477,7 +2472,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         self.place(&frame, resolved, paint, true);
     }
 
-    /// `Stroke`: stroke the content-space path with `stroke_outline`, map it into the
+    /// `Stroke`: stroke the content-space path with `cherenkov_stroke::stroke`, map it into the
     /// shape's frame, flatten and fill non-zero — dashes included, like
     /// the oracle. `carried` replaces stroking, flattening and resolving.
     fn stroke(
