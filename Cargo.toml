@@ -666,20 +666,19 @@ filtrate-derive = { path = "graphics/filtrate/derive" }
 
 # Reference engines for cherenkov-bench's cross-engine comparison only;
 # WaterUI renders through Cherenkov and ships none of these. They resolve
-# from the fork, not crates.io: `vello` carries our Mali Vulkan device-loss
-# fix (linebender/vello#1817, still open upstream) plus the glifo
-# canonical-location hint-cache fix applied to vello_encoding's GlyphCache
-# (branch `glifo-canonical-location-classic`, on the Mali rev), and this rev
-# adds the bump-buffer overflow re-render on top of what cherenkov pinned
-# (7f5e1ca5). The sparse-strip crates and glifo sit on the same
-# canonical-location fix at `glifo-canonical-location` — without it, an
-# explicit all-default location (`[0, 0, …]`) never matched a stored hint
-# entry and every glyph run repaid a HintingInstance reconfigure.
-vello = { git = "https://github.com/lexoliu/vello", branch = "perf/1262-bump-sizing" }
-vello_hybrid = { git = "https://github.com/lexoliu/vello", branch = "glifo-canonical-location" }
-vello_common = { git = "https://github.com/lexoliu/vello", branch = "glifo-canonical-location" }
-vello_sparse_shaders = { git = "https://github.com/lexoliu/vello", branch = "glifo-canonical-location" }
-glifo = { git = "https://github.com/lexoliu/vello", branch = "glifo-canonical-location" }
+# from the fork, not crates.io: `waterui/v0.11` is upstream vello v0.11.0 plus
+# our patches — the glifo hint cache keyed by the canonical location (without
+# it an explicit all-default location never matched a stored hint entry and
+# every glyph run repaid a HintingInstance reconfigure), the live atlas size
+# reported by patch-free resolves, the classic renderer's BumpBufferSizes with
+# grow-on-overflow re-render and deferred bump verification, the discarded
+# select arm's index clamped in prefix-sum lookups, and texel-centre padding of
+# image sampling in vello_gpu_shaders.
+vello = { git = "https://github.com/lexoliu/vello", branch = "waterui/v0.11" }
+vello_gpu = { git = "https://github.com/lexoliu/vello", branch = "waterui/v0.11" }
+vello_common = { git = "https://github.com/lexoliu/vello", branch = "waterui/v0.11" }
+vello_gpu_shaders = { git = "https://github.com/lexoliu/vello", branch = "waterui/v0.11" }
+glifo = { git = "https://github.com/lexoliu/vello", branch = "waterui/v0.11" }
 
 # wgpu 30.0.1's Metal backend reads the address of the kCGColorSpace* globals
 # instead of their value and crashes in CGColorSpaceCreateWithName whenever a
