@@ -1115,6 +1115,31 @@ impl WinitRunner {
         runtime_window_origin(runtime)
     }
 
+    /// Windows' menu bar lives on the window: attach the app bar's HMENU to
+    /// this HWND (see `menu_bar` for the platform contract), and subclass the
+    /// same HWND so a session shutdown asks the termination machine before
+    /// ending the process.
+    #[cfg(target_os = "windows")]
+    fn attach_windows_chrome(&mut self, native_window: &NativeWindow) {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(handle) = native_window.window_handle()
+            && let RawWindowHandle::Win32(win) = handle.as_raw()
+        {
+            self.native_menu_bar.attach_hwnd(
+                win.hwnd.get(),
+                crate::renderer::WindowId::Winit(native_window.id()),
+            );
+            install_termination_subclass(
+                win.hwnd.get() as windows_sys::Win32::Foundation::HWND,
+                TerminationSubclass {
+                    termination: self.termination.clone(),
+                    session_end: Rc::clone(&self.session_end),
+                    runnables: Rc::clone(&self.local_runnable_rx),
+                },
+            );
+        }
+    }
+
     /// Realizes `native_window` as the platform window of `window` on the
     /// runner's shared GPU context, creating that context with the first
     /// window.
@@ -1192,28 +1217,7 @@ impl WinitRunner {
         }
         #[cfg(target_os = "windows")]
         if activates {
-            // Windows' menu bar lives on the window: attach the app bar's
-            // HMENU to this HWND (see `menu_bar` for the platform contract),
-            // and subclass the same HWND so a session shutdown asks the
-            // termination machine before ending the process.
-            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            if let Ok(handle) = native_window.window_handle()
-                && let RawWindowHandle::Win32(win) = handle.as_raw()
-            {
-                let hwnd = win.hwnd.get() as windows_sys::Win32::Foundation::HWND;
-                self.native_menu_bar.attach_hwnd(
-                    win.hwnd.get(),
-                    crate::renderer::WindowId::Winit(native_window.id()),
-                );
-                install_termination_subclass(
-                    hwnd,
-                    TerminationSubclass {
-                        termination: self.termination.clone(),
-                        session_end: Rc::clone(&self.session_end),
-                        runnables: Rc::clone(&self.local_runnable_rx),
-                    },
-                );
-            }
+            self.attach_windows_chrome(&native_window);
         }
         let mut platform = self.create_platform_window(native_window, &window);
         platform.apply_properties(&window);
