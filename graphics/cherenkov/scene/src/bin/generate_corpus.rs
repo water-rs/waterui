@@ -36,7 +36,6 @@ use parley::{
     FontContext, LayoutContext, PositionedLayoutItem, StyleProperty, fontique::Blob,
     style::FontFamily,
 };
-use read_fonts::types::F2Dot14;
 use skrifa::MetadataProvider;
 
 /// `kurbo::Affine::rotate` evaluated with `libm` so the sine/cosine
@@ -316,10 +315,10 @@ impl TextContext {
                     .normalized_coords()
                     .iter()
                     .enumerate()
-                    .filter(|(_, v)| **v != 0)
+                    .filter(|(_, v)| v.to_bits() != 0)
                     .map(|(i, v)| NormalizedCoord {
                         tag: axes.get(i).cloned().unwrap_or_default(),
-                        value: F2Dot14::from_bits(*v).to_f32(),
+                        value: v.to_f32(),
                     })
                     .collect();
                 let glyphs = gr
@@ -1648,6 +1647,32 @@ fn projective_scenes(corpus: &mut Corpus, ctx: &mut TextContext) {
                 let y = f64::from(i).mul_add(16.0, 34.0);
                 plane.fill(Shape::rect(96.0, y, 64.0, 4.0), solid(srgb(1.0, 1.0, 1.0)));
             }
+        });
+    });
+
+    // An affine pose whose inverse Jacobian J = [[1.25, 0.75], [0.75, 1.25]]
+    // has J·Jᵀ with xx == yy exactly and xy != 0 (#3234): the major axis is
+    // at 45 degrees, where the half-angle is taken of `atan2(2xy, 0)`. The
+    // matrix is its own inverse and every entry is a dyadic rational.
+    corpus.scene("projective-diagonal-axis", 192, 192, backdrop, |l| {
+        l.layer(|layer| {
+            let mut matrix = Projection::identity();
+            matrix[0][0] = 1.25;
+            matrix[0][1] = -0.75;
+            matrix[1][0] = -0.75;
+            matrix[1][1] = 1.25;
+            layer.projection(Projection {
+                matrix,
+                pivot: Vec2::new(96.0, 96.0),
+                ..Projection::default()
+            });
+            layer.clip(Shape::rect(32.0, 32.0, 128.0, 128.0));
+            layer.fill(Shape::rect(32.0, 32.0, 128.0, 128.0), solid(sdr.face));
+            for i in 0..16 {
+                let x = f64::from(i).mul_add(8.0, 32.0);
+                layer.fill(Shape::rect(x, 32.0, 2.0, 128.0), solid(sdr.line));
+            }
+            layer.fill(Shape::circle(96.0, 96.0, 24.0), solid(sdr.accent));
         });
     });
 
@@ -4265,6 +4290,24 @@ fn run(root: &Path) -> Result<(), SceneError> {
             );
         });
     }
+
+    // A sweep whose centre is a pixel centre (#3234): the column through it
+    // is evaluated at `x == 0`, the row at `y == 0`, and the centre pixel at
+    // both. Every other sweep scene centres on a pixel corner, which no
+    // pixel centre reaches.
+    corpus.scene("grad-sweep-pixel-centre", 129, 129, white, |l| {
+        l.fill(
+            Shape::rect(0.0, 0.0, 129.0, 129.0),
+            Paint::Sweep(SweepGradient {
+                center: Point::new(64.5, 64.5),
+                start_angle: 0.0,
+                end_angle: std::f64::consts::TAU,
+                stops: stops2(),
+                extend: Extend::Pad,
+                interpolation: ColorSpace::Srgb,
+            }),
+        );
+    });
 
     // A wide-gamut stop interpolated in sRGB: Display P3 (0, 0.85, 0.05)
     // has a negative sRGB red component, so the interpolated encoded value

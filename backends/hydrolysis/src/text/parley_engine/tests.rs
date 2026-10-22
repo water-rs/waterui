@@ -179,11 +179,11 @@ fn logical_text_alignment_follows_environment_direction() {
 
 /// The logically-last cluster's character on a line — where the marker
 /// sits after tail truncation.
-fn last_cluster_char(line: &parley::Line<'_, [u8; 4]>) -> Option<char> {
+fn last_cluster_char(line: &parley::Line<'_, [u8; 4]>, text: &str) -> Option<char> {
     let mut tail = None;
     for run in line.runs() {
         for cluster in run.clusters() {
-            tail = Some(cluster.source_char());
+            tail = text[cluster.text_range()].chars().next();
         }
     }
     tail
@@ -215,7 +215,7 @@ fn a_truncated_line_ends_in_an_ellipsis_inside_its_bound() {
         "the cut fills the bound to glyph granularity"
     );
     assert_eq!(
-        last_cluster_char(&line),
+        last_cluster_char(&line, &layout.0.text),
         Some(TAIL_ELLIPSIS),
         "the drawn line ends in an ellipsis"
     );
@@ -239,10 +239,13 @@ fn a_multiline_limit_carries_the_ellipsis_on_the_last_line() {
     );
     let last = layout.0.layout.get(1).expect("last line");
     assert!(last.metrics().advance <= 80.0);
-    assert_eq!(last_cluster_char(&last), Some(TAIL_ELLIPSIS));
+    assert_eq!(
+        last_cluster_char(&last, &layout.0.text),
+        Some(TAIL_ELLIPSIS)
+    );
     let first = layout.0.layout.get(0).expect("first line");
     assert_ne!(
-        last_cluster_char(&first),
+        last_cluster_char(&first, &layout.0.text),
         Some(TAIL_ELLIPSIS),
         "only the last line carries the marker"
     );
@@ -257,7 +260,7 @@ fn a_text_that_fits_its_limit_is_not_truncated() {
     let layout = service.shape_limited(&input, Some(200.0), Some(1));
 
     let line = layout.0.layout.get(0).expect("one line");
-    assert_eq!(last_cluster_char(&line), Some('t'));
+    assert_eq!(last_cluster_char(&line, &layout.0.text), Some('t'));
 }
 
 /// `GlyphMetrics::bounds` must agree with drawing the outline through

@@ -1660,10 +1660,10 @@ dependencies = [
  "cherenkov-record",
  "crossbeam-channel",
  "filtrate-core",
- "kurbo 0.13.1",
+ "kurbo",
  "libm",
  "nami",
- "parley",
+ "parley 0.12.0",
  "rustc-hash 2.1.3",
  "smallvec",
  "thiserror 2.0.21",
@@ -1688,7 +1688,7 @@ dependencies = [
  "filtrate",
  "glifo",
  "half",
- "kurbo 0.13.1",
+ "kurbo",
  "libc",
  "nami",
  "ndk-sys",
@@ -1699,12 +1699,12 @@ dependencies = [
  "peniko",
  "plist",
  "pollster 1.0.1",
- "read-fonts 0.41.0",
+ "read-fonts 0.45.1",
  "serde",
  "serde_json",
  "skia-bindings",
  "skia-safe",
- "skrifa 0.44.0",
+ "skrifa 0.48.0",
  "sysinfo",
  "thiserror 2.0.21",
  "tracing",
@@ -1726,19 +1726,20 @@ dependencies = [
  "cherenkov-oracle",
  "cherenkov-scene",
  "cherenkov-shader",
+ "cherenkov-stroke",
  "divan",
  "fearless_simd 1.1.0",
  "filtrate",
  "filtrate-core",
  "gungraun",
  "half",
- "kurbo 0.13.1",
+ "kurbo",
  "libc",
  "nami",
  "png",
  "rayon",
  "rustc-hash 2.1.3",
- "skrifa 0.44.0",
+ "skrifa 0.48.0",
  "tracing",
  "wide",
 ]
@@ -1762,7 +1763,7 @@ dependencies = [
  "gloo-timers 0.4.0",
  "half",
  "js-sys",
- "kurbo 0.13.1",
+ "kurbo",
  "libc",
  "libtest-mimic",
  "naga 30.0.1",
@@ -1787,7 +1788,7 @@ dependencies = [
  "quote",
  "rspirv",
  "rustc-hash 2.1.3",
- "skrifa 0.44.0",
+ "skrifa 0.48.0",
  "texture2ddecoder",
  "thiserror 2.0.21",
  "toml 1.1.8+spec-1.1.0",
@@ -1805,14 +1806,15 @@ name = "cherenkov-oracle"
 version = "0.0.0"
 dependencies = [
  "cherenkov-scene",
+ "cherenkov-stroke",
  "half",
- "kurbo 0.13.1",
+ "kurbo",
  "libm",
  "png",
  "rayon",
- "read-fonts 0.41.0",
+ "read-fonts 0.45.1",
  "serde",
- "skrifa 0.44.0",
+ "skrifa 0.48.0",
  "texture2ddecoder",
 ]
 
@@ -1822,7 +1824,7 @@ version = "0.0.0"
 dependencies = [
  "color",
  "filtrate-core",
- "kurbo 0.13.1",
+ "kurbo",
  "nami",
  "nami-core",
  "rustc-hash 2.1.3",
@@ -1837,17 +1839,17 @@ name = "cherenkov-scene"
 version = "0.0.0"
 dependencies = [
  "blake3",
- "fontique",
+ "fontique 0.12.0",
  "half",
- "kurbo 0.13.1",
+ "kurbo",
  "libm",
- "parley",
+ "parley 0.12.0",
  "png",
- "read-fonts 0.44.0",
+ "read-fonts 0.45.1",
  "serde",
  "serde_json",
  "skera",
- "skrifa 0.44.0",
+ "skrifa 0.48.0",
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
@@ -1861,6 +1863,14 @@ dependencies = [
  "half",
  "naga 30.0.1",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "cherenkov-stroke"
+version = "0.0.0"
+dependencies = [
+ "kurbo",
+ "num-bigint",
 ]
 
 [[package]]
@@ -2111,7 +2121,7 @@ dependencies = [
  "block2 0.6.2",
  "dispatch2",
  "keyboard-types",
- "kurbo 0.12.0",
+ "kurbo",
  "libc",
  "libtest-mimic",
  "mach2 0.7.0",
@@ -3725,9 +3735,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "font-types"
-version = "0.12.6"
+version = "0.12.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c92d9081c7ab3bd83ef1eecdfad090f3d966e3ce74106779664114cfe1a6274"
+checksum = "835ae9d781464a79026cde387f9cbc650c9a4909d7cf7e658b127e3c35d2f35d"
 dependencies = [
  "bytemuck",
 ]
@@ -3759,6 +3769,28 @@ name = "fontique"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6688bc1294fe7117d788937b6c53480169b29c566954af490830d4c09da9516a"
+dependencies = [
+ "hashbrown 0.17.1",
+ "linebender_resource_handle",
+ "memmap2",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-text",
+ "objc2-foundation 0.3.2",
+ "parlance",
+ "read-fonts 0.41.0",
+ "roxmltree 0.21.1",
+ "smallvec",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "yeslogic-fontconfig-sys",
+]
+
+[[package]]
+name = "fontique"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbf1df16263783918b7da396077521f92b729ef7c429444dfcf03581f1448b77"
 dependencies = [
  "hashbrown 0.17.1",
  "linebender_resource_handle",
@@ -4653,6 +4685,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "hydrolysis",
+ "icu_locale",
  "icu_properties",
  "icu_provider",
  "image",
@@ -4660,7 +4693,7 @@ dependencies = [
  "jni 0.22.4",
  "js-sys",
  "keyboard-types",
- "kurbo 0.13.1",
+ "kurbo",
  "libc",
  "lru 0.19.0",
  "nami",
@@ -4672,7 +4705,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
  "objc2-web-kit",
- "parley",
+ "parley 0.12.0",
  "peniko",
  "png",
  "pollster 1.0.1",
@@ -4681,7 +4714,7 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook",
- "skrifa 0.44.0",
+ "skrifa 0.48.0",
  "tempfile",
  "thiserror 2.0.21",
  "tiny_http",
@@ -5847,17 +5880,6 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kurbo"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce9729cc38c18d86123ab736fd2e7151763ba226ac2490ec092d1dd148825e32"
-dependencies = [
- "arrayvec",
- "euclid",
- "smallvec",
-]
-
-[[package]]
-name = "kurbo"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b60dfc32f652b926df6192e55525b16d186c69d47876c3ead4da5cc9f8450e2"
@@ -6845,7 +6867,7 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d15d89a677ebfdd18f7085dabaff2fef8a17e127c79b77f869cab2854bc024d5"
 dependencies = [
- "kurbo 0.13.1",
+ "kurbo",
 ]
 
 [[package]]
@@ -8199,9 +8221,9 @@ dependencies = [
 
 [[package]]
 name = "parlance"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b6937eda350acc1a5d05872c3cbf99fe78619c269096e2be3d4a350058639d5"
+checksum = "73072a9470554c8e794778acece2312661218aaabb635600957d952cf01c716e"
 
 [[package]]
 name = "parley"
@@ -8209,8 +8231,7 @@ version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22d2ff88bd3f7d68d1d9b09c7e6209f9a8e8c05088295140a2bcf2e9b17038c5"
 dependencies = [
- "core_maths",
- "fontique",
+ "fontique 0.11.1",
  "harfrust",
  "hashbrown 0.17.1",
  "icu_normalizer",
@@ -8218,8 +8239,23 @@ dependencies = [
  "icu_segmenter",
  "linebender_resource_handle",
  "parlance",
- "parley_data",
+ "parley_data 0.11.1",
  "skrifa 0.44.0",
+]
+
+[[package]]
+name = "parley"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "61bd0c0c1737f0b3d3726dc06b225083af213b61913e4fbae1670613a106c6ce"
+dependencies = [
+ "core_maths",
+ "fontique 0.12.0",
+ "hashbrown 0.17.1",
+ "linebender_resource_handle",
+ "parlance",
+ "parley_engine",
+ "smallvec",
 ]
 
 [[package]]
@@ -8229,6 +8265,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1567535334d6ba2d3cde19221ba9a7bd0fabb3cbd99046ddfb10ae061cfcc889"
 dependencies = [
  "icu_properties",
+]
+
+[[package]]
+name = "parley_data"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c43b63f808f6cc8f4a3b07de0d62a977bddd2e0bb5c232bd9e93ba8ef92e5e4b"
+dependencies = [
+ "icu_collections",
+ "icu_properties",
+]
+
+[[package]]
+name = "parley_emoji"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c4482d912d7671a7cd2089794f90ef3bb5f5f8c738230fb0fcd50fa020f0ed3"
+
+[[package]]
+name = "parley_engine"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74c0d373e462e504ad4436710a39f099e18e848e1ee711f70cd2dcd5a69b290"
+dependencies = [
+ "fontique 0.12.0",
+ "harfrust",
+ "hashbrown 0.17.1",
+ "icu_locale_core",
+ "icu_normalizer",
+ "icu_properties",
+ "icu_segmenter",
+ "linebender_resource_handle",
+ "parlance",
+ "parley_data 0.12.0",
+ "parley_emoji",
+ "skrifa 0.44.0",
 ]
 
 [[package]]
@@ -8315,7 +8387,7 @@ checksum = "839c8299360d2e998bdb106dc0a6cd71dcc5f4df51df1b620361bf50e283cca6"
 dependencies = [
  "bytemuck",
  "color",
- "kurbo 0.13.1",
+ "kurbo",
  "linebender_resource_handle",
  "smallvec",
 ]
@@ -9175,13 +9247,15 @@ dependencies = [
 
 [[package]]
 name = "read-fonts"
-version = "0.44.0"
+version = "0.45.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5a0cf4bb6cbce4c29756270d189a5e400ac05e91192161d83a0bcb6e68492e8"
+checksum = "4edc8db0d972de88e53a085b1f01fb3fbdae7bb0cb7a0ce2b2f8285a412fe3ef"
 dependencies = [
  "bytemuck",
+ "foldhash 0.2.0",
  "font-types",
  "once_cell",
+ "yoke",
 ]
 
 [[package]]
@@ -10257,12 +10331,12 @@ checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 
 [[package]]
 name = "skera"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1793356c03f41587b77c8358124ecf2af32ee681df7305096099e368a4f5cec6"
+checksum = "531045338e36ad05b9652912a47ba38a935d0eaa0293c3e33d8112cfa414c14b"
 dependencies = [
  "hashbrown 0.17.1",
- "skrifa 0.47.0",
+ "skrifa 0.48.0",
  "thiserror 2.0.21",
  "write-fonts",
 ]
@@ -10330,12 +10404,12 @@ dependencies = [
 
 [[package]]
 name = "skrifa"
-version = "0.47.0"
+version = "0.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "526e654b303ff4ad73a5a40b25de2b3ce3d039c5e3b6da5f89ae6e57004cb40f"
+checksum = "a5213b4825bac3587046330052d61bfac7bd3bd0d203c758d7c2ef726fcea034"
 dependencies = [
  "bytemuck",
- "read-fonts 0.44.0",
+ "read-fonts 0.45.1",
 ]
 
 [[package]]
@@ -10614,7 +10688,7 @@ version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "695b5790b3131dafa99b3bbfd25a216edb3d216dad9ca208d4657bfb8f2abc3d"
 dependencies = [
- "kurbo 0.13.1",
+ "kurbo",
  "siphasher",
 ]
 
@@ -11715,7 +11789,7 @@ checksum = "e3e29e3e199888d594edd191c5917a2d5c1893b8bf20076c2bf4df7a40a2ee71"
 dependencies = [
  "dpi",
  "keyboard-types",
- "kurbo 0.13.1",
+ "kurbo",
 ]
 
 [[package]]
@@ -11865,7 +11939,7 @@ dependencies = [
  "fontdb",
  "harfrust",
  "imagesize",
- "kurbo 0.13.1",
+ "kurbo",
  "log",
  "pico-args",
  "roxmltree 0.21.1",
@@ -12688,7 +12762,7 @@ dependencies = [
  "dispatch2",
  "executor-core",
  "futures",
- "kurbo 0.13.1",
+ "kurbo",
  "libc",
  "libtest-mimic",
  "native-executor",
@@ -12778,7 +12852,7 @@ dependencies = [
 name = "waterui-backend-core"
 version = "0.5.2"
 dependencies = [
- "kurbo 0.13.1",
+ "kurbo",
  "nami",
  "num-traits",
  "tracing",
@@ -12795,7 +12869,7 @@ source = "git+https://github.com/water-rs/barcode?branch=dev#6a33701aedc1ca3533d
 dependencies = [
  "barcoders",
  "fast_qr",
- "kurbo 0.13.1",
+ "kurbo",
  "nami",
  "thiserror 2.0.21",
  "waterui-core",
@@ -12851,7 +12925,7 @@ dependencies = [
  "executor-core",
  "futures",
  "keycode",
- "kurbo 0.13.1",
+ "kurbo",
  "libloading 0.9.0",
  "nami",
  "num-traits",
@@ -12877,9 +12951,9 @@ version = "0.2.0"
 source = "git+https://github.com/water-rs/canvas?branch=dev#60b0ac8165a13351b7abe888d7aa7aef35f993c4"
 dependencies = [
  "image",
- "kurbo 0.13.1",
+ "kurbo",
  "nami",
- "parley",
+ "parley 0.11.1",
  "tracing",
  "waterui-core",
  "waterui-graphics",
@@ -13098,7 +13172,7 @@ dependencies = [
  "event-listener",
  "filtrate",
  "filtrate-core",
- "fontique",
+ "fontique 0.12.0",
  "half",
  "image",
  "keyboard-types",
@@ -13385,13 +13459,13 @@ dependencies = [
  "geo-types",
  "getrandom 0.2.17",
  "image",
- "kurbo 0.13.1",
+ "kurbo",
  "lru 0.16.4",
  "maplibre-expr",
  "mvt-reader",
  "nami",
  "native-executor",
- "parley",
+ "parley 0.11.1",
  "rayon",
  "rustc-hash 2.1.3",
  "serde",
@@ -13412,10 +13486,10 @@ name = "waterui-math"
 version = "0.2.0"
 source = "git+https://github.com/water-rs/math?branch=dev#7cf269a89f99bfe99f1ff51e9af5a603b7def353"
 dependencies = [
- "kurbo 0.13.1",
+ "kurbo",
  "mathcat",
  "nami",
- "parley",
+ "parley 0.11.1",
  "peniko",
  "pulldown-latex",
  "quick-xml 0.42.0",
@@ -13578,7 +13652,7 @@ dependencies = [
  "hydrolysis",
  "hydrolysis-m3",
  "image",
- "kurbo 0.13.1",
+ "kurbo",
  "pollster 1.0.1",
  "serde",
  "serde_json",
@@ -13596,7 +13670,7 @@ name = "waterui-text"
 version = "0.5.1"
 dependencies = [
  "nami",
- "parley",
+ "parley 0.12.0",
  "pulldown-cmark",
  "smallvec",
  "suiteki",
@@ -14965,13 +15039,13 @@ dependencies = [
 
 [[package]]
 name = "write-fonts"
-version = "0.53.0"
+version = "0.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c2feba63177f6f6b51d646b78fafd5ff65f0581814155eb36ef620133d245c4"
+checksum = "55716cfa7e8bcdb90289e07dfac478ccb2e3ec0f9a604fe682c7a03a7984d705"
 dependencies = [
  "font-types",
  "log",
- "read-fonts 0.44.0",
+ "read-fonts 0.45.1",
 ]
 
 [[package]]

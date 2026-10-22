@@ -142,6 +142,22 @@ struct VsOut {
     @location(11) @interpolate(flat) cell_texel: u32,
 }
 
+// The angle of the vector (x, y) in [-pi, pi], the range of the oracle's
+// and the CPU kernel's `atan2(y, x)`: a zero `y` of either sign takes the
+// upper branch, so (x < 0, y = 0) is pi, and the zero vector is 0.
+//
+// Not `atan2`, whose result at the zero vector is unspecified: the sweep
+// gradient's centre pixel drew a stray colour from it (#3234), and the
+// compute stroker's round join between perpendicular tangents became a
+// bevel with it (#2544). The angle comes from the normalized x instead.
+fn angle_of(y: f32, x: f32) -> f32 {
+    let r = length(vec2<f32>(y, x));
+    if r == 0.0 {
+        return 0.0;
+    }
+    return select(-1.0, 1.0, y >= 0.0) * acos(clamp(x / r, -1.0, 1.0));
+}
+
 fn apply(m: array<vec4<f32>, 2>, p: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(
         m[0].x * p.x + m[0].z * p.y + m[1].x,
