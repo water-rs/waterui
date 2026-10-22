@@ -36,7 +36,6 @@ use parley::{
     FontContext, LayoutContext, PositionedLayoutItem, StyleProperty, fontique::Blob,
     style::FontFamily,
 };
-use read_fonts::types::F2Dot14;
 use skrifa::MetadataProvider;
 
 /// `kurbo::Affine::rotate` evaluated with `libm` so the sine/cosine
@@ -316,10 +315,10 @@ impl TextContext {
                     .normalized_coords()
                     .iter()
                     .enumerate()
-                    .filter(|(_, v)| **v != 0)
+                    .filter(|(_, v)| v.to_bits() != 0)
                     .map(|(i, v)| NormalizedCoord {
                         tag: axes.get(i).cloned().unwrap_or_default(),
-                        value: F2Dot14::from_bits(*v).to_f32(),
+                        value: v.to_f32(),
                     })
                     .collect();
                 let glyphs = gr

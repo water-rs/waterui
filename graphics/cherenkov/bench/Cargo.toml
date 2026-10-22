@@ -73,8 +73,8 @@ wgpu = { version = "30.0.1", optional = true }
 wgpu29 = { package = "wgpu", version = "29", optional = true }
 pollster = { version = "1.0", optional = true }
 peniko = "0.6"
-skrifa = "0.44"
-read-fonts = "0.41"
+skrifa = "0.48"
+read-fonts = "0.45"
 bytemuck = "1"
 half = { version = "2", optional = true }
 glifo = { version = "0.3", optional = true }

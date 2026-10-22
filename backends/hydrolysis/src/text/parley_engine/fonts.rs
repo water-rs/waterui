@@ -228,15 +228,15 @@ impl ResourceFontFamilies {
             collection.set_generic_families(GenericFamily::Emoji, self.emoji.iter().copied());
         }
 
-        for script in ["Latn", "Grek", "Cyrl"] {
-            set_fallbacks(
-                collection,
-                Script::from_str_unchecked(script),
-                &self.latin_greek_cyrillic,
-            );
+        for script in [
+            Script::from_bytes(*b"Latn"),
+            Script::from_bytes(*b"Grek"),
+            Script::from_bytes(*b"Cyrl"),
+        ] {
+            set_fallbacks(collection, script, &self.latin_greek_cyrillic);
         }
 
-        let hani = Script::from_str_unchecked("Hani");
+        let hani = Script::from_bytes(*b"Hani");
         set_fallbacks(collection, hani, &self.hani_simplified);
         for locale in ["zh", "zh-CN", "zh-SG"] {
             set_fallbacks(collection, (hani, locale), &self.hani_simplified);
@@ -248,19 +248,11 @@ impl ResourceFontFamilies {
         set_fallbacks(collection, (hani, "ko"), &self.hani_korean);
         // Hangul text selects the Hang script, not Hani: the KR face a host
         // bundles for Korean must answer that key too or it sits unreachable.
-        set_fallbacks(
-            collection,
-            Script::from_str_unchecked("Hang"),
-            &self.hani_korean,
-        );
-        set_fallbacks(collection, Script::from_str_unchecked("Arab"), &self.arabic);
-        set_fallbacks(collection, Script::from_str_unchecked("Hebr"), &self.hebrew);
-        set_fallbacks(collection, Script::from_str_unchecked("Thai"), &self.thai);
-        set_fallbacks(
-            collection,
-            Script::from_str_unchecked("Deva"),
-            &self.devanagari,
-        );
+        set_fallbacks(collection, Script::from_bytes(*b"Hang"), &self.hani_korean);
+        set_fallbacks(collection, Script::from_bytes(*b"Arab"), &self.arabic);
+        set_fallbacks(collection, Script::from_bytes(*b"Hebr"), &self.hebrew);
+        set_fallbacks(collection, Script::from_bytes(*b"Thai"), &self.thai);
+        set_fallbacks(collection, Script::from_bytes(*b"Deva"), &self.devanagari);
     }
 }
 

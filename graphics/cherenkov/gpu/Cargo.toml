@@ -22,7 +22,7 @@ wgpu = "30.0.1"
 pollster = "1.0"
 bytemuck = { version = "1", features = ["derive"] }
 kurbo = "0.13"
-skrifa = "0.44"
+skrifa = "0.48"
 png = "0.18"
 half = "2"
 texture2ddecoder = "0.1.2"
