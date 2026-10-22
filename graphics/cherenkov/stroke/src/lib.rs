@@ -8,8 +8,9 @@
 //! cubic that is a cusp to within `f64` precision; the stroke then overshoots
 //! the true outline by up to half a width. This crate decides the cusp exactly
 //! over the `f64` control points, splits the cubic there with both cusp-side
-//! arms exactly zero, and hands the result to `kurbo`, whose join logic then
-//! sees the reversal and applies the stroke's own join (no disc is added).
+//! arms a quarter of the tolerance long along the curve's limiting tangent,
+//! and hands the result to `kurbo`, whose join logic then sees the reversal
+//! and applies the stroke's own join (no disc is added).
 //!
 //! The cusp splitting is removable once linebender/kurbo#615 is fixed. The
 //! dash handling is the engine's own: `kurbo::dash` leaves a dot for a
@@ -51,12 +52,21 @@ fn stroke_undashed(
     style: &Stroke,
     tolerance: f64,
 ) -> BezPath {
-    kurbo::stroke(split_cusps(path), style, &StrokeOpts::default(), tolerance)
+    kurbo::stroke(
+        split_cusps(path, tolerance),
+        style,
+        &StrokeOpts::default(),
+        tolerance,
+    )
 }
 
-/// `path` with every cubic that has an interior cusp split there, produced
-/// lazily so stroking a path allocates nothing beyond `kurbo`'s own output.
-fn split_cusps(path: impl IntoIterator<Item = PathEl>) -> impl Iterator<Item = PathEl> {
+/// `path` with every cubic that has an interior cusp split there for a stroke
+/// accurate to `tolerance`, produced lazily so stroking a path allocates
+/// nothing beyond `kurbo`'s own output.
+fn split_cusps(
+    path: impl IntoIterator<Item = PathEl>,
+    tolerance: f64,
+) -> impl Iterator<Item = PathEl> {
     let mut path = path.into_iter();
     let mut current = Point::ZERO;
     let mut start = Point::ZERO;
@@ -80,7 +90,7 @@ fn split_cusps(path: impl IntoIterator<Item = PathEl>) -> impl Iterator<Item = P
                 let cubic = CubicBez::new(current, a, b, p);
                 current = p;
                 cusp::parameter(&cubic).map_or(el, |t| {
-                    let (left, right) = split_at_cusp(cubic, t);
+                    let (left, right) = split_at_cusp(cubic, t, tolerance);
                     right_half = Some(PathEl::CurveTo(right.p1, right.p2, right.p3));
                     PathEl::CurveTo(left.p1, left.p2, left.p3)
                 })
@@ -93,19 +103,32 @@ fn split_cusps(path: impl IntoIterator<Item = PathEl>) -> impl Iterator<Item = P
     })
 }
 
-/// Split `c` by de Casteljau at `t`, then set the arms next to the split point
-/// exactly to zero so the cusp-side tangent is the curve's true limiting
-/// direction.
-fn split_at_cusp(c: CubicBez, t: f64) -> (CubicBez, CubicBez) {
+/// Split `c` by de Casteljau at `t`, then give each half a cusp-side arm of
+/// `k = min(tolerance / 4, half its other arm)` along the curve's limiting
+/// direction at the cusp.
+///
+/// The exact split leaves both cusp-side arms zero, a singular endpoint that
+/// kurbo 0.13.1's `offset_cubic` turns into non-finite points on the inner
+/// side of some halves. With the arm at length `k` the end tangent keeps
+/// exactly the limiting direction (`ab − at` on the left, `cd − at` on the
+/// right, the direction kurbo's tangent fallback takes for a zero arm), so
+/// the reversal still reaches kurbo's join with the stroke's own join. `k` is
+/// kurbo's own interior-cusp nudge (`DIM_TUNE = 0.25` of the tolerance in
+/// `regularize_cusp`), so the moved curve stays within the tolerance budget.
+fn split_at_cusp(c: CubicBez, t: f64, tolerance: f64) -> (CubicBez, CubicBez) {
     let ab = c.p0.lerp(c.p1, t);
     let bc = c.p1.lerp(c.p2, t);
     let cd = c.p2.lerp(c.p3, t);
     let abc = ab.lerp(bc, t);
     let bcd = bc.lerp(cd, t);
     let at = abc.lerp(bcd, t);
+    let cusp_arm = |toward: Point| {
+        let arm = toward - at;
+        at + arm * (0.25 * tolerance / arm.hypot()).min(0.5)
+    };
     (
-        CubicBez::new(c.p0, ab, at, at),
-        CubicBez::new(at, at, cd, c.p3),
+        CubicBez::new(c.p0, ab, cusp_arm(ab), at),
+        CubicBez::new(at, cusp_arm(cd), cd, c.p3),
     )
 }
 
@@ -141,10 +164,17 @@ mod tests {
         let c = cubic([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (-3.0, -3.0)]);
         let t = cusp::parameter(&c).expect("cusp");
         assert_eq!(t, 1.0 / 3.0);
-        let (left, right) = split_at_cusp(c, t);
-        assert_eq!(left.p2, left.p3);
-        assert_eq!(right.p0, right.p1);
+        let tolerance = 0.02;
+        let (left, right) = split_at_cusp(c, t, tolerance);
+        for (arm, limit) in [
+            (left.p2 - left.p3, left.p1 - left.p3),
+            (right.p1 - right.p0, right.p2 - right.p0),
+        ] {
+            assert!((arm.hypot() - tolerance / 4.0).abs() < 1e-15);
+            assert!(arm.cross(limit).abs() < 1e-15 && arm.dot(limit) > 0.0);
+        }
         assert!((left.p3 - c.eval(t)).hypot() < 1e-15);
+        assert_eq!(left.p3, right.p0);
     }
 
     #[test]
@@ -165,25 +195,66 @@ mod tests {
         assert_eq!(cusp::parameter(&c), None);
     }
 
-    #[test]
-    fn cell_144_outline_stays_within_half_width() {
-        let c = cell_144();
+    /// Stroke `c` round-joined at width 1.2, as `stroke-gpu-curves-*` does,
+    /// check that every outline point is finite, and return how far the
+    /// outline reaches from the centerline.
+    fn finite_outline_reach(c: CubicBez, tolerance: f64) -> f64 {
         let mut path = BezPath::new();
         path.move_to(c.p0);
         path.curve_to(c.p1, c.p2, c.p3);
-        let (width, tolerance) = (1.2, 0.02);
-        let outline = stroke(path, &Stroke::new(width).with_join(Join::Round), tolerance);
+        let outline = stroke(path, &Stroke::new(1.2).with_join(Join::Round), tolerance);
+        assert!(outline.area() != 0.0);
         let mut worst = 0.0_f64;
         for seg in outline.segments() {
             for i in 0..=64 {
                 let p = seg.eval(f64::from(i) / 64.0);
+                assert!(p.is_finite(), "non-finite outline point at {tolerance}");
                 worst = worst.max(c.nearest(p, 1e-9).distance_sq.sqrt());
             }
         }
-        assert!(
-            worst <= width / 2.0 + tolerance,
-            "outline reaches {worst} from the centerline"
-        );
-        assert!(outline.area() != 0.0);
+        worst
+    }
+
+    /// The cell-102 element-3 cubic of `stroke-gpu-curves-*`: a collinear
+    /// reversal whose `α`, `β`, `γ` are rounding noise of the baked rotation
+    /// with one sign. Split as a cusp, its outline reached 1.18 from the
+    /// centerline.
+    #[test]
+    fn cell_102_collinear_noise_is_not_split() {
+        let c = cubic([
+            (206.559_557_697_619_65, 203.091_063_748_859_23),
+            (213.912_319_365_047, 198.178_105_472_972_36),
+            (203.802_272_072_334_4, 204.933_423_102_316_8),
+            (211.155_033_739_761_73, 200.020_464_826_429_93),
+        ]);
+        assert_eq!(cusp::parameter(&c), None);
+        let reach = finite_outline_reach(c, 0.02);
+        assert!(reach <= 0.6 + 0.02, "outline reaches {reach}");
+    }
+
+    #[test]
+    fn cell_144_outline_stays_within_half_width() {
+        let reach = finite_outline_reach(cell_144(), 0.02);
+        assert!(reach <= 0.6 + 0.02, "outline reaches {reach}");
+    }
+
+    /// The cell-90 element-11 cubic of `stroke-gpu-curves-*`, an exact cusp at
+    /// `t = 1/2`. With both cusp-side arms exactly zero, kurbo 0.13.1's
+    /// `offset_cubic` gave the left half's inner offset non-finite points at
+    /// both tolerances. The reach is checked only at the coarse tolerance:
+    /// kurbo 0.13.1 builds round joins and caps at a fixed unit-arc tolerance
+    /// of 1e-3, about 1.6e-4 at this half width, whatever tolerance is asked.
+    #[test]
+    fn cell_90_split_outline_is_finite_and_within_half_width() {
+        let c = cubic([
+            (324.682_665_422_288_3, 165.285_787_276_862_38),
+            (322.213_180_276_986_8, 168.981_632_976_137_43),
+            (325.295_845_699_275_1, 168.368_452_699_150_65),
+            (321.6, 165.898_967_553_849_16),
+        ]);
+        assert_eq!(cusp::parameter(&c), Some(0.5));
+        finite_outline_reach(c, 5e-5);
+        let reach = finite_outline_reach(c, 0.02);
+        assert!(reach <= 0.6 + 0.02, "outline reaches {reach}");
     }
 }

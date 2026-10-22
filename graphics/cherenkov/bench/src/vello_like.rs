@@ -1,10 +1,10 @@
 //! Shared scene lowering + replay for the vello adapters
-//! (`vello_classic`, `vello_cpu`, `vello_hybrid`).
+//! (`vello_classic`, `vello_cpu`, `vello_gpu`).
 //!
 //! [`lower`] runs in `prepare`: it walks the layer tree once and records
 //! an [`Op`] list whose items own their resolved `BezPath`, engine paint,
 //! transform, clip and glyph data. `encode` then replays the list — the
-//! engine's recording calls only. `vello_cpu` and `vello_hybrid` share
+//! engine's recording calls only. `vello_cpu` and `vello_gpu` share
 //! [`replay`] through the [`VelloLikeCtx`] surface (`vello_classic`
 //! replays its own `Op<peniko::Brush>` list against `vello::Scene`).
 
@@ -19,7 +19,7 @@ use crate::convert::{self, Prepared};
 use crate::{BenchError, Counters};
 
 /// The `RenderContext`-style surface shared by `vello_cpu` and
-/// `vello_hybrid::Scene`.
+/// `vello_gpu::Scene`.
 pub trait VelloLikeCtx {
     /// Absolute user-space transform.
     fn set_transform(&mut self, t: Affine);
