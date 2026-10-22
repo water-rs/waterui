@@ -3,20 +3,39 @@
 //! With the control arms `A = P1−P0`, `B = P2−P1`, `C = P3−P2` and
 //! `α = B×C`, `β = C×A`, `γ = A×B`, a non-collinear cubic has an interior cusp
 //! iff `α`, `β`, `γ` are nonzero with one sign and `β² = 4αγ`; the cusp is at
-//! `t₀ = 2γ / (β + 2γ)`. A cubic within `f64` precision of that is accepted
-//! too: `|β² − 4αγ| ≤ 256·u·s⁴` with `u = 2⁻⁵³` and `s` the largest absolute
-//! arm component. The comparison is decided exactly over the `f64` inputs, so
-//! no evaluation rounding moves it. The collinear case (`α = β = γ = 0`) is left
-//! to `kurbo`.
+//! `t₀ = 2γ / (β + 2γ)`.
+//!
+//! Both tests are taken at the representation precision of the control
+//! points, because a cubic built in exact arithmetic (a rotated cusp, a
+//! rotated line) reaches us only with every coordinate rounded to `f64`.
+//! With `u = 2⁻⁵³`, `M` the largest absolute coordinate and `s` the largest
+//! absolute arm component, rounding moves each coordinate by at most
+//! `u·|x| ≤ u·M`, so each arm component by at most `e = 2u·M`. Expanding
+//! around the given arms, `α + Δα = (B + ΔB)×(C + ΔC)` gives
+//! `|Δα| ≤ |ΔB×C| + |B×ΔC| + |ΔB×ΔC| ≤ 2es + 2es + 2e² = ε` with
+//! `ε = 8u·(M·s + u·M²)`, and likewise for `β` and `γ`. Hence:
+//!
+//! - **Collinear.** `max(|α|, |β|, |γ|) ≤ ε`: the cubic is collinear to within
+//!   its own rounding, the signs of `α`, `β`, `γ` are rounding noise, and it is
+//!   not a cusp. It is left to `kurbo`'s collinear handling.
+//! - **Near cusp.** With `|α|, |β|, |γ| ≤ 2s²`,
+//!   `Δ(β² − 4αγ) = 2βΔβ + Δβ² − 4(αΔγ + γΔα + ΔαΔγ)`, so
+//!   `|ΔD| ≤ 4s²ε + ε² + 16s²ε + 4ε² = 20s²ε + 5ε²`. A same-signed cubic with
+//!   `|β² − 4αγ|` within that is a cusp to within its rounding and is split.
+//!
+//! Both comparisons are decided exactly over the `f64` inputs, so no
+//! evaluation rounding moves them. The bounds depend on where the cubic sits
+//! (`M`), not only on its shape, because that is where the rounding of its
+//! coordinates comes from.
 
 use kurbo::CubicBez;
 use num_bigint::{BigInt, BigUint, Sign};
 
-/// The band is `|D| ≤ 256·2⁻⁵³·s⁴ = 2⁻⁴⁵·s⁴`.
-const BAND_SHIFT: usize = 45;
-
 /// Upper bound, in units of `u·s⁴`, of the error of evaluating
-/// `β² − 4αγ` in `f64`, with margin over the analysed ~200.
+/// `β² − 4αγ` in `f64`, with margin over the analysed ~200: rounding of each
+/// arm (`u` relative to the arm), of each product and difference in the
+/// crosses (`|α̂ − α| ≤ 8u·s²`), and of the fused `β̂·β̂ − 4α̂γ̂`
+/// (`32 + 144 + 20 ≈ 196`).
 const FILTER_BAND: f64 = 1024.0;
 
 /// The parameter of `c`'s interior cusp, rounded to `f64`, if it has one
@@ -43,12 +62,20 @@ fn passes_filter(c: &CubicBez) -> bool {
     if largest == 0.0 {
         return false;
     }
+    let coordinate = [c.p0, c.p1, c.p2, c.p3]
+        .into_iter()
+        .fold(0.0_f64, |m, p| m.max(p.x.abs()).max(p.y.abs()));
     let alpha = second.cross(third);
     let beta = third.cross(first);
     let gamma = first.cross(second);
     let disc = beta.mul_add(beta, -4.0 * alpha * gamma);
     let unit_roundoff = 0.5 * f64::EPSILON;
-    disc.abs() <= FILTER_BAND * unit_roundoff * largest.powi(4)
+    // The band `20s²ε + 5ε²` evaluated in `f64` is within a few `u` of its
+    // exact value, so twice it bounds the exact band from above.
+    let epsilon =
+        8.0 * unit_roundoff * coordinate.mul_add(largest, unit_roundoff * coordinate * coordinate);
+    let band = (20.0 * largest * largest).mul_add(epsilon, 5.0 * epsilon * epsilon);
+    disc.abs() <= FILTER_BAND.mul_add(unit_roundoff * largest.powi(4), 2.0 * band)
 }
 
 /// An `f64` as `(mantissa, exponent)` with value `mantissa · 2^exponent`.
@@ -93,18 +120,37 @@ fn exact_parameter(points: [[f64; 2]; 4]) -> Option<f64> {
     let alpha = cross(&second, &third);
     let beta = cross(&third, &first);
     let gamma = cross(&first, &second);
-    let sign = alpha.sign();
-    if sign == Sign::NoSign || beta.sign() != sign || gamma.sign() != sign {
-        return None;
-    }
-    let disc = &beta * &beta - BigInt::from(4) * &alpha * &gamma;
     let largest = [&first, &second, &third]
         .into_iter()
         .flatten()
         .map(|v| v.magnitude().clone())
         .max()
         .expect("six components");
-    if disc.magnitude() << BAND_SHIFT > largest.pow(4) {
+    let coordinate = int
+        .iter()
+        .flatten()
+        .map(|v| v.magnitude().clone())
+        .max()
+        .expect("eight coordinates");
+    // `ε = 8u·(M·s + u·M²) = 2⁻¹⁰³·E` with `E = 2⁵³·M·s + M²`.
+    let rounding = ((&coordinate * &largest) << 53usize) + &coordinate * &coordinate;
+    let cross_max = [&alpha, &beta, &gamma]
+        .into_iter()
+        .map(BigInt::magnitude)
+        .max()
+        .expect("three crosses");
+    if cross_max << 103usize <= rounding {
+        return None;
+    }
+    let sign = alpha.sign();
+    if sign == Sign::NoSign || beta.sign() != sign || gamma.sign() != sign {
+        return None;
+    }
+    let disc = &beta * &beta - BigInt::from(4) * &alpha * &gamma;
+    // `|D| ≤ 20s²ε + 5ε²`, scaled by `2²⁰⁶`.
+    let band = ((BigUint::from(20u8) * &largest * &largest * &rounding) << 103usize)
+        + BigUint::from(5u8) * &rounding * &rounding;
+    if disc.magnitude() << 206usize > band {
         return None;
     }
     let numerator = gamma.magnitude() << 1usize;
