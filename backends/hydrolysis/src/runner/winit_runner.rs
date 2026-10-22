@@ -1120,7 +1120,7 @@ impl WinitRunner {
     /// same HWND so a session shutdown asks the termination machine before
     /// ending the process.
     #[cfg(target_os = "windows")]
-    fn attach_windows_chrome(&mut self, native_window: &NativeWindow) {
+    fn attach_windows_chrome(&self, native_window: &NativeWindow) {
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
         if let Ok(handle) = native_window.window_handle()
             && let RawWindowHandle::Win32(win) = handle.as_raw()
