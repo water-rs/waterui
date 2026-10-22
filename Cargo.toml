@@ -379,7 +379,7 @@ wgpu-hal = { version = "30.0.1", features = ["gles", "metal"] }
 # hands a `glow::NativeFramebuffer` straight to
 # `wgpu::hal::gles::TextureInner::ExternalNativeFramebuffer`, so a different
 # major here makes that a different type and the backend stops compiling.
-glow = "0.17"
+glow = "0.18"
 tiny-skia = "0.12"
 zenwave = { version = "0.7.1", default-features = false, features = ["hyper-backend"] }
 futures-timer = "3"
@@ -686,8 +686,9 @@ glifo = { git = "https://github.com/lexoliu/vello", branch = "waterui/v0.11" }
 # trunk, not yet released for v30). Mirrored from cherenkov's own workspace
 # patch (water-rs/cherenkov#229): `[patch]` in a dependency's manifest does not
 # apply downstream, so without these entries this graph resolves the crashing
-# crates.io build while cherenkov resolves the fork. Drop them once wgpu-hal
-# ships both the color-space fix and passthrough threadgroup-memory metadata.
+# crates.io build while cherenkov resolves the fork. The branch also moves
+# wgpu-hal to glow 0.18, as trunk has. Drop them once a wgpu-hal release ships
+# the color-space fix, passthrough threadgroup-memory metadata and glow 0.18.
 naga = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-shared-memory-v30" }
 naga-types = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-shared-memory-v30" }
 wgpu = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-shared-memory-v30" }
@@ -698,6 +699,10 @@ wgpu-core-deps-windows-linux-android = { git = "https://github.com/water-rs/wgpu
 wgpu-hal = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-shared-memory-v30" }
 wgpu-naga-bridge = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-shared-memory-v30" }
 wgpu-types = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-shared-memory-v30" }
+# wgpu-external-frame hands wgpu-hal's GLES textures to its own glow context, so
+# it must link the glow 0.18 the branch above carries; its crates.io 0.4.0 links
+# 0.17 (water-rs/wgpu-external-frame#43). Drop it with the wgpu entries.
+wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame", branch = "dev" }
 
 # Split component repositories, the waterkit family and suiteki follow their
 # `dev` branch; `Cargo.lock` records the exact commit.
