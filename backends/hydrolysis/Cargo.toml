@@ -69,6 +69,10 @@ skrifa = "0.44"
 # `Emoji`/`Emoji_Presentation` sets for the emoji-cluster ranges shaping must
 # route through the `emoji` generic family first.
 icu_properties = { version = "2.3", default-features = false, features = ["compiled_data"] }
+# CLDR likely-subtags (`LocaleExpander`): the script an Android platform
+# face's bare language tag is written in — see
+# `text/parley_engine/android_fonts::fallback_keys`.
+icu_locale = { version = "2.3", default-features = false, features = ["compiled_data"] }
 wgpu.workspace = true
 lru.workspace = true
 pollster.workspace = true

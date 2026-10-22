@@ -8,7 +8,7 @@
 //! therefore carries its respelled spans, and no effective-input plumbing
 //! survives.
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
 mod android_fonts;
 pub mod fonts;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
