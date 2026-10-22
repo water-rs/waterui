@@ -135,7 +135,6 @@ pub fn prepare(
 ) -> Result<GpuPath, RenderError> {
     let [.., e, f] = raster.as_coeffs();
     let origin = Vec2::new(e, f);
-    // No outline: zero width, or only zero-length dashes.
     // Non-finite parameters draw nothing, as the sweep draws kurbo's
     // all-NaN outline (water-rs/waterui#3156).
     if !(stroke.width.is_finite()
@@ -146,8 +145,9 @@ pub fn prepare(
         return Ok(empty(origin, surface));
     }
     let dash = DashPlan::new(stroke)?;
-    // No outline: zero width, or only zero-length dashes.
-    if stroke.width == 0.0 || dash.as_ref().is_some_and(|plan| plan.on_entries == 0) {
+    // No outline at zero width; a pattern of only zero-length dashes still
+    // draws their cap dots.
+    if stroke.width == 0.0 {
         return Ok(empty(origin, surface));
     }
     if !(stroke.width > 0.0 && tol.is_finite() && tol > 0.0) {
@@ -547,7 +547,8 @@ struct DashPlan {
     /// `cum[0] = 0 ..= cum[E] = P` of the effective pattern.
     cum: Vec<f64>,
     period: f64,
-    /// Entries at even index with positive length.
+    /// Entries at even index: every on-interval, positive-length or not —
+    /// a zero-length one draws its cap dot.
     on_entries: usize,
     phase: f64,
     merge_start: bool,
@@ -578,11 +579,7 @@ impl DashPlan {
         if period >= FIXED_LIMIT {
             return Err(RenderError::Unsupported("dash period too long"));
         }
-        let on_entries = entries
-            .iter()
-            .step_by(2)
-            .filter(|entry| **entry > 0.0)
-            .count();
+        let on_entries = entries.len() / 2;
         // kurbo 0.13.1 `dash_iter`'s normalization and initial state. A dash
         // that begins in a dash with positive remaining length merges
         // through `ClosePath`.
@@ -604,8 +601,9 @@ impl DashPlan {
         }))
     }
 
-    /// `n_on * ceil(length / P)`: how many positive-length dashes can start in
-    /// a window of arc length `length` (design section 6.6).
+    /// `n_on * ceil(length / P)`: how many on-intervals — dashes and
+    /// zero-length cap dots — can start in a window of arc length `length`
+    /// (design section 6.6).
     fn starts(&self, length: f64) -> usize {
         self.on_entries
             .saturating_mul(ceil_count(length * (1.0 + POLYGON_MARGIN) / self.period))
@@ -918,10 +916,12 @@ impl<'a> Encoder<'a> {
             } else {
                 // An interior boundary is classified like any vertex: a
                 // smooth one resolves to `SHARED`, a reversal (an exact
-                // cusp) gets a round join.
+                // cusp) gets the stroke's own join, as kurbo applies it at
+                // the split cusp `cherenkov_stroke` hands it — a miter at a
+                // 180-degree reversal exceeds the limit and bevels.
                 self.last_pt = sub.cubic.p0;
                 self.last_tan = prev_t1;
-                self.join(t0, Join::Round)?;
+                self.join(t0, self.stroke.join)?;
             }
             if k == last {
                 t1 = tan1;
@@ -1071,7 +1071,9 @@ impl<'a> Encoder<'a> {
         let polygon = polygon_length(piece);
         let (stage_cap, stage_base) = if let Some(plan) = &self.dash {
             let cap = if join_only {
-                1
+                // Its join and, when it ends the subpath, the cap dot of a
+                // zero-length dash there.
+                2
             } else {
                 1 + plan.starts(polygon)
             };
@@ -2159,16 +2161,6 @@ mod tests {
             ("lone move", &lone_move, round.clone()),
             ("zero-length subpath", &zero_length, round.clone()),
             ("zero-length closed subpath", &zero_close, round.clone()),
-            (
-                "all-zero on-entries",
-                &line,
-                round.clone().with_dashes(0.0, [0.0, 4.0]),
-            ),
-            (
-                "all-zero on-entries, doubled",
-                &line,
-                round.clone().with_dashes(1.0, [0.0, 4.0, 0.0, 3.0]),
-            ),
             ("NaN width", &line, Stroke::new(f64::NAN)),
             (
                 "NaN miter limit",

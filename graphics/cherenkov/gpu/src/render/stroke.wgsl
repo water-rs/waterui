@@ -735,6 +735,17 @@ fn dash_probe(t: DashTable, u: vec2<u32>) -> vec2<bool> {
     return vec2<bool>(false, false);
 }
 
+// Whether a zero-length on-interval sits at position `u`: it draws both of
+// its caps as a dot there (SVG 2), like `cherenkov_stroke`'s dash walk.
+fn dash_zero(t: DashTable, u: vec2<u32>) -> bool {
+    let rest = dash_cycle(t, u).offset;
+    for (var e = 0u; e < t.entries; e += 2u) {
+        let lo = dash_cum(t, e);
+        if fx_eq(lo, rest) && fx_eq(lo, dash_cum(t, e + 1u)) { return true; }
+    }
+    return false;
+}
+
 // Whether a closed subpath's last dash runs into its first (section 7.4.4).
 // Every record of the subpath evaluates it from the same exact inputs.
 fn subpath_merges(pi: u32, r: StrokeRecord, t: DashTable) -> bool {
@@ -809,6 +820,16 @@ fn dash_fragments(@builtin(global_invocation_id) gid: vec3<u32>) {
             count += 1u;
             chords_total += chords;
         }
+        // A zero-length dash on the closing point draws its caps here: this
+        // record's point is the closing vertex and its tangent the subpath's
+        // start tangent, the outgoing direction the reference takes.
+        if dash_zero(t, u0) {
+            let flags = FRAG_START_CAP | FRAG_END_CAP;
+            let chords = fragment_chords(pi, r, flags, 0.0, 0.0);
+            stage_fragment(pi, r, j, count, 0.0, 0.0, flags, chords);
+            count += 1u;
+            chords_total += chords;
+        }
     } else if (r.head.x & LINEAR_END) != 0u {
         // The final round join of a near-colinear cubic: drawn whenever a dash
         // reaches the vertex; capped when the dash ends there or the subpath does.
@@ -821,15 +842,38 @@ fn dash_fragments(@builtin(global_invocation_id) gid: vec3<u32>) {
             count += 1u;
             chords_total += chords;
         }
+        // An open subpath's last piece owns a zero-length dash at its end:
+        // the caps draw with this join's tangent, the incoming direction.
+        if is_last && !last_close && dash_zero(t, u0) {
+            let dot_flags = FRAG_START_CAP | FRAG_END_CAP;
+            let chords = fragment_chords(pi, r, dot_flags, 0.0, 0.0);
+            stage_fragment(pi, r, j, count, 0.0, 0.0, dot_flags, chords);
+            count += 1u;
+            chords_total += chords;
+        }
     } else {
         let cycle = dash_cycle(t, u0);
         var e = dash_entry(t, cycle.offset);
         var cycle_base = fx_mul(t.period, cycle.index);
+        // The record owns a zero-length dash at its window's start (0 <= a <
+        // L): the caps draw at its start point with its own start tangent,
+        // the outgoing direction of a dot on a vertex. A zero-span record
+        // (a second join at one vertex) owns none — the piece that continues
+        // past the vertex does.
+        if !fx_eq(span, vec2<u32>(0u)) && dash_zero(t, u0) {
+            let dot_flags = FRAG_START_CAP | FRAG_END_CAP;
+            let chords = fragment_chords(pi, r, dot_flags, 0.0, 0.0);
+            stage_fragment(pi, r, j, count, 0.0, 0.0, dot_flags, chords);
+            count += 1u;
+            chords_total += chords;
+        }
         loop {
             let a = fx_add(cycle_base, dash_cum(t, e));
             if !fx_lt(a, u1) { break; }
             let b = fx_add(cycle_base, dash_cum(t, e + 1u));
-            if (e & 1u) == 0u && fx_lt(a, b) && fx_lt(u0, b) {
+            // An on-interval draws a fragment; a zero-length one draws both
+            // caps at its point (ta == tb below).
+            if (e & 1u) == 0u && fx_lt(u0, b) {
                 var flags = 0u;
                 var ta = 0.0;
                 var tb = 1.0;
@@ -869,6 +913,17 @@ fn dash_fragments(@builtin(global_invocation_id) gid: vec3<u32>) {
                 e = 0u;
                 cycle_base = fx_add(cycle_base, t.period);
             }
+        }
+        // The last piece of an open subpath also owns a zero-length dash at
+        // its window's end (a == L): the caps draw at its end point with the
+        // incoming tangent. On a closed subpath the CLOSE record owns the
+        // same point instead, with the outgoing tangent.
+        if is_last && !last_close && dash_zero(t, u1) {
+            let dot_flags = FRAG_START_CAP | FRAG_END_CAP;
+            let chords = fragment_chords(pi, r, dot_flags, 1.0, 1.0);
+            stage_fragment(pi, r, j, count, 1.0, 1.0, dot_flags, chords);
+            count += 1u;
+            chords_total += chords;
         }
     }
     coverage[w + 4u] = count;

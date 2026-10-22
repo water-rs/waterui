@@ -309,7 +309,9 @@ fn dashes(corpus: &mut Corpus, clear: Color) {
         },
         Affine::IDENTITY,
     );
-    // Zero-length dashes: kurbo emits nothing for them, round caps or not.
+    // Zero-length dashes: SVG 2 draws both caps at the dash's point — a
+    // disc for the round caps used here (a tangent square for square,
+    // nothing for butt).
     family(
         corpus,
         clear,
