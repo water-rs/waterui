@@ -34,10 +34,11 @@ members = [
     "backends/hydrolysis/android/test-app/rust",
     # The engine family under `graphics/` (#1449): the `cherenkov` crates in
     # `graphics/cherenkov/` and the `filtrate` family in `graphics/filtrate/`.
-    # The stand-alone apps under `graphics/cherenkov/gpu/examples/` and the
-    # iOS bench project under `graphics/cherenkov/bench/ios/` carry their own
-    # manifests and are not members, matching upstream's `exclude`.
+    # The iOS bench project under `graphics/cherenkov/bench/ios/` carries
+    # its own manifest and is not a member, matching upstream's `exclude`.
     "graphics/cherenkov",
+    "graphics/cherenkov/gpu/examples/android_planes",
+    "graphics/cherenkov/gpu/examples/apple_planes",
     "graphics/cherenkov/record",
     "graphics/cherenkov/shader",
     "graphics/cherenkov/gpu",
