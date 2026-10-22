@@ -831,7 +831,7 @@ fn dash_fragments(@builtin(global_invocation_id) gid: vec3<u32>) {
             chords_total += chords;
         }
     } else if (r.head.x & LINEAR_END) != 0u {
-        // The final round join of a near-colinear cubic: drawn whenever a dash
+        // The final round join of a near-collinear cubic: drawn whenever a dash
         // reaches the vertex; capped when the dash ends there or the subpath does.
         let probe = dash_probe(t, u0);
         if probe.x {
@@ -893,7 +893,7 @@ fn dash_fragments(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
                 // End: a dash ending inside the record caps there; one reaching
                 // the record's end caps when it ends exactly there (unless a
-                // near-colinear cubic's closing join follows) or when the
+                // near-collinear cubic's closing join follows) or when the
                 // record closes its subpath.
                 if fx_lt(b, u1) {
                     flags |= FRAG_END_CAP;

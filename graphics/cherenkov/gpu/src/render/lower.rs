@@ -21,6 +21,7 @@ use crate::render::GpuImage;
 use crate::render::filter::FilterKey;
 
 use crate::render::glyph::{self, Atlas, FontData, MaskCell, PathEmit, PendingRaster, glyph_key};
+use crate::render::gpu_cov::CoverageLimit;
 use crate::render::instance::{
     ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA, FLAG_BLEND_SRC, FLAG_HAS_CLIP,
     FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance,
@@ -1481,9 +1482,11 @@ pub struct Lowering<'a> {
     /// The surface size: a local walk lowers onto its image's size, the
     /// surface walk onto this.
     surface: (u32, u32),
-    /// Whether the device can run the GPU coverage route's compute
-    /// passes — the route consults it at [`Self::path`] (issue #2543).
-    has_compute: bool,
+    /// The device's coverage binding limit when it can run the GPU
+    /// coverage route's compute passes, `None` when it cannot — the route
+    /// consults it at [`Self::path`] (issue #2543) and the automatic
+    /// predicate sizes paths against it (water-rs/waterui#2544).
+    compute: Option<CoverageLimit>,
     pub(crate) coverage_route: path::CoverageRoute,
 }
 
@@ -1495,7 +1498,7 @@ impl<'a> Lowering<'a> {
         size: (u32, u32),
         anchor_scratch: &'a mut AnchorScratch,
         raster_scratch: &'a mut path::EmitScratch,
-        has_compute: bool,
+        compute: Option<CoverageLimit>,
     ) -> Self {
         anchor_scratch.clear();
         Self {
@@ -1541,7 +1544,7 @@ impl<'a> Lowering<'a> {
             projected: FxHashMap::default(),
             projective_draws: 0,
             surface: size,
-            has_compute,
+            compute,
             coverage_route: path::CoverageRoute::Automatic,
         }
     }
@@ -4126,6 +4129,16 @@ impl<'a> Lowering<'a> {
         Ok(true)
     }
 
+    /// The automatic route's predicate (decisions R1 and R2): a path
+    /// takes the GPU route when it is large and crossing-dense enough to
+    /// amortize the dispatch and its own bound, `path`'s rows at `bound`,
+    /// fits the device's binding limit and the per-frame cap. Otherwise
+    /// the CPU sweep renders it. Both sites that route an automatic path,
+    /// a fresh leaf and a re-placed retained one, decide here.
+    fn automatic_gpu(&self, path: &path::GpuPath, bound: &path::GpuBound) -> bool {
+        bound.prefers_gpu() && self.compute.is_some_and(|limit| limit.admits(path, bound))
+    }
+
     /// Select and emit frame-local coverage before CPU realization retention.
     #[expect(
         clippy::cast_possible_truncation,
@@ -4205,7 +4218,7 @@ impl<'a> Lowering<'a> {
                 Vec2::new(coefficients[4], coefficients[5]),
                 (f64::from(self.width), f64::from(self.height)),
             );
-        if !prepared.prefers_gpu() {
+        if !self.automatic_gpu(&prepared, &prepared.bound) {
             return Ok(false);
         }
         let shader_data = match paint {
@@ -4294,7 +4307,7 @@ impl<'a> Lowering<'a> {
         // An automatic-route GPU candidate emits through the coverage
         // path instead of CPU realization; the anchor it leaves behind
         // retains like any other leaf's instances (#3081).
-        let emitted_gpu = self.has_compute
+        let emitted_gpu = self.compute.is_some()
             && self.coverage_route == path::CoverageRoute::Automatic
             && matches!(
                 op,
@@ -4658,7 +4671,7 @@ impl<'a> Lowering<'a> {
                     )?,
                     outline @ OutlineRef::Stroke { shape, stroke } => {
                         let tolerance = path::FLATTEN / path::sigma_max(self.transform).max(1e-12);
-                        if self.has_compute
+                        if self.compute.is_some()
                             && self.coverage_route == path::CoverageRoute::Gpu
                             && !matches!(paint, ResolvedPaint::Shader(_))
                         {
@@ -5056,7 +5069,7 @@ impl<'a> Lowering<'a> {
         // capability; without it the CPU sweep runs even under the
         // #2546 force hook. The forced route cannot serve its emission
         // from the CPU atlas, so it decides before the hit checks.
-        if self.has_compute && self.coverage_route == path::CoverageRoute::Gpu {
+        if self.compute.is_some() && self.coverage_route == path::CoverageRoute::Gpu {
             self.path_gpu(
                 rule,
                 &shader_path.unwrap_or_else(|| make.take().expect("path factory")()),
@@ -5260,7 +5273,8 @@ impl<'a> Lowering<'a> {
             (f64::from(self.width), f64::from(self.height)),
         );
         if bound.empty
-            || (self.coverage_route == path::CoverageRoute::Automatic && !bound.prefers_gpu())
+            || (self.coverage_route == path::CoverageRoute::Automatic
+                && !self.automatic_gpu(&gpu.path, &bound))
         {
             return false;
         }
@@ -6198,6 +6212,12 @@ fn clip_region(clip: Option<DeviceClip>, width: u32, height: u32) -> [u32; 4] {
 mod tests {
     use super::*;
 
+    /// The default device's coverage binding limit, which every engine
+    /// device requests (`render/mod.rs`).
+    fn test_limit() -> CoverageLimit {
+        CoverageLimit::new(&wgpu::Limits::default())
+    }
+
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -6334,7 +6354,7 @@ mod tests {
                     (128, 128),
                     &mut anchors,
                     &mut raster,
-                    has_compute,
+                    has_compute.then(test_limit),
                 );
                 lowering.begin_pass(Target::Part(0), None);
                 let moved = iteration == 2;
@@ -6432,7 +6452,7 @@ mod tests {
             (64, 64),
             &mut anchor_scratch,
             &mut raster_scratch,
-            true,
+            Some(test_limit()),
         );
         let transforms = [
             Affine::IDENTITY,
@@ -6557,7 +6577,7 @@ mod tests {
             (64, 64),
             &mut anchor_scratch,
             &mut raster_scratch,
-            true,
+            Some(test_limit()),
         );
         lowering.begin_pass(Target::Part(0), None);
         let glyphs = GlyphContext {
@@ -6662,7 +6682,7 @@ mod tests {
             (64, 64),
             &mut anchor_scratch,
             &mut raster_scratch,
-            true,
+            Some(test_limit()),
         );
         lowering.begin_pass(Target::Part(0), None);
         lowering
@@ -6748,7 +6768,7 @@ mod tests {
             (64, 64),
             &mut anchor_scratch,
             &mut raster_scratch,
-            true,
+            Some(test_limit()),
         );
         lowering.begin_pass(Target::Part(0), None);
         lowering
@@ -6845,7 +6865,7 @@ mod tests {
             (64, 64),
             &mut anchor_scratch,
             &mut raster_scratch,
-            true,
+            Some(test_limit()),
         );
         let Some((device, _queue)) = device_and_queue() else {
             return;
@@ -7152,7 +7172,7 @@ mod tests {
                 (32, 32),
                 &mut anchor_scratch,
                 &mut raster_scratch,
-                true,
+                Some(test_limit()),
             );
             lowering.prepare(&mut caches, &glyphs).expect("prepared");
             lowering
@@ -7265,7 +7285,7 @@ mod tests {
                 (32, 32),
                 &mut anchor_scratch,
                 &mut raster_scratch,
-                true,
+                Some(test_limit()),
             );
             lowering.prepare(&mut caches, &glyphs).expect("prepared");
             lowering
@@ -7325,7 +7345,7 @@ mod tests {
             (32, 32),
             &mut anchor_scratch,
             &mut raster_scratch,
-            true,
+            Some(test_limit()),
         );
         lowering.prepare(&mut caches, &glyphs).expect("prepared");
         lowering
@@ -7586,7 +7606,7 @@ mod tests {
             (32, 32),
             &mut anchor_scratch,
             &mut raster_scratch,
-            true,
+            Some(test_limit()),
         );
         lowering.prepare(&mut caches, &glyphs).expect("prepared");
         lowering
@@ -7689,7 +7709,7 @@ mod tests {
             (32, 32),
             &mut scratch,
             &mut raster_scratch,
-            true,
+            Some(test_limit()),
         );
         lowering.anchor_scratch.pos.insert(anchor_a, (None, 1));
         lowering.backdrops.insert(7, plan(anchor_a, member));

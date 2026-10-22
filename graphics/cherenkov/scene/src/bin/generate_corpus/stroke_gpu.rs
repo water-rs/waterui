@@ -473,7 +473,7 @@ const CURVES_WIDTH: f64 = 1.2;
 
 /// One subpath of the degenerate curves the stroker has to handle, each
 /// starting where the previous ends: a looped cubic, a true cusp (control
-/// polygon `(0,0),(1,1),(0,1),(1,0)`), a cubic with `p1 == p0`, a colinear
+/// polygon `(0,0),(1,1),(0,1),(1,0)`), a cubic with `p1 == p0`, a collinear
 /// cubic that reverses (two interior cusps, kurbo's `do_linear` branch), a
 /// 270° arc of radius [`CHAIN_ARC_RADIUS`], two quads, a second loop, a quad
 /// with `p1 == p0`, and a second cusp.

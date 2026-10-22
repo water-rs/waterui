@@ -6397,7 +6397,7 @@ impl GpuRenderer {
         }
     }
 
-    fn coverage_options(&self) -> (bool, path::CoverageRoute) {
+    fn coverage_options(&self) -> (Option<gpu_cov::CoverageLimit>, path::CoverageRoute) {
         let has_compute = self
             .adapter
             .get_downlevel_capabilities()
@@ -6414,9 +6414,17 @@ impl GpuRenderer {
                 route != path::CoverageRoute::Gpu || has_compute,
                 "forced GPU coverage requires compute and indirect first-instance support"
             );
-            return (has_compute, route);
+            return (self.coverage_limit(has_compute), route);
         }
-        (has_compute, path::CoverageRoute::Automatic)
+        (
+            self.coverage_limit(has_compute),
+            path::CoverageRoute::Automatic,
+        )
+    }
+
+    /// The device's coverage binding limit, when it computes.
+    fn coverage_limit(&self, has_compute: bool) -> Option<gpu_cov::CoverageLimit> {
+        has_compute.then(|| gpu_cov::CoverageLimit::new(&self.device.limits()))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -6898,7 +6906,7 @@ impl GpuRenderer {
         groups: &FxHashMap<u64, BackdropGroupInfo>,
         inputs: &projective::Inputs,
         ready: &FxHashSet<LayerId>,
-        coverage_options: (bool, path::CoverageRoute),
+        coverage_options: (Option<gpu_cov::CoverageLimit>, path::CoverageRoute),
     ) -> Result<Lowered, RenderError> {
         surf.frame.reset();
         surf.plan_dirty = false;

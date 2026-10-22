@@ -584,11 +584,17 @@ crosses. Buffers — coverage scratch, cell texels, cell and span
 descriptors — are allocated from that bound, so the kernels cannot
 overflow and there is no overflow-detection path to read back.
 
-A bound that exceeds a hard per-frame memory cap is an `Unsupported`
-error, reported as such. It is never a silent fall-through to the CPU
-route: `AGENTS.md` requires an explicit `Unsupported` for a case the
-engine cannot serve, and a silent fallback here would hide an
-unbounded-memory bug behind a frame that merely got slow.
+A path whose own bound does not fit — any buffer it would bind over the
+device's binding limit, or its total with the frame's fixed bytes over
+the hard 256 MiB per-frame cap — takes the CPU sweep. The route
+predicate decides this from the same bound (decision R1), so the path
+is routed to the sweep before anything is dispatched, and it renders.
+The maintainer decided this in water-rs/waterui#2544: content the GPU
+route cannot hold is served by the CPU route rather than failing the
+frame. The bound is an upper bound, so a path whose kernels would use
+less can still be sent to the sweep by a loose row; tightening the rows
+(water-rs/waterui#3238) is what brings such content back to the GPU
+route.
 
 *Alternatives considered:* grow-and-retry across frames (needs a
 readback of the overflow flag, and makes a frame's output depend on
@@ -685,9 +691,16 @@ deterministic without hysteresis.** Its inputs are the path's own
 content (its curve element count, and the crossing-density estimate that
 falls out of the same `O(n)` segment-bound pass as decision R2's buffer
 bound) and the scale of its transform, from which the device-space
-coverage rect follows. Nothing else: not frame history, not the previous
-frame's choice, not a measured timing, not atlas pressure, not whether an
-entry is currently resident. The same path at the same scale therefore
+coverage rect follows. It also requires that the path's own decision R2
+bound fits: every buffer row its single draw would add is at most the
+device's binding limit, and their total with the frame's fixed bytes is
+at most the per-frame cap; a path that does not fit takes the CPU sweep
+(water-rs/waterui#2544). That term reads only the path's content, its
+scale and placement, the surface size and the device limit, which the
+engine fixes when it opens the device. Nothing else: not frame history,
+not the previous frame's choice, not the other paths of the frame, not a
+measured timing, not atlas pressure, not whether an entry is currently
+resident. The same path at the same scale therefore
 takes the same route in every frame and in every process, which is what
 makes the polygon-coverage gate reproducible.
 
@@ -706,11 +719,14 @@ per content hash and keep it while the entry is resident (stable, but
 ties the route to cache residency, which is also history).
 
 **Runtime failure.** The GPU route has no atlas allocation to fail
-(decision S1) and no buffer overflow to detect (decision R2): the only
-failure is a buffer bound above the hard memory cap, which is an
-`Unsupported` error raised before the dispatch. There is no in-frame
-fallback to the CPU sweep — under decision C1 that would make the image
-depend on memory pressure.
+(decision S1) and no buffer overflow to detect (decision R2). A path
+whose own bound does not fit the binding limit or the per-frame cap is
+not a failure: decision R1's predicate sends it to the CPU sweep. The
+remaining failure is a frame whose GPU paths each fit but whose bounds
+together exceed a buffer's binding limit or the cap, which
+`GpuCoverage::draw` refuses at apply with an `Unsupported` error before
+any dispatch. Serving that frame belongs to splitting its coverage work
+into dispatch batches that each fit (water-rs/waterui#3237).
 
 ## 7. Summary of decisions
 
@@ -724,11 +740,11 @@ depend on memory pressure.
 | T2 | #2546 adds large corpus scenes; polygon coverage uses a `#[cfg(test)]`-only forcing hook |
 | K1 | Route-tagged keys; a GPU entry never shares a key with a CPU entry |
 | S1 | GPU-routed cells live in a per-frame storage buffer, not the R8 atlas (refines #2536) |
-| R2 | Buffers sized from an exact `O(n)` CPU-side cell bound; above the cap it is `Unsupported`, never a silent fallback |
+| R2 | Buffers sized from an exact `O(n)` CPU-side cell bound; a path whose own bound exceeds the binding limit or the cap takes the CPU sweep |
 | — | GPU-routed coverage is recomputed every frame; caching it is out of scope |
 | S2 | Dispatches in the frame's own submission, ahead of its raster passes, with a compute→vertex/fragment barrier |
 | S3 | Pending record holds curve elements (flattening is on the GPU, #2543), fill rule, transform and placement key |
-| R1 | Predicate depends only on content and transform scale; deterministic, no hysteresis |
+| R1 | Predicate depends only on content, transform scale and the path's own bound against the device limit; deterministic, no hysteresis |
 
 ## Appendix A — per-scene measurements
 

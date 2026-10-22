@@ -22,7 +22,7 @@ use crate::render::bindings;
 use crate::render::glyph::GpuDraw;
 use crate::render::instance::Instance;
 use crate::render::path::stroke::{DashTable, GpuStrokeRecord};
-use crate::render::path::{CoverageKey, GpuElement, GpuPath};
+use crate::render::path::{CoverageKey, GpuBound, GpuElement, GpuPath};
 use crate::render::stroke_abi::{
     LIST_WORDS, RECORD_WORDS, SCAN_BLOCK, SLOT_WORDS, SLOTS, STAGE_WORDS,
 };
@@ -66,8 +66,13 @@ pub const ARGS_NORMAL: u32 = 36;
 const WORKGROUP: u32 = 64;
 const CLASSIFY_WIDTH: u32 = 128;
 /// Decision R2's hard per-frame cap on the coverage buffers' total
-/// size: a bound over it is an explicit `Unsupported`, never a retry.
+/// size. A path whose own bound passes it is routed to the CPU sweep
+/// ([`CoverageLimit::admits`]); a frame whose paths together pass it is
+/// refused at [`GpuCoverage::draw`], never retried.
 const GPU_COV_MAX_BYTES: u64 = 256 << 20;
+/// The bytes a frame binds beside its paths' rows: the `Params` blocks,
+/// the dispatch arguments and the work header.
+const FRAME_FIXED_BYTES: u64 = 18 * 1024 + 128 + 48;
 
 /// u32 words of one geometry record in the arena: the device bounds
 /// vec4 plus `(texel offset, width, interior, kind)`.
@@ -229,8 +234,8 @@ pub struct GpuCoverage {
     undrawn_bytes: u64,
     /// The undrawn byte budget — the engine's GPU-budget share.
     budget: u64,
-    /// `max_storage_buffer_binding_size.min(max_buffer_size)` in words.
-    limit_words: u64,
+    /// The device's binding limit.
+    limit: CoverageLimit,
     /// An unrecorded compaction's copy plan. Held until a submit lands
     /// it — a failed or retried commit re-records it rather than
     /// pointing entries at content that never moved.
@@ -353,9 +358,6 @@ impl GpuCoverage {
     }
 
     fn with_limits(limits: &wgpu::Limits, budget: u64) -> Self {
-        let limit = limits
-            .max_storage_buffer_binding_size
-            .min(limits.max_buffer_size);
         Self {
             paths: Vec::new(),
             entries: FxHashMap::default(),
@@ -364,7 +366,7 @@ impl GpuCoverage {
             live_words: 0,
             undrawn_bytes: 0,
             budget,
-            limit_words: limit / 4,
+            limit: CoverageLimit::new(limits),
             compaction: None,
             elements: Vec::new(),
             element_sources: Vec::new(),
@@ -542,6 +544,14 @@ impl GpuCoverage {
         self.compaction = None;
     }
 
+    /// The totals one more miss's rows are sized against.
+    const fn frame_totals(&self) -> FrameTotals {
+        FrameTotals {
+            fragments: self.fragment_total,
+            columns: self.cov_total,
+        }
+    }
+
     /// Join one applied `GpuPath` draw into the frame, as the path's
     /// draw index. A resident entry replays its block untouched; a miss
     /// allocates a block, evicts undrawn entries LRU-first over the
@@ -580,54 +590,26 @@ impl GpuCoverage {
             ..
         } = prepared;
         // Decision R2: the bound sizes everything, so over the cap is a
-        // fail, not a resize.
-        let rows = bound.grid_h;
-        let strips = bound.grid_h.div_ceil(crate::render::path::STRIP_H);
-        let to64 = |n: usize| u64::try_from(n).expect("bound fits u64");
-        let fragment_total =
-            self.fragment_total + u32::try_from(bound.fragments).expect("fragments");
-        let cov_total = self
-            .cov_total
-            .checked_add(
-                u32::try_from(bound.grid_w * strips)
-                    .map_err(|_| RenderError::Unsupported("GPU coverage key range exceeds u32"))?,
-            )
-            .ok_or(RenderError::Unsupported(
-                "GPU coverage key range exceeds u32",
-            ))?;
-        let previous_groups = group_words(self.fragment_total, self.cov_total);
-        let next_groups = group_words(fragment_total, cov_total);
-        let tiles = to64(strips * bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize));
-        let previous_tokens = self.fragment_total.min(self.cov_total) * 6;
-        let next_tokens = fragment_total.min(cov_total) * 6;
+        // fail, not a resize. A path whose own rows do not fit never gets
+        // here on the automatic route ([`CoverageLimit::admits`]); this is
+        // the frame's sum.
+        let (rows, totals) = path_rows(prepared, bound, self.frame_totals())?;
         let mut next = self.bound;
-        next.add(&BufferBounds {
-            elements: to64(elements.len()) * (std::mem::size_of::<GpuElement>() as u64),
-            segments: to64(bound.segments) * 16,
-            scratch: to64(bound.bins) * 12
-                + to64(bound.fragments) * 40
-                + to64(bound.fragments.div_ceil(64)) * 64
-                + to64(strips) * 12
-                + tiles * 16
-                + u64::from(next_groups - previous_groups + next_tokens - previous_tokens) * 4,
-            work: to64(rows) * 4 + (to64(strips) + tiles) * 8,
-            paths: (PATH_WORDS as u64) * 4,
-            arena: to64(bound.texels.div_ceil(4) + bound.cell_cap) * 4
-                + to64(bound.instance_cap) * u64::from(GEOMETRY_WORDS) * 4,
-            unbound: 16 + u64::from(ARGS_WORDS) * 4,
-            ..BufferBounds::default()
-        });
-        next.add(&stroke_bounds(strokes.len(), dash.as_deref()));
-        if next.total() + 18 * 1024 + 128 + 48 > GPU_COV_MAX_BYTES {
+        next.add(&rows);
+        if next.total() + FRAME_FIXED_BYTES > GPU_COV_MAX_BYTES {
             return Err(RenderError::Unsupported(
                 "GPU coverage bound exceeds the per-frame cap",
             ));
         }
-        if next.largest() > self.limit_words * 4 {
+        if next.largest() > self.limit.bytes {
             return Err(RenderError::Unsupported(
                 "GPU coverage bound exceeds the device buffer limit",
             ));
         }
+        let FrameTotals {
+            fragments: fragment_total,
+            columns: cov_total,
+        } = totals;
         self.bound = next;
         let record = u32::try_from(self.paths.len()).expect("path count fits u32");
         let elem_base = self.element_total;
@@ -719,7 +701,7 @@ impl GpuCoverage {
         self.bin_total += u32::try_from(bound.bins).expect("bins");
         self.fragment_total = fragment_total;
         self.cov_total = cov_total;
-        self.row_total += u32::try_from(rows).expect("rows");
+        self.row_total += u32::try_from(bound.grid_h).expect("rows");
 
         Ok(u32::try_from(self.draws.len() - 1).expect("draw count fits u32"))
     }
@@ -804,7 +786,7 @@ impl GpuCoverage {
             moves.push((key, tail));
             tail += entry.words;
         }
-        if u64::from(tail) + u64::from(extra) > self.limit_words {
+        if u64::from(tail) + u64::from(extra) > self.limit.words() {
             return Err(RenderError::Unsupported(
                 "GPU coverage output exceeds device buffer limit",
             ));
@@ -818,7 +800,7 @@ impl GpuCoverage {
         // address; the live set plus the immediate need already fit.
         let need = u64::from(tail) + u64::from(extra);
         let size = (need + u64::from(extra).max(need / 4))
-            .min(self.limit_words)
+            .min(self.limit.words())
             .max(16)
             * 4;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1563,6 +1545,105 @@ impl GpuCoverage {
     }
 }
 
+/// The device's coverage binding limit,
+/// `max_storage_buffer_binding_size.min(max_buffer_size)`: every buffer
+/// the coverage kernels bind must fit it.
+#[derive(Clone, Copy, Debug)]
+pub struct CoverageLimit {
+    bytes: u64,
+}
+
+impl CoverageLimit {
+    pub fn new(limits: &wgpu::Limits) -> Self {
+        Self {
+            bytes: limits
+                .max_storage_buffer_binding_size
+                .min(limits.max_buffer_size),
+        }
+    }
+
+    const fn words(self) -> u64 {
+        self.bytes / 4
+    }
+
+    /// The capacity term of the automatic route's predicate (decisions R1
+    /// and R2, as water-rs/waterui#2544 amended them): whether the rows the
+    /// single draw of `path`, placed at `bound`, would add to an otherwise
+    /// empty frame each fit the binding limit and, with the frame's fixed
+    /// bytes, the per-frame cap. Its inputs are the path's content, scale
+    /// and placement, the surface size and the device limit, so it is as
+    /// deterministic as the rest of the predicate. A path it refuses takes
+    /// the CPU sweep. The rows are the ones [`GpuCoverage::draw`] adds, from
+    /// the same [`path_rows`].
+    pub fn admits(self, path: &GpuPath, bound: &GpuBound) -> bool {
+        path_rows(path, bound, FrameTotals::default()).is_ok_and(|(rows, _)| {
+            rows.largest() <= self.bytes && rows.total() + FRAME_FIXED_BYTES <= GPU_COV_MAX_BYTES
+        })
+    }
+}
+
+/// The running totals of a frame's misses that one more path's rows
+/// depend on: the sort groups and tokens are sized from the frame's
+/// fragments and strip columns together.
+#[derive(Clone, Copy, Default)]
+struct FrameTotals {
+    fragments: u32,
+    columns: u32,
+}
+
+/// The rows the draw of `path` at `bound` adds to decision R2's bound of
+/// a frame whose earlier misses reached `before`, by buffer, and the
+/// totals after it. [`GpuCoverage::draw`] and [`CoverageLimit::admits`]
+/// both size a path from here, so the route predicate and the frame's
+/// check cannot disagree on what one path costs.
+fn path_rows(
+    path: &GpuPath,
+    bound: &GpuBound,
+    before: FrameTotals,
+) -> Result<(BufferBounds, FrameTotals), RenderError> {
+    let rows = bound.grid_h;
+    let strips = bound.grid_h.div_ceil(crate::render::path::STRIP_H);
+    let to64 = |n: usize| u64::try_from(n).expect("bound fits u64");
+    let key_range = || RenderError::Unsupported("GPU coverage key range exceeds u32");
+    // The sort groups take up to 16 words per fragment at u32 word
+    // offsets, so a frame past this many fragments cannot be laid out.
+    let after = FrameTotals {
+        fragments: u32::try_from(bound.fragments)
+            .ok()
+            .and_then(|fragments| before.fragments.checked_add(fragments))
+            .filter(|&fragments| fragments <= u32::MAX / 16)
+            .ok_or(RenderError::Unsupported(
+                "GPU coverage fragment bound exceeds u32 addressing",
+            ))?,
+        columns: u32::try_from(bound.grid_w * strips)
+            .ok()
+            .and_then(|columns| before.columns.checked_add(columns))
+            .ok_or_else(key_range)?,
+    };
+    let groups =
+        group_words(after.fragments, after.columns) - group_words(before.fragments, before.columns);
+    let tokens = after.fragments.min(after.columns) * 6 - before.fragments.min(before.columns) * 6;
+    let tiles = to64(strips * bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize));
+    let mut bounds = BufferBounds {
+        elements: to64(path.elements.len()) * (std::mem::size_of::<GpuElement>() as u64),
+        segments: to64(bound.segments) * 16,
+        scratch: to64(bound.bins) * 12
+            + to64(bound.fragments) * 40
+            + to64(bound.fragments.div_ceil(64)) * 64
+            + to64(strips) * 12
+            + tiles * 16
+            + u64::from(groups + tokens) * 4,
+        work: to64(rows) * 4 + (to64(strips) + tiles) * 8,
+        paths: (PATH_WORDS as u64) * 4,
+        arena: to64(bound.texels.div_ceil(4) + bound.cell_cap) * 4
+            + to64(bound.instance_cap) * u64::from(GEOMETRY_WORDS) * 4,
+        unbound: 16 + u64::from(ARGS_WORDS) * 4,
+        ..BufferBounds::default()
+    };
+    bounds.add(&stroke_bounds(path.strokes.len(), path.dash.as_deref()));
+    Ok((bounds, after))
+}
+
 /// The bytes a stroke path's records bound (design section 8), by buffer:
 /// the records, and for a dashed path its cumulative-length table, in the
 /// strokes buffer; the vertex scratch, and for a dashed path the per-record
@@ -1986,6 +2067,54 @@ mod tests {
         cases
     }
 
+    /// Mitered polylines whose every join turns by the same angle: small
+    /// turns, where the miter row is the inner side's `2·s·hw`, and turns
+    /// just inside and just past the miter limit, where the outer side's
+    /// `hw·tan ψ` meets `ml` (design section 6.5). Each runs in a frame of
+    /// its own so no other path's slack hides its join rows.
+    fn miter_cases() -> Vec<(kurbo::BezPath, kurbo::Stroke)> {
+        use kurbo::{BezPath, Join, Stroke, Vec2};
+        let polyline = |turn: f64, alternate: bool| {
+            let mut path = BezPath::new();
+            // Inside the 1024-square surface at either test scale.
+            let mut at = kurbo::Point::new(150.0, 420.0);
+            let mut heading = 0.0_f64;
+            path.move_to(at);
+            for k in 0..9 {
+                at += Vec2::from_angle(heading) * 50.0;
+                path.line_to(at);
+                heading += if alternate && k % 2 == 1 { -turn } else { turn };
+            }
+            path
+        };
+        let mut cases = Vec::new();
+        for (turn, alternate) in [(0.02, false), (0.1, true), (0.6, true)] {
+            for width in [3.0, 31.0] {
+                cases.push((
+                    polyline(turn, alternate),
+                    Stroke::new(width)
+                        .with_join(Join::Miter)
+                        .with_miter_limit(4.0),
+                ));
+            }
+        }
+        for limit in [1.5_f64, 4.0, 10.0] {
+            // A miter passes while `tan ψ < sqrt(ml² - 1)`, `ψ` half the turn.
+            let edge = 2.0 * limit.mul_add(limit, -1.0).sqrt().atan();
+            for turn in [edge - 1e-4, edge + 1e-4] {
+                for alternate in [false, true] {
+                    cases.push((
+                        polyline(turn, alternate),
+                        Stroke::new(31.0)
+                            .with_join(Join::Miter)
+                            .with_miter_limit(limit),
+                    ));
+                }
+            }
+        }
+        cases
+    }
+
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -2030,8 +2159,13 @@ mod tests {
         )];
         // The default device's binding limit bounds one frame, so the cases
         // go through in several.
+        let miters = miter_cases();
         let mut index = 0usize;
-        for chunk in cases.chunks(24).chain(singles.chunks(1)) {
+        for chunk in cases
+            .chunks(24)
+            .chain(singles.chunks(1))
+            .chain(miters.chunks(1))
+        {
             let mut frame = GpuCoverage::new(&device, u64::MAX);
             frame.begin_frame();
             let mut kept = Vec::new();

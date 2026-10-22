@@ -438,13 +438,6 @@ pub struct GpuPath {
     pub bound: GpuBound,
 }
 
-impl GpuPath {
-    /// Large, crossing-dense paths amortize compute dispatch and classification.
-    pub const fn prefers_gpu(&self) -> bool {
-        self.bound.prefers_gpu()
-    }
-}
-
 /// Decision R2's per-path buffer bound, computed in `O(n)` over the
 /// curve elements from their device-space bounding boxes.
 #[derive(Clone, Copy, Debug, Default)]

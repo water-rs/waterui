@@ -196,6 +196,18 @@ const fn f32x2v(v: Vec2) -> [f32; 2] {
     [v.x as f32, v.y as f32]
 }
 
+/// The turn from `from` to `to` as the kernel sees it: the angle between
+/// their f32 roundings, which is what a record stores. The products of two
+/// f32 values are exact in f64, so the angle is accurate to f64 rounding.
+fn kernel_turn(from: Vec2, to: Vec2) -> f64 {
+    let f32v = |v: Vec2| {
+        let [x, y] = f32x2v(v);
+        Vec2::new(f64::from(x), f64::from(y))
+    };
+    let (a, b) = (f32v(from), f32v(to));
+    a.cross(b).atan2(a.dot(b))
+}
+
 /// A nonnegative `x < 2^31` in `2^-32` fixed point: `[integer, fraction]`.
 #[expect(
     clippy::cast_possible_truncation,
@@ -310,7 +322,7 @@ fn regularize_cusp(c: CubicBez, dimension: f64) -> CubicBez {
     c
 }
 
-/// A cubic whose control points are nearly colinear, with the projection onto
+/// A cubic whose control points are nearly collinear, with the projection onto
 /// its reference chord (kurbo 0.13.1 `do_cubic`'s `do_linear` inputs).
 struct Linear {
     projected: [f64; 4],
@@ -318,7 +330,7 @@ struct Linear {
     ref_vec: Vec2,
 }
 
-/// kurbo 0.13.1 `StrokeCtx::do_cubic`'s near-colinear test.
+/// kurbo 0.13.1 `StrokeCtx::do_cubic`'s near-collinear test.
 #[expect(
     clippy::suboptimal_flops,
     reason = "line-for-line port of kurbo 0.13.1"
@@ -618,6 +630,10 @@ struct JoinRec {
     k: u32,
     /// The encoder's f64 turn angle.
     phi: f64,
+    /// The turn between the f32 tangents the kernel reads for this join
+    /// (the previous record's end tangent and this one's start tangent),
+    /// evaluated in f64: the angle of the kernel's own miter geometry.
+    kernel_turn: f64,
     /// The tangent the join turns to.
     tan: Vec2,
     at: Point,
@@ -852,6 +868,7 @@ impl<'a> Encoder<'a> {
                 code: JOIN_START,
                 k: 0,
                 phi: 0.0,
+                kernel_turn: 0.0,
                 tan: tan0,
                 at,
             });
@@ -875,6 +892,7 @@ impl<'a> Encoder<'a> {
             code,
             k,
             phi,
+            kernel_turn: kernel_turn(ab, tan0),
             tan: tan0,
             at,
         });
@@ -1192,14 +1210,21 @@ impl<'a> Encoder<'a> {
             Body::JoinOnly => {}
         }
         if let Some(join) = join {
-            let (chords, v) = match join.code {
-                JOIN_BEVEL => (1, sh * join.phi.abs()),
-                JOIN_MITER => (2, 2.0 * sh * self.stroke.miter_limit),
-                JOIN_ROUND => (join.k as usize, sh * join.phi.abs()),
-                _ => (0, 0.0),
-            };
-            if chords > 0 {
-                self.add_group(2, chords, v, v);
+            match join.code {
+                JOIN_BEVEL => {
+                    let v = sh * join.phi.abs();
+                    self.add_group(2, 1, v, v);
+                }
+                JOIN_MITER => {
+                    let (inner, outer) = self.miter_rows(join.kernel_turn);
+                    self.add_group(1, 2, inner, inner);
+                    self.add_group(1, 2, outer, outer);
+                }
+                JOIN_ROUND => {
+                    let v = sh * join.phi.abs();
+                    self.add_group(2, join.k as usize, v, v);
+                }
+                _ => {}
             }
         }
         let mut dev = Rect::from_points(self.raster * piece.p0, self.raster * piece.p1);
@@ -1209,6 +1234,48 @@ impl<'a> Encoder<'a> {
                 .union_pt(self.raster * cubic.p2);
         }
         self.hull = self.hull.union(dev);
+    }
+
+    /// The device variations of a miter join's two sides (design section
+    /// 6.5), each two chords, for the turn `turn` between the f32 tangents
+    /// the kernel reads.
+    ///
+    /// In the f32 geometry the kernel builds from those tangents, with
+    /// `ψ = |turn| / 2`, each side of `emit_join_side` is one of:
+    ///
+    /// - the inner side of a drawn miter, previous end vertex → `p0` →
+    ///   start vertex: two chords of length `hw`, `2·hw` in all;
+    /// - the outer side of a drawn miter, previous end vertex → miter point
+    ///   → start vertex: two chords of length `hw·tan ψ`. The kernel draws a
+    ///   miter only when `2·hy < (hy + dt)·ml²`, that is `sec² ψ < ml²`, and
+    ///   `tan ψ < sec ψ`, so `hw·tan ψ ≤ hw·min(tan ψ, ml)`;
+    /// - either side of a miter that fails the limit test, previous end
+    ///   vertex → midpoint → start vertex: two chords of length
+    ///   `hw·sin ψ`, and `sin ψ ≤ min(tan ψ, max(ml, 1))` because
+    ///   `sin ψ ≤ tan ψ` and `sin ψ ≤ 1`.
+    ///
+    /// So whichever side the kernel's f32 `cross` sign makes outer, and
+    /// whether or not its f32 limit test passes, the two sides' variations
+    /// are dominated, in some order, by `2·s·hw` and
+    /// `2·s·hw·min(tan ψ, max(ml, 1))`. The bin and fragment rows are summed
+    /// over the path, never per side, so charging one row to each side
+    /// bounds the join without the encoder ever deciding which side is
+    /// which: the f64 side assignment does not have to match the kernel's.
+    /// `turn` is the angle of the f32 tangents themselves, so their rounding
+    /// costs nothing; the kernel's f32 evaluation of the points is covered
+    /// by [`VARIATION_MARGIN`] and the `s·tol` term like every other row.
+    /// Its f32 limit test can admit `sec ψ` past `ml` only by its own
+    /// rounding, the same exposure the earlier `2·s·hw·ml` row had at
+    /// `tan ψ` near `ml`; below the clamp the row is the drawn length.
+    /// At `ψ = π/2`, an exact reversal, `tan` is huge and `max(ml, 1)`
+    /// decides; a NaN turn, from tangents that overflow f32, also leaves
+    /// `max(ml, 1)`, since `f64::min` ignores a NaN.
+    fn miter_rows(&self, turn: f64) -> (f64, f64) {
+        let sh = self.s * self.hw;
+        let reach = (turn.abs() / 2.0)
+            .tan()
+            .min(self.stroke.miter_limit.max(1.0));
+        (2.0 * sh, 2.0 * sh * reach)
     }
 
     /// The chord count and bound row of a cap style (design section 6.5).
@@ -1438,7 +1505,7 @@ mod tests {
     }
 
     /// A random cubic of one of the shapes the encoder has to survive: generic,
-    /// looped, cusped, `p1 == p0`, or colinear with reversals.
+    /// looped, cusped, `p1 == p0`, or collinear with reversals.
     fn random_cubic(rng: &mut Rng, p0: Point) -> CubicBez {
         match rng.below(6) {
             0 => CubicBez::new(p0, rng.point(), rng.point(), rng.point()),
@@ -1457,7 +1524,7 @@ mod tests {
             }
             // p1 == p0.
             3 => CubicBez::new(p0, p0, rng.point(), rng.point()),
-            // Colinear, with a reversal.
+            // Collinear, with a reversal.
             4 => {
                 let dir = Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0)).normalize();
                 let at = |s: f64| p0 + dir * s;
@@ -1477,7 +1544,7 @@ mod tests {
         }
     }
 
-    /// Random subpaths of lines, quads and cubics, with colinear runs,
+    /// Random subpaths of lines, quads and cubics, with collinear runs,
     /// reversals, repeated points, and open and closed endings.
     fn random_path(rng: &mut Rng) -> BezPath {
         let mut path = BezPath::new();
@@ -1486,7 +1553,7 @@ mod tests {
             path.move_to(at);
             for _ in 0..=rng.below(7) {
                 match rng.below(8) {
-                    // A line, a colinear continuation, a reversal.
+                    // A line, a collinear continuation, a reversal.
                     0 | 1 => at = rng.point(),
                     2 => at += (at - path_start(&path)) * rng.range(0.1, 1.0),
                     3 => at = path_start(&path) + (path_start(&path) - at) * rng.range(0.0, 1.0),
@@ -1515,7 +1582,7 @@ mod tests {
         path
     }
 
-    /// The last move point: a pivot for the colinear and reversal cases.
+    /// The last move point: a pivot for the collinear and reversal cases.
     fn path_start(path: &BezPath) -> Point {
         path.elements()
             .iter()
@@ -1849,7 +1916,7 @@ mod tests {
             let mut path = BezPath::new();
             path.move_to(c.p0);
             path.curve_to(c.p1, c.p2, c.p3);
-            // No input returns the non-convergence error, the near-colinear
+            // No input returns the non-convergence error, the near-collinear
             // ones included.
             prepare(&shape(&path), &stroke, raster, tol, SURFACE).expect("the cubic encodes");
             if near_linear(c, tol).is_some() {
