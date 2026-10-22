@@ -637,10 +637,11 @@ fn windows_pointer_position() -> Option<(f64, f64)> {
 /// docked app bars.
 #[cfg(target_os = "windows")]
 fn windows_visible_frame(spec: &MonitorSpec) -> Option<FrameSpec> {
-    use windows_sys::Win32::Foundation::{BOOL, LPARAM, RECT, TRUE};
+    use windows_sys::Win32::Foundation::{LPARAM, RECT, TRUE};
     use windows_sys::Win32::Graphics::Gdi::{
         EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
     };
+    use windows_sys::core::BOOL;
 
     /// `EnumDisplayMonitors` callback payload: the `HMONITOR` winit's
     /// `MonitorHandle` wraps, filled with the matching monitor's `rcWork`.
@@ -689,7 +690,7 @@ fn windows_visible_frame(spec: &MonitorSpec) -> Option<FrameSpec> {
 
     use winit::platform::windows::MonitorHandleExtWindows;
     let mut lookup = Lookup {
-        hmonitor: spec.handle.hmonitor(),
+        hmonitor: spec.handle.hmonitor() as HMONITOR,
         work_area: None,
     };
     // SAFETY: `EnumDisplayMonitors` runs `find_monitor` synchronously on
@@ -698,7 +699,7 @@ fn windows_visible_frame(spec: &MonitorSpec) -> Option<FrameSpec> {
     // and null clip rect enumerate every monitor's full frame.
     unsafe {
         EnumDisplayMonitors(
-            0,
+            std::ptr::null_mut(),
             std::ptr::null(),
             Some(find_monitor),
             &raw mut lookup as LPARAM,

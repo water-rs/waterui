@@ -206,7 +206,9 @@ futures = { workspace = true, optional = true }
 # module turns the Xlib backend's `Display*` into its `xcb_connection_t`.
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "emscripten", target_os = "redox"))))'.dependencies]
 x11-dl = { version = "2.21", optional = true }
-x11rb = { version = "0.14", optional = true }
+# `allow-unsafe-code` exposes `xcb_ffi`, which 0.14 gates behind it: the
+# runner wraps the `xcb_connection_t` winit already owns.
+x11rb = { version = "0.14", features = ["allow-unsafe-code"], optional = true }
 # `ext-background-effect-v1` blur behind a Wayland window, bound on the
 # `wl_display` winit already owns — borrowed through the raw display handle,
 # never a second connection. `staging` carries the ext-* protocols, and
