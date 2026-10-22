@@ -329,6 +329,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "android-planes"
+version = "0.0.0"
+dependencies = [
+ "android-activity",
+ "ash",
+ "cherenkov",
+ "cherenkov-gpu",
+ "jni 0.22.4",
+ "libc",
+ "ndk",
+ "ndk-sys",
+ "skrifa 0.48.0",
+ "tracing",
+ "tracing-subscriber",
+ "wgpu 30.0.1",
+]
+
+[[package]]
 name = "android-properties"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -439,6 +457,26 @@ name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
+name = "apple-planes"
+version = "0.0.0"
+dependencies = [
+ "cherenkov",
+ "cherenkov-bench",
+ "cherenkov-gpu",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
+ "objc2-ui-kit 0.3.2",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+ "wgpu 30.0.1",
+]
 
 [[package]]
 name = "approx"
@@ -1869,7 +1907,7 @@ dependencies = [
 name = "cherenkov-stroke"
 version = "0.0.0"
 dependencies = [
- "kurbo 0.13.1",
+ "kurbo",
  "num-bigint",
 ]
 

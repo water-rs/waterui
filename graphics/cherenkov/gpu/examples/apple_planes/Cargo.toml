@@ -2,46 +2,15 @@
 name = "apple-planes"
 version = "0.0.0"
 description = "On-device verification harness for Apple system-compositor planes (#90)"
-edition = "2024"
-license = "MIT OR Apache-2.0"
+edition.workspace = true
+license.workspace = true
 publish = false
 
 [lib]
 crate-type = ["staticlib", "rlib"]
 
-# A standalone workspace, like android_planes: the example keeps its own
-# lockfile so host builds and the iOS staticlib resolve identically.
-[workspace]
-
-[workspace.package]
-edition = "2024"
-license = "MIT OR Apache-2.0"
-
-[workspace.lints.rust]
-missing_docs = "warn"
-unsafe_op_in_unsafe_fn = "deny"
-
-[workspace.lints.clippy]
-pedantic = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
-
 [lints]
 workspace = true
-
-# Same pins as the repo root: the wgpu fork carries the v30 Metal
-# colour-space fix (gfx-rs/wgpu#10175) that surface negotiation on Apple
-# needs.
-[patch.crates-io]
-naga = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-naga-types = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu-core = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu-core-deps-apple = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu-core-deps-emscripten = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu-core-deps-windows-linux-android = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu-hal = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu-naga-bridge = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu-types = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
 
 [dependencies]
 cherenkov = { path = "../../.." }

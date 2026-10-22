@@ -112,15 +112,19 @@ fn read_launch(app: &AndroidApp) -> (Scenario, bool) {
 
 fn intent_extras(app: &AndroidApp) -> Result<(Option<String>, bool), String> {
     use jni::objects::{JObject, JString, JValue};
+    // SAFETY: `vm_as_ptr` is the process's live JavaVM.
     let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) };
     vm.attach_current_thread(|env| -> jni::errors::Result<(Option<String>, bool)> {
         // android-activity owns the activity's global ref; hold it
         // through a local ref so this `JObject` only deletes what it
         // created.
+        // SAFETY: `env_raw` is this attached thread's JNIEnv and
+        // `activity_as_ptr` is the activity's live jobject.
         let local = unsafe {
             let env_raw = env.get_raw();
             ((**env_raw).v1_2.NewLocalRef)(env_raw, app.activity_as_ptr().cast())
         };
+        // SAFETY: `local` is the live local ref the call above created.
         let activity = unsafe { JObject::from_raw(env, local) };
         let intent = env
             .call_method(
@@ -187,7 +191,9 @@ struct Run {
 struct Video {
     layer: Layer,
     producer: Pool,
-    video: cherenkov::GpuProducer<Gpu>,
+    /// Keeps the frame source registered — the producer's last drop
+    /// retires it.
+    _gpu_producer: cherenkov::GpuProducer<Gpu>,
     sink: cherenkov::FrameSink<Gpu>,
 }
 
@@ -214,6 +220,7 @@ impl Run {
             window.width().cast_unsigned(),
             window.height().cast_unsigned(),
         );
+        // SAFETY: `window` is the app's live NativeWindow.
         let parent = unsafe { SurfaceControl::from_window(window.ptr(), c"cherenkov harness") }
             .expect("surface control from window");
         logcat::line("SurfaceControl \"cherenkov harness\" created");
@@ -253,7 +260,7 @@ impl Run {
                 Video {
                     layer,
                     producer: Pool::new(&vk, spec, paused).expect("producer pool"),
-                    video,
+                    _gpu_producer: video,
                     sink,
                 }
             })

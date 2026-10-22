@@ -28,6 +28,11 @@ const CW: usize = (WIDTH / 2) as usize;
 const CH: usize = (HEIGHT / 2) as usize;
 
 /// One mapped plane region, as `AHardwareBuffer_lockPlanes` reports it.
+#[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the struct is the gralloc plane report verbatim; the harness owns every field"
+)]
 pub struct Plane {
     /// The plane's first byte.
     pub data: *mut u8,
@@ -143,12 +148,16 @@ struct Channel {
 /// # Safety
 /// `channel.base` has `row_stride`-spaced writable rows covering `cols`.
 unsafe fn channel_run(channel: Channel, row: usize, cols: Range<usize>, value: u8) {
+    // SAFETY: the caller's contract covers `row` and `cols` on this
+    // channel's mapping.
     let row_base = unsafe { channel.base.add(row * channel.row_stride) };
     if channel.pixel_stride == 1 {
+        // SAFETY: `cols` lies inside the writable row.
         unsafe { row_base.add(cols.start).write_bytes(value, cols.len()) };
         return;
     }
     for col in cols {
+        // SAFETY: `col` lies inside the writable row.
         unsafe { *row_base.add(col * channel.pixel_stride) = value };
     }
 }
@@ -173,9 +182,12 @@ unsafe fn chroma_row8(channels: [Channel; 2], row: usize, frame: u64, chroma: [(
         && cb.base.wrapping_add(1) == cr.base
     {
         let pair_at = |row_base: *mut u16, cols: Range<usize>, cbv: u8, crv: u8| unsafe {
+            // SAFETY: `cols` lies inside the writable u16 row the byte
+            // pair shares.
             std::slice::from_raw_parts_mut(row_base.add(cols.start), cols.len())
                 .fill(u16::from_le_bytes([cbv, crv]));
         };
+        // SAFETY: the caller's contract covers `row` on `cb`'s mapping.
         let row_base = unsafe { cb.base.add(row * cb.row_stride) }.cast::<u16>();
         pair_at(row_base, 0..CW / 2, runs.left.0, runs.left.1);
         pair_at(row_base, CW / 2..CW, runs.right.0, runs.right.1);
@@ -184,6 +196,8 @@ unsafe fn chroma_row8(channels: [Channel; 2], row: usize, frame: u64, chroma: [(
     }
     for channel in channels {
         let value = |pair: (u8, u8)| <[u8; 2]>::from(pair)[channel.comp];
+        // SAFETY: the channels describe the planes' writable mappings and
+        // every column range stays inside a chroma row.
         unsafe {
             channel_run(channel, row, 0..CW / 2, value(runs.left));
             channel_run(channel, row, CW / 2..CW, value(runs.right));
@@ -206,6 +220,7 @@ unsafe fn luma_row8(base: *mut u8, row: usize, frame: u64, luma: [u8; 4]) {
         while x < width {
             let bit = frame >> ((x / CELL as usize) % 64) & 1;
             let cell = (CELL as usize).min(width - x);
+            // SAFETY: `x..x + cell` stays inside the `width`-byte row.
             unsafe {
                 base.add(x)
                     .write_bytes(if bit == 1 { 235 } else { 24 }, cell);
@@ -220,6 +235,8 @@ unsafe fn luma_row8(base: *mut u8, row: usize, frame: u64, luma: [u8; 4]) {
     } else {
         (luma[2], luma[3])
     };
+    // SAFETY: every run ends inside the `width`-byte row — the halves
+    // cover `width`, and `bar + BAR` never exceeds `WIDTH`.
     unsafe {
         base.write_bytes(left, width / 2);
         base.add(width / 2).write_bytes(right, width / 2);
@@ -349,6 +366,8 @@ pub unsafe fn fill_nv12(planes: &[Plane], frame: u64) {
         (cb, cr)
     });
     let y = &planes[0];
+    // SAFETY: the caller maps `y.data` writable with `row_stride`-spaced
+    // rows of `WIDTH` bytes.
     unsafe {
         let y_base = y.data;
         for row in 0..HEIGHT as usize {
@@ -369,6 +388,8 @@ pub unsafe fn fill_nv12(planes: &[Plane], frame: u64) {
                 comp: 0,
             },
             Channel {
+                // SAFETY: the UV plane's rows hold (Cb, Cr) pairs, so
+                // `data + 1` stays inside the mapping.
                 base: unsafe { uv.data.add(1) },
                 row_stride: uv.row_stride,
                 pixel_stride: uv.pixel_stride,
@@ -392,6 +413,7 @@ pub unsafe fn fill_nv12(planes: &[Plane], frame: u64) {
         ]
     };
     for row in 0..CH {
+        // SAFETY: `channels` describes the planes' writable mappings.
         unsafe { chroma_row8(channels, row, frame, chroma) };
     }
 }
@@ -431,6 +453,9 @@ pub unsafe fn fill_p010(base: *mut u8, stride: usize, frame: u64) {
     interleave10(&mut uv_bot[CW..], chroma[3]);
     let bar = bar_x(frame);
     let bar_cols = (bar / 2)..(bar / 2 + (BAR / 2) as usize);
+    // SAFETY: per the caller, `base` maps `stride * HEIGHT` u16 luma
+    // followed by the interleaved chroma plane; every slice built below
+    // stays inside that mapping.
     unsafe {
         let y_base = base.cast::<u16>();
         for row in 0..HEIGHT as usize {
