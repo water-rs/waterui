@@ -25,11 +25,11 @@ use parley::fontique::{FallbackKey, Language, Script};
 /// clusters all select `Hani`.
 fn expanded_scripts(script: Script) -> Vec<Script> {
     match &script.to_bytes() {
-        b"Hans" | b"Hant" => vec![Script::from_str_unchecked("Hani")],
-        b"Jpan" => ["Hani", "Hira", "Kana"]
-            .map(Script::from_str_unchecked)
+        b"Hans" | b"Hant" => vec![Script::from_bytes(*b"Hani")],
+        b"Jpan" => [*b"Hani", *b"Hira", *b"Kana"]
+            .map(Script::from_bytes)
             .to_vec(),
-        b"Kore" => ["Hang", "Hani"].map(Script::from_str_unchecked).to_vec(),
+        b"Kore" => [*b"Hang", *b"Hani"].map(Script::from_bytes).to_vec(),
         _ => vec![script],
     }
 }
@@ -55,7 +55,7 @@ pub(super) fn fallback_keys(locale: &str) -> Vec<FallbackKey> {
     let Some(script) = langid.script else {
         return Vec::new();
     };
-    let scripts = expanded_scripts(Script::from_str_unchecked(script.as_str()));
+    let scripts = expanded_scripts(Script::from_bytes(script.into_raw()));
     if langid.language.is_unknown() {
         return scripts.into_iter().map(FallbackKey::from).collect();
     }
@@ -245,7 +245,7 @@ fn install_face(
                     // Emoji clusters are shaped through the `emoji` generic
                     // family, not a script fallback, so the platform's
                     // emoji-script (ISO 15924 `Zsye`) faces answer it too.
-                    if key.script() == Script::from_str_unchecked("Zsye") {
+                    if key.script() == Script::from_bytes(*b"Zsye") {
                         font_cx.collection.append_generic_families(
                             GenericFamily::Emoji,
                             core::iter::once(family),
@@ -277,7 +277,12 @@ mod tests {
     use parley::fontique::{FallbackKey, Script};
 
     fn key(script: &str, locale: Option<&str>) -> FallbackKey {
-        let script = Script::from_str_unchecked(script);
+        let script = Script::from_bytes(
+            script
+                .as_bytes()
+                .try_into()
+                .expect("an ISO 15924 script code is four bytes"),
+        );
         locale.map_or_else(|| script.into(), |locale| (script, locale).into())
     }
 
