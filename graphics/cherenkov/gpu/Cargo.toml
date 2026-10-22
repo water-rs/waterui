@@ -139,11 +139,13 @@ cherenkov = { path = "..", features = ["testing"] }
 nami = { version = "0.13", default-features = false, features = ["std", "kurbo"] }
 # `tests/planes.rs` runs its cases on the process main thread.
 libtest-mimic = "0.8.2"
+# `gpu_cov`'s stroke test logs its bounds through a scoped subscriber; the
+# Windows in-crate parity test layers a capture on the registry.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 # The Windows in-crate parity test forwards wgpu-hal's HLSL debug log through tracing.
 tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"] }
-tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
 
 [[test]]
 name = "planes"

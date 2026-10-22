@@ -13,6 +13,11 @@ coverage sweep sorts:
   road-network-n28   37,840
   road-network       76,480
 
+A second series, `--series dash`, is the same five paths stroked with the
+dash pattern `[4, 2]` at offset 1 (`road-network-dash-n10` ...
+`road-network-dash`), whose segment axis is the same centreline count. It is
+not part of the Ir or memory gates.
+
 `measure` profiles each size exactly as the Ir gate does — `ir_gate.profile`,
 instrumentation switched on at a fixed frame, the second steady call of
 `lower` as the sample, Rust Ir excluding the allocator and the libc memory
@@ -42,8 +47,8 @@ yet for the same reason: it is taken on Linux, on the lane that already runs
 The figures in `test_lower_scaling.py` are synthetic inputs chosen to exercise
 the fit (`segments ** 1.4` and `40 * segments`), not measurements of anything.
 
-  lower_scaling.py measure --binary B --tag T --repo R --out O [--jobs N]
-  lower_scaling.py report  --out O --tag T [--exponent 1.1] [--gate]
+  lower_scaling.py measure --binary B --tag T --repo R --out O [--series S] [--jobs N]
+  lower_scaling.py report  --out O --tag T [--series S] [--exponent 1.1] [--gate]
 """
 import argparse
 import concurrent.futures
@@ -57,10 +62,13 @@ SPEC = importlib.util.spec_from_file_location('ir_gate', pathlib.Path(__file__).
 ir_gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ir_gate)
 
-# Scene name and its line segment count: `n * n * 40` horizontal roads plus
+# Grid size suffix and line segment count: `n * n * 40` horizontal roads plus
 # `ceil(n / 5) * (n - 1) * 40` verticals, as `generate-corpus` builds them.
-SIZES = [('road-network-n10', 4_720), ('road-network-n14', 9_400), ('road-network-n20', 19_040),
-         ('road-network-n28', 37_840), ('road-network', 76_480)]
+GRIDS = [('-n10', 4_720), ('-n14', 9_400), ('-n20', 19_040), ('-n28', 37_840), ('', 76_480)]
+# Each series' scene stem: the solid stroke and the dashed one.
+STEMS = {'solid': 'road-network', 'dash': 'road-network-dash'}
+SERIES = {series: [(f'{stem}{suffix}', segments) for suffix, segments in GRIDS]
+          for series, stem in STEMS.items()}
 PHASE = 'lower'
 # The exponent the GPU coverage route is claimed to reach: its coverage work
 # is `O(n)` per segment plus a per-cell pass, so `lower` may grow a little
@@ -106,19 +114,19 @@ def measure(args):
         return f'{args.tag} {scene} done'
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        for line in pool.map(task, [scene for scene, _ in SIZES]):
+        for line in pool.map(task, [scene for scene, _ in SERIES[args.series]]):
             print(line, flush=True)
 
 
 def report(args):
     points = []
     rows = []
-    for scene, segments in SIZES:
+    for scene, segments in SERIES[args.series]:
         sample = ir_gate.load(args.out, args.tag, scene)[PHASE]['second']
         points.append((segments, sample['rust_ir']))
         rows.append((scene, segments, sample))
     exponent = fit(points)
-    lines = [f'# `{PHASE}` Ir against path segment count: `{args.tag}`', '',
+    lines = [f'# `{PHASE}` Ir against path segment count: `{args.tag}`, {args.series} series', '',
              'Second steady call of `lower`, Rust Ir (allocator and libc memory primitives excluded), '
              'one path per scene on the same canvas and pan.', '',
              '| Scene | Segments | Ir | Rust Ir | Rust Ir / segment |', '|---|---:|---:|---:|---:|']
@@ -142,7 +150,7 @@ def report(args):
                   'water-rs/waterui#2543 turns this into a gate by passing `--gate` once the GPU coverage '
                   'route selects these scenes.']
     print('\n'.join(lines))
-    pathlib.Path(args.out, f'{args.tag}-lower-scaling.md').write_text('\n'.join(lines) + '\n')
+    pathlib.Path(args.out, f'{args.tag}-{args.series}-lower-scaling.md').write_text('\n'.join(lines) + '\n')
     return 1 if args.gate and not ok else 0
 
 
@@ -156,11 +164,13 @@ def main():
     p.add_argument('--out', required=True)
     p.add_argument('--pause-at', type=int, default=8)
     p.add_argument('--warmup', type=int, default=30)
+    p.add_argument('--series', choices=sorted(SERIES), default='solid')
     p.add_argument('--jobs', type=int, default=2)
     p.add_argument('--icd', type=pathlib.Path, help='explicit Lavapipe ICD manifest')
     p = sub.add_parser('report')
     p.add_argument('--out', required=True)
     p.add_argument('--tag', required=True)
+    p.add_argument('--series', choices=sorted(SERIES), default='solid')
     p.add_argument('--exponent', type=float, default=EXPONENT)
     p.add_argument('--gate', action='store_true', help='exit non-zero when the fitted exponent exceeds the bound')
     args = parser.parse_args()

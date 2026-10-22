@@ -21,6 +21,7 @@ use crate::render::GpuImage;
 use crate::render::filter::FilterKey;
 
 use crate::render::glyph::{self, Atlas, FontData, MaskCell, PathEmit, PendingRaster, glyph_key};
+use crate::render::gpu_cov::CoverageLimit;
 use crate::render::instance::{
     ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA, FLAG_BLEND_SRC, FLAG_HAS_CLIP,
     FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance,
@@ -723,7 +724,9 @@ pub struct EmissionStorage {
 struct PreparedGpu {
     content: u64,
     linear: [u64; 4],
-    local_bounds: Rect,
+    /// The outline's local bounding box, which a shader paint's frame
+    /// reads. `None` for a compute stroke, which has no outline on the CPU.
+    local_bounds: Option<Rect>,
     path: path::GpuPath,
 }
 
@@ -927,6 +930,37 @@ pub struct Emission {
     /// emission's single retained instance the draw's anchor
     /// (water-rs/waterui#3081).
     gpu: Option<Arc<glyph::GpuDraw>>,
+    /// The automatic route's decisions for a GPU leaf re-placed under it,
+    /// built at its first re-placement (`Lowering::replace_gpu_leaf`).
+    gpu_route: Option<RouteWindow>,
+}
+
+/// The automatic route's decision (`Lowering::automatic_gpu`) for a
+/// retained GPU leaf's geometry on each grid size within one row or
+/// column of `anchor`. The predicate reads a placed bound's grid size and
+/// what [`path::GpuPath::grid_bound`] derives from it, never where the
+/// grid lies, so a re-placement onto one of these sizes takes the stored
+/// decision. A pure translation moves an unclipped grid's size by at most
+/// one either way, so an animated leaf decides each frame without
+/// re-running the capacity check.
+#[derive(Clone, Copy)]
+struct RouteWindow {
+    anchor: [usize; 2],
+    /// Bit `3 * dy + dx` holds the decision for `anchor + (dx, dy) - 1`.
+    gpu: u16,
+}
+
+impl RouteWindow {
+    /// The decision for a `grid` of this window, `None` outside it.
+    fn decision(self, grid: [usize; 2]) -> Option<bool> {
+        let offset = |axis: usize| {
+            (grid[axis] + 1)
+                .checked_sub(self.anchor[axis])
+                .filter(|&d| d < 3)
+        };
+        let (dx, dy) = (offset(0)?, offset(1)?);
+        Some((self.gpu >> (3 * dy + dx)) & 1 != 0)
+    }
 }
 
 impl Emission {
@@ -1479,9 +1513,11 @@ pub struct Lowering<'a> {
     /// The surface size: a local walk lowers onto its image's size, the
     /// surface walk onto this.
     surface: (u32, u32),
-    /// Whether the device can run the GPU coverage route's compute
-    /// passes — the route consults it at [`Self::path`] (issue #2543).
-    has_compute: bool,
+    /// The device's coverage binding limit when it can run the GPU
+    /// coverage route's compute passes, `None` when it cannot — the route
+    /// consults it at [`Self::path`] (issue #2543) and the automatic
+    /// predicate sizes paths against it (water-rs/waterui#2544).
+    compute: Option<CoverageLimit>,
     pub(crate) coverage_route: path::CoverageRoute,
 }
 
@@ -1493,7 +1529,7 @@ impl<'a> Lowering<'a> {
         size: (u32, u32),
         anchor_scratch: &'a mut AnchorScratch,
         raster_scratch: &'a mut path::EmitScratch,
-        has_compute: bool,
+        compute: Option<CoverageLimit>,
     ) -> Self {
         anchor_scratch.clear();
         Self {
@@ -1539,7 +1575,7 @@ impl<'a> Lowering<'a> {
             projected: FxHashMap::default(),
             projective_draws: 0,
             surface: size,
-            has_compute,
+            compute,
             coverage_route: path::CoverageRoute::Automatic,
         }
     }
@@ -4124,6 +4160,18 @@ impl<'a> Lowering<'a> {
         Ok(true)
     }
 
+    /// The automatic route's predicate (decisions R1 and R2): a path
+    /// takes the GPU route when it is large and crossing-dense enough to
+    /// amortize the dispatch and its own bound, `path`'s rows at `bound`,
+    /// fits the device's binding limit and the per-frame cap. Otherwise
+    /// the CPU sweep renders it. Both sites that route an automatic path,
+    /// a fresh leaf and a re-placed retained one, decide here. It reads
+    /// neither `bound.rect` nor `bound.clipped`, which [`RouteWindow`]
+    /// relies on.
+    fn automatic_gpu(&self, path: &path::GpuPath, bound: &path::GpuBound) -> bool {
+        bound.prefers_gpu() && self.compute.is_some_and(|limit| limit.admits(path, bound))
+    }
+
     /// Select and emit frame-local coverage before CPU realization retention.
     #[expect(
         clippy::cast_possible_truncation,
@@ -4164,20 +4212,36 @@ impl<'a> Lowering<'a> {
             .get(&index)
             .is_none_or(|entry| entry.content != content || entry.linear != linear_bits)
         {
-            let local_path = outline.build(tolerance);
-            cached.insert(
-                index,
-                PreparedGpu {
-                    content,
-                    linear: linear_bits,
-                    local_bounds: kurbo::Shape::bounding_box(&local_path),
-                    path: path::prepare_gpu(
-                        local_path.elements(),
-                        Affine::new([linear[0], linear[1], linear[2], linear[3], 0.0, 0.0]),
-                        (f64::from(self.width), f64::from(self.height)),
-                    ),
-                },
-            );
+            let surface = (f64::from(self.width), f64::from(self.height));
+            let linear_affine = Affine::new([linear[0], linear[1], linear[2], linear[3], 0.0, 0.0]);
+            let prepared = match outline {
+                OutlineRef::Stroke { shape, stroke }
+                    if !matches!(paint, ResolvedPaint::Shader(_)) =>
+                {
+                    PreparedGpu {
+                        content,
+                        linear: linear_bits,
+                        local_bounds: None,
+                        path: path::stroke::prepare(
+                            shape,
+                            stroke,
+                            linear_affine,
+                            tolerance,
+                            surface,
+                        )?,
+                    }
+                }
+                _ => {
+                    let local_path = outline.build(tolerance);
+                    PreparedGpu {
+                        content,
+                        linear: linear_bits,
+                        local_bounds: Some(kurbo::Shape::bounding_box(&local_path)),
+                        path: path::prepare_gpu(local_path.elements(), linear_affine, surface),
+                    }
+                }
+            };
+            cached.insert(index, prepared);
         }
         let prepared = cached
             .get(&index)
@@ -4187,7 +4251,7 @@ impl<'a> Lowering<'a> {
                 Vec2::new(coefficients[4], coefficients[5]),
                 (f64::from(self.width), f64::from(self.height)),
             );
-        if !prepared.prefers_gpu() {
+        if !self.automatic_gpu(&prepared, &prepared.bound) {
             return Ok(false);
         }
         let shader_data = match paint {
@@ -4197,7 +4261,8 @@ impl<'a> Lowering<'a> {
                     cached
                         .get(&index)
                         .expect("prepared GPU geometry")
-                        .local_bounds,
+                        .local_bounds
+                        .expect("a shader-painted stroke keeps its kurbo outline"),
                     raster,
                 )?,
             ),
@@ -4275,7 +4340,7 @@ impl<'a> Lowering<'a> {
         // An automatic-route GPU candidate emits through the coverage
         // path instead of CPU realization; the anchor it leaves behind
         // retains like any other leaf's instances (#3081).
-        let emitted_gpu = self.has_compute
+        let emitted_gpu = self.compute.is_some()
             && self.coverage_route == path::CoverageRoute::Automatic
             && matches!(
                 op,
@@ -4333,6 +4398,7 @@ impl<'a> Lowering<'a> {
         let gpu = Self::leaf_gpu_draw(&self.pending[first_pending..]).map(Arc::clone);
         cache.data = Some(Emission {
             gpu,
+            gpu_route: None,
             pending_cells: PendingCells::new(
                 instance_base,
                 first_epatch..self.emission_patches.len(),
@@ -4637,8 +4703,14 @@ impl<'a> Lowering<'a> {
                         paint,
                         glyphs,
                     )?,
-                    outline @ OutlineRef::Stroke { .. } => {
+                    outline @ OutlineRef::Stroke { shape, stroke } => {
                         let tolerance = path::FLATTEN / path::sigma_max(self.transform).max(1e-12);
+                        if self.compute.is_some()
+                            && self.coverage_route == path::CoverageRoute::Gpu
+                            && !matches!(paint, ResolvedPaint::Shader(_))
+                        {
+                            return self.stroke_gpu(*rule, shape, stroke, paint, tolerance);
+                        }
                         self.path(
                             outline.content(tolerance),
                             *rule,
@@ -4661,6 +4733,36 @@ impl<'a> Lowering<'a> {
             } => self.bitmap_glyph(*local, *font, *glyph, *size, glyphs)?,
             _ => unreachable!("scope is composed, never realized as a leaf"),
         }
+        Ok(())
+    }
+
+    /// The forced GPU route of a stroke: the compute stroker consumes the
+    /// centerline under the full transform (water-rs/waterui#2544).
+    #[cold]
+    #[inline(never)]
+    fn stroke_gpu(
+        &mut self,
+        rule: FillRule,
+        shape: &ShapeData,
+        stroke: &kurbo::Stroke,
+        paint: &ResolvedPaint,
+        tolerance: f64,
+    ) -> Result<(), RenderError> {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "surface sizes fit u32"
+        )]
+        let surface = (self.width as u32, self.height as u32);
+        let prepared = path::stroke::prepare(
+            shape,
+            stroke,
+            self.transform,
+            tolerance,
+            (f64::from(surface.0), f64::from(surface.1)),
+        )?;
+        let content = path::hash_stroke(shape, stroke, tolerance);
+        self.emit_gpu_path(rule, content, prepared, paint, None, surface);
         Ok(())
     }
 
@@ -5001,7 +5103,7 @@ impl<'a> Lowering<'a> {
         // capability; without it the CPU sweep runs even under the
         // #2546 force hook. The forced route cannot serve its emission
         // from the CPU atlas, so it decides before the hit checks.
-        if self.has_compute && self.coverage_route == path::CoverageRoute::Gpu {
+        if self.compute.is_some() && self.coverage_route == path::CoverageRoute::Gpu {
             self.path_gpu(
                 rule,
                 &shader_path.unwrap_or_else(|| make.take().expect("path factory")()),
@@ -5178,8 +5280,8 @@ impl<'a> Lowering<'a> {
     /// placement itself costs. Returns `false` — leaving the emission
     /// untouched for an ordinary realization — when the new placement
     /// changes what the leaf emits: a shader paint, which reads device
-    /// bounds; an empty grid; or an automatic-route path that no longer
-    /// prefers the GPU there.
+    /// bounds; an empty grid; or an automatic-route path the route
+    /// predicate no longer admits there.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -5204,10 +5306,20 @@ impl<'a> Lowering<'a> {
             Vec2::new(e, f),
             (f64::from(self.width), f64::from(self.height)),
         );
-        if bound.empty
-            || (self.coverage_route == path::CoverageRoute::Automatic && !bound.prefers_gpu())
-        {
+        if bound.empty {
             return false;
+        }
+        if self.coverage_route == path::CoverageRoute::Automatic {
+            let grid = [bound.grid_w, bound.grid_h];
+            let window = *emission
+                .gpu_route
+                .get_or_insert_with(|| self.route_window(&gpu.path, grid));
+            if !window
+                .decision(grid)
+                .unwrap_or_else(|| self.automatic_gpu(&gpu.path, &bound))
+            {
+                return false;
+            }
         }
         debug_assert_eq!(emission.instances.len(), 1, "a GPU emission is its anchor");
         storage.instances[emission.instances.start].bounds = bound.rect;
@@ -5232,6 +5344,19 @@ impl<'a> Lowering<'a> {
         }
         emission.transform = self.transform;
         true
+    }
+
+    /// The automatic route's decisions for `path` on the grid sizes
+    /// around a non-empty `anchor`.
+    fn route_window(&self, path: &path::GpuPath, anchor: [usize; 2]) -> RouteWindow {
+        let mut gpu = 0;
+        for dy in 0..3 {
+            for dx in 0..3 {
+                let bound = path.grid_bound(anchor[0] + dx - 1, anchor[1] + dy - 1);
+                gpu |= u16::from(self.automatic_gpu(path, &bound)) << (3 * dy + dx);
+            }
+        }
+        RouteWindow { anchor, gpu }
     }
 
     /// Push the draw half of a GPU-routed path — shared by
@@ -6143,13 +6268,103 @@ fn clip_region(clip: Option<DeviceClip>, width: u32, height: u32) -> [u32; 4] {
 mod tests {
     use super::*;
 
+    /// The default device's coverage binding limit, which every engine
+    /// device requests (`render/mod.rs`).
+    fn test_limit() -> CoverageLimit {
+        CoverageLimit::new(&wgpu::Limits::default())
+    }
+
+    /// A retained leaf's stored route decisions agree with the predicate
+    /// at every placement whose grid size they cover, and they cover
+    /// every size a fractional translation of an unclipped grid takes.
+    #[test]
+    fn route_window_matches_the_predicate() {
+        let mut geometry = BezPath::new();
+        for index in 0..1024 {
+            let x = f64::from(index % 32) * 3.0;
+            let y = f64::from(index / 32) * 3.0;
+            geometry.move_to((x, y));
+            geometry.line_to((x + 2.0, y));
+            geometry.line_to((x + 2.0, y + 2.0));
+            geometry.line_to((x, y + 2.0));
+            geometry.close_path();
+        }
+        let surface = (128.0, 128.0);
+        let origin = Vec2::new(16.0, 16.0);
+        let path = path::prepare_gpu(geometry.elements(), Affine::translate(origin), surface);
+        assert!(
+            !path.bound.clipped,
+            "the window anchors on an unclipped grid"
+        );
+        let mut frame = Frame::default();
+        let mut anchors = AnchorScratch::default();
+        let mut raster = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (128, 128),
+            &mut anchors,
+            &mut raster,
+            Some(test_limit()),
+        );
+        // The smallest binding limit that admits the anchor grid refuses
+        // the larger grids around it, so the window holds both decisions.
+        let limit = |bytes| {
+            CoverageLimit::new(&wgpu::Limits {
+                max_storage_buffer_binding_size: bytes,
+                max_buffer_size: bytes,
+                ..wgpu::Limits::default()
+            })
+        };
+        let (mut refused, mut fits) = (0, wgpu::Limits::default().max_buffer_size);
+        assert!(lowering.automatic_gpu(&path, &path.bound));
+        while fits - refused > 1 {
+            let bytes = refused + (fits - refused) / 2;
+            lowering.compute = Some(limit(bytes));
+            if lowering.automatic_gpu(&path, &path.bound) {
+                fits = bytes;
+            } else {
+                refused = bytes;
+            }
+        }
+        lowering.compute = Some(limit(fits));
+        let window = lowering.route_window(&path, [path.bound.grid_w, path.bound.grid_h]);
+        let (mut admitted, mut covered) = (0, 0);
+        for step in -160..=160 {
+            let translation = origin + Vec2::new(f64::from(step) * 0.37, f64::from(step) * 0.21);
+            let bound = path.bound_at(translation, surface);
+            let decision = window.decision([bound.grid_w, bound.grid_h]);
+            if let Some(gpu) = decision {
+                assert_eq!(
+                    gpu,
+                    lowering.automatic_gpu(&path, &bound),
+                    "{translation:?}"
+                );
+                covered += 1;
+                admitted += usize::from(gpu);
+            }
+            if !bound.clipped {
+                assert!(decision.is_some(), "an unclipped placement {translation:?}");
+            }
+        }
+        assert!(
+            admitted > 0 && covered > admitted,
+            "{admitted} of {covered}"
+        );
+    }
+
     #[test]
     #[expect(
         clippy::too_many_lines,
         reason = "three coverage-route cases, the GPU one over three frames"
     )]
     fn automatic_coverage_retains_gpu_emissions() {
-        use std::sync::Arc;
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Kind {
+            Fill,
+            Stroke,
+            Dashed,
+            ShaderStroke,
+        }
 
         let (device, _queue) = device_and_queue().expect("coverage test device");
         let atlas = Atlas::new(&device, u64::MAX);
@@ -6165,29 +6380,94 @@ mod tests {
             bitmaps: &bitmaps,
             content: &content,
         };
-        for (has_compute, rectangles, gpu) in
-            [(true, 1, false), (true, 1024, true), (false, 1024, false)]
-        {
-            let mut geometry = BezPath::new();
-            for index in 0..rectangles {
-                let x = f64::from(index % 32) * 3.0;
-                let y = f64::from(index / 32) * 3.0;
-                geometry.move_to((x, y));
-                geometry.line_to((x + 2.0, y));
-                geometry.line_to((x + 2.0, y + 2.0));
-                geometry.line_to((x, y + 2.0));
-                geometry.close_path();
-            }
-            let elements = geometry.into_iter().collect::<Vec<_>>();
-            let op = Op::Path {
-                local: Affine::IDENTITY,
-                rule: FillRule::NonZero,
-                gpu_candidate: elements.len() >= path::GPU_ROUTE_MIN_ELEMENTS,
-                outline: super::super::prepared::Outline::Fill {
-                    content: path::hash_elements(&elements, FillRule::NonZero as u64),
-                    elements: elements.into(),
-                },
-                paint: ResolvedPaint::Solid([1.0; 4]),
+        // Fills and strokes of a large path take the GPU route when the
+        // device computes; a stroke ships its centerline as records, and a
+        // shader-painted stroke keeps its kurbo outline on the fill route.
+        // `frames` is 3 where the leaf retains: a hit, then a translation.
+        for (has_compute, kind, large, gpu) in [
+            (true, Kind::Fill, false, false),
+            (true, Kind::Fill, true, true),
+            (false, Kind::Fill, true, false),
+            (true, Kind::Stroke, true, true),
+            (true, Kind::Stroke, false, false),
+            (false, Kind::Stroke, true, false),
+            (true, Kind::Dashed, true, true),
+            (true, Kind::Dashed, false, false),
+            (false, Kind::Dashed, true, false),
+            (true, Kind::ShaderStroke, true, true),
+        ] {
+            let op = match kind {
+                Kind::Fill => {
+                    let rectangles = if large { 1024 } else { 1 };
+                    let mut geometry = BezPath::new();
+                    for index in 0..rectangles {
+                        let x = f64::from(index % 32) * 3.0;
+                        let y = f64::from(index / 32) * 3.0;
+                        geometry.move_to((x, y));
+                        geometry.line_to((x + 2.0, y));
+                        geometry.line_to((x + 2.0, y + 2.0));
+                        geometry.line_to((x, y + 2.0));
+                        geometry.close_path();
+                    }
+                    let elements = geometry.into_iter().collect::<Vec<_>>();
+                    Op::Path {
+                        local: Affine::IDENTITY,
+                        rule: FillRule::NonZero,
+                        gpu_candidate: elements.len() >= path::GPU_ROUTE_MIN_ELEMENTS,
+                        outline: super::super::prepared::Outline::Fill {
+                            content: path::hash_elements(&elements, FillRule::NonZero as u64),
+                            elements: elements.into(),
+                        },
+                        paint: ResolvedPaint::Solid([1.0; 4]),
+                    }
+                }
+                Kind::Stroke | Kind::Dashed | Kind::ShaderStroke => {
+                    let lines = if large { 2100 } else { 8 };
+                    let mut geometry = BezPath::new();
+                    geometry.move_to((0.0, 0.0));
+                    for index in 0..lines {
+                        let x = f64::from(index % 40) * 3.0;
+                        let y = f64::from(index % 2).mul_add(1.5, f64::from(index / 40) * 2.0);
+                        geometry.line_to((x, y));
+                    }
+                    let shape = ShapeData::Path {
+                        elements: geometry.into_iter().collect(),
+                        rule: FillRule::NonZero,
+                    };
+                    let mut stroke = kurbo::Stroke::new(1.0);
+                    if kind == Kind::Dashed {
+                        stroke = stroke.with_dashes(0.5, [3.0, 2.0]);
+                    }
+                    let ShapeData::Path { elements, .. } = &shape else {
+                        unreachable!("the stroked shape is a path")
+                    };
+                    Op::Path {
+                        local: Affine::IDENTITY,
+                        rule: FillRule::NonZero,
+                        gpu_candidate: elements.len() >= path::GPU_STROKE_MIN_ELEMENTS,
+                        outline: super::super::prepared::Outline::Stroke { shape, stroke },
+                        paint: if kind == Kind::ShaderStroke {
+                            ResolvedPaint::Shader(Box::new(
+                                super::super::prepared::ResolvedShader {
+                                    source: cherenkov::ShaderPaint {
+                                        shader: cherenkov::ShaderId::new(1),
+                                        uniforms: Vec::new(),
+                                    },
+                                    sampling: Affine::IDENTITY,
+                                },
+                            ))
+                        } else {
+                            ResolvedPaint::Solid([1.0; 4])
+                        },
+                    }
+                }
+            };
+            // A shader paint reads device bounds, so a translation does not
+            // re-place it: it is checked for its route on one frame.
+            let frames = if gpu && kind != Kind::ShaderStroke {
+                3
+            } else {
+                1
             };
             let mut cache = Realization::default();
             let mut retained = ContentData::new(cherenkov::Picture::record(|_| {}));
@@ -6198,7 +6478,7 @@ mod tests {
             // re-pushes its draw record — the coverage entry joins at
             // commit, not here — and its third, translated, re-places
             // the emission in place (#3081).
-            for iteration in 0..if gpu { 3 } else { 1 } {
+            for iteration in 0..frames {
                 retained.storage.retain_gpu_paths(std::slice::from_ref(&op));
                 let mut frame = Frame::default();
                 let mut anchors = AnchorScratch::default();
@@ -6208,7 +6488,7 @@ mod tests {
                     (128, 128),
                     &mut anchors,
                     &mut raster,
-                    has_compute,
+                    has_compute.then(test_limit),
                 );
                 lowering.begin_pass(Target::Part(0), None);
                 let moved = iteration == 2;
@@ -6234,7 +6514,7 @@ mod tests {
                 assert_eq!(
                     tasks,
                     usize::from(gpu),
-                    "compute={has_compute}, rectangles={rectangles}"
+                    "compute={has_compute}, kind={kind:?}, large={large}"
                 );
                 assert_eq!(lowering.paths_rasterized(), u32::from(!gpu));
                 assert!(cache.valid, "every leaf's emission retains");
@@ -6246,24 +6526,33 @@ mod tests {
                         1,
                         "the draw's anchor retains like any instance"
                     );
+                    let prepared = &retained.storage.gpu_paths[&0];
+                    let draw_path = &emission.gpu.as_ref().expect("gpu draw").path;
                     assert!(
-                        Arc::ptr_eq(
-                            &emission.gpu.as_ref().expect("gpu draw").path.elements,
-                            &retained.storage.gpu_paths[&0].path.elements
-                        ),
+                        Arc::ptr_eq(&draw_path.elements, &prepared.path.elements)
+                            && Arc::ptr_eq(&draw_path.strokes, &prepared.path.strokes),
                         "the retained draw shares the prepared geometry"
                     );
+                    // A compute stroke ships records and no outline; a
+                    // fill, or a shader-painted stroke, ships elements.
+                    let compute_stroke = matches!(kind, Kind::Stroke | Kind::Dashed);
+                    assert_eq!(prepared.path.strokes.is_empty(), !compute_stroke);
+                    assert_eq!(prepared.path.elements.is_empty(), compute_stroke);
+                    assert_eq!(prepared.path.dash.is_some(), kind == Kind::Dashed);
+                    assert_eq!(prepared.local_bounds.is_some(), !compute_stroke);
+                    let geometry = if compute_stroke {
+                        Arc::as_ptr(&prepared.path.strokes).cast::<u8>()
+                    } else {
+                        Arc::as_ptr(&prepared.path.elements).cast::<u8>()
+                    };
                     if iteration > 0 {
-                        assert!(
-                            Arc::ptr_eq(
-                                previous_geometry.as_ref().expect("prepared geometry"),
-                                &retained.storage.gpu_paths[&0].path.elements
-                            ),
+                        assert_eq!(
+                            previous_geometry.expect("prepared geometry"),
+                            geometry,
                             "a leaf hit rebuilds no prepared geometry"
                         );
                     }
-                    previous_geometry =
-                        Some(Arc::clone(&retained.storage.gpu_paths[&0].path.elements));
+                    previous_geometry = Some(geometry);
                     let draw = emission.gpu.as_ref().expect("gpu draw");
                     if moved {
                         assert!(
@@ -6297,7 +6586,7 @@ mod tests {
             (64, 64),
             &mut anchor_scratch,
             &mut raster_scratch,
-            true,
+            Some(test_limit()),
         );
         let transforms = [
             Affine::IDENTITY,
@@ -6422,7 +6711,7 @@ mod tests {
             (64, 64),
             &mut anchor_scratch,
             &mut raster_scratch,
-            true,
+            Some(test_limit()),
         );
         lowering.begin_pass(Target::Part(0), None);
         let glyphs = GlyphContext {
@@ -6527,7 +6816,7 @@ mod tests {
             (64, 64),
             &mut anchor_scratch,
             &mut raster_scratch,
-            true,
+            Some(test_limit()),
         );
         lowering.begin_pass(Target::Part(0), None);
         lowering
@@ -6613,7 +6902,7 @@ mod tests {
             (64, 64),
             &mut anchor_scratch,
             &mut raster_scratch,
-            true,
+            Some(test_limit()),
         );
         lowering.begin_pass(Target::Part(0), None);
         lowering
@@ -6710,7 +6999,7 @@ mod tests {
             (64, 64),
             &mut anchor_scratch,
             &mut raster_scratch,
-            true,
+            Some(test_limit()),
         );
         let Some((device, _queue)) = device_and_queue() else {
             return;
@@ -7017,7 +7306,7 @@ mod tests {
                 (32, 32),
                 &mut anchor_scratch,
                 &mut raster_scratch,
-                true,
+                Some(test_limit()),
             );
             lowering.prepare(&mut caches, &glyphs).expect("prepared");
             lowering
@@ -7130,7 +7419,7 @@ mod tests {
                 (32, 32),
                 &mut anchor_scratch,
                 &mut raster_scratch,
-                true,
+                Some(test_limit()),
             );
             lowering.prepare(&mut caches, &glyphs).expect("prepared");
             lowering
@@ -7190,7 +7479,7 @@ mod tests {
             (32, 32),
             &mut anchor_scratch,
             &mut raster_scratch,
-            true,
+            Some(test_limit()),
         );
         lowering.prepare(&mut caches, &glyphs).expect("prepared");
         lowering
@@ -7451,7 +7740,7 @@ mod tests {
             (32, 32),
             &mut anchor_scratch,
             &mut raster_scratch,
-            true,
+            Some(test_limit()),
         );
         lowering.prepare(&mut caches, &glyphs).expect("prepared");
         lowering
@@ -7554,7 +7843,7 @@ mod tests {
             (32, 32),
             &mut scratch,
             &mut raster_scratch,
-            true,
+            Some(test_limit()),
         );
         lowering.anchor_scratch.pos.insert(anchor_a, (None, 1));
         lowering.backdrops.insert(7, plan(anchor_a, member));

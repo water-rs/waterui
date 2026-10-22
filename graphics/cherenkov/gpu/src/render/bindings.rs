@@ -230,26 +230,33 @@ pub const SPACE_CONVERT_GROUP0: &[Entry] = &[Entry::texture(0)];
 #[allow(dead_code)]
 pub const ENGINE_GROUPS: &[&[Entry]] = &[ENGINE_GROUP0, ENGINE_GROUP1];
 
-/// The GPU coverage kernels' single group (`coverage.wgsl`, issues
-/// #2543 and #3081): per-frame compute input, coverage scratch, the
-/// retained coverage arena the kernels write blocks into, and the
+/// The GPU coverage kernels' single group (`coverage.wgsl` and
+/// `stroke.wgsl`, issues #2543, #3081 and #2544): per-frame compute input,
+/// coverage scratch, the retained coverage arena the kernels write blocks
+/// into, the stroke records with the dash tables behind them, and the
 /// dispatch-domain argument buffer.
+///
+/// The argument buffer comes last: the main layout is this table without
+/// it, so every binding keeps its position in both layouts, which is what
+/// the Vulkan and Metal slot rules key on. Eight storage buffers is the
+/// per-stage limit a default device grants, and this layout uses all of it.
 pub const COVERAGE_GROUP0: &[Entry] = &[
-    Entry::uniform(0, COMPUTE, true, 80),
+    Entry::uniform(0, COMPUTE, true, 112),
     Entry::storage_read(1, COMPUTE),
     Entry::storage(2, COMPUTE),
     Entry::storage(3, COMPUTE),
     Entry::storage(4, COMPUTE),
     Entry::storage(5, COMPUTE),
     Entry::storage(6, COMPUTE),
-    Entry::storage(7, COMPUTE),
+    Entry::storage_read(7, COMPUTE),
+    Entry::storage(8, COMPUTE),
 ];
 
 /// The coverage kernels' main group: every binding but the
-/// dispatch-domain argument buffer at binding 7, which only the
+/// dispatch-domain argument buffer at binding 8, which only the
 /// argument-writing kernels bind.
-pub const COVERAGE_MAIN_GROUP0: &[Entry] = COVERAGE_GROUP0.split_at(7).0;
-const _: () = assert!(COVERAGE_GROUP0.len() == 8 && COVERAGE_GROUP0[7].binding == 7);
+pub const COVERAGE_MAIN_GROUP0: &[Entry] = COVERAGE_GROUP0.split_at(8).0;
+const _: () = assert!(COVERAGE_GROUP0.len() == 9 && COVERAGE_GROUP0[8].binding == 8);
 
 /// The argument-writing coverage kernels' group list.
 pub const COVERAGE_GROUPS: &[&[Entry]] = &[COVERAGE_GROUP0];

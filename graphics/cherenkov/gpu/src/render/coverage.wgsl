@@ -33,7 +33,8 @@ struct Element {
 // (seeded +/-inf by the uploader, reduced by `flatten`); atom[4..6]
 // counts emitted instances and texel words; atom[7] is the packed work offset.
 // `rect_*` is written by `finish` from the reduced bbox — the bound
-// fields only size scratch.
+// fields only size scratch. The stroke fields (from `stroke_base`) belong to
+// the compute stroker (water-rs/waterui#2544) and are zero for a fill.
 struct GpuPath {
     atom: array<atomic<u32>, 8>,
     elem_base: u32,
@@ -58,6 +59,24 @@ struct GpuPath {
     rect_w: u32,
     rect_h: u32,
     clip_lo: vec2<f32>,
+    // Absolute index of the path's first stroke record.
+    stroke_base: u32,
+    half_width: f32,
+    miter_limit: f32,
+    // start cap | end cap << 2 | merge_start << 4 | round-cap chords << 8
+    cap_word: u32,
+    // Word offset of the path's dash table behind the stroke records,
+    // 0xffffffff when the stroke is undashed.
+    dash_base: u32,
+    // Entries of the effective dash pattern.
+    dash_entries: u32,
+    // The initial dash phase, 2^-32 fixed point (integer part, fraction).
+    dash_phase: vec2<u32>,
+    // The path's first entry in the dash staging area.
+    stage_base: u32,
+    _pad3a: u32,
+    _pad3b: u32,
+    _pad3c: u32,
 }
 
 struct Params {
@@ -79,8 +98,20 @@ struct Params {
     tokens: u32,
     sorted: u32,
     radix_pass: u32,
-    // Uniform structs round up to 16 bytes: the binding is 80.
-    _pad: vec2<u32>,
+    // The compute stroker's frame totals and scratch regions.
+    stroke_total: u32,
+    dash_total: u32,
+    // Absolute index of the first dashed record; dashed records end the range.
+    dash_first: u32,
+    dash_blocks: u32,
+    // 0: arc-length prefix, 1: fragment and chord offsets.
+    scan_op: u32,
+    dash_words_base: u32,
+    scan_words_base: u32,
+    staging_base: u32,
+    list_base: u32,
+    // Uniform structs round up to 16 bytes: the binding is 112.
+    _pad: u32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -91,12 +122,14 @@ struct Params {
 // The coverage arena: one block per entry — a count header, the emitted
 // 32-byte geometry records, then the packed R8 texels (water-rs/waterui#3081).
 @group(0) @binding(5) var<storage, read_write> arena: array<u32>;
-@group(0) @binding(7) var<storage, read_write> args: array<u32, 12>;
+@group(0) @binding(8) var<storage, read_write> args: array<u32, 15>;
 struct Work {
     bin_count: atomic<u32>,
     fragment_count: atomic<u32>,
     token_count: atomic<u32>,
     fragments: u32,
+    // Dash fragments the compute stroker staged, written by `dash_args`.
+    dash_fragments: u32,
     words: array<atomic<u32>>,
 }
 @group(0) @binding(6) var<storage, read_write> work: Work;
@@ -121,6 +154,12 @@ fn cubic_at(p0: vec2<f32>, c0: vec2<f32>, c1: vec2<f32>, p1: vec2<f32>, t: f32) 
     return p0 * (u * u * u) + c0 * (3.0 * u * u * t) + c1 * (3.0 * u * t * t) + p1 * (t * t * t);
 }
 
+// The derivative of a cubic Bezier at `t`.
+fn cubic_deriv(p0: vec2<f32>, c0: vec2<f32>, c1: vec2<f32>, p1: vec2<f32>, t: f32) -> vec2<f32> {
+    let u = 1.0 - t;
+    return 3.0 * (u * u * (c0 - p0) + 2.0 * u * t * (c1 - c0) + t * t * (p1 - c1));
+}
+
 // The coverage grid rect the CPU sweep derives: the segment bbox
 // inflated by 1 px and clipped to the generation frame's clip —
 // `[0, surface]` for a clipped path, the same rect shifted by −offset
@@ -139,6 +178,14 @@ fn grid_rect(pi: u32) -> vec4<f32> {
 
 // ---- flatten ---------------------------------------------------------------
 
+// Folds a device point into the path's reduced bounding box.
+fn reduce_bbox(pi: u32, p: vec2<f32>) {
+    atomicMin(&paths[pi].atom[0], ordered(p.x));
+    atomicMin(&paths[pi].atom[1], ordered(p.y));
+    atomicMax(&paths[pi].atom[2], ordered(p.x));
+    atomicMax(&paths[pi].atom[3], ordered(p.y));
+}
+
 @compute @workgroup_size(64)
 fn flatten(@builtin(global_invocation_id) gid: vec3<u32>) {
     if invocation(gid) >= params.element_total {
@@ -151,10 +198,7 @@ fn flatten(@builtin(global_invocation_id) gid: vec3<u32>) {
     let slot = u32(el.head.w);
     let pi = path_i;
     var prev = xf(pi, el.lo.xy);
-    atomicMin(&paths[pi].atom[0], ordered(prev.x));
-    atomicMin(&paths[pi].atom[1], ordered(prev.y));
-    atomicMax(&paths[pi].atom[2], ordered(prev.x));
-    atomicMax(&paths[pi].atom[3], ordered(prev.y));
+    reduce_bbox(pi, prev);
     for (var i = 1u; i <= n; i = i + 1u) {
         let t = f32(i) / f32(n);
         var lp: vec2<f32>;
@@ -168,10 +212,7 @@ fn flatten(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         let pt = xf(pi, lp);
         segments[paths[pi].seg_base + slot + i - 1u] = vec4<f32>(prev, pt);
-        atomicMin(&paths[pi].atom[0], ordered(pt.x));
-        atomicMin(&paths[pi].atom[1], ordered(pt.y));
-        atomicMax(&paths[pi].atom[2], ordered(pt.x));
-        atomicMax(&paths[pi].atom[3], ordered(pt.y));
+        reduce_bbox(pi, pt);
         prev = pt;
     }
 }
@@ -183,17 +224,22 @@ fn bin(@builtin(global_invocation_id) gid: vec3<u32>) {
     if invocation(gid) >= params.element_total { return; }
     let el = elements[invocation(gid)];
     let pi = el.head.z;
+    bin_segments(pi, paths[pi].seg_base + el.head.w, el.head.y);
+}
+
+// Bin `count` segments of path `pi` starting at segment `first`.
+fn bin_segments(pi: u32, first: u32, count: u32) {
     let rect = grid_rect(pi);
     if rect.z == 0.0 || rect.w == 0.0 { return; }
-    for (var k = 0u; k < el.head.y; k += 1u) {
-        let si = paths[pi].seg_base + el.head.w + k;
+    for (var k = 0u; k < count; k += 1u) {
+        let si = first + k;
         let s = segments[si];
         let lo = max(min(s.y, s.w) - rect.y, 0.0);
         let hi = min(max(s.y, s.w) - rect.y, rect.w);
         if hi < lo || lo >= rect.w || hi < 0.0 { continue; }
-        let first = u32(floor(lo / 4.0));
-        let last = min(u32(floor(hi / 4.0)), (u32(rect.w) - 1u) / 4u);
-        for (var strip = first; strip <= last; strip += 1u) {
+        let first_strip = u32(floor(lo / 4.0));
+        let last_strip = min(u32(floor(hi / 4.0)), (u32(rect.w) - 1u) / 4u);
+        for (var strip = first_strip; strip <= last_strip; strip += 1u) {
             let slot = atomicAdd(&work.bin_count, 1u);
             let base = params.bin_base + slot * 3u;
             coverage[base] = pi;
@@ -492,6 +538,15 @@ fn work_item(index: u32) -> vec2<u32> {
 
 fn fragment_count() -> u32 { return work.fragments; }
 
+// The (x, y, 1) indirect dispatch arguments of a workgroup-64 kernel over
+// `count` invocations, at most 256 workgroups wide.
+fn write_dispatch_args(base: u32, count: u32) {
+    let groups = (count + 63u) / 64u;
+    args[base] = min(groups, 256u);
+    args[base + 1u] = (groups + 255u) / 256u;
+    args[base + 2u] = 1u;
+}
+
 // The counters bound execution; reserved capacities only determine storage.
 @compute @workgroup_size(64)
 fn prepare_dispatch(@builtin(local_invocation_index) lane: u32) {
@@ -503,11 +558,7 @@ fn prepare_dispatch(@builtin(local_invocation_index) lane: u32) {
         count = fragments;
     }
     if lane == 2u { count = ((fragments + 16383u) / 16384u) * 16u * 64u; }
-    let groups = (count + 63u) / 64u;
-    let base = lane * 3u;
-    args[base] = min(groups, 256u);
-    args[base + 1u] = (groups + 255u) / 256u;
-    args[base + 2u] = 1u;
+    write_dispatch_args(lane * 3u, count);
 }
 
 var<workgroup> radix_masks: array<atomic<u32>, 32>;
