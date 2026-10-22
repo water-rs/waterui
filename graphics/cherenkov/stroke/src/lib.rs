@@ -54,40 +54,43 @@ fn stroke_undashed(
     kurbo::stroke(split_cusps(path), style, &StrokeOpts::default(), tolerance)
 }
 
-/// `path` with every cubic that has an interior cusp split there.
-fn split_cusps(path: impl IntoIterator<Item = PathEl>) -> BezPath {
-    let mut out = BezPath::new();
+/// `path` with every cubic that has an interior cusp split there, produced
+/// lazily so stroking a path allocates nothing beyond `kurbo`'s own output.
+fn split_cusps(path: impl IntoIterator<Item = PathEl>) -> impl Iterator<Item = PathEl> {
+    let mut path = path.into_iter();
     let mut current = Point::ZERO;
     let mut start = Point::ZERO;
-    for el in path {
-        match el {
+    let mut right_half = None;
+    core::iter::from_fn(move || {
+        if let Some(el) = right_half.take() {
+            return Some(el);
+        }
+        let el = path.next()?;
+        Some(match el {
             PathEl::MoveTo(p) => {
                 start = p;
                 current = p;
-                out.push(el);
+                el
             }
             PathEl::LineTo(p) | PathEl::QuadTo(_, p) => {
                 current = p;
-                out.push(el);
+                el
             }
             PathEl::CurveTo(a, b, p) => {
                 let cubic = CubicBez::new(current, a, b, p);
-                if let Some(t) = cusp::parameter(&cubic) {
-                    let (left, right) = split_at_cusp(cubic, t);
-                    out.curve_to(left.p1, left.p2, left.p3);
-                    out.curve_to(right.p1, right.p2, right.p3);
-                } else {
-                    out.push(el);
-                }
                 current = p;
+                cusp::parameter(&cubic).map_or(el, |t| {
+                    let (left, right) = split_at_cusp(cubic, t);
+                    right_half = Some(PathEl::CurveTo(right.p1, right.p2, right.p3));
+                    PathEl::CurveTo(left.p1, left.p2, left.p3)
+                })
             }
             PathEl::ClosePath => {
                 current = start;
-                out.push(el);
+                el
             }
-        }
-    }
-    out
+        })
+    })
 }
 
 /// Split `c` by de Casteljau at `t`, then set the arms next to the split point
