@@ -376,7 +376,16 @@ as in section 4.1 (P3, unclipped, HDR-FLIP where the reference exceeds SDR white
    maxima are 0.005326, 0.135176 and 0.077068; each ceiling is the
    measured maximum rounded up by roughly 10–15%, so a route that is
    genuinely equivalent passes and one that degrades a single sharp
-   join or an HDR dash edge fails.
+   join or an HDR dash edge fails. The `flip_mean` ceiling is calibrated
+   against the CPU sweep: on a scene whose sweep `flip_mean` already
+   exceeds 0.006, the scene's ceiling is the sweep's own value and
+   threshold 1 governs it. `flip_mean` averages over every pixel, so a
+   scene made almost entirely of antialiased edges — the dense dash,
+   zero-length-dash and curve scenes of water-rs/waterui#2544 — exceeds
+   0.006 on the sweep with no perceptible difference, and an absolute
+   mean there would reject a route that is closer to the oracle than
+   the sweep. `flip_max` and `max_local_error` keep their ceilings on
+   every scene.
 3. **No new worst scene.** The scene holding the maximum of each metric
    must not change identity, and its value must not rise. Basis: the
    maxima are concentrated in exactly the geometry a coverage change
