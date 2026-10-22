@@ -1799,7 +1799,7 @@ dependencies = [
  "filtrate-core",
  "futures-channel",
  "futures-util",
- "gloo-timers 0.3.0",
+ "gloo-timers 0.4.0",
  "half",
  "js-sys",
  "kurbo",
@@ -4729,7 +4729,7 @@ dependencies = [
  "icu_provider",
  "image",
  "jiff",
- "jni 0.21.1",
+ "jni 0.22.4",
  "js-sys",
  "keyboard-types",
  "kurbo",
@@ -4793,10 +4793,10 @@ dependencies = [
  "web-sys",
  "wgpu 30.0.1",
  "windows 0.62.2",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
  "winit",
  "x11-dl",
- "x11rb 0.13.2",
+ "x11rb 0.14.0",
 ]
 
 [[package]]
@@ -4804,7 +4804,7 @@ name = "hydrolysis-android-test-app"
 version = "0.0.0"
 dependencies = [
  "hydrolysis",
- "jni 0.21.1",
+ "jni 0.22.4",
  "waterui",
  "waterui-core",
 ]
@@ -15134,7 +15134,9 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a8885a854a8bfdf87a301e53e41b17c5f8f33639903131338b997b1eb614f44"
 dependencies = [
+ "as-raw-xcb-connection",
  "gethostname",
+ "libc",
  "rustix 1.1.5",
  "x11rb-protocol 0.14.0",
 ]
