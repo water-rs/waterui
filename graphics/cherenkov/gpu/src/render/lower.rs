@@ -930,6 +930,37 @@ pub struct Emission {
     /// emission's single retained instance the draw's anchor
     /// (water-rs/waterui#3081).
     gpu: Option<Arc<glyph::GpuDraw>>,
+    /// The automatic route's decisions for a GPU leaf re-placed under it,
+    /// built at its first re-placement (`Lowering::replace_gpu_leaf`).
+    gpu_route: Option<RouteWindow>,
+}
+
+/// The automatic route's decision (`Lowering::automatic_gpu`) for a
+/// retained GPU leaf's geometry on each grid size within one row or
+/// column of `anchor`. The predicate reads a placed bound's grid size and
+/// what [`path::GpuPath::grid_bound`] derives from it, never where the
+/// grid lies, so a re-placement onto one of these sizes takes the stored
+/// decision. A pure translation moves an unclipped grid's size by at most
+/// one either way, so an animated leaf decides each frame without
+/// re-running the capacity check.
+#[derive(Clone, Copy)]
+struct RouteWindow {
+    anchor: [usize; 2],
+    /// Bit `3 * dy + dx` holds the decision for `anchor + (dx, dy) - 1`.
+    gpu: u16,
+}
+
+impl RouteWindow {
+    /// The decision for a `grid` of this window, `None` outside it.
+    fn decision(self, grid: [usize; 2]) -> Option<bool> {
+        let offset = |axis: usize| {
+            (grid[axis] + 1)
+                .checked_sub(self.anchor[axis])
+                .filter(|&d| d < 3)
+        };
+        let (dx, dy) = (offset(0)?, offset(1)?);
+        Some((self.gpu >> (3 * dy + dx)) & 1 != 0)
+    }
 }
 
 impl Emission {
@@ -4134,7 +4165,9 @@ impl<'a> Lowering<'a> {
     /// amortize the dispatch and its own bound, `path`'s rows at `bound`,
     /// fits the device's binding limit and the per-frame cap. Otherwise
     /// the CPU sweep renders it. Both sites that route an automatic path,
-    /// a fresh leaf and a re-placed retained one, decide here.
+    /// a fresh leaf and a re-placed retained one, decide here. It reads
+    /// neither `bound.rect` nor `bound.clipped`, which [`RouteWindow`]
+    /// relies on.
     fn automatic_gpu(&self, path: &path::GpuPath, bound: &path::GpuBound) -> bool {
         bound.prefers_gpu() && self.compute.is_some_and(|limit| limit.admits(path, bound))
     }
@@ -4365,6 +4398,7 @@ impl<'a> Lowering<'a> {
         let gpu = Self::leaf_gpu_draw(&self.pending[first_pending..]).map(Arc::clone);
         cache.data = Some(Emission {
             gpu,
+            gpu_route: None,
             pending_cells: PendingCells::new(
                 instance_base,
                 first_epatch..self.emission_patches.len(),
@@ -5246,8 +5280,8 @@ impl<'a> Lowering<'a> {
     /// placement itself costs. Returns `false` — leaving the emission
     /// untouched for an ordinary realization — when the new placement
     /// changes what the leaf emits: a shader paint, which reads device
-    /// bounds; an empty grid; or an automatic-route path that no longer
-    /// prefers the GPU there.
+    /// bounds; an empty grid; or an automatic-route path the route
+    /// predicate no longer admits there.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -5272,11 +5306,20 @@ impl<'a> Lowering<'a> {
             Vec2::new(e, f),
             (f64::from(self.width), f64::from(self.height)),
         );
-        if bound.empty
-            || (self.coverage_route == path::CoverageRoute::Automatic
-                && !self.automatic_gpu(&gpu.path, &bound))
-        {
+        if bound.empty {
             return false;
+        }
+        if self.coverage_route == path::CoverageRoute::Automatic {
+            let grid = [bound.grid_w, bound.grid_h];
+            let window = *emission
+                .gpu_route
+                .get_or_insert_with(|| self.route_window(&gpu.path, grid));
+            if !window
+                .decision(grid)
+                .unwrap_or_else(|| self.automatic_gpu(&gpu.path, &bound))
+            {
+                return false;
+            }
         }
         debug_assert_eq!(emission.instances.len(), 1, "a GPU emission is its anchor");
         storage.instances[emission.instances.start].bounds = bound.rect;
@@ -5301,6 +5344,19 @@ impl<'a> Lowering<'a> {
         }
         emission.transform = self.transform;
         true
+    }
+
+    /// The automatic route's decisions for `path` on the grid sizes
+    /// around a non-empty `anchor`.
+    fn route_window(&self, path: &path::GpuPath, anchor: [usize; 2]) -> RouteWindow {
+        let mut gpu = 0;
+        for dy in 0..3 {
+            for dx in 0..3 {
+                let bound = path.grid_bound(anchor[0] + dx - 1, anchor[1] + dy - 1);
+                gpu |= u16::from(self.automatic_gpu(path, &bound)) << (3 * dy + dx);
+            }
+        }
+        RouteWindow { anchor, gpu }
     }
 
     /// Push the draw half of a GPU-routed path — shared by
@@ -6216,6 +6272,84 @@ mod tests {
     /// device requests (`render/mod.rs`).
     fn test_limit() -> CoverageLimit {
         CoverageLimit::new(&wgpu::Limits::default())
+    }
+
+    /// A retained leaf's stored route decisions agree with the predicate
+    /// at every placement whose grid size they cover, and they cover
+    /// every size a fractional translation of an unclipped grid takes.
+    #[test]
+    fn route_window_matches_the_predicate() {
+        let mut geometry = BezPath::new();
+        for index in 0..1024 {
+            let x = f64::from(index % 32) * 3.0;
+            let y = f64::from(index / 32) * 3.0;
+            geometry.move_to((x, y));
+            geometry.line_to((x + 2.0, y));
+            geometry.line_to((x + 2.0, y + 2.0));
+            geometry.line_to((x, y + 2.0));
+            geometry.close_path();
+        }
+        let surface = (128.0, 128.0);
+        let origin = Vec2::new(16.0, 16.0);
+        let path = path::prepare_gpu(geometry.elements(), Affine::translate(origin), surface);
+        assert!(
+            !path.bound.clipped,
+            "the window anchors on an unclipped grid"
+        );
+        let mut frame = Frame::default();
+        let mut anchors = AnchorScratch::default();
+        let mut raster = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (128, 128),
+            &mut anchors,
+            &mut raster,
+            Some(test_limit()),
+        );
+        // The smallest binding limit that admits the anchor grid refuses
+        // the larger grids around it, so the window holds both decisions.
+        let limit = |bytes| {
+            CoverageLimit::new(&wgpu::Limits {
+                max_storage_buffer_binding_size: bytes,
+                max_buffer_size: bytes,
+                ..wgpu::Limits::default()
+            })
+        };
+        let (mut refused, mut fits) = (0, wgpu::Limits::default().max_buffer_size);
+        assert!(lowering.automatic_gpu(&path, &path.bound));
+        while fits - refused > 1 {
+            let bytes = refused + (fits - refused) / 2;
+            lowering.compute = Some(limit(bytes));
+            if lowering.automatic_gpu(&path, &path.bound) {
+                fits = bytes;
+            } else {
+                refused = bytes;
+            }
+        }
+        lowering.compute = Some(limit(fits));
+        let window = lowering.route_window(&path, [path.bound.grid_w, path.bound.grid_h]);
+        let (mut admitted, mut covered) = (0, 0);
+        for step in -160..=160 {
+            let translation = origin + Vec2::new(f64::from(step) * 0.37, f64::from(step) * 0.21);
+            let bound = path.bound_at(translation, surface);
+            let decision = window.decision([bound.grid_w, bound.grid_h]);
+            if let Some(gpu) = decision {
+                assert_eq!(
+                    gpu,
+                    lowering.automatic_gpu(&path, &bound),
+                    "{translation:?}"
+                );
+                covered += 1;
+                admitted += usize::from(gpu);
+            }
+            if !bound.clipped {
+                assert!(decision.is_some(), "an unclipped placement {translation:?}");
+            }
+        }
+        assert!(
+            admitted > 0 && covered > admitted,
+            "{admitted} of {covered}"
+        );
     }
 
     #[test]

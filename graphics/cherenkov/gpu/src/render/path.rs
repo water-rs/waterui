@@ -696,22 +696,34 @@ impl GpuPath {
         self
     }
 
-    /// [`GpuPath::placed`]'s bound alone.
+    /// [`GpuPath::placed`]'s bound alone: [`GpuPath::grid_bound`] of the
+    /// grid the placement covers, positioned on it.
     #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn bound_at(&self, translation: Vec2, surface: (f64, f64)) -> GpuBound {
-        let mut bound = self.bound;
         // The bound raster grid: the hull inflated by a pixel and clipped to
         // the surface, floored and ceiled like the sweep's rect.
         let inflated = (self.hull + (translation - self.origin)).inflate(1.0, 1.0);
         let r = inflated.intersect(Rect::new(0.0, 0.0, surface.0, surface.1));
         let w = (r.x1.ceil() - r.x0.floor()).max(0.0) as usize;
         let h = (r.y1.ceil() - r.y0.floor()).max(0.0) as usize;
+        let mut bound = self.grid_bound(w, h);
         bound.rect = [
             r.x0.floor() as f32,
             r.y0.floor() as f32,
             r.x1.ceil() as f32,
             r.y1.ceil() as f32,
         ];
+        bound.clipped = r != inflated;
+        bound
+    }
+
+    /// This path's bound on a `w` x `h` grid: everything
+    /// [`GpuPath::bound_at`] derives except where the grid lies (`rect`)
+    /// and whether the surface clips it (`clipped`), which keep this
+    /// path's own. Every other field of a placed bound is a function of
+    /// the grid size alone.
+    pub fn grid_bound(&self, w: usize, h: usize) -> GpuBound {
+        let mut bound = self.bound;
         bound.grid_w = w;
         bound.grid_h = h;
         // Partial columns, absorbed gaps (<=8) and demoted full runs (<8)
@@ -723,7 +735,6 @@ impl GpuPath {
             (bound.fragments * 64).min(w * h)
         };
         bound.empty = w == 0 || h == 0;
-        bound.clipped = r != inflated;
         // Cells are column-disjoint inside their strip, so the strip count
         // times the grid width is the grid-side cap; spans obey the same
         // bound. The element bound may be tighter.
