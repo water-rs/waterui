@@ -1755,6 +1755,7 @@ dependencies = [
  "cherenkov-oracle",
  "cherenkov-scene",
  "cherenkov-shader",
+ "cherenkov-stroke",
  "dispatch2",
  "filtrate",
  "filtrate-core",

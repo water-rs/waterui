@@ -2472,7 +2472,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         self.place(&frame, resolved, paint, true);
     }
 
-    /// `Stroke`: `kurbo::stroke` the content-space path, map it into the
+    /// `Stroke`: stroke the content-space path with `cherenkov_stroke::stroke`, map it into the
     /// shape's frame, flatten and fill non-zero — dashes included, like
     /// the oracle. `carried` replaces stroking, flattening and resolving.
     fn stroke(

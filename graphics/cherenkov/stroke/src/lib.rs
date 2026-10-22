@@ -1,4 +1,5 @@
-//! Stroke expansion that splits cubic Béziers at cusps before stroking.
+//! Stroke expansion that splits cubic Béziers at cusps before stroking, and
+//! gives zero-length dashes their SVG 2 meaning.
 //!
 //! [`stroke`] is a drop-in for [`kurbo::stroke`] with
 //! [`kurbo::StrokeOpts::default`]. `kurbo` finds a cusp by sampling the
@@ -10,54 +11,86 @@
 //! arms exactly zero, and hands the result to `kurbo`, whose join logic then
 //! sees the reversal and applies the stroke's own join (no disc is added).
 //!
-//! This crate is removable once linebender/kurbo#615 is fixed: call
-//! `kurbo::stroke` directly again.
+//! The cusp splitting is removable once linebender/kurbo#615 is fixed. The
+//! dash handling is the engine's own: `kurbo::dash` leaves a dot for a
+//! zero-length dash only where f64 rounding in its `DashIterator::step`
+//! leaves a roughly 1e-15 segment behind, while SVG 2 draws both of the
+//! dash's caps at the dash's point.
 
 mod cusp;
+mod dash;
 
 use kurbo::{BezPath, CubicBez, PathEl, Point, Stroke, StrokeOpts};
 
 /// Expand `path` stroked with `style` into a fill outline, accurate to
 /// `tolerance`.
+///
+/// Dashing runs first: zero-length dashes become cap-shaped dots and every
+/// non-zero dash goes through the same cusp-splitting stroke as an undashed
+/// path. The dash pattern must be valid: finite and non-negative entries
+/// with a positive sum, and a finite offset.
 #[must_use]
 pub fn stroke(path: impl IntoIterator<Item = PathEl>, style: &Stroke, tolerance: f64) -> BezPath {
+    if style.dash_pattern.is_empty() {
+        return stroke_undashed(path, style, tolerance);
+    }
+    let dashed = dash::dash(path, &style.dash_pattern, style.dash_offset);
+    let mut undashed = style.clone();
+    undashed.dash_pattern.clear();
+    undashed.dash_offset = 0.0;
+    let mut outline = stroke_undashed(dashed.dashes, &undashed, tolerance);
+    for dot in &dashed.dots {
+        dot.append_caps(style, tolerance, &mut outline);
+    }
+    outline
+}
+
+/// `kurbo::stroke` over `path` with its cusped cubics split.
+fn stroke_undashed(
+    path: impl IntoIterator<Item = PathEl>,
+    style: &Stroke,
+    tolerance: f64,
+) -> BezPath {
     kurbo::stroke(split_cusps(path), style, &StrokeOpts::default(), tolerance)
 }
 
-/// `path` with every cubic that has an interior cusp split there.
-fn split_cusps(path: impl IntoIterator<Item = PathEl>) -> BezPath {
-    let mut out = BezPath::new();
+/// `path` with every cubic that has an interior cusp split there, produced
+/// lazily so stroking a path allocates nothing beyond `kurbo`'s own output.
+fn split_cusps(path: impl IntoIterator<Item = PathEl>) -> impl Iterator<Item = PathEl> {
+    let mut path = path.into_iter();
     let mut current = Point::ZERO;
     let mut start = Point::ZERO;
-    for el in path {
-        match el {
+    let mut right_half = None;
+    core::iter::from_fn(move || {
+        if let Some(el) = right_half.take() {
+            return Some(el);
+        }
+        let el = path.next()?;
+        Some(match el {
             PathEl::MoveTo(p) => {
                 start = p;
                 current = p;
-                out.push(el);
+                el
             }
             PathEl::LineTo(p) | PathEl::QuadTo(_, p) => {
                 current = p;
-                out.push(el);
+                el
             }
             PathEl::CurveTo(a, b, p) => {
                 let cubic = CubicBez::new(current, a, b, p);
-                if let Some(t) = cusp::parameter(&cubic) {
-                    let (left, right) = split_at_cusp(cubic, t);
-                    out.curve_to(left.p1, left.p2, left.p3);
-                    out.curve_to(right.p1, right.p2, right.p3);
-                } else {
-                    out.push(el);
-                }
                 current = p;
+                cusp::parameter(&cubic).map_or(el, |t| {
+                    let (left, right) = split_at_cusp(cubic, t);
+                    right_half = Some(PathEl::CurveTo(right.p1, right.p2, right.p3));
+                    PathEl::CurveTo(left.p1, left.p2, left.p3)
+                })
             }
             PathEl::ClosePath => {
                 current = start;
-                out.push(el);
+                el
             }
-        }
-    }
-    out
+        })
+    })
 }
 
 /// Split `c` by de Casteljau at `t`, then set the arms next to the split point

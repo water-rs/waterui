@@ -18,6 +18,7 @@ bench = []
 filtrate = { version = "0.2.1", path = "../../filtrate" }
 filtrate-core = { version = "0.2.0", path = "../../filtrate/core" }
 cherenkov = { version = "0.0.0", path = ".." }
+cherenkov-stroke = { version = "0.0.0", path = "../stroke" }
 wgpu = "30.0.1"
 pollster = "1.0"
 bytemuck = { version = "1", features = ["derive"] }
