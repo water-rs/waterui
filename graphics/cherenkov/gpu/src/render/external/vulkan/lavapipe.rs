@@ -1107,7 +1107,8 @@ fn delayed_timeline_signal_stays_on_gpu() {
     // The wait point is genuinely unsignalled when this render runs:
     // nothing on the host signals it, so a CPU-waiting engine could not
     // return here at all — and any signal would raise the counter below.
-    assert!(matches!(engine.render(FrameTime::now()), Ok(Next::Idle)));
+    let next = engine.render(FrameTime::now());
+    assert!(matches!(next, Ok(Next::Idle)), "render returned {next:?}");
     // SAFETY: `semaphore` is a live timeline semaphore created above on
     // `dev` — a pure query.
     let counter = unsafe { dev.get_semaphore_counter_value(semaphore) }.expect("semaphore counter");
@@ -1134,7 +1135,8 @@ fn delayed_timeline_signal_stays_on_gpu() {
     // The frame lives on the producer: the last clone's drop retires it.
     drop(surface);
     drop(video);
-    assert!(matches!(engine.render(FrameTime::now()), Ok(Next::Idle)));
+    let next = engine.render(FrameTime::now());
+    assert!(matches!(next, Ok(Next::Idle)), "render returned {next:?}");
     // SAFETY: `semaphore` is live; the call only waits on it with a
     // timeout.
     let released = unsafe {

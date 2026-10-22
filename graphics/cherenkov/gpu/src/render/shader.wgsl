@@ -269,7 +269,7 @@ fn sweep_t(i: u32, p: vec2<f32>) -> f32 {
     }
     let span = end - start;
     let c = instances[i].grad.xy;
-    var theta = atan2(p.y - c.y, p.x - c.x);
+    var theta = angle_of(p.y - c.y, p.x - c.x);
     while theta < start {
         theta += tau;
     }

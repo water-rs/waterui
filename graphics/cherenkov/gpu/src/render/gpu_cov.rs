@@ -273,8 +273,10 @@ pub struct GpuCoverage {
     fragment_total: u32,
     /// Row winding counters across all paths.
     row_total: u32,
-    /// The R2 bound's accumulated byte size — the cap's denominator.
-    bound_bytes: u64,
+    /// The R2 bound accumulated over the frame's draws, split by the
+    /// buffer each term sizes: the total is the cap's denominator, each
+    /// buffer is compared with the device binding limit.
+    bound: BufferBounds,
     /// The coverage arena: geometry records and texels, one block per entry.
     arena: CoverageArena,
     /// The prologue went into some surface's encoder already.
@@ -286,9 +288,74 @@ pub struct GpuCoverage {
     buffers: Option<Buffers>,
 }
 
+/// The R2 bound of a frame's draws, split by the buffer each term sizes.
+/// `record_prologue` and the output checks compare each bound buffer, not
+/// the sum, with the device binding limit; the sum is decision R2's cap.
+#[derive(Clone, Copy, Default)]
+struct BufferBounds {
+    elements: u64,
+    paths: u64,
+    segments: u64,
+    /// The coverage scratch: bins, fragments, sort, groups, tokens, tiles.
+    scratch: u64,
+    /// The work-item buffer: row windings and strip/tile items.
+    work: u64,
+    /// The coverage arena blocks the frame allocates.
+    arena: u64,
+    /// The stroke records and dash cumulative lengths.
+    strokes: u64,
+    /// Records outside any binding-limited buffer.
+    unbound: u64,
+}
+
+impl BufferBounds {
+    const fn add(&mut self, other: &Self) {
+        self.elements += other.elements;
+        self.paths += other.paths;
+        self.segments += other.segments;
+        self.scratch += other.scratch;
+        self.work += other.work;
+        self.arena += other.arena;
+        self.strokes += other.strokes;
+        self.unbound += other.unbound;
+    }
+
+    const fn total(&self) -> u64 {
+        self.elements
+            + self.paths
+            + self.segments
+            + self.scratch
+            + self.work
+            + self.arena
+            + self.strokes
+            + self.unbound
+    }
+
+    fn largest(&self) -> u64 {
+        [
+            self.elements,
+            self.paths,
+            self.segments,
+            self.scratch,
+            self.work,
+            self.arena,
+            self.strokes,
+        ]
+        .into_iter()
+        .max()
+        .expect("seven buffers")
+    }
+}
+
 impl GpuCoverage {
     pub fn new(device: &wgpu::Device, budget: u64) -> Self {
-        let limits = device.limits();
+        Self::with_limits(&device.limits(), budget)
+    }
+
+    fn with_limits(limits: &wgpu::Limits, budget: u64) -> Self {
+        let limit = limits
+            .max_storage_buffer_binding_size
+            .min(limits.max_buffer_size);
         Self {
             paths: Vec::new(),
             entries: FxHashMap::default(),
@@ -297,10 +364,7 @@ impl GpuCoverage {
             live_words: 0,
             undrawn_bytes: 0,
             budget,
-            limit_words: limits
-                .max_storage_buffer_binding_size
-                .min(limits.max_buffer_size)
-                / 4,
+            limit_words: limit / 4,
             compaction: None,
             elements: Vec::new(),
             element_sources: Vec::new(),
@@ -323,7 +387,7 @@ impl GpuCoverage {
             bin_total: 0,
             fragment_total: 0,
             row_total: 0,
-            bound_bytes: 0,
+            bound: BufferBounds::default(),
             arena: CoverageArena::new(),
             encoded: false,
             layout: None,
@@ -363,7 +427,7 @@ impl GpuCoverage {
         self.bin_total = 0;
         self.fragment_total = 0;
         self.row_total = 0;
-        self.bound_bytes = 0;
+        self.bound = BufferBounds::default();
         self.generated = 0;
         self.entries.retain(|_, e| e.generated);
         self.live_words = self.entries.values().map(|e| u64::from(e.words)).sum();
@@ -533,30 +597,38 @@ impl GpuCoverage {
             ))?;
         let previous_groups = group_words(self.fragment_total, self.cov_total);
         let next_groups = group_words(fragment_total, cov_total);
-        let path_bytes = to64(elements.len()) * (std::mem::size_of::<GpuElement>() as u64)
-            + to64(bound.segments) * 16
-            + to64(bound.bins) * 12
-            + to64(bound.fragments) * 40
-            + to64(bound.fragments.div_ceil(64)) * 64
-            + to64(strips) * 12
-            + to64(rows) * 4
-            + to64(bound.texels.div_ceil(4) + bound.cell_cap) * 4
-            + to64(bound.instance_cap) * u64::from(GEOMETRY_WORDS) * 4
-            + 16
-            + u64::from(ARGS_WORDS) * 4
-            + (PATH_WORDS as u64) * 4
-            + to64(strips) * (1 + to64(bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize))) * 8
-            + to64(strips * bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize)) * 16
-            + stroke_bytes(strokes.len(), dash.as_deref());
+        let tiles = to64(strips * bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize));
         let previous_tokens = self.fragment_total.min(self.cov_total) * 6;
         let next_tokens = fragment_total.min(cov_total) * 6;
-        self.bound_bytes += path_bytes
-            + u64::from(next_groups - previous_groups + next_tokens - previous_tokens) * 4;
-        if self.bound_bytes + 18 * 1024 + 128 + 48 > GPU_COV_MAX_BYTES {
+        let mut next = self.bound;
+        next.add(&BufferBounds {
+            elements: to64(elements.len()) * (std::mem::size_of::<GpuElement>() as u64),
+            segments: to64(bound.segments) * 16,
+            scratch: to64(bound.bins) * 12
+                + to64(bound.fragments) * 40
+                + to64(bound.fragments.div_ceil(64)) * 64
+                + to64(strips) * 12
+                + tiles * 16
+                + u64::from(next_groups - previous_groups + next_tokens - previous_tokens) * 4,
+            work: to64(rows) * 4 + (to64(strips) + tiles) * 8,
+            paths: (PATH_WORDS as u64) * 4,
+            arena: to64(bound.texels.div_ceil(4) + bound.cell_cap) * 4
+                + to64(bound.instance_cap) * u64::from(GEOMETRY_WORDS) * 4,
+            unbound: 16 + u64::from(ARGS_WORDS) * 4,
+            ..BufferBounds::default()
+        });
+        next.add(&stroke_bounds(strokes.len(), dash.as_deref()));
+        if next.total() + 18 * 1024 + 128 + 48 > GPU_COV_MAX_BYTES {
             return Err(RenderError::Unsupported(
                 "GPU coverage bound exceeds the per-frame cap",
             ));
         }
+        if next.largest() > self.limit_words * 4 {
+            return Err(RenderError::Unsupported(
+                "GPU coverage bound exceeds the device buffer limit",
+            ));
+        }
+        self.bound = next;
         let record = u32::try_from(self.paths.len()).expect("path count fits u32");
         let elem_base = self.element_total;
         let geometry_slots = u32::try_from(bound.instance_cap).expect("instance cap fits u32");
@@ -1491,21 +1563,26 @@ impl GpuCoverage {
     }
 }
 
-/// The scratch bytes a stroke path's records bound (design section 8): the
-/// records and their vertex scratch, and for a dashed path the per-record dash
-/// words, the staging and list entries, the scan blocks and the table.
-fn stroke_bytes(records: usize, dash: Option<&DashTable>) -> u64 {
+/// The bytes a stroke path's records bound (design section 8), by buffer:
+/// the records, and for a dashed path its cumulative-length table, in the
+/// strokes buffer; the vertex scratch, and for a dashed path the per-record
+/// dash words, the staging and list entries and the scan blocks, in the
+/// coverage scratch.
+fn stroke_bounds(records: usize, dash: Option<&DashTable>) -> BufferBounds {
     let to64 = |n: usize| u64::try_from(n).expect("bound fits u64");
-    let vertices = u64::from(SLOTS * SLOT_WORDS) * 4;
-    let mut bytes = to64(records) * (std::mem::size_of::<GpuStrokeRecord>() as u64 + vertices);
+    let mut bounds = BufferBounds {
+        strokes: to64(records) * std::mem::size_of::<GpuStrokeRecord>() as u64,
+        scratch: to64(records) * u64::from(SLOTS * SLOT_WORDS) * 4,
+        ..BufferBounds::default()
+    };
     if let Some(dash) = dash {
-        bytes += to64(records) * u64::from(DASH_RECORD_WORDS) * 4
+        bounds.strokes += to64(dash.cum.len()) * 8;
+        bounds.scratch += to64(records) * u64::from(DASH_RECORD_WORDS) * 4
             + to64(dash.stage_total) * u64::from(STAGE_WORDS) * 4
             + to64(dash.fragments) * u64::from(LIST_WORDS) * 4
-            + to64(records.div_ceil(SCAN_BLOCK as usize)) * u64::from(SCAN_BLOCK_WORDS) * 4
-            + to64(dash.cum.len()) * 8;
+            + to64(records.div_ceil(SCAN_BLOCK as usize)) * u64::from(SCAN_BLOCK_WORDS) * 4;
     }
-    bytes
+    bounds
 }
 
 /// Boundary records use the smaller of sorted-fragment indices and logical
@@ -1599,7 +1676,7 @@ mod tests {
                 &GpuDraw::new(1, 0, Affine::IDENTITY, large_path, (4096, 4096)),
             )
             .expect("sparse 4096-square capacity");
-        assert!(frame.bound_bytes < GPU_COV_MAX_BYTES);
+        assert!(frame.bound.total() < GPU_COV_MAX_BYTES);
         let huge_path = rectangle(1_000_000);
         let before = frame.paths.len();
         assert!(
@@ -1611,6 +1688,68 @@ mod tests {
                 .is_err()
         );
         assert_eq!(frame.paths.len(), before, "reject before appending a path");
+    }
+
+    #[test]
+    fn draw_refuses_a_bound_over_the_device_binding_limit() {
+        let rectangle = |size: u32| {
+            let edge = f64::from(size);
+            crate::render::path::prepare_gpu(
+                &[
+                    PathEl::MoveTo(Point::new(0.0, 0.0)),
+                    PathEl::LineTo(Point::new(edge, 0.0)),
+                    PathEl::LineTo(Point::new(edge, edge)),
+                    PathEl::LineTo(Point::new(0.0, edge)),
+                    PathEl::ClosePath,
+                ],
+                Affine::IDENTITY,
+                (edge, edge),
+            )
+        };
+        let Some(device) = device() else {
+            return;
+        };
+        let mut probe = GpuCoverage::new(&device, u64::MAX);
+        probe.begin_frame();
+        probe
+            .draw(
+                &device,
+                &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096)),
+            )
+            .expect("fits the device's own limits");
+        // A device whose binding limit sits below the largest single
+        // buffer's bound of this draw, far under the 256 MiB cap.
+        let small = wgpu::Limits {
+            max_storage_buffer_binding_size: probe.bound.largest() / 2,
+            ..wgpu::Limits::default()
+        };
+        let mut frame = GpuCoverage::with_limits(&small, u64::MAX);
+        frame.begin_frame();
+        assert!(
+            frame
+                .draw(
+                    &device,
+                    &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096)),
+                )
+                .is_err(),
+            "draw must refuse what record_prologue would reject"
+        );
+        assert_eq!(frame.paths.len(), 0, "reject before appending a path");
+        // A limit above every single buffer's bound but below their sum:
+        // the frame fits each binding, so it is accepted.
+        assert!(probe.bound.largest() < probe.bound.total());
+        let between = wgpu::Limits {
+            max_storage_buffer_binding_size: probe.bound.largest(),
+            ..wgpu::Limits::default()
+        };
+        let mut frame = GpuCoverage::with_limits(&between, u64::MAX);
+        frame.begin_frame();
+        frame
+            .draw(
+                &device,
+                &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096)),
+            )
+            .expect("every buffer fits the binding limit");
     }
 
     fn device() -> Option<wgpu::Device> {

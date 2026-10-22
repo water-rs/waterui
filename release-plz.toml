@@ -274,6 +274,9 @@ name = "cherenkov-gpu"
 [[package]]
 name = "cherenkov-cpu"
 
+[[package]]
+name = "cherenkov-stroke"
+
 # TypeScript runtime (#2687): the facade's `ts`/`ts-ota` features reach
 # `waterui-ts` as an optional dependency, so the family is part of the
 # published set. Its crates depend on group members through workspace

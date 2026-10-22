@@ -17,6 +17,13 @@ determinator tool on it, then writes `GITHUB_OUTPUT` keys:
   everything — see the tool's module doc). Empty when nothing can be
   affected — a prose-only change still gets `cargo fmt`, nothing more.
 - `package-args` — `packages` rendered as `-p` flags for cargo.
+- `linux-package-args` — `package-args` without the crates the Linux lint
+  never compiles (`LINUX_EXCLUDED`); empty exactly when `package-args` is.
+- `workspace-wide` — `true` when `packages` is `workspace`, or the affected
+  packages that are Linux lint members reach `WORKSPACE_WIDE_SHARE` of
+  them (#3229): the pull request then compiles most of the workspace and
+  gets the integration lint budget. `false` for a scoped, comment-only or
+  empty diff.
 - `comment-only` — `true` when every changed file is either prose or a
   `.rs` file whose syntax tree is unchanged once comments, doc comments
   and doc attributes are removed (the `rust_semantic_diff` comparison the
@@ -79,6 +86,31 @@ DEPENDENCY_TABLES = (
 # intersected with the scoped package names: test-only code never
 # compiles for a dependent, so no dev-dependency closure is involved.
 SCENE_ASSET_OWNERS = {"cherenkov-oracle", "cherenkov-gpu", "cherenkov-cpu"}
+
+
+# The workspace members the Linux lint never compiles: they build only on
+# Apple hosts, so the macOS legs lint them and test.yml's Linux scope drops
+# them from the `-p` list (`-p` and `--exclude` cannot be combined).
+LINUX_EXCLUDED = {"waterui-apple", "cocoa-ui"}
+
+# A pull request whose affected packages are at least this share of the
+# Linux-linted members re-checks most of the workspace, so it gets the
+# 30-minute lint budget instead of the 10-minute scoped gate (#3229). A
+# cherenkov-gpu change reaches about 74% and overran the scoped gate (#3246).
+WORKSPACE_WIDE_SHARE = 0.7
+
+
+def linux_package_args(names):
+    """`-p` flags for the affected packages the Linux lint compiles."""
+    return " ".join(f"-p {name}" for name in names if name not in LINUX_EXCLUDED)
+
+
+def is_workspace_wide(names, members):
+    """Whether `names` (affected packages) reach `WORKSPACE_WIDE_SHARE` of
+    the Linux-linted `members` (every workspace member, from the tool)."""
+    linux_members = set(members) - LINUX_EXCLUDED
+    affected = set(names) & linux_members
+    return len(affected) >= WORKSPACE_WIDE_SHARE * len(linux_members)
 
 
 def is_prose(path):
@@ -180,6 +212,8 @@ def main():
     outputs = {
         "packages": "workspace",
         "package-args": "",
+        "linux-package-args": "",
+        "workspace-wide": "true",
         "comment-only": "false",
         "msrv": "true",
         "apple-legs": json.dumps(apple_legs("workspace"), separators=(",", ":")),
@@ -228,6 +262,9 @@ def main():
         def scene_assets_for(names):
             return "true" if SCENE_ASSET_OWNERS & set(names) else "false"
 
+        def wide(names):
+            return "true" if is_workspace_wide(names, report["members"]) else "false"
+
         def apple_legs_for(scope):
             return json.dumps(apple_legs(scope), separators=(",", ":"))
 
@@ -235,6 +272,7 @@ def main():
             outputs.update(
                 {
                     "packages": "",
+                    "workspace-wide": "false",
                     "msrv": "false",
                     "scene-assets": "false",
                     "apple-legs": "[]",
@@ -246,6 +284,7 @@ def main():
             outputs.update(
                 {
                     "packages": "workspace",
+                    "workspace-wide": "true",
                     "msrv": "true" if msrv else "false",
                     "scene-assets": "true",
                     "apple-legs": apple_legs_for("workspace"),
@@ -263,6 +302,8 @@ def main():
                 {
                     "packages": " ".join(owners),
                     "package-args": " ".join(f"-p {name}" for name in owners),
+                    "linux-package-args": linux_package_args(owners),
+                    "workspace-wide": wide(owners),
                     "comment-only": "true",
                     "msrv": "true" if msrv else "false",
                     "scene-assets": scene_assets_for(owners),
@@ -275,6 +316,8 @@ def main():
                 {
                     "packages": " ".join(affected),
                     "package-args": " ".join(f"-p {name}" for name in affected),
+                    "linux-package-args": linux_package_args(affected),
+                    "workspace-wide": wide(affected),
                     "msrv": "true" if msrv else "false",
                     "scene-assets": scene_assets_for(affected),
                     "apple-legs": apple_legs_for(" ".join(affected)),

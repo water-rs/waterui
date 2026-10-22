@@ -90,9 +90,9 @@ class PlatformViewRegistry internal constructor(
     }
 
     /**
-     * Pulls the session's placement set. Called when the host view lays out
-     * and on `onNativePlatformViewsChanged`, so a fresh publish is applied
-     * even before the next traversal.
+     * Pulls the session's placement set. Reached only through
+     * [HydrolysisSession.requestPlacementPull], which runs it at native depth
+     * zero: the pull is a session JNI call and must not nest in another.
      */
     internal fun publishIfPending() {
         val session = session ?: return
@@ -107,8 +107,6 @@ class PlatformViewRegistry internal constructor(
         appliedJson = json
         applyJson(json)
     }
-
-    internal fun notifyChanged() = publishIfPending()
 
     /** Mounted platform views, in `order`, grafted onto the a11y host node. */
     internal fun accessibilityChildren(): List<View> =

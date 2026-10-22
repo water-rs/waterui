@@ -92,8 +92,9 @@ fn projected(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     let a = sqrt(mean + root);
     let b = sqrt(max(mean - root, 0.0));
     // An isotropic footprint has no major axis and takes one tap; its
-    // direction is irrelevant but must stay finite.
-    let angle = select(0.5 * atan2(2.0 * xy, xx - yy), 0.0, root == 0.0);
+    // direction is irrelevant but must stay finite (`angle_of` of the zero
+    // vector is 0).
+    let angle = 0.5 * angle_of(2.0 * xy, xx - yy);
     let e = vec2<f32>(cos(angle), sin(angle));
     let b_eff = max(max(1.0, b), a / MAX_TAPS);
     let taps = clamp(ceil(a / b_eff - TAP_SLACK), 1.0, MAX_TAPS);

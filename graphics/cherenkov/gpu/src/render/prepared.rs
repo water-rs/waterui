@@ -599,12 +599,9 @@ impl OutlineRef<'_> {
     pub fn build(self, tolerance: f64) -> kurbo::BezPath {
         match self {
             Self::Fill { elements, .. } => kurbo::BezPath::from_vec(elements.to_vec()),
-            Self::Stroke { shape, stroke } => kurbo::stroke(
-                path::shape_path(shape, tolerance),
-                stroke,
-                &kurbo::StrokeOpts::default(),
-                tolerance,
-            ),
+            Self::Stroke { shape, stroke } => {
+                cherenkov_stroke::stroke(path::shape_path(shape, tolerance), stroke, tolerance)
+            }
         }
     }
 }

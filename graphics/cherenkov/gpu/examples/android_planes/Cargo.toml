@@ -44,4 +44,4 @@ jni = "0.22"
 libc = "0.2"
 ndk = { version = "0.9", default-features = false, features = ["api-level-30", "sync"] }
 ndk-sys = "0.6"
-skrifa = "0.44"
+skrifa = "0.48"

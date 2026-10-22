@@ -33,7 +33,7 @@
 use std::{marker::PhantomData, mem::MaybeUninit};
 
 use cherenkov::{Extend, Interpolation};
-use fearless_simd::{Select, Simd, SimdFloat, SimdMask, f32x4, f32x16};
+use fearless_simd::{Select, Simd, SimdBase, SimdFloat, SimdMask, f32x4, f32x16, mask32x4};
 
 use super::paint::{
     LinearPaint, PaintData, Project, RADIAL_RESCALE_ABOVE, RadialGeometry, RadialPaint, Stop,
@@ -132,7 +132,7 @@ where
         [r * a, g * a, b * a, a]
     } else {
         let mut out = [[0.0f32; LANES]; 4];
-        for lane in 0..V::N {
+        for lane in 0..V::LEN {
             let p = to_premul(
                 [r[lane], g[lane], b[lane], a[lane]],
                 Interpolation::SrgbEncoded,
@@ -142,10 +142,10 @@ where
             }
         }
         [
-            V::from_slice(simd, &out[0][..V::N]),
-            V::from_slice(simd, &out[1][..V::N]),
-            V::from_slice(simd, &out[2][..V::N]),
-            V::from_slice(simd, &out[3][..V::N]),
+            V::from_slice(simd, &out[0][..V::LEN]),
+            V::from_slice(simd, &out[1][..V::LEN]),
+            V::from_slice(simd, &out[2][..V::LEN]),
+            V::from_slice(simd, &out[3][..V::LEN]),
         ]
     }
 }
@@ -242,11 +242,11 @@ where
 #[inline(always)]
 fn premul_pixel<S: Simd>(simd: S, c: f32x4<S>, working: bool) -> f32x4<S> {
     if working {
-        let premul = c * simd.splat_f32x4(c[3]);
+        let premul = c * simd.splat_f32x4(c.to_array()[3]);
         // Lane 3 holds `a·a`; restore `a` itself.
-        simd.load_array_mask32x4([0, 0, 0, -1]).select(c, premul)
+        mask32x4::from_slice(simd, &[0, 0, 0, -1]).select(c, premul)
     } else {
-        simd.load_array_f32x4(to_premul(c.into(), Interpolation::SrgbEncoded))
+        f32x4::load_array(simd, to_premul(c.into(), Interpolation::SrgbEncoded))
     }
 }
 
@@ -264,11 +264,11 @@ fn premul_pixel<S: Simd>(simd: S, c: f32x4<S>, working: bool) -> f32x4<S> {
 fn eval_stops_pixel<S: Simd>(simd: S, stops: &[Stop], t: f32, working: bool) -> f32x4<S> {
     let first = &stops[0];
     if t <= first.offset {
-        return premul_pixel(simd, simd.load_array_f32x4(first.color), working);
+        return premul_pixel(simd, f32x4::load_array(simd, first.color), working);
     }
     let last = &stops[stops.len() - 1];
     if t >= last.offset {
-        return premul_pixel(simd, simd.load_array_f32x4(last.color), working);
+        return premul_pixel(simd, f32x4::load_array(simd, last.color), working);
     }
     for w in stops.windows(2) {
         let (a, b) = (&w[0], &w[1]);
@@ -279,13 +279,13 @@ fn eval_stops_pixel<S: Simd>(simd: S, stops: &[Stop], t: f32, working: bool) -> 
             } else {
                 0.0
             };
-            let a4 = simd.load_array_f32x4(a.color);
-            let b4 = simd.load_array_f32x4(b.color);
+            let a4 = f32x4::load_array(simd, a.color);
+            let b4 = f32x4::load_array(simd, b.color);
             let mixed = simd.splat_f32x4(f).mul_add(b4 - a4, a4);
             return premul_pixel(simd, mixed, working);
         }
     }
-    premul_pixel(simd, simd.load_array_f32x4(last.color), working)
+    premul_pixel(simd, f32x4::load_array(simd, last.color), working)
 }
 
 /// The span-invariant state every gradient kind's evaluation shares,
@@ -877,17 +877,18 @@ where
     let t = eval.parameter(simd, cx, cy);
     // `solvable`'s lane 0 — the splat point makes every lane identical.
     if let Some(solvable) = eval.solvable(t)
-        && solvable[0] == 0
+        && !solvable.test(0)
     {
         return simd.splat_f32x4(0.0);
     }
-    let (t, active) = X::lane(simd, t[0]);
+    let [t, ..]: [f32; 4] = t.into();
+    let (t, active) = X::lane(simd, t);
     if !active {
         return simd.splat_f32x4(0.0);
     }
     match base.stops {
         Ok(stops) => eval_stops_pixel(simd, stops, t, base.working),
-        Err(c) => simd.load_array_f32x4(c),
+        Err(c) => f32x4::load_array(simd, c),
     }
 }
 
@@ -912,9 +913,8 @@ fn eval_pixels<'a, S, X, E, const CHAINED: bool>(
 {
     for px in out.iter_mut() {
         // SAFETY: the store writes all four lanes of `px`.
-        simd.store_array_f32x4(eval_pixel::<S, X, E, CHAINED>(simd, eval, x, y), unsafe {
-            &mut *px.as_mut_ptr()
-        });
+        eval_pixel::<S, X, E, CHAINED>(simd, eval, x, y)
+            .store_array(unsafe { &mut *px.as_mut_ptr() });
         x += 1.0;
     }
 }
@@ -963,35 +963,45 @@ where
     }
 }
 
-/// Every [`SpanEval`] is a [`SpanKernel`]: `block` is [`eval_block`]'s
-/// one inlined body, `run` the extend-dispatched one-pixel path — the
-/// pieces [`super::span::span`] drives.
+/// A [`SpanEval`] as a [`SpanKernel`]: `block` is [`eval_block`]'s one
+/// inlined body, `run` the extend-dispatched one-pixel path — the
+/// pieces [`super::span::span`] drives. The newtype keeps the blanket
+/// impl off [`SpanEval`] itself, which would forbid a kernel with no
+/// gradient shape — `super::image`'s two-axis `ImageEval` — from
+/// implementing [`SpanKernel`] directly.
+struct Gradient<E>(E);
+
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
-impl<'a, S, E> SpanKernel<'a, S> for E
+impl<'a, S, E> SpanKernel<'a, S> for Gradient<E>
 where
     S: Simd,
     E: SpanEval<'a, S>,
 {
     #[inline(always)]
     fn block(&self, simd: S, xs: f32x16<S>, dy: f32x16<S>) -> [f32x16<S>; 4] {
-        eval_block(simd, self, xs, dy)
+        eval_block(simd, &self.0, xs, dy)
     }
     #[inline(always)]
     fn run(&self, simd: S, x: f32, y: f32, out: &mut [MaybeUninit<[f32; 4]>]) {
-        eval_run_extend(simd, self, x, y, out);
+        eval_run_extend(simd, &self.0, x, y, out);
     }
 }
 
 /// `PaintData::Linear` over `out`: the span driver with the
-/// span-invariant choices [`LinearEval`] decides.
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+/// span-invariant choices [`LinearEval`] decides. Out of line only in
+/// debug builds, for the same reason as `paint::sample_span`.
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        clippy::inline_always,
+        reason = "an optimized build coalesces the frame, and a call per span costs short spans"
+    ),
+    inline(always)
 )]
-#[inline(always)]
 pub(super) fn linear_span<'a, S: Simd>(
     simd: S,
     outer: &PaintData,
@@ -1000,7 +1010,7 @@ pub(super) fn linear_span<'a, S: Simd>(
     py: usize,
     out: &'a mut [MaybeUninit<[f32; 4]>],
 ) -> &'a mut [[f32; 4]] {
-    super::span::span(simd, &LinearEval::new(outer, params), x0, py, out)
+    super::span::span(simd, &Gradient(LinearEval::new(outer, params)), x0, py, out)
 }
 
 /// `PaintData::Radial` over `out`: the span driver with the
@@ -1052,10 +1062,10 @@ where
         || {
             super::span::span(
                 simd,
-                &RadialFormEval::<F> {
+                &Gradient(RadialFormEval::<F> {
                     eval,
                     form: PhantomData,
-                },
+                }),
                 x0,
                 py,
                 out,
@@ -1065,12 +1075,17 @@ where
 }
 
 /// `PaintData::Sweep` over `out`: the span driver with the
-/// span-invariant choices [`SweepEval`] decides.
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+/// span-invariant choices [`SweepEval`] decides. Out of line only in
+/// debug builds, for the same reason as `paint::sample_span`.
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        clippy::inline_always,
+        reason = "an optimized build coalesces the frame, and a call per span costs short spans"
+    ),
+    inline(always)
 )]
-#[inline(always)]
 pub(super) fn sweep_span<'a, S: Simd>(
     simd: S,
     outer: &PaintData,
@@ -1079,5 +1094,5 @@ pub(super) fn sweep_span<'a, S: Simd>(
     py: usize,
     out: &'a mut [MaybeUninit<[f32; 4]>],
 ) -> &'a mut [[f32; 4]] {
-    super::span::span(simd, &SweepEval::new(outer, params), x0, py, out)
+    super::span::span(simd, &Gradient(SweepEval::new(outer, params)), x0, py, out)
 }

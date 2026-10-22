@@ -170,6 +170,23 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
     }
 }
 
+/// Upper bound on growth rounds (re-renders) a scene needs to stop
+/// overflowing.
+///
+/// The fork's pipeline gates each stage on the failure bits of earlier
+/// ones: `tile_alloc.wgsl` bails when `STAGE_BINNING | STAGE_FLATTEN` is
+/// set, and `coarse.wgsl` skips on `STAGE_BINNING | STAGE_TILE_ALLOC |
+/// STAGE_FLATTEN`, flagging `STAGE_PATH_COUNT`. A failed render therefore
+/// reports exact demand only up to its first failing stage, and
+/// `Renderer::verify_bump_readbacks` grows just that. Grown sizes persist
+/// in the renderer, so a satisfied stage stays satisfied for the same
+/// scene and each round clears at least one of the five stages
+/// (`STAGE_BINNING`, `STAGE_TILE_ALLOC`, `STAGE_FLATTEN`,
+/// `STAGE_PATH_COUNT`, `STAGE_COARSE`, see `shader/shared/bump.wgsl`).
+/// The stage bits are WGSL constants, not exported by `vello_encoding`,
+/// so the count is declared here.
+const GROWTH_ROUNDS: u32 = 5;
+
 /// One measured render: `render_to_texture` bracketed by the standalone
 /// drain/timestamp markers, returning the bump-allocator feedback ticket
 /// it issues.
@@ -323,27 +340,32 @@ impl Engine for VelloClassic {
             height: target.height,
             antialiasing_method: AaConfig::Area,
         };
-        let (ticket, mut gpu_seconds, mut render_seconds) =
-            render_measured(&self.gpu, renderer, scene, target, &params)?;
         // The bump-allocator feedback verifies outside the measured
         // interval, once the closing drain has given its download time to
         // resolve. An overflowed render produced a truncated frame, so the
-        // identical scene re-renders once against the sizes the renderer
-        // grew to cover the reported demand — that re-render is the
-        // measured sample. Still overflowing after the growth round means
-        // the size accounting failed the scene; that is an error, not a
-        // retry.
-        if bump_overflowed(&self.gpu, renderer, ticket)? {
-            let retry = render_measured(&self.gpu, renderer, scene, target, &params)?;
-            if bump_overflowed(&self.gpu, renderer, retry.0)? {
+        // identical scene re-renders against the sizes the renderer grew
+        // to cover the reported demand, up to `GROWTH_ROUNDS` times. Only
+        // the final, non-overflowing render's measurements are reported.
+        let (mut ticket, mut gpu_seconds, mut render_seconds) =
+            render_measured(&self.gpu, renderer, scene, target, &params)?;
+        let mut round = 0;
+        while bump_overflowed(&self.gpu, renderer, ticket)? {
+            round += 1;
+            if round > GROWTH_ROUNDS {
                 return Err(BenchError::Engine(format!(
-                    "vello-classic: the scene still overflows the grown bump \
-                     buffers after one re-render ({}x{})",
+                    "vello-classic: the scene still overflows the bump buffers after \
+                     {GROWTH_ROUNDS} growth rounds, one per failure stage ({}x{})",
                     target.width, target.height
                 )));
             }
-            gpu_seconds = retry.1;
-            render_seconds = retry.2;
+            tracing::debug!(
+                width = target.width,
+                height = target.height,
+                round,
+                "vello-classic: bump buffers overflowed; re-rendering after growth"
+            );
+            (ticket, gpu_seconds, render_seconds) =
+                render_measured(&self.gpu, renderer, scene, target, &params)?;
         }
         let readback_at = Instant::now();
         let image = if readback_flag {
