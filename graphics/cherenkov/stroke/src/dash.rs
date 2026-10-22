@@ -292,7 +292,14 @@ impl Walk<'_, '_> {
                     // The next transition is a dash transition inside the
                     // segment, found on the part not yet consumed.
                     let rest = seg.subsegment(t..1.0);
-                    let t1 = rest.inv_arclen(self.phase.remaining, DASH_ACCURACY);
+                    // A remainder at or below the arclength accuracy is a
+                    // transition at the segment end; inverting the arclength
+                    // of such a degenerate rest is 0/0.
+                    let t1 = if seg_remaining <= DASH_ACCURACY {
+                        1.0
+                    } else {
+                        rest.inv_arclen(self.phase.remaining, DASH_ACCURACY)
+                    };
                     if self.phase.active && self.phase.remaining > 0.0 {
                         self.extend(seg_to_el(&rest.subsegment(0.0..t1)), rest.start());
                     }
@@ -455,6 +462,60 @@ mod tests {
             .dots;
         found.sort_by(|a, b| a.center.x.total_cmp(&b.center.x));
         found
+    }
+
+    fn assert_finite(path: &BezPath, what: &str) {
+        for el in path.iter() {
+            let pts: &[Point] = match &el {
+                PathEl::MoveTo(p) | PathEl::LineTo(p) => std::slice::from_ref(p),
+                PathEl::QuadTo(a, b) => &[*a, *b],
+                PathEl::CurveTo(a, b, c) => &[*a, *b, *c],
+                PathEl::ClosePath => &[],
+            };
+            assert!(
+                pts.iter().all(|p| p.x.is_finite() && p.y.is_finite()),
+                "{what}: non-finite point in {el:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_gap_after_a_dash_ending_at_the_segment_end_stays_finite() {
+        let mut path = BezPath::new();
+        path.move_to((424.712_887_282_334_86, 60.877_578_710_412_24));
+        path.line_to((429.687_112_717_665_1, 57.522_421_289_587_754));
+        let dashed = dash(path.iter(), &[6.0, 0.0, 2.0, 3.0], 0.0);
+        assert_finite(&dashed.dashes, "dashes");
+        assert!(dashed.dots.iter().all(|d| d.center.is_finite()));
+        // The line is about 6 long: one dash, covering all of it.
+        let len = dashed
+            .dashes
+            .segments()
+            .map(|s| s.arclen(1e-9))
+            .sum::<f64>();
+        assert!((len - 6.0).abs() < 1e-3, "{len}");
+    }
+
+    #[test]
+    fn dashing_lines_of_near_dash_length_stays_finite() {
+        for cap in [Cap::Butt, Cap::Round, Cap::Square] {
+            for k in -40..=40 {
+                let len = f64::from(k).mul_add(6.6e-16, 6.0);
+                for d in 0..16 {
+                    let a = f64::from(d) * PI / 8.0;
+                    let from = Point::new(424.712_887_282_334_86, 60.877_578_710_412_24);
+                    let to = from + Vec2::new(a.cos(), a.sin()) * len;
+                    let mut path = BezPath::new();
+                    path.move_to(from);
+                    path.line_to(to);
+                    let dashed = dash(path.iter(), &[6.0, 0.0, 2.0, 3.0], 0.0);
+                    assert_finite(&dashed.dashes, "dashes");
+                    assert!(dashed.dots.iter().all(|d| d.center.is_finite()));
+                    let out = outline(&path, &style(1.0, cap, &[6.0, 0.0, 2.0, 3.0], 0.0));
+                    assert_finite(&out, "outline");
+                }
+            }
+        }
     }
 
     #[test]
