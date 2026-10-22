@@ -202,7 +202,8 @@ impl VelloLikeCtx for VelloCpu {
                 id: g.id,
                 x: g.x,
                 y: g.y,
-            }));
+            }))
+            .expect("vello_cpu glyph run renders");
     }
 }
 
