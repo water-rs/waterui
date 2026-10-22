@@ -18,8 +18,8 @@ cherenkov-scene = { path = "../scene" }
 half = "2"
 kurbo = "0.13"
 libm = "0.2"
-skrifa = "0.44"
-read-fonts = "0.41"
+skrifa = "0.48"
+read-fonts = "0.45"
 png = "0.18"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }

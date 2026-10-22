@@ -344,9 +344,9 @@ erased-serde = { version = "0.4.10", default-features = false, features = ["allo
 # only one wgpu, and every `wgpu` type that crosses between the engine and a
 # `GpuContent` producer must be one type.
 wgpu = "30.0.1"
-parley = { version = "0.11", default-features = false }
+parley = { version = "0.12", default-features = false }
 kurbo = "0.13"
-skrifa = "0.47.0"
+skrifa = "0.48.0"
 # The only crate in the Rust ecosystem that reads the OpenType `MATH` table.
 # `read-fonts`/`skrifa` do not expose it (googlefonts/fontations#1269 has been
 # open since 2024-11), and neither `rustybuzz` nor `harfrust` port HarfBuzz's

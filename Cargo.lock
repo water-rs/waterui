@@ -1294,7 +1294,7 @@ version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5"
 dependencies = [
- "objc2 0.6.4",
+ "objc2 0.6.5",
 ]
 
 [[package]]
@@ -1591,7 +1591,7 @@ checksum = "b912d9d13dd63b4bffa750f1f3c49271dc96d6c91ca2d1c1f68a0172832170c8"
 dependencies = [
  "cef-dll-sys",
  "libloading 0.9.0",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "windows-sys 0.61.2",
 ]
 
@@ -1663,7 +1663,7 @@ dependencies = [
  "kurbo 0.13.1",
  "libm",
  "nami",
- "parley",
+ "parley 0.12.0",
  "rustc-hash 2.1.3",
  "smallvec",
  "thiserror 2.0.21",
@@ -1692,19 +1692,19 @@ dependencies = [
  "libc",
  "nami",
  "ndk-sys",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-video",
  "objc2-metal 0.3.2",
  "peniko",
  "plist",
  "pollster 1.0.1",
- "read-fonts 0.41.0",
+ "read-fonts 0.45.1",
  "serde",
  "serde_json",
  "skia-bindings",
  "skia-safe",
- "skrifa 0.44.0",
+ "skrifa 0.48.0",
  "sysinfo",
  "thiserror 2.0.21",
  "tracing",
@@ -1738,7 +1738,7 @@ dependencies = [
  "png",
  "rayon",
  "rustc-hash 2.1.3",
- "skrifa 0.44.0",
+ "skrifa 0.48.0",
  "tracing",
  "wide",
 ]
@@ -1769,7 +1769,7 @@ dependencies = [
  "nami",
  "ndk",
  "ndk-sys",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-av-foundation",
  "objc2-core-foundation",
@@ -1787,7 +1787,7 @@ dependencies = [
  "quote",
  "rspirv",
  "rustc-hash 2.1.3",
- "skrifa 0.44.0",
+ "skrifa 0.48.0",
  "texture2ddecoder",
  "thiserror 2.0.21",
  "toml 1.1.8+spec-1.1.0",
@@ -1810,9 +1810,9 @@ dependencies = [
  "libm",
  "png",
  "rayon",
- "read-fonts 0.41.0",
+ "read-fonts 0.45.1",
  "serde",
- "skrifa 0.44.0",
+ "skrifa 0.48.0",
  "texture2ddecoder",
 ]
 
@@ -1837,17 +1837,17 @@ name = "cherenkov-scene"
 version = "0.0.0"
 dependencies = [
  "blake3",
- "fontique",
+ "fontique 0.12.0",
  "half",
  "kurbo 0.13.1",
  "libm",
- "parley",
+ "parley 0.12.0",
  "png",
- "read-fonts 0.44.0",
+ "read-fonts 0.45.1",
  "serde",
  "serde_json",
  "skera",
- "skrifa 0.44.0",
+ "skrifa 0.48.0",
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
@@ -2036,7 +2036,7 @@ source = "git+https://github.com/water-rs/clipboard-rs?branch=windows-0.62-signe
 dependencies = [
  "clipboard-win",
  "image",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "objc2-ui-kit 0.3.2",
@@ -2115,7 +2115,7 @@ dependencies = [
  "libc",
  "libtest-mimic",
  "mach2 0.7.0",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-av-foundation",
  "objc2-av-kit",
@@ -2501,7 +2501,7 @@ dependencies = [
  "ndk-context",
  "num-derive",
  "num-traits",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-audio-toolbox",
  "objc2-avf-audio",
  "objc2-core-audio",
@@ -2992,7 +2992,7 @@ dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
 ]
 
 [[package]]
@@ -3725,9 +3725,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "font-types"
-version = "0.12.6"
+version = "0.12.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c92d9081c7ab3bd83ef1eecdfad090f3d966e3ce74106779664114cfe1a6274"
+checksum = "835ae9d781464a79026cde387f9cbc650c9a4909d7cf7e658b127e3c35d2f35d"
 dependencies = [
  "bytemuck",
 ]
@@ -3763,7 +3763,29 @@ dependencies = [
  "hashbrown 0.17.1",
  "linebender_resource_handle",
  "memmap2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-text",
+ "objc2-foundation 0.3.2",
+ "parlance",
+ "read-fonts 0.41.0",
+ "roxmltree 0.21.1",
+ "smallvec",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "yeslogic-fontconfig-sys",
+]
+
+[[package]]
+name = "fontique"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbf1df16263783918b7da396077521f92b729ef7c429444dfcf03581f1448b77"
+dependencies = [
+ "hashbrown 0.17.1",
+ "linebender_resource_handle",
+ "memmap2",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-text",
  "objc2-foundation 0.3.2",
@@ -4667,12 +4689,12 @@ dependencies = [
  "native-executor",
  "ndk",
  "ndk-context",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
  "objc2-web-kit",
- "parley",
+ "parley 0.12.0",
  "peniko",
  "png",
  "pollster 1.0.1",
@@ -4681,7 +4703,7 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook",
- "skrifa 0.44.0",
+ "skrifa 0.48.0",
  "tempfile",
  "thiserror 2.0.21",
  "tiny_http",
@@ -7277,9 +7299,9 @@ dependencies = [
 
 [[package]]
 name = "objc2"
-version = "0.6.4"
+version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a12a8ed07aefc768292f076dc3ac8c48f3781c8f2d5851dd3d98950e8c5a89f"
+checksum = "08849bbd4767dfae9457696856ae1c84fe4e0281bbe4a7abff2d0e06fb7981f8"
 dependencies = [
  "objc2-encode",
 ]
@@ -7309,7 +7331,7 @@ dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-cloud-kit 0.3.2",
  "objc2-core-data 0.3.2",
  "objc2-core-foundation",
@@ -7329,7 +7351,7 @@ checksum = "6948501a91121d6399b79abaa33a8aa4ea7857fe019f341b8c23ad6e81b79b08"
 dependencies = [
  "bitflags 2.13.2",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-audio",
  "objc2-core-audio-types",
  "objc2-core-foundation",
@@ -7345,7 +7367,7 @@ dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
  "dispatch2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-media",
  "objc2-core-video",
@@ -7359,7 +7381,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "15b375b013b8a710c67770ca8b45993f0fc22ad7a4ff88e95101b1efbc0b7de4"
 dependencies = [
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-av-foundation",
  "objc2-foundation 0.3.2",
@@ -7372,7 +7394,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13a380031deed8e99db00065c45937da434ca987c034e13b87e4441f9e4090be"
 dependencies = [
  "bitflags 2.13.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]
 
@@ -7396,7 +7418,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73ad74d880bb43877038da939b7427bba67e9dd42004a18b809ba7d87cee241c"
 dependencies = [
  "bitflags 2.13.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]
 
@@ -7418,7 +7440,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b034b578389f89a85c055eacc8d8b368be5f04a6c1b07f672bf3aec21d0ef621"
 dependencies = [
  "block2 0.6.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]
 
@@ -7429,7 +7451,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1eebcea8b0dbff5f7c8504f3107c68fc061a3eb44932051c8cf8a68d969c3b2"
 dependencies = [
  "dispatch2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-audio-types",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
@@ -7442,7 +7464,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a89f2ec274a0cf4a32642b2991e8b351a404d290da87bb6a9a9d8632490bd1c"
 dependencies = [
  "bitflags 2.13.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
 ]
 
 [[package]]
@@ -7464,7 +7486,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b402a653efbb5e82ce4df10683b6b28027616a2715e90009947d50b8dd298fa"
 dependencies = [
  "bitflags 2.13.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]
 
@@ -7478,7 +7500,7 @@ dependencies = [
  "block2 0.6.2",
  "dispatch2",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
 ]
 
 [[package]]
@@ -7489,7 +7511,7 @@ checksum = "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807"
 dependencies = [
  "bitflags 2.13.2",
  "dispatch2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-io-surface",
 ]
@@ -7501,7 +7523,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dbf2dae8a5e651adec3af54059cbce15e3aadbf8913da9782e1e1affc29aa512"
 dependencies = [
  "block2 0.6.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]
 
@@ -7523,7 +7545,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5d563b38d2b97209f8e861173de434bd0214cf020e3423a52624cd1d989f006"
 dependencies = [
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
@@ -7548,7 +7570,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca347214e24bc973fc025fd0d36ebb179ff30536ed1f80252706db19ee452009"
 dependencies = [
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]
 
@@ -7561,7 +7583,7 @@ dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
  "dispatch2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-audio",
  "objc2-core-audio-types",
  "objc2-core-foundation",
@@ -7575,7 +7597,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cde0dfb48d25d2b4862161a4d5fcc0e3c24367869ad306b0c9ec0073bfed92d"
 dependencies = [
  "bitflags 2.13.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
 ]
@@ -7588,7 +7610,7 @@ checksum = "d425caf1df73233f29fd8a5c3e5edbc30d2d4307870f802d18f00d83dc5141a6"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-io-surface",
@@ -7609,7 +7631,7 @@ checksum = "51bc9ad7325642172110196bacd6af64027ec5549ded7fc6589ea03e0f792bf8"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]
 
@@ -7635,7 +7657,7 @@ dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
 ]
 
@@ -7667,7 +7689,7 @@ checksum = "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d"
 dependencies = [
  "bitflags 2.13.2",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
 ]
@@ -7679,7 +7701,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a1e6550c4caed348956ce3370c9ffeca70bb1dbed4fa96112e7c6170e074586"
 dependencies = [
  "block2 0.6.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
 ]
@@ -7705,7 +7727,7 @@ dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
  "dispatch2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-contacts 0.3.2",
  "objc2-core-foundation",
@@ -7722,7 +7744,7 @@ checksum = "85f2a98483f6e76313cb85a5a185eaa3cda86a177b13a8852d56cbd0085bf635"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
@@ -7749,7 +7771,7 @@ dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
  "dispatch2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "objc2-io-surface",
@@ -7763,7 +7785,7 @@ checksum = "d6ea9a706f18e32cf8a0723e99855af4f135282891e07259301bae9135ae3872"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]
 
@@ -7774,7 +7796,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdddde9dfb986546746e3115021a85c4a83e1c5e9037b3c865a688fe9bf94ebb"
 dependencies = [
  "bitflags 2.13.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]
 
@@ -7800,7 +7822,7 @@ dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-core-video",
@@ -7817,7 +7839,7 @@ dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
 ]
 
@@ -7869,7 +7891,7 @@ checksum = "d87d638e33c06f577498cbcc50491496a3ed4246998a7fbba7ccb98b1e7eab22"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-cloud-kit 0.3.2",
  "objc2-core-data 0.3.2",
  "objc2-core-foundation",
@@ -7899,7 +7921,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7902ac02859fc1f7045f8b598c63f1ae0cc7efeaa06a9bc9f3d9a3c955974fa4"
 dependencies = [
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]
 
@@ -7922,7 +7944,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9df9128cbbfef73cda168416ccf7f837b62737d748333bfe9ab71c245d76613e"
 dependencies = [
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]
 
@@ -7934,7 +7956,7 @@ checksum = "05bf9a3c14831a7d9641b0d81d87dd913ee238a012b2fde27db5a84b56f5df3e"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-core-media",
@@ -7951,7 +7973,7 @@ checksum = "b2e5aaab980c433cf470df9d7af96a7b46a9d892d521a2cbbb2f8a4c16751e7f"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
@@ -8199,9 +8221,9 @@ dependencies = [
 
 [[package]]
 name = "parlance"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b6937eda350acc1a5d05872c3cbf99fe78619c269096e2be3d4a350058639d5"
+checksum = "73072a9470554c8e794778acece2312661218aaabb635600957d952cf01c716e"
 
 [[package]]
 name = "parley"
@@ -8209,8 +8231,7 @@ version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22d2ff88bd3f7d68d1d9b09c7e6209f9a8e8c05088295140a2bcf2e9b17038c5"
 dependencies = [
- "core_maths",
- "fontique",
+ "fontique 0.11.1",
  "harfrust",
  "hashbrown 0.17.1",
  "icu_normalizer",
@@ -8218,8 +8239,23 @@ dependencies = [
  "icu_segmenter",
  "linebender_resource_handle",
  "parlance",
- "parley_data",
+ "parley_data 0.11.1",
  "skrifa 0.44.0",
+]
+
+[[package]]
+name = "parley"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "61bd0c0c1737f0b3d3726dc06b225083af213b61913e4fbae1670613a106c6ce"
+dependencies = [
+ "core_maths",
+ "fontique 0.12.0",
+ "hashbrown 0.17.1",
+ "linebender_resource_handle",
+ "parlance",
+ "parley_engine",
+ "smallvec",
 ]
 
 [[package]]
@@ -8229,6 +8265,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1567535334d6ba2d3cde19221ba9a7bd0fabb3cbd99046ddfb10ae061cfcc889"
 dependencies = [
  "icu_properties",
+]
+
+[[package]]
+name = "parley_data"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c43b63f808f6cc8f4a3b07de0d62a977bddd2e0bb5c232bd9e93ba8ef92e5e4b"
+dependencies = [
+ "icu_collections",
+ "icu_properties",
+]
+
+[[package]]
+name = "parley_emoji"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c4482d912d7671a7cd2089794f90ef3bb5f5f8c738230fb0fcd50fa020f0ed3"
+
+[[package]]
+name = "parley_engine"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74c0d373e462e504ad4436710a39f099e18e848e1ee711f70cd2dcd5a69b290"
+dependencies = [
+ "fontique 0.12.0",
+ "harfrust",
+ "hashbrown 0.17.1",
+ "icu_locale_core",
+ "icu_normalizer",
+ "icu_properties",
+ "icu_segmenter",
+ "linebender_resource_handle",
+ "parlance",
+ "parley_data 0.12.0",
+ "parley_emoji",
+ "skrifa 0.44.0",
 ]
 
 [[package]]
@@ -9121,7 +9193,7 @@ version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40d213455a5f1dc59214213c7330e074ddf8114c9a42411eb890c767357ce135"
 dependencies = [
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
@@ -9175,13 +9247,15 @@ dependencies = [
 
 [[package]]
 name = "read-fonts"
-version = "0.44.0"
+version = "0.45.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5a0cf4bb6cbce4c29756270d189a5e400ac05e91192161d83a0bcb6e68492e8"
+checksum = "4edc8db0d972de88e53a085b1f01fb3fbdae7bb0cb7a0ce2b2f8285a412fe3ef"
 dependencies = [
  "bytemuck",
+ "foldhash 0.2.0",
  "font-types",
  "once_cell",
+ "yoke",
 ]
 
 [[package]]
@@ -9408,7 +9482,7 @@ dependencies = [
  "js-sys",
  "libc",
  "log",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
@@ -9464,7 +9538,7 @@ dependencies = [
  "cfg-if 1.0.5",
  "dispatch2",
  "jni 0.21.1",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "objc2-ui-kit 0.3.2",
@@ -10257,12 +10331,12 @@ checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 
 [[package]]
 name = "skera"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1793356c03f41587b77c8358124ecf2af32ee681df7305096099e368a4f5cec6"
+checksum = "531045338e36ad05b9652912a47ba38a935d0eaa0293c3e33d8112cfa414c14b"
 dependencies = [
  "hashbrown 0.17.1",
- "skrifa 0.47.0",
+ "skrifa 0.48.0",
  "thiserror 2.0.21",
  "write-fonts",
 ]
@@ -10330,12 +10404,12 @@ dependencies = [
 
 [[package]]
 name = "skrifa"
-version = "0.47.0"
+version = "0.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "526e654b303ff4ad73a5a40b25de2b3ce3d039c5e3b6da5f89ae6e57004cb40f"
+checksum = "a5213b4825bac3587046330052d61bfac7bd3bd0d203c758d7c2ef726fcea034"
 dependencies = [
  "bytemuck",
- "read-fonts 0.44.0",
+ "read-fonts 0.45.1",
 ]
 
 [[package]]
@@ -12267,7 +12341,7 @@ dependencies = [
  "ndk-context",
  "ndk-sys",
  "num-traits",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-av-foundation",
  "objc2-avf-audio",
@@ -12322,7 +12396,7 @@ dependencies = [
  "ndk",
  "ndk-context",
  "nokhwa",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-av-foundation",
  "objc2-core-foundation",
  "objc2-core-media",
@@ -12370,7 +12444,7 @@ dependencies = [
  "image",
  "jni 0.22.4",
  "ndk-context",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
@@ -12403,7 +12477,7 @@ dependencies = [
  "ndk",
  "ndk-sys",
  "num-traits",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-core-image 0.3.2",
@@ -12437,7 +12511,7 @@ dependencies = [
  "futures",
  "jiff",
  "nami",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
  "thiserror 2.0.21",
  "uuid",
@@ -12452,7 +12526,7 @@ dependencies = [
  "dispatch2",
  "futures",
  "jni 0.22.4",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
  "objc2-photos",
  "objc2-photos-ui",
@@ -12493,7 +12567,7 @@ dependencies = [
  "futures",
  "jni 0.22.4",
  "ndk-context",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-haptics",
  "objc2-foundation 0.3.2",
@@ -12516,7 +12590,7 @@ dependencies = [
  "jiff",
  "jni 0.22.4",
  "js-sys",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-location 0.3.2",
  "objc2-foundation 0.3.2",
  "thiserror 2.0.21",
@@ -12538,7 +12612,7 @@ dependencies = [
  "async-channel",
  "futures",
  "keyboard-types",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "thiserror 2.0.21",
@@ -12557,7 +12631,7 @@ dependencies = [
  "jni 0.22.4",
  "js-sys",
  "ndk-context",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-av-foundation",
  "objc2-contacts 0.3.2",
  "objc2-core-location 0.3.2",
@@ -12623,7 +12697,7 @@ dependencies = [
  "jni 0.22.4",
  "ndk-context",
  "num-traits",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-av-foundation",
  "objc2-av-kit",
  "objc2-core-foundation",
@@ -12692,7 +12766,7 @@ dependencies = [
  "libc",
  "libtest-mimic",
  "native-executor",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-core-graphics",
@@ -12821,7 +12895,7 @@ dependencies = [
  "keycode",
  "libloading 0.9.0",
  "num-traits",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-security",
  "serde",
@@ -12879,7 +12953,7 @@ dependencies = [
  "image",
  "kurbo 0.13.1",
  "nami",
- "parley",
+ "parley 0.11.1",
  "tracing",
  "waterui-core",
  "waterui-graphics",
@@ -13098,13 +13172,13 @@ dependencies = [
  "event-listener",
  "filtrate",
  "filtrate-core",
- "fontique",
+ "fontique 0.12.0",
  "half",
  "image",
  "keyboard-types",
  "mp4parse",
  "nami",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-video",
  "objc2-metal 0.3.2",
@@ -13391,7 +13465,7 @@ dependencies = [
  "mvt-reader",
  "nami",
  "native-executor",
- "parley",
+ "parley 0.11.1",
  "rayon",
  "rustc-hash 2.1.3",
  "serde",
@@ -13415,7 +13489,7 @@ dependencies = [
  "kurbo 0.13.1",
  "mathcat",
  "nami",
- "parley",
+ "parley 0.11.1",
  "peniko",
  "pulldown-latex",
  "quick-xml 0.42.0",
@@ -13596,7 +13670,7 @@ name = "waterui-text"
 version = "0.5.1"
 dependencies = [
  "nami",
- "parley",
+ "parley 0.12.0",
  "pulldown-cmark",
  "smallvec",
  "suiteki",
@@ -13657,7 +13731,7 @@ name = "waterui-ts-engine-jsc"
 version = "0.1.0"
 dependencies = [
  "block2 0.6.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
  "objc2-javascript-core",
  "waterui-ts-engine",
@@ -14169,7 +14243,7 @@ dependencies = [
  "libc",
  "libloading 0.9.0",
  "ndk",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
@@ -14206,7 +14280,7 @@ dependencies = [
  "log",
  "naga 29.0.4",
  "ndk-sys",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "objc2-metal 0.3.2",
@@ -14259,7 +14333,7 @@ dependencies = [
  "naga 30.0.1",
  "naga-types",
  "ndk-sys",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
@@ -14965,13 +15039,13 @@ dependencies = [
 
 [[package]]
 name = "write-fonts"
-version = "0.53.0"
+version = "0.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c2feba63177f6f6b51d646b78fafd5ff65f0581814155eb36ef620133d245c4"
+checksum = "55716cfa7e8bcdb90289e07dfac478ccb2e3ec0f9a604fe682c7a03a7984d705"
 dependencies = [
  "font-types",
  "log",
- "read-fonts 0.44.0",
+ "read-fonts 0.45.1",
 ]
 
 [[package]]

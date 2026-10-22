@@ -24,7 +24,7 @@ kurbo = { version = "0.13.1", features = ["serde"] }
 libm = "0.2"
 # Text layout stays outside the engine; `TextLayout` lowers a shaped
 # layout. No system font backend: hosts bring their own font collection.
-parley = { version = "0.11.1", default-features = false, features = ["std"] }
+parley = { version = "0.12.0", default-features = false, features = ["std"] }
 rustc-hash = "2"
 smallvec = { workspace = true, features = ["union"] }
 thiserror = "2"
