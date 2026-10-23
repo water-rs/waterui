@@ -379,6 +379,10 @@ jobs:
         run: cargo clippy -p cherenkov-gpu --all-targets --locked --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       - name: Clippy (cherenkov-gpu, iOS simulator)
         run: cargo clippy -p cherenkov-gpu --all-targets --locked --target aarch64-apple-ios-sim --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      # The apple_planes harness's UIKit/CoreVideo half is
+      # `cfg(target_vendor = "apple")` and no other leg compiles it for iOS.
+      - name: Clippy (apple-planes, iOS)
+        run: cargo clippy -p apple-planes --all-targets --locked --target aarch64-apple-ios --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # The `apple-target` cache holds this directory for the next run; the
       # number is evidence for the repository's 10 GB budget review, not a
       # gate.

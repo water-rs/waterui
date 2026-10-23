@@ -186,7 +186,7 @@ pub enum ScratchFormat {
 pub struct GpuConfig {
     /// Per-engine route override for the internal differential harness.
     #[cfg(test)]
-    pub(crate) force_gpu_coverage: bool,
+    pub(crate) coverage_route: Option<render::CoverageRoute>,
     /// Uses an existing host device. Handles must share one creation chain.
     /// Device limits and enabled features govern engine capabilities.
     pub device: Option<interop::SharedDevice>,
@@ -239,7 +239,7 @@ impl Default for GpuConfig {
     fn default() -> Self {
         Self {
             #[cfg(test)]
-            force_gpu_coverage: false,
+            coverage_route: None,
             device: None,
             backends: wgpu::Backends::all(),
             power_preference: wgpu::PowerPreference::HighPerformance,

@@ -15,10 +15,12 @@ use cherenkov_scene::Feature;
 use peniko::Brush;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Fill;
-use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene as VelloScene};
+use vello::{
+    AaConfig, AaSupport, BumpReadback, RenderParams, Renderer, RendererOptions, Scene as VelloScene,
+};
 
 use crate::convert::{self, Prepared};
-use crate::memory::{AdapterMemory, Reading, wgpu29_allocator, wgpu29_vk_memory_budget};
+use crate::memory::{AdapterMemory, Reading, allocator_report, wgpu_vk_memory_budget};
 use crate::vello_like::{Lowered, Op, lower, vello_features};
 use crate::wgpu_ctx::{Gpu, Target, drain_and_stamp, readback, resolve_timestamps};
 use crate::{BenchError, Counters, DeviceInfo, EncodeInput, Engine, EngineInfo, GpuSample, Submit};
@@ -168,6 +170,69 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
     }
 }
 
+/// Upper bound on growth rounds (re-renders) a scene needs to stop
+/// overflowing.
+///
+/// The fork's pipeline gates each stage on the failure bits of earlier
+/// ones: `tile_alloc.wgsl` bails when `STAGE_BINNING | STAGE_FLATTEN` is
+/// set, and `coarse.wgsl` skips on `STAGE_BINNING | STAGE_TILE_ALLOC |
+/// STAGE_FLATTEN`, flagging `STAGE_PATH_COUNT`. A failed render therefore
+/// reports exact demand only up to its first failing stage, and
+/// `Renderer::verify_bump_readbacks` grows just that. Grown sizes persist
+/// in the renderer, so a satisfied stage stays satisfied for the same
+/// scene and each round clears at least one of the five stages
+/// (`STAGE_BINNING`, `STAGE_TILE_ALLOC`, `STAGE_FLATTEN`,
+/// `STAGE_PATH_COUNT`, `STAGE_COARSE`, see `shader/shared/bump.wgsl`).
+/// The stage bits are WGSL constants, not exported by `vello_encoding`,
+/// so the count is declared here.
+const GROWTH_ROUNDS: u32 = 5;
+
+/// One measured render: `render_to_texture` bracketed by the standalone
+/// drain/timestamp markers, returning the bump-allocator feedback ticket
+/// it issues.
+///
+/// GPU time comes from timestamps written in standalone submissions after
+/// a full queue drain — on job-scheduled tiled GPUs a timestamp inside the
+/// same submission runs concurrently with the render and brackets an empty
+/// interval. This serializes CPU and GPU for the measured frame.
+fn render_measured(
+    gpu: &Gpu,
+    renderer: &mut Renderer,
+    scene: &VelloScene,
+    target: &Target,
+    params: &RenderParams,
+) -> Result<(Option<BumpReadback>, Option<f64>, f64), BenchError> {
+    drain_and_stamp(gpu, 0)?;
+    let render_at = Instant::now();
+    let ticket = renderer
+        .render_to_texture(&gpu.device, &gpu.queue, scene, &target.view, params)
+        .map_err(|e| BenchError::Gpu(format!("vello render: {e}")))?;
+    drain_and_stamp(gpu, 1)?;
+    let gpu_seconds = resolve_timestamps(gpu)?;
+    Ok((ticket, gpu_seconds, render_at.elapsed().as_secs_f64()))
+}
+
+/// Whether `ticket`'s render overflowed its bump buffers — the feedback
+/// [`Renderer::render_to_texture`] hands the caller to resolve. Dropping
+/// the ticket unresolved is not an option here: this build's vello fork
+/// `unwrap`s the map callback's send, so a discarded ticket panics on the
+/// next device poll, and an unverified overflow would pass a truncated
+/// frame off as rendered. `None` issues no feedback (the CPU pipeline)
+/// and cannot overflow.
+fn bump_overflowed(
+    gpu: &Gpu,
+    renderer: &mut Renderer,
+    ticket: Option<BumpReadback>,
+) -> Result<bool, BenchError> {
+    let Some(ticket) = ticket else {
+        return Ok(false);
+    };
+    let overflowed = renderer
+        .verify_bump_readbacks(&gpu.device, vec![ticket])
+        .map_err(|e| BenchError::Gpu(format!("vello bump readback: {e}")))?;
+    Ok(!overflowed.is_empty())
+}
+
 impl Engine for VelloClassic {
     fn info(&self) -> &EngineInfo {
         &self.info
@@ -275,25 +340,33 @@ impl Engine for VelloClassic {
             height: target.height,
             antialiasing_method: AaConfig::Area,
         };
-        // GPU time: bracket the render with timestamps written in
-        // standalone submissions after a full queue drain — on
-        // job-scheduled tiled GPUs a timestamp inside the same submission
-        // runs concurrently with the render and brackets an empty
-        // interval. This serializes CPU and GPU for the measured frame.
-        drain_and_stamp(&self.gpu, 0)?;
-        let render_at = Instant::now();
-        renderer
-            .render_to_texture(
-                &self.gpu.device,
-                &self.gpu.queue,
-                scene,
-                &target.view,
-                &params,
-            )
-            .map_err(|e| BenchError::Gpu(format!("vello render: {e}")))?;
-        drain_and_stamp(&self.gpu, 1)?;
-        let gpu_seconds = resolve_timestamps(&self.gpu)?;
-        let render_seconds = render_at.elapsed().as_secs_f64();
+        // The bump-allocator feedback verifies outside the measured
+        // interval, once the closing drain has given its download time to
+        // resolve. An overflowed render produced a truncated frame, so the
+        // identical scene re-renders against the sizes the renderer grew
+        // to cover the reported demand, up to `GROWTH_ROUNDS` times. Only
+        // the final, non-overflowing render's measurements are reported.
+        let (mut ticket, mut gpu_seconds, mut render_seconds) =
+            render_measured(&self.gpu, renderer, scene, target, &params)?;
+        let mut round = 0;
+        while bump_overflowed(&self.gpu, renderer, ticket)? {
+            round += 1;
+            if round > GROWTH_ROUNDS {
+                return Err(BenchError::Engine(format!(
+                    "vello-classic: the scene still overflows the bump buffers after \
+                     {GROWTH_ROUNDS} growth rounds, one per failure stage ({}x{})",
+                    target.width, target.height
+                )));
+            }
+            tracing::debug!(
+                width = target.width,
+                height = target.height,
+                round,
+                "vello-classic: bump buffers overflowed; re-rendering after growth"
+            );
+            (ticket, gpu_seconds, render_seconds) =
+                render_measured(&self.gpu, renderer, scene, target, &params)?;
+        }
         let readback_at = Instant::now();
         let image = if readback_flag {
             Some(readback(&self.gpu, target)?)
@@ -321,9 +394,9 @@ impl Engine for VelloClassic {
     fn memory(&self) -> AdapterMemory {
         AdapterMemory {
             engine: Reading::unavailable("Vello classic does not expose engine memory"),
-            wgpu_allocator: wgpu29_allocator(&self.gpu.device, self.gpu.info.backend),
+            wgpu_allocator: allocator_report(&self.gpu.device, self.gpu.info.backend),
             skia_budgeted: Reading::unavailable("Vello classic has no Skia budget"),
-            vk_memory_budget: wgpu29_vk_memory_budget(
+            vk_memory_budget: wgpu_vk_memory_budget(
                 &self.gpu.device,
                 self.gpu.info.backend,
                 &self.gpu.info.name,

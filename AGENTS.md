@@ -45,6 +45,16 @@ are retired and unsupported. Apple support is ARM64-only: macOS
 targets, and explicit requests for them must fail with a clear unsupported-target
 error. This does not remove x86 support from other supported operating systems.
 
+### Support tiers
+
+- **Tier 1** — tested on real devices: macOS, iOS, Android.
+- **Tier 2** — built and tested in CI, with failures fixed promptly: Windows,
+  Linux. Windows does not support dynamic linking; development builds link
+  statically.
+- **Tier 3** — experimental: the GTK, WinUI and TUI backends.
+
+ESP32 is not supported; water-rs/waterui#3060 tracks bringing it back.
+
 ## Framework Design Principles
 
 These are constraints on every WaterUI feature, refactor, and review — not just the current task scope. They override convenience and they are not optional.
@@ -243,7 +253,7 @@ Keep unrelated changes out of the change set.
 - **Building an app or example is also a framework audit.** While authoring app/example code, every point where a WaterUI component or feature does not exist and its absence costs developer experience or user experience — a primitive you had to hand-roll, a modifier that should be built in, a gap you worked around — is a GitHub issue on this repository, filed under the same rules as any other finding. Do not silently absorb the friction into the example; the example's job is to expose it.
 - The repo-local `.claude/skills/waterui/SKILL.md` is for WaterUI users. Update it only when a user-facing public authoring pattern, API usage rule, or app-level CLI usage changes.
 - **Agent-facing surface: stateful is MCP, stateless is skill + CLI.** When a capability is aimed at a coding agent, pick its shape by whether the operation is a step in a conversation with a live process or a pure function of its inputs. A live session — `water mcp`, the offscreen app the agent drives turn by turn — is an MCP server, because the connection is the session: the agent host owns the process lifetime, and a crash is a visible tool error instead of a silent restart with reset state. A pure function — `water build`, `water test`, `water package` — is a CLI command documented in the skill, which keeps shell composition (pipes, `xargs`, CI) that MCP loses. A stateless operation whose output is an image the model itself has to look at — `water preview` — gets both: the CLI for scripts, and an MCP tool returning the image as image content, since the shell round trip costs the agent an extra turn just to read the file. Do not wrap a genuinely stateful session in stateless CLI verbs with session ids: the daemon dying and coming back fresh is invisible to the agent. Scripted, repeatable stateful interaction is neither surface — it is a `#[waterui::test]`.
-- Rendering performance optimizations require visual equivalence, not byte-for-byte or pixel-for-pixel identity. Numerical differences alone must not block an optimization; assess visual equivalence by directly reviewing rendered output.
+- Rendering output is judged by visual equivalence, never by byte-, bit-, ULP- or pixel-level identity: for optimizations, fixes and new realizations alike, and between backends, SIMD levels, routes and the oracle. A test of rendered output asserts a FLIP tolerance, not pixel values, because a pixel assertion pins one implementation and closes off optimization; a numeric kernel test asserts a tolerance below what a viewer can see. Replacing an exact or pixel assertion with one of these is not a weakening. Numerical differences alone never block a change; assess visual equivalence by directly reviewing rendered output.
 - "Visual test" in this repository means the agent reads the generated image directly with its own vision capability. Heuristic image checks are forbidden, including changed-pixel counts, opaque-pixel thresholds, bbox approximations, dominant-color checks, brightness checks, non-uniform checks, and similar proxy code.
 - Before writing any new image/gallery/snapshot export code, search for and reuse the existing `waterui-testing`, preview, showcase, GPU snapshot, or filter gallery infrastructure. Do not add ad-hoc gallery examples, scripts, or binaries unless the user explicitly asks to create or extend that infrastructure.
 - For filter visual review images, the canonical reusable infrastructure is the `gpu_export_filter_gallery_images` test in the in-tree `filtrate` crate (`graphics/filtrate`): `cargo nextest run -p filtrate --lib -E 'test(gpu_export_filter_gallery_images)' --no-capture` exports PNG files to `/tmp/waterui_filter_gallery/`. Use this path to show filter outputs instead of creating a new gallery generator.

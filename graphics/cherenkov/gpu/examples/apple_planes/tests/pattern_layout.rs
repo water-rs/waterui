@@ -8,6 +8,8 @@ use apple_planes::pattern::{self, BAR, CELL, HEIGHT, STRIP, WIDTH};
 /// Fills a tight `32BGRA` image and returns it as packed pixels.
 fn image(frame: u64) -> Vec<u32> {
     let mut bytes = vec![0u8; WIDTH as usize * HEIGHT as usize * 4];
+    // SAFETY: `bytes` is a writable buffer of `HEIGHT` rows of
+    // `WIDTH * 4` bytes.
     unsafe {
         pattern::fill_bgra(bytes.as_mut_ptr(), WIDTH as usize * 4, frame);
     }

@@ -145,7 +145,7 @@ impl LogLevel {
 }
 
 /// Options for running an application on a device
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct RunOptions {
     /// # Note
     ///
@@ -162,6 +162,24 @@ pub struct RunOptions {
     /// If true, stream all native platform logs (`NSLog`, `print`, etc.), not just `WaterUI` logs.
     /// This filters by process ID instead of subsystem, which is noisier but includes all output.
     native_logs: bool,
+}
+
+// Environment values are where credentials such as the inspector's session
+// token travel to the child: the names are printable, the values are not.
+impl std::fmt::Debug for RunOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunOptions")
+            .field(
+                "env_vars",
+                &self
+                    .env_vars
+                    .keys()
+                    .collect::<std::collections::BTreeSet<_>>(),
+            )
+            .field("log_level", &self.log_level)
+            .field("native_logs", &self.native_logs)
+            .finish()
+    }
 }
 
 impl RunOptions {
@@ -935,7 +953,9 @@ fn start_log_stream(
     let probe = log_probe(run_token);
     let end_marker = log_end_marker(run_token);
 
-    let mut log_cmd = host.command_in_own_process_group("log");
+    let mut log_cmd = host.command_in_own_process_group("log").map_err(|error| {
+        FailToRun::Launch(eyre::eyre!("Failed to start macOS log stream: {error}"))
+    })?;
     log_cmd
         .arg("stream")
         .arg("--predicate")
@@ -1467,23 +1487,23 @@ async fn list_conflicting_macos_app_pids(
 }
 
 #[cfg(target_os = "macos")]
-fn quiet_kill_command(host: &Host, signal: &str, pid: &str) -> Command {
-    let mut command = host.command("kill");
+fn quiet_kill_command(host: &Host, signal: &str, pid: &str) -> std::io::Result<Command> {
+    let mut command = host.command("kill")?;
     command
         .arg(signal)
         .arg(pid)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    command
+    Ok(command)
 }
 
 #[cfg(target_os = "macos")]
-async fn is_pid_alive(host: &Host, pid: u32) -> bool {
+async fn is_pid_alive(host: &Host, pid: u32) -> std::io::Result<bool> {
     let pid = pid.to_string();
-    quiet_kill_command(host, "-0", &pid)
+    Ok(quiet_kill_command(host, "-0", &pid)?
         .status()
         .await
-        .is_ok_and(|status| status.success())
+        .is_ok_and(|status| status.success()))
 }
 
 #[cfg(target_os = "macos")]
@@ -1495,6 +1515,11 @@ async fn terminate_pids(host: &Host, pids: &[u32]) -> Result<(), FailToRun> {
     for &pid in pids {
         let pid = pid.to_string();
         let status = quiet_kill_command(host, "-TERM", &pid)
+            .map_err(|e| {
+                FailToRun::Launch(eyre::eyre!(
+                    "Failed to terminate existing app process {pid}: {e}"
+                ))
+            })?
             .status()
             .await
             .map_err(|e| {
@@ -1513,7 +1538,11 @@ async fn terminate_pids(host: &Host, pids: &[u32]) -> Result<(), FailToRun> {
     while Instant::now() < deadline {
         let mut alive = false;
         for &pid in pids {
-            if is_pid_alive(host, pid).await {
+            if is_pid_alive(host, pid).await.map_err(|e| {
+                FailToRun::Launch(eyre::eyre!(
+                    "Failed to poll existing app process {pid}: {e}"
+                ))
+            })? {
                 alive = true;
                 break;
             }
@@ -1669,7 +1698,14 @@ async fn run_macos_app_with_grace(
 
     // The app leads its own process group: a terminal `Ctrl-C` must reach
     // this process alone so the monitor controls its termination.
-    let mut command = host.command_in_own_process_group(&launch.executable_path);
+    let mut command = host
+        .command_in_own_process_group(&launch.executable_path)
+        .map_err(|error| {
+            FailToRun::Launch(eyre::eyre!(
+                "Failed to launch '{}': {error}",
+                launch.executable_path.display()
+            ))
+        })?;
     for (key, value) in options.env_vars() {
         command.env(key, value);
     }
@@ -1779,9 +1815,21 @@ fn spawn_local_child(
     // delivers `Ctrl-C` to every attached process, so the child shares the
     // console's group.
     #[cfg(unix)]
-    let mut cmd = host.command_in_own_process_group(executable_path);
+    let mut cmd = host
+        .command_in_own_process_group(executable_path)
+        .map_err(|error| {
+            FailToRun::Launch(eyre::eyre!(
+                "Failed to launch '{}': {error}",
+                executable_path.display()
+            ))
+        })?;
     #[cfg(not(unix))]
-    let mut cmd = host.command(executable_path);
+    let mut cmd = host.command(executable_path).map_err(|error| {
+        FailToRun::Launch(eyre::eyre!(
+            "Failed to launch '{}': {error}",
+            executable_path.display()
+        ))
+    })?;
     for (key, value) in options.env_vars() {
         cmd.env(key, value);
     }
@@ -2236,6 +2284,7 @@ fn spawn_binary_exit_monitor(monitor: ChildMonitor, sender: Sender<DeviceEvent>)
 async fn write_logger_message(host: &Host, message: &str) -> Result<(), String> {
     let output = host
         .command_in_own_process_group("logger")
+        .map_err(|error| error.to_string())?
         .arg(message)
         .kill_on_drop(true)
         .output()
@@ -2584,6 +2633,19 @@ mod tests {
 
     use smol::channel::unbounded;
 
+    /// Environment values are where credentials travel — `Debug` names
+    /// the variables without spelling their values.
+    #[test]
+    fn run_options_debug_names_env_vars_without_their_values() {
+        let mut options = super::RunOptions::new();
+        options.insert_env_var(
+            "WATERUI_INSPECTOR_TOKEN".to_string(),
+            "s3cret-env-value".to_string(),
+        );
+        let rendered = format!("{options:?}");
+        assert!(!rendered.contains("s3cret-env-value"), "{rendered}");
+        assert!(rendered.contains("WATERUI_INSPECTOR_TOKEN"), "{rendered}");
+    }
     #[cfg(unix)]
     use super::test_support::{ProcessGroupGuard, term_ignoring_fixture};
     use super::{
@@ -3772,6 +3834,7 @@ mod tests {
 
         let child = host
             .std_command(crate::toolchain::Host::current_exe().expect("test executable path"))
+            .expect("the test executable is a path, so resolution always succeeds")
             .args([SIGINT_TEST_NAME, "--exact", "--nocapture"])
             .stdin(Stdio::null())
             .process_group(0)

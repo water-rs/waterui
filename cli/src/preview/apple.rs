@@ -93,7 +93,7 @@ async fn stage_apple_preview_resources(
     let mut resolved_fonts = {
         let font_manifest = project.apple_crate_path().join("Cargo.toml");
         let font_declarations =
-            assets::scan_fonts(project, &font_manifest, &[platform.font_platform()?]).await?;
+            assets::scan_fonts(project, &font_manifest, &[platform.font_platform()]).await?;
         assets::resolve_fonts(project.host(), font_declarations).await?
     };
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);

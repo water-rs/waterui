@@ -418,10 +418,15 @@ fn passes(
 fn expand<F: Filter>(declared: &[Declared]) -> Result<Vec<Expanded>, EffectSetupError> {
     let mut expanded = Vec::with_capacity(declared.len());
     let mut position = Vec::with_capacity(declared.len());
+    let mut space = OperatingSpace::Working;
     for (index, stage) in declared.iter().enumerate() {
-        let srgb = stage.space() == OperatingSpace::Srgb;
-        if srgb {
-            expanded.push(Expanded::color(Placed::new(&TO_SRGB)));
+        if stage.space() != space {
+            let conversion = match stage.space() {
+                OperatingSpace::Working => &FROM_SRGB,
+                OperatingSpace::Srgb => &TO_SRGB,
+            };
+            expanded.push(Expanded::color(Placed::new(conversion)));
+            space = stage.space();
         }
         position.push(expanded.len());
         expanded.push(match stage {
@@ -444,9 +449,9 @@ fn expand<F: Filter>(declared: &[Declared]) -> Result<Vec<Expanded>, EffectSetup
                 }
             }
         });
-        if srgb {
-            expanded.push(Expanded::color(Placed::new(&FROM_SRGB)));
-        }
+    }
+    if space == OperatingSpace::Srgb {
+        expanded.push(Expanded::color(Placed::new(&FROM_SRGB)));
     }
     Ok(expanded)
 }

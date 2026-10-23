@@ -43,6 +43,17 @@ pub enum CommandError {
         /// Formatted diagnostic tail of the captured output streams.
         report: String,
     },
+    /// The command did not exit before its deadline; it and every process it
+    /// started were killed.
+    #[error("command `{program}` did not exit within {after:?} and was killed{report}")]
+    TimedOut {
+        /// The program that was invoked.
+        program: String,
+        /// The deadline that elapsed.
+        after: std::time::Duration,
+        /// Formatted diagnostic tail of the output captured before the kill.
+        report: String,
+    },
 }
 
 /// Returns a platform-appropriate installation hint for sccache.
@@ -397,6 +408,10 @@ fn replace_with_copy(from: &Path, to: &Path) -> io::Result<()> {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         #[cfg(windows)]
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "Windows-only: clears the read-only attribute so the file can be unlinked; there is no Unix mode to widen"
+        )]
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
             // A copy that kept a read-only mode cannot be unlinked until the
             // attribute is cleared; Unix ignores it for unlink.

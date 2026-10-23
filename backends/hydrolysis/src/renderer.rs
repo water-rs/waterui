@@ -192,7 +192,9 @@ use waterui_text::styled::StyledStr;
 use waterui_text::{Text, TextConfig};
 use waterui_webview::WebView;
 
-use crate::animation::{AnimatedScalarHandle, AnimationController, AnimationKey};
+use crate::animation::{
+    AnimatedScalarHandle, AnimationController, AnimationKey, PerpetualAnimation,
+};
 use crate::gesture::GestureEngine;
 use crate::platform::{
     KeyCode, Modifiers, PointerButton, PointerKind, TextInputPurpose, TextInputState, TouchPhase,

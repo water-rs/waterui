@@ -92,7 +92,7 @@ async fn start_server(
         ServerStart::Start(lock) => lock,
     };
 
-    let mut client = host.command(sccache_path);
+    let mut client = host.command(sccache_path)?;
     client
         .arg("--show-stats")
         .stdout(std::process::Stdio::null())
@@ -873,9 +873,10 @@ mod host_tests {
     /// succeeds if the dead file is cleared first.
     #[cfg(unix)]
     #[test]
-    fn a_dead_server_socket_is_cleared_before_connect_or_start() {
+    fn a_dead_server_socket_is_cleared_before_connect_or_start() -> std::io::Result<()> {
         let machine = TestMachine::new();
         let sccache = machine.install("sccache");
+        machine.install("cargo");
         let host = machine.host(Vec::<(String, String)>::new());
         let water_home = crate::project_model::water_dir::water_home_dir(&host)
             .expect("the fake host declares a home");
@@ -886,7 +887,7 @@ mod host_tests {
             .expect("bind the socket a dead server leaves behind");
         drop(dead_socket);
 
-        let mut cargo = host.command("cargo");
+        let mut cargo = host.command("cargo")?;
         smol::block_on(super::configure_compilation_cache(
             &host, &mut cargo, &sccache,
         ))
@@ -896,6 +897,7 @@ mod host_tests {
             "the dead socket was removed before connect-or-start: {}",
             socket.display()
         );
+        Ok(())
     }
 
     /// The socket a live server owns is never taken over — unlinking it
@@ -903,9 +905,10 @@ mod host_tests {
     /// still be there when connect-or-start finishes.
     #[cfg(unix)]
     #[test]
-    fn a_live_server_socket_is_never_taken_over() {
+    fn a_live_server_socket_is_never_taken_over() -> std::io::Result<()> {
         let machine = TestMachine::new();
         let sccache = machine.install("sccache");
+        machine.install("cargo");
         let host = machine.host([("WATERUI_FAKE_SCCACHE_LIVE", "1")]);
         let water_home = crate::project_model::water_dir::water_home_dir(&host)
             .expect("the fake host declares a home");
@@ -915,7 +918,7 @@ mod host_tests {
         let _live_server =
             std::os::unix::net::UnixListener::bind(&socket).expect("bind the live server");
 
-        let mut cargo = host.command("cargo");
+        let mut cargo = host.command("cargo")?;
         smol::block_on(super::configure_compilation_cache(
             &host, &mut cargo, &sccache,
         ))
@@ -925,6 +928,7 @@ mod host_tests {
             "a live server's socket was left alone: {}",
             socket.display()
         );
+        Ok(())
     }
 
     #[test]

@@ -43,6 +43,14 @@ executor-core = { workspace = true, optional = true }
 blocking = { workspace = true, optional = true }
 futures-lite = { workspace = true, optional = true }
 
+# On Windows the store's atomic write ends in `MoveFileExW` with
+# MOVEFILE_WRITE_THROUGH — a rename that is itself durable. The directory
+# `sync_all` used on other platforms cannot be made there: opening a
+# directory takes FILE_FLAG_BACKUP_SEMANTICS, which `fs::File::open` never
+# passes.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", default-features = false, features = ["Win32_Storage_FileSystem"], optional = true }
+
 # The HTTP client is `zenwave`, with the per-target TLS split every fetching
 # crate in the workspace uses: the platform's own TLS on Apple, rustls
 # everywhere else that has a socket, and the browser's fetch on wasm.
@@ -71,6 +79,7 @@ ota = [
     "dep:blocking",
     "dep:futures-lite",
     "dep:zenwave",
+    "dep:windows-sys",
 ]
 
 # Apple platforms use the system JavaScriptCore — zero added binary size.
@@ -100,7 +109,7 @@ hydrolysis-m3.workspace = true
 # The catalog test reads `waterui_meta_ts_catalog` back out of the test
 # executable's metadata directory section, which is the path the `water` CLI
 # takes through a user crate's rlib.
-object = { version = "0.37", default-features = false, features = ["read", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "std"] }
 # The OTA tests sign real bundles with a key generated in the test, serve
 # them from a socket the test owns, and cache them in a directory that goes
 # away with the test.

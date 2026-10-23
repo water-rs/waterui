@@ -65,10 +65,16 @@ jobs:
         run: |
           gh label create "dependencies" --description "Dependency updates" --color "0075ca" 2>/dev/null || true
 
+          # The tracking issue is the open one with exactly this title; other
+          # issues carrying the `dependencies` label are never touched.
+          title="Outdated dependencies"
+          existing=$(gh issue list --label "dependencies" --state open \
+            --search "in:title \"$title\"" --json number,title \
+            --jq "[.[] | select(.title == \"$title\")][0].number // empty")
+
           if [ ! -s outdated.txt ]; then
             echo "No outdated dependencies"
-            existing=$(gh issue list --label "dependencies" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-            if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            if [ -n "$existing" ]; then
               gh issue close "$existing" -c "All dependencies are up to date."
             fi
             exit 0
@@ -86,12 +92,10 @@ jobs:
           BODY
           )
 
-          existing=$(gh issue list --label "dependencies" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-
-          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+          if [ -n "$existing" ]; then
             gh issue edit "$existing" --body "$body"
             echo "Updated issue #$existing"
           else
-            gh issue create --title "Outdated dependencies" --body "$body" --label "dependencies"
+            gh issue create --title "$title" --body "$body" --label "dependencies"
             echo "Created tracking issue"
           fi

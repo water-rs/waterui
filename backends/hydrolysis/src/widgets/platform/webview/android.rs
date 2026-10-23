@@ -18,14 +18,19 @@ use std::collections::HashMap;
 use std::format;
 use std::rc::{Rc, Weak};
 use std::string::{String, ToString};
+use std::sync::Arc;
 use std::vec::Vec;
 
 use executor_core::spawn_local;
 use futures::channel::oneshot;
-use jni::objects::{GlobalRef, JClass, JMethodID, JObject, JStaticMethodID, JString, JValue};
-use jni::signature::{Primitive, ReturnType};
-use jni::sys::{jboolean, jint, jlong, jobject, jvalue};
-use jni::{JNIEnv, JavaVM};
+use jni::objects::{
+    Global, JClass, JMethodID, JObject, JStaticMethodID, JString, JValue, JValueOwned, Reference,
+};
+use jni::signature::{MethodSignature, Primitive, ReturnType, RuntimeMethodSignature};
+use jni::strings::JNIString;
+use jni::sys::{jboolean, jint, jlong, jvalue};
+use jni::vm::JavaVM;
+use jni::{Env, EnvUnowned, jni_sig, jni_str};
 use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
 use waterui_core::{Computed, Str};
@@ -49,8 +54,11 @@ use super::android_protocol::{
 /// did not enter from Java cannot resolve app classes later.
 const WRAPPER_CLASS: &str = "dev/waterui/hydrolysis/webview/HydrolysisWebView";
 
-/// The class `nativeAssetRespond` constructs by name — its constructor is
-/// part of the JNI contract the `@CalledFromNative` keep rule preserves.
+/// The class `nativeAssetRespond` constructs — its constructor is part of
+/// the JNI contract the `@CalledFromNative` keep rule preserves. Resolved
+/// once on the session-create thread: a `WebView` IO thread that answers an
+/// interception did not enter from Java and cannot resolve app classes by
+/// name.
 const ASSET_RESPONSE_CLASS: &str = "dev/waterui/hydrolysis/webview/AssetResponse";
 
 /// The JNI method ids resolved once at session create, in
@@ -63,14 +71,23 @@ struct WebViewMethods {
 }
 
 impl WebViewMethods {
-    fn resolve(env: &mut JNIEnv<'_>, class: &JClass<'_>) -> Result<Self, JniError> {
+    fn resolve(env: &mut Env<'_>, class: &JClass<'_>) -> Result<Self, JniError> {
         let mut methods = Vec::with_capacity(WEBVIEW_METHODS.len());
         for method in WEBVIEW_METHODS {
-            let id = env.get_method_id(class, method.name, method.signature)?;
+            let signature = RuntimeMethodSignature::from_str(method.signature)?;
+            let id = env.get_method_id(
+                class,
+                JNIString::new(method.name),
+                MethodSignature::from(&signature),
+            )?;
             methods.push(id);
         }
-        let create =
-            env.get_static_method_id(class, WEBVIEW_CREATE.name, WEBVIEW_CREATE.signature)?;
+        let create_signature = RuntimeMethodSignature::from_str(WEBVIEW_CREATE.signature)?;
+        let create = env.get_static_method_id(
+            class,
+            JNIString::new(WEBVIEW_CREATE.name),
+            MethodSignature::from(&create_signature),
+        )?;
         Ok(Self {
             methods: Rc::new(methods),
             create,
@@ -87,23 +104,38 @@ impl WebViewMethods {
 /// unbound session, a non-Activity context) must reach the panic text. The
 /// exception is cleared so the guard's `IllegalStateException` stays the
 /// pending report.
-fn panic_with_java_detail(env: &mut JNIEnv<'_>, context: &str, error: &jni::errors::Error) -> ! {
+fn panic_with_java_detail(env: &mut Env<'_>, context: &str, error: &jni::errors::Error) -> ! {
     let detail = env
         .exception_occurred()
-        .ok()
         .and_then(|throwable| {
-            let _ = env.exception_clear();
-            env.call_method(&throwable, "toString", "()Ljava/lang/String;", &[])
-                .ok()
-                .and_then(|value| value.l().ok())
-                .and_then(|object| {
-                    env.get_string(&JString::from(object))
-                        .ok()
-                        .map(|s| s.to_string_lossy().into_owned())
-                })
+            env.exception_clear();
+            env.call_method(
+                &throwable,
+                jni_str!("toString"),
+                jni_sig!("()Ljava/lang/String;"),
+                &[],
+            )
+            .ok()
+            .and_then(|value| value.l().ok())
+            .and_then(|object| {
+                env.as_cast::<JString>(&object)
+                    .ok()
+                    .and_then(|string| string.try_to_string(env).ok())
+            })
         })
         .unwrap_or_else(|| error.to_string());
     panic!("android webview: {context} failed: {detail}");
+}
+
+/// The error path of a `JavaVM::with_local_frame` call: re-acquires the
+/// attached thread's env to read the pending Java exception's own `toString`
+/// into the panic. When no env exists — the caller ran on an unattached
+/// thread, a contract breach — the JNI error is the panic text.
+fn panic_for_jni_error(vm: &JavaVM, context: &str, error: &jni::errors::Error) -> ! {
+    let _: Result<(), jni::errors::Error> = vm.with_top_local_frame(|env| {
+        panic_with_java_detail(env, context, error);
+    });
+    panic!("android webview: {context} failed: {error}");
 }
 
 /// The Rust half of one mounted `HydrolysisWebView`. Kotlin holds a leaked
@@ -113,9 +145,11 @@ pub(super) struct SharedState {
     /// The VM replies and event dispatches attach through — the natives and
     /// the spawned handler tasks all run on the UI thread.
     vm: JavaVM,
-    /// The Kotlin wrapper, installed by `open` once `create` returns. The
-    /// bridge reply path needs it without the handle.
-    wrapper: RefCell<Option<GlobalRef>>,
+    /// The Kotlin wrapper, installed by `open` once `create` returns — the
+    /// same `Global` the handle carries, shared rather than duplicated so
+    /// `open` runs no fallible JNI call after Kotlin has seen the native
+    /// handle. The bridge reply path needs it without the handle.
+    wrapper: RefCell<Option<Rc<Global<JObject<'static>>>>>,
     /// The cached wrapper-method table the reply path calls through.
     methods: WebViewMethods,
     /// Backend-event watchers — `watch` on the handle.
@@ -173,44 +207,42 @@ impl SharedState {
     /// Callable without a handle because the wrapper lives here. Runs inside
     /// a local JNI frame: executor tasks enter JNI from the `ALooper` fd
     /// callback, which has no frame, and locals would otherwise leak.
-    fn post_bridge_reply(&self, reply_proxy: &GlobalRef, message: &str) {
-        let Some(wrapper) = self.wrapper.borrow().clone() else {
+    fn post_bridge_reply(&self, reply_proxy: &Global<JObject<'static>>, message: &str) {
+        let installed = self.wrapper.borrow();
+        let Some(wrapper) = installed.as_ref() else {
             tracing::warn!("android webview: a bridge reply arrived before the wrapper was set");
             return;
         };
         let method = self.methods.id(WebViewMethodId::PostBridgeReply);
-        let mut env = self
-            .vm
-            .get_env()
-            .expect("bridge replies run on the UI thread, which is attached");
-        env.with_local_frame::<_, _, jni::errors::Error>(16, |env| {
-            let message = env
-                .new_string(message)
-                .expect("a reply message is Java-safe UTF-8");
-            // SAFETY: `method` was resolved for the wrapper class at create
-            // time and the signature is `postBridgeReply`'s
-            // `(JavaScriptReplyProxy, String)V`; `reply_proxy` is the proxy
-            // the listener handed `nativeOnBridgeMessage`.
-            unsafe {
-                env.call_method_unchecked(
-                    wrapper.as_obj(),
-                    method,
-                    ReturnType::Primitive(Primitive::Void),
-                    &[
-                        JValue::Object(reply_proxy.as_obj()).as_jni(),
-                        JValue::Object(message.as_ref()).as_jni(),
-                    ],
-                )
-                .map(|_| ())
-            }
-        })
-        .unwrap_or_else(|error| panic_with_java_detail(&mut env, "postBridgeReply", &error));
+        self.vm
+            .with_local_frame::<_, _, jni::errors::Error>(16, |env| {
+                let message = env
+                    .new_string(message)
+                    .expect("a reply message is Java-safe UTF-8");
+                // SAFETY: `method` was resolved for the wrapper class at
+                // create time and the signature is `postBridgeReply`'s
+                // `(JavaScriptReplyProxy, String)V`; `reply_proxy` is the
+                // proxy the listener handed `nativeOnBridgeMessage`.
+                unsafe {
+                    env.call_method_unchecked(
+                        wrapper.as_obj(),
+                        method,
+                        ReturnType::Primitive(Primitive::Void),
+                        &[
+                            JValue::Object(reply_proxy.as_obj()).as_jni(),
+                            JValue::Object(message.as_ref()).as_jni(),
+                        ],
+                    )
+                    .map(|_| ())
+                }
+            })
+            .unwrap_or_else(|error| panic_for_jni_error(&self.vm, "postBridgeReply", &error));
     }
 
     /// `nativeOnBridgeMessage`: parse the envelope, dispatch the named
     /// handler on the executor, and post the reply on `reply_proxy`, the
     /// channel the engine bound to the document that sent the message.
-    fn on_bridge_message(self: Rc<Self>, envelope: &str, reply_proxy: GlobalRef) {
+    fn on_bridge_message(self: Rc<Self>, envelope: &str, reply_proxy: Global<JObject<'static>>) {
         let request = match bridge::Request::parse(envelope) {
             Ok(request) => request,
             Err(error) => {
@@ -250,16 +282,40 @@ impl SharedState {
     }
 }
 
+/// The `AssetResponse` class and its `<init>` resolved once at session
+/// create, while the JNI thread can still resolve app classes by name —
+/// `nativeAssetRespond` constructs through them on `WebView` IO threads
+/// that never entered from Java.
+struct AssetResponseCtor {
+    class: Global<JClass<'static>>,
+    init: JMethodID,
+}
+
+/// The pointer Kotlin carries as `asset_server`: the `AssetServer` `open`
+/// leaked plus the `AssetResponse` constructor, so the interception path
+/// never looks an app class up by name. `nativeAssetServerAcquire` clones
+/// it for the request in flight; `nativeAssetServerRelease` frees each
+/// clone and `release`/`nativeFreeAssetServer` the original.
+struct AssetServerHandle {
+    server: AssetServer,
+    response: Arc<AssetResponseCtor>,
+}
+
 /// The controller the session's environment carries. `new` resolves the
 /// wrapper class and its method table while still on the JNI thread, and
 /// `open` builds wrappers against both.
 pub struct AndroidSystemWebViewController {
     vm: JavaVM,
-    /// The `HydrolysisSession` — the object `HostBridge` calls back into, and
-    /// the instance registry `create` registers the wrapper on.
-    session: GlobalRef,
-    webview_class: GlobalRef,
+    /// The `HydrolysisSession` — the object `HostBridge` calls back into and
+    /// the instance registry `create` registers the wrapper on. The same
+    /// global the session's `HostBridge` holds, shared rather than
+    /// duplicated: one JNI global per Kotlin object.
+    session: Arc<Global<JObject<'static>>>,
+    webview_class: Global<JClass<'static>>,
     methods: WebViewMethods,
+    /// The `AssetResponse` constructor, shared into every boxed
+    /// [`AssetServerHandle`] `open` leaks.
+    asset_response: Arc<AssetResponseCtor>,
     /// Placement instance ids, owned by the controller rather than a static:
     /// a session's registry counts from its own zero.
     next_instance: Cell<u64>,
@@ -270,15 +326,37 @@ impl AndroidSystemWebViewController {
     /// session. `env` must be the JNI environment of `nativeCreateSession` —
     /// the only call that reaches app classes by name on every thread model.
     /// A method R8 stripped or renamed fails here, naming it.
-    pub fn new(env: &mut JNIEnv<'_>, session: GlobalRef) -> Result<Self, JniError> {
-        let class = env.find_class(WRAPPER_CLASS).map_err(JniError::from)?;
+    pub fn new(
+        env: &mut Env<'_>,
+        session: Arc<Global<JObject<'static>>>,
+    ) -> Result<Self, JniError> {
+        let class = env
+            .find_class(JNIString::new(WRAPPER_CLASS))
+            .map_err(JniError::from)?;
         let methods = WebViewMethods::resolve(env, &class)?;
         let webview_class = env.new_global_ref(&class).map_err(JniError::from)?;
+        let asset_response_class = env
+            .find_class(JNIString::new(ASSET_RESPONSE_CLASS))
+            .map_err(JniError::from)?;
+        let init_signature =
+            RuntimeMethodSignature::from_str(WEBVIEW_ASSET_RESPONSE_INIT.signature)?;
+        let init = env.get_method_id(
+            &asset_response_class,
+            JNIString::new(WEBVIEW_ASSET_RESPONSE_INIT.name),
+            MethodSignature::from(&init_signature),
+        )?;
+        let asset_response = Arc::new(AssetResponseCtor {
+            class: env
+                .new_global_ref(&asset_response_class)
+                .map_err(JniError::from)?,
+            init,
+        });
         Ok(Self {
             vm: env.get_java_vm().map_err(JniError::from)?,
             session,
             webview_class,
             methods,
+            asset_response,
             next_instance: Cell::new(0),
         })
     }
@@ -296,19 +374,15 @@ impl CustomWebViewController for AndroidSystemWebViewController {
         // back to `nativeAssetServerAcquire`/`nativeFreeAssetServer`. The
         // `AssetServer` inside is already an `Arc` — the box is a handle,
         // not a second refcount.
-        let asset_server = config
-            .asset_server
-            .map_or(0, |server| Box::into_raw(Box::new(server)) as jlong);
+        let asset_server = config.asset_server.map_or(0, |server| {
+            Box::into_raw(Box::new(AssetServerHandle {
+                server,
+                response: Arc::clone(&self.asset_response),
+            })) as jlong
+        });
 
-        let mut env = self
-            .vm
-            .get_env()
-            .expect("open must run on the UI thread, which is attached");
-        let vm = env
-            .get_java_vm()
-            .expect("a JNIEnv always yields its JavaVM");
         let shared = Rc::new(SharedState {
-            vm,
+            vm: self.vm.clone(),
             wrapper: RefCell::new(None),
             methods: self.methods.clone(),
             watchers: WatcherSet::new(),
@@ -320,24 +394,34 @@ impl CustomWebViewController for AndroidSystemWebViewController {
         });
         let native_handle = Box::into_raw(Box::new(Rc::downgrade(&shared))) as jlong;
 
-        let wrapper = env
-            .with_local_frame::<_, _, jni::errors::Error>(16, |env| {
-                self.create_wrapper(env, instance, native_handle, asset_server)
-            })
-            .unwrap_or_else(|error| {
-                // Keep the leak surface honest on the failure path too.
-                // SAFETY: `native_handle` was `Box::into_raw`'d at the top of
-                // `open`; this is the only site that drops it, and only on the
-                // path where Kotlin never saw the wrapper.
-                unsafe {
-                    drop(Box::from_raw(native_handle as *mut Weak<SharedState>));
-                    if asset_server != 0 {
-                        drop(Box::from_raw(asset_server as *mut AssetServer));
+        let wrapper = Rc::new(
+            self.vm
+                .with_local_frame::<_, _, jni::errors::Error>(16, |env| {
+                    self.create_wrapper(env, instance, native_handle, asset_server)
+                })
+                .unwrap_or_else(|error| {
+                    // Keep the leak surface honest on the failure path too.
+                    // SAFETY: `native_handle` and `asset_server` were
+                    // `Box::into_raw`'d above; this is their only free short
+                    // of the handle's drop, and it runs only when
+                    // `create_wrapper` returned `Err`. The remaining failure
+                    // window lives inside `create_wrapper` itself: its `.l()`
+                    // or `new_global_ref` can still fail after
+                    // `HydrolysisWebView.create` already returned a wrapper
+                    // Kotlin registered with both pointers — freeing them
+                    // then leaves that wrapper holding dangling handles, a
+                    // one-allocation-wide OOM window this comment names
+                    // rather than hides.
+                    unsafe {
+                        drop(Box::from_raw(native_handle as *mut Weak<SharedState>));
+                        if asset_server != 0 {
+                            drop(Box::from_raw(asset_server as *mut AssetServerHandle));
+                        }
                     }
-                }
-                panic_with_java_detail(&mut env, "HydrolysisWebView.create", &error)
-            });
-        *shared.wrapper.borrow_mut() = Some(wrapper.clone());
+                    panic_for_jni_error(&self.vm, "HydrolysisWebView.create", &error)
+                }),
+        );
+        *shared.wrapper.borrow_mut() = Some(Rc::clone(&wrapper));
 
         let handle = AndroidSystemWebViewHandle {
             inner: Rc::new(HandleInner {
@@ -371,15 +455,15 @@ impl CustomWebViewController for AndroidSystemWebViewController {
 
 /// The Kotlin `HydrolysisWebView.create` call — the companion's static
 /// factory, resolved on the class at session create. Returns the wrapper as
-/// a `GlobalRef`.
+/// a `Global<JObject<'static>>`.
 impl AndroidSystemWebViewController {
     fn create_wrapper(
         &self,
-        env: &mut JNIEnv<'_>,
+        env: &mut Env<'_>,
         instance: u64,
         native_handle: jlong,
         asset_server: jlong,
-    ) -> Result<GlobalRef, jni::errors::Error> {
+    ) -> Result<Global<JObject<'static>>, jni::errors::Error> {
         let bridge_object = env.new_string(BRIDGE_OBJECT)?;
         let async_result_object = env.new_string(ASYNC_RESULT_OBJECT)?;
         let asset_host = env.new_string(ANDROID_ASSET_HOST)?;
@@ -391,7 +475,7 @@ impl AndroidSystemWebViewController {
                 self.methods.create,
                 ReturnType::Object,
                 &[
-                    JValue::Object(self.session.as_ref()).as_jni(),
+                    JValue::Object(self.session.as_obj()).as_jni(),
                     JValue::Long(jlong::try_from(instance).expect("an instance id fits a jlong"))
                         .as_jni(),
                     JValue::Long(native_handle).as_jni(),
@@ -414,7 +498,9 @@ const ANDROID_ASSET_HOST: &str = "waterui.localhost";
 
 /// The live wrapper and the bookkeeping around it.
 struct HandleInner {
-    wrapper: GlobalRef,
+    /// The wrapper `create` returned, shared with `SharedState` — one JNI
+    /// global per Kotlin wrapper object.
+    wrapper: Rc<Global<JObject<'static>>>,
     methods: WebViewMethods,
     shared: Rc<SharedState>,
     /// The placement-instance id Kotlin registered the wrapper under.
@@ -430,7 +516,7 @@ struct HandleInner {
 /// The local-frame capacity every wrapper call runs under — the fixed
 /// arguments plus a margin. The script-array loop is unbounded, so
 /// `call_str_array` adds the array length on top of this.
-const LOCAL_FRAME_CAPACITY: i32 = 32;
+const LOCAL_FRAME_CAPACITY: usize = 32;
 
 impl HandleInner {
     /// Run `f` with a JNI env inside a fresh local reference frame sized to
@@ -448,21 +534,18 @@ impl HandleInner {
     /// `release` itself, bypassing `call`, so teardown still reaches Kotlin.
     fn jni<T>(
         &self,
-        locals: i32,
+        locals: usize,
         dead_value: T,
-        f: impl FnOnce(&mut JNIEnv<'_>) -> Result<T, jni::errors::Error>,
+        f: impl FnOnce(&mut Env<'_>) -> Result<T, jni::errors::Error>,
         context: &str,
     ) -> T {
         if self.shared.pending.borrow().dead() {
             return dead_value;
         }
-        let mut env = self
-            .shared
+        self.shared
             .vm
-            .get_env()
-            .expect("webview calls run on the UI thread, which is attached");
-        env.with_local_frame(locals, f)
-            .unwrap_or_else(|error| panic_with_java_detail(&mut env, context, &error))
+            .with_local_frame(locals, f)
+            .unwrap_or_else(|error| panic_for_jni_error(&self.shared.vm, context, &error))
     }
 
     /// `call_method_unchecked` on the wrapper through the cached table.
@@ -505,7 +588,7 @@ impl HandleInner {
                     ReturnType::Primitive(Primitive::Boolean),
                     &args.iter().map(JValue::as_jni).collect::<Vec<jvalue>>(),
                 )
-                .and_then(jni::objects::JValueGen::z)
+                .and_then(JValueOwned::z)
             },
             WEBVIEW_METHODS[method as usize].name,
         )
@@ -546,8 +629,7 @@ impl HandleInner {
     /// unbounded, so a fixed capacity would overflow on enough scripts.
     fn call_str_array(&self, method: WebViewMethodId, values: &[String]) {
         let id = self.methods.id(method);
-        let locals = LOCAL_FRAME_CAPACITY
-            .saturating_add(i32::try_from(values.len()).expect("a script list fits a jint"));
+        let locals = LOCAL_FRAME_CAPACITY + values.len();
         self.jni(
             locals,
             (),
@@ -555,18 +637,15 @@ impl HandleInner {
                 let array = env
                     .new_object_array(
                         jint::try_from(values.len()).expect("a script list fits a jint"),
-                        "java/lang/String",
+                        jni_str!("java/lang/String"),
                         JObject::null(),
                     )
                     .expect("android webview: allocating a string array failed");
                 for (index, value) in values.iter().enumerate() {
                     let value = env.new_string(value).expect("Java-safe UTF-8");
-                    env.set_object_array_element(
-                        &array,
-                        jint::try_from(index).expect("an index fits a jint"),
-                        &value,
-                    )
-                    .expect("android webview: writing a string array failed");
+                    array
+                        .set_element(env, index, &value)
+                        .expect("android webview: writing a string array failed");
                 }
                 // SAFETY: `id` was resolved for the wrapper class and the
                 // table entry's signature declares `([Ljava/lang/String;)V`.
@@ -575,7 +654,7 @@ impl HandleInner {
                         self.wrapper.as_obj(),
                         id,
                         ReturnType::Primitive(Primitive::Void),
-                        &[JValue::Object(&array).as_jni()],
+                        &[JValue::Object(array.as_ref()).as_jni()],
                     )
                 }
                 .map(|_| ())
@@ -642,15 +721,12 @@ impl Drop for HandleInner {
         // copy, destroys the view, unregisters the instance and hands back
         // the asset server — and the rest of the teardown happens here, in
         // Rust, with nothing re-entering it.
-        let mut env = self
-            .shared
-            .vm
-            .get_env()
-            .expect("webview calls run on the UI thread, which is attached");
         let release = self.methods.id(WebViewMethodId::Release);
         // SAFETY: `release` was resolved for the wrapper class at create
         // and its table signature is `()J`.
-        let asset_server = env
+        let asset_server = self
+            .shared
+            .vm
             .with_local_frame::<_, _, jni::errors::Error>(4, |env| unsafe {
                 env.call_method_unchecked(
                     self.wrapper.as_obj(),
@@ -660,7 +736,7 @@ impl Drop for HandleInner {
                 )?
                 .j()
             })
-            .unwrap_or_else(|error| panic_with_java_detail(&mut env, "release", &error));
+            .unwrap_or_else(|error| panic_for_jni_error(&self.shared.vm, "release", &error));
         // Marking the registry dead settles every call still in flight —
         // the async ids Kotlin forgot after the started sentinel included —
         // and a call begun after this settles at once rather than waiting on
@@ -672,9 +748,9 @@ impl Drop for HandleInner {
             // SAFETY: `asset_server` was `Box::into_raw`'d in `open`, and
             // `release()` took it under the write lock every interception's
             // acquire holds the read half of: no acquire can reach it any
-            // more, and an interception still dispatching owns its own `Arc`
+            // more, and an interception still dispatching owns its own
             // clone. Kotlin zeroed its copy, so this is the one free.
-            unsafe { drop(Box::from_raw(asset_server as *mut AssetServer)) };
+            unsafe { drop(Box::from_raw(asset_server as *mut AssetServerHandle)) };
         }
         // SAFETY: `native_handle` was `Box::into_raw`'d in `open` and
         // survives exactly one drop: this one, after `release()` has zeroed
@@ -942,11 +1018,13 @@ fn percent(progress: jint) -> Result<u8, JniError> {
 /// engine spells it. Android routes none of them through
 /// `shouldOverrideUrlLoading`, so this is where they open.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeOpenNavigation(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeOpenNavigation<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     handle: jlong,
-    url: JString,
+    url: JString<'local>,
 ) {
     guard(&mut env, |env| {
         let Some(shared) = shared_from_handle(handle) else {
@@ -963,28 +1041,30 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
 /// request — a server redirect while redirects are disabled. A subframe
 /// request is the page's own and passes before its URL is read.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeShouldOverrideUrlLoading(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeShouldOverrideUrlLoading<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     handle: jlong,
-    url: JString,
+    url: JString<'local>,
     is_main_frame: jboolean,
     is_redirect: jboolean,
 ) -> jboolean {
-    guard_val(&mut env, jboolean::from(false), |env| {
+    guard_val(&mut env, false, |env| {
         let Some(shared) = shared_from_handle(handle) else {
             tracing::debug!("android webview: a request on a released view passed");
-            return Ok(jboolean::from(false));
+            return Ok(false);
         };
-        if is_main_frame == 0 {
-            return Ok(jboolean::from(false));
+        if !is_main_frame {
+            return Ok(false);
         }
         let url = parse_url(&get_string(env, &url)?, "a request for")?;
         let block = shared.navigate(|tracker| {
-            let decision = tracker.request(url, is_redirect != 0);
+            let decision = tracker.request(url, is_redirect);
             (decision.events, decision.block)
         });
-        Ok(jboolean::from(block))
+        Ok(block)
     })
 }
 
@@ -994,11 +1074,13 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
 /// results before the new document's calls begin; then the tracker hears
 /// of the commit.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativePageStarted(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativePageStarted<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     handle: jlong,
-    url: JString,
+    url: JString<'local>,
     progress: jint,
 ) {
     guard(&mut env, |env| {
@@ -1017,11 +1099,13 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
 
 /// `doUpdateVisitedHistory`.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeHistoryUpdated(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeHistoryUpdated<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     handle: jlong,
-    url: JString,
+    url: JString<'local>,
 ) {
     guard(&mut env, |env| {
         let Some(shared) = shared_from_handle(handle) else {
@@ -1036,9 +1120,11 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
 
 /// `onProgressChanged` — the navigation's progress, and its finish.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeProgressChanged(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeProgressChanged<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     handle: jlong,
     progress: jint,
 ) {
@@ -1056,20 +1142,22 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
 /// `onReceivedError`, for any frame. A subframe's — a failed image, a
 /// blocked iframe — is no navigation's and drops before its URL is read.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeReceivedError(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeReceivedError<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     handle: jlong,
-    url: JString,
+    url: JString<'local>,
     is_main_frame: jboolean,
-    message: JString,
+    message: JString<'local>,
 ) {
     guard(&mut env, |env| {
         let Some(shared) = shared_from_handle(handle) else {
             tracing::debug!("android webview: an event on a released view dropped");
             return Ok(());
         };
-        if is_main_frame == 0 {
+        if !is_main_frame {
             return Ok(());
         }
         let url = parse_url(&get_string(env, &url)?, "a failed request for")?;
@@ -1083,11 +1171,13 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
 /// The render process is gone and the view is being torn down — not a
 /// navigation's end but the view's, reported unconditionally.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeRenderProcessGone(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeRenderProcessGone<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     handle: jlong,
-    message: JString,
+    message: JString<'local>,
 ) {
     guard(&mut env, |env| {
         let Some(shared) = shared_from_handle(handle) else {
@@ -1103,12 +1193,14 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeSslError(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeSslError<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     handle: jlong,
-    url: JString,
-    message: JString,
+    url: JString<'local>,
+    message: JString<'local>,
 ) {
     guard(&mut env, |env| {
         let Some(shared) = shared_from_handle(handle) else {
@@ -1129,9 +1221,11 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeNavigationState(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeNavigationState<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     handle: jlong,
     can_go_back: jboolean,
     can_go_forward: jboolean,
@@ -1142,20 +1236,22 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
             return Ok(());
         };
         shared.emit(&BackendEvent::NavigationState {
-            can_go_back: can_go_back != 0,
-            can_go_forward: can_go_forward != 0,
+            can_go_back,
+            can_go_forward,
         });
         Ok(())
     });
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeOnBridgeMessage(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeOnBridgeMessage<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     handle: jlong,
-    envelope: JString,
-    reply_proxy: JObject,
+    envelope: JString<'local>,
+    reply_proxy: JObject<'local>,
 ) {
     guard(&mut env, |env| {
         let Some(shared) = shared_from_handle(handle) else {
@@ -1173,30 +1269,31 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
 /// implementation of the runtime's `originMayUseBridge`, called by the
 /// Kotlin listener per message.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeOriginMayUseBridge(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeOriginMayUseBridge<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     handle: jlong,
-    origin: JString,
+    origin: JString<'local>,
 ) -> jboolean {
-    guard_val(&mut env, jboolean::from(false), |env| {
+    guard_val(&mut env, false, |env| {
         let Some(shared) = shared_from_handle(handle) else {
-            return Ok(jboolean::from(false));
+            return Ok(false);
         };
         let origin = get_string(env, &origin)?;
-        Ok(jboolean::from(origin_may_use_bridge(
-            &shared.origin_rules,
-            &origin,
-        )))
+        Ok(origin_may_use_bridge(&shared.origin_rules, &origin))
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeAsyncResult(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeAsyncResult<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     handle: jlong,
-    payload: JString,
+    payload: JString<'local>,
 ) {
     guard(&mut env, |env| {
         let Some(shared) = shared_from_handle(handle) else {
@@ -1215,9 +1312,11 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
 /// until the handle drops. The handle's own drop never comes through here:
 /// it runs inside the session's teardown and drains the registry itself.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeReleased(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeReleased<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     handle: jlong,
 ) {
     guard(&mut env, |_env| {
@@ -1233,13 +1332,15 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeJsResult(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeJsResult<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     handle: jlong,
     call_id: jlong,
     ok: jboolean,
-    value: JString,
+    value: JString<'local>,
 ) {
     guard(&mut env, |env| {
         let Some(shared) = shared_from_handle(handle) else {
@@ -1249,7 +1350,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
         let value = get_string(env, &value)?;
         shared.pending.borrow_mut().settle(
             u64::try_from(call_id).expect("call ids are allocated non-negative"),
-            ok != 0,
+            ok,
             &value,
         );
         Ok(())
@@ -1257,12 +1358,14 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeCookies(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeCookies<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     handle: jlong,
     call_id: jlong,
-    cookies: JString,
+    cookies: JString<'local>,
 ) {
     guard(&mut env, |env| {
         let Some(shared) = shared_from_handle(handle) else {
@@ -1279,21 +1382,24 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
     });
 }
 
-/// Acquire a reference on the leaked `Box<AssetServer>` `create` passed
-/// Kotlin. `shouldInterceptRequest` takes the asset lock's read half only
-/// around this call, then dispatches `nativeAssetRespond` outside the lock
-/// and hands the clone back through `nativeAssetServerRelease` — a slow
-/// request can never stall the teardown taking the pointer. The clone is the
-/// `AssetServer`'s own `Arc`, boxed into a fresh handle: the share lives on
-/// the server itself, not on the handle.
+/// Acquire a reference on the leaked `Box<AssetServerHandle>` `create`
+/// passed Kotlin. `shouldInterceptRequest` takes the asset lock's read half
+/// only around this call, then dispatches `nativeAssetRespond` outside the
+/// lock and hands the clone back through `nativeAssetServerRelease` — a
+/// slow request can never stall the teardown taking the pointer. The clone
+/// shares the `AssetServer`'s own `Arc` and the `AssetResponse`
+/// constructor, boxed into a fresh handle: the share lives on the server
+/// itself, not on the handle.
 ///
 /// SAFETY: `assetServerPtr` is a live `Box::into_raw` pointer while the
 /// read lock is held: the teardown takes it under the write half and only
 /// then frees it, so the clone here can never race the drop.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeAssetServerAcquire(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeAssetServerAcquire<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     asset_server: jlong,
 ) -> jlong {
     guard_val(&mut env, 0, |_env| {
@@ -1304,57 +1410,66 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
         }
         // SAFETY: the read lock guarantees the `Box` this pointer names is
         // still alive — the teardown takes the pointer under the write lock
-        // before anything frees it — so the `AssetServer` clone inside
+        // before anything frees it — so the `AssetServerHandle` clone inside
         // publishes a new owner the caller releases through
         // `nativeAssetServerRelease`.
-        let clone = unsafe { &*(asset_server as *const AssetServer) }.clone();
-        Ok(Box::into_raw(Box::new(clone)) as jlong)
+        let handle = unsafe { &*(asset_server as *const AssetServerHandle) };
+        Ok(Box::into_raw(Box::new(AssetServerHandle {
+            server: handle.server.clone(),
+            response: Arc::clone(&handle.response),
+        })) as jlong)
     })
 }
 
-/// Drop the `AssetServer` clone `nativeAssetServerAcquire` handed out —
-/// called from `shouldInterceptRequest`'s `finally`, outside the asset lock.
+/// Drop the `AssetServerHandle` clone `nativeAssetServerAcquire` handed out
+/// — called from `shouldInterceptRequest`'s `finally`, outside the asset
+/// lock.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeAssetServerRelease(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeAssetServerRelease<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     asset_server: jlong,
 ) {
     guard(&mut env, |_env| {
         if asset_server != 0 {
-            // SAFETY: each pointer here is a boxed `AssetServer` clone from
-            // `nativeAssetServerAcquire`, released exactly once — here.
-            unsafe { drop(Box::from_raw(asset_server as *mut AssetServer)) };
+            // SAFETY: each pointer here is a boxed `AssetServerHandle` clone
+            // from `nativeAssetServerAcquire`, released exactly once — here.
+            unsafe { drop(Box::from_raw(asset_server as *mut AssetServerHandle)) };
         }
         Ok(())
     });
 }
 
 /// One intercepted asset-origin request, answered synchronously on the
-/// `WebView`'s worker thread. `asset_server` is the boxed `AssetServer`
-/// clone `nativeAssetServerAcquire` handed out; a zero pointer is a
-/// contract break, not a 404.
+/// `WebView`'s worker thread. `asset_server` is the boxed
+/// `AssetServerHandle` clone `nativeAssetServerAcquire` handed out; a zero
+/// pointer is a contract break, not a 404.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeAssetRespond(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeAssetRespond<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     asset_server: jlong,
-    method: JString,
-    path: JString,
-    query: JString,
-) -> jobject {
-    guard_val(&mut env, std::ptr::null_mut(), |env| {
+    method: JString<'local>,
+    path: JString<'local>,
+    query: JString<'local>,
+) -> JObject<'local> {
+    guard_val(&mut env, JObject::null(), |env| {
         if asset_server == 0 {
             return Err(JniError(
                 "android webview: an asset request reached a null asset server".into(),
             ));
         }
-        // SAFETY: `asset_server` is a boxed `AssetServer` clone
+        // SAFETY: `asset_server` is a boxed `AssetServerHandle` clone
         // `nativeAssetServerAcquire` produced under the read lock; the
         // caller's `finally` drops it only after this call returns, so the
         // dereference can never race the free of the `create`-time box —
         // even on a `destroy()` that does not join the IO threads.
-        let server = unsafe { &*(asset_server as *const AssetServer) };
+        let handle = unsafe { &*(asset_server as *const AssetServerHandle) };
+        let server = &handle.server;
         let method = get_string(env, &method)?;
         let path = get_string(env, &path)?;
         let query = if query.is_null() {
@@ -1376,37 +1491,45 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
         let status = jint::from(response.status);
         let headers = env.new_string(headers)?;
         let body = env.byte_array_from_slice(&response.body)?;
-        let response = env.new_object(
-            ASSET_RESPONSE_CLASS,
-            WEBVIEW_ASSET_RESPONSE_INIT.signature,
-            &[
-                JValue::Int(status),
-                JValue::Object(headers.as_ref()),
-                JValue::Object(body.as_ref()),
-            ],
-        )?;
-        Ok(response.into_raw())
+        // SAFETY: `init` is `<init>` resolved on `handle.response.class` at
+        // session create, and the arguments match its
+        // `(ILjava/lang/String;[B)V` signature.
+        let response = unsafe {
+            env.new_object_unchecked(
+                &handle.response.class,
+                handle.response.init,
+                &[
+                    JValue::Int(status).as_jni(),
+                    JValue::Object(headers.as_ref()).as_jni(),
+                    JValue::Object(body.as_ref()).as_jni(),
+                ],
+            )
+        }?;
+        Ok(response)
     })
 }
 
-/// Drop the `create`-time `Box<AssetServer>` after a render-process-gone
-/// teardown took it under the asset lock's write half — the handle's drop
-/// frees the pointer `release` returns itself. Interceptions holding clones
-/// keep the server alive until their `nativeAssetServerRelease`.
+/// Drop the `create`-time `Box<AssetServerHandle>` after a
+/// render-process-gone teardown took it under the asset lock's write half —
+/// the handle's drop frees the pointer `release` returns itself.
+/// Interceptions holding clones keep the server alive until their
+/// `nativeAssetServerRelease`.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeFreeAssetServer(
-    mut env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeFreeAssetServer<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
     asset_server: jlong,
 ) {
     guard(&mut env, |_env| {
         if asset_server == 0 {
             return Ok(());
         }
-        // SAFETY: `create` leaked exactly one `Box<AssetServer>` for this
-        // pointer; cloned handles keep the server alive until their
+        // SAFETY: `create` leaked exactly one `Box<AssetServerHandle>` for
+        // this pointer; cloned handles keep the server alive until their
         // `nativeAssetServerRelease`.
-        unsafe { drop(Box::from_raw(asset_server as *mut AssetServer)) };
+        unsafe { drop(Box::from_raw(asset_server as *mut AssetServerHandle)) };
         Ok(())
     });
 }

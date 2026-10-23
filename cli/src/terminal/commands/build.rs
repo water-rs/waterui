@@ -37,12 +37,6 @@ pub enum TargetPlatform {
     Linux,
     /// Windows.
     Windows,
-    /// ESP32-S3 (Xtensa); unsupported until #1601.
-    Esp32s3,
-    /// ESP32-C3 (RISC-V); unsupported until #1601.
-    Esp32c3,
-    /// ESP32-P4 (RISC-V, hardware FPU); unsupported until #1601.
-    Esp32p4,
 }
 
 /// Target architecture for building.
@@ -554,12 +548,7 @@ async fn check_toolchain_for_backend(
                 TargetPlatform::Ios => AppleSdk::Ios,
                 TargetPlatform::IosSimulator => AppleSdk::IosSimulator,
                 TargetPlatform::Macos => AppleSdk::Macos,
-                TargetPlatform::Android
-                | TargetPlatform::Linux
-                | TargetPlatform::Windows
-                | TargetPlatform::Esp32s3
-                | TargetPlatform::Esp32c3
-                | TargetPlatform::Esp32p4 => {
+                TargetPlatform::Android | TargetPlatform::Linux | TargetPlatform::Windows => {
                     bail!("Internal error: Apple backend is not supported on {platform:?}");
                 }
             };
@@ -626,15 +615,7 @@ async fn build_for_apple(
         (TargetPlatform::Macos, Some(target_arch)) => {
             bail!("macOS only supports arm64, not {:?}", target_arch);
         }
-        (
-            TargetPlatform::Android
-            | TargetPlatform::Linux
-            | TargetPlatform::Windows
-            | TargetPlatform::Esp32s3
-            | TargetPlatform::Esp32c3
-            | TargetPlatform::Esp32p4,
-            _,
-        ) => {
+        (TargetPlatform::Android | TargetPlatform::Linux | TargetPlatform::Windows, _) => {
             bail!(
                 "Internal error: invalid Apple backend platform {:?}",
                 platform
@@ -651,9 +632,6 @@ const fn lib_platform(platform: TargetPlatform) -> LibTargetPlatform {
         TargetPlatform::Macos => LibTargetPlatform::MacOS,
         TargetPlatform::Linux => LibTargetPlatform::Linux,
         TargetPlatform::Windows => LibTargetPlatform::Windows,
-        TargetPlatform::Esp32s3 => LibTargetPlatform::Esp32S3,
-        TargetPlatform::Esp32c3 => LibTargetPlatform::Esp32C3,
-        TargetPlatform::Esp32p4 => LibTargetPlatform::Esp32P4,
     }
 }
 
@@ -674,9 +652,6 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::Macos => "macOS",
         TargetPlatform::Linux => "Linux",
         TargetPlatform::Windows => "Windows",
-        TargetPlatform::Esp32s3 => "ESP32-S3",
-        TargetPlatform::Esp32c3 => "ESP32-C3",
-        TargetPlatform::Esp32p4 => "ESP32-P4",
     }
 }
 

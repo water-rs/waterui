@@ -47,6 +47,7 @@ use crate::{
         spirv_tools::SpirvTools,
         web::{PackageManagerToolchain, WasmPack, wasm32_target},
         windows_arm64_llvm::WindowsArm64LlvmToolchain,
+        windows_long_paths::WindowsLongPaths,
     },
     utils::parse_semver_version,
     winui::toolchain::WinUiToolchain,
@@ -184,7 +185,7 @@ impl DoctorGroup {
     pub fn of(id: &str) -> Self {
         match id {
             ids::RUST => Self::Rust,
-            ids::GIT | ids::C_TOOLCHAIN => Self::Host,
+            ids::GIT | ids::C_TOOLCHAIN | ids::WINDOWS_LONG_PATHS => Self::Host,
             ids::XCODE
             | ids::IOS_SDK
             | ids::IOS_SIMULATOR_SDK
@@ -458,6 +459,9 @@ pub mod ids {
     pub const GIT: &str = "git";
     /// The C compiler driver (`cc`) and linker (`ld`) native builds invoke.
     pub const C_TOOLCHAIN: &str = "c-toolchain";
+    /// `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled` —
+    /// the machine setting Windows checkouts past `MAX_PATH` need.
+    pub const WINDOWS_LONG_PATHS: &str = "windows-long-paths";
     /// iOS device and simulator rustup targets on the selected toolchain.
     pub const APPLE_RUST_TARGETS: &str = "apple-rust-targets";
     /// Android SDK root + `sdkmanager`.
@@ -517,6 +521,7 @@ pub mod ids {
         RUST,
         GIT,
         C_TOOLCHAIN,
+        WINDOWS_LONG_PATHS,
         XCODE,
         IOS_SDK,
         IOS_SIMULATOR_SDK,
@@ -637,8 +642,8 @@ impl ProjectContext {
     /// A platform's scope comes from the platform itself: outside a
     /// project it is host-default only when the host builds for it — its
     /// own Apple toolchain on macOS, its own desktop on Linux or Windows.
-    /// Android, the web and the ESP32 chips are cross-compiled targets a
-    /// project must select.
+    /// Android and the web are cross-compiled targets a project must
+    /// select.
     fn platform_scope(&self, platform: TargetPlatform) -> BackendScope {
         self.manifest.as_ref().map_or_else(
             || {
@@ -1180,36 +1185,59 @@ async fn cargo_helpers_check(host: &Host) -> DoctorItem {
 }
 
 /// Host-level tools every workflow needs regardless of backend: `git`, which
-/// `water create` invokes to initialize the scaffolded repository, and the C
-/// toolchain rustc links through.
+/// `water create` invokes to initialize the scaffolded repository, the C
+/// toolchain rustc links through, and the Windows `LongPathsEnabled` machine
+/// setting checkouts past `MAX_PATH` require.
 ///
 /// The C toolchain is Linux-only here — macOS gets `cc`/`ld` from the Xcode
-/// Command Line Tools (the `apple` group) and Windows from MSVC/LLVM — but it
-/// still reports as a skipped item so every id in [`ids::ALL`] appears.
+/// Command Line Tools (the `apple` group) and Windows from MSVC/LLVM — and
+/// long paths are Windows-only, but both still report as skipped items so
+/// every id in [`ids::ALL`] appears.
 async fn host_checks(host: &Host) -> Vec<DoctorItem> {
-    let git = toolchain_check(
-        host,
-        ids::GIT,
-        "git",
-        "git is missing — `water create` needs it to initialize the project repository",
-        Git,
-    )
-    .await;
-
-    let c_toolchain = if cfg!(target_os = "linux") {
+    let c_toolchain = async {
+        if cfg!(target_os = "linux") {
+            toolchain_check(
+                host,
+                ids::C_TOOLCHAIN,
+                "C toolchain",
+                "a C compiler (`cc`) and linker (`ld`) are missing — rustc links through `cc`",
+                CToolchain,
+            )
+            .await
+        } else {
+            DoctorItem::skipped(ids::C_TOOLCHAIN, "C toolchain")
+        }
+    };
+    let long_paths = async {
+        if cfg!(target_os = "windows") {
+            toolchain_check(
+                host,
+                ids::WINDOWS_LONG_PATHS,
+                "Windows long paths",
+                "`HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem\\LongPathsEnabled` is not 1 — the build cache nests Android host checkouts and Gradle paths past the 260-character MAX_PATH limit, so checkouts fail or silently drop files. `--fix` sets it through an elevated `reg add` (a UAC prompt; modifies the system outside ~/.water).",
+                WindowsLongPaths,
+            )
+            .await
+        } else {
+            DoctorItem::skipped_with_message(
+                ids::WINDOWS_LONG_PATHS,
+                "Windows long paths",
+                "Only required on Windows hosts.",
+            )
+        }
+    };
+    let (git, c_toolchain, long_paths) = join!(
         toolchain_check(
             host,
-            ids::C_TOOLCHAIN,
-            "C toolchain",
-            "a C compiler (`cc`) and linker (`ld`) are missing — rustc links through `cc`",
-            CToolchain,
-        )
-        .await
-    } else {
-        DoctorItem::skipped(ids::C_TOOLCHAIN, "C toolchain")
-    };
-
-    vec![git, c_toolchain]
+            ids::GIT,
+            "git",
+            "git is missing — `water create` needs it to initialize the project repository",
+            Git,
+        ),
+        c_toolchain,
+        long_paths,
+    );
+    vec![git, c_toolchain, long_paths]
 }
 
 /// The Linux system packages and the GTK4 probe, as

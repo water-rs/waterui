@@ -39,7 +39,7 @@ fn assert_item_schema(item: &DoctorItemRecord) {
 }
 
 #[test]
-fn doctor_json_emits_typed_item_records_for_every_check() {
+fn doctor_json_emits_typed_item_records_for_every_check() -> std::io::Result<()> {
     let home = tempfile::tempdir().expect("scratch home for the child process");
     // `web-package-manager` only emits inside a project declaring `[web]`;
     // run the child in one so `ids::ALL` is covered exhaustively.
@@ -55,10 +55,11 @@ fn doctor_json_emits_typed_item_records_for_every_check() {
     // effective on Unix; the write itself is a small config file the CLI
     // owns anyway.)
     let output = Host::current()
+        .without_cargo_target_dir()
         .with_env("HOME", home.path())
         .with_env("USERPROFILE", home.path())
         .with_cwd(project.path())
-        .std_command(env!("CARGO_BIN_EXE_water"))
+        .std_command(env!("CARGO_BIN_EXE_water"))?
         .args(["--json", "doctor"])
         .env_remove("RUST_LOG")
         .output()
@@ -117,7 +118,10 @@ fn doctor_json_emits_typed_item_records_for_every_check() {
                 *id,
                 ids::C_TOOLCHAIN | ids::LINUX_SYSTEM_PACKAGES | ids::GTK4
             );
-            let windows_item = matches!(*id, ids::WINUI | ids::MSVC_BUILD_TOOLS | ids::DXC);
+            let windows_item = matches!(
+                *id,
+                ids::WINUI | ids::MSVC_BUILD_TOOLS | ids::DXC | ids::WINDOWS_LONG_PATHS
+            );
             (apple_item && !cfg!(target_os = "macos"))
                 || (linux_item && !cfg!(target_os = "linux"))
                 || (windows_item && !cfg!(target_os = "windows"))
@@ -126,4 +130,5 @@ fn doctor_json_emits_typed_item_records_for_every_check() {
         })
         .collect();
     assert_eq!(skipped_ids, expected_skipped);
+    Ok(())
 }

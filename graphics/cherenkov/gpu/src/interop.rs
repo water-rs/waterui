@@ -181,10 +181,11 @@ impl<C: GpuContent> Content for C {
 /// An existing device shared with a native presentation host.
 /// All four handles must belong to the same device creation chain.
 ///
-/// On Vulkan and Metal adapters the device must be created with
+/// On Vulkan, Metal and DX12 adapters the device must be created with
 /// `wgpu::Features::PASSTHROUGH_SHADERS`: the engine's fixed shaders are
-/// precompiled binaries loaded through the passthrough API (issue #57), so
-/// `Engine::new` fails explicitly on a device created without the feature.
+/// precompiled binaries loaded through the passthrough API (issues #57,
+/// #2726), so `Engine::new` fails explicitly on a device created without
+/// the feature.
 #[derive(Clone, Debug)]
 pub struct SharedDevice {
     /// Instance used to create the adapter and native surfaces.
@@ -192,7 +193,7 @@ pub struct SharedDevice {
     /// Adapter used to create the device.
     pub adapter: wgpu::Adapter,
     /// Device used for both engine composition and native presentation.
-    /// Request `Features::PASSTHROUGH_SHADERS` on Vulkan and Metal.
+    /// Request `Features::PASSTHROUGH_SHADERS` on Vulkan, Metal and DX12.
     pub device: wgpu::Device,
     /// This device's submission queue.
     pub queue: wgpu::Queue,

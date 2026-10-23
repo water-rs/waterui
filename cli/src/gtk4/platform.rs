@@ -45,6 +45,7 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
         );
     }
 
+    let options = options.with_supported_linkage(&TargetPlatform::Linux.triple());
     let mut build = RustBuild::for_project(project, &backend_path, TargetPlatform::Linux.triple())
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_linkage(
@@ -89,8 +90,8 @@ pub async fn clean_gtk4(project: &Project) -> eyre::Result<()> {
     // The target directories are shared with every other generated backend, so only
     // this backend's own package is cleaned — its dependency artifacts stay for
     // the other backends that resolve them identically.
-    for linkage in [RustLinkage::SharedRuntime, RustLinkage::Static] {
-        let backend_target_dir = project.water_target_dir(linkage).await?;
+    for linkage in RustLinkage::supported_on(&TargetPlatform::Linux.triple()) {
+        let backend_target_dir = project.water_target_dir(*linkage).await?;
         if !backend_target_dir.exists() {
             continue;
         }
@@ -170,7 +171,7 @@ pub async fn package_gtk4(
     )
     .await?;
 
-    if options.uses_shared_rust_runtime() {
+    if options.uses_shared_rust_runtime(&TargetPlatform::Linux.triple()) {
         RustDynamicLibraries::resolve(built, &TargetPlatform::Linux.triple(), project)
             .await?
             .stage(&runtime_dir)

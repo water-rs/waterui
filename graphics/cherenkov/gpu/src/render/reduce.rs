@@ -45,7 +45,7 @@ pub struct Bind {
 pub struct Pipelines {
     layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
-    module: wgpu::ShaderModule,
+    program: super::shaders::RenderProgram,
     /// `(format, pipeline)`: a level stores its capture's format, the
     /// surface's or the scratch format.
     by_format: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
@@ -66,7 +66,7 @@ impl Pipelines {
         Self {
             layout,
             pipeline_layout,
-            module: delivery.reduce_module(device),
+            program: delivery.reduce_program(device),
             by_format: Vec::new(),
         }
     }
@@ -83,8 +83,7 @@ impl Pipelines {
             let pipeline = super::projective::quad_pipeline(
                 device,
                 &self.pipeline_layout,
-                &self.module,
-                "fs_main",
+                &self.program,
                 format,
                 None,
             );
