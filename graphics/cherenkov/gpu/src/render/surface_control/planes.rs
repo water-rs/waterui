@@ -747,7 +747,8 @@ impl Planes {
             if raster.is_some()
                 && this.raster == *raster
                 && this.current.is_some()
-                && this.headroom.to_bits() == display.headroom.to_bits()
+                && (format != wgpu::TextureFormat::Rgba16Float
+                    || this.headroom.to_bits() == display.headroom.to_bits())
             {
                 chosen.push(None);
             } else {

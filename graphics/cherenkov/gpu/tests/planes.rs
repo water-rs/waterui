@@ -1532,7 +1532,7 @@ mod macos {
         static_pixels(false);
     }
 
-    fn raster_formats(layer: &CALayer, found: &mut Vec<(u32, bool, f64)>) {
+    fn raster_formats(layer: &CALayer, found: &mut Vec<(u32, bool, f64, u32)>) {
         // SAFETY: this fixture contains only engine-owned layers; their
         // contents are Core Foundation images or IOSurfaces, inspected on main.
         if let Some(contents) = unsafe { layer.contents() } {
@@ -1542,7 +1542,12 @@ mod macos {
                 // SAFETY: the dynamic-range name is an immutable framework static.
                 let high = &*layer.preferredDynamicRange()
                     == unsafe { objc2_quartz_core::CADynamicRangeHigh };
-                found.push((surface.pixel_format(), high, layer.contentsHeadroom()));
+                found.push((
+                    surface.pixel_format(),
+                    high,
+                    layer.contentsHeadroom(),
+                    surface.id(),
+                ));
             }
         }
         for child in sublayers(layer) {
@@ -1589,7 +1594,9 @@ mod macos {
                 fixture.render();
                 let mut formats = Vec::new();
                 raster_formats(&fixture.host(), &mut formats);
-                if formats == [(format, high, if high { 2.0 } else { 1.0 })] {
+                if matches!(formats.as_slice(), [(actual, extended, headroom, _)]
+                    if *actual == format && *extended == high && headroom.to_bits() == if high { 2.0_f64 } else { 1.0_f64 }.to_bits())
+                {
                     break;
                 }
                 assert!(
@@ -1597,22 +1604,35 @@ mod macos {
                     "expected format {format} HDR={high}, got {formats:?}"
                 );
             }
+            if high {
+                static_headroom_completion(&fixture, true);
+            }
         }
     }
 
-    fn static_headroom_completion(fixture: &Fixture) {
+    fn static_headroom_completion(fixture: &Fixture, recaptures: bool) {
+        let mut before = Vec::new();
+        raster_formats(&fixture.host(), &mut before);
         fixture.woke.store(false, Ordering::Release);
         fixture
             .window
             .display(Display {
                 scale: SCALE,
-                headroom: 2.0,
+                headroom: if recaptures { 3.0 } else { 2.0 },
             })
             .expect("new output headroom");
         assert_eq!(
             fixture.engine.render(FrameTime::now()).expect("recapture"),
             cherenkov::Next::Idle
         );
+        if !recaptures {
+            fixture.render();
+            let mut after = Vec::new();
+            raster_formats(&fixture.host(), &mut after);
+            assert!(!before.is_empty(), "the SDR capture is present");
+            assert_eq!(before, after, "headroom changes retain the SDR IOSurface");
+            return;
+        }
         // No render, readback, queue submission or device poll while waiting:
         // the conversion itself must wake an otherwise idle engine.
         drive(
@@ -1693,7 +1713,7 @@ mod macos {
             assert_eq!(stack(&fixture).len(), 1);
             return;
         }
-        static_headroom_completion(&fixture);
+        static_headroom_completion(&fixture, false);
         fixture
             .window
             .update_animated(cherenkov::Curve::linear(Duration::from_secs(2)), |tx| {

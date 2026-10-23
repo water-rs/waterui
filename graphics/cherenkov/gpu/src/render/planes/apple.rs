@@ -2408,7 +2408,8 @@ impl LayerPlanes {
             if self.buffers.get(&layer).is_none_or(|buffer| {
                 buffer.generation != *generation
                     || buffer.range != *range
-                    || buffer.headroom.to_bits() != c.display.headroom.to_bits()
+                    || (*range == crate::render::present::ColorRange::HighDynamicRange
+                        && buffer.headroom.to_bits() != c.display.headroom.to_bits())
             }) {
                 let buffer = raster::Buffer::new(
                     c.device,

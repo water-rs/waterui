@@ -6669,13 +6669,16 @@ impl GpuRenderer {
         if !surf.promotes || !<planes::Platform as planes::Compositor>::CAPTURES {
             return Ok(());
         }
-        let output_changed = sf.display.headroom.to_bits() != surf.display.headroom.to_bits()
-            || sf.display.scale.to_bits() != surf.display.scale.to_bits();
-        if output_changed && !surf.static_layers.is_empty() {
+        let scale_changed = sf.display.scale.to_bits() != surf.display.scale.to_bits();
+        let output_changed =
+            scale_changed || sf.display.headroom.to_bits() != surf.display.headroom.to_bits();
+        if output_changed {
             for entry in surf.static_layers.values_mut() {
-                entry.capture = None;
+                if scale_changed || entry.range == present::ColorRange::HighDynamicRange {
+                    entry.capture = None;
+                    surf.plan_dirty = true;
+                }
             }
-            surf.plan_dirty = true;
         }
         if !sf.changed && !output_changed {
             return Ok(());
