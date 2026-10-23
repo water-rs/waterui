@@ -98,6 +98,10 @@ mod macos {
                 static_pixels_are_captured_once_and_match_engine_composition,
             ),
             case(
+                "static_content_range_changes_replace_native_storage",
+                static_content_range_changes_replace_native_storage,
+            ),
+            case(
                 "critical_trim_then_present_only_demotes_static_planes",
                 || static_pixels(true),
             ),
@@ -1526,6 +1530,67 @@ mod macos {
 
     fn static_pixels_are_captured_once_and_match_engine_composition() {
         static_pixels(false);
+    }
+
+    fn raster_formats(layer: &CALayer, found: &mut Vec<(u32, bool)>) {
+        // SAFETY: this fixture contains only engine-owned layers; their
+        // contents are Core Foundation images or IOSurfaces, inspected on main.
+        if let Some(contents) = unsafe { layer.contents() } {
+            // SAFETY: the retained contents above is a live CF-backed object.
+            let cf = unsafe { &*Retained::as_ptr(&contents).cast::<CFType>() };
+            if let Some(surface) = cf.downcast_ref::<objc2_io_surface::IOSurfaceRef>() {
+                // SAFETY: the dynamic-range name is an immutable framework static.
+                let high = &*layer.preferredDynamicRange()
+                    == unsafe { objc2_quartz_core::CADynamicRangeHigh };
+                found.push((surface.pixel_format(), high));
+            }
+        }
+        for child in sublayers(layer) {
+            raster_formats(&child, found);
+        }
+    }
+
+    fn static_content_range_changes_replace_native_storage() {
+        let fixture = Fixture::new();
+        let layer = fixture.window.layer();
+        fixture.window.update(|tx| {
+            tx[fixture.window.root()].push(&layer);
+        });
+        for (red, format, high) in [
+            (0.8, kCVPixelFormatType_32BGRA, false),
+            (2.0, objc2_core_video::kCVPixelFormatType_64RGBAHalf, true),
+            (0.6, kCVPixelFormatType_32BGRA, false),
+        ] {
+            let content = fixture.window.record(|draw| {
+                draw.fill(
+                    Rect::new(8., 6., 80., 54.),
+                    WorkingColor::new([red, 0.2, 0.1, 1.0]),
+                );
+            });
+            fixture.window.update(|tx| {
+                tx[&layer].content(content);
+            });
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut x = 0.0;
+            loop {
+                // Exercise consecutive observations of stable content while
+                // its placement changes; replacement must not reuse old pixels.
+                x = 1.0 - x;
+                fixture.window.update(|tx| {
+                    tx[&layer].transform(Affine::translate((x, 0.)));
+                });
+                fixture.render();
+                let mut formats = Vec::new();
+                raster_formats(&fixture.host(), &mut formats);
+                if formats == [(format, high)] {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "expected format {format} HDR={high}, got {formats:?}"
+                );
+            }
+        }
     }
 
     fn static_headroom_completion(fixture: &Fixture) {
