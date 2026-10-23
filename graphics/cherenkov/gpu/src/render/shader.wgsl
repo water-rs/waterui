@@ -269,7 +269,7 @@ fn sweep_t(i: u32, p: vec2<f32>) -> f32 {
     }
     let span = end - start;
     let c = instances[i].grad.xy;
-    var theta = atan2(p.y - c.y, p.x - c.x);
+    var theta = angle_of(p.y - c.y, p.x - c.x);
     while theta < start {
         theta += tau;
     }
@@ -745,7 +745,7 @@ fn fs_simple(in: VsOut, classified: bool) -> vec4<f32> {
             } else {
                 texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(cell_texel_origin(in.cell.zw, in.meta_.w));
             }
-            cov = path_cell_coverage(texel, in.cell.zw, in.shape_a.xy, in.meta_.w);
+            cov = path_cell_coverage(texel, in.cell.zw, in.cell_texel, in.shape_a.xy, in.meta_.w);
         }
         case KIND_SPAN: {
             cov = 1.0;
@@ -792,6 +792,13 @@ struct PartialOut {
     @location(0) local: vec2<f32>,
     @location(1) @interpolate(flat) instance: u32,
     @location(2) @interpolate(flat) coverage: vec2<f32>,
+    // cell-buffer
+    // Buffer-cell stamps joined in the vertex stage (water-rs/waterui#3081).
+    @location(3) @interpolate(flat) cell: vec4<f32>,
+    @location(4) @interpolate(flat) cell_texel: u32,
+    @location(5) @interpolate(flat) interior: vec2<f32>,
+    @location(6) @interpolate(flat) cell_meta: vec2<u32>,
+    // cell-buffer
 }
 
 @vertex
@@ -800,9 +807,15 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     var ellipse = false;
     var ellipse_half = vec2<f32>(0.0);
     var inst_index = ii;
+    var corner_vi = vi;
     // cell-buffer
-    // A GPU-routed path's emitted instances order by its anchor.
-    inst_index = select(ii, bitcast<u32>(inst.params.x), (inst.meta_.w & 0x80000000u) != 0u);
+    // A GPU draw's vertices decode its anchor and join the arena record.
+    if vi >= 8u {
+        let joined = join_gpu_instance(vi, ii);
+        inst = joined.inst;
+        inst_index = joined.anchor;
+        corner_vi = joined.corner;
+    }
     // cell-buffer
     var tier = 0u;
     var promoted = false;
@@ -837,8 +850,8 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
         let half = s.half - radius * (1.0 - sqrt(0.5)) * vec2<f32>(1.0, s.aspect) - margin;
         inst.bounds = vec4<f32>(max(inst.bounds.xy, -half), min(inst.bounds.zw, half));
     }
-    let corner = array<u32, 4>(0u, 1u, 2u, 5u)[min(vi, 3u)];
-    var out = instance_vertex(corner, ii, inst);
+    let corner = array<u32, 4>(0u, 1u, 2u, 5u)[min(corner_vi, 3u)];
+    var out = instance_vertex(corner, inst_index, inst);
     if ellipse {
         var ndc: vec2<f32>;
         if tier == 0u {
@@ -849,7 +862,7 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
                 vec2<f32>(-1.0, 0.0), vec2<f32>(-d, -d),
                 vec2<f32>(0.0, -1.0), vec2<f32>(d, -d),
             );
-            let index = array<u32, 8>(0u, 1u, 7u, 2u, 6u, 3u, 5u, 4u)[vi];
+            let index = array<u32, 8>(0u, 1u, 7u, 2u, 6u, 3u, 5u, 4u)[corner_vi];
             let p = polygon[index] * max(ellipse_half, vec2<f32>(0.0));
             ndc = (apply(inst.affine, p) - globals.origin) / globals.size * 2.0 - 1.0;
         } else {
@@ -881,13 +894,24 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
 
 @vertex
 fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> PartialOut {
-    var out = quad_vertex(array<u32, 8>(0u, 1u, 2u, 5u, 5u, 5u, 5u, 5u)[vi], ii);
+    var out: VsOut;
+    var inst: Instance;
     var depth_index = ii;
     // cell-buffer
-    depth_index = select(ii, bitcast<u32>(instances[ii].params.x), (instances[ii].meta_.w & 0x80000000u) != 0u);
+    if vi >= 8u {
+        let joined = join_gpu_instance(vi, ii);
+        inst = joined.inst;
+        depth_index = joined.anchor;
+        out = instance_vertex(array<u32, 8>(0u, 1u, 2u, 5u, 5u, 5u, 5u, 5u)[joined.corner], joined.anchor, inst);
+        out.cell_texel = joined.texel;
+    } else {
+    // cell-buffer
+        out = quad_vertex(array<u32, 8>(0u, 1u, 2u, 5u, 5u, 5u, 5u, 5u)[vi], ii);
+        inst = instances[ii];
+    // cell-buffer
+    }
     // cell-buffer
     out.position.z = bitcast<f32>(0x3e000000u + depth_index * 8u);
-    let inst = instances[ii];
     let s = inst.shape;
     if inst.meta_.x == KIND_FILL && s.exponent == 2.0 && all(s.radii == vec4<f32>(s.half.x)) {
         let m = inst.affine[0];
@@ -897,11 +921,22 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
         out.affine1.z = max(1.0 - margin, 0.0) * max(1.0 - margin, 0.0);
         out.affine1.w = (1.0 + margin) * (1.0 + margin);
     }
-    if opaque_span(instances[ii]) {
+    if opaque_span(inst) {
         out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
     let local = select(out.local, out.device - out.cell.xy + cell_texel_origin(out.cell.zw, out.meta_.w), out.meta_.x == KIND_GLYPH);
-    return PartialOut(out.position, local, ii, out.affine1.zw);
+    return PartialOut(
+        out.position,
+        local,
+        out.instance,
+        out.affine1.zw,
+        // cell-buffer
+        out.cell,
+        out.cell_texel,
+        out.shape_a.xy,
+        vec2<u32>(out.meta_.x, out.meta_.w),
+        // cell-buffer
+    );
 }
 
 @fragment
@@ -914,13 +949,18 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
     let inst = instances[in.instance];
     var data: VsOut;
     data.local = in.local;
+    var kind = inst.meta_.x;
     // cell-buffer
-    // A buffer cell's origin, interior run and flag for `path_cell_coverage`.
-    data.cell = vec4<f32>(inst.bounds.xy, inst.uv.xy);
-    data.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
-    data.meta_.w = inst.meta_.w;
+    // A buffer cell's origin, interior run and flag arrive as varyings:
+    // `in.instance` is the draw's anchor, which carries none of the
+    // stamps compute wrote per emitted instance (water-rs/waterui#3081).
+    data.cell = in.cell;
+    data.cell_texel = in.cell_texel;
+    data.shape_a = vec4<f32>(in.interior, 0.0, 0.0);
+    data.meta_.w = in.cell_meta.y;
+    kind = in.cell_meta.x;
     // cell-buffer
-    data.meta_.x = select(inst.meta_.x, KIND_GLYPH, inst.meta_.x == KIND_REGION);
+    data.meta_.x = select(kind, KIND_GLYPH, kind == KIND_REGION);
     data.color = inst.color;
     data.params.y = inst.params.y;
     if data.meta_.x != KIND_GLYPH && data.meta_.x != KIND_SPAN {
@@ -1025,7 +1065,7 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
         }
         case KIND_GLYPH: {
             let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(cell_texel_origin(in.cell.zw, in.meta_.w));
-            cov = path_cell_coverage(texel, in.cell.zw, in.shape_a.xy, in.meta_.w);
+            cov = path_cell_coverage(texel, in.cell.zw, in.cell_texel, in.shape_a.xy, in.meta_.w);
             joint = false;
         }
         case KIND_SPAN: {

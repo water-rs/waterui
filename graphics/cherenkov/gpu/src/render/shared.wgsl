@@ -137,6 +137,25 @@ struct VsOut {
     @location(9) @interpolate(flat) affine1: vec4<f32>,
     // bounds.xy, uv.xy (glyph/mask cell texel origin).
     @location(10) @interpolate(flat) cell: vec4<f32>,
+    // A GPU-routed buffer cell's texel word address in the coverage
+    // arena; zero for every other draw.
+    @location(11) @interpolate(flat) cell_texel: u32,
+}
+
+// The angle of the vector (x, y) in [-pi, pi], the range of the oracle's
+// and the CPU kernel's `atan2(y, x)`: a zero `y` of either sign takes the
+// upper branch, so (x < 0, y = 0) is pi, and the zero vector is 0.
+//
+// Not `atan2`, whose result at the zero vector is unspecified: the sweep
+// gradient's centre pixel drew a stray colour from it (#3234), and the
+// compute stroker's round join between perpendicular tangents became a
+// bevel with it (#2544). The angle comes from the normalized x instead.
+fn angle_of(y: f32, x: f32) -> f32 {
+    let r = length(vec2<f32>(y, x));
+    if r == 0.0 {
+        return 0.0;
+    }
+    return select(-1.0, 1.0, y >= 0.0) * acos(clamp(x / r, -1.0, 1.0));
 }
 
 fn apply(m: array<vec4<f32>, 2>, p: vec2<f32>) -> vec2<f32> {
@@ -147,7 +166,52 @@ fn apply(m: array<vec4<f32>, 2>, p: vec2<f32>) -> vec2<f32> {
 }
 
 // cell-buffer
-@group(0) @binding(4) var<storage, read> cell_texels: array<u32>;
+const FLAG_CELL_BUFFER: u32 = 0x80u;
+// The coverage arena (water-rs/waterui#3081): one block per GPU-routed
+// entry — count header, emitted geometry records, packed R8 texels.
+@group(0) @binding(4) var<storage, read> coverage_arena: array<u32>;
+// cell-buffer
+
+// cell-buffer
+// A GPU-routed draw joins its block's geometry records to the anchor
+// instance's drawing state in the vertex stage: `vertex_index` encodes
+// the anchor in its high bits ((A + 1) * 8 + corner), `instance_index`
+// addresses the geometry slot. The anchor's `shape.half` carries the
+// draw's shift and `uv.x` the block's texel base word, which leaves the
+// join as `texel`, the cell's absolute texel word address.
+struct GpuJoin {
+    inst: Instance,
+    anchor: u32,
+    corner: u32,
+    texel: u32,
+}
+fn join_gpu_instance(vi: u32, ii: u32) -> GpuJoin {
+    let a = (vi >> 3u) - 1u;
+    var inst = instances[a];
+    let shift = inst.shape.half;
+    let base = ii * 8u + 4u;
+    let bounds = bitcast<vec4<f32>>(vec4<u32>(
+        coverage_arena[base], coverage_arena[base + 1u],
+        coverage_arena[base + 2u], coverage_arena[base + 3u]));
+    let data = vec4<u32>(
+        coverage_arena[base + 4u], coverage_arena[base + 5u],
+        coverage_arena[base + 6u], coverage_arena[base + 7u]);
+    inst.bounds = bounds + shift.xyxy;
+    var kind = data.w;
+    var texel = 0u;
+    if kind == KIND_GLYPH {
+        inst.shape.half = vec2<f32>(f32(data.z & 0xffffu), f32(data.z >> 16u));
+        texel = bitcast<u32>(inst.uv.x) + data.x;
+        inst.uv.y = f32(data.y);
+        inst.meta_.w = inst.meta_.w | (FLAG_CELL_BUFFER << 24u);
+        if data.z != 0u && inst.meta_.y == PAINT_SOLID {
+            kind = KIND_REGION;
+            inst.meta_.z = data.z;
+        }
+    }
+    inst.meta_.x = kind;
+    return GpuJoin(inst, a, vi & 7u, texel);
+}
 // cell-buffer
 
 // Buffer cells carry local pixel coordinates, keeping large word offsets
@@ -160,7 +224,7 @@ fn cell_texel_origin(origin: vec2<f32>, packed: u32) -> vec2<f32> {
 }
 
 // Decode the cell coordinate convention shared by the raster entry points.
-fn path_cell_coverage(texel: vec2<i32>, origin: vec2<f32>, interior: vec2<f32>, packed: u32) -> f32 {
+fn path_cell_coverage(texel: vec2<i32>, origin: vec2<f32>, texel_base: u32, interior: vec2<f32>, packed: u32) -> f32 {
     // cell-buffer
     if (packed & 0x80000000u) != 0u {
         let local = vec2<u32>(texel);
@@ -168,7 +232,7 @@ fn path_cell_coverage(texel: vec2<i32>, origin: vec2<f32>, interior: vec2<f32>, 
         let omitted = u32(interior.y - interior.x);
         let column = local.x - select(0u, omitted, local.x >= u32(interior.y));
         let pixel = local.y * (u32(origin.y) - omitted) + column;
-        let word = cell_texels[u32(origin.x) + pixel / 4u];
+        let word = coverage_arena[texel_base + pixel / 4u];
         return f32((word >> ((pixel % 4u) * 8u)) & 255u) / 255.0;
     }
     // cell-buffer
@@ -192,6 +256,16 @@ fn vs_main(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
 }
 
 fn quad_vertex(vi: u32, ii: u32) -> VsOut {
+    // cell-buffer
+    // CPU draws always issue vi < 8; a GPU draw's first vertex encodes
+    // its anchor, so vi >= 8 joins the geometry record at `ii`.
+    if vi >= 8u {
+        let joined = join_gpu_instance(vi, ii);
+        var out = instance_vertex(joined.corner, joined.anchor, joined.inst);
+        out.cell_texel = joined.texel;
+        return out;
+    }
+    // cell-buffer
     return instance_vertex(vi, ii, instances[ii]);
 }
 
@@ -269,7 +343,10 @@ struct LamePoint {
 
 fn lame_point(r: vec2<f32>, n: f32, w: f32) -> LamePoint {
     // w^(n-2) is 1 at w = 0 for an ellipse (n = 2) and 0 for n > 2.
-    let wm2 = pow(max(w, 1e-30), n - 2.0);
+    var wm2 = 1.0;
+    if n != 2.0 {
+        wm2 = pow(max(w, 1e-30), n - 2.0);
+    }
     let p = w * wm2;
     let one = 1.0 + w * p;
     let s = pow(one, -1.0 / n);
@@ -374,17 +451,12 @@ fn lame_corner(q_in: vec2<f32>, r_in: vec2<f32>, n: f32) -> vec4<f32> {
     }
     var lo = 0.0;
     var hi = 1.0;
-    var foot = vec4<f32>(0.0);
-    for (var i = 0; i < LAME_EVALS; i++) {
+    // Only the last evaluated point contributes distance and curvature.
+    // Refine to it without computing discarded foot geometry or taking
+    // a final Newton step whose result would never be used.
+    for (var i = 0; i < LAME_EVALS - 1; i++) {
         let pt = lame_point(r, n, w);
-        let len = length(pt.normal);
-        let normal = pt.normal / len;
         let qc = q - pt.c;
-        // Curvature from the implicit form,
-        // κ = (n - 1)(w^(2n-2) + w^(n-2))·r.x·r.y / (s·|normal|³).
-        let p = pt.normal.y / r.x;
-        let kappa = (n - 1.0) * (p * p + pt.wm2) * r.x * r.y / (pt.s * len * len * len);
-        foot = vec4<f32>(dot(qc, normal), normal, kappa);
         let t = vec2<f32>(-pt.normal.y, pt.normal.x);
         let f = dot(qc, t);
         let df = -pt.s / pt.one * dot(t, t) - qc.x * r.x * (n - 1.0) * pt.wm2;
@@ -395,6 +467,15 @@ fn lame_corner(q_in: vec2<f32>, r_in: vec2<f32>, n: f32) -> vec4<f32> {
         }
         w = select(0.5 * (lo + hi), clamp(w - f / df, lo, hi), df < 0.0);
     }
+    let pt = lame_point(r, n, w);
+    let qc = q - pt.c;
+    let len = length(pt.normal);
+    let normal = pt.normal / len;
+    // Curvature from the implicit form,
+    // κ = (n - 1)(w^(2n-2) + w^(n-2))·r.x·r.y / (s·|normal|³).
+    let p = pt.normal.y / r.x;
+    let kappa = (n - 1.0) * (p * p + pt.wm2) * r.x * r.y / (pt.s * len * len * len);
+    let foot = vec4<f32>(dot(qc, normal), normal, kappa);
     return vec4<f32>(foot.x, select(foot.yz, foot.zy, swap), 1.0 / max(foot.w, 1e-6));
 }
 

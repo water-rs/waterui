@@ -320,9 +320,7 @@ split_test! {
 /// with it, so clipped and unclipped renders must agree everywhere.
 fn a_draw_edge_coincident_with_the_clip_edge_covers_once() -> Result<(), Box<dyn std::error::Error>> {
     use cherenkov::kurbo::Affine;
-    let Some(engine) = wait!(engine()) else {
-        return Ok(());
-    };
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let transform = Affine::translate((16.0, 14.0)) * Affine::rotate(0.4);
     let clip = Rect::new(8.0, 4.0, 24.0, 28.0);
     let band = Rect::new(8.0, 12.0, 24.0, 16.0);

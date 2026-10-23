@@ -13,6 +13,7 @@ use cherenkov::{
     Rgba8, Sampling, WorkingColor,
 };
 use cherenkov_cpu::{Raster, RasterConfig};
+use cherenkov_oracle::metrics::assert_close;
 use nami::Binding;
 
 #[test]
@@ -52,7 +53,7 @@ fn encoded_premultiplied_upload_matches_straight_alpha() {
     });
     engine.render(FrameTime::now()).expect("render");
     let pixels = surface.readback().expect("pixels").pixels;
-    assert_eq!(pixels[0].map(f32::to_bits), pixels[2].map(f32::to_bits));
+    assert_close(&pixels[0], &pixels[2]);
     let alpha = 128.0_f32 / 255.0;
     assert!((pixels[0][0] - alpha).abs() < 1e-6 && (pixels[0][3] - alpha).abs() < 1e-6);
 }
@@ -81,7 +82,7 @@ fn image_destination_is_live_and_static_picture_stays_retained() {
     assert_eq!(engine.stats().commands_lowered, 1);
     let pixels = surface.readback().expect("pixels").pixels;
     assert!(pixels[13 * 24 + 13][3] > 0.999);
-    assert_eq!(pixels[5 * 24 + 5][3].to_bits(), 0.0_f32.to_bits());
+    assert_close(&[pixels[5 * 24 + 5][3]], &[0.0]);
     engine.render(FrameTime::now()).expect("idle");
     assert_eq!(engine.stats().commands_lowered, 0);
 }

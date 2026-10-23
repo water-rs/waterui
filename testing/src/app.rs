@@ -1494,9 +1494,10 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     /// dispatches the press with [`Self::queue_pointer_down_at`] and waits on
     /// the tree instead of settling.
     ///
-    /// The virtual cap exists solely for perpetual animations (an
-    /// indeterminate progress spinner keeps the animation controller active
-    /// forever); every finite transition ends well before it. Each pump
+    /// Repeat-forever animations (an indeterminate progress spinner, a
+    /// repeating morph) do not hold settling: a scene whose only remaining
+    /// activity is one settles at once. The virtual cap bounds anything else
+    /// that never ends; every finite transition ends well before it. Each pump
     /// advances the virtual clock one frame, so the cap costs pump work, never
     /// wall-clock sleeps.
     ///
@@ -1505,7 +1506,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     /// has to be able to say "let queued work finish" without inventing an
     /// accessibility node to wait on.
     pub fn settle(&mut self) {
-        /// Virtual time budget for perpetual animations; ~62 pumps at 16ms.
+        /// Virtual time budget for work that never ends; ~62 pumps at 16ms.
         const SETTLE_CAP: Duration = Duration::from_secs(1);
         /// Wall-clock budget for content still owed once the scene is
         /// quiescent. Long enough for a remote fetch on a slow link; bounded
@@ -1516,7 +1517,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         let wall_deadline = Instant::now() + SETTLE_WALL_CAP;
         loop {
             let _ = self.pump_once();
-            if !self.runtime.is_settled() {
+            if !self.runtime.is_settled_except_perpetual() {
                 remaining = remaining.saturating_sub(VIRTUAL_FRAME);
                 if remaining.is_zero() {
                     return;
@@ -1532,7 +1533,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
                     return;
                 }
                 let _ = self.wait_for_local_work(wall_deadline - now);
-                if self.pump_held() || !self.runtime.is_settled() {
+                if self.pump_held() || !self.runtime.is_settled_except_perpetual() {
                     break;
                 }
             }

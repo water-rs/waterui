@@ -6,44 +6,100 @@
 //! clip's edges that lie inside the shape. Each edge set is split at
 //! pairwise intersections and the sub-segments whose midpoint is inside
 //! the other polygon (winding test under that polygon's fill rule)
-//! survive. Accumulating them under the shape's own rule yields the
-//! intersection coverage — the same construction the oracle applies,
-//! where the coverage product a coverage mask implies shows as measured
-//! error near edges the two boundaries share.
-//!
-//! Ported from `cherenkov-oracle`'s `clip.rs` and kept line-compatible:
-//! the engines may not depend on the independent reference.
+//! survive. Both inputs must be consistently oriented boundaries of their
+//! filled regions; raw contour directions are not compatible operands.
+//! Their fragments then trace the intersection under `NonZero`.
+//! The independent oracle instead integrates horizontal-band intersections.
 
 use cherenkov::FillRule;
 
 use super::raster::Edge;
+use super::tiles::{Boundary, IntegerEdge};
+use super::topology::Sweep;
 
 /// A directed line segment in device space.
 pub type Segment = (f64, f64, f64, f64);
 
-/// `edge` placed at device offset `(ox, oy)`, widened to f64.
+/// A canonical boundary segment placed at device offset `(ox, oy)`.
 #[must_use]
-pub fn placed(edge: Edge, ox: f64, oy: f64) -> Segment {
-    (
-        f64::from(edge.x0) + ox,
-        f64::from(edge.y0) + oy,
-        f64::from(edge.x1) + ox,
-        f64::from(edge.y1) + oy,
-    )
+pub const fn placed((x0, y0, x1, y1): Segment, ox: f64, oy: f64) -> Segment {
+    (x0 + ox, y0 + oy, x1 + ox, y1 + oy)
 }
 
-/// The `segment` endpoints narrowed back to rasterizer precision.
+/// Normalize filled regions with the CPU's topology compiler, including
+/// its coincident-line weight reduction. Area accumulation can cancel
+/// opposed edges later, but clipping must remove them before classifying
+/// another shape against the boundary.
 #[expect(
-    clippy::cast_possible_truncation,
-    reason = "device coordinates stay far below f32's integer bound"
+    clippy::cast_precision_loss,
+    reason = "placement-grid coordinates fit within f64's integer precision"
 )]
 #[must_use]
-pub const fn edge(segment: Segment) -> Edge {
-    Edge {
-        x0: segment.0 as f32,
-        y0: segment.1 as f32,
-        x1: segment.2 as f32,
-        y1: segment.3 as f32,
+pub fn filled_boundary(edges: &[Edge], rule: FillRule) -> Vec<Segment> {
+    let raw: Vec<_> = edges.iter().copied().map(IntegerEdge::from).collect();
+    let visible = Sweep::default().boundaries(&raw, rule);
+    let mut out: Vec<_> = visible
+        .into_iter()
+        .map(|edge| {
+            let b = Boundary::new(edge);
+            let top = b.top();
+            let (x0, y0, x1, y1) = (
+                b.x / 65536.0,
+                top as f64 / 65536.0,
+                ((b.bottom - top) as f64).mul_add(b.slope, b.x) / 65536.0,
+                b.bottom as f64 / 65536.0,
+            );
+            if b.sign() > 0 {
+                (x0, y0, x1, y1)
+            } else {
+                (x1, y1, x0, y0)
+            }
+        })
+        .collect();
+    close_boundary(&mut out);
+    out
+}
+
+/// The topology stream omits horizontal area deposits. Endpoint flow at
+/// each ordinate reconnects ends to starts, preserving holes and split
+/// components without recovering the original contour order.
+#[expect(
+    clippy::float_cmp,
+    reason = "closure joins exact endpoints emitted from the same boundary stream"
+)]
+fn close_boundary(boundary: &mut Vec<Segment>) {
+    let mut events = Vec::with_capacity(boundary.len() * 2);
+    for &(x0, y0, x1, y1) in boundary.iter() {
+        events.push((y0, x0, -1));
+        events.push((y1, x1, 1));
+    }
+    events.sort_unstable_by(|a, b| {
+        if a.0 == b.0 {
+            a.1.total_cmp(&b.1)
+        } else {
+            a.0.total_cmp(&b.0)
+        }
+    });
+    let mut at = 0;
+    while at < events.len() {
+        let y = events[at].0;
+        let mut previous = events[at].1;
+        let mut flow = 0;
+        while at < events.len() && events[at].0 == y {
+            let x = events[at].1;
+            if x != previous {
+                if flow > 0 {
+                    boundary.push((previous, y, x, y));
+                } else if flow < 0 {
+                    boundary.push((x, y, previous, y));
+                }
+            }
+            while at < events.len() && events[at].0 == y && events[at].1 == x {
+                flow += events[at].2;
+                at += 1;
+            }
+            previous = x;
+        }
     }
 }
 
@@ -193,9 +249,9 @@ fn clipped(
 
 /// Directed segments tracing the boundary of `shape ∩ clip`.
 ///
-/// `shape` edges keep their direction and `shape_rule` decides "inside the
-/// shape" for clip-edge portions. `clip` is always `NonZero`: a layer clip
-/// is a solid region.
+/// Both operands have already been normalized to true filled boundaries
+/// with compatible winding directions. `shape_rule` classifies the shape's
+/// filled region; production callers use `NonZero` after normalization.
 #[must_use]
 pub fn intersect_edges(shape: &[Segment], shape_rule: FillRule, clip: &[Segment]) -> Vec<Segment> {
     let shape_bounds = Bounds::of(shape);
@@ -264,10 +320,135 @@ fn on_edge(edges: &[Segment], px: f64, py: f64) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use cherenkov::kurbo;
+
+    fn square(x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<Edge> {
+        vec![
+            Edge { x0, y0, x1, y1: y0 },
+            Edge { x0: x1, y0, x1, y1 },
+            Edge {
+                x0: x1,
+                y0: y1,
+                x1: x0,
+                y1,
+            },
+            Edge {
+                x0,
+                y0: y1,
+                x1: x0,
+                y1: y0,
+            },
+        ]
+    }
+
+    fn reversed(edges: &[Edge]) -> Vec<Edge> {
+        edges
+            .iter()
+            .rev()
+            .map(|e| Edge {
+                x0: e.x1,
+                y0: e.y1,
+                x1: e.x0,
+                y1: e.y0,
+            })
+            .collect()
+    }
+
+    fn area(edges: &[Segment]) -> f64 {
+        edges
+            .iter()
+            .map(|&(a, b, c, d)| a.midpoint(c) * (d - b))
+            .sum()
+    }
+
+    #[expect(
+        clippy::float_cmp,
+        reason = "a closed boundary has exactly shared vertices"
+    )]
+    fn checked_boundary(edges: &[Edge], rule: FillRule, expected_area: f64) -> Vec<Segment> {
+        let boundary = filled_boundary(edges, rule);
+        assert!(
+            (area(&boundary).abs() - expected_area).abs() < 1e-3,
+            "{boundary:?}"
+        );
+        for &(x, y, _, _) in &boundary {
+            let incoming = boundary.iter().filter(|e| e.2 == x && e.3 == y).count();
+            let outgoing = boundary.iter().filter(|e| e.0 == x && e.1 == y).count();
+            assert_eq!(incoming, outgoing, "open vertex ({x}, {y}): {boundary:?}");
+        }
+        boundary
+    }
+
+    #[test]
+    fn filled_boundaries_normalize_directions_and_close_horizontals() {
+        let edges = square(0.0, 0.0, 9.0, 9.0);
+        for rule in [FillRule::NonZero, FillRule::EvenOdd] {
+            let normal = checked_boundary(&edges, rule, 81.0);
+            let reverse = checked_boundary(&reversed(&edges), rule, 81.0);
+            assert!((area(&normal) - area(&reverse)).abs() < 1e-3);
+            assert_eq!(winding(&normal, 4.0, 4.0), winding(&reverse, 4.0, 4.0));
+            assert_ne!(winding(&normal, 4.0, 4.0), 0);
+            assert!(normal.iter().any(|e| e.1.to_bits() == e.3.to_bits()));
+        }
+        let mut disjoint = square(0.0, 0.0, 3.0, 3.0);
+        disjoint.extend(reversed(&square(5.0, 0.0, 8.0, 3.0)));
+        checked_boundary(&disjoint, FillRule::NonZero, 18.0);
+    }
+
+    #[test]
+    fn filled_boundaries_preserve_holes_and_remove_even_odd_duplicates() {
+        let outer = square(0.0, 0.0, 10.0, 10.0);
+        let inner = square(3.0, 3.0, 7.0, 7.0);
+        let mut hole = outer.clone();
+        hole.extend(reversed(&inner));
+        checked_boundary(&hole, FillRule::NonZero, 84.0);
+        checked_boundary(&reversed(&hole), FillRule::NonZero, 84.0);
+        let mut nested = outer.clone();
+        nested.extend(inner);
+        checked_boundary(&nested, FillRule::NonZero, 100.0);
+        checked_boundary(&nested, FillRule::EvenOdd, 84.0);
+        let mut duplicate = outer.clone();
+        duplicate.extend(outer);
+        checked_boundary(&duplicate, FillRule::NonZero, 100.0);
+        assert_eq!(filled_boundary(&duplicate, FillRule::EvenOdd), []);
+        assert_eq!(filled_boundary(&[], FillRule::NonZero), []);
+    }
+
+    #[test]
+    fn filled_boundaries_close_self_crossing_regions() {
+        let bow_tie = [
+            Edge {
+                x0: 2.0,
+                y0: 2.0,
+                x1: 10.0,
+                y1: 10.0,
+            },
+            Edge {
+                x0: 10.0,
+                y0: 10.0,
+                x1: 10.0,
+                y1: 2.0,
+            },
+            Edge {
+                x0: 10.0,
+                y0: 2.0,
+                x1: 2.0,
+                y1: 10.0,
+            },
+            Edge {
+                x0: 2.0,
+                y0: 10.0,
+                x1: 2.0,
+                y1: 2.0,
+            },
+        ];
+        for rule in [FillRule::NonZero, FillRule::EvenOdd] {
+            checked_boundary(&bow_tie, rule, 32.0);
+            checked_boundary(&reversed(&bow_tie), rule, 32.0);
+        }
+    }
 
     /// `rect`'s boundary carried through `transform`, as directed edges.
     fn rect_edges(rect: kurbo::Rect, transform: kurbo::Affine) -> Vec<Segment> {

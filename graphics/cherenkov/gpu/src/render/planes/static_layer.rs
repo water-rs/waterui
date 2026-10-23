@@ -248,7 +248,6 @@ fn bounds(
                 local,
                 font,
                 glyph,
-                origin,
                 size,
             } => {
                 let font = &fonts[font];
@@ -258,12 +257,7 @@ fn bounds(
                 else {
                     continue;
                 };
-                (
-                    *local
-                        * Affine::translate((f64::from(origin[0]), f64::from(origin[1])))
-                        * Affine::scale(f64::from(*size)),
-                    decoded.em,
-                )
+                (*local * Affine::scale(f64::from(*size)), decoded.em)
             }
             Op::BeginShadow { parameters, .. } => {
                 let margin = 6.0_f64.mul_add(parameters.sigma, parameters.spread.max(0.0));

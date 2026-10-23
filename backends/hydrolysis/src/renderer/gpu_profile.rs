@@ -25,6 +25,7 @@ const QUERY_SLOTS: u32 = 3;
 /// per-frame pass plus timestamped GPU spans. GPU fields stay `None` on a
 /// device created without `TIMESTAMP_QUERY`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FrameStageTimes {
     /// Runtime and reactive update plus the retained-tree patch: viewport
     /// setup, frame-boundary bookkeeping and `RenderNode::patch`.
@@ -51,6 +52,7 @@ pub struct FrameStageTimes {
 
 /// Which GPU a runtime renders on — attribution for a frame-profile report.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct GpuIdentity {
     /// `Adapter::get_info` for the adapter the device was requested from.
     pub adapter: wgpu::AdapterInfo,

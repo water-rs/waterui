@@ -184,9 +184,22 @@ impl SemanticCore {
     /// would make an app with a focused field never count as settled.
     #[must_use]
     pub fn has_scheduled_semantic_work(&self) -> bool {
+        self.scheduled_semantic_work(PerpetualAnimation::Counts)
+    }
+
+    /// [`Self::has_scheduled_semantic_work`] without repeat-forever
+    /// animations: whether any scheduled work remains that will finish on
+    /// its own. A scene whose only activity is a perpetual animation has
+    /// none.
+    #[must_use]
+    pub fn has_finite_semantic_work(&self) -> bool {
+        self.scheduled_semantic_work(PerpetualAnimation::Ignored)
+    }
+
+    fn scheduled_semantic_work(&self, perpetual: PerpetualAnimation) -> bool {
         self.has_pending_semantic_update()
             || self.os_file_drop_pending()
-            || self.animations_active()
+            || self.animations_active_with(perpetual)
             || self.next_gesture_deadline().is_some()
             || self.has_gliding_smooth_scrolls()
             || self.has_active_touch_fling()

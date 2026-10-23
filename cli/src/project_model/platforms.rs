@@ -27,12 +27,6 @@ pub enum PlatformName {
     Windows,
     /// Web.
     Web,
-    /// ESP32-S3.
-    Esp32s3,
-    /// ESP32-C3.
-    Esp32c3,
-    /// ESP32-P4.
-    Esp32p4,
 }
 
 impl PlatformName {
@@ -47,9 +41,6 @@ impl PlatformName {
             Self::Linux => TargetPlatform::Linux,
             Self::Windows => TargetPlatform::Windows,
             Self::Web => TargetPlatform::Web,
-            Self::Esp32s3 => TargetPlatform::Esp32S3,
-            Self::Esp32c3 => TargetPlatform::Esp32C3,
-            Self::Esp32p4 => TargetPlatform::Esp32P4,
         }
     }
 }
@@ -78,12 +69,6 @@ where
 
 fn validate_backend(platform: TargetPlatform, backend: TargetBackend) -> Result<()> {
     let available = platform.available_backends();
-    if available.is_empty() {
-        bail!(
-            "Platform {platform:?} has no supported backend until Hydrolysis's embedded host lands \
-             (water-rs/waterui#1601); found backend {backend:?}"
-        );
-    }
     if !available.contains(&backend) {
         bail!(
             "Backend {backend:?} does not support platform {platform:?}. Valid backends: {available:?}"
@@ -98,8 +83,8 @@ fn validate_backend(platform: TargetPlatform, backend: TargetBackend) -> Result<
 /// With neither, the platform's library default applies.
 ///
 /// # Errors
-/// Returns an error for a conflicting override, an unsupported combination,
-/// or a platform with no backend.
+/// Returns an error for a conflicting override or an unsupported
+/// combination.
 pub fn resolve_backend(
     project: &Manifest,
     platform: TargetPlatform,
@@ -118,11 +103,9 @@ pub fn resolve_backend(
              for platform {platform:?}"
         );
     }
-    let backend = explicit.or(declared).or_else(|| platform.default_backend())
-        .ok_or_else(|| eyre::eyre!(
-            "Platform {platform:?} has no supported backend until Hydrolysis's embedded host lands \
-             (water-rs/waterui#1601)"
-        ))?;
+    let backend = explicit
+        .or(declared)
+        .unwrap_or_else(|| platform.default_backend());
     validate_backend(platform, backend)?;
     Ok(backend)
 }
@@ -185,9 +168,6 @@ mod tests {
             "linux",
             "windows",
             "web",
-            "esp32s3",
-            "esp32c3",
-            "esp32p4",
         ] {
             assert!(error.contains(name), "{error}");
         }
@@ -243,25 +223,11 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_overrides_and_unserved_platforms_fail() {
+    fn unsupported_overrides_fail() {
         let project = manifest("");
         assert!(
             resolve_backend(&project, TargetPlatform::Linux, Some(TargetBackend::WinUi)).is_err()
         );
-        for platform in [
-            TargetPlatform::Esp32S3,
-            TargetPlatform::Esp32C3,
-            TargetPlatform::Esp32P4,
-        ] {
-            for explicit in [None, Some(TargetBackend::Hydrolysis)] {
-                assert!(
-                    resolve_backend(&project, platform, explicit)
-                        .unwrap_err()
-                        .to_string()
-                        .contains("#1601")
-                );
-            }
-        }
     }
 
     #[test]
@@ -277,7 +243,7 @@ mod tests {
             TargetPlatform::Web,
         ] {
             assert_eq!(
-                Some(resolve_backend(&project, platform, None).unwrap()),
+                resolve_backend(&project, platform, None).unwrap(),
                 platform.default_backend()
             );
         }

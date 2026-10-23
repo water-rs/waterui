@@ -378,7 +378,7 @@ pub(crate) async fn build_rust_lib_with_links(
     let font_declarations = crate::assets::scan_fonts(
         project,
         &project.apple_crate_path().join("Cargo.toml"),
-        &[platform.font_platform()?],
+        &[platform.font_platform()],
     )
     .await?;
     let _resolved_fonts = crate::assets::resolve_fonts(project.host(), font_declarations).await?;
@@ -977,7 +977,7 @@ pub async fn package_apple(
     // The shared-runtime development linkage ships `libwaterui_dylib` and the
     // Rust standard library inside the bundle's Frameworks directory; a
     // statically linked package carries neither.
-    let shared_runtime = if options.uses_shared_rust_runtime() {
+    let shared_runtime = if options.uses_shared_rust_runtime(&triple) {
         let bin_built = BuiltTarget {
             features: built.features.clone(),
             profile_dir: built.profile_dir.clone(),
@@ -1073,7 +1073,7 @@ async fn copy_assets_and_fonts(
     let font_declarations = assets::scan_fonts(
         project,
         &project.apple_crate_path().join("Cargo.toml"),
-        &[platform.font_platform()?],
+        &[platform.font_platform()],
     )
     .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;

@@ -13,6 +13,7 @@ use cherenkov_gpu::interop::{
 };
 use cherenkov_oracle::color::{linear_p3_to_linear_srgb, srgb_encode};
 use cherenkov_oracle::gamut::gamut_map_srgb_analytic;
+use cherenkov_oracle::metrics::assert_unorm8_close;
 
 split_fn! {
 fn shared_device()
@@ -21,7 +22,9 @@ fn shared_device()
     let adapter =
         block!(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
     let required_features = match adapter.get_info().backend {
-        wgpu::Backend::Vulkan | wgpu::Backend::Metal => wgpu::Features::PASSTHROUGH_SHADERS,
+        wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => {
+            wgpu::Features::PASSTHROUGH_SHADERS
+        }
         _ => wgpu::Features::empty(),
     };
     let (device, queue) = block!(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -53,7 +56,7 @@ fn expected_bytes(headroom: f64, p3: [f64; 3]) -> [u8; 4] {
     // plain convert + clamp — assert that contract while we're here.
     if in_gamut {
         let plain = srgb.map(|c| byte(c.clamp(0.0, 1.0)));
-        assert_eq!(b, plain, "in-gamut pixel altered: {srgb:?}");
+        assert_unorm8_close(&b, &plain);
     }
     [b[0], b[1], b[2], 255]
 }

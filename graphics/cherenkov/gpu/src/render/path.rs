@@ -3,6 +3,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use cherenkov::{FillRule, ShapeData};
 use kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape as _, Vec2};
@@ -13,6 +14,9 @@ use crate::render::instance::Instance;
 use crate::render::raster::Raster;
 use crate::render::raster::{self, Band, BandRaster};
 use cherenkov::RenderError;
+
+pub mod stroke;
+use stroke::{DashTable, GpuStrokeRecord, StrokeParams};
 
 /// Coverage strip height in device rows.
 pub const STRIP_H: usize = 4;
@@ -91,26 +95,25 @@ pub fn flatten_segments(path: &BezPath, tolerance: f64) -> (Vec<(f32, f32, f32, 
     (segments, bbox)
 }
 
-/// Which route turns a path's flattened segments into coverage.
-///
-/// The CPU sweep is the only route today. water-rs/waterui#2536's GPU
-/// coverage route is added by water-rs/waterui#2543: it adds a variant
-/// here, grows [`route`] into the predicate of that specification's
-/// section 6 over the inputs `route` already takes, and the route
-/// differential (`route_diff.rs`) compares the two images under section
-/// 4.3 threshold 4.
+/// Coverage policy for a path's flattened segments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CoverageRoute {
-    /// The scanline sweep of this module: `O((n + k) log n)` in `n`
-    /// segments and `k` crossings.
+    /// Choose deterministically from content and device-space work estimates.
+    Automatic,
+    /// Force the CPU scanline sweep in route comparisons.
+    #[cfg(test)]
     Sweep,
-    /// The GPU compute route of water-rs/waterui#2543: curve elements go
-    /// to the frame's compute input buffer untouched by the CPU, and the
-    /// coverage and classification kernels emit the same spans and
-    /// partial cells. Route selection is water-rs/waterui#2545; in this
-    /// change the route is reachable only through the test hook.
+    /// Use GPU flattening, coverage and classification.
     Gpu,
 }
+
+/// Keep ordinary UI geometry out of the GPU preparation pass.
+pub const GPU_ROUTE_MIN_ELEMENTS: usize = 4096;
+
+/// Source elements from which a stroked path is a GPU candidate: half of
+/// [`GPU_ROUTE_MIN_ELEMENTS`], because the stroke expands on the GPU and the
+/// outline is two to five times its source (water-rs/waterui#2544).
+pub const GPU_STROKE_MIN_ELEMENTS: usize = GPU_ROUTE_MIN_ELEMENTS / 2;
 
 /// A coverage grid over an integer device-space rect.
 pub struct Coverage {
@@ -413,6 +416,28 @@ pub struct GpuElement {
     pub hi: [f32; 4],
 }
 
+/// A compute path and the capacity bound derived from those same elements.
+#[derive(Clone)]
+pub struct GpuPath {
+    /// Local curve records consumed by the flatten kernel. Empty for a
+    /// stroke, which has `strokes` instead.
+    pub elements: Arc<[GpuElement]>,
+    /// Stroke records consumed by the compute stroker. Empty for a fill.
+    pub strokes: Arc<[GpuStrokeRecord]>,
+    /// The stroke's per-path parameters; zero for a fill.
+    pub stroke: StrokeParams,
+    /// A dashed stroke's pattern and capacities.
+    pub dash: Option<Arc<DashTable>>,
+    /// The device hull under the encoding raster.
+    hull: Rect,
+    /// The encoding raster's translation: [`GpuPath::placed`] moves the
+    /// hull by a translation's difference from it, so a placement is
+    /// always measured from the encoding, never from an earlier placement.
+    origin: Vec2,
+    /// Device-space capacity and work estimates for these records.
+    pub bound: GpuBound,
+}
+
 /// Decision R2's per-path buffer bound, computed in `O(n)` over the
 /// curve elements from their device-space bounding boxes.
 #[derive(Clone, Copy, Debug, Default)]
@@ -427,16 +452,49 @@ pub struct GpuBound {
     pub grid_w: usize,
     /// Bound raster grid rows.
     pub grid_h: usize,
-    /// Maximum span instances the path can emit.
-    pub span_cap: usize,
+    /// Maximum combined span and cell instances the path can emit.
+    pub instance_cap: usize,
     /// Maximum cell instances the path can emit.
     pub cell_cap: usize,
     /// Stored R8 bytes, excluding implicit full interiors.
     pub texels: usize,
     /// The bound grid is empty: the path cannot emit anything.
     pub empty: bool,
+    /// The surface clips the conservative geometry hull.
+    pub clipped: bool,
     /// Conservative device bounds, used by pass planning before compute.
     pub rect: [f32; 4],
+}
+
+impl GpuBound {
+    /// Large, crossing-dense paths amortize compute dispatch and classification.
+    pub const fn prefers_gpu(&self) -> bool {
+        let strips = self.grid_h.div_ceil(STRIP_H);
+        !self.empty
+            && self.segments >= GPU_ROUTE_MIN_ELEMENTS
+            && self.grid_w * self.grid_h >= 4096
+            && self.bins >= strips * 32
+    }
+
+    /// The same bound seen from a frame moved by the integer vector `by`:
+    /// the geometry and the surface clip move together, so only the
+    /// grid's position changes — its size, clipping and capacities hold.
+    /// A retained coverage entry's placement-relative frame is the device
+    /// frame shifted by `−offset` (water-rs/waterui#3081).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "device coordinates are f32; the shift is an integer"
+    )]
+    pub const fn shifted(mut self, by: Vec2) -> Self {
+        let (x, y) = (by.x as f32, by.y as f32);
+        self.rect = [
+            self.rect[0] + x,
+            self.rect[1] + y,
+            self.rect[2] + x,
+            self.rect[3] + y,
+        ];
+        self
+    }
 }
 
 /// The uniform subdivision count for `kind` (1 quad, 2 cubic) whose
@@ -463,6 +521,20 @@ fn wang_segments(kind: u32, p0: Point, a: Point, b: Point, p1: Point) -> usize {
     (second / (8.0 * FLATTEN)).sqrt().ceil().max(1.0) as usize
 }
 
+/// Whether every point of an element is finite in f32, locally and under
+/// `raster`. An element with a point that is not carries no geometry: the
+/// sweep's `clip_x` and the oracle drop such segments, so encoders skip it
+/// while the cursor still advances to its end. `kurbo::dash` emits a NaN
+/// start for a dash that begins at an open subpath's end, which
+/// `kurbo::stroke` widens into an all-NaN contour; one uploaded NaN poisons
+/// the kernel's device bbox, and `classify` never returns
+/// (water-rs/waterui#3156).
+#[expect(clippy::cast_possible_truncation, reason = "device coords are f32")]
+pub fn encodable(raster: Affine, points: &[Point]) -> bool {
+    let finite = |p: Point| (p.x as f32).is_finite() && (p.y as f32).is_finite();
+    points.iter().all(|&p| finite(p) && finite(raster * p))
+}
+
 /// The element walk state of [`gpu_bound`]: the encoded records so far,
 /// the running bounds and the subpath cursor.
 struct GpuEncode {
@@ -486,6 +558,11 @@ impl GpuEncode {
         if kind == 0 && p1 == self.last {
             return;
         }
+        let points = [self.last, a, b, p1];
+        if !encodable(self.raster, &points) {
+            self.last = p1;
+            return;
+        }
         // The subdivision count is measured on the device-space control
         // hull; the element itself is uploaded in local space for the
         // kernel to transform.
@@ -502,7 +579,6 @@ impl GpuEncode {
             dev = dev.union_pt(self.raster * b);
         }
         *hull = hull.union(dev);
-        let points = [self.last, a, b, p1];
         let short;
         let points: &[Point] = match kind {
             0 => {
@@ -553,17 +629,7 @@ impl GpuEncode {
 /// the device transform `raster`, and computes the R2 bound over their
 /// device bounding boxes. Returns the element records (their `path` and
 /// `slot` fields zeroed — the caller stamps them) and the bound.
-#[expect(clippy::cast_possible_truncation, reason = "device coords are f32")]
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "grid dimensions are clamped nonnegative"
-)]
-pub fn gpu_bound(
-    elements: &[PathEl],
-    raster: Affine,
-    surface: (f64, f64),
-) -> (Vec<GpuElement>, GpuBound) {
-    let clip = Rect::new(0.0, 0.0, surface.0, surface.1);
+pub fn prepare_gpu(elements: &[PathEl], raster: Affine, surface: (f64, f64)) -> GpuPath {
     let mut hull = Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN);
     let mut state = GpuEncode {
         out: Vec::new(),
@@ -601,40 +667,133 @@ pub fn gpu_bound(
         let (p0, s) = (state.last, state.start);
         state.push(&mut hull, 0, p0, p0, s);
     }
-    let (out, mut bound) = (state.out, state.bound);
-    // The bound raster grid: the hull inflated by a pixel and clipped to
-    // the surface, floored and ceiled like the sweep's rect.
-    let inflated = hull.inflate(1.0, 1.0);
-    let r = inflated.intersect(clip);
-    let w = (r.x1.ceil() - r.x0.floor()).max(0.0) as usize;
-    let h = (r.y1.ceil() - r.y0.floor()).max(0.0) as usize;
-    bound.rect = [
-        r.x0.floor() as f32,
-        r.y0.floor() as f32,
-        r.x1.ceil() as f32,
-        r.y1.ceil() as f32,
-    ];
-    bound.grid_w = w;
-    bound.grid_h = h;
-    // Partial columns, absorbed gaps (<=8) and demoted full runs (<8)
-    // need at most 16 columns per touched boundary column. Four rows
-    // per strip; the retained large full interval is implicit.
-    bound.texels = if w <= 32 && h <= 32 {
-        w * h
-    } else {
-        bound.fragments * 64
-    };
-    bound.empty = w == 0 || h == 0;
-    // Cells are column-disjoint inside their strip, so the strip count
-    // times the grid width is the grid-side cap; spans obey the same
-    // bound. The element bound may be tighter.
-    let strip_cap = h.div_ceil(STRIP_H) * w;
-    bound.cell_cap = bound
-        .fragments
-        .min(strip_cap)
-        .max(usize::from(w <= 32 && h <= 32));
-    bound.span_cap = bound.cell_cap + h.div_ceil(STRIP_H);
-    (out, bound)
+    let (out, bound) = (state.out, state.bound);
+    let [.., e, f] = raster.as_coeffs();
+    let origin = Vec2::new(e, f);
+    GpuPath {
+        elements: out.into(),
+        strokes: Arc::from([]),
+        stroke: StrokeParams::default(),
+        dash: None,
+        bound,
+        hull,
+        origin,
+    }
+    .placed(origin, surface)
+}
+
+impl GpuPath {
+    /// The encoded geometry under the encoding raster's 2x2 and the
+    /// translation `translation`, bound against the surface — without
+    /// rebuilding its local curves.
+    pub fn placed(&self, translation: Vec2, surface: (f64, f64)) -> Self {
+        self.clone().with_bound(self.bound_at(translation, surface))
+    }
+
+    /// The same geometry under `bound`.
+    pub const fn with_bound(mut self, bound: GpuBound) -> Self {
+        self.bound = bound;
+        self
+    }
+
+    /// [`GpuPath::placed`]'s bound alone: [`GpuPath::grid_bound`] of the
+    /// grid the placement covers, positioned on it.
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn bound_at(&self, translation: Vec2, surface: (f64, f64)) -> GpuBound {
+        // The bound raster grid: the hull inflated by a pixel and clipped to
+        // the surface, floored and ceiled like the sweep's rect.
+        let inflated = (self.hull + (translation - self.origin)).inflate(1.0, 1.0);
+        let r = inflated.intersect(Rect::new(0.0, 0.0, surface.0, surface.1));
+        let w = (r.x1.ceil() - r.x0.floor()).max(0.0) as usize;
+        let h = (r.y1.ceil() - r.y0.floor()).max(0.0) as usize;
+        let mut bound = self.grid_bound(w, h);
+        bound.rect = [
+            r.x0.floor() as f32,
+            r.y0.floor() as f32,
+            r.x1.ceil() as f32,
+            r.y1.ceil() as f32,
+        ];
+        bound.clipped = r != inflated;
+        bound
+    }
+
+    /// This path's bound on a `w` x `h` grid: everything
+    /// [`GpuPath::bound_at`] derives except where the grid lies (`rect`)
+    /// and whether the surface clips it (`clipped`), which keep this
+    /// path's own. Every other field of a placed bound is a function of
+    /// the grid size alone.
+    pub fn grid_bound(&self, w: usize, h: usize) -> GpuBound {
+        let mut bound = self.bound;
+        bound.grid_w = w;
+        bound.grid_h = h;
+        // Partial columns, absorbed gaps (<=8) and demoted full runs (<8)
+        // need at most 16 columns per touched boundary column. Four rows
+        // per strip; the retained large full interval is implicit.
+        bound.texels = if w <= 32 && h <= 32 {
+            w * h
+        } else {
+            (bound.fragments * 64).min(w * h)
+        };
+        bound.empty = w == 0 || h == 0;
+        // Cells are column-disjoint inside their strip, so the strip count
+        // times the grid width is the grid-side cap; spans obey the same
+        // bound. The element bound may be tighter.
+        let strip_cap = h.div_ceil(STRIP_H) * w;
+        bound.cell_cap = bound
+            .fragments
+            .min(strip_cap)
+            .max(usize::from(w <= 32 && h <= 32));
+        // Spans and cells share the same output range and never overlap.
+        bound.instance_cap = (bound.cell_cap * 2 + h.div_ceil(STRIP_H)).min(strip_cap);
+        bound
+    }
+}
+
+/// A retained GPU coverage entry's identity (water-rs/waterui#3081):
+/// the path content, the raster's 2x2 and translation fraction as the
+/// f32 the kernels run on, the surface, and — for coverage the surface
+/// clips — the integer offset as well. Compared field for field: two
+/// placements share an entry exactly when the kernels would generate
+/// the same coverage for both.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct CoverageKey {
+    content: u64,
+    linear: [u32; 4],
+    fraction: [u32; 2],
+    surface: [u32; 2],
+    offset: Option<[i32; 2]>,
+}
+
+impl CoverageKey {
+    /// The key of `content` generated under `raster`, whose translation
+    /// splits into the integer `offset` and the fraction the kernels
+    /// see. `exact` keeps the offset in the key, for coverage the surface
+    /// clips; otherwise every integer offset shares the entry.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the kernels run on f32 coefficients and i32 offsets"
+    )]
+    pub fn new(
+        content: u64,
+        raster: Affine,
+        offset: Vec2,
+        surface: (u32, u32),
+        exact: bool,
+    ) -> Self {
+        let [xx, yx, xy, yy, tx, ty] = raster.as_coeffs();
+        Self {
+            content,
+            linear: [xx, yx, xy, yy].map(|v| (v as f32).to_bits()),
+            fraction: [tx - offset.x, ty - offset.y].map(|v| (v as f32).to_bits()),
+            surface: surface.into(),
+            offset: exact.then_some([offset.x as i32, offset.y as i32]),
+        }
+    }
+
+    /// The path content the key was made for.
+    pub const fn content(&self) -> u64 {
+        self.content
+    }
 }
 
 /// Emits `coverage` as spans and atlas cells: one cell when the grid is
@@ -1855,6 +2014,37 @@ mod tests {
         let (emitted, rasters) = emit(&coverage, &mut arena).unwrap();
         assert_eq!(emitted.cells.len(), 1);
         assert_eq!(rasters[0].0, 3, "the cell spans only the uploaded coverage");
+    }
+
+    /// A non-finite contour, as `kurbo::dash` emits for a dash that starts
+    /// at an open subpath's end, encodes to nothing: the elements and the
+    /// bound are those of the path without it (water-rs/waterui#3156).
+    #[test]
+    fn a_non_finite_contour_encodes_to_nothing() {
+        let square = [
+            PathEl::MoveTo(Point::new(10.0, 10.0)),
+            PathEl::LineTo(Point::new(90.0, 10.0)),
+            PathEl::LineTo(Point::new(90.0, 90.0)),
+            PathEl::LineTo(Point::new(10.0, 90.0)),
+            PathEl::ClosePath,
+        ];
+        let nan = Point::new(f64::NAN, f64::NAN);
+        let mut poisoned = vec![
+            PathEl::MoveTo(nan),
+            PathEl::LineTo(nan),
+            PathEl::CurveTo(nan, nan, nan),
+            PathEl::ClosePath,
+        ];
+        poisoned.extend(square);
+        let raster = Affine::scale(1.5);
+        let clean = prepare_gpu(&square, raster, (256.0, 256.0));
+        let encoded = prepare_gpu(&poisoned, raster, (256.0, 256.0));
+        assert_eq!(
+            bytemuck::cast_slice::<GpuElement, u32>(&encoded.elements),
+            bytemuck::cast_slice::<GpuElement, u32>(&clean.elements),
+        );
+        let bound = |b: GpuBound| (b.segments, b.bins, b.fragments, b.texels, b.rect);
+        assert_eq!(bound(encoded.bound), bound(clean.bound));
     }
 }
 

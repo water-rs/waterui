@@ -20,9 +20,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use jni::objects::{GlobalRef, JMethodID, JValue};
-use jni::signature::{Primitive, ReturnType};
-use jni::{JNIEnv, JavaVM};
+use jni::Env;
+use jni::objects::{Global, JMethodID, JObject, JValue};
+use jni::signature::{MethodSignature, Primitive, ReturnType, RuntimeMethodSignature};
+use jni::strings::JNIString;
+use jni::vm::JavaVM;
 use nami::Signal;
 use ndk::looper::{FdEvent, ForeignLooper, ThreadLooper};
 use waterui::Environment;
@@ -110,10 +112,13 @@ impl MetricsSnapshot {
 /// a global reference to the `HydrolysisSession` object that owns this
 /// session, and the `jmethodID`s of every [`HOST_METHODS`] entry, resolved
 /// once here. Every call lands on the UI thread (the only thread these
-/// callbacks ever run on) through `get_env`/`attach_current_thread`.
+/// callbacks ever run on) through `attach_current_thread`.
 pub struct HostBridge {
     vm: JavaVM,
-    host_view: GlobalRef,
+    /// Shared, not owned: the Android system-webview controller installs
+    /// itself with an `Arc::clone` of this same global, so one JNI global
+    /// covers the `HydrolysisSession` object.
+    host_view: Arc<Global<JObject<'static>>>,
     /// Cached ids in [`HOST_METHODS`] order — call sites index it by
     /// [`HostMethodId`], so no name or signature literal appears elsewhere.
     methods: Vec<JMethodID>,
@@ -125,21 +130,26 @@ impl HostBridge {
     /// or renamed by R8 — fails the session's creation naming the method
     /// and its signature, rather than the first call that reaches for it.
     pub(crate) fn new(
-        env: &mut JNIEnv,
+        env: &mut Env,
         vm: JavaVM,
-        host_view: GlobalRef,
+        host_view: Global<JObject<'static>>,
     ) -> Result<Self, JniError> {
-        let class = env.get_object_class(&host_view)?;
+        let class = env.get_object_class(host_view.as_obj())?;
         let mut methods = Vec::with_capacity(HOST_METHODS.len());
         for method in HOST_METHODS {
-            match env.get_method_id(&class, method.name, method.signature) {
+            let signature = RuntimeMethodSignature::from_str(method.signature)?;
+            match env.get_method_id(
+                &class,
+                JNIString::new(method.name),
+                MethodSignature::from(&signature),
+            ) {
                 Ok(id) => methods.push(id),
                 Err(error) => {
                     // GetMethodID leaves a pending NoSuchMethodError; the
                     // guard's IllegalStateException is the report that must
                     // reach Kotlin, so the pending one is cleared first.
-                    if env.exception_check().unwrap_or(false) {
-                        let _ = env.exception_clear();
+                    if env.exception_check() {
+                        env.exception_clear();
                     }
                     return Err(JniError(format!(
                         "hydrolysis android: HydrolysisSession is missing \
@@ -151,29 +161,27 @@ impl HostBridge {
         }
         Ok(Self {
             vm,
-            host_view,
+            host_view: Arc::new(host_view),
             methods,
         })
     }
 
     fn call(&self, method: HostMethodId, args: &[JValue]) {
-        match self.vm.get_env() {
-            Ok(mut env) => self.call_with_env(&mut env, method, args),
-            Err(_) => match self.vm.attach_current_thread() {
-                Ok(mut guard) => self.call_with_env(&mut guard, method, args),
-                Err(error) => {
-                    tracing::error!(
-                        target: "waterui::hydrolysis::android",
-                        method = HOST_METHODS[method as usize].name,
-                        %error,
-                        "host callback could not attach a JNI env"
-                    );
-                }
-            },
+        let result: Result<(), jni::errors::Error> = self.vm.attach_current_thread(|env| {
+            self.call_with_env(env, method, args);
+            Ok(())
+        });
+        if let Err(error) = result {
+            tracing::error!(
+                target: "waterui::hydrolysis::android",
+                method = HOST_METHODS[method as usize].name,
+                %error,
+                "host callback could not attach a JNI env"
+            );
         }
     }
 
-    fn call_with_env(&self, env: &mut JNIEnv, method: HostMethodId, args: &[JValue]) {
+    fn call_with_env(&self, env: &mut Env, method: HostMethodId, args: &[JValue]) {
         let jni_args: Vec<jni::sys::jvalue> = args.iter().map(JValue::as_jni).collect();
         // SAFETY: `methods` holds the ids `GetMethodID` resolved on this
         // object's class, in table order; `method` indexes the matching id
@@ -181,7 +189,7 @@ impl HostBridge {
         // caller matches to the declared signature.
         if let Err(error) = unsafe {
             env.call_method_unchecked(
-                &self.host_view,
+                self.host_view.as_obj(),
                 self.methods[method as usize],
                 ReturnType::Primitive(Primitive::Void),
                 &jni_args,
@@ -193,8 +201,8 @@ impl HostBridge {
             // "called with pending exception" and the real trace never
             // reaches logcat. Other JNI failures are logged, never silently
             // dropped.
-            if env.exception_check().unwrap_or(false) {
-                let _ = env.exception_describe();
+            if env.exception_check() {
+                env.exception_describe();
                 return;
             }
             tracing::error!(
@@ -217,50 +225,43 @@ impl HostBridge {
     /// from `requestFocus`/`removeView` on the host's own paths.
     pub(crate) fn platform_view_focus_inside(&self) -> bool {
         let method = self.methods[HostMethodId::PlatformViewFocus as usize];
-        let mut env = self
-            .vm
-            .get_env()
-            .expect("the frame's focus pull runs on the attached UI thread");
-        // SAFETY: `methods` holds the ids `GetMethodID` resolved on this
-        // object's class, in table order; `PlatformViewFocus`'s id
-        // matches the declared `()Z` signature.
-        unsafe {
-            env.call_method_unchecked(
-                &self.host_view,
-                method,
-                ReturnType::Primitive(Primitive::Boolean),
-                &[],
+        self.vm
+            .with_top_local_frame(|env| -> jni::errors::Result<bool> {
+                // SAFETY: `methods` holds the ids `GetMethodID` resolved on
+                // this object's class, in table order; `PlatformViewFocus`'s
+                // id matches the declared `()Z` signature.
+                unsafe {
+                    env.call_method_unchecked(
+                        self.host_view.as_obj(),
+                        method,
+                        ReturnType::Primitive(Primitive::Boolean),
+                        &[],
+                    )
+                }?
+                .z()
+            })
+            .expect(
+                "the frame's focus pull runs on the attached UI thread, \
+                 and onNativePlatformViewFocus must not throw",
             )
-        }
-        .expect("onNativePlatformViewFocus must not throw")
-        .z()
-        .expect("onNativePlatformViewFocus returns a boolean")
     }
 
     /// `call` for a single `String` argument — the JSON pushes serialize
-    /// into a `jstring` inside the env first.
+    /// into a `jstring` inside the env first, and the dispatch itself runs
+    /// through `call_with_env`'s error path.
     fn call_str(&self, method: HostMethodId, json: &str) {
-        let Ok(mut env) = self.vm.get_env() else {
-            return;
-        };
-        let Ok(value) = env.new_string(json) else {
-            return;
-        };
-        let jni_args = [JValue::Object(&value).as_jni()];
-        // SAFETY: as in `call_with_env` — the cached id matches this
-        // method's `(Ljava/lang/String;)V` signature exactly.
-        if unsafe {
-            env.call_method_unchecked(
-                &self.host_view,
-                self.methods[method as usize],
-                ReturnType::Primitive(Primitive::Void),
-                &jni_args,
-            )
-        }
-        .is_err()
-            && env.exception_check().unwrap_or(false)
-        {
-            let _ = env.exception_describe();
+        let result: Result<(), jni::errors::Error> = self.vm.with_top_local_frame(|env| {
+            let value = env.new_string(json)?;
+            self.call_with_env(env, method, &[JValue::Object(value.as_ref())]);
+            Ok(())
+        });
+        if let Err(error) = result {
+            tracing::error!(
+                target: "waterui::hydrolysis::android",
+                method = HOST_METHODS[method as usize].name,
+                %error,
+                "host callback could not attach a JNI env"
+            );
         }
     }
 
@@ -280,7 +281,7 @@ impl HostBridge {
     /// keyboard. Candidate geometry and the field's input contract travel on
     /// the editing-state and cursor-anchor pushes instead.
     fn set_soft_input_visible(&self, visible: bool) {
-        self.call(HostMethodId::SoftInput, &[JValue::Bool(visible.into())]);
+        self.call(HostMethodId::SoftInput, &[JValue::Bool(visible)]);
     }
 
     /// `session.onNativeAccessibilityTreeChanged(json)` — the JSON event
@@ -307,10 +308,7 @@ impl HostBridge {
     /// callback only while a navigation stack can accept the pop. A disabled
     /// callback leaves back to the system, which finishes the activity.
     fn set_back_navigation_available(&self, available: bool) {
-        self.call(
-            HostMethodId::BackAvailable,
-            &[JValue::Bool(available.into())],
-        );
+        self.call(HostMethodId::BackAvailable, &[JValue::Bool(available)]);
     }
 }
 
@@ -618,7 +616,7 @@ struct ExecutorWake {
 /// The local-reference capacity the wake drain's frame reserves. The
 /// `PushLocalFrame` contract is "at least this many", not a bound, so the
 /// usual JNI default covers a drain's bridge calls.
-const WAKE_DRAIN_LOCALS: i32 = 32;
+const WAKE_DRAIN_LOCALS: usize = 32;
 
 impl ExecutorWake {
     /// Registers the executor's own wake fd's drain callback on this thread's
@@ -646,12 +644,11 @@ impl ExecutorWake {
                 // drain gives these tasks the scope a JNI entry gives the
                 // frame callback's drain.
                 let drained = super::jni::java_vm()
-                    .get_env()
-                    .expect(
-                        "hydrolysis android: the looper callback runs on the attached UI thread",
-                    )
                     .with_local_frame(WAKE_DRAIN_LOCALS, |_env| Ok::<_, JniError>(drain.drain()))
-                    .expect("hydrolysis android: PushLocalFrame around the executor drain failed");
+                    .expect(
+                        "hydrolysis android: the looper callback runs on the attached UI thread, \
+                         and PushLocalFrame around the executor drain cannot fail there",
+                    );
                 tracing::debug!(
                     target: "waterui::hydrolysis::android",
                     count,
@@ -832,9 +829,9 @@ impl AndroidSession {
     /// `metrics` is the host's snapshot at creation time — content size and
     /// scale exist from the start, before the surface band attaches.
     pub(crate) fn create(
-        env: &mut JNIEnv,
+        env: &mut Env,
         vm: JavaVM,
-        host_view: GlobalRef,
+        host_view: Global<JObject<'static>>,
         metrics: MetricsSnapshot,
         services: &'static UiThreadServices,
     ) -> Result<Box<Self>, JniError> {
@@ -900,7 +897,7 @@ impl AndroidSession {
         crate::widgets::platform::webview::install_controller(
             &mut env,
             jni_env,
-            bridge.host_view.clone(),
+            Arc::clone(&bridge.host_view),
         )?;
 
         install_view_renderer(&mut env, &theme);

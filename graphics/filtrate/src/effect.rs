@@ -29,6 +29,8 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use core::fmt;
 use core::future::Future;
+
+use crate::pipeline_cache::PipelineCache;
 // `std::time::Instant::now` panics on wasm32-unknown-unknown; web-time is a
 // drop-in backed by `performance.now()` there and by std everywhere else.
 #[cfg(not(target_family = "wasm"))]
@@ -252,6 +254,9 @@ pub struct EffectContext<'a> {
     pub input_format: wgpu::TextureFormat,
     /// The texture format of the output.
     pub output_format: wgpu::TextureFormat,
+    /// The pipelines shared between effects on `device`. The consumer keeps
+    /// one cache per device for as long as it keeps the device.
+    pub pipelines: &'a PipelineCache,
 }
 
 impl fmt::Debug for EffectContext<'_> {

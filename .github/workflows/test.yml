@@ -20,9 +20,17 @@ on:
       affected:
         type: string
         default: "workspace"
-      package-args:
+      # affected.py's `linux-package-args`: the scoped packages as `-p`
+      # flags, without the crates the Linux lint never compiles.
+      linux-package-args:
         type: string
         default: ""
+      # affected.py's `workspace-wide`: the scope is `workspace` or reaches
+      # at least 70% of the Linux-linted members (#3229, #3246), so the lint job
+      # gets the integration budget.
+      workspace-wide:
+        type: boolean
+        default: false
       comment-only:
         type: boolean
         default: false
@@ -88,11 +96,13 @@ jobs:
       # generations of only this job's two cache families
       # (cargo-sources-Linux-*, lint-target-Linux-X64-*) on its own ref.
       actions: write
-    # Pull requests keep the 10-minute gate. An integration push that misses
+    # Scoped pull requests keep the 10-minute gate; a workspace-wide one
+    # compiles most of the workspace and gets the integration budget
+    # (#3229). An integration push that misses
     # the exact `lint-target` key writes the archive every later run restores,
     # so it sweeps the whole workspace, cold after a stable toolchain roll;
     # it gets the room to finish instead of timing out unsaved.
-    timeout-minutes: ${{ inputs.full && 90 || ((github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && 30 || 10) }}
+    timeout-minutes: ${{ inputs.full && 90 || ((inputs.workspace-wide || github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && 30 || 10) }}
     steps:
       - uses: actions/checkout@v4
       # The fast gate owns the target-cache budget, including workspace check
@@ -139,28 +149,21 @@ jobs:
       - name: Lint target cache writer
         id: writer
         run: echo "sweep=${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.lint-target.outputs.cache-hit != 'true' }}" >> "${GITHUB_OUTPUT}"
-      # The affected set as this Linux leg compiles it. `-p` and `--exclude`
-      # are mutually exclusive, so the Apple-only crates are dropped from the
-      # package arguments here — the macOS legs lint them. An Apple-only
-      # scope therefore compiles nothing on Linux. `compiles` is exactly the
+      # The affected set as this Linux leg compiles it. affected.py drops the
+      # Apple-only crates from `linux-package-args` (the macOS legs lint
+      # them), since `-p` and `--exclude` are mutually exclusive. An
+      # Apple-only scope therefore compiles nothing on Linux. `compiles` is exactly the
       # condition under which some cargo step below runs: each one is gated
       # on the full or workspace sweep, the writer sweep, or a package this
       # filtered set names.
       - name: Linux scope
         id: linux-scope
         env:
-          PACKAGE_ARGS: ${{ inputs.package-args }}
+          LINUX_PACKAGE_ARGS: ${{ inputs.linux-package-args }}
           SWEEPS: ${{ inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' }}
         run: |
-          # `package-args` is affected.py's `-p <name>` pairs.
-          read -ra words <<< "${PACKAGE_ARGS}"
-          args=()
-          for ((i = 0; i < ${#words[@]}; i += 2)); do
-            case "${words[i + 1]}" in
-              waterui-apple | cocoa-ui) ;;
-              *) args+=("${words[i]}" "${words[i + 1]}") ;;
-            esac
-          done
+          # `linux-package-args` is affected.py's `-p <name>` pairs.
+          read -ra args <<< "${LINUX_PACKAGE_ARGS}"
           compiles=false
           if [ "${SWEEPS}" = true ] || [ "${#args[@]}" -gt 0 ]; then
             compiles=true
@@ -189,21 +192,20 @@ jobs:
       # must not wait for the nightly to be noticed.
       #
       # The fast gate sweeps only when the affected scope is `workspace` —
-      # a change under no package's directory. A scoped diff gets check +
-      # clippy on the determinator's set (changed crates plus every reverse
-      # dependency that could rebuild differently); a comment-only diff
+      # a change under no package's directory. A scoped diff gets clippy on
+      # the determinator's set (changed crates plus every reverse dependency
+      # that could rebuild differently); a comment-only diff
       # narrows to rustdoc + clippy on the owning crates alone.
       - name: Clippy (workspace)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true'
         # waterui-apple / cocoa-ui compile only on Apple hosts; the macOS legs carry them.
         run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
-      - name: Check and clippy (affected packages)
+      - name: Clippy (affected packages)
         if: inputs.full == false && inputs['comment-only'] == false && inputs.affected != 'workspace' && steps.writer.outputs.sweep != 'true' && steps.linux-scope.outputs.args != ''
         env:
           LINUX_ARGS: ${{ steps.linux-scope.outputs.args }}
         run: |
           read -ra args <<< "${LINUX_ARGS}"
-          cargo check --locked --profile ci-check "${args[@]}" --all-targets --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
           cargo clippy --locked --profile ci-check "${args[@]}" --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       - name: Clippy and rustdoc (comment-only owners)
         if: inputs.full == false && inputs['comment-only'] == true && steps.linux-scope.outputs.args != ''
@@ -900,7 +902,7 @@ jobs:
   # between nightlies (#1582).
   hydrolysis-android:
     name: aarch64-linux-android
-    if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
+    if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis') || contains(inputs.affected, 'android-planes')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -926,6 +928,9 @@ jobs:
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,inspector-signals,testing,web,winit -- -D warnings
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,webview-system -- -D warnings
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --no-default-features -- -D warnings
+      # The android_planes harness is `cfg(target_os = "android")` past its
+      # pattern code, so only this target compiles it.
+      - run: cargo clippy --locked --profile ci-check -p android-planes --target aarch64-linux-android --all-targets -- -D warnings
 
   # The Android host library's own lint (`warningsAsErrors`): the Kotlin
   # half of the Android runner, which no cargo pass reaches (#2047), plus
@@ -1082,6 +1087,9 @@ jobs:
       # precompiled SPIR-V with spirv-opt on every non-Apple native target.
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
+      # `cherenkov-gpu`'s build script compiles its fixed shaders to DXIL
+      # through `dxc` for Windows targets (#2726).
+      - uses: ./.github/actions/install-dxc
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --features winit --target x86_64-pc-windows-msvc -- -D warnings
 
   # The Apple-target legs beside the cross-target ones above (#2143,

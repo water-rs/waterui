@@ -314,8 +314,8 @@ pub async fn build_aar(
     .await?;
 
     {
-        // The library `includeBuild`s the host checkout, whose `build/` and
-        // `.gradle/` every other build of that checkout writes too.
+        // The library `includeBuild`s the materialized host directory,
+        // whose `build/` and `.gradle/` every other build of it writes too.
         let _host_build =
             crate::water_dir::android_host_build_lock(project.host(), &library.host_project_dir)
                 .await?;

@@ -1537,7 +1537,7 @@ pub fn measure_picker_intrinsic_with_label_size(
         PickerStyle::Segmented => {
             let metrics = theme.picker_metrics(PickerStyle::Segmented);
             let mut total_width: f64 = 0.0;
-            let mut max_item_height: f64 = 0.0;
+            let mut item_heights = Vec::with_capacity(items.len());
             for item in &items {
                 let styled = resolved_text_styled(&item.content, env, state);
                 let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
@@ -1545,7 +1545,7 @@ pub fn measure_picker_intrinsic_with_label_size(
                     .horizontal_inset
                     .mul_add(2.0, f64::from(size.width))
                     .max(metrics.segment_min_width);
-                max_item_height = max_item_height.max(f64::from(size.height));
+                item_heights.push(size.height);
             }
             // A visible group label heads the segment row edge to edge: its
             // width competes with the row's total width with no inset term,
@@ -1557,10 +1557,8 @@ pub fn measure_picker_intrinsic_with_label_size(
                 .max(metrics.min_width);
             // The minimum height floors the row alone: the heading adds on
             // top of it so the row keeps its unlabelled height.
-            let row_height = metrics
-                .vertical_inset
-                .mul_add(2.0, max_item_height)
-                .max(metrics.min_height);
+            let row_height =
+                crate::widgets::controls::picker::segmented_row_height(metrics, item_heights);
             let height = row_height
                 + if label_size.height > 0.0 {
                     f64::from(label_size.height) + metrics.label_spacing

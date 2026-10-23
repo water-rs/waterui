@@ -373,7 +373,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         for (i in 0 until childCount) {
             getChildAt(i).layout(0, 0, r - l, b - t)
         }
-        platformViewRegistry.publishIfPending()
+        session?.requestPlacementPull()
     }
 
     // ------------------------------------------------------------------
@@ -706,11 +706,6 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
 
     internal fun notifyAccessibilityTreeChanged(diffJson: String) {
         accessibilityProvider.notifyTreeChanged(diffJson)
-    }
-
-    /** The session pushed a new placement set — pull and apply it. */
-    internal fun notifyPlatformViewsChanged() {
-        platformViewRegistry.notifyChanged()
     }
 
     /** Each a11y publish also drives the autofill enter/exit diff. */

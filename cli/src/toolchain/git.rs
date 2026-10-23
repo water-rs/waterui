@@ -7,6 +7,14 @@
 //! package manager), matching how every distribution the CLI runs on ships
 //! git.
 
+use std::{
+    ffi::{OsStr, OsString},
+    io,
+    process::Output,
+};
+
+use smol::process::Command;
+
 use crate::{
     brew::Brew,
     toolchain::linux::{
@@ -16,6 +24,69 @@ use crate::{
     toolchain::{Host, Installation, Toolchain, ToolchainError},
     utils::CommandError,
 };
+
+/// The `-c` config switches every `git` the CLI spawns runs under.
+///
+/// `core.longpaths=true` opts each invocation into paths past `MAX_PATH`: the
+/// build cache nests a `drive-<letter>/…` copy of the project's absolute
+/// path under `~/.water`, and managed checkouts add
+/// `managed_backends/…/<sha>/` below it, crossing 260 characters on Windows
+/// (water-rs/waterui#3125). Git honours long paths only when the machine
+/// enables them — the `windows-long-paths` doctor item checks that setting.
+const CONFIG_ARGS: &[&str] = &["-c", "core.longpaths=true"];
+
+/// `args` with [`CONFIG_ARGS`] in front, as [`Host::run`] and
+/// [`Host::output`] take them.
+fn argv(args: impl IntoIterator<Item = impl AsRef<OsStr>>) -> Vec<OsString> {
+    CONFIG_ARGS
+        .iter()
+        .map(|arg| OsString::from(*arg))
+        .chain(args.into_iter().map(|arg| arg.as_ref().to_os_string()))
+        .collect()
+}
+
+/// A `git` [`Command`] on `host` with [`CONFIG_ARGS`] applied; the caller
+/// appends the subcommand and its arguments.
+///
+/// # Errors
+/// - [`io::ErrorKind::NotFound`] when `git` is not on the host's `PATH`.
+pub fn command(host: &Host) -> io::Result<Command> {
+    let mut command = host.command("git")?;
+    command.args(CONFIG_ARGS);
+    Ok(command)
+}
+
+/// [`command`] for the synchronous call sites.
+///
+/// # Errors
+/// - [`io::ErrorKind::NotFound`] when `git` is not on the host's `PATH`.
+pub fn std_command(host: &Host) -> io::Result<std::process::Command> {
+    let mut command = host.std_command("git")?;
+    command.args(CONFIG_ARGS);
+    Ok(command)
+}
+
+/// `git` `args` on `host` under [`CONFIG_ARGS`]; [`Host::run`]'s contract.
+///
+/// # Errors
+/// Every error [`Host::run`] reports.
+pub async fn run(
+    host: &Host,
+    args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+) -> Result<String, CommandError> {
+    host.run("git", argv(args)).await
+}
+
+/// [`run`] returning the full [`Output`]; [`Host::output`]'s contract.
+///
+/// # Errors
+/// Every error [`Host::output`] reports.
+pub async fn output(
+    host: &Host,
+    args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+) -> Result<Output, CommandError> {
+    host.output("git", argv(args)).await
+}
 
 /// Toolchain for `git`.
 #[derive(Debug, Clone, Default)]
@@ -170,6 +241,40 @@ mod host_tests {
         let machine = TestMachine::new();
         machine.install("git");
         check(&machine).expect("git on PATH must be ok");
+    }
+
+    /// The fake tools log `<tool> <args>` per invocation under
+    /// `WATERUI_FAKE_LOG` — every `git` the CLI spawns must carry
+    /// `-c core.longpaths=true` ahead of its subcommand so a Windows host
+    /// with `LongPathsEnabled` checks out paths past `MAX_PATH`.
+    #[test]
+    fn invocations_carry_longpaths_config() {
+        let machine = TestMachine::new();
+        machine.install("git");
+        let log = machine.file("git.log", "");
+        let host = machine.host([("WATERUI_FAKE_LOG", log.as_os_str())]);
+        smol::block_on(super::run(&host, ["status"])).expect("fake git run");
+        smol::block_on(
+            super::command(&host)
+                .expect("the fake git is on the host's PATH")
+                .arg("status")
+                .status(),
+        )
+        .expect("fake git command status");
+        super::std_command(&host)
+            .expect("the fake git is on the host's PATH")
+            .arg("status")
+            .status()
+            .expect("fake git std_command status");
+        let logged = std::fs::read_to_string(&log).expect("fake tool log");
+        assert_eq!(
+            logged.lines().collect::<Vec<_>>(),
+            [
+                "git -c core.longpaths=true status",
+                "git -c core.longpaths=true status",
+                "git -c core.longpaths=true status",
+            ]
+        );
     }
 
     #[test]

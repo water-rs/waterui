@@ -20,12 +20,12 @@ use tracing_subscriber::util::SubscriberInitExt;
 use crate::log;
 
 /// What the engine has decided about each video layer, by raw `LayerId`.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Decisions {
     inner: Mutex<Inner>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Inner {
     /// `layer` → the plan's verdict: `promoted` or the rejection reason.
     verdicts: HashMap<u64, String>,
