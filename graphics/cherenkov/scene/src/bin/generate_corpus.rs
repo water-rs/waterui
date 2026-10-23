@@ -6133,6 +6133,39 @@ fn run(root: &Path) -> Result<(), SceneError> {
         }
     }
 
+    // Each road layer fits GPU coverage separately, while their combined
+    // scratch exceeds one binding. Both outputs must survive batch reuse.
+    {
+        let roads = perf_road_network(40);
+        perf.scene(
+            "road-network-batches",
+            1024,
+            768,
+            srgb(0.93, 0.95, 0.90),
+            |l| {
+                winding_pan(l, |pan| {
+                    for (dash_pattern, width, color) in [
+                        (Vec::new(), 3.0, srgb(0.35, 0.38, 0.40)),
+                        (vec![4.0, 2.0], 1.5, srgb(0.9, 0.35, 0.08)),
+                    ] {
+                        pan.stroke(
+                            Shape::Path {
+                                path: roads.clone(),
+                            },
+                            StrokeStyle {
+                                width,
+                                dash_pattern,
+                                dash_offset: 1.0,
+                                ..StrokeStyle::default()
+                            },
+                            solid(color),
+                        );
+                    }
+                });
+            },
+        );
+    }
+
     // Abutting rows with staggered x positions exercise equal-slope join
     // lookup. All 16,000 footprints belong to one path, not separate draws.
     {
