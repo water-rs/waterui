@@ -2773,7 +2773,6 @@ impl<'a> Lowering<'a> {
         let saved_member_outer = self.member_outer_clip.take();
         self.finish_pass();
         let passes_start = self.frame.passes.len();
-        let saved_capture = std::mem::replace(&mut self.capture_isolation, false);
         self.depth += 1;
         let scratch = self.depth - 1;
         self.transform = Affine::translate((px, py)) * self.transform;
@@ -2792,14 +2791,7 @@ impl<'a> Lowering<'a> {
         self.finish_pass();
         let pass = self.frame.passes.len() - 1;
         self.frame.passes[pass].region = [0, 0, width as u32, height as u32];
-        let region = if self.capture_isolation {
-            // Backdrop captures inside the body read the enclosing scratch
-            // in full-surface coordinates, just as inside an isolation.
-            [0, 0, width as u32, height as u32]
-        } else {
-            shadow_region(self.frame, pass, [px as u32, py as u32])
-        };
-        self.capture_isolation |= saved_capture;
+        let region = shadow_region(self.frame, pass, [px as u32, py as u32]);
         (self.transform, self.width, self.height, self.clip) = saved;
         self.member_outer_clip = saved_member_outer;
         self.depth -= 1;
