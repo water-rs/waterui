@@ -343,7 +343,10 @@ struct LamePoint {
 
 fn lame_point(r: vec2<f32>, n: f32, w: f32) -> LamePoint {
     // w^(n-2) is 1 at w = 0 for an ellipse (n = 2) and 0 for n > 2.
-    let wm2 = pow(max(w, 1e-30), n - 2.0);
+    var wm2 = 1.0;
+    if n != 2.0 {
+        wm2 = pow(max(w, 1e-30), n - 2.0);
+    }
     let p = w * wm2;
     let one = 1.0 + w * p;
     let s = pow(one, -1.0 / n);
@@ -448,17 +451,12 @@ fn lame_corner(q_in: vec2<f32>, r_in: vec2<f32>, n: f32) -> vec4<f32> {
     }
     var lo = 0.0;
     var hi = 1.0;
-    var foot = vec4<f32>(0.0);
-    for (var i = 0; i < LAME_EVALS; i++) {
+    // Only the last evaluated point contributes distance and curvature.
+    // Refine to it without computing discarded foot geometry or taking
+    // a final Newton step whose result would never be used.
+    for (var i = 0; i < LAME_EVALS - 1; i++) {
         let pt = lame_point(r, n, w);
-        let len = length(pt.normal);
-        let normal = pt.normal / len;
         let qc = q - pt.c;
-        // Curvature from the implicit form,
-        // κ = (n - 1)(w^(2n-2) + w^(n-2))·r.x·r.y / (s·|normal|³).
-        let p = pt.normal.y / r.x;
-        let kappa = (n - 1.0) * (p * p + pt.wm2) * r.x * r.y / (pt.s * len * len * len);
-        foot = vec4<f32>(dot(qc, normal), normal, kappa);
         let t = vec2<f32>(-pt.normal.y, pt.normal.x);
         let f = dot(qc, t);
         let df = -pt.s / pt.one * dot(t, t) - qc.x * r.x * (n - 1.0) * pt.wm2;
@@ -469,6 +467,15 @@ fn lame_corner(q_in: vec2<f32>, r_in: vec2<f32>, n: f32) -> vec4<f32> {
         }
         w = select(0.5 * (lo + hi), clamp(w - f / df, lo, hi), df < 0.0);
     }
+    let pt = lame_point(r, n, w);
+    let qc = q - pt.c;
+    let len = length(pt.normal);
+    let normal = pt.normal / len;
+    // Curvature from the implicit form,
+    // κ = (n - 1)(w^(2n-2) + w^(n-2))·r.x·r.y / (s·|normal|³).
+    let p = pt.normal.y / r.x;
+    let kappa = (n - 1.0) * (p * p + pt.wm2) * r.x * r.y / (pt.s * len * len * len);
+    let foot = vec4<f32>(dot(qc, normal), normal, kappa);
     return vec4<f32>(foot.x, select(foot.yz, foot.zy, swap), 1.0 / max(foot.w, 1e-6));
 }
 
