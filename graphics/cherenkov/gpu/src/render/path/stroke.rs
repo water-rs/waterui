@@ -748,6 +748,8 @@ struct Encoder<'a> {
     bins: usize,
     fragments: usize,
     hull: Rect,
+    // Curved records retain one subdivision-rounding allowance when dashed.
+    curved_records: usize,
     // The dash capacities.
     subpath_polygon: f64,
     stage_total: usize,
@@ -781,6 +783,7 @@ impl<'a> Encoder<'a> {
             bins: 0,
             fragments: 0,
             hull: Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN),
+            curved_records: 0,
             subpath_polygon: 0.0,
             stage_total: 0,
             dashes: 0,
@@ -1155,14 +1158,19 @@ impl<'a> Encoder<'a> {
         )
     }
 
-    /// The bin and fragment contribution of a chord group (design section
-    /// 6.5): `chords` chords with device variation `(vx, vy)`.
+    /// The bin and fragment contribution of a nonempty chord group.
+    ///
+    /// One chord intersects at most `1 + ceil(dy / 4)` strips and
+    /// `2 + ceil(dx + dy)` cells. Summing the ceilings of `n` nonnegative
+    /// variations costs at most `n - 1` above the ceiling of their sum,
+    /// giving `2n - 1 + ceil(vy / 4)` and `3n - 1 + ceil(vx + vy)`.
+    /// The caller's variation and the margin cover the generated f32 chords.
     fn group(&self, chords: usize, vx: f64, vy: f64) -> (usize, usize) {
         let margin = |v: f64| self.s.mul_add(self.tol, v * (1.0 + VARIATION_MARGIN));
         let (vx, vy) = (margin(vx), margin(vy));
         (
-            2 * chords + ceil_count(vy / 4.0),
-            3 * chords + ceil_count(vx + vy),
+            2 * chords - 1 + ceil_count(vy / 4.0),
+            3 * chords - 1 + ceil_count(vx + vy),
         )
     }
 
@@ -1183,6 +1191,7 @@ impl<'a> Encoder<'a> {
                 self.add_group(2, 1, vx, vy);
             }
             Body::Curve { cubic, n_off, .. } => {
+                self.curved_records += 1;
                 let (mut vx, mut vy) = (0.0, 0.0);
                 for (a, b) in [
                     (cubic.p0, cubic.p1),
@@ -1204,6 +1213,7 @@ impl<'a> Encoder<'a> {
             Body::PointArc {
                 cubic, psi, n_off, ..
             } => {
+                self.curved_records += 1;
                 let v = (2.0 * self.s).mul_add(diameter(cubic), sh * psi.abs());
                 self.add_group(2, *n_off as usize, v, v);
             }
@@ -1389,13 +1399,25 @@ impl<'a> Encoder<'a> {
         let dash = if let Some(plan) = self.dash.take() {
             let records = self.records.len();
             let fragments = self.dashes.saturating_add(records);
-            // Dash fragments take one more chord and one more rounding per
-            // side, and every dash draws at most one start and one end cap.
-            self.bins += 2 * 3 * fragments;
-            self.fragments += 2 * 4 * fragments;
+            // The first fragment of a LINE already has its chord and grid
+            // rounding in bound_piece. Every further fragment starts a dash;
+            // crossing a record boundary does not create an extra allowance.
+            // This includes zero-length dash dots and the terminal dot of an
+            // open subpath, for which finish includes one extra dash start.
+            //
+            // CURVE and POINT_ARC subdivision uses ceil(n_off * (tb - ta)).
+            // Retain the original allowance for their first fragment as well
+            // as each new dash, without assuming exact f32 parameter sums.
+            // JOIN_ONLY records add no offset chords; their joins are already
+            // covered by bound_piece and their dot caps by the cap rows below.
+            // Each extra fragment costs at most one chord and one additional
+            // variation rounding per side: 3 bins and 4 cell fragments.
+            let extra = self.dashes.saturating_add(self.curved_records);
+            self.bins += 2 * 3 * extra;
+            self.fragments += 2 * 4 * extra;
             self.add_group(self.dashes, start.chords, start.reach, start.reach);
             self.add_group(self.dashes, end.chords, end.reach, end.reach);
-            self.segments += 2 * fragments + self.dashes * (start.chords + end.chords);
+            self.segments += 2 * extra + self.dashes * (start.chords + end.chords);
             Some(Arc::new(DashTable {
                 cum: plan.cum.iter().map(|&x| fixed(x)).collect(),
                 phase: fixed(plan.phase),
