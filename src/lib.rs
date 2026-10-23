@@ -66,7 +66,9 @@ pub mod prelude {
     pub use super::dialog::{Dialog, DialogAction, DialogRole};
     pub use super::fullscreen::*;
     #[cfg(feature = "snackbar")]
-    pub use super::snackbar::{Snackbar, SnackbarManager, SnackbarPosition, SnackbarTheme};
+    pub use super::snackbar::{
+        Snackbar, SnackbarDismissReason, SnackbarManager, SnackbarPosition, SnackbarTheme,
+    };
 
     pub use super::gesture::GestureObserver;
 
