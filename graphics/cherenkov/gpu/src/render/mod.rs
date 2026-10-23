@@ -7707,9 +7707,6 @@ impl GpuRenderer {
         let (slots, available) = (0, Err(composition::Materialization::NoExecutor));
 
         available?;
-        if self.scratch_format != WORKING_FORMAT {
-            return Err(composition::Materialization::Format);
-        }
         Ok(composite::plan::Limits {
             slots,
             format: WORKING_FORMAT,
