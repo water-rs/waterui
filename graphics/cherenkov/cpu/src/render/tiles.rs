@@ -321,7 +321,21 @@ impl EdgeTiles {
             .copied()
             .filter(|e| e.top < e.bottom)
             .map(Boundary::new);
-        Self::finish(prepared, &mut Vec::new(), [0; 4])
+        // Supporting endpoints conservatively bound every visible interval.
+        // Transient intersections are draws as well as masks, so their
+        // retained bounds must remain valid for culling and band selection.
+        let bounds = edges.iter().filter(|e| e.top < e.bottom).fold(
+            [i64::MAX, i64::MAX, i64::MIN, i64::MIN],
+            |[x0, y0, x1, y1], e| {
+                [
+                    x0.min(e.x0.min(e.x1)),
+                    y0.min(e.top),
+                    x1.max(e.x0.max(e.x1)),
+                    y1.max(e.bottom),
+                ]
+            },
+        );
+        Self::finish(prepared, &mut Vec::new(), bounds)
     }
 
     fn finish(
@@ -470,6 +484,17 @@ impl std::fmt::Debug for EdgeTiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transient_boundary_geometry_retains_device_bounds() {
+        let raw = [
+            IntegerEdge::new(5 * ONE, 0, 5 * ONE, 10 * ONE),
+            IntegerEdge::new(10 * ONE, 10 * ONE, 10 * ONE, 0),
+        ];
+        let edges = EdgeTiles::from_boundaries(&raw);
+        assert_eq!(edges.bounds(), [5 * ONE, 0, 10 * ONE, 10 * ONE]);
+        assert!(!edges.is_empty());
+    }
 
     #[test]
     fn interval_queries_match_exact_translated_ranges() {

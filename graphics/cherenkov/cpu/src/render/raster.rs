@@ -722,7 +722,7 @@ fn clip_cov(clip: Option<&ClipRef>, w: usize, px: usize, py: usize) -> f32 {
                 && py >= (r.y0.max(0) as usize)
                 && py < (r.y1.max(0) as usize),
         ),
-        Some(ClipMask::Cover(mask)) => mask[py * w + px],
+        Some(ClipMask::Geometry { coverage, .. }) => coverage[py * w + px],
     }
 }
 
@@ -2983,7 +2983,7 @@ impl Band<'_> {
                 usize::try_from(r.x1).unwrap_or(0).clamp(x_lo, x_hi),
                 None,
             ),
-            Some(ClipMask::Cover(mask)) => (x_lo, x_hi, Some(mask.as_slice())),
+            Some(ClipMask::Geometry { coverage, .. }) => (x_lo, x_hi, Some(coverage.as_slice())),
             None => (x_lo, x_hi, None),
         };
         if cx_lo >= cx_hi && clip_mask.is_none() {
@@ -3453,7 +3453,7 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
 }
 
 /// A disjoint proof or topology compilation supplies the visible boundaries.
-fn boundary_mask(edges: &[super::tiles::IntegerEdge], w: usize, h: usize) -> Vec<f32> {
+pub fn boundary_mask(edges: &[super::tiles::IntegerEdge], w: usize, h: usize) -> Vec<f32> {
     let edges = EdgeTiles::from_boundaries(edges);
     let mut mask = vec![0.0; w * h];
     mask.par_chunks_mut(BAND_H * w).enumerate().for_each_init(
@@ -3759,7 +3759,12 @@ mod tests {
                                                     _ => 0.5,
                                                 };
                                             }
-                                            Some(Arc::new(ClipMask::Cover(cells)))
+                                            // This fixture exercises the raster mask consumer,
+                                            // not geometric lowering of the operand stack.
+                                            Some(Arc::new(ClipMask::Geometry {
+                                                operands: Vec::new(),
+                                                coverage: cells,
+                                            }))
                                         }
                                         // A rect covering the whole run.
                                         3 => Some(Arc::new(ClipMask::Rect(IRect {

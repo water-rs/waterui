@@ -24,7 +24,8 @@ use std::sync::Arc;
 
 use cherenkov_scene::corpus;
 use cherenkov_scene::kurbo::{
-    Affine, BezPath, Circle, Ellipse, Line, Point, Rect, RoundedRect, RoundedRectRadii, Vec2,
+    Affine, BezPath, Circle, Ellipse, Line, Point, Rect, RoundedRect, RoundedRectRadii, Shape as _,
+    Vec2,
 };
 use cherenkov_scene::{
     BackdropEffectSpec, BackdropFilter, BackdropGroup, BlendMode, BlendSpace, Color, ColorSpace,
@@ -3505,6 +3506,36 @@ fn run(root: &Path) -> Result<(), SceneError> {
     );
 
     // ---- Clips, opacity, transforms ----------------------------------------
+
+    // All four contour-direction pairs must describe the same intersection
+    // (#2933). Rows reverse the draw; columns reverse the clip. Fractional
+    // edges carry the same HDR/P3 coverage in every panel.
+    corpus.scene_headroom("clip-contour-orientations-hdr", 288, 240, white, 2.0, |l| {
+        let directed = |rect: Rect, reversed: bool| {
+            let path = rect.to_path(0.1);
+            if reversed {
+                path.reverse_subpaths()
+            } else {
+                path
+            }
+        };
+        for (draw_reversed, y) in [(false, 20.0), (true, 140.0)] {
+            for (clip_reversed, x) in [(false, 16.0), (true, 160.0)] {
+                l.layer(|a| {
+                    a.transform(Affine::translate((x, y)));
+                    a.clip(Shape::Path {
+                        path: directed(Rect::new(0.0, 0.0, 80.75, 80.0), clip_reversed),
+                    });
+                    a.fill(
+                        Shape::Path {
+                            path: directed(Rect::new(40.25, -40.0, 120.0, 40.75), draw_reversed),
+                        },
+                        solid(hdr(1.5, 0.1, 0.0)),
+                    );
+                });
+            }
+        }
+    });
 
     corpus.scene("clip-nested", 128, 128, white, |l| {
         l.layer(|a| {
