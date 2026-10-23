@@ -238,14 +238,12 @@ fn dup_fence(fd: &OwnedFd) -> Result<OwnedFd, RenderError> {
         .map_err(|e| RenderError::Render(format!("duplicate a fence: {e}")))
 }
 
-fn raster_entry<'a>(
-    view: Option<&'a wgpu::TextureView>,
-    generation: u64,
+fn engine_encoding(
     range: crate::render::present::ColorRange,
-    placement: &crate::render::planes::Placement,
-    size: (u32, u32),
-) -> Result<Entry<'a>, RenderError> {
-    let layer = placement.layer;
+) -> Result<(wgpu::TextureFormat, OutputColor, Dataspace), RenderError> {
+    if range == crate::render::present::ColorRange::Standard {
+        return Ok((buffer::FORMAT, OutputColor::Srgb, Dataspace::SRGB));
+    }
     let hdr = range == crate::render::present::ColorRange::HighDynamicRange;
     let color = crate::interop::FrameColor {
         transfer: if hdr {
@@ -255,33 +253,50 @@ fn raster_entry<'a>(
         },
         ..crate::interop::FrameColor::LINEAR_P3
     };
-    Ok(Entry::Engine {
-        view,
-        size: placement.size,
-        raster: Some((layer, generation)),
-        format: if hdr {
+    let dataspace = plan::dataspace(
+        &color,
+        Encoding::Rgb {
+            float: hdr,
+            alpha: crate::interop::RgbAlpha::Premultiplied,
+        },
+    )
+    .map_err(|error| RenderError::Render(error.to_string()))?;
+    Ok((
+        if hdr {
             wgpu::TextureFormat::Rgba16Float
         } else {
             buffer::FORMAT
         },
-        color: if hdr {
+        if hdr {
             OutputColor::LinearDisplayP3
         } else {
             OutputColor::DisplayP3
         },
+        dataspace,
+    ))
+}
+
+fn raster_entry<'a>(
+    view: Option<&'a wgpu::TextureView>,
+    generation: u64,
+    range: crate::render::present::ColorRange,
+    placement: &crate::render::planes::Placement,
+    size: (u32, u32),
+) -> Result<Entry<'a>, RenderError> {
+    let layer = placement.layer;
+    let (format, output_color, dataspace) = engine_encoding(range)?;
+    Ok(Entry::Engine {
+        view,
+        size: placement.size,
+        raster: Some((layer, generation)),
+        format,
+        color: output_color,
         properties: Properties {
             z: 0,
             placement: plan::promoted(placement, size).map_err(|e| cannot_show(layer, &e))?,
             alpha: placement.opacity,
             opaque: false,
-            dataspace: plan::dataspace(
-                &color,
-                Encoding::Rgb {
-                    float: hdr,
-                    alpha: crate::interop::RgbAlpha::Premultiplied,
-                },
-            )
-            .map_err(|e| cannot_show(layer, &e))?,
+            dataspace,
             hdr: HdrMetadata::default(),
         },
     })
@@ -298,18 +313,19 @@ fn stack<'a>(composition: &Composition<'a>) -> Result<Vec<Entry<'a>>, RenderErro
     for slot in plan::stack_order(composition.parts.len(), composition.planes.len()) {
         let plane = match slot {
             Slot::Part(n) => {
+                let (format, color, dataspace) = engine_encoding(composition.parts[n].range)?;
                 entries.push(Entry::Engine {
                     view: Some(composition.parts[n].view),
                     size: composition.size,
                     raster: None,
-                    format: buffer::FORMAT,
-                    color: OutputColor::Srgb,
+                    format,
+                    color,
                     properties: Properties {
                         z: 0,
                         placement: full(composition.size),
                         alpha: 1.0,
                         opaque: false,
-                        dataspace: Dataspace::SRGB,
+                        dataspace,
                         hdr: HdrMetadata::default(),
                     },
                 });

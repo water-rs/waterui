@@ -11,7 +11,7 @@ use super::{
 
 /// Working-space colors use straight alpha. Any bounded Display P3 color
 /// can use encoded SDR P3 output; values outside that cube need float output.
-fn working(color: [f32; 4], ceiling: f32) -> ColorRange {
+pub(super) fn working(color: [f32; 4], ceiling: f32) -> ColorRange {
     if color[..3]
         .iter()
         .all(|value| (0.0..=ceiling).contains(value))
@@ -92,6 +92,54 @@ pub(super) fn of_ops(ops: &[Op], images: &FxHashMap<u64, GpuImage>) -> ColorRang
         })
         .max()
         .unwrap_or_default()
+}
+
+/// Classify the same content-first tree order that opens engine parts during
+/// lowering. Promoted content is excluded; its children paint in the next part.
+pub(super) fn parts(
+    tree: &cherenkov::SurfaceTree,
+    layers: &FxHashMap<cherenkov::LayerId, super::lower::ContentData>,
+    bindings: &FxHashMap<cherenkov::LayerId, super::gpu_content::Binding>,
+    plan: &super::planes::Plan,
+    clear: cherenkov::WorkingColor,
+    output: &mut Vec<ColorRange>,
+) {
+    fn visit(
+        id: cherenkov::LayerId,
+        tree: &cherenkov::SurfaceTree,
+        layers: &FxHashMap<cherenkov::LayerId, super::lower::ContentData>,
+        bindings: &FxHashMap<cherenkov::LayerId, super::gpu_content::Binding>,
+        plan: &super::planes::Plan,
+        part: &mut usize,
+        output: &mut [ColorRange],
+    ) {
+        if plan.opens_part().any(|layer| layer == id) {
+            *part += 1;
+        }
+        let node = tree.layer(id);
+        if !plan.planes.iter().any(|plane| plane.layer == id) {
+            let range = if node.filter.is_some()
+                || node.backdrop.is_some()
+                || node.blend == BlendMode::PlusLighter
+                || bindings.contains_key(&id)
+            {
+                ColorRange::HighDynamicRange
+            } else {
+                layers.get(&id).map_or(ColorRange::Standard, |content| {
+                    content.range.expect("prepared content has a color range")
+                })
+            };
+            output[*part] = output[*part].max(range);
+        }
+        for &child in &node.children {
+            visit(child, tree, layers, bindings, plan, part, output);
+        }
+    }
+    output.clear();
+    output.resize(plan.parts(), ColorRange::Standard);
+    output[0] = working(clear.components, 1.0);
+    let mut part = 0;
+    visit(tree.root(), tree, layers, bindings, plan, &mut part, output);
 }
 
 #[cfg(test)]

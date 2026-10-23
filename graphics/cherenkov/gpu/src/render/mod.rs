@@ -427,6 +427,7 @@ struct SurfaceState {
     /// Engine parts above the first (`target` is part 0): one per promoted
     /// plane with layers painted above it, at the surface size.
     parts: Vec<(wgpu::Texture, wgpu::TextureView)>,
+    part_ranges: Vec<present::ColorRange>,
     /// Texture-target hand-off: each rendered texture goes to the host.
     textures: Option<std::sync::mpsc::Sender<wgpu::Texture>>,
     refresh: cherenkov::RefreshRange,
@@ -585,12 +586,28 @@ impl BackdropGroupState {
 impl SurfaceState {
     fn lowering_bytes(&self) -> u64 {
         self.anchor_scratch.heap_bytes()
+            + (self.part_ranges.capacity() * std::mem::size_of::<present::ColorRange>()) as u64
             + self.raster_scratch.heap_bytes()
             + self
                 .layers
                 .values()
                 .map(ContentData::gpu_input_bytes)
                 .sum::<u64>()
+    }
+
+    fn classify_parts(
+        &mut self,
+        frame: &SurfaceFrame<'_>,
+        layers: &FxHashMap<LayerId, ContentData>,
+    ) {
+        content_range::parts(
+            frame.tree,
+            layers,
+            &self.bindings,
+            &self.plan,
+            frame.clear,
+            &mut self.part_ranges,
+        );
     }
 
     /// Engine part `n`'s texture: `target` for part 0.
@@ -3566,6 +3583,7 @@ impl Renderer for GpuRenderer {
                 static_walk: Vec::new(),
                 plan_dirty: false,
                 parts: Vec::new(),
+                part_ranges: Vec::new(),
                 textures,
                 refresh,
                 present_pending: false,
@@ -6361,6 +6379,8 @@ impl GpuRenderer {
                 } else {
                     let parts: Vec<_> = (0..surface.plan.parts())
                         .map(|n| planes::Part {
+                            #[cfg(target_os = "android")]
+                            range: surface.part_ranges[n],
                             view: match n {
                                 0 => &surface.view,
                                 n => &surface.parts[n - 1].1,
@@ -7006,6 +7026,9 @@ impl GpuRenderer {
             lowered.path_arena = std::mem::take(&mut lowering.path_arena);
             result
         };
+        if result.is_ok() && surf.promotes {
+            surf.classify_parts(frame, &layers);
+        }
         surf.layers = layers;
         surf.frame.content.sort_unstable_by_key(|(id, _)| id.raw());
         surf.frame.external.sort_unstable_by_key(|id| id.raw());
