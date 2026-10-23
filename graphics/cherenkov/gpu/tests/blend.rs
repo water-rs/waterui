@@ -188,9 +188,7 @@ split_test! {
 /// luminance.
 fn nonseparable_blends_under_a_clip_on_hdr_stay_finite() -> Result<(), Box<dyn std::error::Error>> {
     use cherenkov::kurbo::RoundedRect;
-    let Some(engine) = wait!(engine()) else {
-        return Ok(());
-    };
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     for (mode, want) in [
         (BlendMode::Hue, 4.0_f32),
         (BlendMode::Saturation, 4.0),
