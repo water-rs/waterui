@@ -2736,6 +2736,7 @@ impl<'a> Lowering<'a> {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
         reason = "finite nonnegative capture extents checked before conversion"
     )]
     fn silhouette_scope(
@@ -2771,6 +2772,8 @@ impl<'a> Lowering<'a> {
         let saved = (self.transform, self.width, self.height, self.clip);
         let saved_member_outer = self.member_outer_clip.take();
         self.finish_pass();
+        let passes_start = self.frame.passes.len();
+        let saved_capture = std::mem::replace(&mut self.capture_isolation, false);
         self.depth += 1;
         let scratch = self.depth - 1;
         self.transform = Affine::translate((px, py)) * self.transform;
@@ -2789,6 +2792,31 @@ impl<'a> Lowering<'a> {
         self.finish_pass();
         let pass = self.frame.passes.len() - 1;
         self.frame.passes[pass].region = [0, 0, width as u32, height as u32];
+        let region = if self.capture_isolation {
+            // Backdrop captures inside the body read the enclosing scratch
+            // in full-surface coordinates, just as inside an isolation.
+            [0, 0, width as u32, height as u32]
+        } else {
+            shadow_region(self.frame, pass, [px as u32, py as u32])
+        };
+        self.capture_isolation |= saved_capture;
+        (self.transform, self.width, self.height, self.clip) = saved;
+        self.member_outer_clip = saved_member_outer;
+        self.depth -= 1;
+        if region[2] == 0 || region[3] == 0 {
+            for i in (passes_start..self.frame.passes.len()).rev() {
+                if self.frame.passes[i].target == Target::Scratch(scratch) {
+                    self.frame.remove_pass(i);
+                }
+            }
+            self.begin_pass(self.current_target(), None);
+            return Ok(());
+        }
+        for pass in &mut self.frame.passes[passes_start..] {
+            if pass.target == Target::Scratch(scratch) {
+                pass.region = region;
+            }
+        }
         self.frame.shadows.push((
             pass,
             super::shadow::Parameters {
@@ -2796,15 +2824,18 @@ impl<'a> Lowering<'a> {
                 ..parameters
             },
         ));
-        (self.transform, self.width, self.height, self.clip) = saved;
-        self.member_outer_clip = saved_member_outer;
-        self.depth -= 1;
         self.begin_pass(self.current_target(), None);
         let mut instance = Self::base(KIND_SPAN, affine(Affine::IDENTITY), self.clip);
-        instance.bounds = [0.0, 0.0, self.width, self.height];
+        let origin = [region[0] as f32 - px as f32, region[1] as f32 - py as f32];
+        instance.bounds = [
+            origin[0].max(0.0),
+            origin[1].max(0.0),
+            (origin[0] + region[2] as f32).min(self.width),
+            (origin[1] + region[3] as f32).min(self.height),
+        ];
         instance.meta[1] = PAINT_TEXTURE;
-        instance.grad[0] = -(px as f32);
-        instance.grad[1] = -(py as f32);
+        instance.grad[0] = origin[0];
+        instance.grad[1] = origin[1];
         if self.scratch_space[scratch] == cherenkov::BlendSpace::SrgbEncoded {
             instance.meta[3] |= FLAG_TEX_SRGB << 24;
         }
@@ -6127,12 +6158,31 @@ fn union_region(bboxes: impl IntoIterator<Item = [f32; 4]>, width: u32, height: 
     padded_region(min, max, width, height)
 }
 
+/// Capture the body's support plus the convolution reach, retaining the
+/// padded viewport's offscreen contributors.
+fn shadow_region(frame: &Frame, last: usize, padding: [u32; 2]) -> [u32; 4] {
+    let support = shadow_support(frame, last);
+    if support[2] == 0 || support[3] == 0 {
+        return [0; 4];
+    }
+    let [_, _, width, height] = frame.passes[last].region;
+    let x = support[0].saturating_sub(padding[0]);
+    let y = support[1].saturating_sub(padding[1]);
+    let end_x = (support[0] + support[2])
+        .saturating_add(padding[0])
+        .min(width);
+    let end_y = (support[1] + support[3])
+        .saturating_add(padding[1])
+        .min(height);
+    [x, y, end_x - x, end_y - y]
+}
+
 /// The texel region of a shadow capture that can hold nonzero input to
 /// its convolution: the union of everything drawn into its scratch depth
 /// since the depth's last clear — the silhouette scope opens it with a
-/// transparent one — padded and clipped to the padded capture extents of
-/// the pass at `last`. Draws into nested scratch depths are not members
-/// of the union; their composites into this depth are, since every pixel
+/// transparent one — translated to the capture's texel origin, padded and
+/// clipped to the extents of the pass at `last`. Draws into nested scratch
+/// depths are not members of the union; their composites into this depth are, since every pixel
 /// a pass writes comes through a drawn instance. A GPU-routed path's
 /// range contributes its anchor instance's conservative bound, and a
 /// coverage-tier polygon is bounded by the source instance it copies.
@@ -6145,8 +6195,7 @@ fn union_region(bboxes: impl IntoIterator<Item = [f32; 4]>, width: u32, height: 
 )]
 pub fn shadow_support(frame: &Frame, last: usize) -> [u32; 4] {
     let target = frame.passes[last].target;
-    let width = frame.passes[last].region[2];
-    let height = frame.passes[last].region[3];
+    let [x, y, width, height] = frame.passes[last].region;
     let first = frame.passes[..=last]
         .iter()
         .rposition(|pass| pass.target == target && pass.clear.is_some())
@@ -6178,6 +6227,9 @@ pub fn shadow_support(frame: &Frame, last: usize) -> [u32; 4] {
                             y.saturating_add(h) as f32,
                         ]
                     }))
+                    .map(move |[x0, y0, x1, y1]| {
+                        [x0 - x as f32, y0 - y as f32, x1 - x as f32, y1 - y as f32]
+                    })
             }),
         width,
         height,
@@ -7957,12 +8009,21 @@ mod tests {
         };
         // Union of (20,10)-(24,18) and (2,30)-(6,34), padded by one.
         assert_eq!(shadow_support(&frame, 3), [1, 9, 24, 26]);
+        assert_eq!(shadow_region(&frame, 3, [4, 8]), [0, 1, 29, 42]);
         // At pass 1 only (20,10)-(24,18) has drawn since the clear.
         assert_eq!(shadow_support(&frame, 1), [19, 9, 6, 10]);
         // The nested depth's own support sees only its own draw.
         assert_eq!(shadow_support(&frame, 2), [49, 49, 6, 6]);
         // Nothing drawn since the clear: the support is empty.
         assert_eq!(shadow_support(&frame, 4), [0, 0, 0, 0]);
+        assert_eq!(shadow_region(&frame, 4, [4, 8]), [0, 0, 0, 0]);
+        // A cropped capture keeps device-space draws but the convolution
+        // samples local texels, including when bounds cross its edges.
+        frame.passes[3].region = [1, 9, 24, 26];
+        assert_eq!(shadow_support(&frame, 3), [0, 0, 24, 26]);
+        frame.passes[3].region = [10, 12, 10, 10];
+        assert_eq!(shadow_support(&frame, 3), [0, 0, 10, 10]);
+        frame.passes[3].region = [0, 0, 64, 64];
         // A filter on a pass can grow its content past the draws'
         // bounds; its explicit region joins the union.
         frame.filters.push((3, FilterKey::Layer(7)));
