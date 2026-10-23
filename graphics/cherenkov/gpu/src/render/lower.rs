@@ -5445,9 +5445,6 @@ impl<'a> Lowering<'a> {
 
     /// All quads in a path group share paint, clip and shader variant. Reserve
     /// and segment once, then write their instances directly into the frame.
-    // Keep the shared template intact across the append loop. Inlining this
-    // into replay scalarizes its fixed fields and increases per-quad work.
-    #[inline(never)]
     fn replay_quads(
         &mut self,
         template: &Instance,
@@ -5460,22 +5457,31 @@ impl<'a> Lowering<'a> {
         self.set_variant(template);
         let first = self.frame.instances.len();
         check_instance_bound(first + quads.len());
+        let solid = template.meta[1] == PAINT_SOLID;
         self.frame
             .instances
-            .extend(quads.map(|(rect, uv, interior)| {
-                let mut inst = *template;
-                inst.bounds = [
+            .extend(quads.map(|(rect, [u0, u1], interior)| Instance {
+                affine: template.affine,
+                bounds: [
                     f32_f64(f64::from(rect[0]) + offset.x),
                     f32_f64(f64::from(rect[1]) + offset.y),
                     f32_f64(f64::from(rect[2]) + offset.x),
                     f32_f64(f64::from(rect[3]) + offset.y),
-                ];
-                inst.uv[..2].copy_from_slice(&uv);
-                if interior != 0 && inst.meta[1] == PAINT_SOLID {
-                    inst.meta[0] = KIND_REGION;
-                    inst.meta[2] = interior;
-                }
-                inst
+                ],
+                shape: template.shape,
+                inner: template.inner,
+                clip_inv: template.clip_inv,
+                clip: template.clip,
+                color: template.color,
+                grad: template.grad,
+                grad2: template.grad2,
+                uv: [u0, u1, template.uv[2], template.uv[3]],
+                params: template.params,
+                meta: if interior != 0 && solid {
+                    [KIND_REGION, template.meta[1], interior, template.meta[3]]
+                } else {
+                    template.meta
+                },
             }));
         if let Some(pending) = self.mask_pending {
             self.mask_patches.extend(
