@@ -13,7 +13,7 @@
 //! part's pool behind that fence, and a promoted frame's fence joins the
 //! producer's release fence before the plane's lease on the frame ends.
 
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -479,6 +479,7 @@ struct Update {
 /// An engine surface realized as child surface controls of the host's
 /// parent.
 pub struct Planes {
+    looper: ndk::looper::ForeignLooper,
     /// The engine's container under the host's parent: every part and plane
     /// is its child, so their z-orders never interleave with the host's.
     root: SurfaceControl,
@@ -551,6 +552,7 @@ impl Planes {
         .map_err(|e| unsupported(&format!("sync-fence semaphore: {e}")))?;
         let (release, released) = mpsc::channel();
         Ok(Self {
+            looper: target.looper.clone(),
             root,
             root_shown: false,
             extended_range: ExtendedRangeBrightness::load(),
@@ -888,14 +890,30 @@ impl Planes {
         let acquire_fence =
             unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(acquire_fence) };
         if !waits.is_empty() {
-            let owner = self.shared.vk.device.clone();
-            queue.on_submitted_work_done(move || {
-                for wait in waits {
-                    // SAFETY: the callback runs after the submission
-                    // completed, so no queue still waits on `wait`.
-                    unsafe { owner.destroy_semaphore(wait, None) };
-                }
-            });
+            let owner = Arc::clone(&self.shared);
+            let completion = Arc::new(dup_fence(&acquire_fence)?);
+            let retained = Arc::clone(&completion);
+            self.looper
+                .add_fd_with_callback(
+                    completion.as_fd(),
+                    ndk::looper::FdEvent::INPUT,
+                    move |_, events| {
+                        assert!(
+                            events.contains(ndk::looper::FdEvent::INPUT),
+                            "GPU completion fence reported {events:?}"
+                        );
+                        for wait in std::mem::take(&mut waits) {
+                            // SAFETY: the submission's sync fence has signalled,
+                            // so no queue still waits on these semaphores.
+                            unsafe { owner.vk.device.destroy_semaphore(wait, None) };
+                        }
+                        let _ = &retained;
+                        false
+                    },
+                )
+                .map_err(|error| {
+                    RenderError::Render(format!("register GPU completion with looper: {error}"))
+                })?;
         }
 
         // The transaction: the stack's buffers and changed properties.

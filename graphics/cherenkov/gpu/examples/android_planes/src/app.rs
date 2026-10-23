@@ -225,7 +225,14 @@ impl Run {
             .expect("surface control from window");
         logcat::line("SurfaceControl \"cherenkov harness\" created");
         let surface = engine
-            .surface(SurfaceControlTarget::new(parent, size), || {})
+            .surface(
+                SurfaceControlTarget::new(
+                    parent,
+                    size,
+                    ndk::looper::ForeignLooper::for_thread().expect("Android activity looper"),
+                ),
+                || {},
+            )
             .expect("surface-control surface");
         logcat::line(&format!("surface target {}x{} created", size.0, size.1));
         if matches!(scenario, Scenario::Recorded(spec) if spec.hdr) {

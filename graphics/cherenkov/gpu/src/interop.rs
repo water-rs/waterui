@@ -1077,6 +1077,7 @@ pub mod android {
     #[derive(Debug)]
     pub struct SurfaceControlTarget {
         pub(crate) parent: SurfaceControl,
+        pub(crate) looper: ndk::looper::ForeignLooper,
         pub(crate) size: (u32, u32),
         pub(crate) transparent: bool,
         pub(crate) refresh: cherenkov::RefreshRange,
@@ -1084,10 +1085,16 @@ pub mod android {
 
     impl SurfaceControlTarget {
         /// Presents under `parent` at `size` device pixels.
+        /// The host must keep polling `looper` while this target is alive.
         #[must_use]
-        pub const fn new(parent: SurfaceControl, size: (u32, u32)) -> Self {
+        pub const fn new(
+            parent: SurfaceControl,
+            size: (u32, u32),
+            looper: ndk::looper::ForeignLooper,
+        ) -> Self {
             Self {
                 parent,
+                looper,
                 size,
                 transparent: false,
                 refresh: cherenkov::DEFAULT_REFRESH,
