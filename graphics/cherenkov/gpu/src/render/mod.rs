@@ -7675,6 +7675,13 @@ impl GpuRenderer {
     /// The error is the reason the frame's images are attributed to, so
     /// a census distinguishes "this build has no executor" from "this
     /// device cannot run one".
+    #[cfg_attr(
+        not(unix),
+        expect(
+            clippy::unused_self,
+            reason = "tile executor state exists only on Unix"
+        )
+    )]
     fn tile_limits(&self) -> Result<composite::plan::Limits, composition::Materialization> {
         // Which executor this target has, and whether it is installed.
         // The mirror is absent only because the Vulkan device declined,
