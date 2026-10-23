@@ -408,7 +408,7 @@ fn stamp(gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, index: u32) {
 }
 
 /// Drains the queue completely, then writes timestamp `index` in its own
-/// submission.
+/// submission and waits for that submission to complete.
 ///
 /// On job-scheduled tiled GPUs (Mali et al.) a standalone timestamp
 /// submission shares no hazard with the engine's work, so a marker submitted
@@ -418,6 +418,9 @@ fn stamp(gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, index: u32) {
 /// submit → `stamp(1)` sequence brackets the engine's real GPU execution.
 /// This serializes CPU and GPU for the measured frame — GPU-timed `measure`
 /// is a synchronous probe, not a pipelined frame rate.
+/// The marker must complete before subsequent engine work or query resolve
+/// is submitted: an outstanding marker yielded zero or stale end ticks on
+/// Metal even though the later readback completed.
 ///
 /// No-op when timestamps are unsupported.
 ///
@@ -436,7 +439,7 @@ pub fn drain_and_stamp(gpu: &Gpu, index: u32) -> Result<(), BenchError> {
     stamp(gpu, &mut encoder, index);
     let submission = gpu.queue.submit([encoder.finish()]);
     tracing::trace!(index, ?submission, "frame timestamp submitted");
-    Ok(())
+    wait(gpu, Some(submission), "the frame timestamp marker")
 }
 
 /// Resolves a timestamp query pair written around a submission into
