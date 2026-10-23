@@ -2578,13 +2578,10 @@ impl Compositor for LayerPlanes {
     }
 
     fn shows(frame: &ExternalFrame) -> bool {
-        // The proven external class is opaque BGRA8/sRGB. YUV range
-        // expansion, BT.1886, and HDR tone mapping differ from the engine;
-        // they remain engine-composited until their platform parity is
-        // established. The second admitted class is the engine's own frame
-        // ring — premultiplied f16 in the working space: its declared
-        // decode is the identity, so the layer shows exactly the pixels
-        // the engine composited.
+        // AVFoundation owns standard PQ/HLG display mapping. Its color tags
+        // cannot express custom reference-white normalization or a custom HLG
+        // reference peak, so those signals remain engine-composited. BT.709
+        // also stays in-engine because the declared decode is BT.1886.
         let video = matches!(&frame.planes, FramePlanes::Rgb { plane, .. }
             if plane.format() == wgpu::TextureFormat::Bgra8Unorm)
             && frame.color.transfer == Transfer::Srgb
@@ -2593,7 +2590,18 @@ impl Compositor for LayerPlanes {
             if plane.format() == wgpu::TextureFormat::Rgba16Float)
             && frame.color.transfer == Transfer::Linear
             && frame.color.primaries == Primaries::DisplayP3;
-        (video || ring) && frame_surface(frame).is_some()
+        let hdr = matches!(frame.planes, FramePlanes::Yuv { .. })
+            && frame.color.reference_white.to_bits()
+                == crate::interop::FrameColor::BT2020_PQ
+                    .reference_white
+                    .to_bits()
+            && match frame.color.transfer {
+                Transfer::Pq => true,
+                // BT.2100's reference HLG display peak is 1000 cd/m².
+                Transfer::Hlg => frame.color.hlg_peak.to_bits() == 1000.0_f32.to_bits(),
+                _ => false,
+            };
+        (video || ring || hdr) && frame_surface(frame).is_some()
     }
 }
 

@@ -1303,10 +1303,33 @@ mod macos {
             .is_some_and(|v| v.downcast_ref::<CFString>().is_some_and(|s| s == expected))
     }
 
-    /// Admitted BGRA/sRGB retains the source `IOSurface` and colour tags.
+    /// SDR and HDR video retain their source `IOSurface` and colour metadata.
     fn a_promoted_frame_shows_its_own_surface_and_declared_colour() {
+        for color in [
+            FrameColor::SRGB,
+            FrameColor::BT2020_PQ,
+            FrameColor::bt2020_hlg(1000.0),
+        ] {
+            promoted_frame_source(color);
+        }
+        for color in [
+            FrameColor {
+                reference_white: 100.0,
+                ..FrameColor::BT2020_PQ
+            },
+            FrameColor::bt2020_hlg(2000.0),
+        ] {
+            let fixture = Fixture::new();
+            let buffer = p010_buffer();
+            stays_in_the_engine(&fixture, p010(&fixture.metal, &buffer, color));
+        }
+    }
+
+    fn promoted_frame_source(color: FrameColor) {
+        use cherenkov_gpu::interop::Transfer;
         let fixture = Fixture::new();
-        let buffer = bgra_buffer();
+        let hdr = matches!(color.transfer, Transfer::Pq | Transfer::Hlg);
+        let buffer = if hdr { p010_buffer() } else { bgra_buffer() };
         // A 314-lux D65 mastering environment, in the standard SEI units.
         let environment = objc2_core_foundation::CFData::from_bytes(&[
             0x00, 0x2f, 0xe9, 0x60, 0x3d, 0x13, 0x40, 0x42,
@@ -1319,22 +1342,19 @@ mod macos {
                 objc2_core_video::CVAttachmentMode::ShouldPropagate,
             );
         }
+        let frame = || {
+            if hdr {
+                p010(&fixture.metal, &buffer, color)
+            } else {
+                bgra(&fixture.metal, &buffer, color)
+            }
+        };
         let offscreen = fixture
             .engine
             .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16), || {})
             .expect("offscreen");
-        let _engine_scene = scene_bar(
-            &fixture.engine,
-            &offscreen,
-            bgra(&fixture.metal, &buffer, FrameColor::SRGB),
-            1.0,
-        );
-        let _window_scene = scene_bar(
-            &fixture.engine,
-            &fixture.window,
-            bgra(&fixture.metal, &buffer, FrameColor::SRGB),
-            1.0,
-        );
+        let _engine_scene = scene_bar(&fixture.engine, &offscreen, frame(), 1.0);
+        let _window_scene = scene_bar(&fixture.engine, &fixture.window, frame(), 1.0);
         assert!(
             fixture.promote(),
             "the platform never reported the probe ready"
@@ -1380,14 +1400,72 @@ mod macos {
             assert!(same(
                 &shown,
                 kCVImageBufferColorPrimariesKey,
-                kCVImageBufferColorPrimaries_ITU_R_709_2
+                if hdr {
+                    objc2_core_video::kCVImageBufferColorPrimaries_ITU_R_2020
+                } else {
+                    kCVImageBufferColorPrimaries_ITU_R_709_2
+                }
             ));
             assert!(same(
                 &shown,
                 kCVImageBufferTransferFunctionKey,
-                kCVImageBufferTransferFunction_sRGB
+                match color.transfer {
+                    Transfer::Pq =>
+                        objc2_core_video::kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
+                    Transfer::Hlg =>
+                        objc2_core_video::kCVImageBufferTransferFunction_ITU_R_2100_HLG,
+                    _ => kCVImageBufferTransferFunction_sRGB,
+                }
             ));
         }
+    }
+
+    fn p010_buffer() -> CFRetained<CVPixelBuffer> {
+        let buffer = surface_buffer(
+            VIDEO.0,
+            VIDEO.1,
+            objc2_core_video::kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+        );
+        fill(&buffer, 2, |plane, row| {
+            for (x, bytes) in row[..VIDEO.0 * 2]
+                .as_chunks_mut::<2>()
+                .0
+                .iter_mut()
+                .enumerate()
+            {
+                let code = if plane == 0 {
+                    64 + x * 820 / VIDEO.0
+                } else {
+                    512
+                };
+                *bytes = (u16::try_from(code).expect("ten-bit code") << 6).to_ne_bytes();
+            }
+        });
+        buffer
+    }
+
+    fn p010(metal: &Metal, buffer: &CVPixelBuffer, color: FrameColor) -> ExternalFrame {
+        let mut frame = ExternalFrame::yuv(
+            plane_texture(
+                metal,
+                buffer,
+                0,
+                (MTLPixelFormat::R16Uint, wgpu::TextureFormat::R16Uint),
+            ),
+            plane_texture(
+                metal,
+                buffer,
+                1,
+                (MTLPixelFormat::RG16Uint, wgpu::TextureFormat::Rg16Uint),
+            ),
+            color,
+        )
+        .expect("valid P010");
+        frame.attachments = Some(
+            cherenkov_gpu::interop::metal::VideoAttachments::from_pixel_buffer(buffer)
+                .expect("source HDR attachments"),
+        );
+        frame
     }
 
     fn bgra_buffer() -> CFRetained<CVPixelBuffer> {
