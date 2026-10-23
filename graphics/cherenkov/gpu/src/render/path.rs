@@ -1,12 +1,12 @@
 //! CPU coverage rasterization of general paths: sparse strips into atlas
 //! cells, plus the cache key for replaying them.
 
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use cherenkov::{FillRule, ShapeData};
 use kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape as _, Vec2};
+use rustc_hash::FxHasher;
 
 use crate::render::glyph::{CellTexels, PathCell, PathEmit};
 use crate::render::instance::Instance;
@@ -1622,7 +1622,7 @@ fn hash_shape_fields(hasher: &mut impl Hasher, shape: &ShapeData) {
 /// stroke parameter and the local flatten tolerance, tagged so it never
 /// collides with a fill of the same geometry.
 pub fn hash_stroke(shape: &ShapeData, stroke: &kurbo::Stroke, tolerance: f64) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = FxHasher::default();
     stroke_into(&mut hasher, shape, stroke, tolerance);
     hasher.finish()
 }
@@ -1654,7 +1654,7 @@ fn stroke_into(
 /// A stable hash of a local path's element list, tagged by draw mode so a
 /// fill, an even-odd fill and a stroke of the same outline never collide.
 pub fn hash_elements(elements: &[PathEl], tag: u64) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = FxHasher::default();
     tag.hash(&mut hasher);
     hash_elements_into(&mut hasher, elements);
     hasher.finish()
@@ -1723,7 +1723,7 @@ impl Placement {
         bytes[..8].copy_from_slice(&self.key.to_ne_bytes());
         bytes[8..16].copy_from_slice(&(self.offset.x as i64).to_ne_bytes());
         bytes[16..].copy_from_slice(&(self.offset.y as i64).to_ne_bytes());
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = FxHasher::default();
         hasher.write(&bytes);
         hasher.finish()
     }
@@ -1756,7 +1756,7 @@ pub fn placement(content_hash: u64, transform: Affine, surface: (u32, u32)) -> P
     }
     bytes[32..36].copy_from_slice(&surface.0.to_ne_bytes());
     bytes[36..].copy_from_slice(&surface.1.to_ne_bytes());
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = FxHasher::default();
     hasher.write(&bytes);
     let key = hasher.finish();
     Placement {
