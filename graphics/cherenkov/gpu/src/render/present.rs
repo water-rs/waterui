@@ -1078,7 +1078,7 @@ impl Presenter {
     /// # Errors
     /// Returns an error when Metal cannot allocate the shared headroom buffer.
     #[cfg(target_vendor = "apple")]
-    pub fn capture_scene(
+    pub(crate) fn capture_scene(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,

@@ -1,8 +1,9 @@
 //! Source headroom of immutable premultiplied linear-P3 captures.
 
 use cherenkov::RenderError;
-use objc2::{rc::Retained, runtime::ProtocolObject};
-use objc2_metal::{MTLBuffer, MTLDevice, MTLResourceOptions};
+use wgpu::hal::Device as _;
+
+type NativeApi = wgpu::hal::metal::Api;
 
 #[derive(Debug)]
 pub struct Reducer {
@@ -114,11 +115,12 @@ impl Reducer {
     }
 }
 
-/// Shared Metal memory read only after the capture's completion event.
+/// Persistent native mapping read only after the capture's completion event.
 #[derive(Debug)]
 pub struct Readback {
     gpu: wgpu::Buffer,
-    raw: Retained<ProtocolObject<dyn MTLBuffer>>,
+    device: wgpu::Device,
+    mapping: wgpu::hal::BufferMapping,
 }
 
 impl Readback {
@@ -127,36 +129,56 @@ impl Readback {
     }
 
     fn new(device: &wgpu::Device) -> Result<Self, RenderError> {
-        // SAFETY: this module is the native Metal capture path.
-        let metal = unsafe { device.as_hal::<wgpu::hal::metal::Api>() }.expect("Metal device");
-        let raw = metal
-            .raw_device()
-            .newBufferWithLength_options(4, MTLResourceOptions::StorageModeShared)
-            .ok_or_else(|| RenderError::Render("Metal refused capture headroom buffer".into()))?;
-        // SAFETY: a new four-byte shared buffer is CPU-owned until submission;
-        // initialize it before importing into wgpu, whose import requires it.
-        unsafe { raw.contents().cast::<f32>().as_ptr().write(1.0) };
-        // SAFETY: the retained buffer belongs to this device, has four initialized
-        // bytes and shared storage. Its GPU use is copy destination only.
-        let gpu = unsafe {
-            device.create_buffer_from_hal::<wgpu::hal::metal::Api>(
-                wgpu::hal::metal::Device::buffer_from_raw(raw.clone(), 4),
-                &wgpu::BufferDescriptor {
-                    label: Some("capture headroom"),
-                    size: 4,
-                    usage: wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                },
-            )
+        let gpu = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("capture headroom"),
+            size: 4,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mapping = {
+            // SAFETY: the buffer and device share this native backend. HAL permits
+            // persistent mappings during GPU access; no CPU read occurs until the
+            // capture completion event, and no map_async operation uses this buffer.
+            unsafe {
+                let native = device.as_hal::<NativeApi>().expect("native device");
+                let buffer = gpu.as_hal::<NativeApi>().expect("native buffer");
+                native.map_buffer(&buffer, 0..4)
+            }
+            .map_err(|error| RenderError::Render(format!("capture headroom mapping: {error}")))?
         };
-        Ok(Self { gpu, raw })
+        Ok(Self {
+            gpu,
+            device: device.clone(),
+            mapping,
+        })
     }
 
     /// The caller must have observed completion of the GPU copy, and no later
     /// GPU use may write this immutable capture's buffer.
     pub unsafe fn read(self) -> f32 {
-        // SAFETY: the caller's completion event orders the GPU copy before this
-        // CPU read of coherent shared memory on the supported ARM64 Apple devices.
-        unsafe { self.raw.contents().cast::<f32>().as_ptr().read() }
+        if !self.mapping.is_coherent {
+            // SAFETY: the caller's completion event orders the GPU write before
+            // invalidation and the CPU read. The mapping covers the whole buffer.
+            unsafe {
+                let device = self.device.as_hal::<NativeApi>().expect("native device");
+                let buffer = self.gpu.as_hal::<NativeApi>().expect("native buffer");
+                device.invalidate_mapped_ranges(&buffer, std::iter::once(0..4));
+            }
+        }
+        // SAFETY: the mapped buffer is aligned for f32 and contains the completed
+        // four-byte GPU result. Drop removes the mapping only after this read.
+        unsafe { self.mapping.ptr.cast::<f32>().as_ptr().read() }
+    }
+}
+
+impl Drop for Readback {
+    fn drop(&mut self) {
+        // SAFETY: this object's unique persistent mapping stays live until Drop;
+        // wgpu retains any submitted buffer use independently of this CPU mapping.
+        unsafe {
+            let device = self.device.as_hal::<NativeApi>().expect("native device");
+            let buffer = self.gpu.as_hal::<NativeApi>().expect("native buffer");
+            device.unmap_buffer(&buffer);
+        }
     }
 }
