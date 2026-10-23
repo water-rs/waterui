@@ -941,6 +941,8 @@ pub enum PlaneContent<'a> {
         view: Option<&'a wgpu::TextureView>,
         /// The capture's content version.
         generation: u64,
+        /// Content range of the captured pixels.
+        range: super::present::ColorRange,
     },
     /// A retained external frame, handed to the system compositor instead of
     /// being sampled by the engine.

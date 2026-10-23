@@ -135,6 +135,8 @@ enum Entry<'a> {
         view: Option<&'a wgpu::TextureView>,
         size: (u32, u32),
         raster: Option<(LayerId, u64)>,
+        format: wgpu::TextureFormat,
+        color: OutputColor,
         properties: Properties,
     },
     /// A frame shown on its own plane.
@@ -236,6 +238,55 @@ fn dup_fence(fd: &OwnedFd) -> Result<OwnedFd, RenderError> {
         .map_err(|e| RenderError::Render(format!("duplicate a fence: {e}")))
 }
 
+fn raster_entry<'a>(
+    view: Option<&'a wgpu::TextureView>,
+    generation: u64,
+    range: crate::render::present::ColorRange,
+    placement: &crate::render::planes::Placement,
+    size: (u32, u32),
+) -> Result<Entry<'a>, RenderError> {
+    let layer = placement.layer;
+    let hdr = range == crate::render::present::ColorRange::HighDynamicRange;
+    let color = crate::interop::FrameColor {
+        transfer: if hdr {
+            crate::interop::Transfer::Linear
+        } else {
+            crate::interop::Transfer::Srgb
+        },
+        ..crate::interop::FrameColor::LINEAR_P3
+    };
+    Ok(Entry::Engine {
+        view,
+        size: placement.size,
+        raster: Some((layer, generation)),
+        format: if hdr {
+            wgpu::TextureFormat::Rgba16Float
+        } else {
+            buffer::FORMAT
+        },
+        color: if hdr {
+            OutputColor::LinearDisplayP3
+        } else {
+            OutputColor::DisplayP3
+        },
+        properties: Properties {
+            z: 0,
+            placement: plan::promoted(placement, size).map_err(|e| cannot_show(layer, &e))?,
+            alpha: placement.opacity,
+            opaque: false,
+            dataspace: plan::dataspace(
+                &color,
+                Encoding::Rgb {
+                    float: hdr,
+                    alpha: crate::interop::RgbAlpha::Premultiplied,
+                },
+            )
+            .map_err(|e| cannot_show(layer, &e))?,
+            hdr: HdrMetadata::default(),
+        },
+    })
+}
+
 /// The stack `composition` describes, bottom first, with each promoted
 /// frame's plane properties.
 ///
@@ -251,6 +302,8 @@ fn stack<'a>(composition: &Composition<'a>) -> Result<Vec<Entry<'a>>, RenderErro
                     view: Some(composition.parts[n].view),
                     size: composition.size,
                     raster: None,
+                    format: buffer::FORMAT,
+                    color: OutputColor::Srgb,
                     properties: Properties {
                         z: 0,
                         placement: full(composition.size),
@@ -279,28 +332,18 @@ fn stack<'a>(composition: &Composition<'a>) -> Result<Vec<Entry<'a>>, RenderErro
                 });
                 continue;
             }
-            PlaneContent::Raster { view, generation } => {
-                entries.push(Entry::Engine {
-                    view: *view,
-                    size: plane.placement.size,
-                    raster: Some((layer, *generation)),
-                    properties: Properties {
-                        z: 0,
-                        placement: plan::promoted(plane.placement, composition.size)
-                            .map_err(|e| cannot_show(layer, &e))?,
-                        alpha: plane.placement.opacity,
-                        opaque: false,
-                        dataspace: plan::dataspace(
-                            &crate::interop::FrameColor::LINEAR_P3,
-                            Encoding::Rgb {
-                                float: true,
-                                alpha: crate::interop::RgbAlpha::Premultiplied,
-                            },
-                        )
-                        .map_err(|e| cannot_show(layer, &e))?,
-                        hdr: HdrMetadata::default(),
-                    },
-                });
+            PlaneContent::Raster {
+                view,
+                generation,
+                range,
+            } => {
+                entries.push(raster_entry(
+                    *view,
+                    *generation,
+                    *range,
+                    plane.placement,
+                    composition.size,
+                )?);
                 continue;
             }
         };
@@ -645,14 +688,16 @@ impl Planes {
             .filter(|entry| matches!(entry, Entry::Engine { .. }))
             .enumerate()
         {
-            let Entry::Engine { size, raster, .. } = entry else {
+            let Entry::Engine {
+                size,
+                raster,
+                format,
+                ..
+            } = entry
+            else {
                 unreachable!("filtered engine entries");
             };
-            let format = if raster.is_some() {
-                wgpu::TextureFormat::Rgba16Float
-            } else {
-                buffer::FORMAT
-            };
+            let format = *format;
             let this = &mut self.parts[part];
             if this.size != *size || this.format != format {
                 for buffer in this.buffers.drain(..) {
@@ -735,21 +780,17 @@ impl Planes {
             label: Some("plane present"),
         });
         let mut sources = stack.iter().filter_map(|entry| match entry {
-            Entry::Engine { view, raster, .. } => Some((*view, raster)),
+            Entry::Engine { view, color, .. } => Some((*view, *color)),
             Entry::Frame(_) | Entry::Hosted { .. } => None,
         });
         for (part, &at) in chosen.iter().enumerate() {
-            let (source, raster) = sources.next().expect("one source per part");
+            let (source, color) = sources.next().expect("one source per part");
             let Some(at) = at else {
                 continue;
             };
             let output = TextureOutput {
                 texture: &self.parts[part].buffers[at].texture,
-                color: if raster.is_some() {
-                    OutputColor::LinearDisplayP3
-                } else {
-                    OutputColor::Srgb
-                },
+                color,
                 alpha: if part == 0 && !self.transparent {
                     OutputAlpha::Opaque
                 } else {

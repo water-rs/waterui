@@ -7,7 +7,7 @@ use objc2_core_foundation::{CFDictionary, CFRetained, CFString, CFType};
 use objc2_core_video::{
     CVPixelBuffer, CVPixelBufferCreate, CVPixelBufferGetIOSurface,
     kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferMetalCompatibilityKey,
-    kCVPixelFormatType_64RGBAHalf, kCVReturnSuccess,
+    kCVPixelFormatType_32BGRA, kCVPixelFormatType_64RGBAHalf, kCVReturnSuccess,
 };
 use objc2_io_surface::IOSurfaceRef;
 use objc2_metal::{
@@ -27,9 +27,70 @@ pub(super) struct Buffer {
     pub generation: u64,
     pub ready: Arc<AtomicBool>,
     pub headroom: f32,
+    pub range: crate::render::present::ColorRange,
     /// Signalled on the conversion command buffer. The listener waits for
     /// value 1, which this buffer publishes once.
     completion: Retained<ProtocolObject<dyn MTLSharedEvent>>,
+}
+
+fn surface(size: (u32, u32), hdr: bool) -> Result<CFRetained<IOSurfaceRef>, RenderError> {
+    let empty = CFDictionary::<CFString, CFType>::from_slices(&[], &[]);
+    // SAFETY: immutable framework keys and the CFBoolean singleton.
+    let attributes = unsafe {
+        CFDictionary::<CFString, CFType>::from_slices(
+            &[
+                kCVPixelBufferIOSurfacePropertiesKey,
+                kCVPixelBufferMetalCompatibilityKey,
+            ],
+            &[
+                &empty,
+                objc2_core_foundation::kCFBooleanTrue.expect("CFBoolean"),
+            ],
+        )
+    };
+    let mut raw = std::ptr::null_mut();
+    // SAFETY: valid attributes, and an out pointer for the retained buffer.
+    let status = unsafe {
+        CVPixelBufferCreate(
+            None,
+            size.0 as usize,
+            size.1 as usize,
+            if hdr {
+                kCVPixelFormatType_64RGBAHalf
+            } else {
+                kCVPixelFormatType_32BGRA
+            },
+            Some(attributes.as_opaque()),
+            std::ptr::NonNull::from(&mut raw),
+        )
+    };
+    if status != kCVReturnSuccess {
+        return Err(RenderError::Render(format!(
+            "static plane pixel buffer: {status}"
+        )));
+    }
+    // SAFETY: success transfers one reference to the caller.
+    let buffer = unsafe {
+        CFRetained::<CVPixelBuffer>::from_raw(
+            std::ptr::NonNull::new(raw).expect("successful pixel-buffer allocation"),
+        )
+    };
+    let surface = CVPixelBufferGetIOSurface(Some(&buffer)).expect("IOSurface-backed pixel buffer");
+    // SAFETY: the colour-space name and IOSurface key are immutable statics.
+    let space = objc2_core_graphics::CGColorSpace::with_name(Some(unsafe {
+        if hdr {
+            objc2_core_graphics::kCGColorSpaceExtendedLinearDisplayP3
+        } else {
+            objc2_core_graphics::kCGColorSpaceDisplayP3
+        }
+    }))
+    .expect("Display P3 color space");
+    let property = space.property_list().expect("serializable colour space");
+    // SAFETY: `surface` is a live IOSurface, the key is the framework's
+    // colour-space constant, and `property` is the colour space's
+    // property-list representation — a value IOSurface accepts.
+    unsafe { surface.set_value(objc2_io_surface::kIOSurfaceColorSpace, &property) };
+    Ok(surface)
 }
 
 impl Buffer {
@@ -38,56 +99,15 @@ impl Buffer {
         size: (u32, u32),
         generation: u64,
         headroom: f32,
+        range: crate::render::present::ColorRange,
     ) -> Result<Self, RenderError> {
-        let empty = CFDictionary::<CFString, CFType>::from_slices(&[], &[]);
-        // SAFETY: immutable framework keys and the CFBoolean singleton.
-        let attributes = unsafe {
-            CFDictionary::<CFString, CFType>::from_slices(
-                &[
-                    kCVPixelBufferIOSurfacePropertiesKey,
-                    kCVPixelBufferMetalCompatibilityKey,
-                ],
-                &[
-                    &empty,
-                    objc2_core_foundation::kCFBooleanTrue.expect("CFBoolean"),
-                ],
-            )
+        let hdr = range == crate::render::present::ColorRange::HighDynamicRange;
+        let format = if hdr {
+            wgpu::TextureFormat::Rgba16Float
+        } else {
+            wgpu::TextureFormat::Bgra8Unorm
         };
-        let mut raw = std::ptr::null_mut();
-        // SAFETY: valid attributes, and an out pointer for the retained buffer.
-        let status = unsafe {
-            CVPixelBufferCreate(
-                None,
-                size.0 as usize,
-                size.1 as usize,
-                kCVPixelFormatType_64RGBAHalf,
-                Some(attributes.as_opaque()),
-                std::ptr::NonNull::from(&mut raw),
-            )
-        };
-        if status != kCVReturnSuccess {
-            return Err(RenderError::Render(format!(
-                "static plane pixel buffer: {status}"
-            )));
-        }
-        // SAFETY: success transfers one reference to the caller.
-        let buffer = unsafe {
-            CFRetained::<CVPixelBuffer>::from_raw(
-                std::ptr::NonNull::new(raw).expect("successful pixel-buffer allocation"),
-            )
-        };
-        let surface =
-            CVPixelBufferGetIOSurface(Some(&buffer)).expect("IOSurface-backed pixel buffer");
-        // SAFETY: the colour-space name and IOSurface key are immutable statics.
-        let space = objc2_core_graphics::CGColorSpace::with_name(Some(unsafe {
-            objc2_core_graphics::kCGColorSpaceExtendedLinearDisplayP3
-        }))
-        .expect("extended linear P3");
-        let property = space.property_list().expect("serializable colour space");
-        // SAFETY: `surface` is a live IOSurface, the key is the framework's
-        // colour-space constant, and `property` is the colour space's
-        // property-list representation — a value IOSurface accepts.
-        unsafe { surface.set_value(objc2_io_surface::kIOSurfaceColorSpace, &property) };
+        let surface = surface(size, hdr)?;
         // SAFETY: Metal is the Apple backend and the descriptor is fully specified.
         let metal = unsafe { device.as_hal::<wgpu::hal::metal::Api>() }.expect("Metal device");
         // SAFETY: the pixel format is a valid `MTLPixelFormat` and the
@@ -95,7 +115,11 @@ impl Buffer {
         // backs.
         let descriptor = unsafe {
             MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-                MTLPixelFormat::RGBA16Float,
+                if hdr {
+                    MTLPixelFormat::RGBA16Float
+                } else {
+                    MTLPixelFormat::BGRA8Unorm
+                },
                 size.0 as usize,
                 size.1 as usize,
                 false,
@@ -119,7 +143,7 @@ impl Buffer {
         let texture = unsafe {
             let texture = wgpu::hal::metal::Device::texture_from_raw(
                 raw,
-                wgpu::TextureFormat::Rgba16Float,
+                format,
                 MTLTextureType::Type2D,
                 1,
                 1,
@@ -134,7 +158,7 @@ impl Buffer {
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba16Float,
+                    format,
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                         | wgpu::TextureUsages::TEXTURE_BINDING,
                     view_formats: &[],
@@ -147,6 +171,7 @@ impl Buffer {
             surface,
             generation,
             headroom,
+            range,
             ready: Arc::new(AtomicBool::new(false)),
             completion,
         })
@@ -192,7 +217,10 @@ impl Buffer {
 }
 
 /// `IOSurface` is reference counted and its immutable contents may cross threads.
-pub(super) struct Contents(pub CFRetained<IOSurfaceRef>);
+pub(super) struct Contents(
+    pub CFRetained<IOSurfaceRef>,
+    pub crate::render::present::ColorRange,
+);
 #[expect(
     clippy::non_send_fields_in_send_ty,
     reason = "IOSurface is thread safe; only immutable GPU-completed contents cross to main"
@@ -208,7 +236,40 @@ impl Contents {
         // SAFETY: `value` is the retained IOSurface above — a type CALayer's
         // `contents` accepts — and `layer` is touched only on main.
         unsafe { layer.setContents(Some(value)) };
-        // SAFETY: `CADynamicRangeHigh` is an immutable framework static.
-        layer.setPreferredDynamicRange(unsafe { objc2_quartz_core::CADynamicRangeHigh });
+        // SAFETY: both dynamic-range names are immutable framework statics.
+        layer.setPreferredDynamicRange(unsafe {
+            if self.1 == crate::render::present::ColorRange::HighDynamicRange {
+                objc2_quartz_core::CADynamicRangeHigh
+            } else {
+                objc2_quartz_core::CADynamicRangeStandard
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::present::ColorRange;
+
+    #[test]
+    fn sdr_native_capture_uses_less_storage_than_hdr() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::METAL,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .expect("Metal adapter");
+        let (device, _) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                .expect("Metal device");
+        let sdr = Buffer::new(&device, (1024, 512), 1, 1.0, ColorRange::WideGamut)
+            .expect("SDR IOSurface");
+        let hdr = Buffer::new(&device, (1024, 512), 2, 2.0, ColorRange::HighDynamicRange)
+            .expect("HDR IOSurface");
+        assert_eq!(sdr.texture.format(), wgpu::TextureFormat::Bgra8Unorm);
+        assert_eq!(hdr.texture.format(), wgpu::TextureFormat::Rgba16Float);
+        assert!(sdr.bytes() < hdr.bytes());
     }
 }

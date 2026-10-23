@@ -6,6 +6,7 @@ mod capabilities;
 mod colr;
 mod composite;
 pub mod composition;
+mod content_range;
 pub mod diag;
 #[cfg(target_os = "linux")]
 pub mod dmabuf_export;
@@ -3315,6 +3316,7 @@ fn plane_stack<'a, 'p: 'a>(
                         planes::PlaneContent::Raster {
                             view: capture.source.as_ref().map(|(_, view)| view),
                             generation: capture.generation,
+                            range: surface.static_layers[&placement.layer].range,
                         }
                     },
                     |slot| planes::PlaneContent::Frame {
@@ -6709,6 +6711,7 @@ impl GpuRenderer {
                 .entry(layer)
                 .or_insert_with(|| planes::static_layer::Observation::new(stamp, resources));
             if entry.observe(stamp, resources, density) {
+                entry.range = content_range::of_ops(ops, &self.images);
                 entry.domain = planes::static_layer::domain(
                     ops,
                     source,

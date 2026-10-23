@@ -2396,12 +2396,18 @@ impl LayerPlanes {
             })
         });
         for plane in c.planes {
-            let PlaneContent::Raster { view, generation } = &plane.content else {
+            let PlaneContent::Raster {
+                view,
+                generation,
+                range,
+            } = &plane.content
+            else {
                 continue;
             };
             let layer = plane.placement.layer;
             if self.buffers.get(&layer).is_none_or(|buffer| {
                 buffer.generation != *generation
+                    || buffer.range != *range
                     || buffer.headroom.to_bits() != c.display.headroom.to_bits()
             }) {
                 let buffer = raster::Buffer::new(
@@ -2409,6 +2415,7 @@ impl LayerPlanes {
                     plane.placement.size,
                     *generation,
                     c.display.headroom,
+                    *range,
                 )?;
                 buffer.completing(c.queue, self.waker.clone());
                 c.presenter.texture(
@@ -2417,7 +2424,11 @@ impl LayerPlanes {
                     view.expect("a new native capture has engine pixels"),
                     crate::interop::TextureOutput {
                         texture: &buffer.texture,
-                        color: crate::interop::OutputColor::LinearDisplayP3,
+                        color: if *range == crate::render::present::ColorRange::HighDynamicRange {
+                            crate::interop::OutputColor::LinearDisplayP3
+                        } else {
+                            crate::interop::OutputColor::DisplayP3
+                        },
                         alpha: crate::interop::OutputAlpha::Premultiplied,
                         headroom: c.display.headroom,
                     },
@@ -2426,7 +2437,10 @@ impl LayerPlanes {
             }
             let buffer = &self.buffers[&layer];
             ready &= buffer.ready.load(Ordering::Acquire);
-            contents.push((layer, raster::Contents(buffer.surface.clone())));
+            contents.push((
+                layer,
+                raster::Contents(buffer.surface.clone(), buffer.range),
+            ));
         }
         Ok(ready.then_some(contents))
     }
