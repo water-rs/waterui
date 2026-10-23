@@ -220,6 +220,7 @@ impl Buffer {
 pub(super) struct Contents(
     pub CFRetained<IOSurfaceRef>,
     pub crate::render::present::ColorRange,
+    pub f32,
 );
 #[expect(
     clippy::non_send_fields_in_send_ty,
@@ -236,6 +237,15 @@ impl Contents {
         // SAFETY: `value` is the retained IOSurface above — a type CALayer's
         // `contents` accepts — and `layer` is touched only on main.
         unsafe { layer.setContents(Some(value)) };
+        // Presentation currently maps extended pixels to this display headroom.
+        // Core Animation requires content headroom tagging to activate EDR.
+        layer.setContentsHeadroom(
+            if self.1 == crate::render::present::ColorRange::HighDynamicRange {
+                f64::from(self.2)
+            } else {
+                1.0
+            },
+        );
         // SAFETY: both dynamic-range names are immutable framework statics.
         layer.setPreferredDynamicRange(unsafe {
             if self.1 == crate::render::present::ColorRange::HighDynamicRange {

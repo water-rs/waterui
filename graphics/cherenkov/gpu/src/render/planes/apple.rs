@@ -2439,7 +2439,7 @@ impl LayerPlanes {
             ready &= buffer.ready.load(Ordering::Acquire);
             contents.push((
                 layer,
-                raster::Contents(buffer.surface.clone(), buffer.range),
+                raster::Contents(buffer.surface.clone(), buffer.range, buffer.headroom),
             ));
         }
         Ok(ready.then_some(contents))

@@ -1532,7 +1532,7 @@ mod macos {
         static_pixels(false);
     }
 
-    fn raster_formats(layer: &CALayer, found: &mut Vec<(u32, bool)>) {
+    fn raster_formats(layer: &CALayer, found: &mut Vec<(u32, bool, f64)>) {
         // SAFETY: this fixture contains only engine-owned layers; their
         // contents are Core Foundation images or IOSurfaces, inspected on main.
         if let Some(contents) = unsafe { layer.contents() } {
@@ -1542,7 +1542,7 @@ mod macos {
                 // SAFETY: the dynamic-range name is an immutable framework static.
                 let high = &*layer.preferredDynamicRange()
                     == unsafe { objc2_quartz_core::CADynamicRangeHigh };
-                found.push((surface.pixel_format(), high));
+                found.push((surface.pixel_format(), high, layer.contentsHeadroom()));
             }
         }
         for child in sublayers(layer) {
@@ -1552,6 +1552,13 @@ mod macos {
 
     fn static_content_range_changes_replace_native_storage() {
         let fixture = Fixture::new();
+        fixture
+            .window
+            .display(Display {
+                scale: SCALE,
+                headroom: 2.0,
+            })
+            .expect("HDR display range");
         let layer = fixture.window.layer();
         fixture.window.update(|tx| {
             tx[fixture.window.root()].push(&layer);
@@ -1582,7 +1589,7 @@ mod macos {
                 fixture.render();
                 let mut formats = Vec::new();
                 raster_formats(&fixture.host(), &mut formats);
-                if formats == [(format, high)] {
+                if formats == [(format, high, if high { 2.0 } else { 1.0 })] {
                     break;
                 }
                 assert!(
