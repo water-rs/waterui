@@ -1069,7 +1069,15 @@ impl Lowerer<'_> {
             return Ok(());
         }
         let mid = line.p0 + d * 0.5;
-        let extra = Affine::translate(mid.to_vec2()) * Affine::rotate(d.y.atan2(d.x));
+        let direction = d / len;
+        let extra = Affine::new([
+            direction.x,
+            direction.y,
+            -direction.y,
+            direction.x,
+            mid.x,
+            mid.y,
+        ]);
         let half = match stroke.start_cap {
             kurbo::Cap::Butt => [f32_f64(len / 2.0), f32_f64(hw)],
             _ => [f32_f64(len / 2.0 + hw), f32_f64(hw)],
