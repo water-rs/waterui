@@ -1584,14 +1584,19 @@ mod macos {
             });
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut x = 0.0;
+            let mut capturing = false;
             loop {
                 // Exercise consecutive observations of stable content while
                 // its placement changes; replacement must not reuse old pixels.
-                x = 1.0 - x;
-                fixture.window.update(|tx| {
-                    tx[&layer].transform(Affine::translate((x, 0.)));
-                });
+                if !capturing {
+                    x = 1.0 - x;
+                    fixture.window.update(|tx| {
+                        tx[&layer].transform(Affine::translate((x, 0.)));
+                    });
+                }
+                fixture.woke.store(false, Ordering::Release);
                 fixture.render();
+                capturing |= fixture.engine.stats().passes > 1;
                 let mut formats = Vec::new();
                 raster_formats(&fixture.host(), &mut formats);
                 if matches!(formats.as_slice(), [(actual, extended, headroom, _)]
@@ -1599,48 +1604,44 @@ mod macos {
                 {
                     break;
                 }
+                if capturing {
+                    // Once capture work was submitted, only its completion may
+                    // drive another frame: no scene changes or GPU polling here.
+                    drive(deadline, &|| fixture.woke.load(Ordering::Acquire), &|| {
+                        format!(
+                            "capture metadata did not wake the idle engine: HDR={high}, native={formats:?}"
+                        )
+                    });
+                }
                 assert!(
                     Instant::now() < deadline,
                     "expected format {format} HDR={high}, got {formats:?}"
                 );
             }
             if high {
-                static_headroom_completion(&fixture, true);
+                static_headroom_completion(&fixture, 3.0);
             }
         }
     }
 
-    fn static_headroom_completion(fixture: &Fixture, recaptures: bool) {
+    fn static_headroom_completion(fixture: &Fixture, headroom: f32) {
         let mut before = Vec::new();
         raster_formats(&fixture.host(), &mut before);
-        fixture.woke.store(false, Ordering::Release);
         fixture
             .window
             .display(Display {
                 scale: SCALE,
-                headroom: if recaptures { 3.0 } else { 2.0 },
+                headroom,
             })
             .expect("new output headroom");
-        assert_eq!(
-            fixture.engine.render(FrameTime::now()).expect("recapture"),
-            cherenkov::Next::Idle
-        );
-        if !recaptures {
-            fixture.render();
-            let mut after = Vec::new();
-            raster_formats(&fixture.host(), &mut after);
-            assert!(!before.is_empty(), "the SDR capture is present");
-            assert_eq!(before, after, "headroom changes retain the SDR IOSurface");
-            return;
-        }
-        // No render, readback, queue submission or device poll while waiting:
-        // the conversion itself must wake an otherwise idle engine.
-        drive(
-            Instant::now() + Duration::from_secs(10),
-            &|| fixture.woke.load(Ordering::Acquire),
-            &|| "capture conversion failed to wake the idle engine".into(),
-        );
         fixture.render();
+        let mut after = Vec::new();
+        raster_formats(&fixture.host(), &mut after);
+        assert!(!before.is_empty(), "the capture is present");
+        assert_eq!(
+            before, after,
+            "display headroom changes retain scene-referred IOSurfaces"
+        );
         assert_eq!(stack(fixture).len(), 2);
     }
 
@@ -1713,7 +1714,7 @@ mod macos {
             assert_eq!(stack(&fixture).len(), 1);
             return;
         }
-        static_headroom_completion(&fixture, false);
+        static_headroom_completion(&fixture, 2.0);
         fixture
             .window
             .update_animated(cherenkov::Curve::linear(Duration::from_secs(2)), |tx| {

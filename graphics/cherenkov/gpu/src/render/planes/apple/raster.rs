@@ -27,6 +27,7 @@ pub(super) struct Buffer {
     pub generation: u64,
     pub ready: Arc<AtomicBool>,
     pub headroom: f32,
+    pub pending_headroom: Option<crate::render::headroom::Readback>,
     pub range: crate::render::present::ColorRange,
     /// Signalled on the conversion command buffer. The listener waits for
     /// value 1, which this buffer publishes once.
@@ -171,20 +172,27 @@ impl Buffer {
             surface,
             generation,
             headroom,
+            pending_headroom: None,
             range,
             ready: Arc::new(AtomicBool::new(false)),
             completion,
         })
     }
 
-    /// Wake `waker` when the next submission on `queue` finishes.
-    ///
-    /// The listener is registered before the signal is staged. wgpu encodes
-    /// that signal on the next submit's last command buffer, after the
-    /// submit's own completion, so the callback observes the conversion
-    /// committed with it. An empty marker committed beside that work can
-    /// run first.
-    pub fn completing(&self, queue: &wgpu::Queue, waker: cherenkov::CompletionWaker) {
+    /// Stage the completion signal on the capture's own submission.
+    pub fn signal(&self, queue: &wgpu::Queue) {
+        // SAFETY: this live event is signalled after the queue's next submission.
+        unsafe {
+            queue
+                .as_hal::<wgpu::hal::metal::Api>()
+                .expect("Metal queue")
+                .add_signal_event(self.completion.clone(), 1);
+        }
+    }
+
+    /// Register after submission. A completed event immediately invokes its
+    /// listener, publishing the capture and its shared headroom readback.
+    pub fn completing(&self, waker: cherenkov::CompletionWaker) {
         autoreleasepool(|_| {
             let ready = Arc::clone(&self.ready);
             let block = block2::RcBlock::new(
@@ -193,26 +201,25 @@ impl Buffer {
                     waker.wake();
                 },
             );
-            // SAFETY: Metal copies the block and invokes it with the event
-            // and the signaled value. The flag and waker are thread safe,
-            // and the callback never touches a layer. `add_signal_event`
-            // only stages a signal for this queue's next submit.
+            // SAFETY: Metal retains the block and invokes it when the live
+            // event reaches 1, including when it reached 1 before registration.
+            // The callback publishes readiness and wakes the engine.
             unsafe {
                 self.completion.notifyListener_atValue_block(
                     &MTLSharedEventListener::sharedListener(),
                     1,
                     block2::RcBlock::as_ptr(&block),
                 );
-                queue
-                    .as_hal::<wgpu::hal::metal::Api>()
-                    .expect("Metal queue")
-                    .add_signal_event(self.completion.clone(), 1);
             }
         });
     }
 
     pub fn bytes(&self) -> u64 {
         self.surface.alloc_size() as u64
+            + self
+                .pending_headroom
+                .as_ref()
+                .map_or(0, crate::render::headroom::Readback::bytes)
     }
 }
 
@@ -237,7 +244,7 @@ impl Contents {
         // SAFETY: `value` is the retained IOSurface above — a type CALayer's
         // `contents` accepts — and `layer` is touched only on main.
         unsafe { layer.setContents(Some(value)) };
-        // Presentation currently maps extended pixels to this display headroom.
+        // Scene-referred pixels carry their source headroom.
         // Core Animation requires content headroom tagging to activate EDR.
         layer.setContentsHeadroom(
             if self.1 == crate::render::present::ColorRange::HighDynamicRange {
@@ -246,6 +253,8 @@ impl Contents {
                 1.0
             },
         );
+        // SAFETY: the tone-map mode is an immutable framework static.
+        layer.setToneMapMode(unsafe { objc2_quartz_core::CAToneMapModeIfSupported });
         // SAFETY: both dynamic-range names are immutable framework statics.
         layer.setPreferredDynamicRange(unsafe {
             if self.1 == crate::render::present::ColorRange::HighDynamicRange {

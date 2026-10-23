@@ -1955,10 +1955,6 @@ impl<'a> Lowering<'a> {
                 pending: &mut self.pending,
             })?;
             self.commands_lowered += changed;
-            if changed != 0 || content.range.is_none() {
-                let (ops, _) = content.retained.current().expect("content prepared above");
-                content.range = Some(super::content_range::of_ops(ops, glyphs.images));
-            }
         }
         Ok(())
     }
@@ -7387,7 +7383,8 @@ mod tests {
             let mut ranges = Vec::new();
             super::super::content_range::parts(
                 &tree,
-                &caches,
+                &mut caches,
+                glyphs.images,
                 glyphs.content,
                 plan,
                 WorkingColor::BLACK,

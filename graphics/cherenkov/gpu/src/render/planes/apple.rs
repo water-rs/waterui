@@ -2405,39 +2405,53 @@ impl LayerPlanes {
                 continue;
             };
             let layer = plane.placement.layer;
-            if self.buffers.get(&layer).is_none_or(|buffer| {
-                buffer.generation != *generation
-                    || buffer.range != *range
-                    || (*range == crate::render::present::ColorRange::HighDynamicRange
-                        && buffer.headroom.to_bits() != c.display.headroom.to_bits())
-            }) {
-                let buffer = raster::Buffer::new(
+            if self
+                .buffers
+                .get(&layer)
+                .is_none_or(|buffer| buffer.generation != *generation || buffer.range != *range)
+            {
+                let mut buffer = raster::Buffer::new(
                     c.device,
                     plane.placement.size,
                     *generation,
                     c.display.headroom,
                     *range,
                 )?;
-                buffer.completing(c.queue, self.waker.clone());
-                c.presenter.texture(
-                    c.device,
-                    c.queue,
-                    view.expect("a new native capture has engine pixels"),
-                    crate::interop::TextureOutput {
-                        texture: &buffer.texture,
-                        color: if *range == crate::render::present::ColorRange::HighDynamicRange {
-                            crate::interop::OutputColor::LinearDisplayP3
-                        } else {
-                            crate::interop::OutputColor::DisplayP3
+                buffer.signal(c.queue);
+                if *range == crate::render::present::ColorRange::HighDynamicRange {
+                    buffer.pending_headroom = Some(c.presenter.capture_scene(
+                        c.device,
+                        c.queue,
+                        view.expect("a new native capture has engine pixels"),
+                        &buffer.texture,
+                    )?);
+                } else {
+                    c.presenter.texture(
+                        c.device,
+                        c.queue,
+                        view.expect("a new native capture has engine pixels"),
+                        crate::interop::TextureOutput {
+                            texture: &buffer.texture,
+                            color: crate::interop::OutputColor::DisplayP3,
+                            alpha: crate::interop::OutputAlpha::Premultiplied,
+                            headroom: c.display.headroom,
                         },
-                        alpha: crate::interop::OutputAlpha::Premultiplied,
-                        headroom: c.display.headroom,
-                    },
-                );
+                    );
+                }
+                buffer.completing(self.waker.clone());
                 self.buffers.insert(layer, buffer);
             }
-            let buffer = &self.buffers[&layer];
-            ready &= buffer.ready.load(Ordering::Acquire);
+            let buffer = self
+                .buffers
+                .get_mut(&layer)
+                .expect("capture inserted above");
+            let completed = buffer.ready.load(Ordering::Acquire);
+            if completed && let Some(pending) = buffer.pending_headroom.take() {
+                // SAFETY: the shared event published with Release after this
+                // capture's GPU copy; this immutable readback is never reused.
+                buffer.headroom = unsafe { pending.read() };
+            }
+            ready &= completed;
             contents.push((
                 layer,
                 raster::Contents(buffer.surface.clone(), buffer.range, buffer.headroom),

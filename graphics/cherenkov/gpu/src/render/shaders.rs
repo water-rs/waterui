@@ -226,6 +226,8 @@ pub mod spirv {
     pub const RESOLVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/resolve.spv"));
     /// `reduce.wgsl`.
     pub const REDUCE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/reduce.spv"));
+    #[cfg(target_vendor = "apple")]
+    pub const HEADROOM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/headroom.spv"));
     /// `shadow.wgsl`, the silhouette convolution module.
     pub const SHADOW: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.spv"));
     /// The space fragment plus `space_convert.wgsl`.
@@ -324,6 +326,9 @@ const SPACE_CONVERT_METALLIB: &[u8] = &[];
 const COVERAGE_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/coverage.metallib"));
 #[cfg(not(target_vendor = "apple"))]
 const COVERAGE_METALLIB: &[u8] = &[];
+
+#[cfg(target_vendor = "apple")]
+const HEADROOM_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/headroom.metallib"));
 
 /// The seven `VARIANT` specializations of `shader.wgsl`, indexed by
 /// `variant_index`.
@@ -475,6 +480,19 @@ const REDUCE: Fixed = Fixed {
     entries: entries::REDUCE,
 };
 
+/// Source headroom reduction for immutable captures.
+#[cfg(target_vendor = "apple")]
+const HEADROOM: Fixed = Fixed {
+    wgsl: include_str!("headroom.wgsl"),
+    #[cfg(cherenkov_spirv)]
+    spirv: spirv::HEADROOM,
+    metallib: HEADROOM_METALLIB,
+    #[cfg(cherenkov_dxil)]
+    dxil: dxil::HEADROOM,
+    programs: programs::MAIN,
+    entries: entries::HEADROOM,
+};
+
 /// General silhouette convolution, with host-bounded taps and explicit texel bounds.
 const SHADOW: Fixed = Fixed {
     wgsl: include_str!("shadow.wgsl"),
@@ -621,6 +639,13 @@ impl ShaderDelivery {
     #[must_use]
     pub fn reduce_program(self, device: &wgpu::Device) -> RenderProgram {
         self.render_program(device, "cherenkov reduce", &REDUCE)
+    }
+
+    /// Source headroom reduction for immutable captures.
+    #[cfg(target_vendor = "apple")]
+    #[must_use]
+    pub fn headroom_program(self, device: &wgpu::Device) -> RenderProgram {
+        self.render_program(device, "capture headroom", &HEADROOM)
     }
 
     /// The general silhouette convolution program.

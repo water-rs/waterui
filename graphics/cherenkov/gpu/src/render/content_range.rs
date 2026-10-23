@@ -98,16 +98,22 @@ pub(super) fn of_ops(ops: &[Op], images: &FxHashMap<u64, GpuImage>) -> ColorRang
 /// lowering. Promoted content is excluded; its children paint in the next part.
 pub(super) fn parts(
     tree: &cherenkov::SurfaceTree,
-    layers: &FxHashMap<cherenkov::LayerId, super::lower::ContentData>,
+    layers: &mut FxHashMap<cherenkov::LayerId, super::lower::ContentData>,
+    images: &FxHashMap<u64, GpuImage>,
     bindings: &FxHashMap<cherenkov::LayerId, super::gpu_content::Binding>,
     plan: &super::planes::Plan,
     clear: cherenkov::WorkingColor,
     output: &mut Vec<ColorRange>,
 ) {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "paint-order walk with retained content and image resources"
+    )]
     fn visit(
         id: cherenkov::LayerId,
         tree: &cherenkov::SurfaceTree,
-        layers: &FxHashMap<cherenkov::LayerId, super::lower::ContentData>,
+        layers: &mut FxHashMap<cherenkov::LayerId, super::lower::ContentData>,
+        images: &FxHashMap<u64, GpuImage>,
         bindings: &FxHashMap<cherenkov::LayerId, super::gpu_content::Binding>,
         plan: &super::planes::Plan,
         part: &mut usize,
@@ -125,21 +131,36 @@ pub(super) fn parts(
             {
                 ColorRange::HighDynamicRange
             } else {
-                layers.get(&id).map_or(ColorRange::Standard, |content| {
-                    content.range.expect("prepared content has a color range")
+                layers.get_mut(&id).map_or(ColorRange::Standard, |content| {
+                    *content.range.get_or_insert_with(|| {
+                        let (ops, _) = content
+                            .retained
+                            .current()
+                            .expect("content prepared before classification");
+                        of_ops(ops, images)
+                    })
                 })
             };
             output[*part] = output[*part].max(range);
         }
         for &child in &node.children {
-            visit(child, tree, layers, bindings, plan, part, output);
+            visit(child, tree, layers, images, bindings, plan, part, output);
         }
     }
     output.clear();
     output.resize(plan.parts(), ColorRange::Standard);
     output[0] = working(clear.components, 1.0);
     let mut part = 0;
-    visit(tree.root(), tree, layers, bindings, plan, &mut part, output);
+    visit(
+        tree.root(),
+        tree,
+        layers,
+        images,
+        bindings,
+        plan,
+        &mut part,
+        output,
+    );
 }
 
 #[cfg(test)]

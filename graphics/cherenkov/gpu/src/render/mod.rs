@@ -15,6 +15,8 @@ pub mod filter;
 mod glyph;
 mod gpu_content;
 mod gpu_cov;
+#[cfg(target_vendor = "apple")]
+mod headroom;
 mod image_storage;
 mod instance;
 mod lower;
@@ -598,11 +600,13 @@ impl SurfaceState {
     fn classify_parts(
         &mut self,
         frame: &SurfaceFrame<'_>,
-        layers: &FxHashMap<LayerId, ContentData>,
+        layers: &mut FxHashMap<LayerId, ContentData>,
+        images: &FxHashMap<u64, GpuImage>,
     ) {
         content_range::parts(
             frame.tree,
             layers,
+            images,
             &self.bindings,
             &self.plan,
             frame.clear,
@@ -6674,7 +6678,10 @@ impl GpuRenderer {
             scale_changed || sf.display.headroom.to_bits() != surf.display.headroom.to_bits();
         if output_changed {
             for entry in surf.static_layers.values_mut() {
-                if scale_changed || entry.range == present::ColorRange::HighDynamicRange {
+                if scale_changed
+                    || (cfg!(not(target_vendor = "apple"))
+                        && entry.range == present::ColorRange::HighDynamicRange)
+                {
                     entry.capture = None;
                     surf.plan_dirty = true;
                 }
@@ -7030,7 +7037,7 @@ impl GpuRenderer {
             result
         };
         if result.is_ok() && surf.promotes {
-            surf.classify_parts(frame, &layers);
+            surf.classify_parts(frame, &mut layers, resources.images);
         }
         surf.layers = layers;
         surf.frame.content.sort_unstable_by_key(|(id, _)| id.raw());
