@@ -1527,6 +1527,9 @@ fn pixel_buffer(frame: &ExternalFrame) -> Result<CFRetained<CVPixelBuffer>, Rend
         })?;
     // SAFETY: the create call returned a +1 pixel buffer.
     let buffer = unsafe { CFRetained::from_raw(buffer) };
+    if let Some(attachments) = &frame.attachments {
+        attachments.apply(&buffer);
+    }
     for (key, value) in color_attachments(frame) {
         // SAFETY: every colour attachment's value is a CFString.
         unsafe { buffer.set_attachment(key, value, CVAttachmentMode::ShouldPropagate) };

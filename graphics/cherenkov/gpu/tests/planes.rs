@@ -1307,6 +1307,18 @@ mod macos {
     fn a_promoted_frame_shows_its_own_surface_and_declared_colour() {
         let fixture = Fixture::new();
         let buffer = bgra_buffer();
+        // A 314-lux D65 mastering environment, in the standard SEI units.
+        let environment = objc2_core_foundation::CFData::from_bytes(&[
+            0x00, 0x2f, 0xe9, 0x60, 0x3d, 0x13, 0x40, 0x42,
+        ]);
+        // SAFETY: the key is an immutable framework constant and the value is CFData.
+        unsafe {
+            buffer.set_attachment(
+                objc2_core_video::kCVImageBufferAmbientViewingEnvironmentKey,
+                &environment,
+                objc2_core_video::CVAttachmentMode::ShouldPropagate,
+            );
+        }
         let offscreen = fixture
             .engine
             .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16), || {})
@@ -1342,6 +1354,18 @@ mod macos {
             shown = unsafe { display.sampleBufferRenderer().copyDisplayedPixelBuffer() };
         }
         let shown = shown.expect("displayed buffer");
+        // SAFETY: the attachment is borrowed while the displayed pixel buffer lives.
+        let shown_environment = unsafe {
+            shown.attachment(
+                objc2_core_video::kCVImageBufferAmbientViewingEnvironmentKey,
+                std::ptr::null_mut(),
+            )
+        }
+        .expect("source viewing environment is preserved");
+        assert_eq!(
+            shown_environment.downcast_ref::<objc2_core_foundation::CFData>(),
+            Some(&*environment)
+        );
         assert_eq!(
             CVPixelBufferGetIOSurface(Some(&buffer))
                 .expect("source")
@@ -1377,7 +1401,7 @@ mod macos {
     }
 
     fn bgra(metal: &Metal, buffer: &CVPixelBuffer, color: FrameColor) -> ExternalFrame {
-        ExternalFrame::rgb(
+        let mut frame = ExternalFrame::rgb(
             plane_texture(
                 metal,
                 buffer,
@@ -1387,7 +1411,12 @@ mod macos {
             RgbAlpha::Opaque,
             color,
         )
-        .expect("valid BGRA")
+        .expect("valid BGRA");
+        frame.attachments = Some(
+            cherenkov_gpu::interop::metal::VideoAttachments::from_pixel_buffer(buffer)
+                .expect("source video attachments"),
+        );
+        frame
     }
 
     /// Renders `frame` in the scene and asserts the engine composed it
