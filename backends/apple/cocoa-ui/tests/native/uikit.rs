@@ -33,6 +33,10 @@ pub fn trials() -> Vec<Trial> {
             extended_linear_display_p3_preserves_space_and_hdr_channels
         ),
         case!(
+            "uikit::label",
+            a_label_draws_its_text_at_the_top_of_an_oversized_frame
+        ),
+        case!(
             "uikit::host_view",
             a_child_invalidation_inside_layout_does_not_reenter_the_pass
         ),
@@ -156,6 +160,71 @@ fn a_child_invalidation_inside_layout_does_not_reenter_the_pass() {
         calls.get(),
     );
     assert!(calls.get() >= 1);
+}
+
+/// Regression for water-rs/waterui#2718: `UILabel` vertically centres
+/// the rect it draws text in, but a leaf's frame is its layout answer —
+/// the ink anchors at the top the way `NSTextFieldCell` draws an
+/// oversized frame. The case rasterizes a tall label and asserts the
+/// text rows sit at the frame's top.
+fn a_label_draws_its_text_at_the_top_of_an_oversized_frame() {
+    use cocoa_ui::objc2::AllocAnyThread;
+
+    let mtm = marker();
+    let label = Label::new(mtm);
+    let attributed = cocoa_ui::objc2_foundation::NSAttributedString::initWithString(
+        cocoa_ui::objc2_foundation::NSAttributedString::alloc(),
+        &cocoa_ui::objc2_foundation::NSString::from_str("Hello 0"),
+    );
+    label.set_attributed_text(&attributed);
+    let frame = Rect::new(0.0, 0.0, 320.0, 240.0);
+    label.setFrame(frame.into());
+    // The geometry contract `drawTextInRect:` receives: the rect text is
+    // drawn in must name the top of the bounds, at the text's own height.
+    let text_rect = label.textRectForBounds_limitedToNumberOfLines(frame.into(), 0);
+    let intrinsic = label.intrinsicContentSize();
+    assert!(
+        text_rect.origin.y <= 1.0,
+        "the text rect anchors at the bounds' top, saw y={}",
+        text_rect.origin.y
+    );
+    assert!(
+        text_rect.size.height < 240.0 * 0.5,
+        "the text rect is the text's height, saw {}",
+        text_rect.size.height
+    );
+    // The rasterized check: render the layer into an RGBA8 bitmap and
+    // find the rows holding ink — they must sit in the frame's top
+    // quarter, not centred.
+    let (width, height) = (320usize, 240usize);
+    let mut pixels = vec![0u8; width * height * 4];
+    let context =
+        cocoa_ui::bitmap::bitmap_context(&mut pixels, width, height).expect("a bitmap context");
+    cocoa_ui::bitmap::with_uikit_context(&context, || {
+        cocoa_ui::bitmap::begin_layer_flip(&context, frame.size.height);
+        cocoa_ui::bitmap::render_layer(&label.layer(), &context);
+        cocoa_ui::bitmap::end_layer_flip(&context);
+    });
+    let ink_rows: Vec<usize> = (0..height)
+        .filter(|row| {
+            (0..width).any(|col| {
+                let px = row * width * 4 + col * 4;
+                pixels[px + 3] > 100
+                    && pixels[px] < 200
+                    && pixels[px + 1] < 200
+                    && pixels[px + 2] < 200
+            })
+        })
+        .collect();
+    assert!(
+        !ink_rows.is_empty(),
+        "the label drew no ink — intrinsic {intrinsic:?}"
+    );
+    let last_ink_row = *ink_rows.last().unwrap();
+    assert!(
+        last_ink_row < height / 4,
+        "the text's last ink row must sit in the frame's top quarter, saw row {last_ink_row} of {height}"
+    );
 }
 
 /// A `UIWindow` hosting a `HostView`: `view::window`/`has_window` must
