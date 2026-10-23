@@ -45,9 +45,8 @@ fn main() {
     // before any case mounts a window. `--list` mounts nothing and skips
     // it.
     #[cfg(all(target_os = "ios", target_abi = "macabi"))]
-    let _background_application = (!arguments.list).then(|| {
-        cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(harness::marker())
-    });
+    let _background_application = (!arguments.list)
+        .then(|| cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(harness::marker()));
     libtest_mimic::run(&arguments, trials()).exit();
 }
 

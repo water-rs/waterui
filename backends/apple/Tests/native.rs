@@ -73,9 +73,8 @@ fn main() {
     // before any trial mounts a window, the same bring-up the preview
     // entry performs. `--list` mounts nothing and skips it.
     #[cfg(catalyst)]
-    let _background_application = (!args.list).then(|| {
-        cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(mtm())
-    });
+    let _background_application =
+        (!args.list).then(|| cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(mtm()));
     libtest_mimic::run(&args, trials()).exit();
 }
 
