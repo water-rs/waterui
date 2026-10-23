@@ -443,7 +443,7 @@ pub fn drain_and_stamp(gpu: &Gpu, index: u32) -> Result<(), BenchError> {
 /// seconds. `None` when timestamps are unsupported.
 ///
 /// # Errors
-/// [`BenchError::Gpu`] on buffer map failure.
+/// [`BenchError::Gpu`] on buffer map failure or a non-increasing query pair.
 ///
 /// # Panics
 /// When the mapped buffer range cannot be read after a successful map.
@@ -475,13 +475,15 @@ pub fn resolve_timestamps(gpu: &Gpu) -> Result<Option<f64>, BenchError> {
     let data = slice
         .get_mapped_range()
         .expect("buffer range is mapped and not overlapping");
-    let ticks: &[u64] = bytemuck::cast_slice(&data);
-    let seconds = if ticks.len() >= 2 && ticks[1] > ticks[0] {
-        Some(f64::from(gpu.queue.get_timestamp_period()) * (ticks[1] - ticks[0]) as f64 * 1e-9)
-    } else {
-        None
-    };
+    let [start, end] = *bytemuck::from_bytes::<[u64; 2]>(&data);
     drop(data);
     staging.unmap();
-    Ok(seconds)
+    if end <= start {
+        return Err(BenchError::Gpu(format!(
+            "invalid GPU timestamp pair: start={start}, end={end}; refusing an incomplete frame timing population"
+        )));
+    }
+    Ok(Some(
+        f64::from(gpu.queue.get_timestamp_period()) * (end - start) as f64 * 1e-9,
+    ))
 }
