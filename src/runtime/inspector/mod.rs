@@ -23,6 +23,7 @@
 //! let _scope = inspector.observe_signals();       // reactive graph, main thread
 //! ```
 
+use std::fmt::Write as _;
 use std::io;
 use std::net::TcpListener;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -241,13 +242,11 @@ fn redacted_child_output(output: &[u8], token: &str) -> String {
 
 /// A token for one process, from the system's random source.
 fn generate_token() -> String {
-    use std::fmt::Write as _;
-    use std::hash::{BuildHasher, Hasher, RandomState};
-
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).expect("the operating system must provide inspector token entropy");
     let mut token = String::with_capacity(32);
-    for _ in 0..2 {
-        let value = RandomState::new().build_hasher().finish();
-        write!(token, "{value:016x}").expect("writing to a String cannot fail");
+    for byte in bytes {
+        write!(token, "{byte:02x}").expect("writing to a String cannot fail");
     }
     token
 }
@@ -838,6 +837,20 @@ mod tests {
         assert_eq!(
             super::redacted_child_output(b"", "s3cret-runtime-token"),
             ""
+        );
+    }
+
+    /// A generated token is a 128-bit credential rendered as lowercase
+    /// hex: 32 characters, each an ASCII hex digit.
+    #[test]
+    fn generated_tokens_are_128_bit_lowercase_hex() {
+        let token = super::generate_token();
+        assert_eq!(token.len(), 32, "{token}");
+        assert!(
+            token
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+            "{token}"
         );
     }
 }
