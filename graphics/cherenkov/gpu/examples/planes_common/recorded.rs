@@ -21,7 +21,7 @@ pub struct Spec {
     pub lifetime: u64,
     /// Animate the candidate instead of unrelated engine content.
     pub animated: bool,
-    /// Include highlights at twice SDR white.
+    /// Include highlights at four times SDR white.
     pub hdr: bool,
     /// Force identical pixels through in-engine composition.
     pub engine: bool,
