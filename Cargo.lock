@@ -13340,6 +13340,7 @@ dependencies = [
  "cpu-time",
  "executor-core",
  "futures",
+ "getrandom 0.4.3",
  "nami",
  "native-executor",
  "object 0.40.0",
