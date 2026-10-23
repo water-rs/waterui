@@ -5445,6 +5445,9 @@ impl<'a> Lowering<'a> {
 
     /// All quads in a path group share paint, clip and shader variant. Reserve
     /// and segment once, then write their instances directly into the frame.
+    // Keep the shared template intact across the append loop. Inlining this
+    // into replay scalarizes its fixed fields and increases per-quad work.
+    #[inline(never)]
     fn replay_quads(
         &mut self,
         template: &Instance,
