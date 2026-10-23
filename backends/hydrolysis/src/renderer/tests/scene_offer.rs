@@ -111,12 +111,19 @@ impl SceneContent for IntrinsicScenePane {
 /// that learns its dimensions once it opens).
 struct DeferredSizeProbe {
     natural: Arc<Mutex<Option<Size>>>,
+    /// The `intrinsic_size` snapshot the view declares at construction —
+    /// the stretch contract, independent of what `measure` answers later.
+    declared: Option<Size>,
 }
 
 impl GpuContent for DeferredSizeProbe {
     fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
     fn render(&mut self, _frame: &mut GpuFrame<'_>) {}
+
+    fn intrinsic_size(&self) -> Option<Size> {
+        self.declared
+    }
 
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(self.natural.lock().expect("probe lock").unwrap_or_else(|| {
@@ -724,6 +731,7 @@ fn gpu_content_is_sized_by_its_live_measure() {
     let node = RenderNode::build(
         AnyView::new(GpuContentView::new(DeferredSizeProbe {
             natural: Arc::clone(&natural),
+            declared: None,
         })),
         &env,
         &mut renderer,
@@ -736,8 +744,10 @@ fn gpu_content_is_sized_by_its_live_measure() {
     assert_eq!(node.stretch_for_test(), StretchAxis::Both);
 
     // Once `measure` reports a natural size, the leaf answers it under an
-    // open proposal — the issue's unconstrained scroll axis — and stops
-    // claiming leftover space.
+    // open proposal — the issue's unconstrained scroll axis. Its stretch
+    // stays the declared contract: `intrinsic_size` was `None` at
+    // construction, so the leaf still fills leftover space; a measured size
+    // is not a new stretch declaration.
     *natural.lock().expect("probe lock") = Some(Size::new(100.0, 200.0));
     let measured = node.measure(&mut renderer.state, &env, &theme, ProposalSize::UNSPECIFIED);
     assert_eq!(
@@ -748,8 +758,8 @@ fn gpu_content_is_sized_by_its_live_measure() {
     );
     assert_eq!(
         node.stretch_for_test(),
-        StretchAxis::None,
-        "a GPU leaf whose content reports a natural size claims no leftover space"
+        StretchAxis::Both,
+        "a leaf constructed with no intrinsic size keeps its declared stretch"
     );
 
     // The semantic measure path (`Native<GpuContentView>::dimensions`, used
@@ -757,6 +767,7 @@ fn gpu_content_is_sized_by_its_live_measure() {
     let leaf = AnyView::new(waterui_core::Native::new(GpuContentView::new(
         DeferredSizeProbe {
             natural: Arc::clone(&natural),
+            declared: None,
         },
     )));
     let dims = crate::renderer::measure_transient_view_with_proposal(
@@ -782,6 +793,7 @@ fn gpu_content_measure_drift_marks_layout() {
     let natural = Arc::new(Mutex::new(None));
     let mut retained = RetainedSubview::new(AnyView::new(GpuContentView::new(DeferredSizeProbe {
         natural: Arc::clone(&natural),
+        declared: None,
     })));
 
     let proposal = ProposalSize::new(Some(390.0), Some(WINDOW_HEIGHT));
@@ -800,5 +812,73 @@ fn gpu_content_measure_drift_marks_layout() {
     );
     let (size, stretch) = retained.patch_and_measure(&mut renderer, &env, proposal);
     assert_eq!(size, Size::new(100.0, 200.0));
-    assert_eq!(stretch, StretchAxis::None);
+    // The moved measure changes the size, never the declared stretch.
+    assert_eq!(stretch, StretchAxis::Both);
+}
+
+/// Stretch is the declared contract — the `intrinsic_size` snapshot taken at
+/// construction — never an inference from what `measure` currently answers
+/// (layout-spec §2.1, §4). A `GpuContent` that declares no intrinsic size
+/// fills leftover space even after `measure` starts reporting a natural
+/// size; one that declares any size — including a zero or partially-zero
+/// one — is content-sized no matter what `measure` reports. Zero and
+/// partial-zero naturals are valid measured sizes, not an unspecified
+/// declaration.
+#[test]
+fn gpu_content_stretch_uses_its_declared_contract() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let theme = renderer.theme();
+
+    let naturals = [
+        Size::new(0.0, 0.0),
+        Size::new(0.0, 200.0),
+        Size::new(100.0, 0.0),
+        Size::new(100.0, 200.0),
+    ];
+    for (declared, want) in [
+        (None, StretchAxis::Both),
+        (Some(Size::new(0.0, 0.0)), StretchAxis::None),
+        (Some(Size::new(0.0, 200.0)), StretchAxis::None),
+        (Some(Size::new(100.0, 0.0)), StretchAxis::None),
+    ] {
+        for natural in naturals {
+            let cell = Arc::new(Mutex::new(Some(natural)));
+
+            // The retained node answers the declared stretch and the live
+            // measured size independently.
+            let node = RenderNode::build(
+                AnyView::new(GpuContentView::new(DeferredSizeProbe {
+                    natural: Arc::clone(&cell),
+                    declared,
+                })),
+                &env,
+                &mut renderer,
+            );
+            assert_eq!(
+                node.stretch_for_test(),
+                want,
+                "declared {declared:?} with live measure {natural:?} must stretch {want:?}"
+            );
+            assert_eq!(
+                node.measure(&mut renderer.state, &env, &theme, ProposalSize::UNSPECIFIED)
+                    .size,
+                natural,
+                "the retained leaf answers the live measured size regardless of the declared contract"
+            );
+
+            // The transient/native path reads the same declaration.
+            let leaf = AnyView::new(waterui_core::Native::new(GpuContentView::new(
+                DeferredSizeProbe {
+                    natural: Arc::clone(&cell),
+                    declared,
+                },
+            )));
+            assert_eq!(
+                crate::renderer::render::effective_stretch_axis(&leaf),
+                want,
+                "the transient path must answer the declared stretch too"
+            );
+        }
+    }
 }

@@ -92,17 +92,19 @@ impl RenderNode {
             // Scene content that is naturally a size is content-sized and claims
             // no leftover space; content that has no size of its own fills.
             Self::SceneView(node) => scene_stretch_axis(node.content.borrow().intrinsic_size()),
-            // GPU content's stretch is read off the live content's ideal
-            // answer, not the construction-time `intrinsic_size` snapshot:
-            // a source whose size resolves after mount stops claiming the
-            // proposal once its measure reports a natural size
+            // GPU content's stretch is the view's declared contract, fixed
+            // at construction by `intrinsic_size`: a live `measure` answer
+            // that resolves later is a size, not a new stretch declaration
             // (water-rs/waterui#1958). A filtered view is a
             // layout-transparent wrapper delegating to its child.
-            Self::GpuContent(node) => gpu_content_stretch_axis(&node.runtime.borrow().view),
-            // An external frame stream can learn its size only once it
-            // starts decoding, so its stretch reads the live `measure`
-            // answer the same way GPU content's does.
-            Self::ExternalFrame(node) => external_frame_stretch_axis(&node.runtime.borrow().view),
+            Self::GpuContent(node) => {
+                waterui_core::NativeView::stretch_axis(&node.runtime.borrow().view)
+            }
+            // An external frame stream's stretch is the same declared
+            // contract — a size learned while decoding does not change it.
+            Self::ExternalFrame(node) => {
+                waterui_core::NativeView::stretch_axis(&node.runtime.borrow().view)
+            }
             Self::Filtered(node) => node.child.stretch(),
             Self::Collection(node) => {
                 // A collection's membership is reactive; its layout is one of the
