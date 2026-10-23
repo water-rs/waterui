@@ -100,6 +100,43 @@ define_class!(
                 }
             });
         }
+
+        // `UILabel` vertically centers the text inside the rect it is
+        // handed; a leaf's frame is the layout answer, whose ink anchors
+        // at the top the way `NSTextFieldCell` draws an oversized frame —
+        // so the text rect is `super`'s answer re-anchored at the top of
+        // the bounds.
+        // SAFETY: see the module safety note.
+        #[unsafe(method(textRectForBounds:limitedToNumberOfLines:))]
+        fn text_rect_for_bounds(&self, bounds: CGRect, number_of_lines: isize) -> CGRect {
+            guarded("Label textRectForBounds:limitedToNumberOfLines:", || {
+                // SAFETY: see the module safety note.
+                let mut rect: CGRect = unsafe {
+                    msg_send![
+                        super(self),
+                        textRectForBounds: bounds,
+                        limitedToNumberOfLines: number_of_lines
+                    ]
+                };
+                rect.origin.y = bounds.origin.y;
+                rect
+            })
+        }
+
+        // `drawTextInRect:` receives the bounds; hand `super` the rect the
+        // text actually occupies, anchored at its top — a natural-height
+        // rect leaves no slack for `UILabel`'s vertical centering to show
+        // up in.
+        // SAFETY: see the module safety note.
+        #[unsafe(method(drawTextInRect:))]
+        fn draw_text_in_rect(&self, rect: CGRect) {
+            guarded("Label drawTextInRect:", || {
+                let text_rect =
+                    self.textRectForBounds_limitedToNumberOfLines(rect, self.numberOfLines());
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), drawTextInRect: text_rect] };
+            });
+        }
     }
 );
 
