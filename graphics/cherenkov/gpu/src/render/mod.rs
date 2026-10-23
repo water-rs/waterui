@@ -15,7 +15,7 @@ pub mod filter;
 mod glyph;
 mod gpu_content;
 mod gpu_cov;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(target_vendor = "apple", target_os = "android"))]
 mod headroom;
 mod image_storage;
 mod instance;
@@ -434,6 +434,8 @@ struct SurfaceState {
     textures: Option<std::sync::mpsc::Sender<wgpu::Texture>>,
     refresh: cherenkov::RefreshRange,
     present_pending: bool,
+    #[cfg(target_os = "android")]
+    present_generation: u64,
     /// The last display properties the frame carried — a change triggers
     /// the window's output re-selection (#98).
     display: cherenkov::Display,
@@ -3545,7 +3547,8 @@ impl Renderer for GpuRenderer {
             GpuTarget::Texture(texture) => (None, Some(texture.textures), texture.refresh, false),
             #[cfg(target_os = "android")]
             GpuTarget::SurfaceControl(target) => {
-                (None, None, self.surface_control(id, target)?, true)
+                let refresh = self.surface_control(id, target, waker.clone())?;
+                (None, None, refresh, true)
             }
             #[cfg(target_os = "linux")]
             GpuTarget::Dmabuf(target) => (None, None, self.dmabuf_export(id, target)?, true),
@@ -3591,6 +3594,8 @@ impl Renderer for GpuRenderer {
                 textures,
                 refresh,
                 present_pending: false,
+                #[cfg(target_os = "android")]
+                present_generation: 0,
                 display: cherenkov::Display::default(),
                 size,
                 format,
@@ -4743,6 +4748,7 @@ impl GpuRenderer {
         &mut self,
         id: SurfaceId,
         target: crate::interop::android::SurfaceControlTarget,
+        waker: cherenkov::CompletionWaker,
     ) -> Result<cherenkov::RefreshRange, SurfaceError> {
         // The context is built on first need (#170); a surface-control
         // target needs it now — planes import frame buffers natively.
@@ -4759,6 +4765,7 @@ impl GpuRenderer {
             native.shared.clone(),
             std::sync::Arc::clone(&self.submit_lock),
             &target,
+            waker,
         )?;
         self.planes.insert(id, system);
         self.presenter
@@ -4957,6 +4964,10 @@ impl GpuRenderer {
                 }
                 self.finish_projective(sf.id);
                 let surface = self.surfaces.get_mut(&sf.id).expect("rendered surface");
+                #[cfg(target_os = "android")]
+                {
+                    surface.present_generation += 1;
+                }
                 surface.present_pending = surface.window.is_some()
                     || surface.promotes
                     || self.exports.contains_key(&sf.id);
@@ -5116,6 +5127,10 @@ impl GpuRenderer {
                 }
                 self.finish_projective(sf.id);
                 let surface = self.surfaces.get_mut(&sf.id).expect("rendered surface");
+                #[cfg(target_os = "android")]
+                {
+                    surface.present_generation += 1;
+                }
                 surface.present_pending = surface.window.is_some()
                     || surface.promotes
                     || self.exports.contains_key(&sf.id);
@@ -6395,6 +6410,8 @@ impl GpuRenderer {
                     planes::SystemPlanes::compose(
                         system,
                         planes::Composition {
+                            #[cfg(target_os = "android")]
+                            generation: surface.present_generation,
                             device,
                             queue,
                             presenter,

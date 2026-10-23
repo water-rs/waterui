@@ -605,7 +605,10 @@ fn helper_specs(m: &Modules<'_>, specs: &mut Vec<Spec>) {
             programs::COVERAGE,
         ),
     ] {
-        if name == "headroom" && metal::apple_target().is_none() {
+        if name == "headroom"
+            && metal::apple_target().is_none()
+            && std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("android")
+        {
             continue;
         }
         specs.push(Spec {

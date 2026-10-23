@@ -171,7 +171,9 @@ impl Scene {
                                     cell * 0.4,
                                 ),
                                 if self.spec.hdr {
-                                    let white = if x < 8 { 1.0 } else { 2.0 };
+                                    // Exceed the Android harness display target (2x) so
+                                    // source range and requested display range differ.
+                                    let white = if x < 8 { 1.0 } else { 4.0 };
                                     WorkingColor::new([white, white, white, 1.0])
                                 } else {
                                     WorkingColor::new([0.15 + phase, 0.5, 0.3, 1.])

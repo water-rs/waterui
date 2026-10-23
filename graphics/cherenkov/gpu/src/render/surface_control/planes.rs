@@ -14,7 +14,7 @@
 //! producer's release fence before the plane's lease on the frame ends.
 
 use std::os::fd::{AsFd, OwnedFd};
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -34,6 +34,7 @@ use crate::interop::{
     ExternalFrame, FramePlanes, HdrMetadata, OutputAlpha, OutputColor, TextureOutput,
 };
 use crate::render::external::vulkan::{self, NativeError, PlaneAcquire, ReleaseSync, Repr, Shared};
+use crate::render::planes::Presentation;
 use crate::render::planes::{Composition, Compositor, PlaneContent, SystemPlanes};
 use crate::render::present::Presenter;
 
@@ -476,10 +477,21 @@ struct Update {
     properties: Properties,
 }
 
-/// An engine surface realized as child surface controls of the host's
-/// parent.
+/// A complete frame whose source brightness is still being read by the GPU.
+struct PendingPresentation {
+    ready: Arc<AtomicBool>,
+    transaction: Transaction,
+    replaced: Vec<Pending>,
+    headrooms: Vec<(usize, crate::render::headroom::Readback)>,
+    generation: u64,
+    display: cherenkov::Display,
+}
+
+/// An engine surface realized under the host's parent surface control.
 pub struct Planes {
     looper: ndk::looper::ForeignLooper,
+    waker: cherenkov::CompletionWaker,
+    presenting: Option<PendingPresentation>,
     /// The engine's container under the host's parent: every part and plane
     /// is its child, so their z-orders never interleave with the host's.
     root: SurfaceControl,
@@ -524,6 +536,7 @@ impl Planes {
         shared: Arc<Shared>,
         submit_lock: Arc<Mutex<()>>,
         target: &SurfaceControlTarget,
+        waker: cherenkov::CompletionWaker,
     ) -> Result<Self, SurfaceError> {
         let unsupported =
             |why: &str| SurfaceError::UnsupportedTarget(format!("surface control: {why}"));
@@ -553,6 +566,8 @@ impl Planes {
         let (release, released) = mpsc::channel();
         Ok(Self {
             looper: target.looper.clone(),
+            waker,
+            presenting: None,
             root,
             root_shown: false,
             extended_range: ExtendedRangeBrightness::load(),
@@ -651,11 +666,38 @@ impl Planes {
         clippy::too_many_lines,
         reason = "one frame's buffers, submission and transaction belong together"
     )]
-    fn present(&mut self, composition: Composition<'_>) -> Result<bool, RenderError> {
+    fn present(&mut self, composition: Composition<'_>) -> Result<Presentation, RenderError> {
+        if let Some(pending) = &self.presenting {
+            if !pending.ready.load(Ordering::Acquire) {
+                return Ok(Presentation::Pending);
+            }
+            let mut pending = self.presenting.take().expect("pending presentation");
+            for (part, readback) in pending.headrooms {
+                // SAFETY: the native completion event precedes the Acquire load;
+                // this buffer holds only this submitted frame's reduction result.
+                let peak = unsafe { readback.read() };
+                let part = &mut self.parts[part];
+                part.headroom = peak;
+                self.extended_range
+                    .as_ref()
+                    .expect("HDR support checked")
+                    .set(
+                        &mut pending.transaction,
+                        &part.surface,
+                        peak,
+                        pending.display.headroom.max(1.0).min(peak),
+                    );
+            }
+            Self::apply(pending.transaction, &self.release, pending.replaced);
+            if pending.generation == composition.generation
+                && pending.display == composition.display
+            {
+                return Ok(Presentation::Presented);
+            }
+        }
         let native = |e: NativeError| RenderError::Render(format!("surface control: {e}"));
         let stack = stack(&composition)?;
-        if composition.display.headroom > 1.0
-            && self.extended_range.is_none()
+        if self.extended_range.is_none()
             && stack.iter().any(|entry| {
                 matches!(
                     entry,
@@ -746,17 +788,12 @@ impl Planes {
                 this.format = format;
                 this.raster = None;
             }
-            if raster.is_some()
-                && this.raster == *raster
-                && this.current.is_some()
-                && (format != wgpu::TextureFormat::Rgba16Float
-                    || this.headroom.to_bits() == display.headroom.to_bits())
-            {
+            if raster.is_some() && this.raster == *raster && this.current.is_some() {
                 chosen.push(None);
             } else {
                 match self.free_buffer(part).map_err(native)? {
                     Some(at) => chosen.push(Some(at)),
-                    None => return Ok(false),
+                    None => return Ok(Presentation::Retry),
                 }
             }
         }
@@ -797,7 +834,7 @@ impl Planes {
                 waits.push(vulkan::import_sync_fd(&self.shared, fence).map_err(native)?);
             }
         }
-        let barrier = |acquire: bool| {
+        let barrier = |acquire: bool, readback: bool| {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("plane ownership"),
             });
@@ -809,14 +846,31 @@ impl Planes {
                 encoder.as_hal_mut::<wgpu::hal::vulkan::Api, _, _>(|hal| {
                     let cb = hal.expect("the engine encoder is Vulkan").raw_handle();
                     buffer::ownership(&self.shared, cb, &images, acquire);
+                    if readback {
+                        // This raw encoder follows the wgpu copy commands on the
+                        // same queue. Publish their writes to the host domain;
+                        // the exported sync fence orders the later CPU read.
+                        self.shared.vk.device.cmd_pipeline_barrier(
+                            cb,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::PipelineStageFlags::HOST,
+                            vk::DependencyFlags::empty(),
+                            &[vk::MemoryBarrier::default()
+                                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                                .dst_access_mask(vk::AccessFlags::HOST_READ)],
+                            &[],
+                            &[],
+                        );
+                    }
                 });
             }
             encoder.finish()
         };
-        let acquire = barrier(true);
+        let acquire = barrier(true, false);
         let mut blits = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("plane present"),
         });
+        let mut headrooms = Vec::new();
         let mut sources = stack.iter().filter_map(|entry| match entry {
             Entry::Engine { view, color, .. } => Some((*view, *color)),
             Entry::Frame(_) | Entry::Hosted { .. } => None,
@@ -836,22 +890,28 @@ impl Planes {
                 },
                 headroom: display.headroom,
             };
-            queue.write_buffer(
-                &self.parts[part].uniform,
-                0,
-                &Presenter::uniform_bytes(&output),
-            );
+            let source = source.expect("a new native buffer has engine pixels");
+            let mut uniform = Presenter::uniform_bytes(&output);
+            if self.parts[part].format == wgpu::TextureFormat::Rgba16Float {
+                // Scene-referred linear P3; SurfaceFlinger maps it to the display.
+                uniform[..4].copy_from_slice(&10_u32.to_ne_bytes());
+                headrooms.push((
+                    part,
+                    presenter.source_headroom(device, &mut blits, source, self.parts[part].size)?,
+                ));
+            }
+            queue.write_buffer(&self.parts[part].uniform, 0, &uniform);
             presenter.encode(
                 device,
                 &mut blits,
-                source.expect("a new native buffer has engine pixels"),
+                source,
                 output,
                 &self.parts[part].uniform,
                 None,
             );
         }
         let blits = blits.finish();
-        let hand_back = barrier(false);
+        let hand_back = barrier(false, !headrooms.is_empty());
         {
             let _submit = self.submit_lock.lock().expect("submit guard");
             // SAFETY: `queue` is the engine's Vulkan queue, and the waits
@@ -889,7 +949,11 @@ impl Planes {
         // SAFETY: `get_semaphore_fd` returned a new descriptor we own.
         let acquire_fence =
             unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(acquire_fence) };
-        if !waits.is_empty() {
+        let ready = Arc::new(AtomicBool::new(false));
+        if !waits.is_empty() || !headrooms.is_empty() {
+            let completed = Arc::clone(&ready);
+            let waker = self.waker.clone();
+            let wake = !headrooms.is_empty();
             let owner = Arc::clone(&self.shared);
             let completion = Arc::new(dup_fence(&acquire_fence)?);
             let retained = Arc::clone(&completion);
@@ -906,6 +970,10 @@ impl Planes {
                             // SAFETY: the submission's sync fence has signalled,
                             // so no queue still waits on these semaphores.
                             unsafe { owner.vk.device.destroy_semaphore(wait, None) };
+                        }
+                        completed.store(true, Ordering::Release);
+                        if wake {
+                            waker.wake();
                         }
                         let _ = &retained;
                         false
@@ -982,22 +1050,18 @@ impl Planes {
                     }
                     if let Some(extended_range) = &self.extended_range {
                         let hdr = this.format == wgpu::TextureFormat::Rgba16Float;
-                        if this
-                            .shown
-                            .as_ref()
-                            .is_none_or(|old| old.dataspace != properties.dataspace)
-                            || (hdr && this.headroom.to_bits() != display.headroom.to_bits())
-                        {
+                        if !hdr || chosen[part].is_none() {
+                            let peak = if hdr { this.headroom } else { 1.0 };
                             extended_range.set(
                                 &mut transaction,
                                 &this.surface,
-                                if hdr { display.headroom } else { 1.0 },
+                                peak,
+                                display.headroom.max(1.0).min(peak),
                             );
                         }
                     }
                     this.shown = Some(properties);
                     this.raster = *raster;
-                    this.headroom = display.headroom;
                     part += 1;
                 }
                 Entry::Frame(promotion) => {
@@ -1082,8 +1146,20 @@ impl Planes {
             });
         }
 
-        Self::apply(transaction, &self.release, pending);
-        Ok(true)
+        if headrooms.is_empty() {
+            Self::apply(transaction, &self.release, pending);
+            Ok(Presentation::Presented)
+        } else {
+            self.presenting = Some(PendingPresentation {
+                ready,
+                transaction,
+                replaced: pending,
+                headrooms,
+                generation: composition.generation,
+                display,
+            });
+            Ok(Presentation::Pending)
+        }
     }
 
     /// Applies `transaction`, delivering each `Pending` its release fence
@@ -1283,34 +1359,36 @@ impl Planes {
     /// delivered by the transaction's completion.
     fn clear(&mut self) {
         let mut transaction = Transaction::new();
-        let mut frames = Vec::new();
+        let mut pending = self
+            .presenting
+            .take()
+            .map_or_else(Vec::new, |frame| frame.replaced);
+        for previous in &pending {
+            if let Some(surface) = &previous.removed {
+                transaction.reparent(surface, None);
+            }
+        }
         for (_, plane) in self.promoted.drain() {
             transaction.reparent(&plane.surface, None);
-            frames.push((plane.surface, plane.frame));
+            pending.push(Pending {
+                surface: plane.surface.as_ptr(),
+                what: Replaced::Frame(plane.frame),
+                removed: Some(plane.surface),
+            });
         }
-        let mut surfaces = Vec::new();
         for part in self.parts.drain(..) {
             transaction.reparent(&part.surface, None);
-            surfaces.push(part.surface);
+            pending.push(Pending {
+                surface: part.surface.as_ptr(),
+                what: Replaced::Nothing,
+                removed: Some(part.surface),
+            });
         }
-        // The host's surfaces leave the display with the engine's; the
-        // host keeps its references.
         for (_, plane) in self.hosted.drain() {
             plane.object.detach(&mut transaction, &self.root);
         }
         transaction.reparent(&self.root, None);
-        transaction.apply(move |completion| {
-            for (surface, frame) in frames {
-                let raw = surface.as_ptr();
-                if completion.surfaces().contains(&raw)
-                    && let Some(fence) = completion.previous_release(raw)
-                {
-                    frame.generation.add_plane_release(fence);
-                }
-                frame.unlease();
-            }
-            drop(surfaces);
-        });
+        Self::apply(transaction, &self.release, pending);
     }
 }
 
@@ -1347,20 +1425,22 @@ impl SystemPlanes for Planes {
             .filter(|part| part.raster.is_some())
             .flat_map(|part| &part.buffers)
             .map(|buffer| buffer.bytes)
-            .sum()
+            .sum::<u64>()
+            + self.presenting.as_ref().map_or(0, |pending| {
+                pending
+                    .headrooms
+                    .iter()
+                    .map(|(_, readback)| readback.bytes())
+                    .sum()
+            })
     }
 
     fn compose(
         &mut self,
         composition: Composition<'_>,
     ) -> Result<(crate::render::planes::Presentation, ()), RenderError> {
-        self.present(composition).map(|shown| {
-            if shown {
-                (crate::render::planes::Presentation::Presented, ())
-            } else {
-                (crate::render::planes::Presentation::Retry, ())
-            }
-        })
+        self.present(composition)
+            .map(|presentation| (presentation, ()))
     }
 
     fn refresh<'a>(
@@ -1375,9 +1455,9 @@ impl SystemPlanes for Planes {
     }
 
     fn reselect(&mut self, _: &wgpu::Adapter, _: &wgpu::Device) -> Result<(), SurfaceError> {
-        // Engine parts are RGBA8 `AHardwareBuffer`s in the sRGB dataspace.
-        // That contract is not a swapchain negotiation, and a frame's
-        // headroom is read when the part is presented.
+        // Content selects each part's storage and dataspace. Display changes
+        // update the requested brightness in the next transaction; they do not
+        // negotiate a swapchain or invalidate scene-referred capture pixels.
         Ok(())
     }
 }

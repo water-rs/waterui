@@ -226,7 +226,7 @@ pub mod spirv {
     pub const RESOLVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/resolve.spv"));
     /// `reduce.wgsl`.
     pub const REDUCE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/reduce.spv"));
-    #[cfg(target_vendor = "apple")]
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
     pub const HEADROOM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/headroom.spv"));
     /// `shadow.wgsl`, the silhouette convolution module.
     pub const SHADOW: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.spv"));
@@ -329,6 +329,8 @@ const COVERAGE_METALLIB: &[u8] = &[];
 
 #[cfg(target_vendor = "apple")]
 const HEADROOM_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/headroom.metallib"));
+#[cfg(target_os = "android")]
+const HEADROOM_METALLIB: &[u8] = &[];
 
 /// The seven `VARIANT` specializations of `shader.wgsl`, indexed by
 /// `variant_index`.
@@ -481,7 +483,7 @@ const REDUCE: Fixed = Fixed {
 };
 
 /// Source headroom reduction for immutable captures.
-#[cfg(target_vendor = "apple")]
+#[cfg(any(target_vendor = "apple", target_os = "android"))]
 const HEADROOM: Fixed = Fixed {
     wgsl: include_str!("headroom.wgsl"),
     #[cfg(cherenkov_spirv)]
@@ -642,7 +644,7 @@ impl ShaderDelivery {
     }
 
     /// Source headroom reduction for immutable captures.
-    #[cfg(target_vendor = "apple")]
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
     #[must_use]
     pub fn headroom_program(self, device: &wgpu::Device) -> RenderProgram {
         self.render_program(device, "capture headroom", &HEADROOM)

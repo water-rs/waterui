@@ -1066,6 +1066,9 @@ pub struct Part<'a> {
     )
 )]
 pub struct Composition<'a> {
+    /// Generation of the rendered engine parts, unchanged by presentation retries.
+    #[cfg(target_os = "android")]
+    pub generation: u64,
     /// The engine's device.
     pub device: &'a wgpu::Device,
     /// The engine's queue.
@@ -1090,7 +1093,7 @@ pub enum Presentation {
     /// Drawable availability requires another display frame.
     Retry,
     /// A queued operation will wake the surface when it completes.
-    #[cfg(target_vendor = "apple")]
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
     Pending,
 }
 

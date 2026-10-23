@@ -917,9 +917,9 @@ impl WindowSurface {
 /// Presents retained engine textures into host-owned textures.
 #[derive(Debug)]
 pub struct Presenter {
-    #[cfg(target_vendor = "apple")]
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
     delivery: ShaderDelivery,
-    #[cfg(target_vendor = "apple")]
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
     headroom: Option<super::headroom::Reducer>,
     program: super::shaders::RenderProgram,
     layout: wgpu::BindGroupLayout,
@@ -955,9 +955,9 @@ impl Presenter {
         let uniform = Self::uniform(device);
         Self {
             program,
-            #[cfg(target_vendor = "apple")]
+            #[cfg(any(target_vendor = "apple", target_os = "android"))]
             delivery,
-            #[cfg(target_vendor = "apple")]
+            #[cfg(any(target_vendor = "apple", target_os = "android"))]
             headroom: None,
             layout,
             pipeline_layout,
@@ -1071,6 +1071,20 @@ impl Presenter {
         output: TextureOutput<'_>,
     ) {
         self.texture_timed(device, queue, source, output, None);
+    }
+
+    /// Derive source headroom in the caller's native submission.
+    #[cfg(target_os = "android")]
+    pub(crate) fn source_headroom(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+        size: (u32, u32),
+    ) -> Result<super::headroom::Readback, cherenkov::RenderError> {
+        self.headroom
+            .get_or_insert_with(|| super::headroom::Reducer::new(device, self.delivery))
+            .encode(device, encoder, source, size)
     }
 
     /// Preserve scene-referred capture pixels and derive their source headroom.

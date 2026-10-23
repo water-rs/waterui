@@ -89,10 +89,16 @@ impl ExtendedRangeBrightness {
         }
     }
 
-    pub fn set(&self, transaction: &mut Transaction, surface: &SurfaceControl, ratio: f32) {
+    pub fn set(
+        &self,
+        transaction: &mut Transaction,
+        surface: &SurfaceControl,
+        current: f32,
+        desired: f32,
+    ) {
         // SAFETY: both wrappers own live NDK objects. The presentation contract
-        // supplies a finite ratio >= 1, used for both rendered and desired range.
-        unsafe { (self.0)(transaction.0.as_ptr(), surface.as_ptr(), ratio, ratio) };
+        // supplies finite current and desired ratios >= 1.
+        unsafe { (self.0)(transaction.0.as_ptr(), surface.as_ptr(), current, desired) };
     }
 }
 

@@ -1,9 +1,12 @@
-//! Source headroom of immutable premultiplied linear-P3 captures.
+//! Source headroom of premultiplied linear-P3 images.
 
 use cherenkov::RenderError;
 use wgpu::hal::Device as _;
 
+#[cfg(target_vendor = "apple")]
 type NativeApi = wgpu::hal::metal::Api;
+#[cfg(target_os = "android")]
+type NativeApi = wgpu::hal::vulkan::Api;
 
 #[derive(Debug)]
 pub struct Reducer {
