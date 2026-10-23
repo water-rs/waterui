@@ -24,7 +24,7 @@ use cherenkov::{LayerId, RenderError, ShapeData, SurfaceError};
 use rustc_hash::FxHashMap;
 
 use super::buffer::{self, Buffer, State};
-use super::ffi::{SurfaceControl, Transaction};
+use super::ffi::{ExtendedRangeBrightness, SurfaceControl, Transaction};
 use super::plan::{
     self, BufferTransform, Dataspace, Encoding, Geometry, HostedProperties, IRect, Inexpressible,
     Op, Placement, Properties, Slot,
@@ -467,6 +467,7 @@ pub struct Planes {
     /// is its child, so their z-orders never interleave with the host's.
     root: SurfaceControl,
     root_shown: bool,
+    extended_range: Option<ExtendedRangeBrightness>,
     size: (u32, u32),
     transparent: bool,
     shared: Arc<Shared>,
@@ -536,6 +537,7 @@ impl Planes {
         Ok(Self {
             root,
             root_shown: false,
+            extended_range: ExtendedRangeBrightness::load(),
             size: target.size(),
             transparent: target.transparent,
             shared,
@@ -634,6 +636,23 @@ impl Planes {
     fn present(&mut self, composition: Composition<'_>) -> Result<bool, RenderError> {
         let native = |e: NativeError| RenderError::Render(format!("surface control: {e}"));
         let stack = stack(&composition)?;
+        if composition.display.headroom > 1.0
+            && self.extended_range.is_none()
+            && stack.iter().any(|entry| {
+                matches!(
+                    entry,
+                    Entry::Engine {
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        ..
+                    }
+                )
+            })
+        {
+            return Err(RenderError::Render(
+                "linear HDR system planes require Android 14 extended-range brightness support"
+                    .into(),
+            ));
+        }
         let Composition {
             device,
             queue,
@@ -925,6 +944,21 @@ impl Planes {
                     plan::diff(this.shown.as_ref(), &properties, &mut self.ops);
                     for &op in &self.ops {
                         transaction.set(&this.surface, op);
+                    }
+                    if let Some(extended_range) = &self.extended_range {
+                        let hdr = this.format == wgpu::TextureFormat::Rgba16Float;
+                        if this
+                            .shown
+                            .as_ref()
+                            .is_none_or(|old| old.dataspace != properties.dataspace)
+                            || (hdr && this.headroom.to_bits() != display.headroom.to_bits())
+                        {
+                            extended_range.set(
+                                &mut transaction,
+                                &this.surface,
+                                if hdr { display.headroom } else { 1.0 },
+                            );
+                        }
                     }
                     this.shown = Some(properties);
                     this.raster = *raster;
