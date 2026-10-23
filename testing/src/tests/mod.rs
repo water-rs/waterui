@@ -46,6 +46,10 @@ impl RuntimeDriver for NoopDriver {
         true
     }
 
+    fn is_settled_except_perpetual(&self) -> bool {
+        true
+    }
+
     fn has_pending_semantic_update(&self) -> bool {
         false
     }
@@ -84,6 +88,7 @@ fn node(
         label: label.map(ToOwned::to_owned),
         identifier: None,
         value: value.map(ToOwned::to_owned),
+        placeholder: None,
         bounds: None,
         enabled,
         selected: false,
@@ -194,6 +199,10 @@ impl RuntimeDriver for EmitThenSettleDriver {
     }
 
     fn is_settled(&self) -> bool {
+        self.pumps >= self.emit_at
+    }
+
+    fn is_settled_except_perpetual(&self) -> bool {
         self.pumps >= self.emit_at
     }
 
@@ -939,6 +948,75 @@ fn a11y_identifier_flows_from_modifier_to_selector() {
         "both buttons stay queryable by role"
     );
     app.query().identifier("login.submit").tap();
+}
+
+/// A tap gesture with no naming scope of its own still publishes an
+/// activatable element: the wrapped node takes the `Button` claim's `Click`
+/// and `Focus` actions and its activation, so a tappable `text("T")` reads
+/// the way a `Button` does instead of serializing identically to plain
+/// text (water-rs/waterui#1070).
+#[test]
+fn tap_gesture_publishes_click_action_on_the_wrapped_node() {
+    let taps = Rc::new(Cell::new(0_u32));
+    let taps_for_view = Rc::clone(&taps);
+    let mut app = ui().mount(move || {
+        let taps_for_view = Rc::clone(&taps_for_view);
+        vstack((
+            text("T").on_tap(move || {
+                taps_for_view.set(taps_for_view.get() + 1);
+            }),
+            text("Plain"),
+        ))
+    });
+
+    let tappable = app.query().role(Role::BUTTON).label("T").single();
+    assert!(
+        tappable
+            .node()
+            .actions()
+            .contains(&accesskit::Action::Click),
+        "the wrapped node advertises Click"
+    );
+    tappable.tap(&mut app);
+    assert_eq!(taps.get(), 1, "the click action runs the tap handler");
+
+    // The untapped sibling stays inert — a plain label with no actions.
+    let plain = app.query().role(Role::LABEL).label("Plain").single();
+    assert_eq!(plain.node().actions(), []);
+    assert_eq!(
+        app.query().role(Role::BUTTON).all().len(),
+        1,
+        "only the tappable view claims a button element"
+    );
+}
+
+/// A `TextField` prompt publishes the `aria-placeholder` semantic on the
+/// field's own node (#1071): before the snapshot carried the property, a
+/// field with a prompt and one without produced identical snapshots.
+#[test]
+fn text_field_prompt_publishes_placeholder_on_the_node() {
+    use waterui::prelude::*;
+
+    let email = Binding::container(Str::from(""));
+    let plain = Binding::container(Str::from(""));
+    let mut app = ui().mount(move || {
+        vstack((
+            TextField::new(text("Email"), &email).prompt("name@example.com"),
+            TextField::new(text("Plain"), &plain),
+        ))
+    });
+
+    let prompted = app.query().role(Role::TEXT_INPUT).label("Email").single();
+    assert_eq!(prompted.node().placeholder(), Some("name@example.com"));
+    // The placeholder is a first-class selector predicate, the way `label` and
+    // `value` are.
+    app.query()
+        .role(Role::TEXT_INPUT)
+        .placeholder("name@example.com")
+        .assert_exists();
+
+    let unprompted = app.query().role(Role::TEXT_INPUT).label("Plain").single();
+    assert_eq!(unprompted.node().placeholder(), None);
 }
 
 /// Explicit `.color(...)` is a view-tree attribute: on the semantic pipeline

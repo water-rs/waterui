@@ -126,11 +126,14 @@ mod platform {
     ///
     /// The host's handlers hold the mount strongly; clearing them leaves
     /// this struct the mount's only owner, so `_mounted` — declared before
-    /// `host` — detaches the child while the host is still retained.
+    /// `host` — detaches the child while the host is still retained. The
+    /// `UITabAccessory` itself arrives after first paint (see the install
+    /// below), so the slot retains it once it exists.
     struct BottomAccessory {
         tabs: Retained<TabsController>,
         _mounted: Rc<crate::contract::Mounted>,
         host: Retained<HostView>,
+        _accessory: Rc<core::cell::OnceCell<Retained<UITabAccessory>>>,
     }
 
     impl Drop for BottomAccessory {
@@ -308,13 +311,30 @@ mod platform {
                     view::set_frame(sub, frame);
                 }
             });
-            let accessory = UITabAccessory::initWithContentView(mtm.alloc(), &accessory_host);
-            tabs.setBottomAccessory(Some(&accessory));
-            keep.keep(accessory);
+            // The capsule installs when the current transaction commits —
+            // after the first frame, never inside the launch commit. On
+            // iOS 26 an accessory installed during the scene's own
+            // presentation can have its materialise transition dropped,
+            // leaving the pocket flat and tinting the content's labels for
+            // the rest of the process; installing into the already-live
+            // tab bar is the path a now-playing bar appearing mid-run
+            // takes — the same deferred install the parity twin declares.
+            let accessory = Rc::new(core::cell::OnceCell::new());
+            cocoa_ui::core_animation::on_commit({
+                let tabs = tabs.clone();
+                let accessory_host = accessory_host.clone();
+                let accessory = Rc::clone(&accessory);
+                move || {
+                    let capsule = UITabAccessory::initWithContentView(mtm.alloc(), &accessory_host);
+                    tabs.setBottomAccessory(Some(&capsule));
+                    let _ = accessory.set(capsule);
+                }
+            });
             keep.keep(BottomAccessory {
                 tabs: tabs.clone(),
                 _mounted: mounted,
                 host: accessory_host,
+                _accessory: accessory,
             });
         }
 

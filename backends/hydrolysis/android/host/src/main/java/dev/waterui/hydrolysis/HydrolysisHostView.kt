@@ -127,7 +127,16 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                     }
                 if (imeAnimating && imeRunning) {
                     val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-                    pushMetrics(windowLocalEdges(ime))
+                    if (pushMetrics(windowLocalEdges(ime))) {
+                        // §7.1's frame-by-frame rule: this progress step
+                        // already runs inside the frame's traversal, ahead
+                        // of the draw whose synced transaction moves the
+                        // IME window. Rendering now queues the GPU band's
+                        // buffer into the same composite; the vsync post a
+                        // plain metrics push schedules would render one
+                        // frame late (water-rs/waterui#1913).
+                        session?.frameScheduler?.pumpNow("ime-progress")
+                    }
                 } else {
                     // A non-IME animation (e.g. a system-bar hide/show)
                     // lands here too and pushes the persisted
@@ -143,9 +152,14 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                 if (animation.typeMask and WindowInsetsCompat.Type.ime() != 0) {
                     imeAnimating = false
                     // The last progress frame is not guaranteed to carry
-                    // fraction 1.0 — publish the settled insets.
+                    // fraction 1.0 — publish the settled insets. `onEnd`
+                    // runs inside the traversal like `onProgress`, so a
+                    // changed snapshot pumps now rather than letting the
+                    // settle value lag the keyboard by a frame.
                     lastRootInsets = ViewCompat.getRootWindowInsets(this@HydrolysisHostView)
-                    pushMetrics()
+                    if (pushMetrics()) {
+                        session?.frameScheduler?.pumpNow("ime-settled")
+                    }
                 }
             }
         }
@@ -247,8 +261,13 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         )
     }
 
-    private fun pushMetrics(keyboardEdgesOverride: IntArray? = null) {
-        val session = session ?: return
+    /**
+     * Returns whether a changed snapshot was pushed. `onProgress` pumps the
+     * frame itself when the IME step changed the metrics — an unchanged
+     * snapshot needs no transaction at all.
+     */
+    private fun pushMetrics(keyboardEdgesOverride: IntArray? = null): Boolean {
+        val session = session ?: return false
         val metrics = resources.displayMetrics
         val configuration = resources.configuration
         val rootInsets = lastRootInsets ?: ViewCompat.getRootWindowInsets(this)
@@ -297,7 +316,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             maxFlingVelocity == lastMaxFlingVelocity &&
             scrollFriction == lastScrollFriction
         ) {
-            return
+            return false
         }
         lastMetricsWidth = width
         lastMetricsHeight = height
@@ -332,6 +351,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                 scrollFriction,
             )
         }
+        return true
     }
 
     // ------------------------------------------------------------------
@@ -353,7 +373,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         for (i in 0 until childCount) {
             getChildAt(i).layout(0, 0, r - l, b - t)
         }
-        platformViewRegistry.publishIfPending()
+        session?.requestPlacementPull()
     }
 
     // ------------------------------------------------------------------
@@ -434,64 +454,82 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean =
         dispatchKey(event, pressed = false) || super.onKeyUp(keyCode, event)
 
+    /**
+     * The dead-key composition state the view path holds for itself — on
+     * the IME path the input method carries it instead.
+     */
+    private val deadKeys = DeadKeyComposer()
+
     private fun dispatchKey(event: KeyEvent, pressed: Boolean): Boolean {
         val session = session ?: return false
-        val key = w3cKey(event) ?: return false
+        val keys = w3cKeys(event)
+        if (keys.isEmpty()) return false
         session.withNativePtr(NativeBridge::nativeKeyEvent.name) { ptr ->
-            NativeBridge.nativeKeyEvent(
-                ptr,
-                key,
-                pressed,
-                event.isShiftPressed,
-                event.isCtrlPressed,
-                event.isAltPressed,
-                event.isMetaPressed,
-            )
+            for (key in keys) {
+                NativeBridge.nativeKeyEvent(
+                    ptr,
+                    key,
+                    pressed,
+                    event.isShiftPressed,
+                    event.isCtrlPressed,
+                    event.isAltPressed,
+                    event.isMetaPressed,
+                )
+            }
         }
         return true
     }
 
-    /** Maps a hardware key onto the W3C `key` vocabulary the runner parses. */
-    private fun w3cKey(event: KeyEvent): String? {
+    /**
+     * Maps a hardware key onto the W3C `key` vocabulary the runner parses.
+     * `internal` so the `InputConnection`'s `sendKeyEvent` reports through
+     * the same vocabulary — and the same dead-key composition — as the
+     * view's own key dispatch.
+     *
+     * One event usually yields one key value; a dead-key sequence whose
+     * held accent cannot compose commits the accent's spacing char ahead
+     * of the press that ended it, so the list carries both.
+     */
+    internal fun w3cKeys(event: KeyEvent): List<String> {
         // Named keys first: Enter and Tab also carry `unicodeChar` ('\n', '\t'),
         // which is not their W3C value.
         return when (event.keyCode) {
-            KeyEvent.KEYCODE_ENTER -> "Enter"
-            KeyEvent.KEYCODE_DEL -> "Backspace"
-            KeyEvent.KEYCODE_FORWARD_DEL -> "Delete"
-            KeyEvent.KEYCODE_TAB -> "Tab"
-            KeyEvent.KEYCODE_ESCAPE -> "Escape"
-            KeyEvent.KEYCODE_SPACE -> " "
-            KeyEvent.KEYCODE_DPAD_LEFT -> "ArrowLeft"
-            KeyEvent.KEYCODE_DPAD_RIGHT -> "ArrowRight"
-            KeyEvent.KEYCODE_DPAD_UP -> "ArrowUp"
-            KeyEvent.KEYCODE_DPAD_DOWN -> "ArrowDown"
-            KeyEvent.KEYCODE_MOVE_HOME -> "Home"
-            KeyEvent.KEYCODE_MOVE_END -> "End"
-            KeyEvent.KEYCODE_PAGE_UP -> "PageUp"
-            KeyEvent.KEYCODE_PAGE_DOWN -> "PageDown"
-            KeyEvent.KEYCODE_F1 -> "F1"
-            KeyEvent.KEYCODE_F2 -> "F2"
-            KeyEvent.KEYCODE_F3 -> "F3"
-            KeyEvent.KEYCODE_F4 -> "F4"
-            KeyEvent.KEYCODE_F5 -> "F5"
-            KeyEvent.KEYCODE_F6 -> "F6"
-            KeyEvent.KEYCODE_F7 -> "F7"
-            KeyEvent.KEYCODE_F8 -> "F8"
-            KeyEvent.KEYCODE_F9 -> "F9"
-            KeyEvent.KEYCODE_F10 -> "F10"
-            KeyEvent.KEYCODE_F11 -> "F11"
-            KeyEvent.KEYCODE_F12 -> "F12"
-            KeyEvent.KEYCODE_INSERT -> "Insert"
-            KeyEvent.KEYCODE_SYSRQ -> "PrintScreen"
-            KeyEvent.KEYCODE_BREAK -> "Pause"
-            KeyEvent.KEYCODE_SCROLL_LOCK -> "ScrollLock"
-            KeyEvent.KEYCODE_MENU -> "ContextMenu"
-            KeyEvent.KEYCODE_NUMPAD_ENTER -> "Enter"
-            KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT -> "Shift"
-            KeyEvent.KEYCODE_CTRL_LEFT, KeyEvent.KEYCODE_CTRL_RIGHT -> "Control"
-            KeyEvent.KEYCODE_ALT_LEFT, KeyEvent.KEYCODE_ALT_RIGHT -> "Alt"
-            KeyEvent.KEYCODE_META_LEFT, KeyEvent.KEYCODE_META_RIGHT -> "Meta"
+            KeyEvent.KEYCODE_ENTER -> listOf("Enter")
+            KeyEvent.KEYCODE_DEL -> listOf("Backspace")
+            KeyEvent.KEYCODE_FORWARD_DEL -> listOf("Delete")
+            KeyEvent.KEYCODE_TAB -> listOf("Tab")
+            KeyEvent.KEYCODE_ESCAPE -> listOf("Escape")
+            KeyEvent.KEYCODE_SPACE -> listOf(" ")
+            KeyEvent.KEYCODE_DPAD_LEFT -> listOf("ArrowLeft")
+            KeyEvent.KEYCODE_DPAD_RIGHT -> listOf("ArrowRight")
+            KeyEvent.KEYCODE_DPAD_UP -> listOf("ArrowUp")
+            KeyEvent.KEYCODE_DPAD_DOWN -> listOf("ArrowDown")
+            KeyEvent.KEYCODE_MOVE_HOME -> listOf("Home")
+            KeyEvent.KEYCODE_MOVE_END -> listOf("End")
+            KeyEvent.KEYCODE_PAGE_UP -> listOf("PageUp")
+            KeyEvent.KEYCODE_PAGE_DOWN -> listOf("PageDown")
+            KeyEvent.KEYCODE_F1 -> listOf("F1")
+            KeyEvent.KEYCODE_F2 -> listOf("F2")
+            KeyEvent.KEYCODE_F3 -> listOf("F3")
+            KeyEvent.KEYCODE_F4 -> listOf("F4")
+            KeyEvent.KEYCODE_F5 -> listOf("F5")
+            KeyEvent.KEYCODE_F6 -> listOf("F6")
+            KeyEvent.KEYCODE_F7 -> listOf("F7")
+            KeyEvent.KEYCODE_F8 -> listOf("F8")
+            KeyEvent.KEYCODE_F9 -> listOf("F9")
+            KeyEvent.KEYCODE_F10 -> listOf("F10")
+            KeyEvent.KEYCODE_F11 -> listOf("F11")
+            KeyEvent.KEYCODE_F12 -> listOf("F12")
+            KeyEvent.KEYCODE_INSERT -> listOf("Insert")
+            KeyEvent.KEYCODE_SYSRQ -> listOf("PrintScreen")
+            KeyEvent.KEYCODE_BREAK -> listOf("Pause")
+            KeyEvent.KEYCODE_SCROLL_LOCK -> listOf("ScrollLock")
+            KeyEvent.KEYCODE_MENU -> listOf("ContextMenu")
+            KeyEvent.KEYCODE_NUMPAD_ENTER -> listOf("Enter")
+            KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT -> listOf("Shift")
+            KeyEvent.KEYCODE_CTRL_LEFT, KeyEvent.KEYCODE_CTRL_RIGHT -> listOf("Control")
+            KeyEvent.KEYCODE_ALT_LEFT, KeyEvent.KEYCODE_ALT_RIGHT -> listOf("Alt")
+            KeyEvent.KEYCODE_META_LEFT, KeyEvent.KEYCODE_META_RIGHT -> listOf("Meta")
             else -> {
                 // `unicodeChar` resolves the key with the full meta state,
                 // and the stock Generic.kcm defines no `ctrl`/`meta`
@@ -506,12 +544,27 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                         ?: event.getUnicodeChar(stripped and KeyEvent.META_ALT_MASK.inv())
                 when {
                     // A dead key reports its spacing accent with
-                    // COMBINING_ACCENT set; dead-key composition on the
-                    // view path is a separate missing feature, so the W3C
-                    // name goes through instead of a lone combining mark.
-                    unicode and KeyCharacterMap.COMBINING_ACCENT != 0 -> "Dead"
-                    unicode != 0 -> unicode.toChar().toString()
-                    else -> null
+                    // COMBINING_ACCENT set. The press holds the accent for
+                    // the next character and still reports the W3C name —
+                    // unless another accent was already held, in which
+                    // case the pair composes or commits the held accent.
+                    // A repeated hold re-reports "Dead" without touching
+                    // the held accent.
+                    unicode and KeyCharacterMap.COMBINING_ACCENT != 0 ->
+                        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                            deadKeys.accentDown(
+                                unicode and KeyCharacterMap.COMBINING_ACCENT.inv()
+                            ) ?: listOf("Dead")
+                        } else {
+                            listOf("Dead")
+                        }
+                    unicode != 0 ->
+                        if (event.action == KeyEvent.ACTION_DOWN) {
+                            deadKeys.charDown(unicode) ?: listOf(unicode.toChar().toString())
+                        } else {
+                            listOf(unicode.toChar().toString())
+                        }
+                    else -> emptyList()
                 }
             }
         }
@@ -653,11 +706,6 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
 
     internal fun notifyAccessibilityTreeChanged(diffJson: String) {
         accessibilityProvider.notifyTreeChanged(diffJson)
-    }
-
-    /** The session pushed a new placement set — pull and apply it. */
-    internal fun notifyPlatformViewsChanged() {
-        platformViewRegistry.notifyChanged()
     }
 
     /** Each a11y publish also drives the autofill enter/exit diff. */

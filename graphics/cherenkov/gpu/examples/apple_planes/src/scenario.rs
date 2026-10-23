@@ -9,6 +9,10 @@ use crate::pattern::{HEIGHT, WIDTH};
 
 /// One launch-time scenario, from the `--scenario` argument.
 #[derive(Clone, Copy, Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the scenario table is a fixed set by design"
+)]
 pub enum Scenario {
     /// Recorded-content policy matrix shared with Android.
     Recorded(crate::recorded::Spec),
@@ -108,6 +112,11 @@ impl Scenario {
 }
 
 /// A built scenario's live layers.
+#[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the built tree is the harness's own state; closed by design"
+)]
 pub struct Built {
     /// The layer the video installs on.
     pub video: Option<Layer>,

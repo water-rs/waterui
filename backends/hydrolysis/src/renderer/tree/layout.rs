@@ -7,7 +7,7 @@ use super::ContainerNode;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use waterui_graphics::{resolve_scene_proposal, scene_stretch_axis};
+use waterui_graphics::scene_stretch_axis;
 
 impl RenderNode {
     /// The stretch axis this node exposes when it is a layout child.
@@ -92,13 +92,18 @@ impl RenderNode {
             // Scene content that is naturally a size is content-sized and claims
             // no leftover space; content that has no size of its own fills.
             Self::SceneView(node) => scene_stretch_axis(node.content.borrow().intrinsic_size()),
-            // GPU content fills its proposal; a filtered view is a
+            // GPU content's stretch is the view's declared contract, fixed
+            // at construction by `intrinsic_size`: a live `measure` answer
+            // that resolves later is a size, not a new stretch declaration
+            // (water-rs/waterui#1958). A filtered view is a
             // layout-transparent wrapper delegating to its child.
             Self::GpuContent(node) => {
-                scene_stretch_axis(node.runtime.borrow().view.intrinsic_size())
+                waterui_core::NativeView::stretch_axis(&node.runtime.borrow().view)
             }
+            // An external frame stream's stretch is the same declared
+            // contract — a size learned while decoding does not change it.
             Self::ExternalFrame(node) => {
-                scene_stretch_axis(node.runtime.borrow().view.intrinsic_size())
+                waterui_core::NativeView::stretch_axis(&node.runtime.borrow().view)
             }
             Self::Filtered(node) => node.child.stretch(),
             Self::Collection(node) => {
@@ -228,26 +233,24 @@ impl RenderNode {
             // formula's typeset box) answers with it on whichever axis the
             // container left open; content that is not fills the proposal.
             Self::SceneView(node) => {
-                let resolved =
-                    resolve_scene_proposal(node.content.borrow().intrinsic_size(), proposal);
-                ViewDimensions::new(Size::new(
-                    resolved.width.unwrap_or(0.0),
-                    resolved.height.unwrap_or(0.0),
-                ))
+                let dimensions = node.intrinsic_dimensions(proposal);
+                node.measured.set(Some((proposal, dimensions.size)));
+                dimensions
             }
             // GPU content answers like a scene: content that is naturally a
             // size is content-sized; content without one fills the proposal.
             Self::GpuContent(node) => {
-                let resolved =
-                    resolve_scene_proposal(node.runtime.borrow().view.intrinsic_size(), proposal);
-                ViewDimensions::new(Size::new(
-                    resolved.width.unwrap_or(0.0),
-                    resolved.height.unwrap_or(0.0),
-                ))
+                let dimensions = node.intrinsic_dimensions(proposal);
+                node.measured.set(Some((proposal, dimensions.size)));
+                dimensions
             }
             // External frames measure through their source: a stream with an
             // intrinsic size is content-sized, one without fills the proposal.
-            Self::ExternalFrame(node) => node.runtime.borrow().view.measure(proposal),
+            Self::ExternalFrame(node) => {
+                let dimensions = node.intrinsic_dimensions(proposal);
+                node.measured.set(Some((proposal, dimensions.size)));
+                dimensions
+            }
             // A filtered view is sized by its content: the engine applies the
             // filter to the mount the child's layers hang from.
             Self::Filtered(node) => node.child.measure(state, &node.env, theme, proposal),

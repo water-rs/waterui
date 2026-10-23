@@ -8,7 +8,7 @@
 //! therefore carries its respelled spans, and no effective-input plumbing
 //! survives.
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
 mod android_fonts;
 pub mod fonts;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
@@ -282,13 +282,17 @@ impl ParleyEngine {
                 // (gvar, CFF/CFF2); built once per run so that choice — and the
                 // scaled, instance-aware metrics it wraps — is shared by every
                 // glyph on the run.
-                let coords: Vec<NormalizedCoord> = run
+                let coords: Vec<i16> = run
                     .normalized_coords()
+                    .iter()
+                    .map(|coord| coord.to_bits())
+                    .collect();
+                let location: Vec<NormalizedCoord> = coords
                     .iter()
                     .map(|coord| NormalizedCoord::from_bits(*coord))
                     .collect();
                 let metrics =
-                    font_ref.glyph_metrics(Size::new(run.font_size()), LocationRef::new(&coords));
+                    font_ref.glyph_metrics(Size::new(run.font_size()), LocationRef::new(&location));
                 let mut ink_bounds = self
                     .ink_bounds
                     .lock()
@@ -305,7 +309,7 @@ impl ParleyEngine {
                         &metrics,
                         font,
                         run.font_size(),
-                        run.normalized_coords(),
+                        &coords,
                         glyph.id,
                     ) {
                         ink_min = ink_min.min(x + x_min);
@@ -710,7 +714,11 @@ fn encode_text_layout(
                 let run = glyph_run.run();
                 let style = glyph_run.style();
                 let brush = rgba8_to_peniko(style.brush);
-                let normalized_coords = run.normalized_coords();
+                let normalized_coords: Vec<i16> = run
+                    .normalized_coords()
+                    .iter()
+                    .map(|coord| coord.to_bits())
+                    .collect();
 
                 // `positioned_glyphs` already folds each cluster advance into
                 // `x` and the run baseline into `y`; only the fragment shift
@@ -728,7 +736,7 @@ fn encode_text_layout(
                 scene.glyphs(&GlyphRun {
                     font: run.font(),
                     font_size: run.font_size(),
-                    normalized_coords,
+                    normalized_coords: &normalized_coords,
                     transform: kurbo::Affine::IDENTITY,
                     brush: &peniko::Brush::Solid(brush),
                     brush_alpha: 1.0,

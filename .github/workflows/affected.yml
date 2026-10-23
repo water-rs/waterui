@@ -31,6 +31,16 @@ on:
       package-args:
         description: The affected packages rendered as cargo `-p` flags.
         value: ${{ jobs.scope.outputs.package-args }}
+      linux-package-args:
+        description: >
+          `package-args` without the crates the Linux lint never compiles
+          (waterui-apple, cocoa-ui).
+        value: ${{ jobs.scope.outputs.linux-package-args }}
+      workspace-wide:
+        description: >
+          `true` when the scope is `workspace` or the affected packages are
+          at least 70% of the Linux-linted workspace members (#3229, #3246).
+        value: ${{ jobs.scope.outputs.workspace-wide }}
       comment-only:
         description: >
           `true` when every changed .rs file's syntax tree is unchanged
@@ -62,6 +72,8 @@ jobs:
     outputs:
       packages: ${{ steps.compute.outputs.packages }}
       package-args: ${{ steps.compute.outputs.package-args }}
+      linux-package-args: ${{ steps.compute.outputs.linux-package-args }}
+      workspace-wide: ${{ steps.compute.outputs.workspace-wide }}
       comment-only: ${{ steps.compute.outputs.comment-only }}
       msrv: ${{ steps.compute.outputs.msrv }}
       scene-assets: ${{ steps.compute.outputs.scene-assets }}
@@ -111,6 +123,8 @@ jobs:
             {
               echo "packages=workspace"
               echo "package-args="
+              echo "linux-package-args="
+              echo "workspace-wide=true"
               echo "comment-only=false"
               echo "msrv=true"
               echo "scene-assets=true"

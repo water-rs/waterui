@@ -61,6 +61,8 @@ fn buffer() -> CFRetained<CVPixelBuffer> {
         )
     };
     let mut out = std::ptr::null_mut();
+    // SAFETY: `attributes` is a live dictionary for the call and `out` is
+    // a valid +1 out-pointer.
     let status = unsafe {
         CVPixelBufferCreate(
             None,
@@ -81,16 +83,21 @@ fn buffer() -> CFRetained<CVPixelBuffer> {
 /// # Safety
 /// `buffer` is a live BGRA pixel buffer nothing else is writing.
 unsafe fn fill(buffer: &CVPixelBuffer, frame: u64) {
+    // SAFETY: `buffer` is a live pixel buffer per the caller.
     let status = unsafe { CVPixelBufferLockBaseAddress(buffer, CVPixelBufferLockFlags(0)) };
     assert_eq!(status, kCVReturnSuccess, "CVPixelBufferLockBaseAddress");
     let base = CVPixelBufferGetBaseAddress(buffer).cast::<u8>();
     let stride = CVPixelBufferGetBytesPerRow(buffer);
+    // SAFETY: `base` is this locked buffer's writable mapping of
+    // `stride`-byte rows, and nothing else is writing it.
     unsafe { pattern::fill_bgra(base, stride, frame) };
+    // SAFETY: this call holds the lock on `buffer`.
     let status = unsafe { CVPixelBufferUnlockBaseAddress(buffer, CVPixelBufferLockFlags(0)) };
     assert_eq!(status, kCVReturnSuccess, "CVPixelBufferUnlockBaseAddress");
 }
 
 /// A buffer's flight state: `None` while the slot is free.
+#[derive(Debug)]
 struct Flight {
     /// Its produce index.
     generation: u64,
@@ -99,12 +106,14 @@ struct Flight {
     retire_serial: u64,
 }
 
+#[derive(Debug)]
 struct Slot {
     buffer: CFRetained<CVPixelBuffer>,
     flight: Option<Flight>,
 }
 
 /// A ring of `IOSurface`-backed buffers feeding one video layer.
+#[derive(Debug)]
 pub struct Pool {
     device: SharedDevice,
     metal: Retained<ProtocolObject<dyn MTLDevice>>,
@@ -195,6 +204,8 @@ impl Pool {
         };
         self.stalled = false;
         let t = Instant::now();
+        // SAFETY: `free`'s buffer is live and its slot is empty, so
+        // nothing else is writing it.
         unsafe { fill(&self.slots[free].buffer, generation) };
         self.fill_ms = u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
         let t = Instant::now();

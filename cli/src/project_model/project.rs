@@ -18,7 +18,7 @@ use crate::framework::{
     CheckoutMember, FrameworkChannel, ResolvedFramework, local_checkout_members,
     validate_resolved_cli,
 };
-use crate::toolchain::Host;
+use crate::toolchain::{Host, git};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenMode {
@@ -235,18 +235,10 @@ impl Project {
             ));
             updates.push((path.join("Water.lock"), lockfile));
         }
-        let mut updates: Vec<_> = updates
+        let updates: Vec<_> = updates
             .into_iter()
             .map(|(file, contents)| (file, Some(contents)))
             .collect();
-        if channel == FrameworkChannel::Stable
-            && previous
-                .framework
-                .as_ref()
-                .is_some_and(|previous| previous.channel() != Some(FrameworkChannel::Stable))
-        {
-            updates.push((path.join("Water.lock"), None));
-        }
         apply_channel_selection(host, &path, framework, updates).await?;
         Self::open_for_preview_build(host, path)
             .await
@@ -2063,7 +2055,7 @@ impl Project {
     async fn ensure_git_init(host: &Host, path: &Path) -> Result<(), FailToCreateProject> {
         // Check if already in a git repository
 
-        let mut cmd = host.command("git");
+        let mut cmd = git::command(host).map_err(FailToCreateProject::GitStatus)?;
 
         let is_in_git = command(&mut cmd, host.std_output())
             .args(["rev-parse", "--git-dir"])
@@ -2076,7 +2068,7 @@ impl Project {
 
         if !is_in_git {
             // Initialize a new git repository
-            let mut cmd = host.command("git");
+            let mut cmd = git::command(host).map_err(FailToCreateProject::GitInit)?;
             command(&mut cmd, host.std_output())
                 .args(["init"])
                 .current_dir(path)
@@ -2511,7 +2503,7 @@ async fn resolve_cargo_layout(
     cargo_layout_from(
         host,
         &application_manifest,
-        framework,
+        framework.as_ref(),
         &metadata,
         water_lock.as_deref(),
     )
@@ -2562,7 +2554,7 @@ impl Fact for CargoLayoutFact {
         cargo_layout_from(
             scope.host(),
             &application_manifest,
-            self.framework.clone(),
+            self.framework.as_ref(),
             &metadata,
             water_lock.as_deref(),
         )
@@ -2575,15 +2567,16 @@ impl Fact for CargoLayoutFact {
 fn cargo_layout_from(
     host: &Host,
     application_manifest: &Path,
-    framework: Option<ResolvedFramework>,
+    framework: Option<&ResolvedFramework>,
     metadata: &cargo_metadata::Metadata,
     water_lock: Option<&[u8]>,
 ) -> eyre::Result<CargoLayout> {
     validate_resolved_cli(host, metadata)?;
-    if let Some(framework) = framework
-        && let Some(lockfile) = water_lock
-    {
-        framework.validate_dependencies(metadata, lockfile)?;
+    if let Some(framework) = framework {
+        framework.validate_public_api_dependencies(metadata)?;
+        if let Some(lockfile) = water_lock {
+            framework.validate_dependencies(metadata, lockfile)?;
+        }
     }
 
     let root_package = package_at_manifest(metadata, application_manifest)?;
@@ -2631,7 +2624,11 @@ fn package_at_manifest<'a>(
     metadata
         .packages
         .iter()
-        .find(|package| package.manifest_path.as_std_path() == application_manifest)
+        .find(|package| {
+            // Cargo may report the manifest under a verbatim `\\?\`-prefixed
+            // spelling where `application_manifest` carries the ordinary one.
+            dunce::simplified(package.manifest_path.as_std_path()) == application_manifest
+        })
         .ok_or_else(|| {
             eyre::eyre!(
                 "Cargo metadata omitted the application package at {}",
@@ -2662,7 +2659,7 @@ async fn cargo_tree(
     locked: bool,
 ) -> eyre::Result<String> {
     let application_manifest = application_manifest(project_root).await?;
-    let mut tree = host.command("cargo");
+    let mut tree = host.command("cargo")?;
     tree.arg("tree")
         .arg("--manifest-path")
         .arg(&application_manifest)
@@ -3974,9 +3971,6 @@ mod managed_backends_tests {
             TargetPlatform::Linux,
             TargetPlatform::Windows,
             TargetPlatform::Web,
-            TargetPlatform::Esp32S3,
-            TargetPlatform::Esp32C3,
-            TargetPlatform::Esp32P4,
         ] {
             assert_eq!(
                 ManagedBackends::for_platform(platform),
@@ -4599,7 +4593,7 @@ mod target_graph_tests {
         let host = machine
             .host([("WATERUI_FAKE_LOG", log.as_os_str())])
             .with_offline(true);
-        let cache = host.cache_dir().unwrap().join("waterui/fonts");
+        let cache = super::super::assets::cache_dir(&host).unwrap();
         std::fs::create_dir_all(&cache).unwrap();
         smol::block_on(async {
             let mut manifest = Manifest::open(root.join("Water.toml")).await.unwrap();
@@ -4643,7 +4637,7 @@ mod target_graph_tests {
             smol::block_on(async {
                 if cached_font {
                     let url = "https://example.com/inter.ttf";
-                    let cache = host.cache_dir().unwrap().join("waterui/fonts");
+                    let cache = super::super::assets::cache_dir(&host).unwrap();
                     std::fs::create_dir_all(&cache).unwrap();
                     let hash = hex::encode(Sha256::digest(url.as_bytes()));
                     std::fs::write(cache.join(format!("{hash}.ttf")), b"cached font").unwrap();
@@ -5838,19 +5832,19 @@ mod local_patch_tests {
         }
     }
 
-    fn local_checkout(machine: &TestMachine) -> PathBuf {
+    fn local_checkout(machine: &TestMachine) -> std::io::Result<PathBuf> {
         let checkout = machine.root().join("waterui");
-        write_local_checkout(&checkout);
-        checkout
+        write_local_checkout(&checkout)?;
+        Ok(checkout)
     }
 
     #[test]
-    fn create_removes_what_it_wrote_when_a_later_step_fails() {
+    fn create_removes_what_it_wrote_when_a_later_step_fails() -> std::io::Result<()> {
         let machine = TestMachine::new();
         machine.install("cargo");
         machine.install("git");
         let host = machine.host::<&str, &str>([]);
-        let checkout = local_checkout(&machine);
+        let checkout = local_checkout(&machine)?;
         let root = machine.root().join("water-example");
         std::fs::write(machine.home().join(".water"), "not a directory")
             .expect("block the Water home directory");
@@ -5870,15 +5864,16 @@ mod local_patch_tests {
             "partial project root remains: {}",
             root.display()
         );
+        Ok(())
     }
 
     #[test]
-    fn discarding_a_draft_removes_the_project_and_returns_the_error() {
+    fn discarding_a_draft_removes_the_project_and_returns_the_error() -> std::io::Result<()> {
         let machine = TestMachine::new();
         machine.install("cargo");
         machine.install("git");
         let host = machine.host::<&str, &str>([]);
-        let checkout = local_checkout(&machine);
+        let checkout = local_checkout(&machine)?;
         let root = machine.root().join("water-example");
 
         let draft = smol::block_on(ProjectDraft::create(
@@ -5901,6 +5896,7 @@ mod local_patch_tests {
             "discarded project cache remains: {}",
             cache.display()
         );
+        Ok(())
     }
 }
 

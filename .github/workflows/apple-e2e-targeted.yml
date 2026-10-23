@@ -53,6 +53,9 @@ env:
   RUSTC_WRAPPER: ""
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # e2e lanes build fully cold: some of what they measure is cold compile
+  # time, so no job here restores or saves any Actions cache and none runs
+  # a compile wrapper (sccache, stow). Caching is for the everyday gates.
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   # `cargo install --path` otherwise builds in a tempdir; framework builds
@@ -108,13 +111,6 @@ jobs:
           toolchain: stable
           cache: "false"
 
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes (source packages are toolchain-independent). No save and no
-      # `target` cache in this lane.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
-
       - name: Build the water CLI
         env:
           # The CLI's own target directory lives with its checkout in the
@@ -146,7 +142,7 @@ jobs:
       # This job builds under the dated stable pinned below (apple-e2e.yml's
       # header explains why), and rustup ranks this variable above the
       # project's file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
     steps:
       - uses: actions/checkout@v4
 
@@ -158,7 +154,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           targets: aarch64-apple-ios-sim
           # run-ios-device-tests.sh verifies the packaged archive's exports
           # with the llvm-nm shipped by this toolchain.
@@ -167,13 +163,6 @@ jobs:
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
-
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache (the old per-leg `target`
-      # writer is gone).
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
@@ -279,7 +268,7 @@ jobs:
       # This job builds under the dated stable pinned below (apple-e2e.yml's
       # header explains why), and rustup ranks this variable above the
       # project's file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
     steps:
       - uses: actions/checkout@v4
 
@@ -291,17 +280,11 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           cache: "false"
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
-
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4

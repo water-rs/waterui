@@ -12,6 +12,7 @@ use cherenkov_gpu::{
         shader_delivery, wgpu,
     },
 };
+use cherenkov_oracle::metrics::assert_unorm8_close;
 
 split_fn! {
 /// An adapter/device pair usable as a `SharedDevice`: passthrough backends
@@ -23,7 +24,9 @@ fn shared_device()
     let adapter =
         block!(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
     let required_features = match adapter.get_info().backend {
-        wgpu::Backend::Vulkan | wgpu::Backend::Metal => wgpu::Features::PASSTHROUGH_SHADERS,
+        wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => {
+            wgpu::Features::PASSTHROUGH_SHADERS
+        }
         _ => wgpu::Features::empty(),
     };
     let (device, queue) = block!(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -154,7 +157,7 @@ fn hardware_and_shader_srgb_store_the_same_premultiplied_bytes()
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    for alpha in [0.0, 0.25, 0.5, 1.0] {
+    for (alpha, stored) in [(0.0, 0_u8), (0.25, 64), (0.5, 128), (1.0, 255)] {
         surface.clear_color(WorkingColor::new([1.0, 1.0, 1.0, alpha]));
         wait!(engine.render(FrameTime::now()))?;
         for output in &outputs {
@@ -205,13 +208,9 @@ fn hardware_and_shader_srgb_store_the_same_premultiplied_bytes()
             .slice(..)
             .get_mapped_range()
             .expect("buffer range is mapped and not overlapping");
-        for (a, b) in bytes[..4].iter().zip(&bytes[256..260]) {
-            assert!(
-                a.abs_diff(*b) <= 1,
-                "hardware transfer differs at alpha {alpha}: {a} vs {b}"
-            );
-            assert!((f32::from(*a) / 255.0 - alpha).abs() < 0.005);
-        }
+        // The hardware transfer matches the shader route, and both store the alpha.
+        assert_unorm8_close(&bytes[..4], &bytes[256..260]);
+        assert_unorm8_close(&bytes[..4], &[stored; 4]);
         drop(bytes);
         buffer.unmap();
     }

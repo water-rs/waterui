@@ -234,13 +234,3 @@ pub fn corpus_dir(root: &Path) -> PathBuf {
 pub fn perf_dir(root: &Path) -> PathBuf {
     root.join("scenes/perf")
 }
-
-/// The repository root, resolved from `CARGO_MANIFEST_DIR` (the `scene`
-/// crate's directory).
-#[must_use]
-pub fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("workspace layout")
-        .to_path_buf()
-}

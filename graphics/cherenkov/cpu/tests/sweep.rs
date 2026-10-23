@@ -5,6 +5,7 @@ use cherenkov::{
     Draw, Engine, Extend, FrameTime, Offscreen, OffscreenFormat, Paint, SweepGradient, WorkingColor,
 };
 use cherenkov_cpu::{Raster, RasterConfig};
+use cherenkov_oracle::metrics::assert_close;
 
 #[test]
 fn sweep_wraps_negative_spans_and_applies_paint_coordinates() {
@@ -28,7 +29,7 @@ fn sweep_wraps_negative_spans_and_applies_paint_coordinates() {
     let pixels = surface.readback().expect("pixels").pixels;
     let bottom = pixels[24 * 32 + 16];
     assert!((bottom[0] - 0.5).abs() < 1e-5 && (bottom[2] - 0.5).abs() < 1e-5);
-    assert_eq!(pixels[8 * 32 + 16][3].to_bits(), 0.0_f32.to_bits());
+    assert_close(&[pixels[8 * 32 + 16][3]], &[0.0]);
 }
 
 #[test]

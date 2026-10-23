@@ -71,7 +71,7 @@ fn every_variant_emits_spirv() {
         writer
             .write(&module, &info, None, &None, &mut words)
             .unwrap_or_else(|e| panic!("variant {variant}: spv: {e}"));
-        assert_ne!(words, []);
+        assert_ne!(words, Vec::<u32>::new());
     }
 }
 }
@@ -133,7 +133,7 @@ fn effect_emits(name: &str, module: &Module, info: &naga::valid::ModuleInfo) {
     writer
         .write(module, info, None, &None, &mut words)
         .unwrap_or_else(|e| panic!("{name}: spv: {e}"));
-    assert_ne!(words, []);
+    assert_ne!(words, Vec::<u32>::new());
     let options = hlsl::Options::default();
     let mut out = String::new();
     let pipeline_options = hlsl::PipelineOptions::default();
@@ -212,6 +212,7 @@ fn standalone_modules_emit() {
     for (name, source) in [
         ("projective", format!("{SHARED}\n{BLEND}\n{PROJECTIVE}")),
         ("mip", MIP.to_owned()),
+        ("coverage", include_str!(concat!(env!("OUT_DIR"), "/coverage.wgsl")).to_owned()),
         ("resolve", RESOLVE.to_owned()),
     ] {
         let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{name}: {e}"));

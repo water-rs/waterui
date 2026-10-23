@@ -44,6 +44,9 @@ class HydrolysisSession internal constructor(
     /** The native teardown waits for the outermost native call to return. */
     private var tearDownPending = false
 
+    /** A placement pull requested under a native call; the outermost [exitNative] runs it. */
+    private var placementPullPending = false
+
     /** [tearDown] has handed [livePtr] to `nativeDestroySession`. */
     private var destroyed = false
 
@@ -100,11 +103,32 @@ class HydrolysisSession internal constructor(
         return livePtr
     }
 
-    /** [withNativePtr]'s exit: the outermost return runs a pending teardown. */
+    /**
+     * [withNativePtr]'s exit: the outermost return runs a pending teardown,
+     * else a pending placement pull. The pull opens its own [withNativePtr]
+     * scope, so this runs again at depth zero with the flag already cleared.
+     */
     @PublishedApi
     internal fun exitNative() {
         nativeDepth -= 1
-        if (nativeDepth == 0 && tearDownPending) tearDown()
+        if (nativeDepth != 0) return
+        if (tearDownPending) {
+            placementPullPending = false
+            tearDown()
+        } else if (placementPullPending) {
+            placementPullPending = false
+            hostView?.platformViewRegistry?.publishIfPending()
+        }
+    }
+
+    /**
+     * Pulls the published placement set into the bound registry, never under a
+     * native call: the native side holds the session borrowed until the
+     * outermost call returns, and `nativePlatformViewFrames` would re-enter it.
+     */
+    internal fun requestPlacementPull() {
+        if (nativeDepth == 0) hostView?.platformViewRegistry?.publishIfPending()
+        else placementPullPending = true
     }
 
     /** The view currently presenting this session, or none between bindings. */
@@ -131,15 +155,17 @@ class HydrolysisSession internal constructor(
     private val platformViewInstances = HashMap<Long, View>()
 
     /**
-     * Registers `view` as the platform-view instance `id`. Public because the
-     * registering code lives in another Gradle module.
+     * Registers `view` as the platform-view instance `id` and requests a
+     * placement pull (deferred while a native call is live, see
+     * [requestPlacementPull]). Public because the registering code lives in
+     * another Gradle module.
      */
     fun registerPlatformViewInstance(id: Long, view: View) {
         check(platformViewInstances.putIfAbsent(id, view) == null) {
             "hydrolysis: a platform-view instance is already registered under id $id"
         }
         // A placement naming this instance may already be waiting.
-        hostView?.platformViewRegistry?.notifyChanged()
+        requestPlacementPull()
     }
 
     /**
@@ -296,9 +322,13 @@ class HydrolysisSession internal constructor(
         hostView?.notifyAccessibilityTreeChanged(diffJson)
     }
 
+    /**
+     * The session published a new placement set. Fired from inside the frame,
+     * so the pull runs once the outermost native call returns.
+     */
     @CalledFromNative
     fun onNativePlatformViewsChanged() {
-        hostView?.notifyPlatformViewsChanged()
+        requestPlacementPull()
     }
 
     /**
@@ -309,17 +339,6 @@ class HydrolysisSession internal constructor(
     @CalledFromNative
     fun onNativePlatformViewFocus(): Boolean =
         hostView?.platformViewRegistry?.focusInside() == true
-
-    /**
-     * A fatal, unrecoverable failure on the native side (GPU device loss, an
-     * explicit GPU error). The host raises it as an exception on the UI
-     * thread — a crash with a named cause is the honest surface for a session
-     * that can no longer present.
-     */
-    @CalledFromNative
-    fun onNativeFatalError(message: String) {
-        throw IllegalStateException(message)
-    }
 
     /**
      * The native side requests a close from inside its frame and keeps

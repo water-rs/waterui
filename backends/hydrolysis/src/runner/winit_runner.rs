@@ -250,7 +250,7 @@ impl TerminationHost for WinitTerminationHost {
 struct SessionEnd {
     /// HWNDs holding a `ShutdownBlockReasonCreate`, filled by the
     /// `WM_QUERYENDSESSION` subclass.
-    block_reasons: RefCell<std::collections::HashSet<isize>>,
+    block_reasons: RefCell<std::collections::HashSet<windows_sys::Win32::Foundation::HWND>>,
     /// Whether the machine reported `terminate`.
     terminated: std::cell::Cell<bool>,
     /// Console control handlers waiting for `terminate`, each released by a
@@ -354,7 +354,8 @@ impl TerminationSubclass {
             let mut msg: MSG = unsafe { std::mem::zeroed() };
             // SAFETY: `msg` is a writable `MSG`; a null HWND takes every
             // message of this thread.
-            while unsafe { PeekMessageW(&raw mut msg, 0, 0, 0, PM_REMOVE) } != 0 {
+            while unsafe { PeekMessageW(&raw mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0
+            {
                 // SAFETY: `msg` was just filled by `PeekMessageW`.
                 unsafe {
                     TranslateMessage(&raw const msg);
@@ -432,7 +433,10 @@ unsafe extern "system" fn session_end_proc(
 /// the window would otherwise end with the session without running
 /// `on_terminate`.
 #[cfg(target_os = "windows")]
-fn install_termination_subclass(hwnd: isize, subclass: TerminationSubclass) {
+fn install_termination_subclass(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    subclass: TerminationSubclass,
+) {
     use windows_sys::Win32::UI::Shell::SetWindowSubclass;
     let subclass = Box::into_raw(Box::new(subclass));
     // SAFETY: `hwnd` is a live application window this process owns; the
@@ -461,7 +465,7 @@ fn install_termination_subclass(hwnd: isize, subclass: TerminationSubclass) {
 /// Removes the session-end subclass before the window's `HWND` is
 /// destroyed — the same teardown point the menu bar detaches at.
 #[cfg(target_os = "windows")]
-fn remove_termination_subclass(hwnd: isize) {
+fn remove_termination_subclass(hwnd: windows_sys::Win32::Foundation::HWND) {
     use windows_sys::Win32::UI::Shell::{GetWindowSubclass, RemoveWindowSubclass};
     // SAFETY: `hwnd` is still a live application window (this runs before
     // the winit window is dropped).
@@ -509,9 +513,7 @@ static CONSOLE_CLOSE: std::sync::OnceLock<winit::event_loop::EventLoopProxy<Runn
 /// the system withholds them from a process that loads user32, and the
 /// application windows receive `WM_ENDSESSION` instead.
 #[cfg(target_os = "windows")]
-unsafe extern "system" fn console_close_handler(
-    ctrl_type: u32,
-) -> windows_sys::Win32::Foundation::BOOL {
+unsafe extern "system" fn console_close_handler(ctrl_type: u32) -> windows_sys::core::BOOL {
     use windows_sys::Win32::System::Console::CTRL_CLOSE_EVENT;
     if ctrl_type != CTRL_CLOSE_EVENT {
         return 0;
@@ -720,9 +722,6 @@ pub fn run(
     let _ = env.get_or_insert_with::<MenuShortcutRegistry, _>(MenuShortcutRegistry::default);
     crate::theme::install_theme_tokens(&mut env, Some(&style));
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
-    env.insert(waterui_core::ViewRenderer::new(
-        crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
-    ));
     // The application's fonts, discovered once. Every window's renderer is
     // seeded from this collection, and a self-drawn component that typesets
     // text itself reads it out of the environment instead of enumerating the
@@ -775,6 +774,17 @@ pub fn run(
     );
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     super::menu_bar::register_menu_bar(&menu_bar, &env);
+    // The capture service mounts its subtree under a snapshot of the
+    // assembled environment — the theme tokens, hooks and font collection a
+    // window's subtree resolves — so it must be installed last
+    // (water-rs/waterui#2703).
+    env.insert(waterui_core::ViewRenderer::new(
+        crate::view_renderer::HydrolysisViewRenderer::new(
+            Rc::clone(&theme),
+            env.clone(),
+            FontFamilyResolution::Lenient,
+        ),
+    ));
     let mut runner = WinitRunner {
         env,
         theme,
@@ -936,6 +946,20 @@ fn load_staged_window_icon(
     }
 }
 
+/// Arms `WindowHandle::focus` on `window`: the request reaches winit's
+/// `focus_window` — `_NET_ACTIVE_WINDOW`, `SetForegroundWindow`, a Wayland
+/// activation-token request, as the handle's docs say. The hook holds the
+/// native window weakly, so a request filed through a handle that outlived
+/// the window's teardown is a no-op.
+fn arm_window_focus_requests(window: &Window, native_window: &Arc<NativeWindow>) {
+    let native = Arc::downgrade(native_window);
+    window.arm_focus_requests(move || {
+        if let Some(native) = native.upgrade() {
+            native.focus_window();
+        }
+    });
+}
+
 fn native_window_attributes(
     window: &Window,
     env: &Environment,
@@ -1091,6 +1115,31 @@ impl WinitRunner {
         runtime_window_origin(runtime)
     }
 
+    /// Windows' menu bar lives on the window: attach the app bar's HMENU to
+    /// this HWND (see `menu_bar` for the platform contract), and subclass the
+    /// same HWND so a session shutdown asks the termination machine before
+    /// ending the process.
+    #[cfg(target_os = "windows")]
+    fn attach_windows_chrome(&self, native_window: &NativeWindow) {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(handle) = native_window.window_handle()
+            && let RawWindowHandle::Win32(win) = handle.as_raw()
+        {
+            self.native_menu_bar.attach_hwnd(
+                win.hwnd.get(),
+                crate::renderer::WindowId::Winit(native_window.id()),
+            );
+            install_termination_subclass(
+                win.hwnd.get() as windows_sys::Win32::Foundation::HWND,
+                TerminationSubclass {
+                    termination: self.termination.clone(),
+                    session_end: Rc::clone(&self.session_end),
+                    runnables: Rc::clone(&self.local_runnable_rx),
+                },
+            );
+        }
+    }
+
     /// Realizes `native_window` as the platform window of `window` on the
     /// runner's shared GPU context, creating that context with the first
     /// window.
@@ -1147,6 +1196,7 @@ impl WinitRunner {
                 .create_window(attributes)
                 .expect("hydrolysis runner: failed to create winit window"),
         );
+        arm_window_focus_requests(&window, &native_window);
         #[cfg(hydrolysis_wayland_platform)]
         if let Some(xid) = x11_state_watch::x11_window_id(&native_window) {
             // The window is on X11, so the app's own server connection is
@@ -1167,27 +1217,7 @@ impl WinitRunner {
         }
         #[cfg(target_os = "windows")]
         if activates {
-            // Windows' menu bar lives on the window: attach the app bar's
-            // HMENU to this HWND (see `menu_bar` for the platform contract),
-            // and subclass the same HWND so a session shutdown asks the
-            // termination machine before ending the process.
-            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            if let Ok(handle) = native_window.window_handle()
-                && let RawWindowHandle::Win32(win) = handle.as_raw()
-            {
-                self.native_menu_bar.attach_hwnd(
-                    win.hwnd.get(),
-                    crate::renderer::WindowId::Winit(native_window.id()),
-                );
-                install_termination_subclass(
-                    win.hwnd.get(),
-                    TerminationSubclass {
-                        termination: self.termination.clone(),
-                        session_end: Rc::clone(&self.session_end),
-                        runnables: Rc::clone(&self.local_runnable_rx),
-                    },
-                );
-            }
+            self.attach_windows_chrome(&native_window);
         }
         let mut platform = self.create_platform_window(native_window, &window);
         platform.apply_properties(&window);
@@ -1344,7 +1374,7 @@ impl WinitRunner {
             && let RawWindowHandle::Win32(win) = handle.as_raw()
         {
             self.native_menu_bar.detach_hwnd(win.hwnd.get());
-            remove_termination_subclass(win.hwnd.get());
+            remove_termination_subclass(win.hwnd.get() as windows_sys::Win32::Foundation::HWND);
         }
     }
 

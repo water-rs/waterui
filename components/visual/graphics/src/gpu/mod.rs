@@ -15,6 +15,8 @@
 
 extern crate alloc;
 
+#[cfg(target_os = "android")]
+pub mod device;
 pub mod external;
 pub mod runtime;
 pub use external::{

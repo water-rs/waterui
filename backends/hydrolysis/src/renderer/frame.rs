@@ -184,9 +184,22 @@ impl SemanticCore {
     /// would make an app with a focused field never count as settled.
     #[must_use]
     pub fn has_scheduled_semantic_work(&self) -> bool {
+        self.scheduled_semantic_work(PerpetualAnimation::Counts)
+    }
+
+    /// [`Self::has_scheduled_semantic_work`] without repeat-forever
+    /// animations: whether any scheduled work remains that will finish on
+    /// its own. A scene whose only activity is a perpetual animation has
+    /// none.
+    #[must_use]
+    pub fn has_finite_semantic_work(&self) -> bool {
+        self.scheduled_semantic_work(PerpetualAnimation::Ignored)
+    }
+
+    fn scheduled_semantic_work(&self, perpetual: PerpetualAnimation) -> bool {
         self.has_pending_semantic_update()
             || self.os_file_drop_pending()
-            || self.animations_active()
+            || self.animations_active_with(perpetual)
             || self.next_gesture_deadline().is_some()
             || self.has_gliding_smooth_scrolls()
             || self.has_active_touch_fling()
@@ -229,18 +242,23 @@ impl HydrolysisRenderer {
         (&mut self.core.state, run)
     }
 
-    /// The per-frame work counters of the last rendered pump.
-    /// `HydroState::counters` is private to `crate::renderer`, so callers
-    /// outside the renderer reach it through here.
-    #[must_use]
-    pub const fn frame_work_counters(&self) -> FrameWorkCounters {
-        self.core.state.counters
-    }
-
     /// Mutable access for the runner's host-side wakeup and submission
     /// sites (the ones that happen outside a renderer method).
     pub const fn frame_work_counters_mut(&mut self) -> &mut FrameWorkCounters {
         &mut self.core.state.counters
+    }
+
+    /// Reads this frame's work counters and opens the next frame's count.
+    /// The frame pump snapshots its own work when the frame's profile is
+    /// finalized; everything counted afterwards — the next frame's input
+    /// handling, scheduling drains and host wakes included — accumulates
+    /// toward the frame it produces, so an idle or operand-only frame
+    /// reports its own work rather than the last scene build's leftovers
+    /// (water-rs/waterui#2907).
+    pub fn take_frame_work_counters(&mut self) -> FrameWorkCounters {
+        let counters = self.core.state.counters;
+        self.core.state.counters.reset_frame();
+        counters
     }
 
     /// Drops the recorded scene and the hit-test state derived from it.
@@ -248,11 +266,16 @@ impl HydrolysisRenderer {
     /// The hit registries are retained: clearing them would lose what the
     /// kept nodes own — materialization rebuilds the flat lists, so only
     /// the gesture engine's per-frame target list drains here.
+    ///
+    /// The frame-work counters are deliberately untouched: they roll at
+    /// every presented frame's boundary
+    /// ([`Self::take_frame_work_counters`]), not per scene reset — a
+    /// refresh flush resets the scene mid-frame while the counters are
+    /// still collecting that frame's work.
     pub fn reset_scene(&mut self) {
         self.gesture_engine.clear_targets();
         self.text_editing.text_input_targets.clear();
         self.state.measurement.reset_counters();
-        self.state.counters.reset_frame();
         #[cfg(feature = "accessibility")]
         self.accessibility.reset_scene();
     }

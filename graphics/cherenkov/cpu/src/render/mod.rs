@@ -3,13 +3,16 @@
 //! end's render loop.
 
 mod account;
+mod bins;
 mod bitmap;
 mod blend;
 mod colr;
+pub mod coverage;
 mod filter;
 mod font;
 mod geometry;
 mod glyph;
+mod gradient;
 mod image;
 mod mesh;
 #[cfg(any(test, feature = "testing"))]
@@ -23,17 +26,23 @@ mod prepared;
 pub mod present;
 mod projective;
 mod raster;
+mod shadow;
+mod span;
+mod tiles;
+mod topology;
 
 // The `testing` feature's surface: the span kernels and the types their
 // signatures name. `render` is a private module, so nothing is reachable
 // without `crate::testing`'s re-export, which does not exist without the
 // feature.
 #[cfg(any(test, feature = "testing"))]
+pub use lower::GeometryChange;
+#[cfg(any(test, feature = "testing"))]
 pub use lower::{ClipMask, ClipRef};
 #[cfg(any(test, feature = "testing"))]
 pub use paint::{PaintData, paint_data};
 #[cfg(any(test, feature = "testing"))]
-pub use raster::{Accum, ClipRun, Edge, composite_span};
+pub use raster::{ClipRun, Edge, composite_span};
 #[cfg(any(test, feature = "testing"))]
 pub use raster::{composite_solid, convert_span};
 
@@ -133,9 +142,12 @@ pub struct RasterRenderer {
     glyph_cache: glyph::GlyphCache,
     /// Decoded colour-font bitmaps, bounded by `Budget::cpu`.
     bitmap_cache: bitmap::BitmapCache,
-    /// Swept fill and stroke geometry offered by realizations dropped or
+    /// Fill and stroke geometry offered by realizations dropped or
     /// rebuilt this frame; empty between frames.
     geometry: geometry::GeometryCache,
+    /// Reusable build storage for retained geometry; high-water
+    /// capacity persists across frames.
+    edge_scratch: tiles::EdgeScratch,
     /// Bumped on every image replacement: the one change to what a
     /// current projective image read that arrives without a tree edit.
     /// A removal only runs once no installed content draws the image
@@ -143,6 +155,11 @@ pub struct RasterRenderer {
     image_replacements: u64,
     /// Counts rendered frames; the projective cache's recency clock.
     frame_count: u64,
+    /// Rebuilt for each raster call; capacity is shared across surfaces.
+    /// Boxed so lending it to a surface render moves a pointer, not the
+    /// index itself — a by-value move of the struct is a `memcpy` call
+    /// every frame. `None` only while a surface render holds it.
+    band_index: Option<Box<bins::FrameIndex>>,
 }
 
 impl std::fmt::Debug for RasterRenderer {
@@ -187,8 +204,10 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
                     glyph_cache: glyph::GlyphCache::new(config.budget.cpu.0),
                     bitmap_cache: bitmap::BitmapCache::new(config.budget.cpu.0),
                     geometry: geometry::GeometryCache::default(),
+                    edge_scratch: tiles::EdgeScratch::default(),
                     image_replacements: 0,
                     frame_count: 0,
+                    band_index: Some(Box::default()),
                 },
                 info,
             )
@@ -646,7 +665,11 @@ impl Renderer for RasterRenderer {
             .surfaces
             .values()
             .map(SurfaceState::band_bytes)
-            .sum::<u64>();
+            .sum::<u64>()
+            + self.band_index.as_ref().map_or(0, |index| {
+                size_of::<bins::FrameIndex>() as u64 + index.heap_bytes()
+            })
+            + self.edge_scratch.heap_bytes();
         categories.glyphs = self.glyph_cache.bytes();
         categories.images = self.images.values().map(|image| image.bytes()).sum();
         categories.colr = self.fonts.values().map(font::Font::colr_bytes).sum();
@@ -700,6 +723,7 @@ impl Renderer for RasterRenderer {
             self.glyph_cache.clear();
             self.bitmap_cache.clear();
             self.geometry.clear();
+            self.band_index = Some(Box::default());
             for surface in self.surfaces.values_mut() {
                 for content in surface.layers.values_mut() {
                     content.trim();
@@ -735,12 +759,19 @@ impl RasterRenderer {
             });
             if sf.changed || filter_changed {
                 stats.frame = Some(frame.id);
-                self.render_surface(sf, frame.id, stats)?;
+                let mut index = self
+                    .band_index
+                    .take()
+                    .expect("the band index is lent only for one surface render");
+                let result = self.render_surface(sf, frame.id, stats, &mut index);
+                self.band_index = Some(index);
+                result?;
             }
         }
         let (used, used_groups) = self.filter_uses();
         self.evict_projective();
         self.geometry.finish_frame();
+        self.edge_scratch.clear();
         self.filters.finish_frame(&used, &used_groups);
         self.update_filter_wakes();
         // Every visible surface whose filter or backdrop group still
@@ -829,6 +860,7 @@ impl RasterRenderer {
         sf: &cherenkov::SurfaceFrame<'_>,
         frame: cherenkov::FrameId,
         stats: &mut FrameStats,
+        index: &mut bins::FrameIndex,
     ) -> Result<(), RenderError> {
         let phases = stats.phases;
         let id = sf.id;
@@ -836,7 +868,12 @@ impl RasterRenderer {
             Some(surf) => surf.size,
             None => return Ok(()),
         };
-        let (projected, mut used) = self.realize_projective(sf, frame, stats)?;
+        // The frame's transient band-index metrics, shared by the
+        // projective realizations and the surface render: each records
+        // the frame-local peak.
+        let mut frame_mem = bins::FrameMeter::default();
+        let (projected, mut used) =
+            self.realize_projective(sf, frame, stats, index, &mut frame_mem)?;
         let mut items: Vec<Item> = Vec::new();
         let glyph_reqs = self.lower_items(
             sf,
@@ -864,22 +901,49 @@ impl RasterRenderer {
         let shade_at = cherenkov::Instant::now();
         let (draws, edges) = match &mut surf.output {
             Output::F32(fb) => pool.install(|| {
-                raster::render_bands(level, &items, clear, fb, w, h, Some(&peak), has_backdrop)
+                raster::render_bands(
+                    level,
+                    &items,
+                    index,
+                    clear,
+                    fb,
+                    w,
+                    h,
+                    Some(&peak),
+                    has_backdrop,
+                    &mut frame_mem,
+                )
             })?,
             Output::F16(out) => pool.install(|| {
-                raster::render_bands_f16(level, &items, clear, out, w, h, Some(&peak), has_backdrop)
+                raster::render_bands_f16(
+                    level,
+                    &items,
+                    index,
+                    clear,
+                    out,
+                    w,
+                    h,
+                    Some(&peak),
+                    has_backdrop,
+                    &mut frame_mem,
+                )
             })?,
-            Output::Stream { format, sink, emit } => raster::render_bands_stream(
-                level,
-                &items,
-                clear,
-                (w, h),
-                emit,
-                *format,
-                sink.as_mut(),
-                Some(&peak),
-                has_backdrop,
-            )?,
+            Output::Stream { format, sink, emit } => {
+                pool.install(|| index.rebuild(&items, h));
+                raster::render_bands_stream(
+                    level,
+                    &items,
+                    clear,
+                    (w, h),
+                    emit,
+                    *format,
+                    sink.as_mut(),
+                    Some(&peak),
+                    has_backdrop,
+                    index,
+                    &mut frame_mem,
+                )?
+            }
         };
         stats.phases.shade_seconds += shade_at.elapsed().as_secs_f64();
         surf.backdrop_capture_peak = peak.load(std::sync::atomic::Ordering::Relaxed);
@@ -887,7 +951,11 @@ impl RasterRenderer {
             lower_s = stats.phases.lower_seconds - phases.lower_seconds,
             glyph_s = stats.phases.glyph_seconds - phases.glyph_seconds,
             shade_s = stats.phases.shade_seconds - phases.shade_seconds,
-            items = items.len(), glyphs = glyph_reqs, "raster phases");
+            items = items.len(), glyphs = glyph_reqs,
+            index_bytes = index.heap_bytes(),
+            query_peak = frame_mem.query_peak.load(std::sync::atomic::Ordering::Relaxed),
+            index_query_peak = frame_mem.peak.load(std::sync::atomic::Ordering::Relaxed),
+            "raster phases");
         stats.draws += draws;
         stats.instances += edges;
         stats.passes += u32::try_from(h.div_ceil(raster::BAND_H)).unwrap_or(u32::MAX);
@@ -935,7 +1003,11 @@ impl RasterRenderer {
                 frame,
                 &mut self.fonts,
                 &self.bitmap_fonts,
-                (&mut self.bitmap_cache, &mut self.geometry),
+                (
+                    &mut self.bitmap_cache,
+                    &mut self.geometry,
+                    &mut self.edge_scratch,
+                ),
                 self.level,
                 &self.pool,
             );
@@ -976,6 +1048,8 @@ impl RasterRenderer {
         sf: &cherenkov::SurfaceFrame<'_>,
         frame: cherenkov::FrameId,
         stats: &mut FrameStats,
+        index: &mut bins::FrameIndex,
+        meter: &mut bins::FrameMeter,
     ) -> Result<(FxHashMap<LayerId, projective::Placed>, projective::Used), RenderError> {
         let mut used = projective::Used::default();
         let Some(size) = self.surfaces.get(&sf.id).map(|surf| surf.size) else {
@@ -1034,12 +1108,14 @@ impl RasterRenderer {
                     raster::render_bands(
                         self.level,
                         &items,
+                        index,
                         [0.0; 4],
                         &mut base,
                         w,
                         h,
                         None,
                         has_backdrop,
+                        meter,
                     )
                 })?;
                 stats.draws += draws;

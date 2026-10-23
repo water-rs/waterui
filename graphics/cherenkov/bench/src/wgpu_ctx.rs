@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use cherenkov_oracle::F32Image;
-use wgpu29::{
+use wgpu::{
     Buffer, BufferDescriptor, BufferUsages, Device, DeviceDescriptor, Extent3d, Instance, MapMode,
     MemoryHints, PollType, QuerySet, QueryType, Queue, SubmissionIndex, Texture, TextureDescriptor,
     TextureDimension, TextureFormat, TextureUsages, TextureView,
@@ -36,9 +36,9 @@ pub struct Gpu {
     /// The queue.
     pub queue: Queue,
     /// Adapter info for provenance.
-    pub info: wgpu29::AdapterInfo,
+    pub info: wgpu::AdapterInfo,
     /// The target texture format chosen from the adapter's queried
-    /// [`wgpu29::Adapter::get_texture_format_features`]. Recorded in
+    /// [`wgpu::Adapter::get_texture_format_features`]. Recorded in
     /// provenance.
     pub target_format: TextureFormat,
     /// Whether timestamp queries are available.
@@ -74,20 +74,18 @@ impl Gpu {
     /// [`BenchError::Gpu`] when no adapter offers a usable target format or
     /// device creation fails.
     pub fn new() -> Result<Self, BenchError> {
-        let instance = Instance::new(wgpu29::InstanceDescriptor {
-            backends: wgpu29::Backends::PRIMARY | wgpu29::Backends::GL,
-            ..wgpu29::InstanceDescriptor::new_without_display_handle()
+        let instance = Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::PRIMARY | wgpu::Backends::GL,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
-        let adapters = pollster::block_on(instance.enumerate_adapters(wgpu29::Backends::all()));
+        let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
         let mut attempts = Vec::new();
         // (adapter, format, has-timestamps): prefer a timestamp-capable
         // adapter, then a usable format.
-        let mut chosen: Option<(wgpu29::Adapter, TextureFormat, bool)> = None;
+        let mut chosen: Option<(wgpu::Adapter, TextureFormat, bool)> = None;
         for adapter in adapters {
             let info = adapter.get_info();
-            let ts = adapter
-                .features()
-                .contains(wgpu29::Features::TIMESTAMP_QUERY);
+            let ts = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
             for format in TARGET_FORMATS {
                 let feats = adapter.get_texture_format_features(format);
                 if feats.allowed_usages.contains(TARGET_USAGES) {
@@ -110,22 +108,22 @@ impl Gpu {
         };
         let info = adapter.get_info();
         let supported = adapter.features();
-        let timestamps = supported.contains(wgpu29::Features::TIMESTAMP_QUERY);
+        let timestamps = supported.contains(wgpu::Features::TIMESTAMP_QUERY);
         tracing::info!(
             name = %info.name,
             backend = ?info.backend,
             timestamp_query = timestamps,
             timestamps_inside_encoders =
-                supported.contains(wgpu29::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS),
+                supported.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS),
             "bench adapter"
         );
         // Only pass-boundary timestamps are used: Metal on Apple GPUs
         // advertises `TIMESTAMP_QUERY_INSIDE_ENCODERS` but samples only at
         // stage boundaries, and wgpu's dummy-blit emulation of an
         // encoder-level stamp can leave the command buffer unfinished.
-        let mut required = wgpu29::Features::empty();
+        let mut required = wgpu::Features::empty();
         if timestamps {
-            required |= wgpu29::Features::TIMESTAMP_QUERY;
+            required |= wgpu::Features::TIMESTAMP_QUERY;
         }
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
             label: Some("cherenkov-bench"),
@@ -133,10 +131,10 @@ impl Gpu {
             // Clamp the portable defaults to what the adapter reports:
             // iOS Metal offers 15 inter-stage varyings (60 components)
             // where `Limits::default` asks for 16.
-            required_limits: wgpu29::Limits::default().or_worse_values_from(&adapter.limits()),
-            experimental_features: wgpu29::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::default().or_worse_values_from(&adapter.limits()),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: MemoryHints::Performance,
-            trace: wgpu29::Trace::Off,
+            trace: wgpu::Trace::Off,
         }))
         .map_err(|e| BenchError::Gpu(format!("device request failed: {e}")))?;
         let (query_set, query_buffer, marker) = if timestamps {
@@ -155,7 +153,7 @@ impl Gpu {
                 view_formats: &[],
             });
             (
-                Some(device.create_query_set(&wgpu29::QuerySetDescriptor {
+                Some(device.create_query_set(&wgpu::QuerySetDescriptor {
                     label: Some("frame timestamps"),
                     ty: QueryType::Timestamp,
                     count: 2,
@@ -169,7 +167,7 @@ impl Gpu {
                     usage: BufferUsages::QUERY_RESOLVE | BufferUsages::COPY_SRC,
                     mapped_at_creation: false,
                 })),
-                Some(texture.create_view(&wgpu29::TextureViewDescriptor::default())),
+                Some(texture.create_view(&wgpu::TextureViewDescriptor::default())),
             )
         } else {
             (None, None, None)
@@ -239,7 +237,7 @@ impl Target {
             usage: TARGET_USAGES,
             view_formats: &[],
         });
-        let view = texture.create_view(&wgpu29::TextureViewDescriptor::default());
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Self {
             texture,
             view,
@@ -255,6 +253,9 @@ impl Target {
 ///
 /// # Errors
 /// [`BenchError::Gpu`] on buffer map failure.
+///
+/// # Panics
+/// When the mapped buffer range cannot be read after a successful map.
 pub fn readback(gpu: &Gpu, target: &Target) -> Result<F32Image, BenchError> {
     let bytes_per_row = (target.width * 4).div_ceil(256) * 256;
     let buf = gpu.device.create_buffer(&BufferDescriptor {
@@ -265,19 +266,19 @@ pub fn readback(gpu: &Gpu, target: &Target) -> Result<F32Image, BenchError> {
     });
     let mut encoder = gpu
         .device
-        .create_command_encoder(&wgpu29::CommandEncoderDescriptor {
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("readback"),
         });
     encoder.copy_texture_to_buffer(
-        wgpu29::TexelCopyTextureInfo {
+        wgpu::TexelCopyTextureInfo {
             texture: &target.texture,
             mip_level: 0,
-            origin: wgpu29::Origin3d::ZERO,
-            aspect: wgpu29::TextureAspect::All,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
         },
-        wgpu29::TexelCopyBufferInfo {
+        wgpu::TexelCopyBufferInfo {
             buffer: &buf,
-            layout: wgpu29::TexelCopyBufferLayout {
+            layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(target.height),
@@ -293,7 +294,9 @@ pub fn readback(gpu: &Gpu, target: &Target) -> Result<F32Image, BenchError> {
     tracing::trace!(?submission, "readback submitted");
     let slice = buf.slice(..);
     map_read(gpu, slice, submission, "the pixel readback")?;
-    let data = slice.get_mapped_range();
+    let data = slice
+        .get_mapped_range()
+        .expect("buffer range is mapped and not overlapping");
     let mut rgba8 = Vec::with_capacity((target.width * target.height * 4) as usize);
     for row in 0..target.height {
         let start = (row * bytes_per_row) as usize;
@@ -337,7 +340,7 @@ pub fn wait(gpu: &Gpu, submission: Option<SubmissionIndex>, what: &str) -> Resul
             );
             Ok(())
         }
-        Err(wgpu29::PollError::Timeout) => {
+        Err(wgpu::PollError::Timeout) => {
             tracing::error!(what, ?elapsed, "GPU wait timed out");
             Err(BenchError::Gpu(format!(
                 "the GPU did not finish {what} within {WAIT_TIMEOUT:?}"
@@ -351,7 +354,7 @@ pub fn wait(gpu: &Gpu, submission: Option<SubmissionIndex>, what: &str) -> Resul
 /// [`wait`].
 fn map_read(
     gpu: &Gpu,
-    slice: wgpu29::BufferSlice<'_>,
+    slice: wgpu::BufferSlice<'_>,
     submission: SubmissionIndex,
     what: &str,
 ) -> Result<(), BenchError> {
@@ -373,7 +376,7 @@ fn map_read(
 /// clear of [`Gpu::marker`]) in `encoder`: index 0 at the pass's start,
 /// any other at its end. Pass boundaries are the one timestamp position
 /// every `TIMESTAMP_QUERY` backend supports, Metal on Apple GPUs included.
-fn stamp(gpu: &Gpu, encoder: &mut wgpu29::CommandEncoder, index: u32) {
+fn stamp(gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, index: u32) {
     let (Some(qs), Some(marker)) = (&gpu.query_set, &gpu.marker) else {
         return;
     };
@@ -382,19 +385,19 @@ fn stamp(gpu: &Gpu, encoder: &mut wgpu29::CommandEncoder, index: u32) {
     } else {
         (None, Some(index))
     };
-    encoder.begin_render_pass(&wgpu29::RenderPassDescriptor {
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("timestamp marker"),
-        color_attachments: &[Some(wgpu29::RenderPassColorAttachment {
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: marker,
             depth_slice: None,
             resolve_target: None,
-            ops: wgpu29::Operations {
-                load: wgpu29::LoadOp::Clear(wgpu29::Color::BLACK),
-                store: wgpu29::StoreOp::Discard,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Discard,
             },
         })],
         depth_stencil_attachment: None,
-        timestamp_writes: Some(wgpu29::RenderPassTimestampWrites {
+        timestamp_writes: Some(wgpu::RenderPassTimestampWrites {
             query_set: qs,
             beginning_of_pass_write_index: beginning,
             end_of_pass_write_index: end,
@@ -427,7 +430,7 @@ pub fn drain_and_stamp(gpu: &Gpu, index: u32) -> Result<(), BenchError> {
     wait(gpu, None, "the queue before a frame timestamp")?;
     let mut encoder = gpu
         .device
-        .create_command_encoder(&wgpu29::CommandEncoderDescriptor {
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("timestamp"),
         });
     stamp(gpu, &mut encoder, index);
@@ -441,6 +444,9 @@ pub fn drain_and_stamp(gpu: &Gpu, index: u32) -> Result<(), BenchError> {
 ///
 /// # Errors
 /// [`BenchError::Gpu`] on buffer map failure.
+///
+/// # Panics
+/// When the mapped buffer range cannot be read after a successful map.
 #[expect(
     clippy::cast_precision_loss,
     reason = "a tick delta of a timed frame fits f64 mantissa"
@@ -457,7 +463,7 @@ pub fn resolve_timestamps(gpu: &Gpu) -> Result<Option<f64>, BenchError> {
     });
     let mut encoder = gpu
         .device
-        .create_command_encoder(&wgpu29::CommandEncoderDescriptor {
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("timestamp resolve"),
         });
     encoder.resolve_query_set(qs, 0..2, buf, 0);
@@ -466,7 +472,9 @@ pub fn resolve_timestamps(gpu: &Gpu) -> Result<Option<f64>, BenchError> {
     tracing::trace!(?submission, "timestamps resolved");
     let slice = staging.slice(..);
     map_read(gpu, slice, submission, "the timestamp readback")?;
-    let data = slice.get_mapped_range();
+    let data = slice
+        .get_mapped_range()
+        .expect("buffer range is mapped and not overlapping");
     let ticks: &[u64] = bytemuck::cast_slice(&data);
     let seconds = if ticks.len() >= 2 && ticks[1] > ticks[0] {
         Some(f64::from(gpu.queue.get_timestamp_period()) * (ticks[1] - ticks[0]) as f64 * 1e-9)

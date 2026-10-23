@@ -216,7 +216,7 @@ impl Prepared {
         })
     }
 
-    /// An `ImageSource` for `vello_cpu`/`vello_hybrid` paints: the atlas
+    /// An `ImageSource` for `vello_cpu`/`vello_gpu` paints: the atlas
     /// `OpaqueId` when the adapter uploaded the image in `prepare`, else
     /// the decoded pixmap (the CPU-resident route).
     ///
@@ -241,7 +241,7 @@ impl Prepared {
     }
 
     /// `vello_common::paint::PaintType` — the paint type
-    /// `vello_cpu`/`vello_hybrid` `set_paint` takes, with images resolved
+    /// `vello_cpu`/`vello_gpu` `set_paint` takes, with images resolved
     /// through [`Prepared::image_source`].
     ///
     /// # Errors
@@ -717,7 +717,7 @@ pub fn brush(engine: &'static str, paint: &Paint, blobs: &Blobs) -> Result<Brush
 }
 
 /// Builds `vello_common::paint::PaintType` — the paint type
-/// `vello_cpu`/`vello_hybrid` `set_paint` actually takes (an image brush over
+/// `vello_cpu`/`vello_gpu` `set_paint` actually takes (an image brush over
 /// `vello_common::paint::ImageSource`, not plain `peniko::ImageData`).
 ///
 /// # Errors

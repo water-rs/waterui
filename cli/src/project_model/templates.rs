@@ -2146,10 +2146,10 @@ mod tests {
     /// A local checkout declares `apple-backend-path` but has no crate there:
     /// the staged source is missing, and no remote source substitutes for it.
     #[test]
-    fn declared_local_apple_backend_missing_its_crate_is_an_error() {
+    fn declared_local_apple_backend_missing_its_crate_is_an_error() -> std::io::Result<()> {
         let directory = tempdir().unwrap();
         let root = directory.path().join("waterui");
-        write_local_checkout(&root);
+        write_local_checkout(&root)?;
         let mut context = ctx(
             Some(root.clone()),
             Some(PathBuf::from("managed_backends/apple")),
@@ -2167,6 +2167,7 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(error.contains("backends/apple"), "{error}");
+        Ok(())
     }
 
     /// The scaffolded `gradle-wrapper.properties` renders the framework's
@@ -3193,9 +3194,8 @@ mod tests {
 
     /// Run `git -C dir args` for a fixture checkout and return its trimmed
     /// stdout.
-    fn probe_git(dir: &Path, args: &[&str]) -> String {
-        let output = crate::toolchain::Host::current()
-            .std_command("git")
+    fn probe_git(dir: &Path, args: &[&str]) -> std::io::Result<String> {
+        let output = crate::toolchain::git::std_command(&crate::toolchain::Host::current())?
             .arg("-C")
             .arg(dir)
             .args(args)
@@ -3206,10 +3206,10 @@ mod tests {
             "git {args:?} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        String::from_utf8(output.stdout)
+        Ok(String::from_utf8(output.stdout)
             .expect("git stdout is utf-8")
             .trim()
-            .to_string()
+            .to_string())
     }
 
     /// The channel path answers through real `cargo metadata`: a
@@ -3220,12 +3220,16 @@ mod tests {
     /// resolved revisions yield their own tables, and an unresolvable probe
     /// fails instead of forwarding the unfiltered set.
     #[test]
-    fn resolved_forward_tables_reads_the_resolved_package_from_cargo_metadata() {
+    fn resolved_forward_tables_reads_the_resolved_package_from_cargo_metadata()
+    -> std::io::Result<()> {
         let tempdir = tempdir().expect("temporary probe fixture dir");
 
         // A committed `waterui-apple` checkout returns the revision a channel
         // manifest pins on.
-        let write_backend = |dir_name: &str, version: &str, features: &[&str]| {
+        let write_backend = |dir_name: &str,
+                             version: &str,
+                             features: &[&str]|
+         -> std::io::Result<(String, String)> {
             let dir = tempdir.path().join(dir_name);
             write_fixture_crate(&dir, "waterui-apple", features);
             // The pinned revision must carry the declared version.
@@ -3234,9 +3238,9 @@ mod tests {
                 .expect("fixture manifest")
                 .replace("0.0.0", version);
             std::fs::write(&manifest_path, manifest).expect("fixture manifest");
-            probe_git(&dir, &["init", "-b", "fixture"]);
-            let rev = crate::framework::test_fixtures::git_commit_all(&dir, "fixture");
-            (format!("file://{}", dir.display()), rev)
+            probe_git(&dir, &["init", "-b", "fixture"])?;
+            let rev = crate::framework::test_fixtures::git_commit_all(&dir, "fixture")?;
+            Ok((format!("file://{}", dir.display()), rev))
         };
 
         let manifest_for = |git_url: &str, rev: &str| {
@@ -3269,7 +3273,7 @@ mod tests {
             ("apple-0.5.2", "0.5.2", vec!["map", "media"]),
             ("apple-0.6.0", "0.6.0", vec!["map", "media", "inspector"]),
         ] {
-            let (git_url, rev) = write_backend(dir_name, version, &features);
+            let (git_url, rev) = write_backend(dir_name, version, &features)?;
             let manifest = manifest_for(&git_url, &rev);
             let tables = smol::block_on(super::resolved_forward_tables(
                 &host,
@@ -3307,6 +3311,7 @@ mod tests {
             error.to_string().contains("resolve"),
             "the error must name the resolution that failed: {error}"
         );
+        Ok(())
     }
 
     /// A fake checkout patching `waterui-core` to its own `core/`, and a
@@ -3871,6 +3876,97 @@ mod tests {
         );
     }
 
+    /// A managed crate reached before the project first resolves — the
+    /// create-time font scans build it before the application's own
+    /// `Cargo.lock` exists — still receives the canonical lock's pins: a
+    /// certified registry identity the index no longer offers, like the
+    /// `waterkit-audio` release `waterui-ffi` requires, is a version Cargo
+    /// may only keep when a lock records it (#1240).
+    #[test]
+    fn the_canonical_lock_seeds_a_managed_crate_without_a_project_lockfile() {
+        let registry = "registry+https://github.com/rust-lang/crates.io-index";
+        let canonical_bytes = format!(
+            "version = 4\n\n\
+             [[package]]\nname = \"waterui\"\nversion = \"0.5.2\"\n\n\
+             [[package]]\nname = \"waterkit-audio\"\nversion = \"0.1.4\"\nsource = \"{registry}\"\n\n\
+             [[package]]\nname = \"project-only\"\nversion = \"3.0.0\"\nsource = \"{registry}\"\n"
+        );
+        let framework = crate::framework::test_fixtures::stable_framework_certifying(
+            canonical_bytes.as_bytes(),
+        );
+        let canonical = framework
+            .canonical_lock_of(canonical_bytes.into_bytes())
+            .expect("the certified bytes make the canonical lock");
+
+        smol::block_on(async {
+            let dir = tempfile::tempdir().expect("temporary seed dir");
+            let project_lock = dir.path().join("Cargo.lock");
+            let crate_dir = dir.path().join("managed_backends/apple-companion");
+            smol::fs::create_dir_all(&crate_dir)
+                .await
+                .expect("companion dir");
+
+            crate::templates::seed_lockfile(&crate_dir, &project_lock, Some(&canonical))
+                .await
+                .expect("seeding the managed lockfile should succeed");
+            let seeded: cargo_lock::Lockfile =
+                smol::fs::read_to_string(crate_dir.join("Cargo.lock"))
+                    .await
+                    .expect("the seeded Cargo.lock")
+                    .parse()
+                    .expect("the seeded lock parses");
+            for pin in &canonical
+                .lock()
+                .expect("the canonical lock parses")
+                .packages
+            {
+                assert!(
+                    seeded.packages.contains(pin),
+                    "the seed must carry the certified identity of {}",
+                    pin.name
+                );
+            }
+
+            // A project lockfile later appearing re-seeds on top of the
+            // canonical pins rather than replacing them.
+            smol::fs::write(
+                &project_lock,
+                format!(
+                    "version = 4\n\n[[package]]\nname = \"application-entry\"\nversion = \"1.0.0\"\nsource = \"{registry}\"\n"
+                ),
+            )
+            .await
+            .expect("project lock");
+            crate::templates::seed_lockfile(&crate_dir, &project_lock, Some(&canonical))
+                .await
+                .expect("re-seeding should succeed");
+            let reseeded: cargo_lock::Lockfile =
+                smol::fs::read_to_string(crate_dir.join("Cargo.lock"))
+                    .await
+                    .expect("the re-seeded Cargo.lock")
+                    .parse()
+                    .expect("the re-seeded lock parses");
+            for pin in &canonical
+                .lock()
+                .expect("the canonical lock parses")
+                .packages
+            {
+                assert!(
+                    reseeded.packages.contains(pin),
+                    "the re-seed keeps the certified identity of {}",
+                    pin.name
+                );
+            }
+            assert!(
+                reseeded
+                    .packages
+                    .iter()
+                    .any(|package| package.name.as_str() == "application-entry"),
+                "the project's own pin joins the seed"
+            );
+        });
+    }
+
     #[test]
     fn generated_companion_manifest_emits_only_linked_crate_types() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -4402,7 +4498,7 @@ impl From<GeneratedDependencyDetail> for SupportDependencyDetail {
 /// these crates, not the code under debug.
 ///
 /// Dependencies are also compiled with optimizations: the rendering stack
-/// (vello, wgpu, parley) is a dependency of every generated crate and sits on
+/// (cherenkov, wgpu, parley) is a dependency of every generated crate and sits on
 /// every frame's hot path, and at `opt-level` 0 its per-frame encode-and-submit
 /// alone costs several milliseconds — a debug `water run` visibly drops frames
 /// while scrolling. The generated crate itself stays unoptimized and fully
@@ -6523,8 +6619,11 @@ const LOCKFILE_SEED_FORMAT: u32 = 3;
 /// (#2073). The stamp at [`LOCKFILE_SEED`] records the inputs instead, and
 /// the crate is re-seeded only when the project's lockfile or the canonical
 /// lock changed since the last seed, or when the crate has no `Cargo.lock`
-/// at all. A project without a lockfile has nothing to pin yet and is left
-/// to resolve on its own.
+/// at all. A project without a lockfile has nothing of its own to pin yet;
+/// the canonical lock still seeds when the channel carries one — the
+/// create-time font scans reach the managed crate before the project first
+/// resolves, and the certified pins the channel locks — a yanked registry
+/// release among them (#1240) — are the versions Cargo may keep.
 ///
 /// # Errors
 ///
@@ -6537,11 +6636,20 @@ pub async fn seed_lockfile(
     let seed = match fs::read(project_lockfile).await {
         Ok(seed) => seed,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if canonical.is_none() {
+                tracing::debug!(
+                    lockfile = %project_lockfile.display(),
+                    "project has no lockfile; the managed crate resolves on its own"
+                );
+                return Ok(());
+            }
             tracing::debug!(
                 lockfile = %project_lockfile.display(),
-                "project has no lockfile; the managed crate resolves on its own"
+                "project has no lockfile; the managed crate seeds from the canonical lock alone"
             );
-            return Ok(());
+            // An empty lockfile carries no project pins: the merge below
+            // fills it with the canonical entries alone.
+            b"version = 4\n".to_vec()
         }
         Err(error) => return Err(error),
     };

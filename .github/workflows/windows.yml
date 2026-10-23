@@ -71,6 +71,16 @@ jobs:
       - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
+      # #3093: before the first test binary is built, so `target/debug/deps`
+      # already holds the pinned WARP when nextest's executables land there,
+      # and `target/debug` holds it for the binaries tests spawn through
+      # `CARGO_BIN_EXE_*` (#3163).
+      - name: Install current WARP
+        uses: ./.github/actions/install-warp
+        with:
+          into: |
+            target/debug/deps
+            target/debug
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145
@@ -111,8 +121,9 @@ jobs:
       #
       # Of the six, `chromium-example` cannot link here (one level below its
       # backend's missing `cef_sandbox`), so it stays out. `stress-example`
-      # runs red here until the Cherenkov pin picks up the upload-staging
-      # timeout fix — that is the honest state of the leg.
+      # exercises the steady-redraw stress bench on this runner's adapter:
+      # the upload-staging timeout it used to hit is fixed in-tree in
+      # `graphics/cherenkov`, so the leg is expected to run green.
       #
       # One full-workspace pass under default features.
       - run: cargo nextest run --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example' --profile ci
@@ -142,6 +153,7 @@ jobs:
           sweep: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Save Cargo sources
+        id: save-sources
         if: ${{ (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.cargo-sources.outputs.cache-hit != 'true' }}
         uses: ./.github/actions/cargo-sources
         with:
@@ -149,8 +161,9 @@ jobs:
           primary-key: ${{ steps.cargo-sources.outputs.cache-primary-key }}
           limit-bytes: ${{ vars.ACTIONS_CACHE_LIMIT_BYTES }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      # A save the headroom check skipped (no room) keeps the old generation.
       - name: Retire superseded cache generations
-        if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+        if: ${{ (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.save-sources.outputs.saved != 'false' }}
         uses: ./.github/actions/retire-cargo-caches
         with:
           families: cargo-sources-${{ runner.os }}-
@@ -174,7 +187,10 @@ jobs:
   # `compile_error!` off wasm32 (the wasm job lints it where it is legal) —
   # and `skill_snippets`, whose `dev` feature would turn `dynamic_linking`
   # back on and whose `compile-gate-tests` transcriptions must never run
-  # (see the Linux job). The two excluded crates with
+  # (see the Linux job). `layout-twins` and `ios-test-host` are out for the
+  # same `dev` feature: it is their only one, so their default-feature
+  # tests in `test` are all this platform can run of them. The two
+  # excluded crates with
   # platform-specific code in their feature shapes run afterwards in the
   # shapes they have.
   all-features:
@@ -194,6 +210,12 @@ jobs:
       - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
+      - name: Install current WARP
+        uses: ./.github/actions/install-warp
+        with:
+          into: |
+            target/debug/deps
+            target/debug
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145
@@ -202,6 +224,13 @@ jobs:
       # fixture setup scripts install their fonts through `uv run`
       # (`.config/nextest.toml`).
       - uses: astral-sh/setup-uv@v6
+      # Same as the test job: the Cherenkov test targets this pass compiles
+      # `include_bytes!` generated fonts, and its bench tests read the
+      # generated corpus scenes.
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: full
       - name: Test (root crate, every feature but dynamic_linking)
         run: cargo nextest run --locked --features all --profile ci
       # The `trybuild_*` binaries each drive a cold fixture build that is
@@ -218,6 +247,8 @@ jobs:
             --exclude waterui-core `
             --exclude waterui-browser-cef `
             --exclude skill_snippets `
+            --exclude layout-twins `
+            --exclude ios-test-host `
             --exclude filtrate `
             -E 'not binary(/^trybuild_/)'
       - name: Test (waterui-core, every stable feature)

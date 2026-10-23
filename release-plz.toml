@@ -240,10 +240,12 @@ git_tag_name = "hydrolysis-v{{ version }}"
 # Cherenkov / filtrate (#1449): the same releases the cherenkov
 # repository's release-plz config opted into — `release = true` there is
 # a `[[package]]` entry here (publishable crates release only when
-# listed). The engine crates (cherenkov*, `publish = false` at 0.0.0)
-# are never picked up. Tag names namespace to the package, matching this
-# config's default: the upstream `v*`/`core-v*`/`derive-v*`/`shader-v*`
-# names would collide with the facade's and waterui-core's.
+# listed). The `cherenkov` engine crates publish on their own line like
+# the rest of the family — `waterui-graphics` and `hydrolysis` depend on
+# them, so the published set must include them (#2687). Tag names
+# namespace to the package, matching this config's default: the upstream
+# `v*`/`core-v*`/`derive-v*`/`shader-v*` names would collide with the
+# facade's and waterui-core's.
 [[package]]
 name = "filtrate"
 # cargo-semver-checks' feature heuristic enables `webgl`, which is
@@ -260,11 +262,58 @@ name = "filtrate-derive"
 [[package]]
 name = "cherenkov-shader"
 
+[[package]]
+name = "cherenkov-record"
+
+[[package]]
+name = "cherenkov"
+
+[[package]]
+name = "cherenkov-gpu"
+
+[[package]]
+name = "cherenkov-cpu"
+
+[[package]]
+name = "cherenkov-stroke"
+
+# TypeScript runtime (#2687): the facade's `ts`/`ts-ota` features reach
+# `waterui-ts` as an optional dependency, so the family is part of the
+# published set. Its crates depend on group members through workspace
+# `^` requirements — they join the `waterui` version group like every
+# other `waterui-*` crate (#600, #2688), which sets their first release
+# at the group version.
+[[package]]
+name = "waterui-ts-schema"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-ts-engine"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-ts-engine-jsc"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-ts-engine-quickjs"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-ts"
+version_group = "waterui"
+
 # Tooling
 
-# The CLI releases on its own version line — it is not in the waterui
-# version group — under `cli/v*` tags (bare `v*` belongs to the
-# facade, `hydrolysis-v*` to Hydrolysis). Publishing stays in-band: this
+# The CLI is in the waterui version group: it depends on group crates
+# through workspace `^` requirements, so an independent line could ship a
+# patch release whose dependency edge crosses a `0.x` minor — a breaking
+# move for consumers that no published-version bump on the CLI itself
+# would signal (#2688). Sharing the group version makes every release
+# that moves those edges a minor bump by construction. Tag naming stays
+# namespaced — `cli/v*` tags (bare `v*` belongs to the facade,
+# `hydrolysis-v*` to Hydrolysis) — so release.yml can tell the CLI's
+# release from the framework's. Publishing stays in-band: this
 # repository's `release` job runs on the `main` push itself, so crates.io
 # trusted publishing issues it an OIDC token, and release-plz publishes
 # `waterui-cli` in dependency order after the workspace crates it
@@ -274,5 +323,6 @@ name = "cherenkov-shader"
 # the `water` binary builds.
 [[package]]
 name = "waterui-cli"
+version_group = "waterui"
 git_release_name = "cli/v{{ version }}"
 git_tag_name = "cli/v{{ version }}"

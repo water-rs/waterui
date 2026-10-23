@@ -1,6 +1,7 @@
 //! Pump-based headless runtime for tests, snapshots and offscreen rendering.
 
 use super::*;
+use crate::animation::PerpetualAnimation;
 use crate::renderer::MenuShortcutRegistry;
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility::{
@@ -495,9 +496,6 @@ impl HeadlessRuntime {
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         crate::theme::install_theme_tokens(&mut env, Some(&style));
         let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
-        ));
         // The application's fonts, built once: the platform's collection plus
         // the staged fonts directory, exactly as the windowed runners load
         // them.
@@ -506,6 +504,17 @@ impl HeadlessRuntime {
         // environment instead of enumerating the system's fonts for itself.
         let fonts = crate::text::fonts::native_collection(&env);
         fonts.clone().install(&mut env);
+        // The capture service mounts its subtree under a snapshot of the
+        // assembled environment — the theme tokens, hooks and font
+        // collection a window's subtree resolves — so it must be installed
+        // last (water-rs/waterui#2703).
+        env.insert(waterui_core::ViewRenderer::new(
+            crate::view_renderer::HydrolysisViewRenderer::new(
+                Rc::clone(&theme),
+                env.clone(),
+                family_resolution,
+            ),
+        ));
 
         // Headless binaries (preview, tests) have no platform runner to install
         // a tracing subscriber; honor `RUST_LOG` here so they stay debuggable.
@@ -857,15 +866,31 @@ impl HeadlessRuntime {
     /// with their own timeout rather than trusting one settled probe.
     #[must_use]
     pub fn is_settled(&self) -> bool {
+        self.is_quiescent(PerpetualAnimation::Counts)
+    }
+
+    /// [`Self::is_settled`] except that repeat-forever animations (an
+    /// indeterminate spinner, a repeating morph) do not count: whether any
+    /// work remains that will finish on its own.
+    #[must_use]
+    pub fn is_settled_except_perpetual(&self) -> bool {
+        self.is_quiescent(PerpetualAnimation::Ignored)
+    }
+
+    fn is_quiescent(&self, perpetual: PerpetualAnimation) -> bool {
+        let scheduled = |renderer: &HydrolysisRenderer| match perpetual {
+            PerpetualAnimation::Counts => renderer.has_scheduled_semantic_work(),
+            PerpetualAnimation::Ignored => renderer.has_finite_semantic_work(),
+        };
         !self.runtime.platform.has_pending_events()
             && !self.local_executor.has_pending()
             && self.pending_window_queue.borrow().is_empty()
-            && !self.runtime.mode.is_pending()
-            && !self.runtime.renderer.has_scheduled_semantic_work()
+            && !self.runtime.mode.is_pending_with(perpetual)
+            && !scheduled(&self.runtime.renderer)
             && self.popup_windows.iter().all(|popup| {
-                !popup.mode.is_pending()
+                !popup.mode.is_pending_with(perpetual)
                     && !popup.platform.has_pending_events()
-                    && !popup.renderer.has_scheduled_semantic_work()
+                    && !scheduled(&popup.renderer)
             })
     }
 
@@ -1126,8 +1151,14 @@ impl HeadlessRuntime {
         if render_result.is_some() {
             // The renderer's frame-work counters are sampled after the frame's
             // render and its readback have both submitted on the same queue,
-            // so they cover all the GPU work this pump ran for it.
-            profile.counters.frame_work = self.runtime.renderer.frame_work_counters();
+            // so they cover all the GPU work this pump ran for it. The frame's
+            // own snapshot already left the profile inside the render pump —
+            // the tail drained here is the work that ran after it (the
+            // readback's own submissions), which joins the same frame's count.
+            profile
+                .counters
+                .frame_work
+                .accumulate(self.runtime.renderer.take_frame_work_counters());
         }
         profile.phases.executor_before = executor_before;
         profile.phases.input = input;

@@ -69,6 +69,13 @@ impl PickerRenderState {
     ) {
         self.label_view.ensure_built(renderer, env);
     }
+
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the picker's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+    }
 }
 
 /// The label view a menu picker draws inside its field: the picker's own label
@@ -237,13 +244,10 @@ pub fn picker_accessibility(
                     let selection = picker.selection.clone();
                     let open = Rc::clone(&menu_open);
                     let request = ctx.as_ref().zip(theme).map(|(ctx, theme)| {
-                        let bounds = ctx.bounds;
                         let metrics = theme.picker_metrics(PickerStyle::Menu);
+                        let bounds = renderer.resolve_window_rect(ctx.bounds);
                         (
-                            waterui_core::layout::Point::new(
-                                crate::num_cast::f64_as_f32(bounds.x0),
-                                crate::num_cast::f64_as_f32(bounds.y1),
-                            ),
+                            crate::widgets::util::popup_anchor(bounds),
                             bounds.width(),
                             menu_picker_row_height(max_item_text_height, metrics),
                             metrics,
@@ -351,29 +355,33 @@ pub fn picker_accessibility(
                             0.0
                         }
                 });
-                for (index, item) in items.iter().enumerate() {
-                    let label = renderer
-                        .read_resolved_text_styled(&item.content, env)
-                        .to_plain()
-                        .to_string();
-                    let label_size = HydrolysisRenderer::measure_text_intrinsic_size(
-                        renderer.state_mut(),
-                        StyledStr::plain(label.clone()),
-                        env,
-                    );
+                // Each option's label, measured as the render path measures
+                // it, so the rows it sizes match the drawn ones.
+                let labels: Vec<_> = items
+                    .iter()
+                    .map(|item| {
+                        let styled = renderer.read_resolved_text_styled(&item.content, env);
+                        let size = HydrolysisRenderer::measure_text_intrinsic_size(
+                            renderer.state_mut(),
+                            styled.clone(),
+                            env,
+                        );
+                        (styled.to_plain().to_string(), size)
+                    })
+                    .collect();
+                let label_heights: Vec<f32> = labels.iter().map(|(_, size)| size.height).collect();
+                for (index, (item, (label, label_size))) in items.iter().zip(labels).enumerate() {
                     let row_rect = geometry.map(|(ctx, metrics)| {
                         if picker.style == PickerStyle::Segmented {
+                            let row_height =
+                                segmented_row_height(metrics, label_heights.iter().copied());
+                            let (_, segment_row) =
+                                segmented_label_area(ctx.bounds, group_label_height, row_height);
                             let segment_width =
-                                ctx.bounds.width() / crate::num_cast::usize_as_f64(items.len());
+                                segment_row.width() / crate::num_cast::usize_as_f64(items.len());
                             let x0 = segment_width
-                                .mul_add(crate::num_cast::usize_as_f64(index), ctx.bounds.x0);
-                            let top = ctx.bounds.y0
-                                + if group_label_height > 0.0 {
-                                    group_label_height + metrics.label_spacing
-                                } else {
-                                    0.0
-                                };
-                            kurbo::Rect::new(x0, top, x0 + segment_width, ctx.bounds.y1)
+                                .mul_add(crate::num_cast::usize_as_f64(index), segment_row.x0);
+                            kurbo::Rect::new(x0, segment_row.y0, x0 + segment_width, segment_row.y1)
                         } else {
                             let y = row_y.unwrap_or(ctx.bounds.y0);
                             let row_height =
@@ -644,11 +652,10 @@ pub fn render_menu_picker(
         let field_open_state = Rc::clone(&menu_open);
         let picker_selection = selection;
         let menu_entries = entries;
-        let menu_origin = waterui_core::layout::Point::new(
-            crate::num_cast::f64_as_f32(hit_bounds.x0),
-            crate::num_cast::f64_as_f32(hit_bounds.y1),
-        );
-        let menu_width = hit_bounds.width();
+        // The popup anchors in window space at the field's bottom edge.
+        let window_bounds = ctx.renderer_mut().resolve_window_rect(hit_bounds);
+        let menu_origin = crate::widgets::util::popup_anchor(window_bounds);
+        let menu_width = window_bounds.width();
         // The popup opens in the picker's environment layered over the
         // dispatch's (water-rs/hydrolysis#140).
         let picker_env = env.clone();
@@ -763,29 +770,42 @@ pub fn radio_group_label_area(
     }
 }
 
+/// The segment row's height from its segments' label heights: the tallest
+/// label plus the vertical insets, floored at the minimum height.
+///
+/// Layout carries extents as `f32`, so the row height is quantised to `f32`
+/// here, once. The measured size adds the heading on top of this value, and
+/// the drawn row and the emitted segment bounds take it as is. A row derived
+/// as the bounds minus the heading would inherit the rounding of the `f32`
+/// total instead, and the labelled row would differ from the unlabelled one.
+pub fn segmented_row_height(
+    metrics: PickerMetrics,
+    item_heights: impl IntoIterator<Item = f32>,
+) -> f64 {
+    let max_item_height = item_heights.into_iter().map(f64::from).fold(0.0, f64::max);
+    f64::from(crate::num_cast::f64_as_f32(
+        metrics
+            .vertical_inset
+            .mul_add(2.0, max_item_height)
+            .max(metrics.min_height),
+    ))
+}
+
 /// The segmented picker's label layout: the segment row is flush with the
-/// control bounds, so the heading spans the full width at the top edge — edge
-/// to edge like the row below it — and the row keeps exactly its unlabelled
-/// height in the space below the heading and the metrics' label spacing. Same
-/// presence rule: a label measuring zero height (a hidden one) draws nothing
-/// and takes no space — the row keeps the full bounds.
+/// control's sides and bottom edge at its own [`segmented_row_height`], so its
+/// height is the same with or without a heading. The heading spans the full
+/// width at the top edge, edge to edge like the row below it, and the
+/// metrics' label spacing separates the two. Same presence rule: a label
+/// measuring zero height (a hidden one) draws nothing and takes no space.
 pub fn segmented_label_area(
     bounds: kurbo::Rect,
-    metrics: PickerMetrics,
     label_height: f64,
+    row_height: f64,
 ) -> (Option<kurbo::Rect>, kurbo::Rect) {
-    if label_height > 0.0 {
-        let heading = kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y0 + label_height);
-        let row = kurbo::Rect::new(
-            bounds.x0,
-            heading.y1 + metrics.label_spacing,
-            bounds.x1,
-            bounds.y1,
-        );
-        (Some(heading), row)
-    } else {
-        (None, bounds)
-    }
+    let row = kurbo::Rect::new(bounds.x0, bounds.y1 - row_height, bounds.x1, bounds.y1);
+    let heading = (label_height > 0.0)
+        .then(|| kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y0 + label_height));
+    (heading, row)
 }
 
 /// Flushes the picker's retained label sub-view at `rect` with accessibility
@@ -956,14 +976,31 @@ pub fn render_segmented_picker(
         let signal = widget_disabled(env);
         ctx.renderer_mut().read_signal(&signal)
     };
+    // Each segment's label, measured once: the tallest sizes the row exactly
+    // as layout measured it, and each centres in its own segment.
+    let labels: Vec<_> = items
+        .iter()
+        .map(|item| {
+            let label = ctx
+                .renderer_mut()
+                .read_resolved_text_styled(&item.content, env);
+            let size = HydrolysisRenderer::measure_text_intrinsic_size(
+                ctx.state_mut(),
+                label.clone(),
+                env,
+            );
+            (label, size)
+        })
+        .collect();
     // The group heading spans the full width at the top edge; the segment
-    // row keeps its unlabelled height in the space below it, and keeps the
-    // full bounds when the label is hidden.
+    // row keeps its unlabelled height on the bottom edge below it.
     let label_size = owner
         .borrow_mut()
         .label_view
         .measure_intrinsic(ctx.renderer_mut(), env);
-    let (heading, row_bounds) = segmented_label_area(bounds, metrics, f64::from(label_size.height));
+    let row_height = segmented_row_height(metrics, labels.iter().map(|(_, size)| size.height));
+    let (heading, row_bounds) =
+        segmented_label_area(bounds, f64::from(label_size.height), row_height);
     if let Some(heading) = heading {
         flush_picker_label(ctx, owner, env, heading);
     }
@@ -975,7 +1012,7 @@ pub fn render_segmented_picker(
         theme.draw_segmented_picker_container(&mut *draw, row_bounds, item_count);
     });
 
-    for (index, item) in items.into_iter().enumerate() {
+    for (index, (item, (label, label_size))) in items.into_iter().zip(labels).enumerate() {
         let x0 = segment_width.mul_add(crate::num_cast::usize_as_f64(index), row_bounds.x0);
         let segment_rect = kurbo::Rect::new(x0, row_bounds.y0, x0 + segment_width, row_bounds.y1);
         let is_selected = item.tag == selected;
@@ -1014,11 +1051,6 @@ pub fn render_segmented_picker(
         // own per-chunk styling; the selected/unselected foreground override is
         // applied to all chunks so the live selection signal drives the color each
         // frame without rebuilding a view.
-        let label = ctx
-            .renderer_mut()
-            .read_resolved_text_styled(&item.content, env);
-        let label_size =
-            HydrolysisRenderer::measure_text_intrinsic_size(ctx.state_mut(), label.clone(), env);
         let label_rect = segmented_label_rect(segment_rect, label_size, metrics);
         let styled = match theme.segmented_picker_label_color(is_selected) {
             Some(color) => label.foreground(color),
@@ -1139,12 +1171,12 @@ mod tests {
     }
 
     /// The segmented group's heading spans the full control width at the top
-    /// edge — edge to edge like the row it heads — and the segment row fills
-    /// the space below it down to the bottom edge.
+    /// edge — edge to edge like the row it heads — and the segment row keeps
+    /// its own height on the bottom edge, the label spacing below the heading.
     #[test]
     fn segmented_label_heading_spans_edge_to_edge_above_the_row() {
         let bounds = Rect::new(0.0, 0.0, 320.0, 64.0);
-        let (heading, row) = segmented_label_area(bounds, metrics(), 12.0);
+        let (heading, row) = segmented_label_area(bounds, 12.0, 44.0);
         let heading = heading.expect("a drawn group label must be placed");
 
         assert_eq!(heading, Rect::new(0.0, 0.0, 320.0, 12.0));
@@ -1162,6 +1194,6 @@ mod tests {
             radio_group_label_area(bounds, metrics(), 0.0, 14.0),
             (None, 14.0)
         );
-        assert_eq!(segmented_label_area(bounds, metrics(), 0.0), (None, bounds));
+        assert_eq!(segmented_label_area(bounds, 0.0, 96.0), (None, bounds));
     }
 }

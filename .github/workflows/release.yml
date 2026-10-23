@@ -49,9 +49,65 @@ jobs:
       # `cros-libva` build script, reached through `waterkit-codec`, fails the
       # `waterui-image` verify build on the missing `libva-dev`.
       - uses: ./.github/actions/setup-linux-deps
+      # The publish set is release-plz's `[[package]]` list. Two invariants
+      # are checked before anything uploads:
+      #
+      # 1. Every publishable workspace member must be listed — an unlisted
+      #    publishable crate is how `waterui-ts` was left out of the
+      #    managed set while the facade depended on it (#2687).
+      # 2. crates.io trusted publishing cannot mint the first version of a
+      #    name: a listed crate absent from the index must have its name
+      #    claimed first — publish an empty 0.0.0 once from a maintainer
+      #    machine, then configure trusted publishing on crates.io (see
+      #    RELEASING.md, "First publish of a crate name"). Without that
+      #    check a release would publish the cohort in dependency order up
+      #    to the unclaimed name and then die, leaving immutable partial
+      #    versions on crates.io.
+      - name: Guard the publish set
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t managed < <(sed -n 's/^name = "\(.*\)"/\1/p' release-plz.toml | sort -u)
+          mapfile -t publishable < <(
+            cargo metadata --format-version 1 --no-deps \
+              | jq -r '.packages[] | select(.publish != []) | .name' | sort -u)
+          unlisted="$(comm -23 <(printf '%s\n' "${publishable[@]}") <(printf '%s\n' "${managed[@]}"))"
+          if [[ -n "$unlisted" ]]; then
+            echo "::error::publishable crates missing from release-plz.toml: $(xargs <<< "$unlisted")"
+            exit 1
+          fi
+          index_path() {
+            local n="$1"
+            case ${#n} in
+              1) echo "1/$n" ;;
+              2) echo "2/$n" ;;
+              # The index lays a three-character name under its second
+              # character (`abc` -> `3/b/abc`).
+              3) echo "3/${n:1:1}/$n" ;;
+              *) echo "${n:0:2}/${n:2:2}/$n" ;;
+            esac
+          }
+          unclaimed=()
+          for name in "${managed[@]}"; do
+            # `|| true` keeps a dead network from killing the step through
+            # `set -e` before the code check below can name the failed probe.
+            code="$(curl -sL --retry 10 -o /dev/null -w '%{http_code}' \
+              "https://index.crates.io/$(index_path "$name")" || true)"
+            if [[ "$code" == 404 ]]; then
+              unclaimed+=("$name")
+            elif [[ "$code" != 2* ]]; then
+              echo "::error::crates.io index probe for $name failed with HTTP $code"
+              exit 1
+            fi
+          done
+          if ((${#unclaimed[@]})); then
+            echo "::error::crates.io has never published: ${unclaimed[*]} — trusted publishing cannot mint a first version; claim each name by publishing an empty 0.0.0 once from a maintainer machine, then configure trusted publishing on crates.io (see RELEASING.md)."
+            exit 1
+          fi
       # Mint a short-lived crates.io token from the GitHub OIDC identity
-      # instead of a stored CARGO_REGISTRY_TOKEN (trusted publishing is
-      # configured per crate on crates.io).
+      # (trusted publishing is configured per crate on crates.io). The
+      # guard above keeps the run from reaching this step while a managed
+      # name is still unclaimed.
       - uses: rust-lang/crates-io-auth-action@v1
         id: crates-io-auth
       - uses: ./.github/actions/release-plz
@@ -207,18 +263,23 @@ jobs:
 
       - name: Install cargo-dist
         if: ${{ !matrix.container }}
-        uses: taiki-e/install-action@v2
+        uses: ./.github/actions/install-tool
         with:
           tool: cargo-dist@${{ env.DIST_VERSION }}
+          path: ~/.cargo/bin/cargo-dist*
 
       # cargo-binstall picks the glibc build for a gnu host; dist's own
       # installer measures the container's glibc and takes the static musl
-      # build when it is too old.
+      # build when it is too old. A bare `curl | sh` has no retry budget —
+      # the flags carry the same minutes-scale resilience install-action
+      # gives the non-container leg, so a transient CDN 5xx cannot kill the
+      # release build (#1116).
       - name: Install cargo-dist (container)
         if: matrix.container
         shell: bash
         run: |
           curl --proto '=https' --tlsv1.2 -LsSf \
+            --connect-timeout 30 --retry 8 --retry-delay 10 --retry-all-errors \
             "https://github.com/axodotdev/cargo-dist/releases/download/v${{ env.DIST_VERSION }}/cargo-dist-installer.sh" | sh
 
       # The manifest goes to stdout; the global build reads it back from
@@ -263,9 +324,10 @@ jobs:
           ref: ${{ env.TAG }}
 
       - name: Install cargo-dist
-        uses: taiki-e/install-action@v2
+        uses: ./.github/actions/install-tool
         with:
           tool: cargo-dist@${{ env.DIST_VERSION }}
+          path: ~/.cargo/bin/cargo-dist*
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -350,6 +412,23 @@ jobs:
             target/distrib/*.zip
             target/distrib/*.sha256
             target/distrib/sha256.sum
+            target/distrib/waterui-cli-installer.sh
+            target/distrib/waterui-cli-installer.ps1
+
+      # The documented installer URL needs a location that names the CLI
+      # release line: this repository's `releases/latest` can be the
+      # framework's, and the archived water-rs/cli repository receives no
+      # new releases. `cli-latest` is a permanent release this step keeps
+      # carrying the newest CLI installers — `make_latest: false` keeps it
+      # from ever becoming the repository's latest release, and axoupdater's
+      # release listing drops it because `cli-latest` is not a version tag.
+      - name: Republish the installers under cli-latest
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cli-latest
+          name: water CLI installer (latest)
+          make_latest: false
+          files: |
             target/distrib/waterui-cli-installer.sh
             target/distrib/waterui-cli-installer.ps1
 

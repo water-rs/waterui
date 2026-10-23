@@ -28,6 +28,7 @@ use cherenkov_gpu::interop::vulkan::{
 };
 use cherenkov_gpu::interop::{ExternalFrame, OutputAlpha, OutputColor, SharedDevice, wgpu};
 use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::metrics::assert_images_match;
 
 const SIZE: u32 = 32;
 
@@ -394,14 +395,12 @@ fn exported_frame_roundtrips_through_import() -> Result<(), Box<dyn std::error::
     engine.render(FrameTime::now())?;
     let expected = reference.readback()?.pixels;
 
-    for (i, (got, want)) in exported.iter().zip(expected.iter()).enumerate() {
-        for (c, (g, w)) in got.iter().zip(want.iter()).enumerate() {
-            assert!(
-                (f64::from(*g) - f64::from(*w)).abs() < 0.02,
-                "pixel {i} channel {c}: exported {got:?} vs offscreen {want:?}"
-            );
-        }
-    }
+    let image = |pixels: Vec<[f32; 4]>| cherenkov_oracle::F32Image {
+        width: SIZE,
+        height: SIZE,
+        pixels,
+    };
+    assert_images_match(&image(expected), &image(exported));
 
     // The release cycle: the host returns the image with a sync file
     // (here, one that signals promptly). With one image in the pool, the

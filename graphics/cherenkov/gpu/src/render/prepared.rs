@@ -201,13 +201,53 @@ const fn extend_code(extend: Extend) -> u32 {
     }
 }
 
-/// Lowers a paint; `to_local` maps content space to the instance's local
-/// (shape-centred) space in which the shader evaluates gradient parameters.
+/// The image space -> content transform that maps a `width` x `height`
+/// image onto the whole of `dst`.
+pub(super) fn image_placement(dst: &Rect, width: u32, height: u32) -> Affine {
+    Affine::translate((dst.x0, dst.y0))
+        * Affine::scale_non_uniform(
+            (dst.x1 - dst.x0) / f64::from(width),
+            (dst.y1 - dst.y0) / f64::from(height),
+        )
+}
+
+/// An image paint over a texture of `width` x `height` with source
+/// conversion `sampling_flags`; `transform` maps image space to content
+/// space and `to_local` content space to the instance's local space.
 #[expect(
     clippy::cast_precision_loss,
     clippy::many_single_char_names,
     reason = "image dimensions fit f32; affine coefficients are conventionally a..f"
 )]
+pub(super) fn image_paint(
+    to_local: Affine,
+    transform: Affine,
+    (width, height): (u32, u32),
+    (extend_x, extend_y): (Extend, Extend),
+    sampling: cherenkov::Sampling,
+    sampling_flags: u32,
+) -> PaintData {
+    // `to_local * transform` maps image space to instance-local; the
+    // shader needs the inverse.
+    let [a, b, c, d, e, f] = (to_local * transform).inverse().as_coeffs();
+    let sampling = match sampling {
+        cherenkov::Sampling::Nearest => 0,
+        cherenkov::Sampling::Linear => 1,
+    };
+    PaintData {
+        kind: PAINT_IMAGE,
+        grad: [f32_f64(a), f32_f64(b), f32_f64(c), f32_f64(d)],
+        grad2: [f32_f64(e), f32_f64(f), width as f32, height as f32],
+        packed: extend_code(extend_x)
+            | (extend_code(extend_y) << 4)
+            | (sampling << 8)
+            | sampling_flags,
+        ..PaintData::default()
+    }
+}
+
+/// Lowers a paint; `to_local` maps content space to the instance's local
+/// (shape-centred) space in which the shader evaluates gradient parameters.
 fn paint_data(
     paint: &Paint,
     to_local: Affine,
@@ -267,22 +307,17 @@ fn paint_data(
             let img = images.get(&pattern.image.raw()).ok_or_else(|| {
                 RenderError::Image(format!("unregistered image {}", pattern.image.raw()))
             })?;
-            // `to_local * transform` maps image space to instance-local; the
-            // shader needs the inverse.
-            let [a, b, c, d, e, f] = (to_local * pattern.transform).inverse().as_coeffs();
-            data.kind = PAINT_IMAGE;
-            data.grad = [f32_f64(a), f32_f64(b), f32_f64(c), f32_f64(d)];
-            let (iw, ih) = (img.width as f32, img.height as f32);
-            data.grad2 = [f32_f64(e), f32_f64(f), iw, ih];
-            let sampling = match pattern.sampling {
-                cherenkov::Sampling::Nearest => 0,
-                cherenkov::Sampling::Linear => 1,
+            data = PaintData {
+                image: Some(pattern.image.raw()),
+                ..image_paint(
+                    to_local,
+                    pattern.transform,
+                    (img.width, img.height),
+                    (pattern.extend_x, pattern.extend_y),
+                    pattern.sampling,
+                    img.sampling_flags,
+                )
             };
-            data.packed = extend_code(pattern.extend_x)
-                | (extend_code(pattern.extend_y) << 4)
-                | (sampling << 8)
-                | img.sampling_flags;
-            data.image = Some(pattern.image.raw());
         }
         Paint::Shader(_) => return Err(RenderError::Unsupported(names::SHADER)),
         Paint::Transformed(_) => unreachable!("transformed paints resolve separately"),
@@ -507,6 +542,70 @@ pub enum Outline {
     },
 }
 
+/// Borrowed geometry after resolving a retained command reference.
+#[derive(Clone, Copy)]
+pub enum OutlineRef<'a> {
+    /// Fill geometry and its precomputed semantic hash.
+    Fill {
+        elements: &'a [PathEl],
+        content: u64,
+    },
+    /// Stroke geometry whose hash also depends on device tolerance.
+    Stroke {
+        shape: &'a ShapeData,
+        stroke: &'a kurbo::Stroke,
+    },
+}
+
+impl Outline {
+    /// Resolve owned and source-backed outlines without constructing geometry.
+    #[expect(
+        clippy::inline_always,
+        reason = "resolve borrowed outline fields at their use site"
+    )]
+    #[inline(always)]
+    pub fn get<'a>(&'a self, source: &'a cherenkov::DisplayList) -> OutlineRef<'a> {
+        match self {
+            Self::Fill { elements, content } => OutlineRef::Fill {
+                elements,
+                content: *content,
+            },
+            Self::Stroke { shape, stroke } => OutlineRef::Stroke { shape, stroke },
+            Self::Source { command, content } => match &source.commands()[*command] {
+                Command::Fill {
+                    shape: ShapeData::Path { elements, .. },
+                    ..
+                } => OutlineRef::Fill {
+                    elements,
+                    content: content.expect("prepared fill has a hash"),
+                },
+                Command::Stroke { shape, stroke, .. } => OutlineRef::Stroke { shape, stroke },
+                _ => unreachable!("prepared outline keeps its source kind"),
+            },
+        }
+    }
+}
+
+impl OutlineRef<'_> {
+    /// Semantic identity at the tolerance used to construct the outline.
+    pub fn content(self, tolerance: f64) -> u64 {
+        match self {
+            Self::Fill { content, .. } => content,
+            Self::Stroke { shape, stroke } => path::hash_stroke(shape, stroke, tolerance),
+        }
+    }
+
+    /// Construct local geometry only when a realization needs it.
+    pub fn build(self, tolerance: f64) -> kurbo::BezPath {
+        match self {
+            Self::Fill { elements, .. } => kurbo::BezPath::from_vec(elements.to_vec()),
+            Self::Stroke { shape, stroke } => {
+                cherenkov_stroke::stroke(path::shape_path(shape, tolerance), stroke, tolerance)
+            }
+        }
+    }
+}
+
 /// A prepared glyph run either indexes retained source or owns expanded glyphs.
 pub enum GlyphSource {
     /// A partial run produced by nested pictures or COLR expansion.
@@ -588,6 +687,8 @@ pub enum Op {
         rule: FillRule,
         /// The outline builder.
         outline: Outline,
+        /// Whether the source has enough elements to consider GPU coverage.
+        gpu_candidate: bool,
         /// The resolved paint (identity local space — device pixels).
         paint: ResolvedPaint,
     },
@@ -609,8 +710,6 @@ pub enum Op {
         font: u64,
         /// The glyph index.
         glyph: u32,
-        /// The glyph origin in run coordinates.
-        origin: [f32; 2],
         /// The run size.
         size: f32,
     },
@@ -781,6 +880,7 @@ impl Lowerer<'_> {
             ops.push(Op::Path {
                 local: ambient,
                 rule: *rule,
+                gpu_candidate: elements.len() >= path::GPU_ROUTE_MIN_ELEMENTS,
                 outline: source.map_or_else(
                     || Outline::Fill {
                         elements: Arc::clone(elements),
@@ -827,13 +927,10 @@ impl Lowerer<'_> {
             .images
             .get(&image.raw())
             .ok_or_else(|| RenderError::Image(format!("unregistered image {}", image.raw())))?;
-        let (iw, ih) = (f64::from(img.width), f64::from(img.height));
-        let (dw, dh) = (dst.x1 - dst.x0, dst.y1 - dst.y0);
-        if dw <= 0.0 || dh <= 0.0 {
+        if dst.x1 - dst.x0 <= 0.0 || dst.y1 - dst.y0 <= 0.0 {
             return Ok(());
         }
-        let transform =
-            Affine::translate((dst.x0, dst.y0)) * Affine::scale_non_uniform(dw / iw, dh / ih);
+        let transform = image_placement(dst, img.width, img.height);
         let paint = Paint::Image(ImagePattern {
             image,
             transform,
@@ -857,6 +954,7 @@ impl Lowerer<'_> {
         ops: &mut Vec<Op>,
         source: Option<usize>,
     ) -> Result<(), RenderError> {
+        cherenkov::lowering::check_dashes(stroke)?;
         let hw = stroke.width / 2.0;
         let general = match shape {
             ShapeData::Path { .. } => true,
@@ -871,6 +969,8 @@ impl Lowerer<'_> {
             ops.push(Op::Path {
                 local: ambient,
                 rule: FillRule::NonZero,
+                gpu_candidate: matches!(shape, ShapeData::Path { elements, .. }
+                    if elements.len() >= path::GPU_STROKE_MIN_ELEMENTS),
                 outline: source.map_or_else(
                     || Outline::Stroke {
                         shape: shape.clone(),
@@ -1232,15 +1332,18 @@ impl Lowerer<'_> {
                 continue;
             }
             if bitmap {
-                let (local, origin) = match super::glyph::classify(glyph)? {
-                    super::glyph::GlyphPlacement::Translate(glyph) => (ambient, [glyph.x, glyph.y]),
-                    super::glyph::GlyphPlacement::Outline(place) => (ambient * place, [0.0, 0.0]),
+                // The placement composes like an image drawn under the
+                // glyph's transform, so the two realize identically.
+                let place = match super::glyph::classify(glyph)? {
+                    super::glyph::GlyphPlacement::Translate(glyph) => {
+                        Affine::translate((f64::from(glyph.x), f64::from(glyph.y)))
+                    }
+                    super::glyph::GlyphPlacement::Outline(place) => place,
                 };
                 ops.push(Op::BitmapGlyph {
-                    local,
+                    local: ambient * place,
                     font: run.font.raw(),
                     glyph: glyph.id,
-                    origin,
                     size: run.size,
                 });
                 continue;
@@ -1297,4 +1400,97 @@ fn clip_shape(shape: &ShapeData) -> Result<ClipShape, RenderError> {
             _ => None,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use cherenkov::WorkingColor;
+    use cherenkov::kurbo::Ellipse;
+
+    use super::*;
+
+    /// `stroke` against empty registries, as `draw` dispatches a
+    /// `Command::Stroke`.
+    fn lower_stroke(shape: &ShapeData, stroke: &kurbo::Stroke) -> Result<(), RenderError> {
+        let (mut pending, fonts, images) = (Vec::new(), FxHashMap::default(), FxHashMap::default());
+        let lowerer = Lowerer {
+            pending: &mut pending,
+            fonts: &fonts,
+            images: &images,
+        };
+        let mut ops = Vec::new();
+        lowerer.stroke(
+            Affine::IDENTITY,
+            shape,
+            stroke,
+            &Paint::Solid(WorkingColor::WHITE),
+            &mut ops,
+            None,
+        )
+    }
+
+    /// One shape per route `stroke` selects: the general outline path, the
+    /// line box path, and the offset and distance analytic strokes.
+    fn route_shapes() -> [ShapeData; 4] {
+        let mut path = kurbo::BezPath::new();
+        path.move_to((4.0, 4.0));
+        path.line_to((12.0, 12.0));
+        [
+            ShapeData::Path {
+                elements: path.into_elements().into(),
+                rule: FillRule::NonZero,
+            },
+            ShapeData::Line(Line::new((0.0, 0.0), (8.0, 0.0))),
+            ShapeData::Rect(Rect::new(0.0, 0.0, 8.0, 8.0)),
+            ShapeData::Ellipse(Ellipse::new((4.0, 4.0), (8.0, 3.0), 0.0)),
+        ]
+    }
+
+    /// A negative or non-finite dash entry is rejected before the lowering
+    /// picks a route, so every shape reports the same error.
+    #[test]
+    fn a_negative_or_nonfinite_dash_entry_errors_on_every_route() {
+        for entry in [-1.0, f64::NEG_INFINITY, f64::NAN, f64::INFINITY] {
+            let mut stroke = kurbo::Stroke::new(2.0);
+            stroke.dash_pattern.extend([4.0, entry]);
+            for shape in route_shapes() {
+                assert!(
+                    matches!(lower_stroke(&shape, &stroke), Err(RenderError::Render(_))),
+                    "dash entry {entry} on {shape:?}"
+                );
+            }
+        }
+    }
+
+    /// A dash pattern whose entries sum to zero is rejected on every
+    /// route.
+    #[test]
+    fn a_dash_pattern_summing_to_zero_errors_on_every_route() {
+        let mut stroke = kurbo::Stroke::new(2.0);
+        stroke.dash_pattern.extend([0.0, 0.0]);
+        for shape in route_shapes() {
+            assert!(
+                matches!(lower_stroke(&shape, &stroke), Err(RenderError::Render(_))),
+                "zero-sum pattern on {shape:?}"
+            );
+        }
+    }
+
+    /// A non-finite dash offset is rejected on every route, dashed or not.
+    #[test]
+    fn a_nonfinite_dash_offset_errors_on_every_route() {
+        for offset in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for pattern in [Vec::new(), vec![4.0, 2.0]] {
+                let mut stroke = kurbo::Stroke::new(2.0);
+                stroke.dash_offset = offset;
+                stroke.dash_pattern.extend(pattern.iter().copied());
+                for shape in route_shapes() {
+                    assert!(
+                        matches!(lower_stroke(&shape, &stroke), Err(RenderError::Render(_))),
+                        "dash offset {offset}, {pattern:?} on {shape:?}"
+                    );
+                }
+            }
+        }
+    }
 }

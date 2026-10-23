@@ -917,7 +917,7 @@ impl WindowSurface {
 /// Presents retained engine textures into host-owned textures.
 #[derive(Debug)]
 pub struct Presenter {
-    module: wgpu::ShaderModule,
+    program: super::shaders::RenderProgram,
     layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
     sampler: wgpu::Sampler,
@@ -932,7 +932,7 @@ impl Presenter {
     /// Creates the shared present state.
     #[must_use]
     pub fn new(device: &wgpu::Device, delivery: ShaderDelivery) -> Self {
-        let module = delivery.present_module(device);
+        let program = delivery.present_program(device);
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("present"),
             entries: &layout_entries(bindings::PRESENT_GROUP0),
@@ -950,7 +950,7 @@ impl Presenter {
         });
         let uniform = Self::uniform(device);
         Self {
-            module,
+            program,
             layout,
             pipeline_layout,
             sampler,
@@ -969,8 +969,8 @@ impl Presenter {
                 label: Some("present"),
                 layout: Some(&self.pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &self.module,
-                    entry_point: Some("vs_main"),
+                    module: &self.program.vertex,
+                    entry_point: Some(self.program.vertex_entry),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     buffers: &[],
                 },
@@ -978,8 +978,8 @@ impl Presenter {
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
-                    module: &self.module,
-                    entry_point: Some("fs_main"),
+                    module: &self.program.fragment,
+                    entry_point: Some(self.program.fragment_entry),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,

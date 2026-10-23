@@ -31,6 +31,7 @@ use crate::callback::guarded;
 use crate::geometry::{Point, Size};
 use crate::notification::NotificationObserver;
 use crate::scroll_flight::{FlightPlan, ScrollFlight};
+use crate::visibility::VisibilityEmitter;
 
 /// The handler [`ScrollView`] calls after `AppKit` lays it out.
 type LayoutHandler = Rc<dyn Fn(&ScrollView)>;
@@ -45,6 +46,11 @@ pub struct ScrollViewIvars {
     flight: Rc<ScrollFlight>,
     /// Ends a flight when the user's live scroll reports a bounds change.
     live_scroll: RefCell<Vec<NotificationObserver>>,
+    /// The instance-owned visibility event: fires when this view's hidden,
+    /// alpha, frame, bounds, window or superview state changes so
+    /// subscribed descendants re-check presentation visibility. Clip-view
+    /// bounds moves ride [`crate::scroll::observe_scroll_viewport`].
+    emitter: VisibilityEmitter,
 }
 
 impl ScrollViewIvars {
@@ -56,6 +62,7 @@ impl ScrollViewIvars {
             tile: RefCell::new(None),
             flight: ScrollFlight::new(mtm),
             live_scroll: RefCell::new(Vec::new()),
+            emitter: VisibilityEmitter::new(),
         }
     }
 }
@@ -133,6 +140,57 @@ define_class!(
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
                 self.ivars().flight.land();
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(viewDidMoveToSuperview))]
+        fn view_did_move_to_superview_override(&self) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), viewDidMoveToSuperview] };
+            guarded("ScrollView viewDidMoveToSuperview visibility emit", || {
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setFrameOrigin:))]
+        fn set_frame_origin_override(&self, new_origin: NSPoint) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setFrameOrigin: new_origin] };
+            guarded("ScrollView setFrameOrigin: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setFrameSize:))]
+        fn set_frame_size_override(&self, new_size: NSSize) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setFrameSize: new_size] };
+            guarded("ScrollView setFrameSize: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setHidden:))]
+        fn set_hidden_override(&self, hidden: bool) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setHidden: hidden] };
+            guarded("ScrollView setHidden: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setAlphaValue:))]
+        fn set_alpha_value_override(&self, alpha: f64) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setAlphaValue: alpha] };
+            guarded("ScrollView setAlphaValue: visibility emit", || {
+                self.ivars().emitter.emit();
             });
         }
     }
@@ -350,6 +408,12 @@ impl ScrollView {
     /// handler. Use it to spot clip-view resizes `layout` does not cover.
     pub fn set_tile_handler(&self, handler: impl Fn(&Self) + 'static) {
         self.ivars().tile.replace(Some(Rc::new(handler)));
+    }
+
+    /// The visibility event this view fires — see
+    /// [`VisibilityEmitter`](crate::visibility::VisibilityEmitter).
+    pub fn visibility_emitter(&self) -> &VisibilityEmitter {
+        &self.ivars().emitter
     }
 
     /// Marks the view as needing layout on the next pass.

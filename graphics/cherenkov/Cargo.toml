@@ -6,22 +6,25 @@ edition.workspace = true
 rust-version = "1.95"
 license.workspace = true
 repository.workspace = true
-publish = false
+readme = "README.md"
+keywords = ["graphics", "2d", "rendering", "engine", "wgpu"]
+categories = ["graphics", "rendering"]
 
 [features]
-testing = []
+testing = ["dep:cherenkov-oracle"]
 
 [dependencies]
 arc-swap = "1"
-cherenkov-record = { path = "record", features = ["serde"] }
+cherenkov-oracle = { path = "oracle", optional = true }
+cherenkov-record = { version = "0.0.0", path = "record", features = ["serde"] }
 crossbeam-channel.workspace = true
 web-time = "1"
-filtrate-core = { path = "../filtrate/core" }
+filtrate-core = { version = "0.2.0", path = "../filtrate/core" }
 kurbo = { version = "0.13.1", features = ["serde"] }
 libm = "0.2"
 # Text layout stays outside the engine; `TextLayout` lowers a shaped
 # layout. No system font backend: hosts bring their own font collection.
-parley = { version = "0.11.1", default-features = false, features = ["std"] }
+parley = { version = "0.12.0", default-features = false, features = ["std"] }
 rustc-hash = "2"
 smallvec = { workspace = true, features = ["union"] }
 thiserror = "2"
@@ -34,6 +37,7 @@ wasm-bindgen-futures = "0.4"
 wasm-bindgen-test = "0.3"
 
 [dev-dependencies]
+cherenkov-oracle = { path = "oracle" }
 nami = { version = "0.13", default-features = false, features = ["std", "kurbo"] }
 
 [lints]

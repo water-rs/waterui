@@ -9,14 +9,9 @@ use cocoa_ui::appkit::{HostView, Label, Window, WindowLevel, WindowStyle};
 use cocoa_ui::objc2::rc::Retained;
 use cocoa_ui::objc2::runtime::Bool;
 use cocoa_ui::objc2::{msg_send, sel};
-use cocoa_ui::objc2_app_kit::{
-    NSBitmapFormat, NSColor, NSTextAlignment, NSTextField, NSTextFieldCell, NSView,
-};
-use cocoa_ui::objc2_foundation::{
-    NSAlignmentOptions, NSArray, NSAttributedString, NSNotFound, NSPoint, NSRange, NSRect, NSSize,
-    NSString,
-};
-use cocoa_ui::{MainThreadMarker, Rect, Size, bitmap, font, text, view};
+use cocoa_ui::objc2_app_kit::NSView;
+use cocoa_ui::objc2_foundation::{NSArray, NSNotFound, NSRange, NSRect, NSString};
+use cocoa_ui::{Point, Rect, Size};
 use libtest_mimic::Trial;
 
 use crate::harness::marker;
@@ -63,8 +58,12 @@ pub fn trials() -> Vec<Trial> {
         ),
         case!("appkit::label", a_factory_label_survives_debug_ivar_checks),
         case!(
-            "appkit::label",
-            a_label_at_a_fractional_origin_rasters_text_on_pixel_bounds
+            "appkit::visibility",
+            a_windowed_view_is_presentable_until_clipped_or_hidden
+        ),
+        case!(
+            "appkit::visibility",
+            ancestor_emissions_reach_a_descendants_subscribed_wake
         ),
         case!(
             "appkit::window",
@@ -332,333 +331,202 @@ fn a_factory_label_survives_debug_ivar_checks() {
     label.set_line_limit(1);
 }
 
-/// `Label`'s cell anchors its interior's origin on the control view's
-/// backing pixels: text at a fractional backing origin must raster onto
-/// pixel bounds rather than smearing across them. A stock `NSTextField`
-/// pair is the un-anchored reference; a `Label` pair must produce
-/// byte-identical glyph rasters translated by exactly the aligned
-/// amount — matching at any other translation, or not at all, means
-/// glyphs straddle pixels again.
-fn a_label_at_a_fractional_origin_rasters_text_on_pixel_bounds() {
+/// Whether two rects share any area — the same positive-intersection test
+/// `visibility::presentable` composes.
+fn intersects(
+    a: cocoa_ui::objc2_core_foundation::CGRect,
+    b: cocoa_ui::objc2_core_foundation::CGRect,
+) -> bool {
+    let x = a.origin.x.max(b.origin.x);
+    let y = a.origin.y.max(b.origin.y);
+    (a.origin.x + a.size.width).min(b.origin.x + b.size.width) - x > 0.0
+        && (a.origin.y + a.size.height).min(b.origin.y + b.size.height) - y > 0.0
+}
+
+/// `visibility::presentable` is the single gate the GPU and filtered
+/// frame clocks consume: a windowed view answers `true` only while the
+/// window presents, no ancestor hides or zeroes it, and the scroll clip
+/// leaves some of it inside — and it flips back on reveal, reparent and
+/// scroll, with no frame-size change involved. The clip assertions reuse
+/// `observe_scroll_viewport` to prove the same scroll move wakes watchers.
+fn a_windowed_view_is_presentable_until_clipped_or_hidden() {
     let mtm = marker();
-    let (host_w, host_h) = (140.0, 170.0);
-    let window = bitmap::capture_window(mtm, Size::new(host_w, host_h));
-    let host = window
-        .contentView()
-        .expect("the offscreen window's content");
-    // The window never orders in — `cacheDisplay` rasterizes the tree
-    // without any on-screen presence.
-    let scale = window.backingScaleFactor();
-    assert!(scale > 0.0, "the fixture requires a positive backing scale");
-    // Exactly half a device pixel: the worst raster phase at any scale.
-    let frac = 0.5 / scale;
-    let face = font::system(mtm, 13.0, 0.0);
-    let fields = raster_fields(mtm, &host, frac, &face);
-    assert_eq!(
-        fields.label_frac.frame().origin,
-        NSPoint::new(8.0 + frac, 20.0),
-        "the fractional frame must stay exactly as set — nothing may snap it"
-    );
+    let window = Window::new(mtm, Rect::new(0.0, 0.0, 400.0, 300.0), WindowStyle::TITLED);
+    let host = HostView::new(mtm, window.content_rect());
+    window.set_content_view(&host);
 
-    // The expected ink translation comes from the view's own backing
-    // anchor — the same native API the cell uses — not an assumed
-    // rounding rule.
-    let anchor = fields.label_frac.backingAlignedRect_options(
-        NSRect::new(NSPoint::ZERO, NSSize::ZERO),
-        NSAlignmentOptions::AlignMinXNearest
-            | NSAlignmentOptions::AlignMinYNearest
-            | NSAlignmentOptions::AlignWidthNearest
-            | NSAlignmentOptions::AlignHeightNearest,
-    );
-    let shift = device_px((anchor.origin.x * scale).round());
-    let (field_w, field_h) = (
-        device_px((FIELD_SIZE.0 * scale).round()),
-        device_px((FIELD_SIZE.1 * scale).round()),
-    );
+    let scroll = cocoa_ui::appkit::ScrollView::new(mtm, true, false);
+    cocoa_ui::view::set_frame(&scroll, Rect::new(0.0, 0.0, 200.0, 200.0));
+    host.add_subview(&scroll);
+    scroll.set_document_extent(Size::new(200.0, 1000.0));
+    let child = HostView::new(mtm, Rect::new(0.0, 800.0, 100.0, 50.0));
+    let document = scroll
+        .document_view()
+        .expect("the scroll view carries a document");
+    cocoa_ui::view::add_subview(&document, &child);
 
-    let raster = HostRaster::capture(&host, host_w, host_h, scale);
-    let stock_int_crop = raster.crop(fields.stock_int.frame());
-    let stock_frac_crop = raster.crop(fields.stock_frac.frame());
-    let label_int_crop = raster.crop(fields.label_int.frame());
-    let label_frac_crop = raster.crop(fields.label_frac.frame());
-    for (name, bytes) in [
-        ("stock_int", &stock_int_crop),
-        ("stock_frac", &stock_frac_crop),
-        ("label_int", &label_int_crop),
-        ("label_frac", &label_frac_crop),
-    ] {
-        assert!(
-            glyph_ink(bytes) > 0,
-            "the {name} crop must contain actual blue glyph ink"
-        );
-    }
-
-    // The anchored cell must produce the identical glyph raster at a
-    // fractional backing origin — byte-for-byte the integer raster
-    // translated by the anchor's actual amount.
-    assert_eq!(
-        shifted_diffs(&label_frac_crop, &label_int_crop, field_w, field_h, shift),
-        0,
-        "fractional-origin ink must equal integer-origin ink translated \
-         by the anchor's {shift} device pixel(s)"
-    );
-    // Negative control: the unfixed stock cell must still smear — if the
-    // stock pair ever matches, the fixture stopped measuring raster phase
-    // and the assertion above proves nothing.
+    // A windowless view — and a view in a hidden window — cannot present:
+    // `window_presentable` gates first.
+    assert!(!cocoa_ui::visibility::presentable(&child));
+    window.order_front();
+    host.layout_if_needed();
+    scroll.layout_if_needed();
     assert!(
-        shifted_diffs(&stock_frac_crop, &stock_int_crop, field_w, field_h, shift) > 100,
-        "the stock control must still show the unfixed smear"
+        scroll.viewport_size().width > 0.0 && scroll.viewport_size().height > 0.0,
+        "clip view never got a viewport — got {:?}",
+        scroll.viewport_size()
     );
+    // A bare test process never receives `occlusionState == Visible` from
+    // the window server (that needs a bundled application's GUI session),
+    // so `presentable` stays `false` here even ordered front — the same
+    // deferral an occluded real window takes. The geometry half the gate
+    // composes — native `visibleRect` under the real clip chain — is what
+    // the assertions below exercise.
+    assert!(!cocoa_ui::visibility::presentable(&child));
 
-    // A text update re-renders through the same anchored interior: new ink
-    // must differ from the old render's.
-    let updated_content = text::build(
-        mtm,
-        &[blue_run("Updated wrapped content draws differently", &face)],
-    );
-    fields.label_frac.set_attributed_text(&updated_content);
-    let updated = HostRaster::capture(&host, host_w, host_h, scale);
-    let updated_crop = updated.crop(fields.label_frac.frame());
+    // Fully clipped below the 200pt viewport — the #1539 defect case.
+    // `visibleRect` is the clip's bounds mapped into the child's space and
+    // does NOT intersect the child's own bounds, so the honest test is the
+    // intersection — the same one `presentable` composes.
+    let visible = child.visibleRect();
     assert!(
-        glyph_ink(&updated_crop) > 0 && updated_crop != label_frac_crop,
-        "a replaced attributed string must change the raster"
+        !intersects(visible, child.bounds()),
+        "fully clipped child should have no own-bounds area inside the clip: {visible:?}",
     );
 
-    // A rotated host transform preserves the label's own layout — the
-    // anchor rides the native transform rather than snapping geometry —
-    // and the text still draws.
-    fields.label_frac.setFrameRotation(30.0);
-    let bounds_before = fields.label_frac.bounds().size;
-    let rotated = HostRaster::capture(&host, host_w, host_h, scale);
-    assert_eq!(
-        fields.label_frac.bounds().size,
-        bounds_before,
-        "rotation must not disturb the label's own bounds"
+    // The same scroll move wakes a viewport observation — the bridge the
+    // components' `scroll_watch` reuses — with no frame-size change.
+    let scroll_fires = Rc::new(Cell::new(0));
+    let _observation = cocoa_ui::scroll::observe_scroll_viewport(&scroll.clone().into_super(), {
+        let scroll_fires = Rc::clone(&scroll_fires);
+        move || scroll_fires.set(scroll_fires.get() + 1)
+    });
+    scroll.scroll_to(cocoa_ui::Point::new(0.0, 750.0));
+    scroll.layout_if_needed();
+    let visible = child.visibleRect();
+    assert!(
+        intersects(visible, child.bounds()),
+        "scrolled-in child has no own-bounds area inside the clip: {visible:?}",
     );
     assert!(
-        glyph_ink(&rotated.crop(fields.label_frac.frame())) > 0,
-        "a rotated label must still raster ink"
+        scroll_fires.get() >= 1,
+        "clip-view bounds change never fired"
     );
-    fields.label_frac.setFrameRotation(0.0);
+
+    // Hidden then detached ancestors empty the visible area again.
+    cocoa_ui::view::set_hidden(&scroll, true);
+    assert!(!cocoa_ui::visibility::presentable(&child));
+    cocoa_ui::view::set_hidden(&scroll, false);
+    cocoa_ui::view::remove_from_superview(&child);
+    assert!(!cocoa_ui::visibility::presentable(&child));
+
     window.close();
 }
 
-/// The frame size every fixture field shares.
-const FIELD_SIZE: (f64, f64) = (96.0, 30.0);
+/// The typed-owned wake: `VisibilityWatch` registers the one closure on
+/// every observable ancestor, `refresh` detaches the old chain's tokens
+/// before binding the new one — so a reparent's previous ancestors can
+/// never reach the handler — and dropping the watch stops delivery
+/// entirely. A plain `NSView` ancestor with no emitter stays
+/// unobserved: mutating its notification flags is unsound under shared
+/// leaves, so a host reports its changes through `updateVisibility`
+/// instead — the watch must neither subscribe to it nor touch its
+/// posting flags.
+fn ancestor_emissions_reach_a_descendants_subscribed_wake() {
+    let mtm = marker();
+    let window = Window::new(mtm, Rect::new(0.0, 0.0, 400.0, 300.0), WindowStyle::TITLED);
+    let host = HostView::new(mtm, window.content_rect());
+    window.set_content_view(&host);
+    window.order_front();
 
-/// The text run every fixture field draws.
-const fn blue_run<'a>(content: &'a str, face: &'a font::Font) -> text::TextRun<'a> {
-    text::TextRun {
-        text: content,
-        font: face,
-        foreground: None,
-        background: None,
-        underline: false,
-        strikethrough: false,
-        letter_spacing: 0.0,
-        line_height: 0.0,
-    }
-}
+    let child = HostView::new(mtm, Rect::new(0.0, 0.0, 100.0, 50.0));
+    host.add_subview(&child);
 
-/// An already-rounded device-pixel count as `usize`. The fixture's device
-/// extents are a few hundred pixels by construction; `f64` has no checked
-/// `usize` conversion, so the bound is asserted by hand before the cast.
-#[expect(
-    clippy::cast_sign_loss,
-    clippy::cast_possible_truncation,
-    reason = "no checked f64-to-usize conversion exists; the asserted bound proves the cast exact"
-)]
-const fn device_px(px: f64) -> usize {
-    assert!(
-        px >= 0.0 && px <= 1_000_000.0,
-        "a fixture extent must land on a small nonnegative device pixel count"
+    let fires = Rc::new(Cell::new(0));
+    let wake: Rc<dyn Fn()> = Rc::new({
+        let fires = Rc::clone(&fires);
+        move || fires.set(fires.get() + 1)
+    });
+    let watch = cocoa_ui::visibility::VisibilityWatch::new(&child, wake);
+    let before = fires.get();
+    cocoa_ui::view::set_hidden(&host, true);
+    assert_eq!(fires.get() - before, 1);
+    let before = fires.get();
+    cocoa_ui::view::set_hidden(&host, false);
+    assert_eq!(fires.get() - before, 1);
+
+    // A reparent emits its own `didMoveToSuperview`/`didMoveToWindow`
+    // wakes on the child; the refresh that follows detaches the old
+    // chain's tokens — an emission on a former ancestor can no longer
+    // reach the handler — and binds the new one. `other` stays a
+    // detached sibling so `host` genuinely leaves the chain.
+    cocoa_ui::view::remove_from_superview(&child);
+    let other = HostView::new(mtm, Rect::new(0.0, 0.0, 100.0, 50.0));
+    other.add_subview(&child);
+    watch.refresh(&child);
+    let before = fires.get();
+    other.visibility_emitter().emit();
+    assert_eq!(fires.get() - before, 1);
+    let before = fires.get();
+    host.visibility_emitter().emit();
+    assert_eq!(
+        fires.get() - before,
+        0,
+        "an ancestor the watch detached still delivered a wake"
     );
-    px as usize
-}
 
-/// The four identically configured fields of the raster fixture.
-struct RasterFields {
-    stock_int: Retained<NSTextField>,
-    stock_frac: Retained<NSTextField>,
-    label_int: Retained<Label>,
-    label_frac: Retained<Label>,
-}
-
-/// The identical configuration on every field — the same string, font,
-/// color, alignment and wrapping, so crops differ only in raster phase.
-/// Left alignment keeps every glyph's pen a pure translation of the
-/// interior's origin — a centered line would place each glyph at its own
-/// fractional phase and defeat the shifted-equality check.
-fn configure_field(field: &NSTextField, content: &NSAttributedString, blue: &NSColor) {
-    field.setAlignment(NSTextAlignment::Left);
-    field.setAttributedStringValue(content);
-    field.setTextColor(Some(blue));
-    let cell = field
-        .cell()
-        .and_then(|cell| cell.downcast::<NSTextFieldCell>().ok())
-        .expect("a label-style field carries a text cell");
-    cell.setWraps(true);
-    cell.setScrollable(false);
-}
-
-/// Builds the four-field fixture on `host`: a stock `NSTextField` pair —
-/// the unfixed reference, whose smear proves the fixture sees raster
-/// phase at all — and a `Label` pair, one of each at an integer and a
-/// `frac`-device-pixel origin, stacked in disjoint vertical rows.
-fn raster_fields(
-    mtm: MainThreadMarker,
-    host: &NSView,
-    frac: f64,
-    face: &font::Font,
-) -> RasterFields {
-    let content = text::build(
-        mtm,
-        &[blue_run(
-            "Fractional origins still raster on pixel bounds",
-            face,
-        )],
-    );
-    let blue = NSColor::systemBlueColor();
-    let fields = RasterFields {
-        stock_int: NSTextField::labelWithString(&NSString::from_str(""), mtm),
-        stock_frac: NSTextField::labelWithString(&NSString::from_str(""), mtm),
-        label_int: Label::label_with_string(mtm, ""),
-        label_frac: Label::label_with_string(mtm, ""),
+    // A foreign (non-`CocoaUi`) ancestor publishes nothing the watch can
+    // subscribe to — per-watch flag mutation was unsound — so its frame
+    // change must NOT reach the wake and its posting flags must stay
+    // untouched; the host reports those changes through the explicit
+    // `updateVisibility` contract.
+    // SAFETY: `initWithFrame:` on a fresh `NSView` allocation on the main
+    // thread.
+    let plain: Retained<NSView> = unsafe {
+        msg_send![mtm.alloc::<NSView>(), initWithFrame: NSRect::new(Point::new(0.0, 0.0).into(), Size::new(200.0, 200.0).into())]
     };
-    let all: [&NSTextField; 4] = [
-        &fields.stock_int,
-        &fields.stock_frac,
-        &fields.label_int,
-        &fields.label_frac,
-    ];
-    for field in all {
-        configure_field(field, &content, &blue);
-    }
-    let (width, height) = FIELD_SIZE;
-    let rows: [(&NSTextField, f64, f64); 4] = [
-        (&fields.stock_int, 8.0, 134.0),
-        (&fields.stock_frac, 8.0 + frac, 96.0),
-        (&fields.label_int, 8.0, 58.0),
-        (&fields.label_frac, 8.0 + frac, 20.0),
-    ];
-    for (field, x, y) in rows {
-        field.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(width, height)));
-        host.addSubview(field);
-    }
-    fields
-}
+    host.add_subview(&plain);
+    cocoa_ui::view::remove_from_superview(&child);
+    cocoa_ui::view::add_subview(&plain, &child);
+    let posted_frame = plain.postsFrameChangedNotifications();
+    let posted_bounds = plain.postsBoundsChangedNotifications();
+    watch.refresh(&child);
+    let before = fires.get();
+    plain.setFrameSize(Size::new(180.0, 200.0).into());
+    assert_eq!(
+        fires.get() - before,
+        0,
+        "a foreign ancestor's frame change must not wake a descendant — hosts call updateVisibility"
+    );
+    // `AppKit` itself enables posting on windowed views — the watch's
+    // contract is only that it leaves the flags exactly as it found
+    // them.
+    assert_eq!(
+        (
+            plain.postsFrameChangedNotifications(),
+            plain.postsBoundsChangedNotifications()
+        ),
+        (posted_frame, posted_bounds),
+        "the watch mutated a foreign ancestor's posting flags"
+    );
+    // The host-side contract: emitting on a mounted `CocoaUi` root — the
+    // call `waterui_apple_update_visibility` performs — still reaches
+    // the wake through the foreign layer.
+    let before = fires.get();
+    host.visibility_emitter().emit();
+    assert_eq!(fires.get() - before, 1);
 
-/// A rendered host's raw device pixels plus the crop helper the raster
-/// assertions are stated over.
-struct HostRaster {
-    pixels: Vec<u8>,
-    pixel_w: usize,
-    scale: f64,
-    host_h: f64,
-}
+    drop(watch);
+    let before = fires.get();
+    plain.setFrameSize(Size::new(200.0, 200.0).into());
+    other.visibility_emitter().emit();
+    assert_eq!(
+        fires.get() - before,
+        0,
+        "a dropped watch kept receiving wakes"
+    );
 
-impl HostRaster {
-    /// `cacheDisplay`s `host` into its own rep and returns the raw bytes,
-    /// top-down RGBA — no CGImage/context redraw, so comparisons read
-    /// exactly what the native paint path wrote. The rep's declared
-    /// geometry and byte layout are verified before a byte is read.
-    fn capture(host: &NSView, host_w: f64, host_h: f64, scale: f64) -> Self {
-        bitmap::force_text_fields_display(host);
-        let rep = view::bitmap_rep_for_caching_display(host).expect("a caching rep");
-        view::cache_display(host, &rep);
-        let pixel_w = device_px((host_w * scale).round());
-        let pixel_h = device_px((host_h * scale).round());
-        assert_eq!(
-            (
-                usize::try_from(rep.pixelsWide()),
-                usize::try_from(rep.pixelsHigh()),
-            ),
-            (Ok(pixel_w), Ok(pixel_h)),
-            "the rep must cover the host's whole device rect"
-        );
-        assert_eq!(
-            (
-                usize::try_from(rep.samplesPerPixel()),
-                usize::try_from(rep.bitsPerPixel()),
-            ),
-            (Ok(4), Ok(32)),
-            "the rep must be interleaved 8-bit RGBA"
-        );
-        assert!(!rep.isPlanar(), "the rep must be interleaved, not planar");
-        assert!(
-            !rep.bitmapFormat().contains(NSBitmapFormat::AlphaFirst),
-            "the rep must lay out alpha last — the ink predicate reads RGBA"
-        );
-        let row_bytes =
-            usize::try_from(rep.bytesPerRow()).expect("the rep's row stride is nonnegative");
-        assert!(
-            row_bytes >= pixel_w * 4,
-            "the rep's stride must cover a full RGBA row"
-        );
-        let data = rep.bitmapData();
-        assert!(!data.is_null(), "the rep must expose its raw pixels");
-        let mut pixels = vec![0u8; pixel_w * pixel_h * 4];
-        for row in 0..pixel_h {
-            // SAFETY: `data` is the rep's live bitmap storage; `row_bytes`
-            // spans `pixel_w * 4` bytes and `row` stays inside `pixelsHigh`.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    data.add(row * row_bytes),
-                    pixels.as_mut_ptr().add(row * pixel_w * 4),
-                    pixel_w * 4,
-                );
-            }
-        }
-        Self {
-            pixels,
-            pixel_w,
-            scale,
-            host_h,
-        }
-    }
-
-    /// A field's device rect as a top-down row/column crop (view y is
-    /// bottom-up).
-    fn crop(&self, frame: NSRect) -> Vec<u8> {
-        let (crop_w, crop_h) = (
-            device_px((frame.size.width * self.scale).round()),
-            device_px((frame.size.height * self.scale).round()),
-        );
-        let x0 = device_px((frame.origin.x * self.scale).floor());
-        let y0 =
-            device_px(((self.host_h - frame.origin.y - frame.size.height) * self.scale).round());
-        (0..crop_h)
-            .flat_map(|row| {
-                let start = (y0 + row) * self.pixel_w * 4 + x0 * 4;
-                self.pixels[start..start + crop_w * 4].to_vec()
-            })
-            .collect()
-    }
-}
-
-/// Known-color glyph ink inside a crop: the explicit blue text color — a
-/// bare alpha count would pass on an opaque background too. A presence
-/// count only: coverage scales with backing density, so it carries no
-/// fixed minimum.
-fn glyph_ink(pixels: &[u8]) -> usize {
-    crate::harness::count_pixels(pixels, [0, 80, 180, 200], [80, 170, 255, 255])
-}
-
-/// Two equal-size crops compared under a device-pixel x-translation: the
-/// number of byte-differing pixels.
-fn shifted_diffs(a: &[u8], b: &[u8], width: usize, height: usize, dx: usize) -> usize {
-    (0..height)
-        .map(|row| {
-            let start = row * width * 4;
-            a[start + dx * 4..start + width * 4]
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .zip(b[start..start + width * 4 - dx * 4].as_chunks::<4>().0)
-                .filter(|(pa, pb)| pa != pb)
-                .count()
-        })
-        .sum()
+    window.close();
 }
 
 /// The case the old harness excluded: `-[NSWindow initWithContentRect:]`

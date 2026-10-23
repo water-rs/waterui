@@ -8,6 +8,7 @@
 use cherenkov::kurbo::Rect;
 use cherenkov::{Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor};
 use cherenkov_cpu::{Raster, RasterConfig};
+use cherenkov_oracle::metrics::assert_close;
 
 fn engine() -> Engine<Raster> {
     Engine::<Raster>::new(RasterConfig::default()).expect("engine")
@@ -89,9 +90,5 @@ fn a_child_reattached_before_its_parent_drops_still_renders() {
 
     let rb = surface.readback().expect("readback");
     // Full coverage of an opaque fill writes the paint unchanged.
-    assert_eq!(
-        (rb.pixels[16 * 32 + 16]).map(f32::to_bits),
-        [1.0, 0.0, 0.0, 1.0].map(f32::to_bits),
-        "the child still renders under its new parent"
-    );
+    assert_close(&(rb.pixels[16 * 32 + 16]), &[1.0, 0.0, 0.0, 1.0]);
 }

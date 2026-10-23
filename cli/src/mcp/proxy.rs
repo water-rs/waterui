@@ -313,7 +313,7 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
         &[HYDROLYSIS_MCP_FEATURE],
     )
     .await?;
-    stage_hydrolysis_resources(
+    let assets_root = stage_hydrolysis_resources(
         &project,
         platform,
         HydrolysisPreviewTheme::Material3,
@@ -329,11 +329,17 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
 
     // stdout is the MCP link — never inherit it; stderr flows straight to the
     // parent's stderr so app logs and build diagnostics stay visible.
-    let mut command = project.host().command(binary_path);
+    //
+    // `WATERUI_ASSETS_ROOT` points the child's `ResourceContext` at the staged
+    // assets: the binary runs out of the shared Cargo profile directory, so
+    // the exe-relative `resources/waterui_assets` probe cannot find the tree
+    // staging wrote under the managed backend (water-rs/waterui#1884).
+    let mut command = project.host().command(binary_path)?;
     command
         .kill_on_drop(true)
         .current_dir(&backend_path)
         .env(MCP_RUN_CONFIG_ENV, &config_path)
+        .env("WATERUI_ASSETS_ROOT", &assets_root)
         .env("WATERUI_PROJECT_DIR", project.root())
         .env("WATERUI_APP_NAME", &project.manifest().package.name)
         .stdin(Stdio::piped())
@@ -391,6 +397,7 @@ async fn drive_child(mut transport: ChildTransport, mut child: Child, calls: Rec
             CallToolParams {
                 name: call.name.to_owned(),
                 arguments: call.arguments,
+                meta: None,
             },
         );
         let result = match transport.request(request).await {

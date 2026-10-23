@@ -446,11 +446,11 @@ mod material3 {
     fn styling_block_14() {
         {
             let env = Environment::new();
-            hydrolysis::run(app(env), hydrolysis_m3::Material3::defaults()); // light+dark baseline
+            hydrolysis::run(app, env, hydrolysis_m3::Material3::defaults()); // light+dark baseline
         }
         {
             let env = Environment::new();
-            hydrolysis::run(app(env), hydrolysis_m3::Material3::dark());
+            hydrolysis::run(app, env, hydrolysis_m3::Material3::dark());
         }
     }
 

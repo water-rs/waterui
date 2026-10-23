@@ -125,7 +125,7 @@ impl TextLayout {
                     id
                 };
                 glyphs.push(lower_run(&run, id));
-                let metrics = run.run().metrics();
+                let metrics = run.run().font_metrics();
                 if let Some(underline) = &run.style().underline {
                     stripe(
                         &mut underlines,
@@ -190,7 +190,11 @@ fn lower_run(run: &ParleyRun<'_, Paint>, font: FontId) -> TextCommand {
     let glyphs = GlyphRun {
         font,
         size: shaped.font_size(),
-        coords: shaped.normalized_coords().into(),
+        coords: shaped
+            .normalized_coords()
+            .iter()
+            .map(|coord| coord.to_bits())
+            .collect(),
         glyphs: run
             .positioned_glyphs()
             .map(|glyph| Glyph {

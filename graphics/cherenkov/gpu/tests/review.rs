@@ -9,6 +9,7 @@ use cherenkov::{
 };
 use cherenkov::{Draw, GlyphRun, WorkingColor};
 use cherenkov_gpu::{Gpu, GpuConfig, TimestampSupport};
+use cherenkov_oracle::metrics::assert_images_match;
 use cherenkov_oracle::paint::radial_t;
 
 split_fn! {
@@ -127,17 +128,12 @@ fn a_full_atlas_grows_then_reports_exhaustion() -> Result<(), Box<dyn std::error
     let small = small?;
     assert!(big.iter().any(|p| p[3] > 0.0), "default render is empty");
     assert!(small.iter().any(|p| p[3] > 0.0), "capped render is empty");
-    let eps = 1.0 / 255.0 + 1e-4;
-    for (i, (a, b)) in big.iter().zip(&small).enumerate() {
-        for c in 0..4 {
-            assert!(
-                (a[c] - b[c]).abs() <= eps,
-                "pixel {i} channel {c}: {} vs {}",
-                a[c],
-                b[c]
-            );
-        }
-    }
+    let image = |pixels: Vec<[f32; 4]>| cherenkov_oracle::F32Image {
+        width: 512,
+        height: 512,
+        pixels,
+    };
+    assert_images_match(&image(big), &image(small));
     // A live set that does not fit the capped atlas exhausts it.
     let Some(exhausted) = wait!(render_text(tiny, 2000, 48.0)) else {
         return Ok(());

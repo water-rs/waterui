@@ -1025,7 +1025,7 @@ async fn run_sdkmanager_output_with_java(
     full_args.extend(sdkmanager_proxy_args(host)?);
     full_args.extend(args);
 
-    let mut cmd = host.command(&sdkmanager_path);
+    let mut cmd = host.command(&sdkmanager_path)?;
     cmd.args(full_args)
         .env("ANDROID_SDK_ROOT", &sdk_root)
         .env("ANDROID_HOME", &sdk_root)

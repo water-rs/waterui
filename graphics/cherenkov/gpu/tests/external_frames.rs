@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use cherenkov::{Engine, EngineError, FrameTime, Offscreen, OffscreenFormat};
 use cherenkov_gpu::interop::{ExternalFrame, FrameColor, RgbAlpha, SharedDevice, Transfer, wgpu};
 use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::metrics::{assert_close, assert_images_match};
 use cherenkov_oracle::yuv::{
     ChromaSiting, Matrix, Nv12, P010, PlaneLayout, Primaries, Range, YuvColor, YuvFrame,
 };
@@ -171,7 +172,9 @@ fn shared_device()
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
     let required_features = match adapter.get_info().backend {
-        wgpu::Backend::Vulkan | wgpu::Backend::Metal => wgpu::Features::PASSTHROUGH_SHADERS,
+        wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => {
+            wgpu::Features::PASSTHROUGH_SHADERS
+        }
         _ => wgpu::Features::empty(),
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -276,21 +279,22 @@ fn render(
     Ok(rb.pixels)
 }
 
-/// Every pixel must land within the f32-pipeline + f16-storage envelope
-/// of the f64 reference; the defects this catches are an order larger.
-fn compare(pixels: &[[f32; 4]], expected: impl Fn(u32, u32) -> [f64; 4], what: &str) {
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let got = pixels[(y * SIZE + x) as usize];
-            let want = expected(x, y);
-            for (c, (g, w)) in got.iter().zip(want.iter()).enumerate() {
-                assert!(
-                    (f64::from(*g) - w).abs() < 0.01,
-                    "{what} pixel ({x}, {y}) channel {c}: got {got:?}, expected {want:?}"
-                );
-            }
-        }
-    }
+/// The f32 pipeline with f16 storage must look like the f64 reference.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the reference is narrowed to the f32 the engine renders"
+)]
+fn compare(pixels: &[[f32; 4]], expected: impl Fn(u32, u32) -> [f64; 4]) {
+    let image = |pixels: Vec<[f32; 4]>| cherenkov_oracle::F32Image {
+        width: SIZE,
+        height: SIZE,
+        pixels,
+    };
+    let want = (0..SIZE)
+        .flat_map(|y| (0..SIZE).map(move |x| (x, y)))
+        .map(|(x, y)| expected(x, y).map(|c| c as f32))
+        .collect();
+    assert_images_match(&image(want), &image(pixels.to_vec()));
 }
 
 #[test]
@@ -334,11 +338,7 @@ fn nv12_frame_decodes_in_place() -> Result<(), Box<dyn std::error::Error>> {
     let frame = ExternalFrame::yuv(y_plane, uv_plane, FrameColor::BT709_VIDEO)?;
     let pixels = render(&engine, &surface, frame, "nv12")?;
     let reference = yuv_reference::<Nv12>(&luma, &chroma, &BT709_VIDEO)?;
-    compare(
-        &pixels,
-        |x, y| reference.pixels[(y * SIZE + x) as usize],
-        "nv12",
-    );
+    compare(&pixels, |x, y| reference.pixels[(y * SIZE + x) as usize]);
     Ok(())
 }
 
@@ -390,11 +390,7 @@ fn p010_frame_decodes_in_place() -> Result<(), Box<dyn std::error::Error>> {
     let frame = ExternalFrame::yuv(y_plane, uv_plane, FrameColor::BT709_VIDEO)?;
     let pixels = render(&engine, &surface, frame, "p010")?;
     let reference = yuv_reference::<P010>(&luma, &chroma, &BT709_VIDEO)?;
-    compare(
-        &pixels,
-        |x, y| reference.pixels[(y * SIZE + x) as usize],
-        "p010",
-    );
+    compare(&pixels, |x, y| reference.pixels[(y * SIZE + x) as usize]);
     Ok(())
 }
 
@@ -429,7 +425,7 @@ fn rgba_frame_decodes_in_place() -> Result<(), Box<dyn std::error::Error>> {
     );
     let frame = ExternalFrame::rgb(rgb_plane, RgbAlpha::Opaque, color)?;
     let pixels = render(&engine, &surface, frame, "rgba")?;
-    compare(&pixels, |x, y| rgb_expected(x, y, color.transfer), "rgba");
+    compare(&pixels, |x, y| rgb_expected(x, y, color.transfer));
     Ok(())
 }
 
@@ -538,11 +534,7 @@ fn hlg_black_and_footroom_decode_to_black() -> Result<(), Box<dyn std::error::Er
             },
         },
     )?;
-    compare(
-        &pixels,
-        |x, y| oracle.pixels[(y * SIZE + x) as usize],
-        "hlg",
-    );
+    compare(&pixels, |x, y| oracle.pixels[(y * SIZE + x) as usize]);
 
     // A footroom or nominal-black code decodes to exactly black: a
     // negative signal squared into positive light — however small, below
@@ -551,12 +543,8 @@ fn hlg_black_and_footroom_decode_to_black() -> Result<(), Box<dyn std::error::Er
         if code <= 64 {
             for y in 0..SIZE {
                 let got = pixels[(y * SIZE + x as u32) as usize];
-                // Footroom and nominal black decode to exactly black (#2107, #2108).
-                assert_eq!(
-                    got.map(f32::to_bits),
-                    [0.0, 0.0, 0.0, 1.0].map(f32::to_bits),
-                    "hlg black or footroom code {code} at ({x}, {y})"
-                );
+                // Footroom and nominal black decode to black (#2107, #2108).
+                assert_close(&got, &[0.0, 0.0, 0.0, 1.0]);
             }
         }
     }
@@ -593,8 +581,8 @@ fn frame_producer_shows_each_submitted_frame_on_two_surfaces()
         engine.render(FrameTime::now())?;
         let [r, g, b, _] = rgba;
         let expected = to_linear_p3([r, g, b].map(|c| f64::from(c) / 255.0));
-        for (name, surface) in [("first", &first), ("second", &second)] {
-            compare(&surface.readback()?.pixels, |_, _| expected, name);
+        for surface in [&first, &second] {
+            compare(&surface.readback()?.pixels, |_, _| expected);
         }
     }
     Ok(())

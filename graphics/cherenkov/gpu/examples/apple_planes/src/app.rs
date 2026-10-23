@@ -353,7 +353,9 @@ struct Logged {
 struct Video {
     layer: Layer,
     producer: Pool,
-    video: cherenkov::GpuProducer<Gpu>,
+    /// Keeps the frame source registered — the producer's last drop
+    /// retires it.
+    _gpu_producer: cherenkov::GpuProducer<Gpu>,
     sink: cherenkov::FrameSink<Gpu>,
 }
 
@@ -404,6 +406,8 @@ impl Run {
         // The iOS host's display link pauses while idle and is woken
         // through the host; the macOS host drives frames on its own.
         #[cfg(target_os = "ios")]
+        // SAFETY: the Swift host defines this symbol; it takes no
+        // arguments and is callable from any thread.
         let wake = || unsafe { cherenkov_planes_wake() };
         #[cfg(not(target_os = "ios"))]
         let wake = || {};
@@ -425,7 +429,7 @@ impl Run {
             Video {
                 layer,
                 producer: Pool::new(&shared, paused),
-                video,
+                _gpu_producer: video,
                 sink,
             }
         });

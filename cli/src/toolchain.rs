@@ -13,6 +13,7 @@ pub mod linux;
 pub mod managed_tool;
 pub mod meson;
 pub mod msvc;
+pub(crate) mod process_tree;
 pub mod rust;
 pub mod sccache;
 pub mod spirv_tools;
@@ -20,6 +21,7 @@ pub mod spirv_tools;
 pub(crate) mod testing;
 pub mod web;
 pub mod windows_arm64_llvm;
+pub mod windows_long_paths;
 pub(crate) mod winget;
 
 pub use host::Host;

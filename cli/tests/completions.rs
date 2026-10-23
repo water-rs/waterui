@@ -8,11 +8,12 @@
 use waterui_cli::toolchain::Host;
 
 #[test]
-fn completions_generate_a_script_for_each_supported_shell() {
+fn completions_generate_a_script_for_each_supported_shell() -> std::io::Result<()> {
     let home = tempfile::tempdir().expect("scratch home for the child process");
     // Redirect the child's home so `ensure_global_config` never writes
     // `~/.water/config.toml` on the machine running the tests.
     let host = Host::current()
+        .without_cargo_target_dir()
         .with_env("HOME", home.path())
         .with_env("USERPROFILE", home.path());
     for (shell, anchor) in [
@@ -23,7 +24,7 @@ fn completions_generate_a_script_for_each_supported_shell() {
         ("elvish", "arg-completer"),
     ] {
         let output = host
-            .std_command(env!("CARGO_BIN_EXE_water"))
+            .std_command(env!("CARGO_BIN_EXE_water"))?
             .args(["completions", shell])
             .env_remove("RUST_LOG")
             .output()
@@ -39,4 +40,5 @@ fn completions_generate_a_script_for_each_supported_shell() {
             "{shell} completion script must contain `{anchor}`"
         );
     }
+    Ok(())
 }

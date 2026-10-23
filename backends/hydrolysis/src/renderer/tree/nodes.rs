@@ -423,6 +423,19 @@ impl RetainedSubview {
         dirty
     }
 
+    /// [`Self::take_layout_dirty`] on a sub-view that may not be built
+    /// yet: unbuilt has no marks — it lays out fresh at build, so `false`
+    /// is the honest answer. Widgets holding their parts as
+    /// `RetainedSubview`s (labels, badges, nav bars) consume their marks
+    /// this way through the leaf's `take_layout_dirty` arm
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty_if_built(&mut self) -> bool {
+        match &mut self.state {
+            RetainedSubviewState::Built(_) => self.take_layout_dirty(),
+            RetainedSubviewState::Unbuilt { .. } => false,
+        }
+    }
+
     /// Build (once), patch, lay out (when the rect size, the structure or the
     /// §7.1 context changed), and flush the sub-view at `rect` under `env`. A
     /// zero-area rect renders nothing, matching the dispatch path's empty-rect
@@ -807,6 +820,19 @@ pub trait WidgetBehavior {
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> ViewDimensions;
+
+    /// Consume the layout-dirty marks of the [`RetainedSubview`]s this
+    /// leaf owns — labels, bar parts, badge content — and report whether
+    /// any fired since their last consume. The sub-views' trees hang off
+    /// this leaf's measure, so their marks decide the leaf's measured
+    /// size: an enclosing `RetainedSubview` reads them through the
+    /// `Widget` arm of [`RenderNode::take_layout_dirty`], and each
+    /// consumed sub-view keeps the mark in its own `needs_layout` for
+    /// its next flush (water-rs/waterui#1957). `false` for leaves that
+    /// own no sub-views.
+    fn take_layout_dirty(&self) -> bool {
+        false
+    }
 
     /// Runs the leaf's layout-time prepare step: applying theme paint that
     /// could not be resolved at tree-build time (build contexts carry no
@@ -1264,6 +1290,37 @@ pub struct SceneViewNode {
     /// sees the same recorded identity.
     pub(super) association:
         Rc<RefCell<Option<std::rc::Weak<crate::renderer::recording::SceneResources>>>>,
+    /// The `(proposal, answer)` this leaf last measured at — the mark
+    /// [`RenderNode::take_layout_dirty`] reads through
+    /// [`Self::size_drifted`]: a scene whose natural size changes after
+    /// mount (a reloaded image's viewBox) must not keep its first box
+    /// inside a retained sub-view (water-rs/waterui#1957).
+    pub(super) measured: Cell<Option<(ProposalSize, Size)>>,
+}
+
+impl SceneViewNode {
+    /// The leaf's natural-size answer under `proposal` — the
+    /// `measure_body` arm's own computation.
+    pub(super) fn intrinsic_dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
+        let resolved = waterui_graphics::resolve_scene_proposal(
+            self.content.borrow().intrinsic_size(),
+            proposal,
+        );
+        ViewDimensions::new(Size::new(
+            resolved.width.unwrap_or(0.0),
+            resolved.height.unwrap_or(0.0),
+        ))
+    }
+
+    /// Whether a fresh probe at the last proposal answers a different
+    /// size than `measured` latched — the leaf's implicit layout mark:
+    /// there is no consumable flag; the next `measure` rewrites
+    /// `measured` and ends the drift report by itself.
+    pub(super) fn size_drifted(&self) -> bool {
+        self.measured
+            .get()
+            .is_some_and(|(proposal, size)| self.intrinsic_dimensions(proposal).size != size)
+    }
 }
 
 /// A `GpuContentView` leaf that OWNS its [`GpuContentRuntime`] — the node
@@ -1277,6 +1334,30 @@ pub struct GpuContentNode {
     pub(super) accessibility_identity: Rc<()>,
     pub(crate) core: NodeCore,
     pub(super) runtime: Rc<RefCell<crate::gpu_view::GpuContentRuntime>>,
+    /// The `(proposal, answer)` this leaf last measured at — the mark
+    /// [`RenderNode::take_layout_dirty`] reads through
+    /// [`Self::size_drifted`], as on [`SceneViewNode`]
+    /// (water-rs/waterui#1957).
+    pub(super) measured: Cell<Option<(ProposalSize, Size)>>,
+}
+
+impl GpuContentNode {
+    /// The leaf's live measure under `proposal` — the `measure_body`
+    /// arm's own call. [`GpuContentView::measure`] asks the content
+    /// itself, so a source whose size resolves after mount answers its
+    /// new natural size instead of the `intrinsic_size` snapshot
+    /// [`GpuContentView::new`] took (water-rs/waterui#1958).
+    pub(super) fn intrinsic_dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
+        self.runtime.borrow().view.measure(proposal)
+    }
+
+    /// Whether a fresh probe at the last proposal answers a different
+    /// size than `measured` latched — the leaf's implicit layout mark.
+    pub(super) fn size_drifted(&self) -> bool {
+        self.measured
+            .get()
+            .is_some_and(|(proposal, size)| self.intrinsic_dimensions(proposal).size != size)
+    }
 }
 
 /// An `ExternalFrameView` leaf that OWNS its [`crate::gpu_view::ExternalFrameRuntime`]
@@ -1288,6 +1369,28 @@ pub struct ExternalFrameNode {
     pub(super) accessibility_identity: Rc<()>,
     pub(crate) core: NodeCore,
     pub(super) runtime: Rc<RefCell<crate::gpu_view::ExternalFrameRuntime>>,
+    /// The `(proposal, answer)` this leaf last measured at — the mark
+    /// [`RenderNode::take_layout_dirty`] reads through
+    /// [`Self::size_drifted`]: a stream that learns its size only after
+    /// decoding starts must not keep its first box inside a retained
+    /// sub-view (water-rs/waterui#1957).
+    pub(super) measured: Cell<Option<(ProposalSize, Size)>>,
+}
+
+impl ExternalFrameNode {
+    /// The source's measure under `proposal` — the `measure_body` arm's
+    /// own call, repeated to detect drift.
+    pub(super) fn intrinsic_dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
+        self.runtime.borrow().view.measure(proposal)
+    }
+
+    /// Whether a fresh probe at the last proposal answers a different
+    /// size than `measured` latched — the leaf's implicit layout mark.
+    pub(super) fn size_drifted(&self) -> bool {
+        self.measured
+            .get()
+            .is_some_and(|(proposal, size)| self.intrinsic_dimensions(proposal).size != size)
+    }
 }
 
 /// A `FilteredView` wrapper that OWNS its [`FilteredRuntime`]

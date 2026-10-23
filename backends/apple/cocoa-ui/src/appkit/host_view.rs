@@ -17,8 +17,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSDragOperation, NSDraggingInfo, NSEvent, NSScreen, NSTrackingArea, NSTrackingAreaOptions,
-    NSView,
+    NSAccessibilityFrameInView, NSDragOperation, NSDraggingInfo, NSEvent, NSScreen, NSTrackingArea,
+    NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{NSArray, NSEdgeInsets, NSObjectProtocol, NSPoint, NSRect, NSSize};
 
@@ -27,6 +27,7 @@ use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, MeasureProposal, Point, Rect, Size};
 use crate::keys::{self, KeyEvent};
 use crate::pointer::{PointerEvent, PointerEvents};
+use crate::visibility::VisibilityEmitter;
 
 /// What a [`HostView`]'s hit-test handler decides for a point.
 #[derive(Debug, Clone)]
@@ -90,6 +91,10 @@ pub struct HostViewIvars {
     accessibility_press: RefCell<Option<AccessibilityPressHandler>>,
     /// `viewDidChangeBackingProperties` subscribers — backing-scale changes.
     backing_changed: RefCell<Option<WindowHandler>>,
+    /// Whether `accessibilityFrame` reports the union of the direct
+    /// children's frames — the extent a labelled layout container resolves
+    /// to — instead of the view's own frame (water-rs/waterui#1482).
+    reports_content_extent: Cell<bool>,
     /// Whether the view's own content is laid out against its bounds — the
     /// answer to "does this view manage its own safe area".
     manages_safe_area: std::cell::Cell<bool>,
@@ -105,6 +110,10 @@ pub struct HostViewIvars {
     intrinsic_auto_layout: std::cell::Cell<bool>,
     /// The width the intrinsic-content-size query was last invalidated for.
     last_auto_layout_width: std::cell::Cell<f64>,
+    /// The instance-owned visibility event: fires when this view's hidden,
+    /// alpha, frame, bounds, window or superview state changes so
+    /// subscribed descendants re-check presentation visibility.
+    emitter: VisibilityEmitter,
     /// The capturable surface the mounted leaf stored on this view.
     capturable: crate::capture::CapturableSlot,
 }
@@ -139,12 +148,14 @@ impl fmt::Debug for HostViewIvars {
             .field("pointer_inside", &self.pointer_inside.get())
             .field("tracking_area", &self.tracking_area.borrow().is_some())
             .field("key", &self.key.borrow().is_some())
+            .field("reports_content_extent", &self.reports_content_extent.get())
             .field("right_mouse", &self.right_mouse.borrow().is_some())
             .field(
                 "accessibility_press",
                 &self.accessibility_press.borrow().is_some(),
             )
             .field("capturable", &self.capturable.get().is_some())
+            .field("emitter", &self.emitter)
             .finish()
     }
 }
@@ -200,6 +211,7 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self);
                 }
+                self.ivars().emitter.emit();
             });
         }
 
@@ -286,6 +298,47 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self, new_size.into());
                 }
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setFrameOrigin:))]
+        fn set_frame_origin_override(&self, new_origin: NSPoint) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setFrameOrigin: new_origin] };
+            guarded("HostView setFrameOrigin: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setBoundsSize:))]
+        fn set_bounds_size_override(&self, new_size: NSSize) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setBoundsSize: new_size] };
+            guarded("HostView setBoundsSize: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setBoundsOrigin:))]
+        fn set_bounds_origin_override(&self, new_origin: NSPoint) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setBoundsOrigin: new_origin] };
+            guarded("HostView setBoundsOrigin: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setAlphaValue:))]
+        fn set_alpha_value_override(&self, alpha: f64) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setAlphaValue: alpha] };
+            guarded("HostView setAlphaValue: visibility emit", || {
+                self.ivars().emitter.emit();
             });
         }
 
@@ -299,6 +352,7 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self, hidden);
                 }
+                self.ivars().emitter.emit();
             });
         }
 
@@ -312,6 +366,7 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self);
                 }
+                self.ivars().emitter.emit();
             });
         }
 
@@ -560,6 +615,18 @@ define_class!(
             })
         }
 
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> NSRect {
+            guarded("HostView accessibilityFrame", || {
+                if !self.ivars().reports_content_extent.get() {
+                    // SAFETY: see the module safety note.
+                    return unsafe { msg_send![super(self), accessibilityFrame] };
+                }
+                NSAccessibilityFrameInView(self, self.content_extent())
+            })
+        }
+
         // SAFETY: see the module safety note. The override above puts
         // `AXPress` on every host that is an accessibility element; the
         // action is allowed only while a press handler is installed, so a
@@ -649,6 +716,12 @@ impl HostView {
         self.ivars().window.replace(Some(Rc::new(handler)));
     }
 
+    /// The visibility event this view fires — see
+    /// [`VisibilityEmitter`](crate::visibility::VisibilityEmitter).
+    pub fn visibility_emitter(&self) -> &VisibilityEmitter {
+        &self.ivars().emitter
+    }
+
     /// Calls `handler` every time the view moves into or out of a superview —
     /// `viewDidMoveToSuperview`, the point where an enclosing scroll surface
     /// may have changed.
@@ -715,6 +788,32 @@ impl HostView {
         self.ivars()
             .accessibility_press
             .replace(Some(Rc::new(handler)));
+    }
+
+    /// Whether `accessibilityFrame` reports the union of the direct
+    /// children's frames — the extent this container resolved its content
+    /// to — instead of the view's own frame. A labelled layout container
+    /// (`Frame`, `vstack`, …) is assigned the whole region but places its
+    /// content in the resolved box, so a label on it announces the
+    /// children's extent, not the assignment (water-rs/waterui#1482).
+    /// Computed live on every read; nothing is stored.
+    pub fn set_reports_content_extent(&self, reports: bool) {
+        self.ivars().reports_content_extent.set(reports);
+    }
+
+    /// The union of the direct, non-hidden subviews' frames — in this
+    /// view's coordinate space — or the view's own bounds when it has
+    /// none.
+    fn content_extent(&self) -> NSRect {
+        let mut extent: Option<NSRect> = None;
+        for subview in &self.subviews() {
+            if subview.isHidden() {
+                continue;
+            }
+            let frame = subview.frame();
+            extent = Some(extent.map_or(frame, |u| union(u, frame)));
+        }
+        extent.unwrap_or_else(|| self.bounds())
     }
 
     /// Lets `handler` answer the view's intrinsic measurements,
@@ -962,4 +1061,11 @@ impl HostView {
         } = self.safeAreaInsets();
         EdgeInsets::new(top, left, bottom, right)
     }
+}
+
+/// The smallest rect containing `a` and `b`.
+fn union(a: NSRect, b: NSRect) -> NSRect {
+    let min = NSPoint::new(a.min().x.min(b.min().x), a.min().y.min(b.min().y));
+    let max = NSPoint::new(a.max().x.max(b.max().x), a.max().y.max(b.max().y));
+    NSRect::new(min, NSSize::new(max.x - min.x, max.y - min.y))
 }

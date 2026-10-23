@@ -175,6 +175,7 @@ objc2-metal = { version = "0.3", default-features = false, features = [
     "MTLResource",
     "objc2-io-surface",
     "block2",
+    "dispatch2",
 ] }
 objc2-quartz-core = { version = "0.3", default-features = false, features = [
     "std",
@@ -243,7 +244,7 @@ objc2-core-media = { version = "0.3", default-features = false, features = [
     "CMTime",
     "CMTimeRange",
 ], optional = true }
-kurbo = { version = "0.12" }
+kurbo = { version = "0.13" }
 wgpu = { version = "30.0.1", default-features = false }
 wgpu-hal = { version = "30.0.1", default-features = false, features = [
     "metal",

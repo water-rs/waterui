@@ -118,12 +118,15 @@ impl cherenkov::lowering::Compiler for Lowerer<'_> {
                 shape,
                 stroke,
                 paint,
-            } => Op::Stroke {
-                local: ambient,
-                shape: shape.clone(),
-                stroke: stroke.clone(),
-                paint: paint_data(paint, Affine::IDENTITY, self.images)?,
-            },
+            } => {
+                cherenkov::lowering::check_dashes(stroke)?;
+                Op::Stroke {
+                    local: ambient,
+                    shape: shape.clone(),
+                    stroke: stroke.clone(),
+                    paint: paint_data(paint, Affine::IDENTITY, self.images)?,
+                }
+            }
             Command::Shadow { shape, shadow } => Op::Shadow {
                 local: ambient,
                 shape: shape.clone(),
@@ -384,6 +387,7 @@ impl Lowerer<'_> {
         paint: &cherenkov::Paint,
         ops: &mut Vec<Op>,
     ) -> Result<(), RenderError> {
+        cherenkov::lowering::check_dashes(stroke)?;
         let font = self
             .fonts
             .get(&run.font.raw())
@@ -486,5 +490,72 @@ impl Lowerer<'_> {
             });
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cherenkov::WorkingColor;
+    use cherenkov::kurbo::Rect;
+    use cherenkov::lowering::Compiler as _;
+
+    use super::*;
+
+    /// `draw` on a `Command::Stroke` against empty registries.
+    fn lower_stroke(stroke: kurbo::Stroke) -> Result<(), RenderError> {
+        let images = FxHashMap::default();
+        let (mut fonts, bitmap_fonts) = (FxHashMap::default(), FxHashMap::default());
+        let mut lowerer = Lowerer {
+            images: &images,
+            fonts: &mut fonts,
+            bitmap_fonts: &bitmap_fonts,
+        };
+        let mut ops = Vec::new();
+        lowerer.draw(
+            &Command::Stroke {
+                shape: ShapeData::Rect(Rect::new(0.0, 0.0, 8.0, 8.0)),
+                stroke,
+                paint: cherenkov::Paint::Solid(WorkingColor::WHITE),
+            },
+            Affine::IDENTITY,
+            &mut ops,
+        )
+    }
+
+    /// A negative or non-finite dash entry is rejected at lowering.
+    #[test]
+    fn a_negative_or_nonfinite_dash_entry_errors() {
+        for entry in [-1.0, f64::NEG_INFINITY, f64::NAN, f64::INFINITY] {
+            let mut stroke = kurbo::Stroke::new(2.0);
+            stroke.dash_pattern.extend([4.0, entry]);
+            assert!(
+                matches!(lower_stroke(stroke), Err(RenderError::Render(_))),
+                "dash entry {entry}"
+            );
+        }
+    }
+
+    /// A dash pattern whose entries sum to zero is rejected at lowering.
+    #[test]
+    fn a_dash_pattern_summing_to_zero_errors() {
+        let mut stroke = kurbo::Stroke::new(2.0);
+        stroke.dash_pattern.extend([0.0, 0.0]);
+        assert!(matches!(lower_stroke(stroke), Err(RenderError::Render(_))));
+    }
+
+    /// A non-finite dash offset is rejected, dashed or not.
+    #[test]
+    fn a_nonfinite_dash_offset_errors() {
+        for offset in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for pattern in [Vec::new(), vec![4.0, 2.0]] {
+                let mut stroke = kurbo::Stroke::new(2.0);
+                stroke.dash_offset = offset;
+                stroke.dash_pattern.extend(pattern.iter().copied());
+                assert!(
+                    matches!(lower_stroke(stroke), Err(RenderError::Render(_))),
+                    "dash offset {offset}, {pattern:?}"
+                );
+            }
+        }
     }
 }
