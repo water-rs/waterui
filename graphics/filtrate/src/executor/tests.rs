@@ -516,6 +516,25 @@ fn srgb_stages_are_converted_around() {
     // The conversions are colour stages, so they share the stage's segment.
     assert_eq!(plan.passes.len(), 1);
     assert_eq!(plan.passes[0].segment.stages, 0..3);
+
+    let plan = assert_composes(
+        "consecutive sRGB stages",
+        &CssInvert.then(filters::GaussianBlur::new(2.0_f32).in_space(OperatingSpace::Srgb)),
+    );
+    // Convert in once, run both spatial stages, then convert out once.
+    let stages: Vec<_> = plan
+        .passes
+        .iter()
+        .map(|pass| pass.segment.stages.clone())
+        .collect();
+    assert_eq!(stages, [0..2, 2..3, 3..4, 4..5]);
+
+    let plan = assert_composes(
+        "sRGB runs separated by a working-space stage",
+        &CssInvert.then(filters::Brightness(0.1_f32)).then(CssInvert),
+    );
+    // Each encoded stage still needs its own pair across the working stage.
+    assert_eq!(plan.passes[0].segment.stages, 0..7);
 }
 
 #[test]
@@ -2142,12 +2161,11 @@ const F16_ONE_PASS: f64 = 1.0;
 /// writing `Rgba16Float` once.
 const F16_SEPARABLE: f64 = 2.0;
 
-/// Steps for a separable stage in encoded sRGB. Each spatial stage is
-/// wrapped in conversions, so the route runs `to_srgb`, the horizontal
-/// stage, `from_srgb` + `to_srgb`, the vertical stage and `from_srgb`: four
+/// Steps for a separable stage in encoded sRGB. The route runs `to_srgb`,
+/// the horizontal stage, the vertical stage and `from_srgb`: three
 /// writes of encoded values, which decoding amplifies by up to sRGB's
 /// exponent 2.4, and one of the linear result.
-const F16_SEPARABLE_SRGB: f64 = 4.0 * 2.4 + 1.0;
+const F16_SEPARABLE_SRGB: f64 = 3.0 * 2.4 + 1.0;
 
 /// Runs `filter` on the wgpu executor over f16 textures and on the CPU,
 /// checks they agree to the precision of the `steps` half-float writes on
@@ -2601,6 +2619,16 @@ fn gpu_export_filter_gallery_images() {
     export_filter!("invert.png", Invert);
     export_filter!("blur.png", Blur(3.0_f32));
     export_filter!("gaussian_blur.png", GaussianBlur::new(2.0_f32));
+    export_filter!(
+        "luma_curve_srgb_blur.png",
+        LumaCurve {
+            curve: [0.9_f32, 0.83, 0.925, 0.815],
+            amount: 0.75,
+            chroma: 0.375,
+            offset: 0.1,
+        }
+        .then(GaussianBlur::new(2.0_f32).in_space(OperatingSpace::Srgb))
+    );
     export_filter!("motion_blur.png", MotionBlur(6.0_f32, 30.0_f32));
     export_filter!("zoom_blur.png", ZoomBlur(0.2_f32, 0.5_f32, 0.5_f32));
     export_filter!("sharpen.png", Sharpen(1.5_f32));
