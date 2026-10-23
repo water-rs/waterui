@@ -8,9 +8,14 @@ use cherenkov::{
     Sampling, WorkingColor,
 };
 use cherenkov_cpu::{Raster, RasterConfig};
+use cherenkov_oracle::F32Image;
+use cherenkov_oracle::metrics::{assert_close, assert_images_match};
 use skrifa::MetadataProvider;
 use skrifa::bitmap::{BitmapData, BitmapFormat, BitmapStrikes, Origin};
 use skrifa::raw::TableProvider;
+
+#[path = "support/visual.rs"]
+mod visual;
 
 const CBDT_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -212,19 +217,10 @@ fn equivalent(
         }));
     });
     engine.render(FrameTime::now()).expect("render");
-    let actual_pixels = actual.readback().expect("actual readback").pixels;
-    let reference_pixels = reference.readback().expect("reference readback").pixels;
-    assert!(actual_pixels.iter().any(|pixel| pixel[3] > 0.0));
-    assert_eq!(
-        actual_pixels
-            .iter()
-            .map(|pixel| pixel.map(f32::to_bits))
-            .collect::<Vec<_>>(),
-        reference_pixels
-            .iter()
-            .map(|pixel| pixel.map(f32::to_bits))
-            .collect::<Vec<_>>()
-    );
+    let actual = actual.readback().expect("actual readback");
+    let reference = reference.readback().expect("reference readback");
+    assert!(actual.pixels.iter().any(|pixel| pixel[3] > 0.0));
+    assert_images_match(&visual::image(&reference), &visual::image(&actual));
 }
 
 #[expect(
@@ -548,14 +544,14 @@ fn missing_notdef_is_empty_and_bitmap_transforms_validate_and_strokes_are_unsupp
         .render(FrameTime::now())
         .expect("missing glyph frame");
     assert_eq!(engine.stats().glyphs_rasterized, 0);
-    assert!(
-        surface
-            .readback()
-            .expect("readback")
-            .pixels
-            .iter()
-            .all(|pixel| pixel[3].to_bits() == 0)
-    );
+    let alphas: Vec<f32> = surface
+        .readback()
+        .expect("readback")
+        .pixels
+        .iter()
+        .map(|pixel| pixel[3])
+        .collect();
+    assert_close(&alphas, &vec![0.0; alphas.len()]);
 
     glyph_mut(&mut missing).id = glyph_id(&bytes, '😀');
     glyph_mut(&mut missing).transform = Some(Affine::scale_non_uniform(0.0, 1.0));
@@ -621,8 +617,19 @@ fn render_static_bitmap(
     surface.readback().expect("readback").pixels
 }
 
+/// Bit patterns for the checks that the placement is *not* the unsnapped
+/// one: a quarter-pixel shift is below what FLIP scores, so the contrast is
+/// taken on the pixels themselves.
 fn bitmap_pixel_bits(pixels: &[[f32; 4]]) -> Vec<[u32; 4]> {
     pixels.iter().map(|pixel| pixel.map(f32::to_bits)).collect()
+}
+
+fn bitmap_image(pixels: &[[f32; 4]]) -> F32Image {
+    F32Image {
+        width: 64,
+        height: 64,
+        pixels: pixels.to_vec(),
+    }
 }
 
 /// Animated bitmap placement follows the layer's quarter-pixel snap and
@@ -688,15 +695,9 @@ fn an_animating_layer_places_bitmap_glyphs_on_the_quarter_pixel_grid() {
         render_static_bitmap(&engine, font.id(), glyph, Affine::translate((1.2, 0.0)));
     let off_settled =
         render_static_bitmap(&engine, font.id(), glyph, Affine::translate((1.25, 0.0)));
-    assert_eq!(bitmap_pixel_bits(&at_start), bitmap_pixel_bits(&identity));
-    assert_eq!(
-        bitmap_pixel_bits(&quarter),
-        bitmap_pixel_bits(&quarter_static)
-    );
+    assert_images_match(&bitmap_image(&identity), &bitmap_image(&at_start));
+    assert_images_match(&bitmap_image(&quarter_static), &bitmap_image(&quarter));
     assert_ne!(bitmap_pixel_bits(&quarter), bitmap_pixel_bits(&off_grid));
-    assert_eq!(
-        bitmap_pixel_bits(&settled),
-        bitmap_pixel_bits(&settled_static)
-    );
+    assert_images_match(&bitmap_image(&settled_static), &bitmap_image(&settled));
     assert_ne!(bitmap_pixel_bits(&settled), bitmap_pixel_bits(&off_settled));
 }

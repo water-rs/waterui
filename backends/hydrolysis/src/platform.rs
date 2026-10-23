@@ -4545,7 +4545,7 @@ mod winit_impl {
         /// the same space `CursorMoved` reports in.
         #[cfg(target_os = "windows")]
         fn windows_live_pointer_position(&self) -> Option<(f32, f32)> {
-            use windows_sys::Win32::Foundation::POINT;
+            use windows_sys::Win32::Foundation::{HWND, POINT};
             use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
             use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
             let RawWindowHandle::Win32(win32) = self.window.window_handle().ok()?.as_raw() else {
@@ -4560,7 +4560,7 @@ mod winit_impl {
             // SAFETY: `hwnd` is the window's live Win32 handle for as long
             // as the `NativeWindow` lives, and `point` is a valid, writable
             // `POINT` the call rewrites in client coordinates.
-            if unsafe { ScreenToClient(win32.hwnd.get(), &raw mut point) } == 0 {
+            if unsafe { ScreenToClient(win32.hwnd.get() as HWND, &raw mut point) } == 0 {
                 return None;
             }
             let position = PhysicalPosition::new(f64::from(point.x), f64::from(point.y))

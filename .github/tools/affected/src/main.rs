@@ -9,6 +9,7 @@
 //!   "merge_base": "…",
 //!   "workspace": false,
 //!   "affected": ["waterui-core"],
+//!   "members": ["waterui", "waterui-core"],
 //!   "owners": {"core/src/lib.rs": "waterui-core"}
 //! }
 //! ```
@@ -19,6 +20,10 @@
 //! is true when a changed path either matched a `mark-changed = "all"`
 //! rule in `rules.toml` or matched no package at all, where enumerating
 //! packages would pretend precision the diff does not have.
+//!
+//! `members` is every workspace member's name, sorted: the denominator of
+//! the share of the workspace a diff affects, so `affected.py` can tell a
+//! workspace-wide diff from a scoped one without a second package graph.
 //!
 //! `owners` maps every changed path to the package that owns it by
 //! directory (`null` when a rule consumed it). The comment-only lane in
@@ -348,12 +353,20 @@ fn report_affected(base: &str, head: &str) {
     affected.sort_unstable();
     affected.dedup();
 
+    let mut members: Vec<String> = new_graph
+        .workspace()
+        .iter()
+        .map(|package| package.name().to_string())
+        .collect();
+    members.sort_unstable();
+
     println!(
         "{}",
         serde_json::json!({
             "workspace": workspace,
             "merge_base": merge_base,
             "affected": affected,
+            "members": members,
             "owners": owners,
         })
     );

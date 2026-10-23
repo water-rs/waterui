@@ -362,10 +362,11 @@ impl SeededPan {
 /// reaches a view as `UIPanGestureRecognizer`s — a trackpad glide through
 /// the `Continuous` scroll type, a wheel notch through `Discrete` — and
 /// each must land as a `SurfaceEvent::Scroll` with the pan's incremental
-/// translation negated into the W3C content-motion sign, its unit by
-/// scroll type, and `finished` per gesture kind. A finger drag is
+/// translation negated into the W3C content-motion sign — always a
+/// logical-point `Pixel` displacement, whatever the mask — and `finished`
+/// per gesture kind. A finger drag is
 /// pointer input, not a scroll: both recognizers take zero touches.
-#[allow(clippy::too_many_lines)] // The wiring check plus the three scroll probes it verifies.
+#[allow(clippy::too_many_lines)] // The wiring check plus the five scroll probes it verifies.
 fn indirect_scroll_input_arrives_as_surface_scroll_events() {
     use std::cell::RefCell;
 
@@ -410,7 +411,7 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
     let gesture = SeededPan::new(mtm, CGPoint::new(40.0, 24.0));
     let this: &UIView = &view;
     gesture.setTranslation_inView(CGPoint::new(12.0, -30.0), Some(this));
-    view.scroll_probe_for_test(&gesture, ScrollUnit::Pixel);
+    view.scroll_probe_for_test(&gesture, UIScrollTypeMask::Continuous);
 
     // The action consumes the incremental translation: the delta a
     // recognizer reports is since its own last callback.
@@ -445,9 +446,20 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
     // The gesture's terminal callback carries `finished`.
     gesture.setTranslation_inView(CGPoint::new(4.0, 0.0), Some(this));
     gesture.ivars().state.set(UIGestureRecognizerState::Ended);
-    view.scroll_probe_for_test(&gesture, ScrollUnit::Pixel);
+    let before = events.borrow().len();
+    view.scroll_probe_for_test(&gesture, UIScrollTypeMask::Continuous);
+    assert_eq!(
+        gesture.translationInView(Some(this)),
+        CGPoint::ZERO,
+        "the terminal callback did not consume its translation"
+    );
     {
         let events = events.borrow();
+        assert_eq!(
+            events.len(),
+            before + 1,
+            "the Ended callback did not append exactly one event"
+        );
         let [.., event] = events.as_slice() else {
             panic!("expected a second scroll event, got {}", events.len());
         };
@@ -465,15 +477,68 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
         assert!(*finished, "a glide's end did not mark the scroll finished");
     }
 
-    // A wheel notch is complete on its own: `Line` units, `finished` on
-    // every callback — even mid-`Changed`.
+    // Cancelled and Failed terminate a glide the same way Ended does.
+    for terminal in [
+        UIGestureRecognizerState::Cancelled,
+        UIGestureRecognizerState::Failed,
+    ] {
+        gesture.ivars().state.set(terminal);
+        gesture.setTranslation_inView(CGPoint::new(2.0, 0.0), Some(this));
+        let before = events.borrow().len();
+        view.scroll_probe_for_test(&gesture, UIScrollTypeMask::Continuous);
+        assert_eq!(
+            gesture.translationInView(Some(this)),
+            CGPoint::ZERO,
+            "a {terminal:?} callback did not consume its translation"
+        );
+        let events = events.borrow();
+        assert_eq!(
+            events.len(),
+            before + 1,
+            "a {terminal:?} callback did not append exactly one event"
+        );
+        let [.., event] = events.as_slice() else {
+            panic!("expected another scroll event, got {}", events.len());
+        };
+        let SurfaceEvent::Scroll {
+            delta_x,
+            delta_y,
+            unit,
+            finished,
+            ..
+        } = event
+        else {
+            panic!("expected a scroll event, got {event:?}");
+        };
+        assert_eq!((*delta_x, *delta_y), (-2.0, 0.0));
+        assert_eq!(*unit, ScrollUnit::Pixel);
+        assert!(
+            *finished,
+            "a {terminal:?} callback did not mark the scroll finished"
+        );
+    }
+
+    // A wheel notch is complete on its own: the same logical-point
+    // `Pixel` displacement, `finished` on every callback — even
+    // mid-`Changed`.
     gesture.ivars().state.set(UIGestureRecognizerState::Changed);
     gesture.setTranslation_inView(CGPoint::new(0.0, 5.0), Some(this));
-    view.scroll_probe_for_test(&gesture, ScrollUnit::Line);
+    let before = events.borrow().len();
+    view.scroll_probe_for_test(&gesture, UIScrollTypeMask::Discrete);
+    assert_eq!(
+        gesture.translationInView(Some(this)),
+        CGPoint::ZERO,
+        "the discrete callback did not consume its translation"
+    );
     {
         let events = events.borrow();
+        assert_eq!(
+            events.len(),
+            before + 1,
+            "the discrete callback did not append exactly one event"
+        );
         let [.., event] = events.as_slice() else {
-            panic!("expected a third scroll event, got {}", events.len());
+            panic!("expected a fifth scroll event, got {}", events.len());
         };
         let SurfaceEvent::Scroll {
             delta_y,
@@ -485,7 +550,7 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
             panic!("expected a scroll event, got {event:?}");
         };
         assert_eq!(*delta_y, -5.0);
-        assert_eq!(*unit, ScrollUnit::Line);
+        assert_eq!(*unit, ScrollUnit::Pixel);
         assert!(*finished, "a wheel notch is a complete scroll on its own");
     }
 }

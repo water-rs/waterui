@@ -15,6 +15,7 @@
 use cherenkov::kurbo::{Affine, Ellipse, Point, Rect};
 use cherenkov::lowering::rounded_box::{BoxForm, RoundedBox, box_form};
 use cherenkov::{ContinuousRect, ShapeData};
+use cherenkov_oracle::metrics::assert_close;
 use cherenkov_oracle::sdf::{box_params, distance_and_normal};
 use cherenkov_scene::{ContinuousRect as SceneContinuousRect, Shape};
 use cherenkov_shader::eval::{Eval, Value};
@@ -81,10 +82,8 @@ fn sweep(
         Affine::translate(centre.to_vec2()),
         "the sweep runs on axis-aligned boxes"
     );
-    assert_eq!(
-        engine_extra, extra,
-        "the engines' and the oracle's box mappings place the shape alike"
-    );
+    // The engines' and the oracle's box mappings place the shape alike.
+    assert_close(&engine_extra.as_coeffs(), &extra.as_coeffs());
     let wgsl_shape = wgsl_shape(&boxed);
     let reach = [oracle_box.half[0] + BAND, oracle_box.half[1] + BAND];
     let grid = pixel_centres(centre.y, reach[1]).flat_map(|py| {

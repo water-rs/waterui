@@ -8,6 +8,10 @@ use cherenkov_gpu::Gpu;
 
 /// A matrix point: buffer side, plane count, content lifetime, and motion.
 #[derive(Clone, Copy, Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a fixed matrix point the harness owns; closed by design"
+)]
 pub struct Spec {
     /// Square layer side in device pixels.
     pub side: u32,
@@ -66,6 +70,7 @@ impl Spec {
 }
 
 /// A retained tile pattern, independent of either platform's frame producers.
+#[derive(Debug)]
 pub struct Scene {
     /// The experiment's input, included in the device heartbeat.
     pub spec: Spec,

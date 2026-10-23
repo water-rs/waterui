@@ -1805,6 +1805,10 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         self.view.bounds_in(relative_to)
     }
 
+    fn can_present(&self) -> bool {
+        can_present_now(&self.view)
+    }
+
     fn begin_capture_suppression(&self) {
         let count = self.state.capture_suppression.get() + 1;
         self.state.capture_suppression.set(count);

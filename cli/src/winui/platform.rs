@@ -46,6 +46,17 @@ pub async fn build_winui(project: &Project, options: BuildOptions) -> eyre::Resu
         );
     }
 
+    // Windows has no shared-runtime linkage: the build links statically,
+    // and a project that resolved `waterui/dynamic_linking` is rejected
+    // before anything compiles.
+    let options = options.with_supported_linkage(&TargetPlatform::Windows.triple());
+    crate::build::reject_unsupported_dynamic_linking(
+        project,
+        &cargo_toml,
+        &TargetPlatform::Windows.triple(),
+    )
+    .await?;
+
     // The generated `build.rs` embeds `app-icon.ico` into the executable's
     // resources when targeting Windows, so it has to exist before the
     // backend compiles. Assets and fonts stage after the build instead: the
@@ -110,8 +121,8 @@ pub async fn clean_winui(project: &Project) -> eyre::Result<()> {
     // The target directories are shared with every other generated backend, so only
     // this backend's own package is cleaned — its dependency artifacts stay for
     // the other backends that resolve them identically.
-    for linkage in [RustLinkage::SharedRuntime, RustLinkage::Static] {
-        let backend_target_dir = project.water_target_dir(linkage).await?;
+    for linkage in RustLinkage::supported_on(&TargetPlatform::Windows.triple()) {
+        let backend_target_dir = project.water_target_dir(*linkage).await?;
         if !backend_target_dir.exists() {
             continue;
         }
@@ -178,15 +189,9 @@ pub async fn package_winui(
         copy_dir(&staged_resources, &runtime_dir.join("resources")).await?;
     }
 
-    if options.uses_shared_rust_runtime() {
-        RustDynamicLibraries::resolve(built, &TargetPlatform::Windows.triple(), project)
-            .await?
-            .stage(&runtime_dir)
-            .await?;
-    } else {
-        RustDynamicLibraries::remove_staged(&runtime_dir, &TargetPlatform::Windows.triple())
-            .await?;
-    }
+    // Windows links statically, so a development packaging stages no shared
+    // runtime — it only clears whatever an earlier build left behind.
+    RustDynamicLibraries::remove_staged(&runtime_dir, &TargetPlatform::Windows.triple()).await?;
 
     // Ship the binary under the product name; the tagged Cargo artifact name
     // is internal to the shared target directory.

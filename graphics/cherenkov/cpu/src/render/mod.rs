@@ -7,10 +7,12 @@ mod bins;
 mod bitmap;
 mod blend;
 mod colr;
+pub mod coverage;
 mod filter;
 mod font;
 mod geometry;
 mod glyph;
+mod gradient;
 mod image;
 mod mesh;
 #[cfg(any(test, feature = "testing"))]
@@ -25,17 +27,22 @@ pub mod present;
 mod projective;
 mod raster;
 mod shadow;
+mod span;
+mod tiles;
+mod topology;
 
 // The `testing` feature's surface: the span kernels and the types their
 // signatures name. `render` is a private module, so nothing is reachable
 // without `crate::testing`'s re-export, which does not exist without the
 // feature.
 #[cfg(any(test, feature = "testing"))]
+pub use lower::GeometryChange;
+#[cfg(any(test, feature = "testing"))]
 pub use lower::{ClipMask, ClipRef};
 #[cfg(any(test, feature = "testing"))]
 pub use paint::{PaintData, paint_data};
 #[cfg(any(test, feature = "testing"))]
-pub use raster::{Accum, ClipRun, Edge, composite_span};
+pub use raster::{ClipRun, Edge, composite_span};
 #[cfg(any(test, feature = "testing"))]
 pub use raster::{composite_solid, convert_span};
 
@@ -135,9 +142,12 @@ pub struct RasterRenderer {
     glyph_cache: glyph::GlyphCache,
     /// Decoded colour-font bitmaps, bounded by `Budget::cpu`.
     bitmap_cache: bitmap::BitmapCache,
-    /// Swept fill and stroke geometry offered by realizations dropped or
+    /// Fill and stroke geometry offered by realizations dropped or
     /// rebuilt this frame; empty between frames.
     geometry: geometry::GeometryCache,
+    /// Reusable build storage for retained geometry; high-water
+    /// capacity persists across frames.
+    edge_scratch: tiles::EdgeScratch,
     /// Bumped on every image replacement: the one change to what a
     /// current projective image read that arrives without a tree edit.
     /// A removal only runs once no installed content draws the image
@@ -194,6 +204,7 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
                     glyph_cache: glyph::GlyphCache::new(config.budget.cpu.0),
                     bitmap_cache: bitmap::BitmapCache::new(config.budget.cpu.0),
                     geometry: geometry::GeometryCache::default(),
+                    edge_scratch: tiles::EdgeScratch::default(),
                     image_replacements: 0,
                     frame_count: 0,
                     band_index: Some(Box::default()),
@@ -657,7 +668,8 @@ impl Renderer for RasterRenderer {
             .sum::<u64>()
             + self.band_index.as_ref().map_or(0, |index| {
                 size_of::<bins::FrameIndex>() as u64 + index.heap_bytes()
-            });
+            })
+            + self.edge_scratch.heap_bytes();
         categories.glyphs = self.glyph_cache.bytes();
         categories.images = self.images.values().map(|image| image.bytes()).sum();
         categories.colr = self.fonts.values().map(font::Font::colr_bytes).sum();
@@ -759,6 +771,7 @@ impl RasterRenderer {
         let (used, used_groups) = self.filter_uses();
         self.evict_projective();
         self.geometry.finish_frame();
+        self.edge_scratch.clear();
         self.filters.finish_frame(&used, &used_groups);
         self.update_filter_wakes();
         // Every visible surface whose filter or backdrop group still
@@ -990,7 +1003,11 @@ impl RasterRenderer {
                 frame,
                 &mut self.fonts,
                 &self.bitmap_fonts,
-                (&mut self.bitmap_cache, &mut self.geometry),
+                (
+                    &mut self.bitmap_cache,
+                    &mut self.geometry,
+                    &mut self.edge_scratch,
+                ),
                 self.level,
                 &self.pool,
             );

@@ -287,7 +287,7 @@ pub async fn stage_hydrolysis_resources(
     let mut font_declarations = assets::scan_fonts(
         project,
         &backend_path.join("Cargo.toml"),
-        &[platform.font_platform()?],
+        &[platform.font_platform()],
     )
     .await?;
     font_declarations.extend(theme.font_declarations());

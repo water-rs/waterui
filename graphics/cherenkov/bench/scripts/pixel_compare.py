@@ -5,16 +5,16 @@ Pixel-class device.
   pixel_compare.py run     --base B --head H --scene DIR... --out O
                            [--governor | --gpu-counters]
   pixel_compare.py run     --base B --head H --scene DIR... --out O
-                           --engine E --workers N --cpus LIST --cluster-khz POLICY=KHZ...
+                           --engine E --workers N --cluster-khz POLICY=KHZ...
   pixel_compare.py analyze O
 
 `run` pushes both binaries and the scene directories, then measures every
 scene in rounds of base/head pairs: `base head` then `head base`, alternating,
-so neither arm always runs first. Each invocation is one `measure` process:
-`--rate 120 --energy --cpu 7`, the warmup and measured frame counts given, and
-`--native W×H` (width `--width`, the scene's own aspect) for scenes under a
-`perf/` directory. Every completed report is kept; nothing is retried or
-dropped.
+so neither arm always runs first. Each GPU-engine invocation is one `measure`
+process: `--rate 120 --energy --cpu 7`, the warmup and measured frame counts
+given, and `--native W×H` (width `--width`, the scene's own aspect) for scenes
+under a `perf/` directory. Every completed report is kept; nothing is retried
+or dropped.
 
 A GPU's busy time at a given workload scales with its clock, and the default
 GPU governor picks the clock from recent utilization: a fresh process, a
@@ -44,24 +44,27 @@ short invocations: `--rounds 32 --frames 300` resolves the 96 px corpus
 scenes.
 
 `--engine cherenkov-cpu` (or the reference CPU engines `vello-cpu` and
-`skia-cpu`) measures a CPU rasterizer instead: `measure --engine E --cpu
-LIST` with every bench thread confined to the CPU set `--cpus`, the engine at
-`--workers` workers, each scene at its own size, and no pacing or energy
-window, so frames run back to back and measure cost. The worker count reaches
-the engine through its own control: cherenkov-cpu's raster pool, and rayon's
-global pool beside it, through `RAYON_NUM_THREADS`; vello-cpu's dispatcher
-through `VELLO_CPU_THREADS` (one worker is its single-threaded dispatcher, N
+`skia-cpu`) measures a CPU rasterizer instead: `measure --engine E` with the
+engine at `--workers` workers, each scene at its own size, and no pacing or
+energy window, so frames run back to back and measure cost. No bench thread
+is placed: a phone's big.LITTLE scheduler moves threads where it will, and
+pinning or confining them measures a device no user has, so no CPU set or
+affinity is applied. The worker count reaches the engine through its own
+control: cherenkov-cpu's raster pool, and rayon's global pool beside it,
+through `RAYON_NUM_THREADS`; vello-cpu's dispatcher through
+`VELLO_CPU_THREADS` (one worker is its single-threaded dispatcher, N
 its multithreaded one with N workers); skia-cpu is single-threaded and runs
 at one worker only. The GPU is left to its governor. Every CPU frequency
-policy holding a CPU of the set is held at its `--cluster-khz` clock for the
-workload instead. Original policy values are restored after each invocation.
+policy on the device is held at its `--cluster-khz` clock for the workload
+instead, so thermal throttling stays out of the run; the option must name
+every policy. Original policy values are restored after each invocation.
 
 Controls, checked for every invocation and recorded with it:
 
 - before: screen off, physical sensors below their limits, and the requested
   device settings applied with readback evidence;
-- during: physical temperature supervision, GPU clock residency, CPU placement,
-  and the requested worker count;
+- during: physical temperature supervision, GPU clock residency, the GPU
+  engine's measuring-thread placement, and a CPU engine's worker count;
 - after: pinned policy ranges and CPU frequency residency over the workload,
   followed by restoration of every original property and sysfs value.
 
@@ -75,28 +78,35 @@ those per arm, and their change. The metrics are GPU milliseconds (or
 shader-core active cycles with `--gpu-counters`) for the GPU engine; for a
 CPU engine the frame (encode and submit together, in milliseconds: an engine
 may rasterize in either, as vello-cpu dispatches strips while it records),
-and for cherenkov-cpu also its raster pass (`shade`, the backend's phase). A
-p50 over a finite frame count has a sampling error, and a fresh process can
-land at a different cost, so the change alone does not say whether the
-collection can tell a 2% change from none. `analyze` therefore puts a 95%
-interval around the change by a hierarchical bootstrap (invocations, then the
-frames of each). A metric whose whole interval lies above `--limit-percent`
-(2%) `fails` whatever the interval's width: the collection has shown the
-change exceeds the limit at that confidence. Any other metric is decided only
-when its interval is no wider than the limit (half-width at most half of
-`--limit-percent`), so a true change of zero reads above the limit with
-probability far below a percent; it then `fails` above the limit and passes
-otherwise. A wider interval is `unresolved`, never a pass. The limit bounds a
-cost increase, so an interval wholly below the negative limit — the head
-measurably cheaper — is no failure, and like any other it passes only at that
-width and is `unresolved` beyond it. The scene's verdict is its first
-metric's (GPU time, cycles or the frame). Each metric also carries the change
-of the median invocation p99 and its interval, which decide nothing. More
-`--frames` shrink the sampling error of each p50 and more `--rounds` average
-over more processes; full-size scenes resolve on GPU time at the defaults,
-and scenes of a fraction of a millisecond on shader-core cycles. In governor
-mode `analyze` reports each arm's worst invocation GPU p99 against
-`--budget-ms` and makes no cost decision.
+and for cherenkov-cpu also its raster pass (`shade`, the backend's phase).
+
+For the GPU engine, a p50 over a finite frame count has a sampling error, and
+a fresh process can land at a different cost, so the change alone does not
+say whether the collection can tell a 2% change from none. `analyze`
+therefore puts a 95% interval around the change by a hierarchical bootstrap
+(invocations, then the frames of each). A metric whose whole interval lies
+above `--limit-percent` (2%) `fails` whatever the interval's width: the
+collection has shown the change exceeds the limit at that confidence. Any
+other metric is decided only when its interval is no wider than the limit
+(half-width at most half of `--limit-percent`), so a true change of zero
+reads above the limit with probability far below a percent; it then `fails`
+above the limit and passes otherwise. A wider interval is `unresolved`,
+never a pass. The limit bounds a cost increase, so an interval wholly below
+the negative limit — the head measurably cheaper — is no failure, and like
+any other it passes only at that width and is `unresolved` beyond it. The
+scene's verdict is its first metric's (GPU time or cycles). Each metric also
+carries the change of the median invocation p99 and its interval, which
+decide nothing. More `--frames` shrink the sampling error of each p50 and
+more `--rounds` average over more processes; full-size scenes resolve on GPU
+time at the defaults, and scenes of a fraction of a millisecond on
+shader-core cycles. In governor mode `analyze` reports each arm's worst
+invocation GPU p99 against `--budget-ms` and makes no cost decision.
+
+A CPU engine's collection is never decided: the phone's big.LITTLE
+scheduling makes CPU timing unstable and a CPU-side change is proven by the
+deterministic Callgrind gate, so `analyze` reports, per scene and metric,
+each arm's median invocation p50 and p99 with their change, for judging
+whether there is an obvious regression.
 
 For cherenkov-cpu `analyze` also reports, per arm, how much of `submit` the
 backend's phases (`lower`, `glyph`, `shade`) leave unaccounted: the render
@@ -154,7 +164,7 @@ CPU_PHASES = ("lower", "glyph", "shade")
 class CpuEngine(typing.NamedTuple):
     """A CPU rasterizer the bench measures: the environment that sets its
     worker count, the `device.adapter` a report states for that count, the
-    metrics `analyze` decides it on, and its most workers."""
+    metrics `analyze` reports, and its most workers."""
     environment: typing.Callable[[int], dict[str, str]]
     adapter: typing.Callable[[int], str]
     metrics: tuple[str, ...]
@@ -217,15 +227,6 @@ def tree_sha256(directory: Path) -> dict[str, str]:
 
 def save(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
-
-
-def cpu_list(text: str) -> list[int]:
-    """The CPUs of a `measure --cpu` list such as `0-3,7`, sorted."""
-    cpus: set[int] = set()
-    for part in text.split(","):
-        low, _, high = part.partition("-")
-        cpus.update(range(int(low), int(high or low) + 1))
-    return sorted(cpus)
 
 
 class Clocks:
@@ -392,11 +393,11 @@ class Session:
         self.device = Device(args.serial)
         self.cpu_engine = CPU_ENGINES.get(args.engine)
         if self.cpu_engine is None:
-            self.cpus = [CPU]
+            self.cpus: list[int] | None = [CPU]
             self.pinned = None if args.governor else {"gpu": args.gpu_khz,
                                                       self.policy_of(CPU): args.cpu_khz}
         else:
-            self.cpus = cpu_list(args.cpus)
+            self.cpus = None
             self.pinned = dict(args.cluster_khz)
         self.clocks = Clocks(self.device, list(self.pinned or {"gpu": 0, self.policy_of(CPU): 0}))
         self.remote = f"/data/local/tmp/pixel-compare-{self.out.name}"
@@ -428,11 +429,9 @@ class Session:
         policies = None
         if self.cpu_engine is not None:
             policies = Clocks.describe(self.device)
-            holding = {name for name, policy in policies.items()
-                       if set(policy["cpus"]) & set(self.cpus)}
-            if set(self.pinned) != holding:
-                raise SystemExit(f"--cluster-khz must name exactly the policies holding CPUs "
-                                 f"{self.cpus}: {sorted(holding)}")
+            if set(self.pinned) != set(policies):
+                raise SystemExit(f"--cluster-khz must name every CPU frequency policy on "
+                                 f"the device: {sorted(policies)}")
         if self.pinned:
             for name, khz in self.pinned.items():
                 if khz not in self.clocks.available(name):
@@ -483,11 +482,10 @@ class Session:
         report = f"{self.remote}/{run_id}.json"
         command = [f"{self.remote}/bench-{side}", "measure", "--engine", args.engine,
                    "--scene", f"{self.remote}/scenes/{scene['name']}",
-                   "--cpu", ",".join(map(str, self.cpus)),
                    "--warmup", str(args.warmup), "--frames", str(args.frames), "--out", report]
         environment: dict[str, str] = {}
         if self.cpu_engine is None:
-            command += ["--rate", str(RATE_HZ), "--energy"]
+            command += ["--cpu", str(CPU), "--rate", str(RATE_HZ), "--energy"]
             if args.gpu_counters:
                 command.append("--gpu-counters")
             if scene["perf"]:
@@ -533,17 +531,17 @@ class Session:
         failures = []
         if report["conditions"]["screen_state"] not in ("off", "dozing", "asleep"):
             failures.append(f"screen {report['conditions']['screen_state']}")
-        if not (report["placement"]["controlled"] and report["placement"]["requested"] == self.cpus):
-            failures.append("placement not pinned")
-        if any(s["cpu_start"] not in self.cpus or s["cpu_end"] not in self.cpus
-               for s in report["samples"]):
-            failures.append(f"measuring thread left CPUs {self.cpus}")
         if self.cpu_engine is not None:
             adapter = self.cpu_engine.adapter(self.args.workers)
             if report["device"]["adapter"] != adapter:
                 failures.append(f"the engine reports {report['device']['adapter']!r}, "
                                 f"not {adapter!r}")
             return failures
+        if not (report["placement"]["controlled"] and report["placement"]["requested"] == self.cpus):
+            failures.append("placement not pinned")
+        if any(s["cpu_start"] not in self.cpus or s["cpu_end"] not in self.cpus
+               for s in report["samples"]):
+            failures.append(f"measuring thread left CPUs {self.cpus}")
         if self.args.gpu_counters and (report.get("gpu_counters") is None or any(
                 s.get("gpu_counters") is None for s in report["samples"])):
             failures.append("report carries no per-frame GPU counters")
@@ -686,6 +684,7 @@ def analyze(out: Path, limit_percent: float, budget_ms: float) -> dict[str, Any]
     plan = json.loads((out / PLAN).read_text())
     control = json.loads((out / CONTROL).read_text())
     runs = [json.loads(line) for line in (out / RUNS).read_text().splitlines()]
+    cpu_engine = plan["engine"] in CPU_ENGINES
     pinned = plan["clocks"] != "governor"
     result: dict[str, Any] = {"plan": plan, "completed": control["completed"], "scenes": {}}
     for scene in plan["scenes"]:
@@ -717,22 +716,31 @@ def analyze(out: Path, limit_percent: float, budget_ms: float) -> dict[str, Any]
             per_invocation = {side: {"p50": [quantile(run, 0.5) for run in runs_],
                                      "p99": [quantile(run, 0.99) for run in runs_]}
                               for side, runs_ in frames.items()}
-            change = median_change(frames)
-            low, high = change_interval(frames, random.Random(f"{name}/{metric}"))
-            p99_low, p99_high = change_interval(frames, random.Random(f"{name}/{metric}/p99"),
-                                                0.99)
             judged = {"unit": unit, "per_invocation": per_invocation,
-                      "change_percent": change, "interval_percent": [low, high],
-                      "p99_change_percent": median_change(frames, 0.99),
-                      "p99_interval_percent": [p99_low, p99_high],
-                      "worst_p99": {side: max(v["p99"]) for side, v in per_invocation.items()}}
-            if pinned:
-                judged["verdict"] = decide(change, low, high, limit_percent)
+                      "change_percent": median_change(frames),
+                      "p99_change_percent": median_change(frames, 0.99)}
+            if cpu_engine:
+                judged["p50"] = {side: statistics.median(invocation["p50"])
+                                 for side, invocation in per_invocation.items()}
+                judged["p99"] = {side: statistics.median(invocation["p99"])
+                                 for side, invocation in per_invocation.items()}
             else:
-                judged["verdict"] = "within budget" if judged["worst_p99"]["head"] <= budget_ms \
-                    else "over budget"
+                change = judged["change_percent"]
+                low, high = change_interval(frames, random.Random(f"{name}/{metric}"))
+                p99_low, p99_high = change_interval(frames, random.Random(f"{name}/{metric}/p99"),
+                                                    0.99)
+                judged["interval_percent"] = [low, high]
+                judged["p99_interval_percent"] = [p99_low, p99_high]
+                judged["worst_p99"] = {side: max(v["p99"])
+                                       for side, v in per_invocation.items()}
+                if pinned:
+                    judged["verdict"] = decide(change, low, high, limit_percent)
+                else:
+                    judged["verdict"] = "within budget" \
+                        if judged["worst_p99"]["head"] <= budget_ms else "over budget"
             entry["metrics"][metric] = judged
-        entry["verdict"] = entry["metrics"][plan["metrics"][0]]["verdict"]
+        if not cpu_engine:
+            entry["verdict"] = entry["metrics"][plan["metrics"][0]]["verdict"]
         if plan["engine"] == "cherenkov-cpu":
             entry["phase_gap"] = phase_gap(reports)
         result["scenes"][name] = entry
@@ -751,7 +759,6 @@ def main() -> None:
     run.add_argument("--serial", required=True)
     run.add_argument("--engine", choices=[GPU_ENGINE, *CPU_ENGINES], default=GPU_ENGINE)
     run.add_argument("--workers", type=int)
-    run.add_argument("--cpus")
     run.add_argument("--cluster-khz", action="append", default=[],
                      type=lambda text: (text.split("=", 1)[0], int(text.split("=", 1)[1])),
                      metavar="POLICY=KHZ")
@@ -776,13 +783,13 @@ def main() -> None:
                          "the frame budget")
         engine = CPU_ENGINES.get(args.engine)
         if engine is None:
-            if args.workers is not None or args.cpus is not None or args.cluster_khz:
-                parser.error("--workers, --cpus and --cluster-khz select a CPU engine's cells")
+            if args.workers is not None or args.cluster_khz:
+                parser.error("--workers and --cluster-khz are a CPU engine's controls")
         else:
             if args.governor or args.gpu_counters:
                 parser.error("a CPU engine is measured at pinned CPU clocks, without GPU counters")
-            if args.workers is None or args.cpus is None or not args.cluster_khz:
-                parser.error("a CPU engine needs --workers, --cpus and --cluster-khz")
+            if args.workers is None or not args.cluster_khz:
+                parser.error("a CPU engine needs --workers and --cluster-khz")
             if args.workers < 1 or (engine.max_workers is not None
                                     and args.workers > engine.max_workers):
                 parser.error(f"{args.engine} runs at 1 to {engine.max_workers or 'any'} workers")
@@ -797,11 +804,19 @@ def main() -> None:
     else:
         result = analyze(args.out, args.limit_percent, args.budget_ms)
         save(args.out / "analysis.json", result)
+        cpu_engine = result["plan"]["engine"] in CPU_ENGINES
         for name, entry in result["scenes"].items():
             if "metrics" not in entry:
                 print(f"{name}: {entry['verdict']}")
                 continue
             for metric, judged in entry["metrics"].items():
+                if cpu_engine:
+                    print(f"{name} {metric}: base p50 {judged['p50']['base']:.3f} "
+                          f"{judged['unit']} p99 {judged['p99']['base']:.3f}; head p50 "
+                          f"{judged['p50']['head']:.3f} {judged['unit']} p99 "
+                          f"{judged['p99']['head']:.3f}; {judged['change_percent']:+.3f}%, "
+                          f"p99 {judged['p99_change_percent']:+.3f}%")
+                    continue
                 low, high = judged["interval_percent"]
                 p99_low, p99_high = judged["p99_interval_percent"]
                 print(f"{name} {metric}: {judged['verdict']} ({judged['change_percent']:+.3f}%, "

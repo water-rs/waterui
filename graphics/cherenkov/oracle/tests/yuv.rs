@@ -5,6 +5,7 @@
 
 use cherenkov_oracle::Image;
 use cherenkov_oracle::color::{linear_p3_to_linear_bt2020, linear_p3_to_linear_srgb};
+use cherenkov_oracle::metrics;
 use cherenkov_oracle::yuv::{
     ChromaSiting, Matrix, Nv12, P010, PlaneLayout, Primaries, Range, Transfer, YuvColor, YuvError,
     YuvFrame, decode,
@@ -141,14 +142,10 @@ const fn uniform<'a, L: PlaneLayout>(
 /// Every pixel of `image` equals pixel 0.
 fn the_pixel(image: &Image) -> [f64; 3] {
     let first = image.pixels[0];
-    assert!(
-        image
-            .pixels
-            .iter()
-            .all(|pixel| pixel.map(f64::to_bits) == first.map(f64::to_bits)),
-        "{image:?}"
-    );
-    assert!((first[3] - 1.0).abs() < f64::EPSILON, "opaque");
+    let actual: Vec<f64> = image.pixels.iter().flatten().copied().collect();
+    let expected: Vec<f64> = image.pixels.iter().flat_map(|_| first).collect();
+    metrics::assert_close(&actual, &expected);
+    metrics::assert_close(&first[3..4], &[1.0]);
     [first[0], first[1], first[2]]
 }
 

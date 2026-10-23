@@ -167,13 +167,26 @@ pub(super) struct ResourceFontFamilies {
     devanagari: Vec<FamilyId>,
 }
 
+/// Install `families` for `key` ahead of any families a platform source
+/// already registered: an application resource face outranks the platform
+/// faces in its script's fallback list but never replaces them.
 #[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
-fn set_fallbacks(collection: &mut Collection, key: impl Into<FallbackKey>, families: &[FamilyId]) {
+fn set_fallbacks(
+    collection: &mut Collection,
+    key: impl Into<FallbackKey> + Copy,
+    families: &[FamilyId],
+) {
     if families.is_empty() {
         return;
     }
+    let mut combined = families.to_vec();
+    for family in collection.fallback_families(key) {
+        if !combined.contains(&family) {
+            combined.push(family);
+        }
+    }
     assert!(
-        collection.set_fallbacks(key, families.iter().copied()),
+        collection.set_fallbacks(key, combined.iter().copied()),
         "hydrolysis font loader attempted to install an untracked script fallback"
     );
 }
@@ -215,15 +228,15 @@ impl ResourceFontFamilies {
             collection.set_generic_families(GenericFamily::Emoji, self.emoji.iter().copied());
         }
 
-        for script in ["Latn", "Grek", "Cyrl"] {
-            set_fallbacks(
-                collection,
-                Script::from_str_unchecked(script),
-                &self.latin_greek_cyrillic,
-            );
+        for script in [
+            Script::from_bytes(*b"Latn"),
+            Script::from_bytes(*b"Grek"),
+            Script::from_bytes(*b"Cyrl"),
+        ] {
+            set_fallbacks(collection, script, &self.latin_greek_cyrillic);
         }
 
-        let hani = Script::from_str_unchecked("Hani");
+        let hani = Script::from_bytes(*b"Hani");
         set_fallbacks(collection, hani, &self.hani_simplified);
         for locale in ["zh", "zh-CN", "zh-SG"] {
             set_fallbacks(collection, (hani, locale), &self.hani_simplified);
@@ -235,19 +248,11 @@ impl ResourceFontFamilies {
         set_fallbacks(collection, (hani, "ko"), &self.hani_korean);
         // Hangul text selects the Hang script, not Hani: the KR face a host
         // bundles for Korean must answer that key too or it sits unreachable.
-        set_fallbacks(
-            collection,
-            Script::from_str_unchecked("Hang"),
-            &self.hani_korean,
-        );
-        set_fallbacks(collection, Script::from_str_unchecked("Arab"), &self.arabic);
-        set_fallbacks(collection, Script::from_str_unchecked("Hebr"), &self.hebrew);
-        set_fallbacks(collection, Script::from_str_unchecked("Thai"), &self.thai);
-        set_fallbacks(
-            collection,
-            Script::from_str_unchecked("Deva"),
-            &self.devanagari,
-        );
+        set_fallbacks(collection, Script::from_bytes(*b"Hang"), &self.hani_korean);
+        set_fallbacks(collection, Script::from_bytes(*b"Arab"), &self.arabic);
+        set_fallbacks(collection, Script::from_bytes(*b"Hebr"), &self.hebrew);
+        set_fallbacks(collection, Script::from_bytes(*b"Thai"), &self.thai);
+        set_fallbacks(collection, Script::from_bytes(*b"Deva"), &self.devanagari);
     }
 }
 
@@ -283,9 +288,12 @@ fn staged_fonts_dir(resources: &waterui_core::ResourceContext) -> std::path::Pat
 /// [`DeclaredFonts`], with the recognized script fallbacks installed.
 ///
 /// The platform's own faces are the ones `fontique` enumerates, except on
-/// Android: `fontique` has no source there, so
-/// `android_fonts::platform_font_context` scans the platform font
-/// directories instead. The application's half is the same on every target.
+/// Android: fontique's Android backend reads the deprecated
+/// `/system/etc/fonts.xml` under `/system` only and keeps a single family
+/// per script or locale, so `android_fonts::platform_font_context`
+/// registers the faces `ASystemFontIterator` enumerates, keyed by the
+/// locale the platform declares. The application's half is the same on
+/// every target.
 ///
 /// The fonts directory is `staged_fonts_dir` of the environment's required
 /// [`waterui_core::ResourceContext`] and is never probed from the process's
@@ -302,7 +310,7 @@ pub fn native_collection(env: &waterui_core::Environment) -> FontCollection {
     let root = staged_fonts_dir(waterui_core::ResourceContext::from_environment(env));
     let mut resource_fonts = ResourceFontFamilies::default();
     #[cfg(target_os = "android")]
-    let mut font_cx = super::android_fonts::platform_font_context(&mut resource_fonts);
+    let mut font_cx = super::android_fonts::platform_font_context();
     #[cfg(not(target_os = "android"))]
     let mut font_cx = parley::FontContext::new();
     if root.is_dir() {

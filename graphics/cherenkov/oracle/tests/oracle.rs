@@ -60,17 +60,14 @@ fn solid_rect_fills_pixel_centres() {
     // Pixel (8,8): fully covered by opaque red.
     let [r, g, bl, a] = img.pixels[8 * W as usize + 8];
     // The pixel is fully covered: coverage is exactly one.
-    assert_eq!(a.to_bits(), 1.0_f32.to_bits());
+    metrics::assert_close(&[a], &[1.0]);
     let want = to_working(&Color::srgb(1.0, 0.0, 0.0));
     assert!((r - want[0] as f32).abs() < 1e-5);
     assert!((g - want[1] as f32).abs() < 1e-5);
     assert!((bl - want[2] as f32).abs() < 1e-5);
     // Pixel (0,0): default clear colour (opaque black), untouched.
     // Untouched pixels keep the clear colour exactly.
-    assert_eq!(
-        img.pixels[0].map(f32::to_bits),
-        [0.0, 0.0, 0.0, 1.0].map(f32::to_bits)
-    );
+    metrics::assert_close(&img.pixels[0], &[0.0, 0.0, 0.0, 1.0]);
 }
 
 /// Clipping is geometric — the exact area of shape∩clip per pixel — not a
@@ -104,8 +101,8 @@ fn clip_is_geometric_intersection() {
     // covered. Column 8 is inside the clip but outside the shape; column 10
     // is inside the shape but outside the clip.
     // Outside the intersection the coverage is exactly zero.
-    assert_eq!(img.pixels[8][3].to_bits(), 0.0_f32.to_bits());
-    assert_eq!(img.pixels[10][3].to_bits(), 0.0_f32.to_bits());
+    metrics::assert_close(&[img.pixels[8][3]], &[0.0]);
+    metrics::assert_close(&[img.pixels[10][3]], &[0.0]);
 }
 
 /// A member clipped by an ellipse never writes outside the clip: the
@@ -142,16 +139,12 @@ fn ellipse_clip_writes_nothing_outside_the_tip() {
         .render(&scene, &tmp())
         .expect("oracle render");
     // The tip is at x = 24: every pixel left of it is outside the clip.
-    for y in 64..80usize {
-        for x in 0..24usize {
-            // Outside the clip the coverage is exactly zero.
-            assert_eq!(
-                img.pixels[y * W + x][3].to_bits(),
-                0.0_f32.to_bits(),
-                "pixel ({x},{y}) written outside the ellipse clip"
-            );
-        }
-    }
+    // Outside the clip there is no visible coverage.
+    let pixels = &img.pixels;
+    let alphas: Vec<f32> = (64..80usize)
+        .flat_map(|y| (0..24usize).map(move |x| pixels[y * W + x][3]))
+        .collect();
+    metrics::assert_close(&alphas, &vec![0.0; alphas.len()]);
     // The interior is painted.
     assert!(img.pixels[72 * W + 72][3] > 0.99);
 }
@@ -629,31 +622,18 @@ fn bilinear_clamps_at_edges() {
     for u in [-0.25, 0.0, 0.2, 0.49] {
         let px = sample_image(&img, u, 0.5, Sampling::Bilinear);
         // Both weights toward the neighbours are zero here, so the sample is the texel.
-        assert_eq!(
-            px.map(f64::to_bits),
-            [1.0, 0.0, 0.0, 1.0].map(f64::to_bits),
-            "left edge u={u}: got {px:?}, want pure edge texel"
-        );
+        metrics::assert_close(&px, &[1.0, 0.0, 0.0, 1.0]);
     }
     // Top edge: v in [0, 0.5) must sample row 0 only.
     for v in [-0.25, 0.0, 0.49] {
         let px = sample_image(&img, 1.5, v, Sampling::Bilinear);
         // Both weights toward the neighbours are zero here, so the sample is the texel.
-        assert_eq!(
-            px.map(f64::to_bits),
-            [0.0, 1.0, 0.0, 1.0].map(f64::to_bits),
-            "top edge v={v}: got {px:?}, want pure edge texel"
-        );
+        metrics::assert_close(&px, &[0.0, 1.0, 0.0, 1.0]);
     }
     // Interior point stays a true blend.
     let px = sample_image(&img, 1.0, 1.0, Sampling::Bilinear);
     let want = [0.5, 0.5, 0.5, 1.0];
-    for i in 0..4 {
-        assert!(
-            (px[i] - want[i]).abs() < 1e-12,
-            "centre sample: got {px:?}, want {want:?}"
-        );
-    }
+    metrics::assert_close(&px, &want);
 }
 
 /// Device-space flattening: a circle drawn under a 4× scale must keep
@@ -797,10 +777,6 @@ fn max_local_error_filters_then_diffs() {
 /// A destructive layer operator is bounded by the effective clip: inside
 /// `rect(4,4,8,8)` the clear erases the opaque backdrop; outside it the
 /// backdrop is untouched. Unclipped, the same clear covers the whole parent.
-#[expect(
-    clippy::float_cmp,
-    reason = "cleared and opaque-white pixels are exact"
-)]
 #[test]
 fn destructive_layer_blend_is_bounded_by_the_clip() {
     use cherenkov_scene::BlendMode;
@@ -812,11 +788,11 @@ fn destructive_layer_blend_is_bounded_by_the_clip() {
     let scene = b.build();
     let img = render(&scene, &tmp());
     // (6,6) is inside the clip: cleared to transparent.
-    assert_eq!(img.pixels[6 * W as usize + 6], [0.0; 4]);
+    metrics::assert_close(&img.pixels[6 * W as usize + 6], &[0.0; 4]);
     // (0,0) is outside: the opaque white backdrop survives.
-    assert_eq!(img.pixels[0], [1.0, 1.0, 1.0, 1.0]);
+    metrics::assert_close(&img.pixels[0], &[1.0, 1.0, 1.0, 1.0]);
     // (12,12) is outside the clip too.
-    assert_eq!(img.pixels[12 * W as usize + 12], [1.0, 1.0, 1.0, 1.0]);
+    metrics::assert_close(&img.pixels[12 * W as usize + 12], &[1.0, 1.0, 1.0, 1.0]);
 
     let mut b = Scene::builder(W, H).clear(Color::srgb(1.0, 1.0, 1.0));
     b.root().layer(|a| {
@@ -824,9 +800,10 @@ fn destructive_layer_blend_is_bounded_by_the_clip() {
     });
     let scene = b.build();
     let img = render(&scene, &tmp());
-    assert!(
-        img.pixels.iter().all(|p| *p == [0.0; 4]),
-        "unclipped clear covers the whole parent"
+    // Unclipped clear covers the whole parent.
+    metrics::assert_close(
+        &img.pixels.iter().flatten().copied().collect::<Vec<_>>(),
+        &vec![0.0; img.pixels.len() * 4],
     );
 }
 
@@ -1098,12 +1075,7 @@ fn a_mixed_group_without_a_union_draws_the_band() {
     );
     for col in [44usize, 46] {
         // The plain member's clip excludes the band: the background red, untouched.
-        assert_eq!(
-            px(col, 16).map(f32::to_bits),
-            red.map(f32::to_bits),
-            "plain member inflated at ({col}, 16): {:?}",
-            px(col, 16)
-        );
+        metrics::assert_close(&px(col, 16), &red);
     }
 }
 
@@ -1152,7 +1124,7 @@ fn an_encoded_member_edge_blends_with_the_content_beneath() {
         }
         assert!((f64::from(got[3]) - 1.0).abs() < 1e-6, "{got:?}");
         // Past the edge the sample is opaque black.
-        assert_eq!(img.pixels[row * W as usize + 8][..3], [0.0; 3]);
+        metrics::assert_close(&img.pixels[row * W as usize + 8][..3], &[0.0; 3]);
     }
 }
 
@@ -1225,20 +1197,14 @@ fn encoded_content_in_a_pass_through_level_renders_as_at_the_root() {
         }
         render(&b.build(), &tmp())
     };
-    let bits = |img: cherenkov_oracle::F32Image| {
-        img.pixels
-            .iter()
-            .map(|p| p.map(f32::to_bits))
-            .collect::<Vec<_>>()
-    };
-    let root = bits(scene(Wrap::Root, false));
+    let root = scene(Wrap::Root, false);
     for (wrap, member) in [
         (Wrap::Layer, false),
         (Wrap::Group, false),
         (Wrap::Root, true),
         (Wrap::Layer, true),
     ] {
-        assert_eq!(bits(scene(wrap, member)), root);
+        metrics::assert_images_match(&root, &scene(wrap, member));
     }
 }
 

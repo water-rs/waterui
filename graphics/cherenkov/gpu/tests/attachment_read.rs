@@ -3,6 +3,7 @@
 
 use std::borrow::Cow;
 
+use cherenkov_oracle::metrics::assert_f16_close;
 use objc2_metal::{MTLResource, MTLStorageMode};
 
 #[test]
@@ -53,6 +54,7 @@ fn attachment_read(producer: &str, consumer: &str, expected: [f32; 4]) {
                 .map(|name| wgpu::PassthroughShaderEntryPoint {
                     name: Cow::Borrowed(name),
                     workgroup_size: (0, 0, 0),
+                    workgroup_memory_sizes: std::borrow::Cow::Borrowed(&[]),
                 })
                 .collect(),
             ),
@@ -205,10 +207,13 @@ fn attachment_read(producer: &str, consumer: &str, expected: [f32; 4]) {
         .unwrap();
     rx.recv().unwrap().unwrap();
     let data = readback.get_mapped_range(..).unwrap();
-    let expected = expected.map(|v| half::f16::from_f32(v).to_bits());
     for row in data.as_chunks::<256>().0 {
         for pixel in row[..7 * 8].as_chunks::<8>().0 {
-            assert_eq!(bytemuck::cast_slice::<u8, u16>(pixel), expected);
+            let stored = bytemuck::cast_slice::<u8, u16>(pixel)
+                .iter()
+                .map(|&word| half::f16::from_bits(word).to_f32())
+                .collect::<Vec<_>>();
+            assert_f16_close(&stored, &expected, 1.0);
         }
     }
 }

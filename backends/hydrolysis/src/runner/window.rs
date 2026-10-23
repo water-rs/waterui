@@ -2,6 +2,8 @@
 //! scene rebuild/refresh/render phases, and input-event dispatch.
 
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::animation::PerpetualAnimation;
 use crate::platform::{GpuSurfaceWindow, PresentationSurface as _};
 use crate::renderer::material::{Blending, WithinWindowLevel};
 #[cfg(any(target_os = "android", test))]
@@ -35,6 +37,19 @@ pub(super) enum FrameMode {
 impl FrameMode {
     pub(super) const fn is_pending(self) -> bool {
         !matches!(self, Self::Idle)
+    }
+
+    /// [`Self::is_pending`] under a quiescence query that may ignore
+    /// repeat-forever animations. `Animate` frames are scheduled only by an
+    /// animation tick, and every animation other than a perpetual one is
+    /// counted separately by the renderer's own scheduled-work query, so when
+    /// perpetual animation is ignored only `Refresh` remains pending.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) const fn is_pending_with(self, perpetual: PerpetualAnimation) -> bool {
+        match perpetual {
+            PerpetualAnimation::Counts => self.is_pending(),
+            PerpetualAnimation::Ignored => self.is_unapplied_change(),
+        }
     }
 
     /// Whether the scheduled frame exists to apply an unapplied semantic
@@ -1126,6 +1141,7 @@ crate::engine::cfg_async_fn! {
     let format = surface.format();
     let output_alpha = surface.output_alpha();
     let context = surface.device_loss().gpu_context();
+    let context_id = context.context_id;
     // The engine renders into its own retained output before the swapchain
     // image is acquired: the render awaits the GPU device on wasm32, and a
     // browser expires a canvas texture when the task that acquired it ends,
@@ -1138,7 +1154,7 @@ crate::engine::cfg_async_fn! {
             device: surface.device(),
             queue: surface.queue(),
             device_loss: surface.device_loss().clone(),
-            gpu_context_id: context.context_id,
+            gpu_context_id: context_id,
             shared_device: context.shared_device.clone(),
             display_scale,
             width,
@@ -1170,7 +1186,7 @@ crate::engine::cfg_async_fn! {
         // The timestamp resolve blocks until the frame's submits finish — the
         // headless frame's "present wait", kept separate from the CPU submit
         // time `render` measures.
-        renderer.finish_gpu_frame_profile(context.context_id, surface.device(), surface.queue());
+        renderer.finish_gpu_frame_profile(context_id, surface.device(), surface.queue());
     }
     #[cfg(not(target_arch = "wasm32"))]
     let snapshot = {

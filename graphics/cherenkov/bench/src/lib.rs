@@ -11,7 +11,7 @@
 //! |---------|-------|-------|---------------|
 //! | `vello-cpu` | `vello_cpu` | CPU raster (`f32` pipeline) | rgba8 premul pixmap |
 //! | `vello-classic` | `vello` | wgpu (Vulkan/Metal/D3D12) | `Rgba8Unorm`/`Bgra8Unorm` texture, picked from queried capabilities |
-//! | `vello-hybrid` | `vello_hybrid` | CPU strips + wgpu colour pass | `Rgba8Unorm`/`Bgra8Unorm` texture, picked from queried capabilities |
+//! | `vello-hybrid` | `vello_gpu` | CPU strips + wgpu colour pass | `Rgba8Unorm`/`Bgra8Unorm` texture, picked from queried capabilities |
 //! | `skia-cpu` | `skia-safe` | CPU raster (`SkRasterPipeline`) | `RGBAF16` premul surface, linear-P3 colours |
 //! | `skia-vulkan` | `skia-safe` | Ganesh/Vulkan | `RGBAF16` premul surface, linear-P3 colours |
 //! | `skia-metal` | `skia-safe` | Graphite/Metal | `RGBAF16` premul render target, linear-P3 colours |

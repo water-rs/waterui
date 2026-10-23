@@ -383,6 +383,16 @@ pub trait CapturableSurface {
     fn begin_capture_suppression(&self);
     /// Resumes the surface's presentation.
     fn end_capture_suppression(&self);
+    /// Whether the surface's own presentation can put a frame in front of
+    /// the user right now — the window-level half of `canPresentNow`: a
+    /// surface inside a window that cannot present (never ordered in,
+    /// occluded, scene-less, or not attached to a window at all) answers
+    /// `false` no matter its own bounds. A `false` answer joins the
+    /// surface to the capture's external rendering even while its bounds
+    /// give it no [`SurfaceSpec`] — a zero-size surface included — so its
+    /// redraw requests reach the capture's drive instead of dying on a
+    /// presentation path that can never run.
+    fn can_present(&self) -> bool;
     /// Redirects the surface's redraw requests to `on_redraw`; while
     /// external, the surface presents nowhere itself.
     fn begin_external_rendering(&self, on_redraw: Rc<dyn Fn()>);
@@ -1298,6 +1308,14 @@ struct CapturedSnapshot {
     surface: Rc<dyn CapturableSurface>,
 }
 
+/// A resolved surface the capture joins without a spec — its id and the
+/// surface it came from. Kept for redraw routing only: it renders
+/// nothing this pass, so it enters `active` but never `Preparation`.
+struct CapturedSurface {
+    surface_id: usize,
+    surface: Rc<dyn CapturableSurface>,
+}
+
 /// One live external-render registration: a surface whose
 /// `begin_external_rendering` has been paired once. The `Rc` is held by
 /// the capture's `active` map AND by every outstanding `Preparation`
@@ -1613,7 +1631,20 @@ impl ViewCapture {
 
     /// The redraw hook external surfaces call — installed by the owning
     /// effect view before any capture runs.
+    ///
+    /// A surface binds the hook when it joins and keeps it for its whole
+    /// external-rendering scope, so the hook is fixed once one has joined:
+    /// an owner whose redraw answer changes dispatches inside its hook.
+    ///
+    /// # Panics
+    ///
+    /// When a surface has already joined this capture — a replacement
+    /// would never reach it, stranding its redraws on the old hook.
     pub fn set_on_redraw(&self, redraw: impl Fn() + 'static) {
+        assert!(
+            self.active.borrow().is_empty(),
+            "a view capture's redraw hook is fixed once a surface has joined"
+        );
         *self.on_redraw.borrow_mut() = Some(Rc::new(redraw));
     }
 
@@ -1765,8 +1796,8 @@ impl ViewCapture {
                 target.height(),
                 crate::view::is_flipped(content),
             );
-            let snapshots = self.collect_snapshots(target, geometry);
-            self.update_external_surfaces(&snapshots);
+            let (snapshots, unpresentable) = self.collect_snapshots(target, geometry);
+            self.update_external_surfaces(&snapshots, &unpresentable);
             // The registrations this capture owns — the immutable
             // snapshot of who must stay external until its frame
             // settles.
@@ -1827,21 +1858,29 @@ impl ViewCapture {
         crate::view::set_hidden(&self.content, hidden);
     }
 
-    /// The surface snapshot list for one capture.
+    /// The surface collection for one capture: the rendered snapshots
+    /// plus the surfaces the capture must still join for redraw routing —
+    /// resolved capturables whose bounds produced no spec this pass and
+    /// that cannot present on their own. A windowless capture's zero-size
+    /// image surface is the case: its redraws would otherwise die on a
+    /// presentation path that never runs, so it joins the scope like a
+    /// spec'd surface and wakes the capture's drive.
     fn collect_snapshots(
         &self,
         target: &ProtocolObject<dyn MTLTexture>,
         geometry: CaptureGeometry,
-    ) -> Vec<CapturedSnapshot> {
+    ) -> (Vec<CapturedSnapshot>, Vec<CapturedSurface>) {
         let mut snapshots = Vec::new();
+        let mut unpresentable = Vec::new();
         self.collect_into(
             &self.content,
             &mut snapshots,
+            &mut unpresentable,
             geometry,
             target.width(),
             target.height(),
         );
-        snapshots
+        (snapshots, unpresentable)
     }
 
     /// Recursion over `view`'s subviews through [`walk_capturables`]:
@@ -1850,6 +1889,7 @@ impl ViewCapture {
         &self,
         view: &PlatformView,
         snapshots: &mut Vec<CapturedSnapshot>,
+        unpresentable: &mut Vec<CapturedSurface>,
         geometry: CaptureGeometry,
         target_width: usize,
         target_height: usize,
@@ -1868,41 +1908,55 @@ impl ViewCapture {
                     spec,
                     surface: surface.clone(),
                 });
+            } else if !surface.can_present() {
+                unpresentable.push(CapturedSurface {
+                    surface_id: view_key(view),
+                    surface: surface.clone(),
+                });
             }
         });
     }
 
-    /// Joins and parts external surfaces against this capture's snapshot
-    /// list.
+    /// Joins and parts external surfaces against this capture's collection:
+    /// the spec'd `snapshots` that render into the target and the
+    /// `unpresentable` surfaces kept only for their redraw routing.
     ///
     /// # Panics
     ///
     /// When [`set_on_redraw`](Self::set_on_redraw) was never called.
-    fn update_external_surfaces(&self, snapshots: &[CapturedSnapshot]) {
+    fn update_external_surfaces(
+        &self,
+        snapshots: &[CapturedSnapshot],
+        unpresentable: &[CapturedSurface],
+    ) {
         let on_redraw = self
             .on_redraw
             .borrow()
             .clone()
             .expect("a view capture's redraw hook must be installed before capture");
         let mut active = self.active.borrow_mut();
-        // One pass over the snapshot: the next registration set is built
+        // One pass over the collection: the next registration set is built
         // keyed by surface id — surviving surfaces keep their `Rc` lease,
         // parted ones drop out (their registration ends when the last
         // owner, map or outstanding capture, drops on this thread), and
         // each new surface is begun exactly once. No per-surface scan of
-        // the snapshot, so nested-GPU-child scenes stay linear.
+        // the collection, so nested-GPU-child scenes stay linear.
+        let join = |id, surface: &Rc<dyn CapturableSurface>| {
+            active.get(&id).cloned().unwrap_or_else(|| {
+                surface.begin_external_rendering(on_redraw.clone());
+                Rc::new(SurfaceRegistration {
+                    surface: surface.clone(),
+                })
+            })
+        };
         let next: HashMap<usize, Rc<SurfaceRegistration>> = snapshots
             .iter()
-            .map(|s| {
-                let id = s.spec.surface_id;
-                let registration = active.get(&id).cloned().unwrap_or_else(|| {
-                    s.surface.begin_external_rendering(on_redraw.clone());
-                    Rc::new(SurfaceRegistration {
-                        surface: s.surface.clone(),
-                    })
-                });
-                (id, registration)
-            })
+            .map(|s| (s.spec.surface_id, join(s.spec.surface_id, &s.surface)))
+            .chain(
+                unpresentable
+                    .iter()
+                    .map(|s| (s.surface_id, join(s.surface_id, &s.surface))),
+            )
             .collect();
         *active = next;
     }

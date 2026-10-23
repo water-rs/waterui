@@ -23,6 +23,7 @@
 //! let _scope = inspector.observe_signals();       // reactive graph, main thread
 //! ```
 
+use std::fmt::Write as _;
 use std::io;
 use std::net::TcpListener;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -234,21 +235,18 @@ const fn debug_host() -> IpAddr {
 
 /// What the launched CLI's captured output looks like in a diagnostic:
 /// the same bytes with the session token scrubbed, because a tool that
-/// echoes its own arguments would otherwise print the credential it was
-/// called with.
+/// reports the credential it was handed would otherwise print it.
 fn redacted_child_output(output: &[u8], token: &str) -> String {
     String::from_utf8_lossy(output).replace(token, "[redacted]")
 }
 
 /// A token for one process, from the system's random source.
 fn generate_token() -> String {
-    use std::fmt::Write as _;
-    use std::hash::{BuildHasher, Hasher, RandomState};
-
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).expect("the operating system must provide inspector token entropy");
     let mut token = String::with_capacity(32);
-    for _ in 0..2 {
-        let value = RandomState::new().build_hasher().finish();
-        write!(token, "{value:016x}").expect("writing to a String cannot fail");
+    for byte in bytes {
+        write!(token, "{byte:02x}").expect("writing to a String cannot fail");
     }
     token
 }
@@ -415,7 +413,7 @@ impl InspectorRuntime {
             tracing::warn!(
                 target: "waterui::inspector",
                 inspector_addr = %endpoint.addr,
-                "Could not find the `water` CLI; attach with `water inspector --target <addr> --token <token>`, or point WATERUI_CLI at the binary"
+                "Could not find the `water` CLI; attach with `WATERUI_INSPECTOR_TOKEN=<token> water inspector --target <addr>`, or point WATERUI_CLI at the binary"
             );
             return;
         };
@@ -425,8 +423,10 @@ impl InspectorRuntime {
             .arg("inspector")
             .arg("--target")
             .arg(endpoint.addr.to_string())
-            .arg("--token")
-            .arg(&endpoint.token);
+            // The credential travels in the child's environment: the CLI
+            // accepts no `--token`, because argv is readable by every
+            // process on the machine.
+            .env("WATERUI_INSPECTOR_TOKEN", &endpoint.token);
 
         // The CLI builds the inspector against the project it is inspecting, and
         // reads that project from its working directory. A launched application
@@ -837,6 +837,20 @@ mod tests {
         assert_eq!(
             super::redacted_child_output(b"", "s3cret-runtime-token"),
             ""
+        );
+    }
+
+    /// A generated token is a 128-bit credential rendered as lowercase
+    /// hex: 32 characters, each an ASCII hex digit.
+    #[test]
+    fn generated_tokens_are_128_bit_lowercase_hex() {
+        let token = super::generate_token();
+        assert_eq!(token.len(), 32, "{token}");
+        assert!(
+            token
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+            "{token}"
         );
     }
 }
