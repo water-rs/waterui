@@ -1,5 +1,6 @@
 package dev.waterui.hydrolysis
 
+import android.content.Context
 import android.util.Log
 import android.view.Choreographer
 
@@ -24,10 +25,12 @@ import android.view.Choreographer
  * The session owns the scheduler and [stop]s it when it is destroyed; a
  * stopped scheduler is inert for the rest of its life.
  */
-internal class FrameScheduler(private val session: HydrolysisSession) :
+internal class FrameScheduler(private val session: HydrolysisSession, context: Context) :
     Choreographer.FrameCallback {
 
     private val choreographer = Choreographer.getInstance()
+    private val performance = FramePerformance(context)
+
     private var posted = false
     private var deadlinePosted = false
     private var pumping = false
@@ -73,6 +76,7 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
      */
     fun stop() {
         stopped = true
+        performance.close()
         if (posted) {
             choreographer.removeFrameCallback(this)
             posted = false
@@ -83,9 +87,10 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
 
     /** Sends host demand; native combines content rates and ignores repeats. */
     private fun publishFrameDemand() {
-        session.withNativePtr(NativeBridge::nativeSetFrameDemand.name) { ptr ->
+        val rate = session.withNativePtr(NativeBridge::nativeSetFrameDemand.name) { ptr ->
             NativeBridge.nativeSetFrameDemand(ptr, pumping, touching)
         }
+        performance.setRefreshRate(rate)
     }
 
     /**
@@ -119,10 +124,12 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
      * transaction itself.
      */
     private fun pump(cause: String) {
+        val started = System.nanoTime()
         val outcome =
             session.withNativePtr(NativeBridge::nativeOnFrame.name) { ptr ->
-                NativeBridge.nativeOnFrame(ptr, System.nanoTime())
+                NativeBridge.nativeOnFrame(ptr, started)
             }
+        val elapsed = System.nanoTime() - started
         // The frame can end the session: a teardown requested inside it ran
         // as the frame returned and stopped this scheduler.
         if (stopped) return
@@ -163,6 +170,8 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
         // The native frame may change the content rate even when the pump's
         // continuous-work flag stays the same. Native demand is deduplicated.
         publishFrameDemand()
+        performance.report((outcome ushr 32).toInt(), elapsed)
+        if (!nowPumping) performance.close()
     }
 
     private companion object {

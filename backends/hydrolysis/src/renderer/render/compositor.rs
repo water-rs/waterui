@@ -87,6 +87,14 @@ impl<'a> HydrolysisRenderTarget<'a> {
 }
 
 impl HydrolysisRenderer {
+    /// The worker currently serving this Android window, absent before GPU initialization.
+    #[cfg(target_os = "android")]
+    pub(crate) fn render_thread_id(&self) -> Option<u32> {
+        self.cherenkov_window
+            .as_ref()
+            .map(|window| window.state.engine.info().render_thread_id)
+    }
+
     crate::engine::cfg_async_fn! {
         /// Renders the frame into `target`'s texture.
         ///

@@ -49,9 +49,11 @@ object NativeBridge {
      * session, and a recreation that exhausts its loss budget already
      * reaches the host as the frame call's `IllegalStateException`;
      * 17 = [nativeSetFrameDemand] separates continuous work and touch, and
-     * surface attachment carries the display's suggested ARR rates.
+     * surface attachment carries the display's suggested ARR rates; 18 =
+     * [nativeOnFrame] returns the render-worker ID in the upper 32 bits and
+     * [nativeSetFrameDemand] returns the selected content frame rate.
      */
-    private const val SCHEMA: Int = 17
+    private const val SCHEMA: Int = 18
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -157,7 +159,8 @@ object NativeBridge {
     /**
      * The frame transaction. Returns a bitmask: 1 = wants another vsync frame,
      * 2 = window requested close, 4 = a fallback deadline is available through
-     * [nativeFrameDeadlineInNanos].
+     * [nativeFrameDeadlineInNanos]. The upper 32 bits contain the render-worker
+     * thread ID, or zero before GPU initialization.
      */
     @JvmStatic external fun nativeOnFrame(sessionPtr: Long, vsyncNanos: Long): Long
 
@@ -201,7 +204,7 @@ object NativeBridge {
      * range on the native side. The demand survives surface re-creation.
      */
     @JvmStatic
-    external fun nativeSetFrameDemand(sessionPtr: Long, continuous: Boolean, touching: Boolean)
+    external fun nativeSetFrameDemand(sessionPtr: Long, continuous: Boolean, touching: Boolean): Float
 
     /**
      * One system-back phase. `phase` is a `BACK_*` constant. `edge` is

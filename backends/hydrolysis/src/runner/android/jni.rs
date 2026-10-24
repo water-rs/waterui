@@ -63,7 +63,9 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// already reaches Kotlin as the frame call's `IllegalStateException`;
 /// 17 = `nativeSetFrameDemand` separates continuous work and touch demand,
 /// and surface attachment supplies the display's suggested ARR rates.
-pub const JNI_SCHEMA: jint = 17;
+/// 18 = frame outcomes carry the Android render-worker ID in their upper word;
+/// frame-demand updates return the selected content frame rate.
+pub const JNI_SCHEMA: jint = 18;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -521,7 +523,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeOnFrame<'l
 ) -> jlong {
     guard_val(&mut env, 0, |_env| {
         let outcome = session(session_ptr).on_frame();
-        let mut bits: jlong = 0;
+        let mut bits = i64::from(outcome.render_thread_id.unwrap_or(0)) << 32;
         if outcome.wants_next_frame {
             bits |= 1;
         }
@@ -658,12 +660,12 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetFrameDe
     session_ptr: jlong,
     continuous: jboolean,
     touching: jboolean,
-) {
-    guard(&mut env, |_env| {
+) -> jfloat {
+    guard_val(&mut env, 0.0, |_env| {
         session(session_ptr)
             .set_frame_demand(continuous, touching)
             .map_err(JniError)
-    });
+    })
 }
 
 // ---------------------------------------------------------------------------

@@ -60,12 +60,12 @@ class SessionTeardownTest {
     @Test
     fun aDelayedWakeReleasesHighRefreshUnlessTouchIsHeld() {
         val session = HydrolysisSession(context, onCloseRequested = {})
-        val scheduler = FrameScheduler(session)
-        ShadowNativeBridge.onFrame = { WANTS_NEXT_FRAME }
+        val scheduler = FrameScheduler(session, context)
+        ShadowNativeBridge.onFrame = { WANTS_NEXT_FRAME or (123L shl 32) }
         scheduler.pumpNow("test")
         assertEquals(listOf(true), ShadowNativeBridge.highRefreshDemands)
 
-        ShadowNativeBridge.onFrame = { HAS_DEADLINE }
+        ShadowNativeBridge.onFrame = { HAS_DEADLINE or (123L shl 32) }
         ShadowNativeBridge.deadlineNanos = Duration.ofSeconds(10).toNanos()
         shadowOf(Looper.getMainLooper()).idleFor(FRAME_WINDOW)
         assertEquals(listOf(true, false), ShadowNativeBridge.highRefreshDemands)
@@ -652,9 +652,10 @@ class ShadowNativeBridge {
 
         @JvmStatic
         @Implementation
-        fun nativeSetFrameDemand(sessionPtr: Long, continuous: Boolean, touching: Boolean) {
+        fun nativeSetFrameDemand(sessionPtr: Long, continuous: Boolean, touching: Boolean): Float {
             assertLive(sessionPtr)
             highRefreshDemands += continuous || touching
+            return 0f // These session tests do not attach a GPU surface.
         }
 
         @JvmStatic

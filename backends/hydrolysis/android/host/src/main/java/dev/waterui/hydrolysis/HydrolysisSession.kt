@@ -68,7 +68,7 @@ class HydrolysisSession internal constructor(
      * drives — a view-owned scheduler outlives a replaced view and can
      * still hold a posted frame for a session destroyed later.
      */
-    internal val frameScheduler: FrameScheduler = FrameScheduler(this)
+    internal val frameScheduler: FrameScheduler = FrameScheduler(this, context.applicationContext)
 
     /**
      * Runs [block] with the native session pointer for the JNI entry named

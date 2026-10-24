@@ -676,6 +676,8 @@ impl Drop for ExecutorWake {
 /// Outcome of one frame transaction, decoded by the Kotlin scheduler.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameOutcome {
+    /// Worker used by this frame; zero on the JNI edge means no GPU worker yet.
+    pub(crate) render_thread_id: Option<u32>,
     /// The engine wants another vsync-aligned frame (animations, pending
     /// refresh, a redraw request consumed this pass). False means the window
     /// goes fully idle — no callbacks, no CPU or GPU work.
@@ -1171,6 +1173,7 @@ impl AndroidSession {
             "frame outcome"
         );
         FrameOutcome {
+            render_thread_id: self.runtime.renderer.render_thread_id(),
             wants_next_frame,
             deadline_in_nanos,
             should_close,
@@ -1261,7 +1264,7 @@ impl AndroidSession {
         &mut self,
         continuous: bool,
         touching: bool,
-    ) -> Result<(), String> {
+    ) -> Result<f32, String> {
         let visible = !self.runtime.is_hidden();
         let engine = match &self.runtime.engine_next {
             cherenkov::Next::At { rate, .. } if visible => Some(rate.clone()),

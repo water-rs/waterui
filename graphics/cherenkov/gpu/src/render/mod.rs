@@ -2935,6 +2935,10 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         Ok((
             renderer,
             GpuInfo {
+                // SAFETY: gettid only reads the calling thread identity.
+                #[cfg(target_os = "android")]
+                render_thread_id: u32::try_from(unsafe { libc::gettid() })
+                    .expect("Android thread IDs are positive"),
                 name: info.name,
                 backend: format!("{:?}", info.backend),
                 vendor: info.vendor,

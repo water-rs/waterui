@@ -488,12 +488,18 @@ impl AndroidSurface {
 
     /// Holds content and interaction demand across attachments. An unchanged
     /// demand does not repeat the platform call.
-    pub(crate) fn set_refresh_demand(&mut self, demand: RefreshDemand) -> Result<(), GpuError> {
-        if self.refresh_demand == demand {
-            return Ok(());
+    pub(crate) fn set_refresh_demand(&mut self, demand: RefreshDemand) -> Result<f32, GpuError> {
+        if self.refresh_demand != demand {
+            self.refresh_demand = demand;
+            self.apply_frame_rate()?;
         }
-        self.refresh_demand = demand;
-        self.apply_frame_rate()
+        Ok(self.requested_frame_rate())
+    }
+
+    fn requested_frame_rate(&self) -> f32 {
+        self.native_window
+            .as_ref()
+            .map_or(0.0, |lease| lease.refresh.requested(&self.refresh_demand))
     }
 
     /// Writes the held demand onto the live native window. Between
@@ -504,7 +510,7 @@ impl AndroidSurface {
         let Some(lease) = self.native_window.as_ref() else {
             return Ok(());
         };
-        let rate = lease.refresh.requested(&self.refresh_demand);
+        let rate = self.requested_frame_rate();
         // `ANativeWindow_setFrameRate` is API 30. The framework floor is API
         // 31, so the symbol is a direct link, not a run-time lookup.
         lease
