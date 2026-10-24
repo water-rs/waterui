@@ -291,7 +291,12 @@ pub fn pan(
     handler: impl Fn(GestureState, &UIPanGestureRecognizer) + 'static,
 ) -> GestureAttachment {
     let mtm = view.mtm();
-    attach(view, UIPanGestureRecognizer::new(mtm), Some(buttons), handler)
+    attach(
+        view,
+        UIPanGestureRecognizer::new(mtm),
+        Some(buttons),
+        handler,
+    )
 }
 
 /// A pinch recognizer on `view`.
