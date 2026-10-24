@@ -169,10 +169,7 @@ impl RenderNode {
                 let alignment = renderer.read_signal(&text.alignment);
                 TextNode::emit_accessibility(renderer, Some(ctx), &styled, env);
                 renderer.pop_render_owner();
-                let (state, scene) = renderer.state_and_run_mut();
-                HydrolysisRenderer::render_styled_text_limited(
-                    state,
-                    scene,
+                renderer.render_styled_text_limited(
                     ctx,
                     styled,
                     alignment,

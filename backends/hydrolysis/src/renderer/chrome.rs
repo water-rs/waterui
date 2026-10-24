@@ -22,6 +22,8 @@ use waterui_core::animation::Animation;
 use waterui_core::interaction::InteractionState;
 use waterui_graphics::animation::engine_animation;
 
+use crate::renderer::recording::{LoweredResources, SceneResources};
+
 use crate::theme::{
     Chrome, Elevation, FocusIndicator, InteractionMotion, MAX_PRESS_WAVES, PressFeedback, Ripple,
 };
@@ -29,15 +31,24 @@ use crate::theme::{
 /// Content a node's program lists as a live item: recorded once into its
 /// own engine layer and kept while the program lists the same source.
 ///
-/// A source's recording reads its operands as signals, so what changes
-/// afterwards reaches the engine through those signals, never through
-/// another recording. The mount re-records a source only when the program
-/// lists a different one in its place, or when the node mounts on a new
-/// engine surface.
+/// A source may contain fixed commands or operands read as signals. Signal
+/// updates reach the engine without another recording. The mount re-records
+/// only when the program lists a different source in its place, or when the
+/// node mounts on a new engine surface.
 pub trait LiveSource {
     /// Records the source's commands into `recorder`, in the record space of
-    /// the item's transform.
-    fn record(&self, recorder: &mut Recorder);
+    /// the item's transform. Returned registrations stay alive with the
+    /// installed content, including while its retirement is pending.
+    fn record(
+        &self,
+        recorder: &mut Recorder,
+        resources: &SceneResources,
+    ) -> Option<LoweredResources>;
+
+    /// Fixed content available to scene inspection, when this source owns a recording.
+    fn recording(&self) -> Option<&crate::renderer::recording::Recording> {
+        None
+    }
 }
 
 /// A value a recording reads live: a signal that carries the animation each
@@ -122,12 +133,17 @@ impl LiveCaret {
 }
 
 impl LiveSource for LiveCaret {
-    fn record(&self, recorder: &mut Recorder) {
+    fn record(
+        &self,
+        recorder: &mut Recorder,
+        _resources: &SceneResources,
+    ) -> Option<LoweredResources> {
         recorder.clip(self.clip.live(), |recorder| {
             recorder.group(self.group.live(), |recorder| {
                 recorder.fill(self.rect.live(), self.paint.live());
             });
         });
+        None
     }
 }
 
@@ -484,13 +500,18 @@ struct ChromeSource {
 }
 
 impl LiveSource for ChromeSource {
-    fn record(&self, recorder: &mut Recorder) {
+    fn record(
+        &self,
+        recorder: &mut Recorder,
+        _resources: &SceneResources,
+    ) -> Option<LoweredResources> {
         #[cfg(test)]
         self.chrome.recordings.set(self.chrome.recordings.get() + 1);
         match self.half {
             Half::Below => self.chrome.record_below(recorder),
             Half::Above => self.chrome.record_above(recorder),
         }
+        None
     }
 }
 

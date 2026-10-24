@@ -1525,10 +1525,7 @@ impl HydrolysisRenderer {
                         kurbo::Affine::translate((text_rect.x0, text_rect.y0)),
                         kurbo::Rect::new(0.0, 0.0, text_rect.width(), text_rect.height()),
                     );
-                    let (state, scene) = self.state_and_run_mut();
-                    Self::render_styled_text(
-                        state,
-                        scene,
+                    self.render_styled_text(
                         ctx,
                         StyledStr::plain(plain_label.clone()),
                         HorizontalAlignment::Leading,

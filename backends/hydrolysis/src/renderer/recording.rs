@@ -1373,6 +1373,20 @@ impl Recording {
     }
 }
 
+impl crate::renderer::chrome::LiveSource for Recording {
+    fn record(
+        &self,
+        recorder: &mut Recorder,
+        resources: &SceneResources,
+    ) -> Option<LoweredResources> {
+        Some(self.record_on(recorder, resources))
+    }
+
+    fn recording(&self) -> Option<&Recording> {
+        Some(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use kurbo::Point;

@@ -240,16 +240,17 @@ fn flush_window_tree_reuses_retained_tree() {
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(view, &env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     renderer.finish_rebuild_frame();
+    assert!(renderer.commit_mirror().scene_layers > 0);
 
-    // A geometry-static frame re-flushes the retained tree without rebuilding it.
-    // `flush_window_tree` does full frame management (reset + flush + move the
-    // scene into the compositor's layer stack), so verify a scene segment resulted.
+    // A geometry-static flush keeps the mounted text and widget content.
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "a retained tree must be present to flush");
-    let scene_layers = renderer.commit_mirror().scene_segments;
-    assert!(
-        scene_layers > 0,
-        "re-flushing the retained tree must produce a scene segment layer"
+    let stats = renderer.commit_mirror();
+    assert!(stats.scene_layers > 0, "retained content remains mounted");
+    assert_eq!(stats.created, 0, "the flush reuses its layers");
+    assert_eq!(
+        stats.live_records, 0,
+        "unchanged sources are not recorded again"
     );
 }
 

@@ -115,13 +115,21 @@ fn secondary_click(x: f32, y: f32) -> [InputEvent; 2] {
 }
 
 fn runtime_with(view: impl View) -> HeadlessRuntime {
+    runtime_with_on(
+        view,
+        crate::platform::OffscreenGpuContext::new_for_tests_blocking(),
+    )
+}
+
+fn runtime_with_on(view: impl View, gpu: crate::platform::OffscreenGpuContext) -> HeadlessRuntime {
     let view = RefCell::new(Some(AnyView::new(view)));
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         view.borrow_mut()
             .take()
             .expect("the fixture view is built once")
     });
-    HeadlessRuntime::new_for_tests(
+    HeadlessRuntime::new_for_tests_on_context(
+        gpu,
         pumped_test_environment(),
         builder,
         WINDOW,
@@ -721,4 +729,40 @@ fn live_colour_updates_without_layout_or_recording() {
     assert_eq!(work.recorded_view_contents, 0);
     assert_eq!(work.layer_creations, 0);
     assert_eq!(work.layer_removals, 0);
+}
+
+#[test]
+fn short_text_signal_repaints_only_its_changed_region() {
+    let value = Binding::container(10u32);
+    let label = value.clone();
+    let (gpu, diagnostics, _state) = super::diagnostic_gpu();
+    let mut runtime = runtime_with_on(
+        vstack((
+            text("Unchanged heading"),
+            waterui::text!("{label}", label = label),
+            text("Unchanged footer"),
+        )),
+        gpu,
+    );
+    let mut frames = Frames::new();
+    let (_, mut before) = frames.render(&mut runtime);
+    super::structural_transitions::save(&before, "text-damage", "initial");
+    let _ = diagnostics.take();
+    for number in [11, 12] {
+        value.set(number);
+        let (_, after) = frames.render(&mut runtime);
+        let reports = diagnostics.take();
+        assert!(!reports.is_empty(), "text update must reach the engine");
+        let pixels: u64 = reports.iter().map(|report| report.repaint_pixels).sum();
+        assert!(
+            pixels > 0 && pixels < u64::from(WINDOW) * u64::from(WINDOW) / 20,
+            "short text update repainted {pixels} pixels"
+        );
+        assert_ne!(
+            before.rgba8, after.rgba8,
+            "text update must change the image"
+        );
+        super::structural_transitions::save(&after, "text-damage", &number.to_string());
+        before = after;
+    }
 }

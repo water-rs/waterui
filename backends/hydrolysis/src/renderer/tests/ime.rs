@@ -234,22 +234,7 @@ fn form_runtime_on(
 
 #[test]
 fn caret_blink_reuses_recording_without_layout() {
-    let gpu = crate::platform::OffscreenGpuContext::new_for_tests_blocking();
-    let probe = crate::platform::OffscreenSurface::on_context(
-        gpu.clone(),
-        1,
-        1,
-        wgpu::TextureFormat::Rgba8UnormSrgb,
-    );
-    let context = probe.device_loss().gpu_context();
-    let diagnostics = cherenkov_gpu::composition::Sink::new();
-    let engine = crate::engine::GpuEngine::new(cherenkov_gpu::GpuConfig {
-        device: Some(context.shared_device.clone()),
-        composition_diag: Some(diagnostics.clone()),
-        ..cherenkov_gpu::GpuConfig::default()
-    })
-    .expect("diagnostic engine");
-    let _state = crate::engine::SharedEngineState::register(context.context_id, Rc::new(engine));
+    let (gpu, diagnostics, _state) = super::diagnostic_gpu();
     let (mut runtime, _value, _submitted) = form_runtime_on(gpu);
     let start = runtime.renderer().frame_instant() + Duration::from_millis(16);
     let initial = runtime
