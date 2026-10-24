@@ -381,7 +381,7 @@ fn sample_rows(
                         );
                         for py in first..last {
                             for px in x0..x1 {
-                                if clip_cov(clip, w, px, py) <= 0.0 {
+                                if clip_cov(clip.as_ref(), w, px, py) <= 0.0 {
                                     continue;
                                 }
                                 let (field, coverage) =
@@ -707,7 +707,7 @@ fn shadow_edge<S: Simd>(
     py: usize,
     cx: f32,
     inv_sqrt2_sigma: f32,
-    clip_mask: Option<ClipCoverage<'_>>,
+    clip_mask: Option<&ClipCoverage<'_>>,
     color: &[f32; 4],
     space: cherenkov::BlendSpace,
     from: usize,
@@ -832,7 +832,7 @@ impl ClipScratch {
     clippy::cast_sign_loss,
     reason = "clip rect edges are clamped non-negative before indexing"
 )]
-fn clip_cov(clip: Option<ClipCoverage<'_>>, w: usize, px: usize, py: usize) -> f32 {
+fn clip_cov(clip: Option<&ClipCoverage<'_>>, w: usize, px: usize, py: usize) -> f32 {
     match clip {
         None => 1.0,
         Some(ClipCoverage::Rect(r)) => f32::from(
@@ -1321,7 +1321,7 @@ impl<'a> ClipRun<'a> {
         clippy::cast_sign_loss,
         reason = "rectangle edges are clamped non-negative"
     )]
-    pub fn new(clip: Option<ClipCoverage<'a>>, w: usize, x0: usize, py: usize) -> Self {
+    pub fn new(clip: Option<&ClipCoverage<'a>>, w: usize, x0: usize, py: usize) -> Self {
         let span = match clip {
             None => ClipSpan::Full,
             Some(ClipCoverage::Rect(rect)) => {
@@ -1682,7 +1682,7 @@ fn shade_run<S: Simd>(
     py: usize,
     w: usize,
     paint: &PaintData,
-    clip: Option<ClipCoverage<'_>>,
+    clip: Option<&ClipCoverage<'_>>,
     space: cherenkov::BlendSpace,
     src: &mut [MaybeUninit<[f32; 4]>],
 ) {
@@ -2447,7 +2447,15 @@ fn run<S: Simd>(
                     acc,
                     ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
                 );
-                band.draw(simd, acc, stack, (edges, *offset), *bbox, paint, clip);
+                band.draw(
+                    simd,
+                    acc,
+                    stack,
+                    (edges, *offset),
+                    *bbox,
+                    paint,
+                    clip.as_ref(),
+                );
             }
             Item::PushIsolate { space } => stack.push(Plane {
                 buf: buffers.take_color(slice_len(band.w, bh)),
@@ -2466,13 +2474,15 @@ fn run<S: Simd>(
                     plane.space,
                     *opacity,
                     *blend,
-                    clips.prepare(
-                        clip.as_ref(),
-                        band.y0..band.y0 + bh,
-                        band.w,
-                        acc,
-                        ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
-                    ),
+                    clips
+                        .prepare(
+                            clip.as_ref(),
+                            band.y0..band.y0 + bh,
+                            band.w,
+                            acc,
+                            ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                        )
+                        .as_ref(),
                     stack,
                 );
                 buffers.give_color(plane.buf);
@@ -2554,13 +2564,15 @@ fn run<S: Simd>(
                     *space,
                     *opacity,
                     *blend,
-                    clips.prepare(
-                        clip.as_ref(),
-                        band.y0..band.y0 + bh,
-                        band.w,
-                        acc,
-                        ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
-                    ),
+                    clips
+                        .prepare(
+                            clip.as_ref(),
+                            band.y0..band.y0 + bh,
+                            band.w,
+                            acc,
+                            ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                        )
+                        .as_ref(),
                     stack,
                 );
                 buffers.give_color(window);
@@ -2599,13 +2611,15 @@ fn run<S: Simd>(
                     band.sample(
                         capture,
                         *bounds,
-                        clips.prepare(
-                            clip.as_ref(),
-                            band.y0..band.y0 + bh,
-                            band.w,
-                            acc,
-                            ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
-                        ),
+                        clips
+                            .prepare(
+                                clip.as_ref(),
+                                band.y0..band.y0 + bh,
+                                band.w,
+                                acc,
+                                ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                            )
+                            .as_ref(),
                         effect,
                         union.as_ref(),
                         *space,
@@ -2628,13 +2642,15 @@ fn run<S: Simd>(
                 *sigma_eff,
                 color,
                 *bbox,
-                clips.prepare(
-                    clip.as_ref(),
-                    band.y0..band.y0 + bh,
-                    band.w,
-                    acc,
-                    ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
-                ),
+                clips
+                    .prepare(
+                        clip.as_ref(),
+                        band.y0..band.y0 + bh,
+                        band.w,
+                        acc,
+                        ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                    )
+                    .as_ref(),
             ),
             Item::Project(item) => {
                 let clip = clips.prepare(
@@ -2644,7 +2660,7 @@ fn run<S: Simd>(
                     acc,
                     ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
                 );
-                band.project(stack, item, clip);
+                band.project(stack, item, clip.as_ref());
             }
             Item::Silhouette { slot, paint, clip } => {
                 band.glyph(
@@ -2654,13 +2670,15 @@ fn run<S: Simd>(
                     0,
                     0,
                     paint,
-                    clips.prepare(
-                        clip.as_ref(),
-                        band.y0..band.y0 + bh,
-                        band.w,
-                        acc,
-                        ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
-                    ),
+                    clips
+                        .prepare(
+                            clip.as_ref(),
+                            band.y0..band.y0 + bh,
+                            band.w,
+                            acc,
+                            ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                        )
+                        .as_ref(),
                 );
             }
             Item::Glyph {
@@ -2676,13 +2694,15 @@ fn run<S: Simd>(
                 *x,
                 *y,
                 paint,
-                clips.prepare(
-                    clip.as_ref(),
-                    band.y0..band.y0 + bh,
-                    band.w,
-                    acc,
-                    ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
-                ),
+                clips
+                    .prepare(
+                        clip.as_ref(),
+                        band.y0..band.y0 + bh,
+                        band.w,
+                        acc,
+                        ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                    )
+                    .as_ref(),
             ),
         }
     }
@@ -3124,7 +3144,7 @@ impl Band<'_> {
         (edges, offset): (&EdgeTiles, super::tiles::Fixed),
         bbox: crate::render::lower::DrawBox,
         paint: &PaintData,
-        clip: Option<ClipCoverage<'_>>,
+        clip: Option<&ClipCoverage<'_>>,
     ) {
         let bh = self.fb.len() / self.w;
         let first = usize::from(bbox.y0).max(self.y0);
@@ -3180,7 +3200,7 @@ impl Band<'_> {
         sigma_eff: f32,
         color: &[f32; 4],
         bbox: IRect,
-        clip: Option<ClipCoverage<'_>>,
+        clip: Option<&ClipCoverage<'_>>,
     ) {
         let bh = self.fb.len() / self.w;
         let (y_lo, y_hi) = (
@@ -3408,7 +3428,7 @@ impl Band<'_> {
         &mut self,
         capture: &Capture,
         bounds: IRect,
-        clip: Option<ClipCoverage<'_>>,
+        clip: Option<&ClipCoverage<'_>>,
         effect: &SampleEffect,
         union: Option<&UnionSample>,
         member_space: cherenkov::BlendSpace,
@@ -3508,7 +3528,7 @@ impl Band<'_> {
         ox: i32,
         oy: i32,
         paint: &PaintData,
-        clip: Option<ClipCoverage<'_>>,
+        clip: Option<&ClipCoverage<'_>>,
     ) {
         let Some(mask) = slot.get() else { return };
         let bh = self.fb.len() / self.w;
@@ -3585,7 +3605,7 @@ impl Band<'_> {
         &mut self,
         stack: &mut [Plane],
         item: &super::lower::ProjectItem,
-        clip: Option<ClipCoverage<'_>>,
+        clip: Option<&ClipCoverage<'_>>,
     ) {
         let bh = self.fb.len() / self.w;
         let [x0, y0, x1, y1] = item.placed.bounds.map(|v| v as usize);
@@ -3626,7 +3646,7 @@ impl Band<'_> {
         src_space: cherenkov::BlendSpace,
         opacity: f32,
         blend: (cherenkov::BlendMode, cherenkov::BlendSpace),
-        clip: Option<ClipCoverage<'_>>,
+        clip: Option<&ClipCoverage<'_>>,
         stack: &mut Vec<Plane>,
     ) {
         let (dst, dst_space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
@@ -3999,7 +4019,7 @@ mod tests {
                                         })),
                                         _ => None,
                                     };
-                                    let clip = ClipRun::new(mask, w, x0, py);
+                                    let clip = ClipRun::new(mask.as_ref(), w, x0, py);
                                     let cov: Vec<f32> = if cov_kind == 1 {
                                         vec![1.0; len]
                                     } else {
