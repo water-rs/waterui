@@ -666,7 +666,12 @@ impl ContentData {
     }
 
     pub fn gpu_input_bytes(&self) -> u64 {
-        (self.storage.gpu_paths.capacity() * std::mem::size_of::<(usize, PreparedGpu)>()
+        (self.storage.templates.capacity() * size_of::<InstanceTemplate>()
+            + self.storage.covers.capacity() * size_of::<Cover>()
+            + self.storage.instances.capacity() * size_of::<RetainedInstance>()
+            + self.storage.stops.capacity() * size_of::<Stop>()
+            + self.storage.refs.capacity() * size_of::<(u32, u64)>()
+            + self.storage.gpu_paths.capacity() * std::mem::size_of::<(usize, PreparedGpu)>()
             + self
                 .storage
                 .gpu_paths
