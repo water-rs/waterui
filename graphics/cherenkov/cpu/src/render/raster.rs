@@ -381,7 +381,7 @@ fn sample_rows(
                         );
                         for py in first..last {
                             for px in x0..x1 {
-                                if clip_cov(clip.as_ref(), w, px, py) <= 0.0 {
+                                if clip_cov(clip, w, px, py) <= 0.0 {
                                     continue;
                                 }
                                 let (field, coverage) =
@@ -707,7 +707,7 @@ fn shadow_edge<S: Simd>(
     py: usize,
     cx: f32,
     inv_sqrt2_sigma: f32,
-    clip_mask: Option<&ClipCoverage<'_>>,
+    clip_mask: Option<ClipCoverage<'_>>,
     color: &[f32; 4],
     space: cherenkov::BlendSpace,
     from: usize,
@@ -832,7 +832,7 @@ impl ClipScratch {
     clippy::cast_sign_loss,
     reason = "clip rect edges are clamped non-negative before indexing"
 )]
-fn clip_cov(clip: Option<&ClipCoverage<'_>>, w: usize, px: usize, py: usize) -> f32 {
+fn clip_cov(clip: Option<ClipCoverage<'_>>, w: usize, px: usize, py: usize) -> f32 {
     match clip {
         None => 1.0,
         Some(ClipCoverage::Rect(r)) => f32::from(
@@ -2474,15 +2474,13 @@ fn run<S: Simd>(
                     plane.space,
                     *opacity,
                     *blend,
-                    clips
-                        .prepare(
-                            clip.as_ref(),
-                            band.y0..band.y0 + bh,
-                            band.w,
-                            acc,
-                            ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
-                        )
-                        .as_ref(),
+                    clips.prepare(
+                        clip.as_ref(),
+                        band.y0..band.y0 + bh,
+                        band.w,
+                        acc,
+                        ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                    ),
                     stack,
                 );
                 buffers.give_color(plane.buf);
@@ -2564,15 +2562,13 @@ fn run<S: Simd>(
                     *space,
                     *opacity,
                     *blend,
-                    clips
-                        .prepare(
-                            clip.as_ref(),
-                            band.y0..band.y0 + bh,
-                            band.w,
-                            acc,
-                            ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
-                        )
-                        .as_ref(),
+                    clips.prepare(
+                        clip.as_ref(),
+                        band.y0..band.y0 + bh,
+                        band.w,
+                        acc,
+                        ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                    ),
                     stack,
                 );
                 buffers.give_color(window);
@@ -2611,15 +2607,13 @@ fn run<S: Simd>(
                     band.sample(
                         capture,
                         *bounds,
-                        clips
-                            .prepare(
-                                clip.as_ref(),
-                                band.y0..band.y0 + bh,
-                                band.w,
-                                acc,
-                                ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
-                            )
-                            .as_ref(),
+                        clips.prepare(
+                            clip.as_ref(),
+                            band.y0..band.y0 + bh,
+                            band.w,
+                            acc,
+                            ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                        ),
                         effect,
                         union.as_ref(),
                         *space,
@@ -2642,15 +2636,13 @@ fn run<S: Simd>(
                 *sigma_eff,
                 color,
                 *bbox,
-                clips
-                    .prepare(
-                        clip.as_ref(),
-                        band.y0..band.y0 + bh,
-                        band.w,
-                        acc,
-                        ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
-                    )
-                    .as_ref(),
+                clips.prepare(
+                    clip.as_ref(),
+                    band.y0..band.y0 + bh,
+                    band.w,
+                    acc,
+                    ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                ),
             ),
             Item::Project(item) => {
                 let clip = clips.prepare(
@@ -2660,7 +2652,7 @@ fn run<S: Simd>(
                     acc,
                     ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
                 );
-                band.project(stack, item, clip.as_ref());
+                band.project(stack, item, clip);
             }
             Item::Silhouette { slot, paint, clip } => {
                 band.glyph(
@@ -3200,7 +3192,7 @@ impl Band<'_> {
         sigma_eff: f32,
         color: &[f32; 4],
         bbox: IRect,
-        clip: Option<&ClipCoverage<'_>>,
+        clip: Option<ClipCoverage<'_>>,
     ) {
         let bh = self.fb.len() / self.w;
         let (y_lo, y_hi) = (
@@ -3428,7 +3420,7 @@ impl Band<'_> {
         &mut self,
         capture: &Capture,
         bounds: IRect,
-        clip: Option<&ClipCoverage<'_>>,
+        clip: Option<ClipCoverage<'_>>,
         effect: &SampleEffect,
         union: Option<&UnionSample>,
         member_space: cherenkov::BlendSpace,
@@ -3605,7 +3597,7 @@ impl Band<'_> {
         &mut self,
         stack: &mut [Plane],
         item: &super::lower::ProjectItem,
-        clip: Option<&ClipCoverage<'_>>,
+        clip: Option<ClipCoverage<'_>>,
     ) {
         let bh = self.fb.len() / self.w;
         let [x0, y0, x1, y1] = item.placed.bounds.map(|v| v as usize);
@@ -3646,7 +3638,7 @@ impl Band<'_> {
         src_space: cherenkov::BlendSpace,
         opacity: f32,
         blend: (cherenkov::BlendMode, cherenkov::BlendSpace),
-        clip: Option<&ClipCoverage<'_>>,
+        clip: Option<ClipCoverage<'_>>,
         stack: &mut Vec<Plane>,
     ) {
         let (dst, dst_space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
