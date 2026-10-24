@@ -4466,13 +4466,7 @@ impl<'a> Lowering<'a> {
             ) {
                 break;
             }
-            let (leaf_changed, revision) =
-                self.leaf((i, op), ops.get(i + 1), cache, storage, glyphs, source)?;
-            self.frame.commands.push(super::damage::Command {
-                instances_end: self.frame.instances.len(),
-                revision,
-            });
-            changed |= leaf_changed;
+            changed |= self.leaf((i, op), ops.get(i + 1), cache, storage, glyphs, source)?;
             i += 1;
         }
         self.frame
@@ -4509,7 +4503,7 @@ impl<'a> Lowering<'a> {
         storage: &mut EmissionStorage,
         glyphs: &GlyphContext<'_>,
         source: &cherenkov::DisplayList,
-    ) -> Result<(bool, u64), RenderError> {
+    ) -> Result<bool, RenderError> {
         let (_, op) = indexed;
         let cover = self.shadow_cover(op, next);
         let hit = cache.valid
@@ -4532,23 +4526,29 @@ impl<'a> Lowering<'a> {
                     && self.replace_gpu_leaf(op, e, storage)
             });
         cache.valid = true;
-        if hit || replaced {
+        let (changed, revision) = if hit || replaced {
             let emission = cache.data.as_mut().expect("a retained leaf has data");
             if replaced {
                 emission.revision = self.frame.revision;
             }
             self.compose(emission, storage);
-            return Ok((replaced, emission.revision));
-        }
-        // GPU leaves retain like CPU leaves (water-rs/waterui#3081): the
-        // anchor instance and its coverage draw record live on the
-        // emission; the coverage entry itself survives by placement key.
-        if self.clip.is_some() {
-            self.realize_clipped_leaf(indexed, cover, cache, storage, glyphs, source)?;
+            (replaced, emission.revision)
         } else {
-            self.realize_leaf(indexed, cover, cache, storage, glyphs, source)?;
-        }
-        Ok((true, self.frame.revision))
+            // GPU leaves retain like CPU leaves (water-rs/waterui#3081): the
+            // anchor instance and its coverage draw record live on the
+            // emission; the coverage entry itself survives by placement key.
+            if self.clip.is_some() {
+                self.realize_clipped_leaf(indexed, cover, cache, storage, glyphs, source)?;
+            } else {
+                self.realize_leaf(indexed, cover, cache, storage, glyphs, source)?;
+            }
+            (true, self.frame.revision)
+        };
+        self.frame.commands.push(super::damage::Command {
+            instances_end: self.frame.instances.len(),
+            revision,
+        });
+        Ok(changed)
     }
 
     /// The automatic route's predicate (decisions R1 and R2): a path
@@ -7049,7 +7049,7 @@ mod tests {
                 if moved {
                     lowering.transform = Affine::translate((5.25, 3.0));
                 }
-                let (changed, _) = lowering
+                let changed = lowering
                     .leaf(
                         (0, &op),
                         None,
