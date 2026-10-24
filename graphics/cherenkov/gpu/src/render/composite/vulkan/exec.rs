@@ -209,6 +209,8 @@ pub fn encode(
                 }
                 ShaderVariant::LongGradient => 4,
                 ShaderVariant::Image => 6,
+                ShaderVariant::Glyph => 7,
+                ShaderVariant::Composite => 8,
             };
             draws.push(Draw {
                 key: PipeKey {
@@ -685,7 +687,7 @@ fn note(
             variant: match key.variant {
                 0 => report::Variant::Simple,
                 1 => report::Variant::Shadow,
-                2 | 4 | 6 => report::Variant::Source,
+                2 | 4 | 6 | 7 | 8 => report::Variant::Source,
                 3 => report::Variant::Clear,
                 _ => unreachable!("closed tile shader set"),
             },

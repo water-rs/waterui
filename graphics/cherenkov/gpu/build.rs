@@ -462,13 +462,15 @@ struct Modules<'a> {
 /// both executors' modules share the attachment interfaces and differ
 /// only in the engine spec source they are generated from. Used by the
 /// Vulkan `specs` entries and the Apple metallib loop alike.
-const TILE_FAMILIES: [(&str, usize); 3] = [
+const TILE_FAMILIES: [(&str, usize); 5] = [
     ("engine_tile", 2),
     ("engine_tile_long", 4),
     ("engine_tile_image", 6),
+    ("engine_tile_glyph", 7),
+    ("engine_tile_composite", 8),
 ];
 
-/// The fixed module set `render` creates: seven VARIANT specializations
+/// The fixed module set `render` creates: nine VARIANT specializations
 /// of `shader.wgsl` plus `present`, `external`, `external_native`,
 /// `projective`, `mip`, `resolve`, `reduce`, `shadow`, `coverage` and
 /// `space_convert`.
@@ -486,7 +488,7 @@ const TILE_FAMILIES: [(&str, usize); 3] = [
 /// but the union's and the cell's also drops the `// cell-buffer` spans of
 /// `shared.wgsl` and `shader.wgsl`, the cell-texel reads.
 fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
-    let mut specs: Vec<Spec> = (0..7u32)
+    let mut specs: Vec<Spec> = (0..9u32)
         .map(|variant| {
             let (cap, shared, shader, union) = match variant {
                 3 => (m.union_max, m.shared, m.shader_no_long, m.union),

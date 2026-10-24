@@ -23,6 +23,8 @@ const VARIANT_LONG_GRADIENT: u32 = 4u;
 // Every span but the union's: GPU-routed path draws (#2543).
 const VARIANT_CELL: u32 = 5u;
 const VARIANT_IMAGE: u32 = 6u;
+const VARIANT_GLYPH: u32 = 7u;
+const VARIANT_COMPOSITE: u32 = 8u;
 
 @group(1) @binding(0) var source: texture_2d<f32>;
 // The blend backdrop: a copy of the target's region, sampled like `source`.
@@ -990,7 +992,18 @@ fn fs_shadow(in: VsOut) -> vec4<f32> {
 fn fs_full(fragment: VsOut) -> vec4<f32> {
     // A device-space quad paints, clips and samples at its pixel, never at
     // a point interpolated across the quad.
-    let in = device_quad_pixel(fragment);
+    var in = device_quad_pixel(fragment);
+    // Lowering chooses these modules only for the stated instance class.
+    // Keep the coverage and compositing formula shared, while making the
+    // unrelated branches unreachable before native pipeline compilation.
+    if VARIANT == VARIANT_GLYPH {
+        in.meta_.x = KIND_GLYPH;
+        in.meta_.y = PAINT_SOLID;
+    }
+    if VARIANT == VARIANT_COMPOSITE {
+        in.meta_.x = KIND_SPAN;
+        in.meta_.y = PAINT_TEXTURE;
+    }
     // The constants every fragment needs arrive as flat varyings; the
     // storage array is read only for kind-specific fields (inner, clip,
     // mask, gradient data).

@@ -128,6 +128,12 @@ const LONG_TILE_METALLIB: &[u8] =
 /// `engine_tile_image.metallib` — the variant-6 (image source) tile module.
 const IMAGE_TILE_METALLIB: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_image.metallib"));
+/// Solid clipped glyph tile module.
+const GLYPH_TILE_METALLIB: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_glyph.metallib"));
+/// Span composite tile module.
+const COMPOSITE_TILE_METALLIB: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_composite.metallib"));
 
 /// The passthrough module for one tile family: the declared entries are
 /// identical across families — the attachment interfaces wrap whichever
@@ -178,6 +184,10 @@ pub struct Executor {
     /// The image-source tile module, created on its family's first
     /// pipeline.
     module_image: Option<wgpu::ShaderModule>,
+    /// Solid clipped glyph module.
+    module_glyph: Option<wgpu::ShaderModule>,
+    /// Span composite module.
+    module_composite: Option<wgpu::ShaderModule>,
     pipelines: FxHashMap<Key, wgpu::RenderPipeline>,
 }
 
@@ -202,6 +212,12 @@ impl Executor {
             6 => self
                 .module_image
                 .get_or_insert_with(|| tile_module(device, IMAGE_TILE_METALLIB)),
+            7 => self
+                .module_glyph
+                .get_or_insert_with(|| tile_module(device, GLYPH_TILE_METALLIB)),
+            8 => self
+                .module_composite
+                .get_or_insert_with(|| tile_module(device, COMPOSITE_TILE_METALLIB)),
             _ => self
                 .module
                 .get_or_insert_with(|| tile_module(device, TILE_METALLIB)),
@@ -211,7 +227,7 @@ impl Executor {
             let entry = match key.variant {
                 0 => format!("tile_{}_simple", key.target),
                 1 => format!("tile_{}_shadow", key.target),
-                2 | 4 | 5 => format!("tile_{}_{}", key.target, key.source),
+                2 | 4 | 5 | 7 | 8 => format!("tile_{}_{}", key.target, key.source),
                 3 => format!("tile_{}_clear", key.target),
                 _ => unreachable!("closed tile shader set"),
             };
@@ -277,7 +293,7 @@ fn note(
             variant: match key.variant {
                 0 => report::Variant::Simple,
                 1 => report::Variant::Shadow,
-                2 | 4 | 6 => report::Variant::Source,
+                2 | 4 | 6 | 7 | 8 => report::Variant::Source,
                 3 => report::Variant::Clear,
                 _ => unreachable!("closed tile shader set"),
             },
@@ -470,6 +486,8 @@ pub fn encode(
                 }
                 ShaderVariant::LongGradient => 4,
                 ShaderVariant::Image => 6,
+                ShaderVariant::Glyph => 7,
+                ShaderVariant::Composite => 8,
             };
             let key = Key {
                 target: op.target,

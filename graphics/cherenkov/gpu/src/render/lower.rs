@@ -114,6 +114,10 @@ pub enum ShaderVariant {
     /// image paint whose texture keeps its source encoding (non-zero
     /// `image_storage` source flags).
     Image,
+    /// Solid atlas glyphs with clipping or masks, without unrelated paint/shape branches.
+    Glyph,
+    /// A span sampling a rendered layer, retaining its blend-space and clip semantics.
+    Composite,
 }
 
 /// A texture identity scoped to its resource owner.
@@ -518,6 +522,12 @@ const fn variant_of(inst: &Instance) -> ShaderVariant {
         // same instructions as without the image variant.
         if (inst.meta[3] & super::image_storage::SOURCE) != 0 && inst.meta[1] == PAINT_IMAGE {
             return ShaderVariant::Image;
+        }
+        if inst.meta[0] == KIND_GLYPH && inst.meta[1] == PAINT_SOLID {
+            return ShaderVariant::Glyph;
+        }
+        if inst.meta[0] == KIND_SPAN && inst.meta[1] == PAINT_TEXTURE {
+            return ShaderVariant::Composite;
         }
         return ShaderVariant::Full;
     }

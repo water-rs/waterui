@@ -1141,7 +1141,7 @@ pub struct GpuRenderer {
     /// outer-band member, the first GPU-routed draw and the first image
     /// paint with source flags (on wasm, by `prepare_lazy_pipelines`
     /// before the frame that needs them).
-    pipelines: FormatCells<[[Option<wgpu::RenderPipeline>; 7]; 2]>,
+    pipelines: FormatCells<[[Option<wgpu::RenderPipeline>; 9]; 2]>,
     /// `[format slot][module][opaque, partial]` coverage pipelines, same cell policy
     /// as the core set: the simple module's pair is built at init under
     /// `core_pipelines_eager()` (always, on wasm), else created at the
@@ -2134,6 +2134,8 @@ const fn variant_index(variant: ShaderVariant) -> usize {
         ShaderVariant::LongGradient => 4,
         ShaderVariant::Cell => 5,
         ShaderVariant::Image => 6,
+        ShaderVariant::Glyph => 7,
+        ShaderVariant::Composite => 8,
     }
 }
 
@@ -2403,7 +2405,7 @@ impl PipelineFactory<'_> {
 /// layers whose formats coincide, and an empty cell is created at first
 /// use so preparation lands inside the frame that needs it (#170).
 fn core_pipeline<'m>(
-    pipelines: &'m mut FormatCells<[[Option<wgpu::RenderPipeline>; 7]; 2]>,
+    pipelines: &'m mut FormatCells<[[Option<wgpu::RenderPipeline>; 9]; 2]>,
     factory: &PipelineFactory<'_>,
     format: wgpu::TextureFormat,
     replace: bool,
@@ -11127,7 +11129,13 @@ impl GpuRenderer {
                 let union = range.variant == ShaderVariant::Union;
                 if let PipelineKind::Effect { id, replace } = range.pipeline {
                     effects.insert((id, union, replace, format_i));
-                } else if matches!(range.variant, ShaderVariant::Union | ShaderVariant::Image) {
+                } else if matches!(
+                    range.variant,
+                    ShaderVariant::Union
+                        | ShaderVariant::Image
+                        | ShaderVariant::Glyph
+                        | ShaderVariant::Composite
+                ) {
                     core.insert((
                         variant_index(range.variant),
                         format_i,
