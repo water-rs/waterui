@@ -408,7 +408,7 @@ fn stamp(gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, index: u32) {
 }
 
 /// Drains the queue completely, then writes timestamp `index` in its own
-/// submission.
+/// submission and waits for that submission to complete.
 ///
 /// On job-scheduled tiled GPUs (Mali et al.) a standalone timestamp
 /// submission shares no hazard with the engine's work, so a marker submitted
@@ -418,6 +418,9 @@ fn stamp(gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, index: u32) {
 /// submit → `stamp(1)` sequence brackets the engine's real GPU execution.
 /// This serializes CPU and GPU for the measured frame — GPU-timed `measure`
 /// is a synchronous probe, not a pipelined frame rate.
+/// The marker must complete before subsequent engine work or query resolve
+/// is submitted: an outstanding marker yielded zero or stale end ticks on
+/// Metal even though the later readback completed.
 ///
 /// No-op when timestamps are unsupported.
 ///
@@ -436,14 +439,14 @@ pub fn drain_and_stamp(gpu: &Gpu, index: u32) -> Result<(), BenchError> {
     stamp(gpu, &mut encoder, index);
     let submission = gpu.queue.submit([encoder.finish()]);
     tracing::trace!(index, ?submission, "frame timestamp submitted");
-    Ok(())
+    wait(gpu, Some(submission), "the frame timestamp marker")
 }
 
 /// Resolves a timestamp query pair written around a submission into
 /// seconds. `None` when timestamps are unsupported.
 ///
 /// # Errors
-/// [`BenchError::Gpu`] on buffer map failure.
+/// [`BenchError::Gpu`] on buffer map failure or a non-increasing query pair.
 ///
 /// # Panics
 /// When the mapped buffer range cannot be read after a successful map.
@@ -475,13 +478,15 @@ pub fn resolve_timestamps(gpu: &Gpu) -> Result<Option<f64>, BenchError> {
     let data = slice
         .get_mapped_range()
         .expect("buffer range is mapped and not overlapping");
-    let ticks: &[u64] = bytemuck::cast_slice(&data);
-    let seconds = if ticks.len() >= 2 && ticks[1] > ticks[0] {
-        Some(f64::from(gpu.queue.get_timestamp_period()) * (ticks[1] - ticks[0]) as f64 * 1e-9)
-    } else {
-        None
-    };
+    let [start, end] = *bytemuck::from_bytes::<[u64; 2]>(&data);
     drop(data);
     staging.unmap();
-    Ok(seconds)
+    if end <= start {
+        return Err(BenchError::Gpu(format!(
+            "invalid GPU timestamp pair: start={start}, end={end}; refusing an incomplete frame timing population"
+        )));
+    }
+    Ok(Some(
+        f64::from(gpu.queue.get_timestamp_period()) * (end - start) as f64 * 1e-9,
+    ))
 }
