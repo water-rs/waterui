@@ -233,6 +233,7 @@ impl Registry {
             });
             Texture {
                 image: super::GpuImage {
+                    revision: 0,
                     sampling_flags: 0,
                     texture,
                     view,

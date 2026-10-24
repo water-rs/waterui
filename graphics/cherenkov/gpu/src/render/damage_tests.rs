@@ -74,6 +74,12 @@ fn movement_and_removal_keep_last_submitted_footprints() {
     history.submitted();
     history.update(&frame(&[]));
     assert_eq!(history.pixels(), 0);
+    history.forget();
+    history.update(&frame(&[]));
+    assert!(
+        history.pass(0).is_full(),
+        "replacement attachment must initialize even an empty scene"
+    );
 }
 
 #[test]

@@ -12,16 +12,49 @@ use crate::render::lower::{Frame, Target};
 #[derive(Default)]
 pub struct Demand {
     passes: Vec<Region>,
+    staging: rustc_hash::FxHashMap<usize, Region>,
 }
 
 impl Demand {
     pub fn bytes(&self) -> u64 {
-        (self.passes.capacity() * size_of::<Region>()) as u64
+        (self.passes.capacity() * size_of::<Region>()
+            + self.staging.capacity() * size_of::<(usize, Region)>()) as u64
+            + self
+                .staging
+                .values()
+                .map(|region| region.heap_bytes().0)
+                .sum::<u64>()
             + self
                 .passes
                 .iter()
                 .map(|region| region.heap_bytes().0)
                 .sum::<u64>()
+    }
+
+    /// Diagnostic union of the raster scissors over persistent base-level
+    /// outputs. This bounds touched pixels, not fragment invocations.
+    pub fn output_pixels(&self, frame: &Frame) -> u64 {
+        let mut outputs = rustc_hash::FxHashMap::<Target, Region>::default();
+        for (index, pass) in frame.passes.iter().enumerate() {
+            if matches!(
+                pass.target,
+                Target::Part(_) | Target::Plane(_) | Target::Projected(_)
+            ) {
+                let [x, y, w, h] = pass.region;
+                let output = outputs
+                    .entry(pass.target)
+                    .or_insert_with(|| Region::new((x + w, y + h)));
+                for rect in self.pass(index).rectangles() {
+                    let (x, y, w, h) = rect.xywh();
+                    output.add(x, y, w, h);
+                }
+            }
+        }
+        outputs.values().map(Region::pixel_area).sum()
+    }
+
+    pub fn raster_pass(&self, index: usize) -> &Region {
+        self.staging.get(&index).unwrap_or_else(|| self.pass(index))
     }
 
     pub fn pass(&self, index: usize) -> &Region {
@@ -34,7 +67,7 @@ impl Demand {
         &mut self,
         frame: &Frame,
         plan: &ExecutionPlan,
-        mut output: impl FnMut(Target, [u32; 4], &mut Region),
+        mut output: impl FnMut(usize, Target, [u32; 4], &mut Region),
     ) {
         self.reset(frame);
         for (index, pass) in frame.passes.iter().enumerate().rev() {
@@ -45,7 +78,7 @@ impl Demand {
                 .iter()
                 .any(|later| later.target == pass.target)
             {
-                output(pass.target, pass.region, &mut self.passes[index]);
+                output(index, pass.target, pass.region, &mut self.passes[index]);
             }
         }
         for index in (0..frame.passes.len()).rev() {
@@ -84,6 +117,45 @@ impl Demand {
                         );
                     self.read(index, read, whole, frame);
                 }
+            }
+        }
+        self.prepare_staging(frame);
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "validated capture scale maps clipped target pixels into the device extent"
+    )]
+    fn prepare_staging(&mut self, frame: &Frame) {
+        self.staging.retain(|index, _| {
+            frame.passes.get(*index).is_some_and(|pass| {
+                crate::render::resolve::of(pass).is_some() && crate::render::resolve::staged(pass)
+            })
+        });
+        for (index, pass) in frame.passes.iter().enumerate() {
+            let Some(resolve) =
+                crate::render::resolve::of(pass).filter(|_| crate::render::resolve::staged(pass))
+            else {
+                continue;
+            };
+            let extent = resolve.extent.into();
+            let region = self
+                .staging
+                .entry(index)
+                .or_insert_with(|| Region::new(extent));
+            if region.extent() == extent {
+                region.clear();
+            } else {
+                *region = Region::new(extent);
+            }
+            let scale = f64::from(resolve.scale);
+            for rect in self.passes[index].rectangles() {
+                let x0 = (f64::from(rect.x0()) / scale).floor() as u32;
+                let y0 = (f64::from(rect.y0()) / scale).floor() as u32;
+                let x1 = (f64::from(rect.x1()) / scale).ceil() as u32;
+                let y1 = (f64::from(rect.y1()) / scale).ceil() as u32;
+                region.add(x0, y0, x1 - x0, y1 - y0);
             }
         }
     }

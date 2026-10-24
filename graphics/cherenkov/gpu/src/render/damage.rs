@@ -54,6 +54,13 @@ pub struct Commands {
 }
 
 impl Commands {
+    pub fn forget(&mut self) {
+        self.previous.clear();
+        self.previous_targets.clear();
+        self.previous_states.clear();
+        self.pending = false;
+    }
+
     pub fn bytes(&self) -> u64 {
         ((self.previous.capacity() + self.prepared.capacity())
             * size_of::<((Key, usize), Footprint)>()
@@ -278,18 +285,45 @@ fn pass_state(frame: &Frame, index: usize, version: &impl Fn(&DrawRange) -> u64)
             let synthetic_end = command.instances.start.min(end);
             if cursor < synthetic_end {
                 range_state(range, version(range)).hash(&mut hash);
-                hash.write(bytemuck::cast_slice(
-                    &frame.instances[cursor..synthetic_end],
-                ));
+                synthetic_state(frame, cursor..synthetic_end, &mut hash);
             }
             cursor = cursor.max(command.instances.end).min(end);
         }
         if cursor < end {
             range_state(range, version(range)).hash(&mut hash);
-            hash.write(bytemuck::cast_slice(&frame.instances[cursor..end]));
+            synthetic_state(frame, cursor..end, &mut hash);
         }
     }
     hash.finish()
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "union headers encode validated bounded integer member counts"
+)]
+fn synthetic_state(frame: &Frame, instances: Range<usize>, hash: &mut FxHasher) {
+    use super::instance::{FLAG_UNION, PAINT_BACKDROP, PAINT_PROJECTIVE};
+    for instance in &frame.instances[instances] {
+        let mut template = *instance;
+        let count = match instance.meta[1] {
+            PAINT_BACKDROP => ((instance.meta[3] >> 8) & 0xff) as usize,
+            PAINT_PROJECTIVE => 3,
+            _ => 0,
+        };
+        if count != 0 {
+            let first = instance.meta[2] as usize;
+            hash.write(bytemuck::cast_slice(&frame.stops[first..first + count]));
+            template.meta[2] = 0;
+        }
+        if instance.meta[3] & (FLAG_UNION << 24) != 0 {
+            let first = instance.uv[0].to_bits() as usize;
+            let count = 1 + 2 * frame.stops[first].color[1] as usize;
+            hash.write(bytemuck::cast_slice(&frame.stops[first..first + count]));
+            template.uv[0] = 0.0;
+        }
+        hash.write(bytemuck::bytes_of(&template));
+    }
 }
 
 fn range_state(range: &DrawRange, version: u64) -> u64 {

@@ -23,6 +23,7 @@ mod instance;
 mod lower;
 mod paint;
 mod path;
+mod repaint;
 #[cfg(test)]
 pub use path::CoverageRoute;
 pub mod planes;
@@ -371,6 +372,7 @@ fn coverage_depth_bytes(texture: &wgpu::Texture) -> u64 {
 
 /// A GPU-resident image registered with the engine.
 pub struct GpuImage {
+    revision: u64,
     /// Per-texel colour conversion flags, packed above sampling in image paints.
     pub sampling_flags: u32,
     /// The texture holding source texels.
@@ -496,6 +498,7 @@ struct SurfaceState {
     draw_demand: composite::demand::Demand,
     command_damage: damage::Commands,
     propagated_damage: composite::demand::Changes,
+    repaint_clears: repaint::Clears,
     #[cfg(target_vendor = "apple")]
     tile_targets: composite::metal::Attachments,
     /// This frame's offsets into the shared buffers: instances and globals
@@ -592,6 +595,13 @@ impl BackdropGroupState {
 }
 
 impl SurfaceState {
+    fn replace_target(&mut self, size: (u32, u32), target: wgpu::Texture, view: wgpu::TextureView) {
+        self.command_damage.forget();
+        self.size = size;
+        self.target = target;
+        self.view = view;
+    }
+
     fn new(
         window: Option<present::WindowSurface>,
         textures: Option<std::sync::mpsc::Sender<wgpu::Texture>>,
@@ -644,6 +654,7 @@ impl SurfaceState {
             draw_demand: composite::demand::Demand::default(),
             command_damage: damage::Commands::default(),
             propagated_damage: composite::demand::Changes::default(),
+            repaint_clears: repaint::Clears::default(),
             #[cfg(target_vendor = "apple")]
             tile_targets: composite::metal::Attachments::default(),
             inst_base: 0,
@@ -678,6 +689,7 @@ impl SurfaceState {
             + self.draw_demand.bytes()
             + self.command_damage.bytes()
             + self.propagated_damage.bytes()
+            + self.repaint_clears.bytes()
             + (self.frame.commands.capacity() * size_of::<damage::Command>()) as u64
             + self.anchor_scratch.heap_bytes()
             + (self.part_ranges.capacity() * std::mem::size_of::<present::ColorRange>()) as u64
@@ -3547,9 +3559,15 @@ impl GpuRenderer {
             // Local images that sampled the previous pixels are no longer
             // current.
             self.image_replacements += 1;
+            self.images
+                .get_mut(&id.raw())
+                .expect("registered image")
+                .revision += 1;
             return Ok(());
         }
-        let replacement = upload_image(&self.device, &self.queue, size, &data).await?;
+        let revision = current.revision + 1;
+        let mut replacement = upload_image(&self.device, &self.queue, size, &data).await?;
+        replacement.revision = revision;
         self.image_replacements += 1;
         let old = self
             .images
@@ -3745,9 +3763,7 @@ impl Renderer for GpuRenderer {
                 );
             }
         }
-        state.size = size;
-        state.target = target;
-        state.view = view;
+        state.replace_target(size, target, view);
         for part in &mut state.parts {
             *part = create_target(
                 &self.device,
@@ -6160,6 +6176,7 @@ impl GpuRenderer {
                 continue;
             }
             let pipelines = self.projective.as_ref().expect("built above");
+            surf.command_damage.forget();
             let entry = projective::Entry::new(&self.device, pipelines, r.key.bucket, &r.levels);
             let bytes = entry.bytes();
             if let Some(i) = slot {
@@ -7854,6 +7871,7 @@ impl GpuRenderer {
                 continue;
             }
             if entry.capture.is_none() {
+                surf.command_damage.forget();
                 let domain = entry.domain.expect("a static candidate has a domain");
                 let (texture, view) = create_target(
                     &self.device,
@@ -7919,6 +7937,7 @@ impl GpuRenderer {
                     .get(id)
                     .and_then(gpu_content::Producer::current)
                     .map_or(0, |slot| slot.generation),
+                Some(lower::ImageSource::Registered(id)) => self.images[id].revision,
                 _ => 0,
             });
         for (index, key) in &surf.frame.filters {
@@ -7947,11 +7966,15 @@ impl GpuRenderer {
             command_invalidated_pass_pixels = surf.command_damage.pixels(),
             "command damage before effect propagation"
         );
-        surf.draw_demand.update(
-            &surf.frame,
-            &surf.composition,
-            |_, [x, y, width, height], required| required.add(x, y, width, height),
-        );
+        surf.draw_demand
+            .update(&surf.frame, &surf.composition, |index, _, _, required| {
+                for rect in surf.propagated_damage.pass(index).rectangles() {
+                    let (x, y, w, h) = rect.xywh();
+                    required.add(x, y, w, h);
+                }
+            });
+        surf.repaint_clears
+            .prepare(&mut surf.frame, &surf.draw_demand);
         let max_scratch = surf
             .frame
             .passes
@@ -8975,8 +8998,8 @@ impl GpuRenderer {
                         .expect("an epoch writes its output");
                     (
                         surf.composition.images[epoch.output.0].target,
+                        first_output.pass,
                         epoch.region,
-                        surf.frame.passes[first_output.pass].clear.is_some(),
                     )
                 };
                 composite::vulkan::exec::encode(
@@ -9012,13 +9035,11 @@ impl GpuRenderer {
                 )
                 .map_err(|e| RenderError::Render(format!("tile composition: {e}")))?;
                 #[cfg(target_os = "android")]
-                if let (Target::Part(part), [x, y, w, h], cleared) = written {
-                    if cleared {
-                        // Vulkan clears the entire output attachment, even when
-                        // the epoch's draws cover a smaller region.
-                        surf.part_damage[part as usize].mark_full();
-                    } else {
-                        surf.part_damage[part as usize].add(x, y, w, h);
+                if let (Target::Part(part), first, region) = written {
+                    for [x, y, w, h] in
+                        repaint::Scissors::new(surf.draw_demand.pass(first), region).rectangles()
+                    {
+                        surf.part_damage[part as usize].add(x + region[0], y + region[1], w, h);
                     }
                 }
                 stats.passes += 1;
@@ -9141,12 +9162,18 @@ impl GpuRenderer {
                 });
             }
             #[cfg(target_os = "android")]
-            if let Target::Part(part) = pass.target {
-                if pass.clear.is_some() {
-                    surf.part_damage[part as usize].mark_full();
-                } else if !pass.ranges.is_empty() {
-                    let [x, y, width, height] = pass.region;
-                    surf.part_damage[part as usize].add(x, y, width, height);
+            if let Target::Part(part) = pass.target
+                && (pass.clear.is_some() || !pass.ranges.is_empty())
+            {
+                for [x, y, w, h] in
+                    repaint::Scissors::new(surf.draw_demand.pass(i), pass.region).rectangles()
+                {
+                    surf.part_damage[part as usize].add(
+                        x + pass.region[0],
+                        y + pass.region[1],
+                        w,
+                        h,
+                    );
                 }
             }
             let (view, texture) = match pass.target {
@@ -9275,7 +9302,11 @@ impl GpuRenderer {
                     },
                 );
             }
-            let load = match pass.clear {
+            let texture = texture.clone();
+            let view = view.clone();
+            let (texture, view) = (&texture, &view);
+            let partial_clear = surf.repaint_clears.instance(i);
+            let load = match pass.clear.filter(|_| partial_clear.is_none()) {
                 Some([red, green, blue, alpha]) => wgpu::LoadOp::Clear(wgpu::Color {
                     r: f64::from(red),
                     g: f64::from(green),
@@ -9304,7 +9335,8 @@ impl GpuRenderer {
             #[cfg(not(all(unix, not(target_vendor = "apple"))))]
             let native_run = false;
             let begin_index = self.query_base + 2 * pass_index;
-            let in_pass_begin = (!self.pass_start_on_encoder).then_some(begin_index);
+            let in_pass_begin =
+                (!self.pass_start_on_encoder && partial_clear.is_none()).then_some(begin_index);
             let in_pass_end = (!native_run).then_some(begin_index + 1);
             let timestamp_writes = self
                 .query_set
@@ -9396,6 +9428,55 @@ impl GpuRenderer {
             {
                 encoder.write_timestamp(query_set, begin_index);
             }
+            if let Some(instance) = partial_clear {
+                let bind1 = surf
+                    .binds1
+                    .entry((None, None, None, None))
+                    .or_insert_with(|| {
+                        stats.bind_groups_created += 1;
+                        make_bind1(
+                            &self.device,
+                            &self.layout1,
+                            &self.dummy_view,
+                            None,
+                            None,
+                            None,
+                            None,
+                        )
+                    });
+                repaint::ClearDraw {
+                    timestamps: self
+                        .query_set
+                        .as_ref()
+                        .filter(|_| !self.pass_start_on_encoder)
+                        .map(|query_set| wgpu::RenderPassTimestampWrites {
+                            query_set,
+                            beginning_of_pass_write_index: Some(begin_index),
+                            end_of_pass_write_index: None,
+                        }),
+                    pipeline: core_pipeline(
+                        &mut self.pipelines,
+                        &factory,
+                        texture.format(),
+                        true,
+                        ShaderVariant::Simple,
+                    )?,
+                    bind0: &self.bind0,
+                    bind1,
+                    offset: (surf.globals_base + u32::try_from(i).expect("pass index")) * 256,
+                    instance: inst_base + instance,
+                }
+                .encode(
+                    &mut encoder,
+                    view,
+                    &repaint::Scissors::new(surf.draw_demand.raster_pass(i), draw_region),
+                );
+                stats.passes += 1;
+                stats.draws += u32::try_from(surf.draw_demand.pass(i).rectangles().len())
+                    .expect("damage rectangle count");
+            }
+            let scissors = repaint::Scissors::new(surf.draw_demand.raster_pass(i), draw_region);
+            let raster_draws = scissors.draw_count();
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -9479,17 +9560,23 @@ impl GpuRenderer {
                         stats.pipeline_switches += 1;
                     }
                     if let Some(g) = range.gpu {
-                        render_pass.draw_indirect(
-                            self.gpu_cov.draws_buffer(),
-                            gpu_cov::GpuCoverage::draw_base(g) + u64::from(gpu_cov::ARGS_OPAQUE),
-                        );
+                        scissors.draw(&mut render_pass, |raster| {
+                            raster.draw_indirect(
+                                self.gpu_cov.draws_buffer(),
+                                gpu_cov::GpuCoverage::draw_base(g)
+                                    + u64::from(gpu_cov::ARGS_OPAQUE),
+                            );
+                        });
                     } else {
-                        render_pass.draw(
-                            0..8,
-                            (inst_base + range.instances.start)..(inst_base + range.instances.end),
-                        );
+                        scissors.draw(&mut render_pass, |raster| {
+                            raster.draw(
+                                0..8,
+                                (inst_base + range.instances.start)
+                                    ..(inst_base + range.instances.end),
+                            );
+                        });
                     }
-                    stats.draws += 1;
+                    stats.draws += raster_draws;
                 }
                 // The polygon tiers draw vertex indices past 8, which
                 // the cell-buffer variants read as a GPU-draw join: they
@@ -9507,11 +9594,13 @@ impl GpuRenderer {
                 }
                 for (tier, range) in pass.tier_ranges.iter().enumerate() {
                     if !range.is_empty() {
-                        render_pass.draw(
-                            0..(16u32 << tier),
-                            (inst_base + range.start)..(inst_base + range.end),
-                        );
-                        stats.draws += 1;
+                        scissors.draw(&mut render_pass, |raster| {
+                            raster.draw(
+                                0..(16u32 << tier),
+                                (inst_base + range.start)..(inst_base + range.end),
+                            );
+                        });
+                        stats.draws += raster_draws;
                     }
                 }
                 render_pass.set_pipeline(coverage_pipeline(
@@ -9653,9 +9742,12 @@ impl GpuRenderer {
                         },
                     );
                 }
-                render_pass.execute_bundles([&surf.painter_replays[&i].bundle]);
-                stats.draws +=
-                    u32::try_from(pass.ranges.len()).expect("draw ranges fit the instance limit");
+                scissors.draw(&mut render_pass, |raster| {
+                    raster.execute_bundles([&surf.painter_replays[&i].bundle]);
+                });
+                stats.draws += u32::try_from(pass.ranges.len())
+                    .expect("draw ranges fit the instance limit")
+                    * raster_draws;
                 stats.pipeline_switches += u32::try_from(
                     pass.ranges
                         .windows(2)
@@ -9668,7 +9760,7 @@ impl GpuRenderer {
             let mut ri = if replayable { pass.ranges.len() } else { 0 };
             while ri < pass.ranges.len() {
                 let range = &pass.ranges[ri];
-                stats.draws += 1;
+                stats.draws += raster_draws;
                 if let PipelineKind::Projective { replace } = range.pipeline {
                     let pipes = self
                         .projective
@@ -9699,10 +9791,12 @@ impl GpuRenderer {
                         &self.dummy_view,
                     );
                     render_pass.set_bind_group(1, bind, &[]);
-                    render_pass.draw(
-                        0..6,
-                        (inst_base + range.instances.start)..(inst_base + range.instances.end),
-                    );
+                    scissors.draw(&mut render_pass, |raster| {
+                        raster.draw(
+                            0..6,
+                            (inst_base + range.instances.start)..(inst_base + range.instances.end),
+                        );
+                    });
                     ri += 1;
                     continue;
                 }
@@ -9758,7 +9852,8 @@ impl GpuRenderer {
                         });
                         end += 1;
                     }
-                    stats.draws += u32::try_from(draws.len() - 1).unwrap_or(u32::MAX);
+                    stats.draws +=
+                        u32::try_from(draws.len() - 1).unwrap_or(u32::MAX) * raster_draws;
                     stats.passes += 1;
                     let vk_format = hal_adapter
                         .as_ref()
@@ -9795,6 +9890,7 @@ impl GpuRenderer {
                                 &draws,
                                 offset,
                                 surf.bind_gen,
+                                &scissors,
                             )
                         })
                     }
@@ -9899,10 +9995,12 @@ impl GpuRenderer {
                         &self.dummy_uint_view,
                     );
                     render_pass.set_bind_group(1, bind, &[]);
-                    render_pass.draw(
-                        0..6,
-                        (inst_base + range.instances.start)..(inst_base + range.instances.end),
-                    );
+                    scissors.draw(&mut render_pass, |raster| {
+                        raster.draw(
+                            0..6,
+                            (inst_base + range.instances.start)..(inst_base + range.instances.end),
+                        );
+                    });
                     ri += 1;
                     continue;
                 }
@@ -10042,30 +10140,40 @@ impl GpuRenderer {
                 render_pass.set_bind_group(1, bind, &[]);
                 if let Some(g) = range.gpu {
                     if coverage_order {
-                        render_pass.draw_indexed_indirect(
-                            self.gpu_cov.draws_buffer(),
-                            gpu_cov::GpuCoverage::draw_base(g) + u64::from(gpu_cov::ARGS_PARTIAL),
-                        );
+                        scissors.draw(&mut render_pass, |raster| {
+                            raster.draw_indexed_indirect(
+                                self.gpu_cov.draws_buffer(),
+                                gpu_cov::GpuCoverage::draw_base(g)
+                                    + u64::from(gpu_cov::ARGS_PARTIAL),
+                            );
+                        });
                     } else {
-                        render_pass.draw_indirect(
-                            self.gpu_cov.draws_buffer(),
-                            gpu_cov::GpuCoverage::draw_base(g) + u64::from(gpu_cov::ARGS_NORMAL),
-                        );
+                        scissors.draw(&mut render_pass, |raster| {
+                            raster.draw_indirect(
+                                self.gpu_cov.draws_buffer(),
+                                gpu_cov::GpuCoverage::draw_base(g)
+                                    + u64::from(gpu_cov::ARGS_NORMAL),
+                            );
+                        });
                     }
                 } else if coverage_order {
                     // Four vertex shader runs per quad, but the indices
                     // submit the painter path's exact ordered triangles —
                     // required for bit-identical rasterization.
-                    render_pass.draw_indexed(
-                        0..6,
-                        0,
-                        (inst_base + range.instances.start)..(inst_base + range.instances.end),
-                    );
+                    scissors.draw(&mut render_pass, |raster| {
+                        raster.draw_indexed(
+                            0..6,
+                            0,
+                            (inst_base + range.instances.start)..(inst_base + range.instances.end),
+                        );
+                    });
                 } else {
-                    render_pass.draw(
-                        0..6,
-                        (inst_base + range.instances.start)..(inst_base + range.instances.end),
-                    );
+                    scissors.draw(&mut render_pass, |raster| {
+                        raster.draw(
+                            0..6,
+                            (inst_base + range.instances.start)..(inst_base + range.instances.end),
+                        );
+                    });
                 }
                 ri += 1;
             }
@@ -10276,6 +10384,7 @@ impl GpuRenderer {
                     peak_backed_bytes: backed,
                 },
                 tile_pipelines,
+                surf.draw_demand.output_pixels(&surf.frame),
             ));
         }
         #[cfg(target_vendor = "apple")]
@@ -10940,6 +11049,7 @@ async fn upload_image(
     diag::create(device, "image", image_storage::bytes(&texture));
     write_image(device, queue, &texture, (width, height), data).await?;
     Ok(GpuImage {
+        revision: 0,
         texture,
         view,
         width,
@@ -11140,6 +11250,7 @@ fn create_gpu_image(
         &data.bytes,
     );
     GpuImage {
+        revision: 0,
         sampling_flags: data.flags,
         texture,
         view,

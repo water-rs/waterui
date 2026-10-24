@@ -457,6 +457,7 @@ fn frame_report_attributes_the_epoch_and_the_traffic_around_it() {
             peak_backed_bytes: 4 * REGION_BYTES,
         },
         Vec::new(),
+        256,
     );
 
     assert_eq!((report.frame, report.surface, report.passes), (7, 3, 3));
@@ -497,6 +498,7 @@ fn frame_report_attributes_the_epoch_and_the_traffic_around_it() {
         &plan,
         AttachmentBytes::default(),
         Vec::new(),
+        256,
     );
     assert!(report.epochs.is_empty());
     assert!(report.on_chip.is_empty());
@@ -642,7 +644,7 @@ fn demand_follows_frozen_writes_and_severs_cleared_generations() {
             changes.pass(4).is_empty(),
             "frozen capture excludes later writes"
         );
-        demand.update(&frame, &plan, |target, _, region| {
+        demand.update(&frame, &plan, |_, target, _, region| {
             if target == Target::Part(0) {
                 region.add(2, 3, 4, 5);
             }
@@ -653,7 +655,7 @@ fn demand_follows_frozen_writes_and_severs_cleared_generations() {
         for index in [3, 5, 6] {
             assert!(demand.pass(index).is_empty(), "unneeded pass {index}");
         }
-        demand.update(&frame, &plan, |target, _, region| {
+        demand.update(&frame, &plan, |_, target, _, region| {
             if target == Target::Part(1) {
                 region.add(8, 9, 2, 3);
             }
@@ -689,7 +691,7 @@ fn demand_expands_neighborhood_reads_and_tracks_destination_snapshots() {
         Some(0)
     );
     let mut demand = crate::render::composite::demand::Demand::default();
-    demand.update(&frame, &plan, |_, _, region| region.add(4, 5, 2, 3));
+    demand.update(&frame, &plan, |_, _, _, region| region.add(4, 5, 2, 3));
     assert_eq!(demand.pass(0).pixel_area(), 6);
     assert_eq!(demand.pass(1).pixel_area(), 256);
     assert_eq!(demand.pass(2).pixel_area(), 6);
