@@ -114,7 +114,7 @@ impl SurfaceState {
         let count = match &self.output {
             Output::Stream { .. } => (self.size.1 as usize).div_ceil(raster::BAND_H),
             Output::F32(_) | Output::F16(_) => {
-                self.damage.bands().iter().filter(|dirty| **dirty).count()
+                usize::try_from(self.damage.bands().pixel_area()).expect("band count fits usize")
             }
         };
         u32::try_from(count).expect("surface band count fits u32")

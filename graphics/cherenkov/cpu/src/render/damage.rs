@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use cherenkov::LayerId;
+use cherenkov::{LayerId, damage::Region};
 use rustc_hash::FxHashMap;
 
 use super::{
@@ -54,17 +54,32 @@ struct Footprint {
     generation: u64,
 }
 
-#[derive(Default)]
 pub struct Damage {
     pub layers: Vec<Layer>,
     previous: FxHashMap<LayerId, Footprint>,
     generation: u64,
     stack: Vec<(Range<usize>, (usize, usize))>,
-    bands: Vec<bool>,
+    bands: Region,
     filter_aprons: Vec<usize>,
     captures: Vec<Dependency>,
     baseline: Option<([u32; 4], u64)>,
     pending: ([u32; 4], u64),
+}
+
+impl Default for Damage {
+    fn default() -> Self {
+        Self {
+            layers: Vec::new(),
+            previous: FxHashMap::default(),
+            generation: 0,
+            stack: Vec::new(),
+            bands: Region::new((1, 0)),
+            filter_aprons: Vec::new(),
+            captures: Vec::new(),
+            baseline: None,
+            pending: ([0; 4], 0),
+        }
+    }
 }
 
 impl Damage {
@@ -75,8 +90,8 @@ impl Damage {
     pub fn heap_bytes(&self) -> u64 {
         (self.layers.capacity() * size_of::<Layer>()
             + self.previous.capacity() * size_of::<(LayerId, Footprint)>()
-            + self.stack.capacity() * size_of::<(Range<usize>, (usize, usize))>()
-            + self.bands.capacity() * size_of::<bool>()) as u64
+            + self.stack.capacity() * size_of::<(Range<usize>, (usize, usize))>()) as u64
+            + self.bands.heap_bytes().0
             + (self.filter_aprons.capacity() * size_of::<usize>()) as u64
             + (self.captures.capacity() * size_of::<Dependency>()) as u64
     }
@@ -93,8 +108,17 @@ impl Damage {
         // Footprints update in place. Until rasterization commits, neither
         // this metadata nor a partially written output is a valid baseline.
         let full = self.baseline.take() != Some(self.pending) || animated;
+        let extent = (
+            1,
+            u32::try_from(h.div_ceil(BAND_H)).expect("surface band count fits u32"),
+        );
+        if self.bands.extent() != extent {
+            self.bands = Region::new(extent);
+        }
         self.bands.clear();
-        self.bands.resize(h.div_ceil(BAND_H), full);
+        if full {
+            self.bands.mark_full();
+        }
         self.generation += 1;
         self.stack.clear();
         let apron = self.dependencies(items, h);
@@ -142,7 +166,10 @@ impl Damage {
             loop {
                 let mut changed = false;
                 for capture in &self.captures {
-                    if self.bands[capture.input.clone()].iter().any(|dirty| *dirty) {
+                    if self.bands().rectangles().iter().any(|rect| {
+                        (rect.y0() as usize) < capture.input.end
+                            && capture.input.start < rect.y1() as usize
+                    }) {
                         changed |= mark(&mut self.bands, capture.output, apron, h);
                     }
                 }
@@ -174,7 +201,7 @@ impl Damage {
         maximum.min(h)
     }
 
-    pub fn bands(&self) -> &[bool] {
+    pub const fn bands(&self) -> &Region {
         &self.bands
     }
 
@@ -202,16 +229,22 @@ fn extend_items(rows: &mut (usize, usize), items: &[Item], h: usize) {
     }
 }
 
-fn mark(bands: &mut [bool], (start, end): (usize, usize), apron: usize, h: usize) -> bool {
-    if start < end {
-        let selected =
-            &mut bands[start.saturating_sub(apron) / BAND_H..(end + apron).min(h).div_ceil(BAND_H)];
-        let changed = selected.iter().any(|dirty| !*dirty);
-        if changed {
-            selected.fill(true);
-        }
-        changed
-    } else {
-        false
+fn mark(bands: &mut Region, (start, end): (usize, usize), apron: usize, h: usize) -> bool {
+    if start >= end || bands.is_full() {
+        return false;
     }
+    let start = start.saturating_sub(apron) / BAND_H;
+    let end = (end + apron).min(h).div_ceil(BAND_H);
+    let before = bands.pixel_area();
+    if start == 0 && end == h.div_ceil(BAND_H) {
+        bands.mark_full();
+    } else {
+        bands.add(
+            0,
+            u32::try_from(start).expect("band start fits u32"),
+            1,
+            u32::try_from(end - start).expect("band count fits u32"),
+        );
+    }
+    bands.pixel_area() != before
 }

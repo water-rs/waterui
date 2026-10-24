@@ -1,6 +1,75 @@
 use crate::{Gpu, GpuConfig, interop::TextureTarget};
 use cherenkov::{Draw, Engine, FrameTime, WorkingColor, kurbo::Rect};
 
+struct LiveSigma(std::sync::mpsc::Sender<filtrate_core::AnimatedCallback>);
+
+impl filtrate_core::FilterParam for LiveSigma {
+    fn snapshot(&self) -> f32 {
+        1.0
+    }
+
+    fn watch_animated(
+        &self,
+        callback: filtrate_core::AnimatedCallback,
+    ) -> filtrate_core::WatchGuard {
+        self.0.send(callback).expect("parameter receiver");
+        filtrate_core::WatchGuard::new(())
+    }
+}
+
+#[test]
+fn partial_frames_follow_retained_filter_parameters() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = Engine::<Gpu>::new(GpuConfig::default())?;
+    let (send, receive) = std::sync::mpsc::channel();
+    let blur = engine.filter(filtrate::filters::GaussianBlur::new(LiveSigma(send)));
+    let size = (256, 192);
+    let (target, _textures) = TextureTarget::new(size);
+    let retained = engine.surface(target, || {})?;
+    let background = WorkingColor::new([0.2, 0.3, 0.4, 0.5]);
+    retained.clear_color(background);
+    retained.update(|tx| {
+        tx[retained.root()].content(retained.record(|r| {
+            paint_frame(r, Some(80.0), false, Some(blur.id()));
+        }));
+    });
+    engine.render(FrameTime::now())?;
+    let change = receive.recv_timeout(std::time::Duration::from_secs(5))?;
+    let output = std::env::temp_dir().join("cherenkov-partial-live-blur");
+    std::fs::create_dir_all(&output)?;
+    for (step, sigma) in [3.0f32, 1.0, 4.0, 0.5].into_iter().enumerate() {
+        change(filtrate_core::AnimatedTarget {
+            value: sigma,
+            interpolator: None,
+        });
+        engine.render(FrameTime::now())?;
+        let reference_blur = engine.filter(filtrate::filters::GaussianBlur::new(sigma));
+        let (target, _reference_textures) = TextureTarget::new(size);
+        let reference = engine.surface(target, || {})?;
+        reference.clear_color(background);
+        reference.update(|tx| {
+            tx[reference.root()].content(reference.record(|r| {
+                paint_frame(r, Some(80.0), false, Some(reference_blur.id()));
+            }));
+        });
+        engine.render(FrameTime::now())?;
+        let actual = retained.readback()?;
+        let expected = reference.readback()?;
+        let actual = cherenkov_oracle::F32Image {
+            width: actual.width,
+            height: actual.height,
+            pixels: actual.pixels,
+        };
+        let expected = cherenkov_oracle::F32Image {
+            width: expected.width,
+            height: expected.height,
+            pixels: expected.pixels,
+        };
+        actual.write_png(&output.join(format!("frame-{step}.png")))?;
+        cherenkov_oracle::metrics::assert_images_match(&expected, &actual);
+    }
+    Ok(())
+}
+
 #[test]
 fn partial_frames_match_fresh_render_after_motion_and_removal()
 -> Result<(), Box<dyn std::error::Error>> {
