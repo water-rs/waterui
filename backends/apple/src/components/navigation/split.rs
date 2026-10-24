@@ -1,15 +1,17 @@
 //! `NavigationSplitLayout` — the two/three-column adaptive container.
 //!
-//! iOS renders a `UISplitViewController` (double or triple column); each
-//! column hosts a [`NavContentController`] wrapping the rendered subtree, so a
-//! column's own `NavigationView` draws its standalone bar inside the column.
+//! iOS renders a `UISplitViewController` (double or triple column): the
+//! sidebar column hosts a [`NavContentController`] inside an implicit
+//! `UINavigationController`, while the middle and detail columns are
+//! stack-driven `UINavigationController`s, so a column's own
+//! `NavigationView` chrome lands on `navigationItem` and a collapse onto
+//! compact pushes the page with the platform's back affordance.
 //! macOS renders the kit [`SplitViewController`] (`NSSplitViewController`).
 //! Selection bindings rebuild the downstream columns; column visibility maps
 //! to per-column collapse.
 
 use core::cell::RefCell;
 
-use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
 use waterui::navigation::{
     NavigationSplitLayout, split::NavigationSplitDetailBuilder as DetailBuilder,
@@ -66,21 +68,20 @@ struct Columns {
 }
 
 impl Columns {
-    /// The middle column's leaf: built from the primary selection (three
-    /// columns) or the placeholder.
-    fn middle(&self) -> NativeLeaf {
-        let view = match (&self.content, self.primary.snapshot()) {
+    /// The middle column's content: built from the primary selection
+    /// (three columns) or the placeholder.
+    fn middle_view(&self) -> AnyView {
+        match (&self.content, self.primary.snapshot()) {
             (Some(content), Some(id)) => AnyView::new(content.build(id)),
             _ => self.placeholder.build(),
-        };
-        self.renderer.render(view)
+        }
     }
 
-    /// The detail column's leaf: the primary selection drives two-column
-    /// splits; the secondary selection drives three-column splits.
-    fn detail(&self) -> NativeLeaf {
-        let view = self
-            .secondary
+    /// The detail column's content: the primary selection drives
+    /// two-column splits; the secondary selection drives three-column
+    /// splits.
+    fn detail_view(&self) -> AnyView {
+        self.secondary
             .as_ref()
             .map_or_else(
                 || self.primary.snapshot(),
@@ -89,8 +90,7 @@ impl Columns {
             .map_or_else(
                 || self.placeholder.build(),
                 |id| AnyView::new(self.detail.build(id)),
-            );
-        self.renderer.render(view)
+            )
     }
 }
 
@@ -112,10 +112,11 @@ mod platform {
 
     use crate::contract::KeepAlive;
 
-    /// `WuiSplitColumnPageController`: `UIKit` wraps each column in a nav
-    /// controller whose bar reserves its height in the safe area even when
-    /// it draws nothing, so the page hides the bar while it is the stack's
-    /// base — a pushed page keeps it for the back affordance.
+    /// `UIKit` wraps the sidebar column in a nav controller whose bar
+    /// reserves its height in the safe area even when it draws nothing, so
+    /// the page hides the bar while it is the stack's base — a pushed page
+    /// keeps it for the back affordance. (The detail and middle columns
+    /// are stack-driven nav controllers whose own bar carries chrome.)
     fn hide_bar_when_base(vc: &Retained<NavContentController>) {
         let weak = cocoa_ui::objc2::rc::Weak::new(&**vc);
         vc.set_will_appear_handler(move |animated| {
@@ -134,7 +135,6 @@ mod platform {
     struct Split {
         columns: Columns,
         nav: Retained<SplitController>,
-        mtm: cocoa_ui::MainThreadMarker,
         applying_selection: Cell<bool>,
     }
 
@@ -191,7 +191,6 @@ mod platform {
         let split = Rc::new(Split {
             columns,
             nav,
-            mtm,
             applying_selection: Cell::new(false),
         });
 
@@ -308,24 +307,29 @@ mod platform {
             }
         }
 
+        /// Middle/detail columns render through the stack driver: a real
+        /// `UINavigationController` per column, so the page's chrome —
+        /// large title, the `searchable` field, toolbar items — lands on
+        /// `navigationItem`, and a collapse pushes the top page onto the
+        /// compact stack with the platform's own back affordance.
         fn mount_middle(&self, keep: &mut KeepAlive) {
-            let leaf = self.columns.middle();
-            let vc = NavContentController::new(self.mtm, leaf.view());
-            hide_bar_when_base(&vc);
+            let ctx = self.columns.renderer.context();
+            let (leaf, column_nav) =
+                crate::components::navigation::stack::column_leaf(self.columns.middle_view(), &ctx);
             self.nav
-                .set_column(UISplitViewControllerColumn::Supplementary, &vc);
+                .set_column(UISplitViewControllerColumn::Supplementary, &column_nav);
             keep.keep(leaf);
-            keep.keep(vc);
+            keep.keep(column_nav);
         }
 
         fn mount_detail(&self, keep: &mut KeepAlive) {
-            let leaf = self.columns.detail();
-            let vc = NavContentController::new(self.mtm, leaf.view());
-            hide_bar_when_base(&vc);
+            let ctx = self.columns.renderer.context();
+            let (leaf, column_nav) =
+                crate::components::navigation::stack::column_leaf(self.columns.detail_view(), &ctx);
             self.nav
-                .set_column(UISplitViewControllerColumn::Secondary, &vc);
+                .set_column(UISplitViewControllerColumn::Secondary, &column_nav);
             keep.keep(leaf);
-            keep.keep(vc);
+            keep.keep(column_nav);
         }
     }
 }
@@ -552,8 +556,8 @@ mod platform {
         fn mount(&self, keep: &mut KeepAlive) {
             // The sidebar leaf is already retained; the first column stays
             // mounted — only downstream columns rebuild.
-            let middle = self.columns.middle();
-            let detail = self.columns.detail();
+            let middle = self.columns.renderer.render(self.columns.middle_view());
+            let detail = self.columns.renderer.render(self.columns.detail_view());
             self.nav.set_columns(
                 &self.sidebar,
                 if self.columns.content.is_some() {
