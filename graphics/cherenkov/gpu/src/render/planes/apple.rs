@@ -1527,6 +1527,9 @@ fn pixel_buffer(frame: &ExternalFrame) -> Result<CFRetained<CVPixelBuffer>, Rend
         })?;
     // SAFETY: the create call returned a +1 pixel buffer.
     let buffer = unsafe { CFRetained::from_raw(buffer) };
+    if let Some(attachments) = &frame.attachments {
+        attachments.apply(&buffer);
+    }
     for (key, value) in color_attachments(frame) {
         // SAFETY: every colour attachment's value is a CFString.
         unsafe { buffer.set_attachment(key, value, CVAttachmentMode::ShouldPropagate) };
@@ -2396,37 +2399,66 @@ impl LayerPlanes {
             })
         });
         for plane in c.planes {
-            let PlaneContent::Raster { view, generation } = &plane.content else {
+            let PlaneContent::Raster {
+                view,
+                generation,
+                range,
+            } = &plane.content
+            else {
                 continue;
             };
             let layer = plane.placement.layer;
-            if self.buffers.get(&layer).is_none_or(|buffer| {
-                buffer.generation != *generation
-                    || buffer.headroom.to_bits() != c.display.headroom.to_bits()
-            }) {
-                let buffer = raster::Buffer::new(
+            if self
+                .buffers
+                .get(&layer)
+                .is_none_or(|buffer| buffer.generation != *generation || buffer.range != *range)
+            {
+                let mut buffer = raster::Buffer::new(
                     c.device,
                     plane.placement.size,
                     *generation,
                     c.display.headroom,
+                    *range,
                 )?;
-                buffer.completing(c.queue, self.waker.clone());
-                c.presenter.texture(
-                    c.device,
-                    c.queue,
-                    view.expect("a new native capture has engine pixels"),
-                    crate::interop::TextureOutput {
-                        texture: &buffer.texture,
-                        color: crate::interop::OutputColor::LinearDisplayP3,
-                        alpha: crate::interop::OutputAlpha::Premultiplied,
-                        headroom: c.display.headroom,
-                    },
-                );
+                buffer.signal(c.queue);
+                if *range == crate::render::present::ColorRange::HighDynamicRange {
+                    buffer.pending_headroom = Some(c.presenter.capture_scene(
+                        c.device,
+                        c.queue,
+                        view.expect("a new native capture has engine pixels"),
+                        &buffer.texture,
+                    )?);
+                } else {
+                    c.presenter.texture(
+                        c.device,
+                        c.queue,
+                        view.expect("a new native capture has engine pixels"),
+                        crate::interop::TextureOutput {
+                            texture: &buffer.texture,
+                            color: crate::interop::OutputColor::DisplayP3,
+                            alpha: crate::interop::OutputAlpha::Premultiplied,
+                            headroom: c.display.headroom,
+                        },
+                    );
+                }
+                buffer.completing(self.waker.clone());
                 self.buffers.insert(layer, buffer);
             }
-            let buffer = &self.buffers[&layer];
-            ready &= buffer.ready.load(Ordering::Acquire);
-            contents.push((layer, raster::Contents(buffer.surface.clone())));
+            let buffer = self
+                .buffers
+                .get_mut(&layer)
+                .expect("capture inserted above");
+            let completed = buffer.ready.load(Ordering::Acquire);
+            if completed && let Some(pending) = buffer.pending_headroom.take() {
+                // SAFETY: the shared event published with Release after this
+                // capture's GPU copy; this immutable readback is never reused.
+                buffer.headroom = unsafe { pending.read() };
+            }
+            ready &= completed;
+            contents.push((
+                layer,
+                raster::Contents(buffer.surface.clone(), buffer.range, buffer.headroom),
+            ));
         }
         Ok(ready.then_some(contents))
     }
@@ -2546,13 +2578,10 @@ impl Compositor for LayerPlanes {
     }
 
     fn shows(frame: &ExternalFrame) -> bool {
-        // The proven external class is opaque BGRA8/sRGB. YUV range
-        // expansion, BT.1886, and HDR tone mapping differ from the engine;
-        // they remain engine-composited until their platform parity is
-        // established. The second admitted class is the engine's own frame
-        // ring — premultiplied f16 in the working space: its declared
-        // decode is the identity, so the layer shows exactly the pixels
-        // the engine composited.
+        // AVFoundation owns standard PQ/HLG display mapping. Its color tags
+        // cannot express custom reference-white normalization or a custom HLG
+        // reference peak, so those signals remain engine-composited. BT.709
+        // also stays in-engine because the declared decode is BT.1886.
         let video = matches!(&frame.planes, FramePlanes::Rgb { plane, .. }
             if plane.format() == wgpu::TextureFormat::Bgra8Unorm)
             && frame.color.transfer == Transfer::Srgb
@@ -2561,7 +2590,18 @@ impl Compositor for LayerPlanes {
             if plane.format() == wgpu::TextureFormat::Rgba16Float)
             && frame.color.transfer == Transfer::Linear
             && frame.color.primaries == Primaries::DisplayP3;
-        (video || ring) && frame_surface(frame).is_some()
+        let hdr = matches!(frame.planes, FramePlanes::Yuv { .. })
+            && frame.color.reference_white.to_bits()
+                == crate::interop::FrameColor::BT2020_PQ
+                    .reference_white
+                    .to_bits()
+            && match frame.color.transfer {
+                Transfer::Pq => true,
+                // BT.2100's reference HLG display peak is 1000 cd/m².
+                Transfer::Hlg => frame.color.hlg_peak.to_bits() == 1000.0_f32.to_bits(),
+                _ => false,
+            };
+        (video || ring || hdr) && frame_surface(frame).is_some()
     }
 }
 

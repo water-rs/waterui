@@ -638,6 +638,7 @@ fn cover_strips(b: Rect, c: Cover) -> impl Iterator<Item = Rect> {
 pub struct ContentData {
     pub(crate) retained: cherenkov::lowering::Content<Op, Emission>,
     pub(crate) storage: EmissionStorage,
+    pub(crate) range: Option<super::present::ColorRange>,
 }
 
 impl ContentData {
@@ -645,11 +646,13 @@ impl ContentData {
         Self {
             retained: cherenkov::lowering::Content::new(list),
             storage: EmissionStorage::default(),
+            range: None,
         }
     }
 
     pub fn replace(&mut self, list: cherenkov::Picture) -> cherenkov::Picture {
         let previous = self.retained.replace(list);
+        self.range = None;
         self.storage.instances.clear();
         self.storage.stops.clear();
         self.storage.templates.clear();
@@ -681,6 +684,7 @@ impl ContentData {
         Self {
             retained: cherenkov::lowering::Content::picture(list),
             storage: EmissionStorage::default(),
+            range: None,
         }
     }
 
@@ -691,10 +695,12 @@ impl ContentData {
             self.storage.geometry.flag_reconcile();
         }
         self.retained.update(updates);
+        self.range = None;
     }
 
     pub fn invalidate(&mut self) {
         self.retained.invalidate();
+        self.range = None;
         self.storage = EmissionStorage::default();
     }
 
@@ -707,12 +713,14 @@ impl ContentData {
     /// dimensions changed behind the same id.
     pub fn invalidate_image(&mut self, id: cherenkov::ImageId) {
         if self.retained.invalidate_image(id) {
+            self.range = None;
             self.storage = EmissionStorage::default();
         }
     }
 
     pub fn trim(&mut self) {
         self.retained.trim();
+        self.range = None;
         self.storage = EmissionStorage::default();
     }
 }
@@ -2205,11 +2213,12 @@ impl<'a> Lowering<'a> {
         glyphs: &GlyphContext<'_>,
     ) -> Result<(), RenderError> {
         for content in caches.values_mut() {
-            self.commands_lowered += content.retained.prepare(&mut super::prepared::Lowerer {
+            let changed = content.retained.prepare(&mut super::prepared::Lowerer {
                 fonts: glyphs.fonts,
                 images: glyphs.images,
                 pending: &mut self.pending,
             })?;
+            self.commands_lowered += changed;
         }
         Ok(())
     }
@@ -7627,6 +7636,10 @@ mod tests {
     /// after it into a transparent part 1, and its own content is left
     /// to its plane.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "verify emitted parts and color ranges against the same promotion matrix"
+    )]
     fn a_promoted_layer_splits_the_surface_into_parts() {
         use cherenkov::testing::LayerOp;
         use cherenkov::{Draw as _, Picture, SurfaceTree};
@@ -7645,7 +7658,10 @@ mod tests {
         }
         let rect = |x: f64| {
             ContentData::new(Picture::record(|c| {
-                c.fill(Rect::new(x, 0.0, x + 8.0, 8.0), WorkingColor::WHITE);
+                c.fill(
+                    Rect::new(x, 0.0, x + 8.0, 8.0),
+                    WorkingColor::new([if x > 0.0 { 2.0 } else { 1.0 }, 1.0, 1.0, 1.0]),
+                );
             }))
         };
         let lower = |plan: &crate::render::planes::Plan| {
@@ -7686,6 +7702,28 @@ mod tests {
                     plan,
                 )
                 .expect("lowered");
+            let mut ranges = Vec::new();
+            super::super::content_range::parts(
+                &tree,
+                &mut caches,
+                glyphs.images,
+                glyphs.content,
+                plan,
+                WorkingColor::BLACK,
+                &mut ranges,
+            );
+            assert_eq!(ranges.len(), plan.parts());
+            let hdr = super::super::present::ColorRange::HighDynamicRange;
+            assert_eq!(
+                ranges.contains(&hdr),
+                !plan.planes.iter().any(|p| p.layer == above)
+            );
+            if ranges.len() > 1 {
+                assert_ne!(
+                    ranges[0], hdr,
+                    "the HDR layer belongs above the video plane"
+                );
+            }
             frame
                 .passes
                 .iter()

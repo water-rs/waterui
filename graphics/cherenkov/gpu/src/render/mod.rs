@@ -6,6 +6,7 @@ mod capabilities;
 mod colr;
 mod composite;
 pub mod composition;
+mod content_range;
 pub mod diag;
 #[cfg(target_os = "linux")]
 pub mod dmabuf_export;
@@ -14,6 +15,8 @@ pub mod filter;
 mod glyph;
 mod gpu_content;
 mod gpu_cov;
+#[cfg(any(target_vendor = "apple", target_os = "android"))]
+mod headroom;
 mod image_storage;
 mod instance;
 mod lower;
@@ -426,10 +429,13 @@ struct SurfaceState {
     /// Engine parts above the first (`target` is part 0): one per promoted
     /// plane with layers painted above it, at the surface size.
     parts: Vec<(wgpu::Texture, wgpu::TextureView)>,
+    part_ranges: Vec<present::ColorRange>,
     /// Texture-target hand-off: each rendered texture goes to the host.
     textures: Option<std::sync::mpsc::Sender<wgpu::Texture>>,
     refresh: cherenkov::RefreshRange,
     present_pending: bool,
+    #[cfg(target_os = "android")]
+    present_generation: u64,
     /// The last display properties the frame carried — a change triggers
     /// the window's output re-selection (#98).
     display: cherenkov::Display,
@@ -584,12 +590,30 @@ impl BackdropGroupState {
 impl SurfaceState {
     fn lowering_bytes(&self) -> u64 {
         self.anchor_scratch.heap_bytes()
+            + (self.part_ranges.capacity() * std::mem::size_of::<present::ColorRange>()) as u64
             + self.raster_scratch.heap_bytes()
             + self
                 .layers
                 .values()
                 .map(ContentData::gpu_input_bytes)
                 .sum::<u64>()
+    }
+
+    fn classify_parts(
+        &mut self,
+        frame: &SurfaceFrame<'_>,
+        layers: &mut FxHashMap<LayerId, ContentData>,
+        images: &FxHashMap<u64, GpuImage>,
+    ) {
+        content_range::parts(
+            frame.tree,
+            layers,
+            images,
+            &self.bindings,
+            &self.plan,
+            frame.clear,
+            &mut self.part_ranges,
+        );
     }
 
     /// Engine part `n`'s texture: `target` for part 0.
@@ -3306,6 +3330,7 @@ fn plane_stack<'a, 'p: 'a>(
                         planes::PlaneContent::Raster {
                             view: capture.source.as_ref().map(|(_, view)| view),
                             generation: capture.generation,
+                            range: surface.static_layers[&placement.layer].range,
                         }
                     },
                     |slot| planes::PlaneContent::Frame {
@@ -3513,7 +3538,8 @@ impl Renderer for GpuRenderer {
             GpuTarget::Texture(texture) => (None, Some(texture.textures), texture.refresh, false),
             #[cfg(target_os = "android")]
             GpuTarget::SurfaceControl(target) => {
-                (None, None, self.surface_control(id, target)?, true)
+                let refresh = self.surface_control(id, target, waker.clone())?;
+                (None, None, refresh, true)
             }
             #[cfg(target_os = "linux")]
             GpuTarget::Dmabuf(target) => (None, None, self.dmabuf_export(id, target)?, true),
@@ -3555,9 +3581,12 @@ impl Renderer for GpuRenderer {
                 static_walk: Vec::new(),
                 plan_dirty: false,
                 parts: Vec::new(),
+                part_ranges: Vec::new(),
                 textures,
                 refresh,
                 present_pending: false,
+                #[cfg(target_os = "android")]
+                present_generation: 0,
                 display: cherenkov::Display::default(),
                 size,
                 format,
@@ -4710,6 +4739,7 @@ impl GpuRenderer {
         &mut self,
         id: SurfaceId,
         target: crate::interop::android::SurfaceControlTarget,
+        waker: cherenkov::CompletionWaker,
     ) -> Result<cherenkov::RefreshRange, SurfaceError> {
         // The context is built on first need (#170); a surface-control
         // target needs it now — planes import frame buffers natively.
@@ -4726,6 +4756,7 @@ impl GpuRenderer {
             native.shared.clone(),
             std::sync::Arc::clone(&self.submit_lock),
             &target,
+            waker,
         )?;
         self.planes.insert(id, system);
         self.presenter
@@ -4924,6 +4955,10 @@ impl GpuRenderer {
                 }
                 self.finish_projective(sf.id);
                 let surface = self.surfaces.get_mut(&sf.id).expect("rendered surface");
+                #[cfg(target_os = "android")]
+                {
+                    surface.present_generation += 1;
+                }
                 surface.present_pending = surface.window.is_some()
                     || surface.promotes
                     || self.exports.contains_key(&sf.id);
@@ -5083,6 +5118,10 @@ impl GpuRenderer {
                 }
                 self.finish_projective(sf.id);
                 let surface = self.surfaces.get_mut(&sf.id).expect("rendered surface");
+                #[cfg(target_os = "android")]
+                {
+                    surface.present_generation += 1;
+                }
                 surface.present_pending = surface.window.is_some()
                     || surface.promotes
                     || self.exports.contains_key(&sf.id);
@@ -6350,6 +6389,8 @@ impl GpuRenderer {
                 } else {
                     let parts: Vec<_> = (0..surface.plan.parts())
                         .map(|n| planes::Part {
+                            #[cfg(target_os = "android")]
+                            range: surface.part_ranges[n],
                             view: match n {
                                 0 => &surface.view,
                                 n => &surface.parts[n - 1].1,
@@ -6360,6 +6401,8 @@ impl GpuRenderer {
                     planes::SystemPlanes::compose(
                         system,
                         planes::Composition {
+                            #[cfg(target_os = "android")]
+                            generation: surface.present_generation,
                             device,
                             queue,
                             presenter,
@@ -6592,13 +6635,19 @@ impl GpuRenderer {
         if !surf.promotes || !<planes::Platform as planes::Compositor>::CAPTURES {
             return Ok(());
         }
-        let output_changed = sf.display.headroom.to_bits() != surf.display.headroom.to_bits()
-            || sf.display.scale.to_bits() != surf.display.scale.to_bits();
-        if output_changed && !surf.static_layers.is_empty() {
+        let scale_changed = sf.display.scale.to_bits() != surf.display.scale.to_bits();
+        let output_changed =
+            scale_changed || sf.display.headroom.to_bits() != surf.display.headroom.to_bits();
+        if output_changed {
             for entry in surf.static_layers.values_mut() {
-                entry.capture = None;
+                if scale_changed
+                    || (cfg!(not(target_vendor = "apple"))
+                        && entry.range == present::ColorRange::HighDynamicRange)
+                {
+                    entry.capture = None;
+                    surf.plan_dirty = true;
+                }
             }
-            surf.plan_dirty = true;
         }
         if !sf.changed && !output_changed {
             return Ok(());
@@ -6654,6 +6703,7 @@ impl GpuRenderer {
                 .entry(layer)
                 .or_insert_with(|| planes::static_layer::Observation::new(stamp, resources));
             if entry.observe(stamp, resources, density) {
+                entry.range = content_range::of_ops(ops, &self.images);
                 entry.domain = planes::static_layer::domain(
                     ops,
                     source,
@@ -6948,6 +6998,9 @@ impl GpuRenderer {
             lowered.path_arena = std::mem::take(&mut lowering.path_arena);
             result
         };
+        if result.is_ok() && surf.promotes {
+            surf.classify_parts(frame, &mut layers, resources.images);
+        }
         surf.layers = layers;
         surf.frame.content.sort_unstable_by_key(|(id, _)| id.raw());
         surf.frame.external.sort_unstable_by_key(|id| id.raw());
@@ -7673,6 +7726,13 @@ impl GpuRenderer {
     /// The error is the reason the frame's images are attributed to, so
     /// a census distinguishes "this build has no executor" from "this
     /// device cannot run one".
+    #[cfg_attr(
+        not(unix),
+        expect(
+            clippy::unused_self,
+            reason = "tile executor state exists only on Unix"
+        )
+    )]
     fn tile_limits(&self) -> Result<composite::plan::Limits, composition::Materialization> {
         // Which executor this target has, and whether it is installed.
         // The mirror is absent only because the Vulkan device declined,
@@ -7705,9 +7765,6 @@ impl GpuRenderer {
         let (slots, available) = (0, Err(composition::Materialization::NoExecutor));
 
         available?;
-        if self.scratch_format != WORKING_FORMAT {
-            return Err(composition::Materialization::Format);
-        }
         Ok(composite::plan::Limits {
             slots,
             format: WORKING_FORMAT,
