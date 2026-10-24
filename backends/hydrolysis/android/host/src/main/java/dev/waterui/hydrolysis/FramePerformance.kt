@@ -1,6 +1,7 @@
 package dev.waterui.hydrolysis
 
 import android.content.Context
+import android.os.Build
 import android.os.PerformanceHintManager
 import android.os.Process
 import android.util.Log
@@ -30,12 +31,14 @@ internal class FramePerformance(context: Context) : AutoCloseable {
             close()
             val threads = if (renderThread == 0) intArrayOf(Process.myTid())
                 else intArrayOf(Process.myTid(), renderThread)
-            session = manager!!.createHintSession(threads, targetNanos)
-            if (session == null) {
+            val created = manager!!.createHintSession(threads, targetNanos)
+            if (created == null) {
                 supported = false
                 Log.i("hydrolysis", "Performance hint sessions are unavailable on this device")
                 return
             }
+            if (Build.VERSION.SDK_INT >= 35) created.setPreferPowerEfficiency(true)
+            session = created
             worker = renderThread
             reportedTargetNanos = targetNanos
         }
