@@ -900,8 +900,8 @@ struct GeometryEntry {
 /// (water-rs/waterui#3306), keyed by [`GeometryKey::digest`]: a
 /// re-recorded or re-placed path reuses its flattened,
 /// winding-resolved segments. Liveness reconciles only after a walk
-/// that flagged or changed realizations — the entries the current
-/// retained emissions' digests mark stay, the rest drop — so the live
+/// flagged by source updates or geometry identity changes — the current
+/// retained emissions mark the entries that stay, the rest drop — so the live
 /// set tracks current emissions, never historical placements. The
 /// cache lives and dies with the content's storage.
 #[derive(Default)]
@@ -951,13 +951,13 @@ impl GeometryCache {
         &mut entry.geometry
     }
 
-    /// Reconcile liveness after a successful walk that flagged or
-    /// changed a realization: a new epoch marks the digests `emissions`
-    /// carry and drops unmarked entries — marking a colliding digest
-    /// retains the entry, never reuses its geometry. An unflagged
-    /// all-hit walk and an empty table both return without scanning.
-    fn reconcile(&mut self, emissions: &[Realization<Emission>], changed: bool) {
-        if !std::mem::take(&mut self.reconcile) && !changed {
+    /// Reconcile liveness after a flagged walk succeeds: a new
+    /// epoch marks the digests `emissions` carry and drops unmarked
+    /// entries — marking a colliding digest retains the entry, never
+    /// reuses its geometry. An unflagged walk and an empty table both
+    /// return without scanning.
+    fn reconcile(&mut self, emissions: &[Realization<Emission>]) {
+        if !std::mem::take(&mut self.reconcile) {
             return;
         }
         if self.entries.is_empty() {
@@ -4245,7 +4245,7 @@ impl<'a> Lowering<'a> {
                 0..ops.len(),
                 glyphs,
             )?;
-            content.storage.geometry.reconcile(emissions, changed);
+            content.storage.geometry.reconcile(emissions);
             self.layers_composed += u32::from(changed);
         }
         if let Some(binding) = binding {
@@ -4645,6 +4645,13 @@ impl<'a> Lowering<'a> {
         };
         self.transform = transform;
         let geometry = realized?;
+        // Reconcile on identity change only: a re-realized leaf that
+        // lands the same digest (a placement or coverage re-emit) owns
+        // nothing new. `None` transitions count — a CPU path leaf
+        // becoming any other realization releases its entry.
+        if geometry != cache.data.as_ref().and_then(|e| e.geometry) {
+            storage.geometry.flag_reconcile();
+        }
         let stop_base = u32::try_from(first_stop).expect("stop count fits u32");
         let instance_base = u32::try_from(first_instance).expect("instance count fits u32");
         let retained_instance = storage.instances.len();
