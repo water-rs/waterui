@@ -12,6 +12,8 @@
 //!
 //! The cases are iOS-only: on macOS the binary lists no trials.
 
+#[cfg(target_os = "ios")]
+use cocoa_ui::{Rect, uikit::native_test, view};
 use libtest_mimic::Arguments;
 
 // The target runner launches this binary as an application from the
@@ -30,12 +32,35 @@ fn main() {
     libtest_mimic::run(&arguments, Vec::new()).exit();
 }
 
+/// A main-thread marker for cases that construct `UIKit` objects — the
+/// harness application guarantees it.
+#[cfg(target_os = "ios")]
+fn mtm() -> cocoa_ui::MainThreadMarker {
+    cocoa_ui::MainThreadMarker::new().expect("native_app cases run on the main thread")
+}
+
+/// A key, visible window in the application's scene with `content`
+/// filling it, laid out.
+#[cfg(target_os = "ios")]
+fn scene_window(
+    mtm: cocoa_ui::MainThreadMarker,
+    content: &cocoa_ui::PlatformView,
+) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow> {
+    let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+    window.addSubview(content);
+    view::set_frame(content, view::bounds(&window));
+    window.makeKeyAndVisible();
+    window.layoutIfNeeded();
+    window
+}
+
 /// Every `native_app` case: trials that need a running `UIApplication`.
 #[cfg(target_os = "ios")]
 fn trials() -> Vec<libtest_mimic::Trial> {
     let mut trials = scroll_animation::trials();
     trials.extend(main_menu::trials());
     trials.extend(key_commands::trials());
+    trials.extend(gesture_events::trials());
     trials
 }
 
@@ -81,9 +106,9 @@ mod main_menu {
 #[cfg(target_os = "ios")]
 mod scroll_animation {
     use cocoa_ui::geometry::{Point, Size};
-    use cocoa_ui::objc2_ui_kit::UIWindow;
-    use cocoa_ui::uikit::{ScrollView, native_test};
-    use cocoa_ui::{MainThreadMarker, PlatformView, Rect, Retained, view};
+    use cocoa_ui::uikit::ScrollView;
+
+    use super::{mtm, scene_window};
     use waterui::animation::Animation;
     use waterui::component::list::ListItem;
     use waterui::layout::scroll::ScrollController;
@@ -128,21 +153,6 @@ mod scroll_animation {
                 })
             })
             .collect()
-    }
-
-    fn mtm() -> MainThreadMarker {
-        MainThreadMarker::new().expect("native_app cases run on the main thread")
-    }
-
-    /// A key, visible window in the application's scene with `content`
-    /// filling it, laid out.
-    fn scene_window(mtm: MainThreadMarker, content: &PlatformView) -> Retained<UIWindow> {
-        let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
-        window.addSubview(content);
-        view::set_frame(content, view::bounds(&window));
-        window.makeKeyAndVisible();
-        window.layoutIfNeeded();
-        window
     }
 
     fn animated_content_offset_lands_after_a_native_animation() {
@@ -703,5 +713,259 @@ mod key_commands {
         fn drop(&mut self) {
             self.window.setHidden(true);
         }
+    }
+}
+
+/// The shared gesture contract end to end inside the real `UIApplication`
+/// scene: a completed gesture inserts the observed `Gesture` and its
+/// typed event — `TapEvent`, `DragEvent`, `RotationEvent`,
+/// `MagnificationEvent` — into the action's environment, so a `Use<T>`
+/// handler extracts the same value Hydrolysis reports for the same input.
+/// These cases cover the observer's state/getter mapping, not the OS's
+/// gesture recognition: they drive the installed recognizer's documented
+/// `setState:`/getter-seeding transitions, which dispatch the target
+/// through the same `on_recognized` path a real completion does.
+#[cfg(target_os = "ios")]
+mod gesture_events {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use cocoa_ui::Retained;
+    use cocoa_ui::objc2::DowncastTarget;
+    use cocoa_ui::objc2_ui_kit::{
+        UIGestureRecognizerState, UIPanGestureRecognizer, UIPinchGestureRecognizer,
+        UIRotationGestureRecognizer, UITapGestureRecognizer,
+    };
+    use waterui::ViewExt as _;
+    use waterui::extract::Use;
+    use waterui::gesture::{DragEvent, DragGesture, GesturePhase};
+    use waterui::gesture::{MagnificationEvent, MagnificationGesture};
+    use waterui::gesture::{PointerButton, RotationEvent, RotationGesture, TapEvent, TapGesture};
+    use waterui::prelude::text;
+    use waterui_apple::dispatch;
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, pump_main_until, render_environment,
+    };
+
+    use super::{mtm, scene_window};
+
+    /// The `gesture_events::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        let cases: [(&str, fn()); 4] = [
+            (
+                "a_tap_gesture_delivers_its_event",
+                a_tap_gesture_delivers_its_event,
+            ),
+            (
+                "a_drag_gesture_delivers_its_events",
+                a_drag_gesture_delivers_its_events,
+            ),
+            (
+                "a_rotation_gesture_reports_native_radians",
+                a_rotation_gesture_reports_native_radians,
+            ),
+            (
+                "a_magnification_gesture_honours_the_shared_minimum",
+                a_magnification_gesture_honours_the_shared_minimum,
+            ),
+        ];
+        cases
+            .into_iter()
+            .map(|(name, case)| {
+                libtest_mimic::Trial::test(format!("gesture_events::{name}"), move || {
+                    case();
+                    Ok(())
+                })
+            })
+            .collect()
+    }
+
+    /// The host's recognizers — the first of `T` attached — as the
+    /// test's handle on the concrete recognizer the observer wired.
+    fn recognizer<T: DowncastTarget>(host: &cocoa_ui::PlatformView) -> Retained<T> {
+        host.gestureRecognizers()
+            .expect("the observer attaches a recognizer")
+            .iter()
+            .find_map(|recognizer| recognizer.downcast::<T>().ok())
+            .expect("the observer attaches a recognizer of the requested kind")
+    }
+
+    /// Driving the tap recognizer's `Recognized` transition completes it;
+    /// the action's environment carries a `TapEvent` whose count and
+    /// button match the configured gesture.
+    fn a_tap_gesture_delivers_its_event() {
+        let taps = Rc::new(RefCell::new(Vec::new()));
+        let leaf = dispatch::render(
+            waterui::AnyView::new({
+                let taps = Rc::clone(&taps);
+                text("tap").gesture(TapGesture::new(), move |Use(event): Use<TapEvent>| {
+                    taps.borrow_mut().push(event);
+                })
+            }),
+            &render_environment(),
+        );
+        let host = leaf.view();
+        let _window = scene_window(mtm(), host);
+        let recognizer = recognizer::<UITapGestureRecognizer>(host);
+        let before = taps.borrow().len();
+        recognizer.setState(UIGestureRecognizerState::Recognized);
+        pump_main_until(MAIN_QUEUE_DEADLINE, || taps.borrow().len() > before);
+        let taps = taps.borrow();
+        assert_eq!(taps.len(), before + 1, "one completion appends one event");
+        let tap = &taps[before];
+        assert_eq!(tap.count, 1);
+        assert_eq!(tap.button, PointerButton::Primary);
+    }
+
+    /// Driving the pan recognizer's `Began`→`Changed`→`Ended` transitions
+    /// delivers the phase sequence the shared contract names — the
+    /// events the same input produces on Hydrolysis.
+    fn a_drag_gesture_delivers_its_events() {
+        let drags = Rc::new(RefCell::new(Vec::new()));
+        let leaf = dispatch::render(
+            waterui::AnyView::new({
+                let drags = Rc::clone(&drags);
+                text("drag").gesture(DragGesture::new(0.0), move |Use(e): Use<DragEvent>| {
+                    drags.borrow_mut().push(e);
+                })
+            }),
+            &render_environment(),
+        );
+        let host = leaf.view();
+        let _window = scene_window(mtm(), host);
+        let recognizer = recognizer::<UIPanGestureRecognizer>(host);
+        for state in [
+            UIGestureRecognizerState::Began,
+            UIGestureRecognizerState::Changed,
+            UIGestureRecognizerState::Ended,
+        ] {
+            let before = drags.borrow().len();
+            recognizer.setState(state);
+            pump_main_until(MAIN_QUEUE_DEADLINE, || drags.borrow().len() > before);
+            assert_eq!(
+                drags.borrow().len(),
+                before + 1,
+                "one transition appends one event"
+            );
+        }
+        let drags = drags.borrow();
+        assert_eq!(
+            drags.iter().map(|e| e.phase).collect::<Vec<_>>(),
+            vec![
+                GesturePhase::Started,
+                GesturePhase::Updated,
+                GesturePhase::Ended
+            ],
+            "the pan's transitions are the contract's phase sequence"
+        );
+        assert!(
+            drags.iter().all(|e| e.button == PointerButton::Primary),
+            "a touches contact presses as the primary button"
+        );
+    }
+
+    /// `UIRotationGestureRecognizer.rotation` is already radians — the
+    /// event's angle is the raw getter value, phases map the state
+    /// transitions, and `Ended` carries zero velocity (#2757).
+    fn a_rotation_gesture_reports_native_radians() {
+        let rotations = Rc::new(RefCell::new(Vec::new()));
+        let leaf = dispatch::render(
+            waterui::AnyView::new({
+                let rotations = Rc::clone(&rotations);
+                text("rotate").gesture(
+                    RotationGesture::new(0.0),
+                    move |Use(e): Use<RotationEvent>| {
+                        rotations.borrow_mut().push(e);
+                    },
+                )
+            }),
+            &render_environment(),
+        );
+        let host = leaf.view();
+        let _window = scene_window(mtm(), host);
+        let recognizer = recognizer::<UIRotationGestureRecognizer>(host);
+        let fire = |state, angle: f64| {
+            recognizer.setRotation(angle);
+            let before = rotations.borrow().len();
+            recognizer.setState(state);
+            pump_main_until(MAIN_QUEUE_DEADLINE, || rotations.borrow().len() > before);
+            let rotations = rotations.borrow();
+            assert_eq!(
+                rotations.len(),
+                before + 1,
+                "one callback appends one event"
+            );
+            rotations[before].clone()
+        };
+
+        let e = fire(UIGestureRecognizerState::Began, 0.0);
+        assert_eq!(
+            (e.phase, e.angle, e.velocity),
+            (GesturePhase::Started, 0.0, 0.0)
+        );
+        let e = fire(UIGestureRecognizerState::Changed, 0.75);
+        assert_eq!(e.phase, GesturePhase::Updated);
+        assert!(
+            (e.angle - 0.75).abs() < 1e-6,
+            "raw radians getter, saw {}",
+            e.angle
+        );
+        let e = fire(UIGestureRecognizerState::Changed, 1.25);
+        assert!((e.angle - 1.25).abs() < 1e-6);
+        let e = fire(UIGestureRecognizerState::Ended, 1.25);
+        assert_eq!((e.phase, e.velocity), (GesturePhase::Ended, 0.0));
+        assert!((e.angle - 1.25).abs() < 1e-6);
+    }
+
+    /// The shared scale composition clamps at the contract's `.01`
+    /// minimum each update — an `initial_scale` below it and a relative
+    /// delta both stay inside the floor (#2757).
+    fn a_magnification_gesture_honours_the_shared_minimum() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let leaf = dispatch::render(
+            waterui::AnyView::new({
+                let events = Rc::clone(&events);
+                text("pinch").gesture(
+                    MagnificationGesture::new(0.001),
+                    move |Use(e): Use<MagnificationEvent>| {
+                        events.borrow_mut().push(e);
+                    },
+                )
+            }),
+            &render_environment(),
+        );
+        let host = leaf.view();
+        let _window = scene_window(mtm(), host);
+        let recognizer = recognizer::<UIPinchGestureRecognizer>(host);
+        let fire = |state, scale: f64| {
+            recognizer.setScale(scale);
+            let before = events.borrow().len();
+            recognizer.setState(state);
+            pump_main_until(MAIN_QUEUE_DEADLINE, || events.borrow().len() > before);
+            let events = events.borrow();
+            assert_eq!(events.len(), before + 1, "one callback appends one event");
+            events[before].clone()
+        };
+
+        let e = fire(UIGestureRecognizerState::Began, 1.0);
+        assert_eq!((e.phase, e.velocity), (GesturePhase::Started, 0.0));
+        assert!((e.scale - 0.001).abs() < 1e-6, "saw {}", e.scale);
+        let e = fire(UIGestureRecognizerState::Changed, 1.5);
+        assert!(
+            (e.scale - 0.01).abs() < 1e-6,
+            "clamp to .01, saw {}",
+            e.scale
+        );
+        let e = fire(UIGestureRecognizerState::Changed, 3.0);
+        assert!(
+            (e.scale - 0.02).abs() < 1e-6,
+            "factor 2 on .01, saw {}",
+            e.scale
+        );
+        let e = fire(UIGestureRecognizerState::Changed, 3.0);
+        assert!((e.scale - 0.02).abs() < 1e-6 && e.velocity == 0.0);
+        let e = fire(UIGestureRecognizerState::Ended, 3.0);
+        assert_eq!((e.phase, e.velocity), (GesturePhase::Ended, 0.0));
+        assert!((e.scale - 0.02).abs() < 1e-6);
     }
 }

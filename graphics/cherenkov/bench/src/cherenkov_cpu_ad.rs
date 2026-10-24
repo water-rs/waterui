@@ -1702,6 +1702,7 @@ impl Engine for Cherenkov {
             wgpu_allocator: Reading::unavailable("cherenkov-cpu has no wgpu allocator"),
             skia_budgeted: Reading::unavailable("cherenkov-cpu has no Skia budget"),
             vk_memory_budget: Reading::unavailable("cherenkov-cpu has no Vulkan device"),
+            metal_allocated_bytes: Reading::unavailable("cherenkov-cpu has no Metal device"),
         }
     }
 }

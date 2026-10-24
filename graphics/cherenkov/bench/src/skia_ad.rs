@@ -991,6 +991,7 @@ impl Engine for SkiaCpu {
             wgpu_allocator: Reading::unavailable("Skia raster has no wgpu allocator"),
             skia_budgeted: Reading::unavailable("Skia raster has no budgeted GPU resources"),
             vk_memory_budget: Reading::unavailable("Skia raster has no Vulkan device"),
+            metal_allocated_bytes: Reading::unavailable("Skia raster has no Metal device"),
         }
     }
 }
@@ -1438,6 +1439,7 @@ impl Engine for SkiaVk {
                 self.vk_physical_device,
                 &self.device_name,
             ),
+            metal_allocated_bytes: Reading::unavailable("Skia Vulkan uses Vulkan, not Metal"),
         }
     }
 }
@@ -1773,6 +1775,7 @@ mod graphite_metal {
                 wgpu_allocator: Reading::unavailable("Skia Graphite does not use wgpu"),
                 skia_budgeted: skia_budget("graphite", budgeted_bytes),
                 vk_memory_budget: Reading::unavailable("Skia Graphite uses Metal, not Vulkan"),
+                metal_allocated_bytes: Reading::Measured(self.device.currentAllocatedSize() as u64),
             }
         }
     }
