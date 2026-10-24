@@ -1057,6 +1057,10 @@ impl AndroidSession {
     /// scheduler whether another frame is owed.
     pub(crate) fn on_frame(&mut self) -> FrameOutcome {
         tracing::debug!(target: "waterui::hydrolysis::android", "frame wake");
+        // Tasks and input callbacks can start animations. Publish this frame's
+        // time before either runs so idle time is not charged to a new track.
+        let now = Instant::now();
+        self.runtime.renderer.set_frame_instant(now);
         // The transaction is open: a frame request recorded from now on
         // fires no wake — its scheduling is counted into `wants_next_frame`
         // below instead of posting into a frame already running.
@@ -1066,7 +1070,6 @@ impl AndroidSession {
         // `render_window`'s `sync_text_input_state` hold gate.
         self.platform_view_focus_sync();
         let should_close = handle_input_events(&mut self.runtime, &self.env) || self.should_close();
-        let now = Instant::now();
         let mut deadline = advance_runtime(&mut self.runtime, &self.env, now);
         if matches!(self.runtime.engine_next, cherenkov::Next::At { time, .. } if time <= now)
             && !self.runtime.is_hidden()
