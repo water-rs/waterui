@@ -3575,6 +3575,20 @@ mod tests {
         atlas.resize_to(&device, size, pages);
         assert_eq!(atlas.pages(), 2);
         let bytes_peak = atlas.gpu_bytes();
+        let old_origin = atlas
+            .store_glyph(
+                &device,
+                &queue,
+                key(100),
+                0,
+                0,
+                512,
+                512,
+                &vec![0x80; 512 * 512],
+            )
+            .expect("cached glyph");
+        // The pending key must preserve this hit even without a touched shelf.
+        atlas.begin_commit(&[]);
 
         // A batch of 40 cells still needs them stored — but packs on
         // one page, so the second page must be released.
@@ -3584,7 +3598,20 @@ mod tests {
             panic!("a smaller batch must shrink the atlas");
         };
         assert_eq!((size, pages), (4096, 1));
-        atlas.resize_to(&device, size, pages);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let relocation = atlas
+            .relocate(&device, &mut encoder, size, pages)
+            .expect("shrink fits");
+        assert_eq!(relocation.moved(), 1);
+        let moved = relocation
+            .cell(old_origin.0, old_origin.1)
+            .expect("cached glyph migrated");
+        let retained = atlas.get(&key(100)).expect("pending hit retained");
+        assert_eq!(
+            (u32::from(retained.x), u32::from(retained.y)),
+            (moved.x, moved.y)
+        );
+        queue.submit([encoder.finish()]);
         assert_eq!(atlas.pages(), 1);
         assert!(atlas.gpu_bytes() < bytes_peak);
         for raster in &quiet {
