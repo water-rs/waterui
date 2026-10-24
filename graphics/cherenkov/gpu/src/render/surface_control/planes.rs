@@ -1419,11 +1419,11 @@ impl SystemPlanes for Planes {
     // thread; nothing travels to a platform compositor thread.
     type Commit = ();
 
-    fn captured_bytes(&self) -> u64 {
+    fn native_bytes(&self) -> u64 {
         self.parts
             .iter()
-            .filter(|part| part.raster.is_some())
             .flat_map(|part| &part.buffers)
+            .chain(&self.retiring)
             .map(|buffer| buffer.bytes)
             .sum::<u64>()
             + self.presenting.as_ref().map_or(0, |pending| {

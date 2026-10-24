@@ -2683,7 +2683,7 @@ impl SystemPlanes for LayerPlanes {
     /// frame's [`CommitApply`] otherwise.
     type Commit = Option<Box<dyn CommitApply>>;
 
-    fn captured_bytes(&self) -> u64 {
+    fn native_bytes(&self) -> u64 {
         self.buffers.values().map(raster::Buffer::bytes).sum()
     }
     fn animate(&mut self, tree: &cherenkov::SurfaceTree, plan: &super::Plan) {
