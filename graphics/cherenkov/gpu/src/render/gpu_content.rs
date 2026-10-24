@@ -245,6 +245,8 @@ impl Producer {
             },
             color: FrameColor::LINEAR_P3,
             wait: None,
+            #[cfg(target_vendor = "apple")]
+            attachments: None,
         }
     }
 

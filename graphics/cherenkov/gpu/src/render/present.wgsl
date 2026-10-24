@@ -443,6 +443,10 @@ fn fs_main(in: Vertex) -> @location(0) vec4<f32> {
         }
     }
     switch present.encode {
+        case 10u: {
+            // Native compositor owns the final display-dependent mapping.
+            return present_color(p3.rgb, alpha);
+        }
         case 2u: {
             // Extended linear P3 output rolls off to the host's headroom.
             return present_color(tone_map(p3.rgb, present.headroom), alpha);

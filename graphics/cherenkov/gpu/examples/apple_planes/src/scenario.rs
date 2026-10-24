@@ -25,7 +25,7 @@ pub enum Scenario {
 }
 
 /// The scenario names `parse` accepts, for its error message.
-pub const NAMES: &str = "overlay|in-engine|static:side:count:lifetime:plane|engine|animated:side:count:lifetime:plane|engine";
+pub const NAMES: &str = "overlay|in-engine|static:side:count:lifetime:plane|engine|static-hdr:side:count:lifetime:plane|engine|animated:side:count:lifetime:plane|engine";
 
 impl Scenario {
     /// Parses the `--scenario` value; unknown names are an error — the
@@ -48,13 +48,7 @@ impl Scenario {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Recorded(spec) => {
-                if spec.animated {
-                    "animated"
-                } else {
-                    "static"
-                }
-            }
+            Self::Recorded(spec) => spec.name(),
             Self::Overlay => "overlay",
             Self::InEngine => "in-engine",
         }

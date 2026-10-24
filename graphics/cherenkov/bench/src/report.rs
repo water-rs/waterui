@@ -89,6 +89,10 @@ pub struct FrameSample {
 /// idle after it. Cycles are counted at each block's own clock.
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct GpuCounterSample {
+    /// External memory read beats, summed over L2 slices; not bytes.
+    pub external_read_beats: u64,
+    /// External memory write beats, summed over L2 slices; not bytes.
+    pub external_write_beats: u64,
     /// Cycles the shader cores were executing work, summed over cores —
     /// the frame's cost.
     pub shader_core_active_cycles: u64,
@@ -112,6 +116,8 @@ pub struct GpuCountersInfo {
     pub gpu: &'static str,
     /// Shader cores the counters are summed over.
     pub shader_cores: u32,
+    /// L2 slices included in the external-memory counters.
+    pub l2_slices: u32,
 }
 
 /// CPU placement of a `measure` run.

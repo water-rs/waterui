@@ -225,9 +225,24 @@ impl Run {
             .expect("surface control from window");
         logcat::line("SurfaceControl \"cherenkov harness\" created");
         let surface = engine
-            .surface(SurfaceControlTarget::new(parent, size), || {})
+            .surface(
+                SurfaceControlTarget::new(
+                    parent,
+                    size,
+                    ndk::looper::ForeignLooper::for_thread().expect("Android activity looper"),
+                ),
+                || {},
+            )
             .expect("surface-control surface");
         logcat::line(&format!("surface target {}x{} created", size.0, size.1));
+        if matches!(scenario, Scenario::Recorded(spec) if spec.hdr) {
+            surface
+                .display(cherenkov::Display {
+                    scale: 1.0,
+                    headroom: 2.0,
+                })
+                .expect("HDR output request");
+        }
         surface.clear_color(WorkingColor::new([0.01, 0.012, 0.018, 1.0]));
 
         let font_data = std::fs::read(FONT).expect("Roboto is present on Android");
