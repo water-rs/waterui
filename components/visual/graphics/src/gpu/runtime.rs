@@ -221,7 +221,11 @@ impl SharedGpuContext {
         // via `SharedDevice` or to a shaderloom `CompiledShader` must request
         // whatever the shader runtime needs where the adapter offers it.
         let backend = adapter.get_info().backend;
-        let required_features = shaderloom::required_features(adapter.features());
+        let required_features = shaderloom::required_features(adapter.features())
+            // cherenkov-gpu's fixed modules interpolate image taps in f16
+            // (#2551); the floor is unconditional like the engine's own
+            // device request.
+            | wgpu::Features::SHADER_F16;
         // The backends above load passthrough artifacts unconditionally, so
         // an adapter that withholds the feature cannot run this device at
         // all — fail here rather than at the first shader load.

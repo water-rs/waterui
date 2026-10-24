@@ -108,6 +108,10 @@ impl BrowserSurface {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-web-device"),
+                // cherenkov-gpu's fixed modules interpolate image taps in
+                // f16 (#2551): the engine's floor feature is requested
+                // unconditionally.
+                required_features: wgpu::Features::SHADER_F16,
                 ..Default::default()
             })
             .await

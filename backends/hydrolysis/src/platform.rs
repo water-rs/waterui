@@ -1868,8 +1868,12 @@ impl OffscreenGpuContext {
         // PASSTHROUGH_SHADERS loads the engine's precompiled fixed shaders on
         // Metal and Vulkan (water-rs/cherenkov#57); adapters that lack it get
         // the same hard Engine::new failure the engine documents.
+        // cherenkov-gpu's fixed modules interpolate image taps in f16
+        // (#2551): the engine's floor feature joins the request
+        // unconditionally.
         #[cfg(not(feature = "frame-profile"))]
         let required_features = crate::platform::required_media_features(adapter.features())
+            | wgpu::Features::SHADER_F16
             | (adapter.features()
                 & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
         // The frame profiler timestamps GPU work through timestamp queries
@@ -1878,6 +1882,7 @@ impl OffscreenGpuContext {
         // does not — the feature never fails a device request over this.
         #[cfg(feature = "frame-profile")]
         let required_features = crate::platform::required_media_features(adapter.features())
+            | wgpu::Features::SHADER_F16
             | (adapter.features()
                 & (wgpu::Features::TIMESTAMP_QUERY
                     | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
@@ -3223,7 +3228,11 @@ mod winit_impl {
             adapter: &wgpu::Adapter,
         ) -> Result<DeviceLoss, super::OpenDeviceError> {
             let required_limits = super::required_device_limits(adapter);
+            // cherenkov-gpu's fixed modules interpolate image taps in f16
+            // (#2551): the engine's floor feature joins the request
+            // unconditionally.
             let required_features = crate::platform::required_media_features(adapter.features())
+                | wgpu::Features::SHADER_F16
                 | (adapter.features()
                     & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
             let (device, queue) = super::open_engine_device(

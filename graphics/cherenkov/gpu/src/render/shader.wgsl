@@ -13,8 +13,8 @@
 // `shared.wgsl` precedes this file in every build: the consts, instance
 // layout, vertex stage and coverage machinery live there.
 
-// The Rust side prepends `const VARIANT: u32 = <n>u;` when building each
-// module; the file stays compilable standalone.
+// The Rust side prepends `enable f16;` and `const VARIANT: u32 = <n>u;`
+// when building each module — `sample_image_tex` interpolates taps in f16.
 const VARIANT_SIMPLE: u32 = 0u;
 const VARIANT_SHADOW: u32 = 1u;
 const VARIANT_FULL: u32 = 2u;
@@ -339,11 +339,15 @@ fn sample_image_tex(tex: texture_2d<f32>, u: f32, v: f32, w: f32, h: f32, biline
         let lo = vec2<i32>(floor(f));
         let hi = min(lo + 1, vec2<i32>(dims) - 1);
         let t = f - floor(f);
-        let c00 = image_working_texel(textureLoad(tex, vec2<i32>(lo.x, lo.y), 0), flags);
-        let c10 = image_working_texel(textureLoad(tex, vec2<i32>(hi.x, lo.y), 0), flags);
-        let c01 = image_working_texel(textureLoad(tex, vec2<i32>(lo.x, hi.y), 0), flags);
-        let c11 = image_working_texel(textureLoad(tex, vec2<i32>(hi.x, hi.y), 0), flags);
-        return mix(mix(c00, c10, t.x), mix(c01, c11, t.x), t.y);
+        // Every tap is already f16-representable: `flags == 0` texels are
+        // stored Rgba16Float working values, and source decoding rounds
+        // through `quantizeToF16`. The two bilinear levels run in f16.
+        let c00 = vec4<f16>(image_working_texel(textureLoad(tex, vec2<i32>(lo.x, lo.y), 0), flags));
+        let c10 = vec4<f16>(image_working_texel(textureLoad(tex, vec2<i32>(hi.x, lo.y), 0), flags));
+        let c01 = vec4<f16>(image_working_texel(textureLoad(tex, vec2<i32>(lo.x, hi.y), 0), flags));
+        let c11 = vec4<f16>(image_working_texel(textureLoad(tex, vec2<i32>(hi.x, hi.y), 0), flags));
+        let tf = vec2<f16>(t);
+        return vec4<f32>(mix(mix(c00, c10, tf.x), mix(c01, c11, tf.x), tf.y));
     }
     let xy = clamp(round(vec2<f32>(u, v) - 0.5), vec2<f32>(0.0), dims - 1.0);
     return image_working_texel(textureLoad(tex, vec2<i32>(xy), 0), flags);

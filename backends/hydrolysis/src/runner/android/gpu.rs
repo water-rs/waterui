@@ -157,7 +157,11 @@ impl AndroidGpuContext {
     ) -> Result<crate::platform::DeviceLoss, GpuError> {
         let adapter = Self::pick_adapter(instance).await?;
         let required_limits = crate::platform::required_device_limits(&adapter);
+        // cherenkov-gpu's fixed modules interpolate image taps in f16
+        // (#2551): the engine's floor feature joins the request
+        // unconditionally.
         let required_features = crate::platform::required_media_features(adapter.features())
+            | wgpu::Features::SHADER_F16
             | (adapter.features()
                 & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
         // The device is opened through the engine's creation path, not

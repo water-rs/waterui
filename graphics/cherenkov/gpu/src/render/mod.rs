@@ -1506,6 +1506,15 @@ fn create_device(
     config: &GpuConfig,
 ) -> Result<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue), EngineError> {
     if let Some(shared) = &config.device {
+        if !shared
+            .device
+            .features()
+            .contains(wgpu::Features::SHADER_F16)
+        {
+            return Err(EngineError::Backend(
+                "the shared device lacks SHADER_F16".into(),
+            ));
+        }
         return Ok((
             shared.instance.clone(),
             shared.adapter.clone(),
@@ -1544,11 +1553,14 @@ fn create_device(
     );
     tracing::debug!(limits = ?adapter.limits(), "adapter limits");
     // The float32 features are what an `Rgba32Float` offscreen surface
-    // needs; a device without them rejects that surface by name.
-    let mut required = supported
-        & (image_storage::COMPRESSION_FEATURES
-            | wgpu::Features::INDIRECT_FIRST_INSTANCE
-            | float32_target_features());
+    // needs; a device without them rejects that surface by name. f16
+    // arithmetic is the engine's hardware floor (#1): `sample_image_tex`
+    // interpolates in f16, so the device requirement is not probed.
+    let mut required = wgpu::Features::SHADER_F16
+        | (supported
+            & (image_storage::COMPRESSION_FEATURES
+                | wgpu::Features::INDIRECT_FIRST_INSTANCE
+                | float32_target_features()));
     // The fixed engine shaders are precompiled (#57, #2726): Vulkan loads
     // SPIR-V, Metal a metallib and DX12 DXIL through the passthrough API;
     // wgpu-hal advertises the feature unconditionally on all three.
@@ -1766,6 +1778,15 @@ async fn create_device(
     config: &GpuConfig,
 ) -> Result<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue), EngineError> {
     if let Some(shared) = &config.device {
+        if !shared
+            .device
+            .features()
+            .contains(wgpu::Features::SHADER_F16)
+        {
+            return Err(EngineError::Backend(
+                "the shared device lacks SHADER_F16".into(),
+            ));
+        }
         return Ok((
             shared.instance.clone(),
             shared.adapter.clone(),
@@ -1813,11 +1834,14 @@ async fn create_device(
     );
     tracing::debug!(limits = ?adapter.limits(), "adapter limits");
     // The float32 features are what an `Rgba32Float` offscreen surface
-    // needs; a device without them rejects that surface by name.
-    let mut required = supported
-        & (image_storage::COMPRESSION_FEATURES
-            | wgpu::Features::INDIRECT_FIRST_INSTANCE
-            | float32_target_features());
+    // needs; a device without them rejects that surface by name. f16
+    // arithmetic is the engine's hardware floor (#1): `sample_image_tex`
+    // interpolates in f16, so the device requirement is not probed.
+    let mut required = wgpu::Features::SHADER_F16
+        | (supported
+            & (image_storage::COMPRESSION_FEATURES
+                | wgpu::Features::INDIRECT_FIRST_INSTANCE
+                | float32_target_features()));
     // Pass-boundary timestamps are all Metal is asked for: Apple GPUs
     // advertise `TIMESTAMP_QUERY_INSIDE_ENCODERS` but sample only at
     // stage boundaries, so an encoder-level `write_timestamp` goes through

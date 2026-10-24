@@ -115,6 +115,8 @@ fn options(groups: &[&[Entry]]) -> hlsl::Options {
         }
     }
     hlsl::Options {
+        // The caller raises this to `V6_2` for modules using f16 types:
+        // dxc only accepts native 16-bit types from shader model 6.2 on.
         shader_model: hlsl::ShaderModel::V6_0,
         binding_map,
         fake_missing_bindings: false,
@@ -146,10 +148,17 @@ struct DxcJob {
     stem: String,
     entry: String,
     profile: &'static str,
+    /// The module contains f16 types: dxc needs `-enable-16bit-types`.
+    f16: bool,
     file: String,
     hlsl_path: PathBuf,
     dxil_path: PathBuf,
 }
+
+/// Whether a module needs the 6.2 profile and `-enable-16bit-types`:
+/// shared with the writer tests, which emit the same model choice.
+#[path = "f16_meta.rs"]
+mod f16_meta;
 
 #[derive(Default)]
 pub struct Modules {
@@ -202,10 +211,14 @@ impl Emitter<'_> {
             .unwrap_or_else(|e| panic!("{stem}: HLSL entry point failed: {e}"));
         let hlsl_path = out_dir.join(format!("{stem}.hlsl"));
         std::fs::write(&hlsl_path, &source).expect("write HLSL");
-        let profile = match stage {
-            naga::ShaderStage::Vertex => "vs_6_0",
-            naga::ShaderStage::Fragment => "ps_6_0",
-            naga::ShaderStage::Compute => "cs_6_0",
+        let f16 = options.shader_model == hlsl::ShaderModel::V6_2;
+        let profile = match (stage, f16) {
+            (naga::ShaderStage::Vertex, false) => "vs_6_0",
+            (naga::ShaderStage::Fragment, false) => "ps_6_0",
+            (naga::ShaderStage::Compute, false) => "cs_6_0",
+            (naga::ShaderStage::Vertex, true) => "vs_6_2",
+            (naga::ShaderStage::Fragment, true) => "ps_6_2",
+            (naga::ShaderStage::Compute, true) => "cs_6_2",
             _ => unreachable!("{stem}: the engine has no {stage:?} stages"),
         };
         let file = format!("{stem}.dxil");
@@ -214,6 +227,7 @@ impl Emitter<'_> {
             stem: stem.to_owned(),
             entry: name,
             profile,
+            f16,
             file,
             hlsl_path,
             dxil_path,
@@ -243,6 +257,7 @@ fn compile_dxc_job(job: &DxcJob) -> Result<Vec<u8>, String> {
             "-no-warnings",
             "-Ges",
         ])
+        .args(job.f16.then_some("-enable-16bit-types"))
         .args(["-Qstrip_debug", "-Qstrip_reflect", "-Fo"])
         .arg(&job.dxil_path)
         .arg(&job.hlsl_path)
@@ -407,7 +422,10 @@ impl Modules {
             module,
             info,
         };
-        let render_options = options(groups);
+        let mut render_options = options(groups);
+        if f16_meta::uses_f16(module) {
+            render_options.shader_model = hlsl::ShaderModel::V6_2;
+        }
         let mut jobs = Vec::new();
         let mut entry_points = Vec::new();
         for program in programs {

@@ -2121,12 +2121,13 @@ mod tests {
             .into_iter()
             .next()?;
         let backend = adapter.get_info().backend;
-        let required_features = match backend {
-            wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => {
-                wgpu::Features::PASSTHROUGH_SHADERS
-            }
-            _ => wgpu::Features::empty(),
-        };
+        let required_features = wgpu::Features::SHADER_F16
+            | match backend {
+                wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => {
+                    wgpu::Features::PASSTHROUGH_SHADERS
+                }
+                _ => wgpu::Features::empty(),
+            };
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             required_features,
             ..wgpu::DeviceDescriptor::default()

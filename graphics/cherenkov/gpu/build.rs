@@ -497,8 +497,10 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
             };
             Spec {
                 name: format!("engine{variant}"),
+                // `enable f16;` precedes every declaration: the bilinear
+                // taps in `sample_image_tex` interpolate in `f16`.
                 source: format!(
-                    "const VARIANT: u32 = {variant}u;\n{cap}{shared}\n{shader}\n{union}{}",
+                    "enable f16;\nconst VARIANT: u32 = {variant}u;\n{cap}{shared}\n{shader}\n{union}{}",
                     m.blend
                 ),
                 groups: bindings::ENGINE_GROUPS,

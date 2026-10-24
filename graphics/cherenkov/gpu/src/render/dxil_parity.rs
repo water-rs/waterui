@@ -57,8 +57,8 @@ where
     }
 }
 
-/// A WARP DX12 device whose wgpu-hal emits shader model 6.0 HLSL, the
-/// model `build.rs` writes, with the stage log captured.
+/// A WARP DX12 device whose wgpu-hal supports the engine's native f16
+/// shader model, with the stage log captured.
 struct Harness {
     device: wgpu::Device,
     capture: Capture,
@@ -77,10 +77,10 @@ impl Harness {
             tracing::subscriber::set_default(tracing_subscriber::registry().with(capture.clone()));
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         descriptor.backends = wgpu::Backends::DX12;
-        // SAFETY: caps the compiler at the shader model `build.rs` targets;
-        // the device's own model is at least 6.0 wherever DXC runs.
+        // SAFETY: caps the compiler at shader model 6.2, required by the
+        // native f16 engine modules emitted by `build.rs`.
         descriptor.backend_options.dx12.force_shader_model =
-            unsafe { wgpu::ForceShaderModelToken::with_shader_model(wgpu::DxcShaderModel::V6_0) };
+            unsafe { wgpu::ForceShaderModelToken::with_shader_model(wgpu::DxcShaderModel::V6_2) };
         let instance = wgpu::Instance::new(descriptor);
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             force_fallback_adapter: true,
