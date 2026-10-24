@@ -7912,7 +7912,30 @@ impl GpuRenderer {
             },
             tile_limits,
         );
-        surf.command_damage.update(&surf.frame);
+        surf.command_damage
+            .update_resources(&surf.frame, |range| match &range.image {
+                Some(lower::ImageSource::Content(id)) => self
+                    .producers
+                    .get(id)
+                    .and_then(gpu_content::Producer::current)
+                    .map_or(0, |slot| slot.generation),
+                _ => 0,
+            });
+        for (index, key) in &surf.frame.filters {
+            if self.filters.wants_redraw(*key) {
+                surf.command_damage.invalidate_pass(&surf.frame, *index);
+            }
+        }
+        for (index, pass) in surf.frame.passes.iter().enumerate() {
+            for range in &pass.ranges {
+                if let Some(lower::ImageSource::Shader(key)) = &range.image
+                    && self.shaders.animated(key)
+                {
+                    surf.command_damage
+                        .invalidate_range(&surf.frame, index, range);
+                }
+            }
+        }
         surf.propagated_damage
             .update(&surf.frame, &surf.composition, |index, region| {
                 for rect in surf.command_damage.pass(index).rectangles() {

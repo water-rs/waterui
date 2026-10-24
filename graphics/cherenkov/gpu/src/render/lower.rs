@@ -64,7 +64,7 @@ pub enum Source {
 }
 
 /// The blend pipeline a draw range uses.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum PipelineKind {
     /// Fixed-function source-over compositing.
     #[default]
@@ -87,7 +87,7 @@ pub enum PipelineKind {
 }
 
 /// The specialised fragment pipeline a range draws with.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ShaderVariant {
     /// Solid fills, spans, and glyphs: coverage + opacity + solid colour.
     #[default]

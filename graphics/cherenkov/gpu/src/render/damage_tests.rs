@@ -111,3 +111,74 @@ fn same_bounds_clipping_and_replaced_geometry_are_changes() {
     history.update(&scene);
     assert_eq!(history.pixels(), 144);
 }
+
+#[test]
+fn attachment_and_synthetic_changes_keep_the_submitted_baseline() {
+    let mut scene = frame(&[(0, 10.0)]);
+    let mut history = Commands::default();
+    history.update(&scene);
+    history.submitted();
+    scene.passes[0].clear = Some([0.5; 4]);
+    history.update(&scene);
+    assert!(history.pass(0).is_full(), "background color changed");
+    scene.passes[0].clear = Some([0.0; 4]);
+    history.update(&scene);
+    assert!(
+        history.pass(0).is_empty(),
+        "abandoned clear never became the baseline"
+    );
+    scene.commands.clear(); // this draw is now a synthetic composite
+    history.update(&scene);
+    history.submitted();
+    scene.instances[0].color[3] = 0.5;
+    history.update(&scene);
+    assert!(history.pass(0).is_full(), "composite opacity changed");
+    history.submitted();
+    history.update(&scene);
+    assert!(history.pass(0).is_empty());
+    scene.shadows.push((
+        0,
+        crate::render::shadow::Parameters {
+            transform: Affine::IDENTITY,
+            sigma: 2.0,
+            spread: 1.0,
+        },
+    ));
+    history.update(&scene);
+    assert!(history.pass(0).is_full(), "shadow added");
+    history.submitted();
+    scene.shadows[0].1.sigma = 3.0;
+    history.update(&scene);
+    assert!(history.pass(0).is_full(), "shadow sampling radius changed");
+}
+
+#[test]
+fn resource_versions_and_animated_ranges_are_local() {
+    let scene = frame(&[(0, 10.0), (1, 70.0)]);
+    let mut history = Commands::default();
+    history.update_resources(&scene, |_| 1);
+    history.submitted();
+    history.update_resources(&scene, |_| 1);
+    assert!(history.pass(0).is_empty());
+    history.update_resources(&scene, |_| 2);
+    assert_eq!(
+        history.pixels(),
+        288,
+        "new external frame updates its two commands"
+    );
+    history.submitted();
+    history.update_resources(&scene, |_| 2);
+    let mut range = scene.passes[0].ranges[0].clone();
+    range.instances = 0..1;
+    history.invalidate_range(&scene, 0, &range);
+    assert_eq!(
+        history.pixels(),
+        144,
+        "animated paint updates only its draw"
+    );
+    history.invalidate_pass(&scene, 0);
+    assert!(
+        history.pass(0).is_full(),
+        "filter can affect its entire output"
+    );
+}
