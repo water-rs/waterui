@@ -159,7 +159,7 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
             posted = true
         }
 
-        val nowPumping = wantsNext || posted
+        val nowPumping = wantsNext || (posted && !deadlinePosted)
         if (nowPumping != pumping) {
             pumping = nowPumping
             // Continuous pumping asks for high refresh; an idle pump with no
