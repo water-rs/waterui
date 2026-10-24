@@ -900,13 +900,17 @@ fn mask_coverage(in: VsOut) -> f32 {
 // geometric clip SDF times the atlas-or-texture mask texel, matching
 // fs_full's own evaluation verbatim.
 fn clip_mask_coverage(in: VsOut) -> f32 {
+    return clip_mask_coverage_shape(in, instances[in.instance].clip);
+}
+
+fn clip_mask_coverage_shape(in: VsOut, clip: Shape) -> f32 {
     let i = in.instance;
     let flags = (in.meta_.w >> 24u) & 0xffu;
     var cov = 1.0;
     if (flags & FLAG_HAS_CLIP) != 0u {
         // `clip_inv` maps device to clip-local: J^-T is its transpose.
         let pc = apply(instances[i].clip_inv, in.device);
-        let sample = sdf_sample(instances[i].clip, pc, false);
+        let sample = sdf_sample(clip, pc, false);
         let g = sample.gradient;
         let ci = instances[i].clip_inv;
         let dg = vec2<f32>(ci[0].x * g.x + ci[0].y * g.y, ci[0].z * g.x + ci[0].w * g.y);

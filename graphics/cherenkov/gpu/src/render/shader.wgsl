@@ -1003,6 +1003,7 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
     if VARIANT == VARIANT_COMPOSITE {
         in.meta_.x = KIND_SPAN;
         in.meta_.y = PAINT_TEXTURE;
+        in.meta_.w &= FLAG_TEX_SRGB << 24u;
     }
     // The constants every fragment needs arrive as flat varyings; the
     // storage array is read only for kind-specific fields (inner, clip,
@@ -1101,6 +1102,11 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
             planes[nplanes + k] = cp.p[k];
         }
         cov = planes_coverage(planes, nplanes + cp.n) * mask_coverage(in);
+    } else if VARIANT == VARIANT_GLYPH {
+        var clip = instances[i].clip;
+        // Lowering selects this module only for sharp rectangular clips.
+        clip.radii = vec4<f32>(0.0);
+        cov *= clip_mask_coverage_shape(in, clip);
     } else {
         cov *= clip_mask_coverage(in);
     }
