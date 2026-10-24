@@ -701,6 +701,7 @@ struct Member {
 
 /// The lowering walk state for one surface frame.
 pub struct Lowering<'a, 'b> {
+    pub damage_layers: Vec<super::damage::Layer>,
     items: &'a mut Vec<Item>,
     filters: Option<&'a mut Registry>,
     frame: FrameId,
@@ -1314,6 +1315,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         anchor_scratch.clear();
         Self {
             items,
+            damage_layers: Vec::new(),
             filters,
             frame,
             used_filters: FxHashSet::default(),
@@ -2113,6 +2115,28 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// space; content and children draw in `content_transform` space,
     /// which is where `scroll_offset` bites.
     fn layer(
+        &mut self,
+        id: LayerId,
+        tree: &SurfaceTree,
+        caches: &mut FxHashMap<LayerId, ContentData>,
+    ) -> Result<(), RenderError> {
+        let start = self.items.len();
+        let result = self.layer_inner(id, tree, caches);
+        if self.local.is_none() {
+            self.damage_layers.push(super::damage::Layer {
+                id,
+                revision: if self.projects(id, tree) {
+                    tree.layer(id).revision().max(tree.content_stamp(id))
+                } else {
+                    tree.layer(id).revision()
+                },
+                items: start..self.items.len(),
+            });
+        }
+        result
+    }
+
+    fn layer_inner(
         &mut self,
         id: LayerId,
         tree: &SurfaceTree,

@@ -19,6 +19,82 @@ fn engine() -> Engine<Raster> {
 const RED: WorkingColor = WorkingColor::new([1., 0., 0., 1.]);
 
 #[test]
+fn retained_outputs_skip_unchanged_bands_after_motion_and_clear() {
+    for format in [OffscreenFormat::LinearF32, OffscreenFormat::LinearF16] {
+        let engine = engine();
+        let size = (128, 1024);
+        let surface = engine.surface(Offscreen::new(size, format), || {}).unwrap();
+        let moving = surface.layer();
+        let background = WorkingColor::new([0.1, 0.3, 0.2, 0.5]);
+        let foreground = WorkingColor::new([3.0, 0.2, 0.8, 0.6]);
+        surface.update(|tx| {
+            tx[surface.root()]
+                .push(&moving)
+                .content(surface.record(|r| {
+                    r.fill(Rect::new(0.0, 0.0, 128.0, 1024.0), background);
+                }));
+        });
+        for (step, position) in [
+            Some((20.0, 32.0)),
+            Some((80.0, 448.0)),
+            None,
+            Some((20.0, 32.0)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            surface.update(|tx| {
+                if let Some(position) = position {
+                    tx[&moving]
+                        .transform(Affine::translate(position))
+                        .content(surface.record(|r| {
+                            r.fill(Rect::new(0.0, 0.0, 8.0, 8.0), foreground);
+                        }));
+                } else {
+                    tx[&moving].clear_content();
+                }
+            });
+            engine.render(FrameTime::now()).unwrap();
+            let passes = engine.stats().passes;
+            if step == 0 {
+                assert_eq!(passes, 64);
+            } else {
+                assert!(
+                    passes > 0 && passes * 20 < 64,
+                    "frame {step}: {passes} bands"
+                );
+            }
+            let actual = surface.readback().unwrap();
+            let reference = engine.surface(Offscreen::new(size, format), || {}).unwrap();
+            reference.update(|tx| {
+                tx[reference.root()].content(reference.record(|r| {
+                    r.fill(Rect::new(0.0, 0.0, 128.0, 1024.0), background);
+                    if let Some((x, y)) = position {
+                        r.fill(Rect::new(x, y, x + 8.0, y + 8.0), foreground);
+                    }
+                }));
+            });
+            engine.render(FrameTime::now()).unwrap();
+            let expected = reference.readback().unwrap();
+            let actual = F32Image {
+                width: size.0,
+                height: size.1,
+                pixels: actual.pixels,
+            };
+            let expected = F32Image {
+                width: size.0,
+                height: size.1,
+                pixels: expected.pixels,
+            };
+            assert_images_match(&expected, &actual);
+            let path =
+                std::env::temp_dir().join(format!("cherenkov-cpu-damage-{format:?}-{step}.png"));
+            actual.write_png(&path).unwrap();
+        }
+    }
+}
+
+#[test]
 fn a_half_edge_rect_has_exact_coverage() {
     let engine = engine();
     let surface = engine

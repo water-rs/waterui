@@ -155,6 +155,17 @@ impl std::fmt::Debug for LayerNode {
 }
 
 impl LayerNode {
+    /// Version of this layer's own content and sampled properties, including
+    /// child membership/order but excluding changes inside descendants.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        if self.inner_stamp > self.outer_stamp {
+            self.inner_stamp
+        } else {
+            self.outer_stamp
+        }
+    }
+
     /// The affine track, including its original start and velocity.
     /// Component transforms are returned only when their sole moving
     /// component is translation, which is affine-linear in the same lanes.
