@@ -106,6 +106,30 @@ fn two_by_two(engine: &Engine<Gpu>) -> Image<Rgba8> {
 }
 
 split_test! {
+/// Source-encoded images must select their full fragment entry in a tile epoch.
+fn an_image_in_an_isolated_layer_selects_its_native_entry() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let image = two_by_two(&engine);
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.group(cherenkov::Group::new().opacity(0.5), |c| {
+                c.fill(Rect::new(0., 0., 64., 64.), cherenkov::WorkingColor::WHITE);
+                c.image(image.id(), Rect::new(8., 8., 56., 56.), Sampling::Nearest);
+            });
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    if cfg!(any(target_vendor = "apple", target_os = "android")) {
+        assert!(wait!(engine.memory()).tile_reserved.0 > 0, "image uses a native tile epoch");
+    }
+    Ok(())
+}
+}
+
+split_test! {
 fn an_image_draws_nearest() -> Result<(), Box<dyn std::error::Error>> {
     let Some(engine) = wait!(engine()) else {
         return Ok(());

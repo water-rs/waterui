@@ -992,7 +992,7 @@ impl Mirror {
         let fragment_entry = match key.variant {
             0 => c"tile_simple",
             1 => c"tile_shadow",
-            2 | 4 | 5 => c"tile_full",
+            2 | 4 | 5 | 6 => c"tile_full",
             3 => c"tile_clear",
             _ => unreachable!("closed tile shader set"),
         };

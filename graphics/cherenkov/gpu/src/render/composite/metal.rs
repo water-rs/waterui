@@ -211,7 +211,7 @@ impl Executor {
             let entry = match key.variant {
                 0 => format!("tile_{}_simple", key.target),
                 1 => format!("tile_{}_shadow", key.target),
-                2 | 4 | 5 => format!("tile_{}_{}", key.target, key.source),
+                2 | 4 | 5 | 6 => format!("tile_{}_{}", key.target, key.source),
                 3 => format!("tile_{}_clear", key.target),
                 _ => unreachable!("closed tile shader set"),
             };
