@@ -975,7 +975,7 @@ impl Emission {
         }
         if refs
             .iter()
-            .all(|&(slot, epoch)| atlas.shelf_epoch(slot) == epoch)
+            .all(|&(slot, epoch)| atlas.shelf_matches(slot, epoch))
         {
             self.live_stamp = stamp;
             return true;
