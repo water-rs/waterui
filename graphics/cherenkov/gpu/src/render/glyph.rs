@@ -2,6 +2,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{BuildHasher, Hash, Hasher};
+use std::num::NonZeroU64;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -189,6 +190,13 @@ pub struct PathEmit {
     /// `emit_slots` arena, which outlives this record so a replay pin
     /// stays meaningful after an eviction.
     pub slots: Range<usize>,
+    /// The retained-geometry digest the lowering that emitted this
+    /// record assigned: a coverage hit returns it for the content's
+    /// ownership marks without rebuilding or hashing the key. Identity
+    /// only — geometry reuse still compares the full `GeometryKey`
+    /// (water-rs/waterui#3306). `None` for records built outside the
+    /// retained route.
+    pub geometry: Option<NonZeroU64>,
 }
 
 impl PathEmit {
@@ -222,6 +230,7 @@ impl PathEmit {
                 })
                 .collect(),
             slots: self.slots.clone(),
+            geometry: self.geometry,
         }
     }
 }
@@ -338,6 +347,17 @@ struct Layout {
 /// the wider [`Entry`] add — folded into `cpu_bytes` so the cache pays
 /// for the retained structure it needs (#119).
 const LIVE_ENTRY_BYTES: u64 = 120;
+
+/// CPU bytes one cached `PathEmit` costs: its heap lists, the inline
+/// retained-geometry digest, and the shared per-admission bookkeeping
+/// — the one formula admission, eviction and relocation account by.
+fn path_entry_bytes(emit: &PathEmit) -> u64 {
+    (emit.spans.len() * 16
+        + emit.cells.len() * size_of::<PathCell>()
+        + emit.slots.len() * 4
+        + size_of::<Option<NonZeroU64>>()) as u64
+        + LIVE_ENTRY_BYTES
+}
 
 /// A live admission's bookkeeping: which cache map holds the entry and,
 /// for glyphs, the full key needed to remove it.
@@ -731,10 +751,7 @@ impl Atlas {
 
     /// Caches a path emission.
     pub fn insert_path(&mut self, key: u64, emit: PathEmit) {
-        self.cpu_bytes += (emit.spans.len() * 16
-            + emit.cells.len() * size_of::<PathCell>()
-            + emit.slots.len() * 4) as u64
-            + LIVE_ENTRY_BYTES;
+        self.cpu_bytes += path_entry_bytes(&emit);
         self.paths.insert(key, emit);
     }
 
@@ -1830,13 +1847,7 @@ impl Atlas {
                 return true;
             }
             let first = emit.cells.first().expect("a dropped path owns cells");
-            dropped.push((
-                (emit.spans.len() * 16
-                    + emit.cells.len() * size_of::<PathCell>()
-                    + emit.slots.len() * 4) as u64
-                    + LIVE_ENTRY_BYTES,
-                served(first.slot),
-            ));
+            dropped.push((path_entry_bytes(emit), served(first.slot)));
             false
         });
         self.masks.retain(|key, mask| {
@@ -1912,10 +1923,7 @@ impl Atlas {
                     kind: LiveKind::Path,
                 },
             );
-            self.cpu_bytes += (emit.spans.len() * 16
-                + emit.cells.len() * size_of::<PathCell>()
-                + emit.slots.len() * 4) as u64
-                + LIVE_ENTRY_BYTES;
+            self.cpu_bytes += path_entry_bytes(emit);
         }
         for (&key, mask) in &self.masks {
             self.slot_keys[usize::try_from(mask.slot).expect("shelf index")].insert(key);
@@ -2124,10 +2132,7 @@ impl Atlas {
                 LiveKind::Path => {
                     if let Some(emit) = self.paths.remove(&hk) {
                         self.slot_dead.push(emit.slots.clone());
-                        bytes += (emit.spans.len() * 16
-                            + emit.cells.len() * size_of::<PathCell>()
-                            + emit.slots.len() * 4) as u64
-                            + LIVE_ENTRY_BYTES;
+                        bytes += path_entry_bytes(&emit);
                     }
                 }
                 LiveKind::Mask => {

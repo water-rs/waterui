@@ -97,13 +97,7 @@ impl Scenario {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Recorded(spec) => {
-                if spec.animated {
-                    "animated"
-                } else {
-                    "static"
-                }
-            }
+            Self::Recorded(spec) => spec.name(),
             Self::Overlay => "overlay",
             Self::Hdr => "hdr",
             Self::Clipped => "clipped",

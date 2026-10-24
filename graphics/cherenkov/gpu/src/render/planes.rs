@@ -941,6 +941,8 @@ pub enum PlaneContent<'a> {
         view: Option<&'a wgpu::TextureView>,
         /// The capture's content version.
         generation: u64,
+        /// Content range of the captured pixels.
+        range: super::present::ColorRange,
     },
     /// A retained external frame, handed to the system compositor instead of
     /// being sampled by the engine.
@@ -1045,6 +1047,9 @@ pub struct Plane<'a> {
     )
 )]
 pub struct Part<'a> {
+    /// Prepared content range, excluding promoted content.
+    #[cfg(target_os = "android")]
+    pub range: super::present::ColorRange,
     /// The engine texture holding the part.
     pub view: &'a wgpu::TextureView,
 }
@@ -1061,6 +1066,9 @@ pub struct Part<'a> {
     )
 )]
 pub struct Composition<'a> {
+    /// Generation of the rendered engine parts, unchanged by presentation retries.
+    #[cfg(target_os = "android")]
+    pub generation: u64,
     /// The engine's device.
     pub device: &'a wgpu::Device,
     /// The engine's queue.
@@ -1085,7 +1093,7 @@ pub enum Presentation {
     /// Drawable availability requires another display frame.
     Retry,
     /// A queued operation will wake the surface when it completes.
-    #[cfg(target_vendor = "apple")]
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
     Pending,
 }
 
