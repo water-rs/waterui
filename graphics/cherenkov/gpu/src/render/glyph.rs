@@ -3559,13 +3559,14 @@ mod tests {
             ],
             coords_hash: 0,
         };
+        let texels = vec![0x80; 512 * 512];
         let cell = |glyph: u32| PendingRaster::Glyph {
             key: key(glyph),
             left: 0,
             top: 0,
             w: 512,
             h: 512,
-            texels: vec![0x80; 512 * 512],
+            texels: texels.clone(),
         };
         let peak: Vec<PendingRaster> = (0..70u32).map(cell).collect();
         let refs: Vec<&PendingRaster> = peak.iter().collect();
@@ -3576,16 +3577,7 @@ mod tests {
         assert_eq!(atlas.pages(), 2);
         let bytes_peak = atlas.gpu_bytes();
         let old_origin = atlas
-            .store_glyph(
-                &device,
-                &queue,
-                key(100),
-                0,
-                0,
-                512,
-                512,
-                &vec![0x80; 512 * 512],
-            )
+            .store_glyph(&device, &queue, key(100), 0, 0, 512, 512, &texels)
             .expect("cached glyph");
         // The pending key must preserve this hit even without a touched shelf.
         atlas.begin_commit(&[]);
@@ -3598,7 +3590,7 @@ mod tests {
             panic!("a smaller batch must shrink the atlas");
         };
         assert_eq!((size, pages), (4096, 1));
-        let mut encoder = device.create_command_encoder(&Default::default());
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let relocation = atlas
             .relocate(&device, &mut encoder, size, pages)
             .expect("shrink fits");
@@ -3614,31 +3606,16 @@ mod tests {
         queue.submit([encoder.finish()]);
         assert_eq!(atlas.pages(), 1);
         assert!(atlas.gpu_bytes() < bytes_peak);
-        for raster in &quiet {
-            let PendingRaster::Glyph {
-                key,
-                left,
-                top,
-                w,
-                h,
-                texels,
-            } = raster
-            else {
-                unreachable!("glyph pending only")
-            };
+        for glyph in 100..140 {
             assert!(
                 atlas
-                    .store_glyph(&device, &queue, *key, *left, *top, *w, *h, texels)
+                    .store_glyph(&device, &queue, key(glyph), 0, 0, 512, 512, &texels)
                     .is_some(),
                 "the shrunken atlas still holds the whole batch"
             );
         }
-        let max_y = quiet
-            .iter()
-            .filter_map(|r| match r {
-                PendingRaster::Glyph { key, .. } => atlas.get(key).map(|e| u32::from(e.y)),
-                _ => None,
-            })
+        let max_y = (100..140)
+            .map(|glyph| u32::from(atlas.get(&key(glyph)).expect("stored glyph").y))
             .max();
         assert!(max_y.unwrap_or(0) < 4096, "no cell lands past page one");
 
