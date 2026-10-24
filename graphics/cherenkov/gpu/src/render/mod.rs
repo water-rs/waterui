@@ -4238,7 +4238,7 @@ impl Renderer for GpuRenderer {
             + self
                 .planes
                 .values()
-                .map(planes::SystemPlanes::captured_bytes)
+                .map(planes::SystemPlanes::native_bytes)
                 .sum::<u64>()
             + self.uploads.gpu_bytes()
             + self.stops.size()
