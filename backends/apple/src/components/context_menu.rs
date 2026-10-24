@@ -481,7 +481,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                         cocoa_ui::gesture::ButtonMask::PRIMARY,
                         {
                             let present = Rc::clone(&present);
-                            move |gesture| {
+                            move |gesture, _recognizer| {
                                 if matches!(gesture, cocoa_ui::gesture::GestureState::Began) {
                                     present();
                                 }
@@ -492,7 +492,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                         &host,
                         1,
                         cocoa_ui::gesture::ButtonMask::SECONDARY,
-                        move |gesture| {
+                        move |gesture, _recognizer| {
                             if matches!(gesture, cocoa_ui::gesture::GestureState::Ended) {
                                 present();
                             }
