@@ -7,20 +7,20 @@ use crate::render::{
 fn frame(items: &[(usize, f32)]) -> Frame {
     let mut frame = Frame::default();
     let layer = cherenkov::SurfaceTree::new().root();
-    frame.command_sources.push(CommandSource {
-        root: Target::Part(0),
-        layer,
-        mask_epoch: None,
-    });
     for &(op, x) in items {
+        frame.command_sources.push(CommandSource {
+            commands: frame.commands.len()..frame.commands.len() + 1,
+            first_op: op,
+            root: Target::Part(0),
+            layer,
+            mask_epoch: None,
+        });
         let start = frame.instances.len();
         let mut instance = Instance::new(KIND_SPAN);
         instance.bounds = [x, 10.0, x + 10.0, 20.0];
         instance.color = [1.0; 4];
         frame.instances.push(instance);
         frame.commands.push(Command {
-            source: 0,
-            op,
             instances: start..start + 1,
             revision: 1,
         });
@@ -135,6 +135,7 @@ fn attachment_and_synthetic_changes_keep_the_submitted_baseline() {
         "abandoned clear never became the baseline"
     );
     scene.commands.clear(); // this draw is now a synthetic composite
+    scene.command_sources.clear();
     history.update(&scene);
     history.submitted();
     scene.instances[0].color[3] = 0.5;

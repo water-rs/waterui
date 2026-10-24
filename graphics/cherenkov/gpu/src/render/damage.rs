@@ -26,14 +26,14 @@ pub struct Key {
 }
 
 pub struct CommandSource {
+    pub commands: Range<usize>,
+    pub first_op: usize,
     pub root: Target,
     pub layer: LayerId,
     pub mask_epoch: Option<u64>,
 }
 
 pub struct Command {
-    pub source: usize,
-    pub op: usize,
     pub instances: Range<usize>,
     pub revision: u64,
 }
@@ -165,56 +165,58 @@ impl Commands {
     }
 
     fn collect(&mut self, frame: &Frame) {
-        for (order, command) in frame.commands.iter().enumerate() {
-            let source = &frame.command_sources[command.source];
-            let key = Key {
-                root: source.root,
-                layer: source.layer,
-                op: command.op,
-            };
-            let start = self
-                .spans
-                .partition_point(|(span, _, _)| span.end <= command.instances.start);
-            for (span, pass, binding) in self.spans[start..]
-                .iter()
-                .take_while(|(span, _, _)| span.start < command.instances.end)
-            {
-                let instances = &frame.instances
-                    [span.start.max(command.instances.start)..span.end.min(command.instances.end)];
-                if instances.is_empty() {
-                    continue;
-                }
-                let extent = self.regions[*pass].extent();
-                let footprint = Footprint {
-                    order,
-                    bounds: super::lower::union_region(
-                        instances
-                            .iter()
-                            .map(clipped_bounds)
-                            .filter(|bounds| bounds[0] < bounds[2] && bounds[1] < bounds[3]),
-                        extent.0,
-                        extent.1,
-                    ),
-                    signature: signature(command, source, &instances[0], *binding),
+        for source in &frame.command_sources {
+            for (offset, command) in frame.commands[source.commands.clone()].iter().enumerate() {
+                let order = source.commands.start + offset;
+                let key = Key {
+                    root: source.root,
+                    layer: source.layer,
+                    op: source.first_op + offset,
                 };
-                if let Some(before) = self.previous.get(&(key, *pass)) {
-                    if before.order + 1 < self.last_order[*pass] {
-                        // Reordering changes overlap even when each command's
-                        // own pixels are unchanged. Insertions/removals alone
-                        // preserve the relative order of surviving commands.
-                        self.regions[*pass].mark_full();
+                let start = self
+                    .spans
+                    .partition_point(|(span, _, _)| span.end <= command.instances.start);
+                for (span, pass, binding) in self.spans[start..]
+                    .iter()
+                    .take_while(|(span, _, _)| span.start < command.instances.end)
+                {
+                    let instances = &frame.instances[span.start.max(command.instances.start)
+                        ..span.end.min(command.instances.end)];
+                    if instances.is_empty() {
+                        continue;
                     }
-                    self.last_order[*pass] = self.last_order[*pass].max(before.order + 1);
+                    let extent = self.regions[*pass].extent();
+                    let footprint = Footprint {
+                        order,
+                        bounds: super::lower::union_region(
+                            instances
+                                .iter()
+                                .map(clipped_bounds)
+                                .filter(|bounds| bounds[0] < bounds[2] && bounds[1] < bounds[3]),
+                            extent.0,
+                            extent.1,
+                        ),
+                        signature: signature(command, source, &instances[0], *binding),
+                    };
+                    if let Some(before) = self.previous.get(&(key, *pass)) {
+                        if before.order + 1 < self.last_order[*pass] {
+                            // Reordering changes overlap even when each command's
+                            // own pixels are unchanged. Insertions/removals alone
+                            // preserve the relative order of surviving commands.
+                            self.regions[*pass].mark_full();
+                        }
+                        self.last_order[*pass] = self.last_order[*pass].max(before.order + 1);
+                    }
+                    self.prepared
+                        .entry((key, *pass))
+                        .and_modify(|old| {
+                            old.bounds = cover(old.bounds, footprint.bounds);
+                            // One leaf can split across shader/raster ranges. Fold all
+                            // templates in their emission order, not just the first.
+                            old.signature = old.signature.rotate_left(7) ^ footprint.signature;
+                        })
+                        .or_insert(footprint);
                 }
-                self.prepared
-                    .entry((key, *pass))
-                    .and_modify(|old| {
-                        old.bounds = cover(old.bounds, footprint.bounds);
-                        // One leaf can split across shader/raster ranges. Fold all
-                        // templates in their emission order, not just the first.
-                        old.signature = old.signature.rotate_left(7) ^ footprint.signature;
-                    })
-                    .or_insert(footprint);
             }
         }
     }

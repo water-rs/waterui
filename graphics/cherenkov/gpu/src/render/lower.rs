@@ -4319,18 +4319,6 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    fn command_source(&mut self, layer: LayerId, live_stamp: u64) -> usize {
-        let command_source = self.frame.command_sources.len();
-        self.frame
-            .command_sources
-            .push(super::damage::CommandSource {
-                root: self.root_target,
-                layer,
-                mask_epoch: self.clip.and_then(|clip| clip.mask).map(|_| live_stamp),
-            });
-        command_source
-    }
-
     /// Compose retained ops under the sampled layer state. Only invalid leaf
     /// realizations produce new instances or coverage; scopes assemble passes.
     fn ops(
@@ -4342,7 +4330,6 @@ impl<'a> Lowering<'a> {
         (layer, range): (LayerId, Range<usize>),
         glyphs: &GlyphContext<'_>,
     ) -> Result<bool, RenderError> {
-        let command_source = self.command_source(layer, glyphs.live_stamp);
         let (mut changed, mut i) = (false, range.start);
         while i < range.end {
             match &ops[i] {
@@ -4361,23 +4348,7 @@ impl<'a> Lowering<'a> {
                         )?;
                         Ok(())
                     };
-                    match shape {
-                        ClipShape::Empty => {}
-                        ClipShape::Boxed { extra, shape, rect } => {
-                            let clip = DeviceClip {
-                                inv: (self.transform * *extra).inverse(),
-                                shape: *shape,
-                                aligned_rect: rect
-                                    .filter(|_| axis_aligned(self.transform))
-                                    .map(|r| device_rect(self.transform, r)),
-                                mask: None,
-                            };
-                            self.run_clipped(clip, body, glyphs)?;
-                        }
-                        ClipShape::Path { elements, rule, .. } => {
-                            self.with_path_clip(elements, *rule, body, glyphs)?;
-                        }
-                    }
+                    self.clip_scope(shape, body, glyphs)?;
                     self.transform = saved;
                     i = *end as usize;
                 }
@@ -4428,15 +4399,18 @@ impl<'a> Lowering<'a> {
                     i = *end as usize;
                 }
                 Op::End => unreachable!("paired scopes consume their ends"),
-                op => {
-                    changed |= self.command(
-                        (command_source, i, op),
-                        ops.get(i + 1),
-                        &mut emissions[i],
-                        storage,
-                        glyphs,
+                _ => {
+                    let (end, run_changed) = self.command_run(
                         source,
+                        ops,
+                        emissions,
+                        storage,
+                        (layer, i..range.end),
+                        glyphs,
                     )?;
+                    changed |= run_changed;
+                    i = end;
+                    continue;
                 }
             }
             i += 1;
@@ -4444,9 +4418,82 @@ impl<'a> Lowering<'a> {
         Ok(changed)
     }
 
+    fn clip_scope(
+        &mut self,
+        shape: &ClipShape,
+        body: impl FnMut(&mut Self, &GlyphContext<'_>) -> Result<(), RenderError>,
+        glyphs: &GlyphContext<'_>,
+    ) -> Result<(), RenderError> {
+        match shape {
+            ClipShape::Empty => {}
+            ClipShape::Boxed { extra, shape, rect } => {
+                let clip = DeviceClip {
+                    inv: (self.transform * *extra).inverse(),
+                    shape: *shape,
+                    aligned_rect: rect
+                        .filter(|_| axis_aligned(self.transform))
+                        .map(|r| device_rect(self.transform, r)),
+                    mask: None,
+                };
+                self.run_clipped(clip, body, glyphs)?;
+            }
+            ClipShape::Path { elements, rule, .. } => {
+                self.with_path_clip(elements, *rule, body, glyphs)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Consecutive leaves share provenance; their operation indices follow
+    /// from the run's first index instead of being copied into every record.
+    fn command_run(
+        &mut self,
+        source: &cherenkov::DisplayList,
+        ops: &[Op],
+        emissions: &mut [Realization<Emission>],
+        storage: &mut EmissionStorage,
+        (layer, range): (LayerId, Range<usize>),
+        glyphs: &GlyphContext<'_>,
+    ) -> Result<(usize, bool), RenderError> {
+        let first_command = self.frame.commands.len();
+        let mut i = range.start;
+        let mut changed = false;
+        while i < range.end {
+            let op = &ops[i];
+            if matches!(
+                op,
+                Op::BeginClip { .. } | Op::BeginIsolate { .. } | Op::BeginShadow { .. } | Op::End
+            ) {
+                break;
+            }
+            changed |= self.command(
+                (i, op),
+                ops.get(i + 1),
+                &mut emissions[i],
+                storage,
+                glyphs,
+                source,
+            )?;
+            i += 1;
+        }
+        self.frame
+            .command_sources
+            .push(super::damage::CommandSource {
+                commands: first_command..self.frame.commands.len(),
+                first_op: range.start,
+                root: self.root_target,
+                layer,
+                mask_epoch: self
+                    .clip
+                    .and_then(|clip| clip.mask)
+                    .map(|_| glyphs.live_stamp),
+            });
+        Ok((i, changed))
+    }
+
     fn command(
         &mut self,
-        (command_source, index, op): (usize, usize, &Op),
+        (index, op): (usize, &Op),
         next: Option<&Op>,
         cache: &mut Realization<Emission>,
         storage: &mut EmissionStorage,
@@ -4456,8 +4503,6 @@ impl<'a> Lowering<'a> {
         let first = self.frame.instances.len();
         let changed = self.leaf((index, op), next, cache, storage, glyphs, source)?;
         self.frame.commands.push(super::damage::Command {
-            source: command_source,
-            op: index,
             instances: first..self.frame.instances.len(),
             revision: cache
                 .data
