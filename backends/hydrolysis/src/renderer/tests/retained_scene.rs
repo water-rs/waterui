@@ -66,7 +66,7 @@ fn opacity_at_root(value: &Binding<f32>) -> AnyView {
         .clone()
         .with(Animation::linear(Duration::from_millis(1_000)));
     AnyView::new(vstack((
-        ().size(120.0, 120.0).opacity(animated),
+        Color::srgb(210, 60, 30).size(40.0, 40.0).opacity(animated),
         ().size(360.0, 200.0),
     )))
 }
@@ -78,7 +78,7 @@ fn opacity_in_scroll(value: &Binding<f32>) -> AnyView {
     let animated = value
         .clone()
         .with(Animation::linear(Duration::from_millis(1_000)));
-    let header = ().size(120.0, 120.0).opacity(animated);
+    let header = Color::srgb(210, 60, 30).size(40.0, 40.0).opacity(animated);
     AnyView::new(scroll(vstack((header, padding_list()))))
 }
 
@@ -90,7 +90,9 @@ fn transform_at_root(value: &Binding<f32>) -> AnyView {
         .clone()
         .with(Animation::linear(Duration::from_millis(1_000)));
     AnyView::new(vstack((
-        ().size(80.0, 80.0).scale(animated.clone(), animated),
+        Color::srgb(30, 90, 210)
+            .size(40.0, 40.0)
+            .scale(animated.clone(), animated),
         ().size(360.0, 200.0),
     )))
 }
@@ -102,7 +104,9 @@ fn transform_in_scroll(value: &Binding<f32>) -> AnyView {
     let animated = value
         .clone()
         .with(Animation::linear(Duration::from_millis(1_000)));
-    let header = ().size(80.0, 80.0).scale(animated.clone(), animated);
+    let header = Color::srgb(30, 90, 210)
+        .size(40.0, 40.0)
+        .scale(animated.clone(), animated);
     AnyView::new(scroll(vstack((header, padding_list()))))
 }
 
@@ -137,6 +141,7 @@ impl Layout for CountingLayout {
 /// then pumps `parametric_frames` further frames while the animation is active and
 /// records the frame economy.
 fn run_scenario(
+    case: &str,
     make_view: fn(&Binding<f32>) -> AnyView,
     parametric_frames: u32,
 ) -> ScenarioMetrics {
@@ -145,13 +150,24 @@ fn run_scenario(
         let value = value.clone();
         AnyViewBuilder::<AnyView>::new(move || make_view(&value))
     };
-    let env = test_environment();
-    let mut runtime =
-        HeadlessRuntime::new_for_tests(env, builder, 400, 640, MinimalTestTheme::default());
+    let (gpu, diagnostics, _state) = super::diagnostic_gpu();
+    let mut runtime = HeadlessRuntime::new_for_tests_on_context(
+        gpu,
+        pumped_test_environment(),
+        builder,
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
 
     let start = Instant::now();
     // Initial structural build.
-    let _ = runtime.pump_at(false, start);
+    let initial = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial capture");
+    super::structural_transitions::save(&initial, case, "initial");
+    let _ = diagnostics.take();
 
     // Start an animation: the bound value animates from 1.0 -> 0.25 over 1s.
     value.set(0.25);
@@ -159,7 +175,21 @@ fn run_scenario(
     let mut metrics = ScenarioMetrics::default();
     for frame in 1..=parametric_frames {
         let at = start + Duration::from_millis(u64::from(frame) * 16);
-        let result = runtime.pump_at(false, at);
+        let result = runtime.pump_at(frame == parametric_frames, at);
+        let reports = diagnostics.take();
+        let pixels: u64 = reports.iter().map(|report| report.repaint_pixels).sum();
+        assert!(
+            pixels < 400 * 640 / 20,
+            "small property animation repainted {pixels} pixels"
+        );
+        if frame == parametric_frames {
+            let final_image = result.snapshot.as_ref().expect("final capture");
+            super::structural_transitions::save(final_image, case, "animated");
+            assert_ne!(
+                initial.rgba8, final_image.rgba8,
+                "animation must change visible content"
+            );
+        }
         let counters = result.profile.counters;
         metrics.parametric_frames += 1;
         if counters.rebuild_iterations > 0 {
@@ -433,7 +463,7 @@ const PARAMETRIC_FRAMES: u32 = 20;
 /// re-measure. Baking the opacity into the capture instead forces a rebuild every frame.
 #[test]
 fn opacity_at_root_never_rebuilds() {
-    let metrics = run_scenario(opacity_at_root, PARAMETRIC_FRAMES);
+    let metrics = run_scenario("opacity_at_root", opacity_at_root, PARAMETRIC_FRAMES);
     assert_eq!(metrics.parametric_frames, PARAMETRIC_FRAMES);
     assert_eq!(
         metrics.frames_rebuilt, 0,
@@ -450,7 +480,7 @@ fn opacity_at_root_never_rebuilds() {
 /// (and the flashing) on every animation/scroll frame.
 #[test]
 fn opacity_in_scroll_never_rebuilds() {
-    let metrics = run_scenario(opacity_in_scroll, PARAMETRIC_FRAMES);
+    let metrics = run_scenario("opacity_in_scroll", opacity_in_scroll, PARAMETRIC_FRAMES);
     assert_eq!(metrics.parametric_frames, PARAMETRIC_FRAMES);
     assert_eq!(
         metrics.frames_rebuilt, 0,
@@ -466,7 +496,7 @@ fn opacity_in_scroll_never_rebuilds() {
 /// window frame without any structural rebuild or re-measure.
 #[test]
 fn transform_at_root_never_rebuilds() {
-    let metrics = run_scenario(transform_at_root, PARAMETRIC_FRAMES);
+    let metrics = run_scenario("transform_at_root", transform_at_root, PARAMETRIC_FRAMES);
     assert_eq!(metrics.parametric_frames, PARAMETRIC_FRAMES);
     assert_eq!(
         metrics.frames_rebuilt, 0,
@@ -482,7 +512,11 @@ fn transform_at_root_never_rebuilds() {
 /// replays without a rebuild today. The refactor must keep it at zero rebuilds.
 #[test]
 fn transform_in_scroll_never_rebuilds() {
-    let metrics = run_scenario(transform_in_scroll, PARAMETRIC_FRAMES);
+    let metrics = run_scenario(
+        "transform_in_scroll",
+        transform_in_scroll,
+        PARAMETRIC_FRAMES,
+    );
     assert_eq!(metrics.parametric_frames, PARAMETRIC_FRAMES);
     assert_eq!(
         metrics.frames_rebuilt, 0,
