@@ -10,6 +10,7 @@ targets:
       - Sources
     settings:
       base:
+        ARCHS: arm64
         PRODUCT_BUNDLE_IDENTIFIER: dev.cherenkov.bench
         INFOPLIST_FILE: Info.plist
         SWIFT_OBJC_BRIDGING_HEADER: CherenkovBench-Bridging-Header.h
