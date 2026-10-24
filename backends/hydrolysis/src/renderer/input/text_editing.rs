@@ -1084,51 +1084,64 @@ impl HydrolysisRenderer {
     ) {
         let focused = self.text_editing.focused_index();
         let menu_target = self.active_text_context_menu_target();
-        let mut scene = Recording::new();
         let theme = self.theme();
-        {
-            scene.record_picture(transform, |draw| {
-                for (index, target) in self.text_editing.text_input_targets.iter().enumerate() {
-                    if target.content_alpha <= 0.0 {
-                        continue;
-                    }
-                    let selection_visible = focused == Some(index) || menu_target == Some(index);
-                    if !selection_visible {
-                        continue;
-                    }
-                    let selection = refreshed_target_selection(target);
-                    let selection_paint = theme.input_selection_paint();
-                    let caret_opacity = (selection.is_collapsed() && focused == Some(index))
-                        .then(|| self.text_caret_opacity(self.frame_instant()));
-                    let caret_paint = caret_opacity
-                        .filter(|opacity| *opacity > 0.0)
-                        .map(|opacity| theme.input_caret_paint(opacity));
+        for index in 0..self.text_editing.text_input_targets.len() {
+            let target = &self.text_editing.text_input_targets[index];
+            if target.content_alpha <= 0.0 || (focused != Some(index) && menu_target != Some(index))
+            {
+                continue;
+            }
+            let selection = refreshed_target_selection(target);
+            if selection.is_collapsed() {
+                if focused != Some(index) {
+                    continue;
+                }
+                let opacity = self.text_caret_opacity(self.frame_instant());
+                let paint = theme.input_caret_paint(opacity);
+                // Preserve the theme's paint semantics, including paints whose
+                // alpha is not the requested opacity. Zero still hides the caret.
+                let alpha = if opacity > 0.0 {
+                    target.content_alpha
+                } else {
+                    0.0
+                };
+                let rect = target.cursor_area;
+                let clip = target.text_clip_bounds;
+                let caret = self.live_caret.get_or_insert_with(|| {
+                    Rc::new(crate::renderer::chrome::LiveCaret::new(
+                        rect,
+                        clip,
+                        paint.clone(),
+                        alpha,
+                    ))
+                });
+                caret.update(rect, clip, paint, alpha);
+                let source: Rc<dyn crate::renderer::chrome::LiveSource> = caret.clone();
+                self.program().push_live(source, transform);
+            } else {
+                let selection_paint = theme.input_selection_paint();
+                let mut scene = Recording::new();
+                scene.record_picture(transform, |draw| {
                     draw.clip(target.text_clip_bounds, |draw| {
                         draw.group(
                             waterui_graphics::draw::Group::new().opacity(target.content_alpha),
                             |draw| {
-                                if selection.is_collapsed() {
-                                    if let Some(paint) = &caret_paint {
-                                        draw.fill(target.cursor_area, paint.clone());
-                                    }
-                                } else {
-                                    target.layout.selection_rects(selection, |rect| {
-                                        let highlight = kurbo::Rect::new(
-                                            target.text_bounds.x0 + rect.x0,
-                                            target.text_bounds.y0 + rect.y0,
-                                            target.text_bounds.x0 + rect.x1,
-                                            target.text_bounds.y0 + rect.y1,
-                                        );
-                                        draw.fill(highlight, selection_paint.clone());
-                                    });
-                                }
+                                target.layout.selection_rects(selection, |rect| {
+                                    let highlight = kurbo::Rect::new(
+                                        target.text_bounds.x0 + rect.x0,
+                                        target.text_bounds.y0 + rect.y0,
+                                        target.text_bounds.x0 + rect.x1,
+                                        target.text_bounds.y0 + rect.y1,
+                                    );
+                                    draw.fill(highlight, selection_paint.clone());
+                                });
                             },
                         );
                     });
-                }
-            });
+                });
+                self.scene_mut().append(&scene, kurbo::Affine::IDENTITY);
+            }
         }
-        self.scene_mut().append(&scene, kurbo::Affine::IDENTITY);
     }
 }
 

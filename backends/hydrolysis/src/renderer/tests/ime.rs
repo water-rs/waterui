@@ -226,6 +226,50 @@ fn form_runtime() -> (HeadlessRuntime, Binding<Str>, Binding<bool>) {
     (runtime, value, submitted)
 }
 
+#[test]
+fn caret_blink_reuses_recording_without_layout() {
+    let (mut runtime, _value, _submitted) = form_runtime();
+    let start = runtime.renderer().frame_instant() + Duration::from_millis(16);
+    let initial = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial frame");
+    super::structural_transitions::save(&initial, "caret-live", "initial");
+    let mut largest_change = 0;
+    let caret = runtime
+        .renderer()
+        .live_caret
+        .clone()
+        .expect("focused caret");
+    for tick in 1..=4 {
+        let frame = runtime.pump_at(true, start + Duration::from_millis(tick * 530));
+        let work = frame.profile.counters.frame_work;
+        assert_eq!(work.live_recordings, 0, "blink must keep its live source");
+        assert_eq!(work.recorded_view_contents, 0, "blink must not record text");
+        assert_eq!(work.layout_calls, 0, "blink must not relayout text");
+        assert!(Rc::ptr_eq(
+            &caret,
+            runtime
+                .renderer()
+                .live_caret
+                .as_ref()
+                .expect("focused caret"),
+        ));
+        let snapshot = frame.snapshot.expect("blink frame");
+        super::structural_transitions::save(&snapshot, "caret-live", &format!("tick-{tick}"));
+        largest_change = largest_change.max(
+            initial
+                .rgba8
+                .iter()
+                .zip(&snapshot.rgba8)
+                .map(|(before, after)| before.abs_diff(*after))
+                .max()
+                .expect("nonempty frame"),
+        );
+    }
+    assert!(largest_change > 10, "the retained caret must visibly blink");
+}
+
 fn runtime_with(view: AnyView) -> HeadlessRuntime {
     let view = RefCell::new(Some(view));
     let builder = AnyViewBuilder::<AnyView>::new(move || {

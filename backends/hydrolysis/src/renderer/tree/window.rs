@@ -493,6 +493,20 @@ impl SemanticCore {
 }
 
 impl HydrolysisRenderer {
+    /// Refreshes text presentation without walking or laying out the view tree.
+    pub(crate) fn record_text_input_overlay(
+        &mut self,
+        env: &Environment,
+        transform: kurbo::Affine,
+    ) {
+        let host = self.core.presentation_hosts.text_overlay.clone();
+        self.record_host(&host, |renderer| {
+            renderer.registries();
+            renderer.render_active_text_context_menu_overlay(env, transform);
+            renderer.prepare_transient_text_input_overlay(env, transform);
+        });
+    }
+
     /// Records every presentation under its host cell — the text context
     /// menu overlay, the open `.context_menu` presentation and the anchored
     /// overlays — after the window content's flush. Each host's record
@@ -509,11 +523,7 @@ impl HydrolysisRenderer {
         // The overlay-mode text context menu re-encodes with the frame it
         // floats over; drawing it only on the one-time build path would
         // leave it visible for a single frame.
-        let host = self.core.presentation_hosts.text_overlay.clone();
-        self.record_host(&host, |renderer| {
-            renderer.render_active_text_context_menu_overlay(env, transform);
-            renderer.prepare_transient_text_input_overlay(env, transform);
-        });
+        self.record_text_input_overlay(env, transform);
         // Same for an open `.context_menu` presentation: its dim backdrop,
         // lifted preview and anchored accessory re-encode per frame and the
         // pass is where dismiss_requests/menu-close is observed.

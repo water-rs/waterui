@@ -94,6 +94,43 @@ impl<T: Clone + PartialEq + 'static> Signal for Operand<T> {
     }
 }
 
+/// The focused editor's caret, retained across animation ticks.
+pub(super) struct LiveCaret {
+    rect: Operand<Rect>,
+    clip: Operand<Rect>,
+    paint: Operand<Paint>,
+    group: Operand<cherenkov_record::Group>,
+}
+
+impl LiveCaret {
+    pub(super) fn new(rect: Rect, clip: Rect, paint: Paint, alpha: f32) -> Self {
+        Self {
+            rect: Operand::new(rect),
+            clip: Operand::new(clip),
+            paint: Operand::new(paint),
+            group: Operand::new(cherenkov_record::Group::new().opacity(alpha)),
+        }
+    }
+
+    pub(super) fn update(&self, rect: Rect, clip: Rect, paint: Paint, alpha: f32) {
+        self.rect.set(rect, None);
+        self.clip.set(clip, None);
+        self.paint.set(paint, None);
+        self.group
+            .set(cherenkov_record::Group::new().opacity(alpha), None);
+    }
+}
+
+impl LiveSource for LiveCaret {
+    fn record(&self, recorder: &mut Recorder) {
+        recorder.clip(self.clip.live(), |recorder| {
+            recorder.group(self.group.live(), |recorder| {
+                recorder.fill(self.rect.live(), self.paint.live());
+            });
+        });
+    }
+}
+
 struct BorderOperands {
     shape: Operand<ShapeData>,
     stroke: Operand<Stroke>,

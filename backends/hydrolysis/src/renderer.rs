@@ -614,6 +614,7 @@ pub struct HydrolysisRenderer {
     /// The pump follows it: `Next::Idle` means no animation is running and
     /// the display link may sleep.
     engine_next: Option<cherenkov::Next>,
+    live_caret: Option<Rc<chrome::LiveCaret>>,
     /// Per-frame applied-filter telemetry the render thread's `EngineEffect`
     /// calls accumulate into; reset before each `Engine::render` and read back
     /// into the `frame_applied_filter_*` fields after it.
@@ -1931,6 +1932,7 @@ impl HydrolysisRenderer {
             mirror: None,
             program: Vec::new(),
             engine_next: None,
+            live_caret: None,
             applied_filter_metrics: Arc::default(),
             frame_applied_filter_count: 0,
             frame_applied_filter_effect: Duration::ZERO,

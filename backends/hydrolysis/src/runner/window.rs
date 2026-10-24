@@ -923,7 +923,11 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
 
     let mut built = false;
     match runtime.mode {
-        FrameMode::Idle => {}
+        FrameMode::Idle => {
+            runtime
+                .renderer
+                .record_text_input_overlay(env, kurbo::Affine::IDENTITY);
+        }
         FrameMode::Refresh | FrameMode::Animate if !runtime.renderer.has_render_tree() => {
             build_window_scene(
                 runtime,
