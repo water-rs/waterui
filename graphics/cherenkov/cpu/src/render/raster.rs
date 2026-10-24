@@ -335,6 +335,7 @@ fn sample_rows(
 ) -> (usize, usize) {
     let mut rows = (h, 0);
     let mut clips = ClipScratch::default();
+    let mut compiler = Compiler::default();
     let mut charged = 0;
     let mut i = range.start;
     while i < range.end {
@@ -375,6 +376,7 @@ fn sample_rows(
                             clip.as_ref(),
                             first..last,
                             w,
+                            &mut compiler,
                             meter.map(|m| (&mut charged, m)),
                         );
                         for py in first..last {
@@ -764,7 +766,6 @@ pub enum ClipCoverage<'a> {
 /// Reused by a worker across items and bands; one slot per recursive window.
 #[derive(Default)]
 struct ClipScratch {
-    compiler: Compiler,
     cells: Vec<f32>,
     previous: Option<ClipRef>,
     rows: Range<usize>,
@@ -777,6 +778,7 @@ impl ClipScratch {
         clip: Option<&ClipRef>,
         rows: Range<usize>,
         width: usize,
+        compiler: &mut Compiler,
         meter: Option<(&mut u64, &FrameMeter)>,
     ) -> Option<ClipCoverage<'a>> {
         let clip = clip?;
@@ -790,23 +792,23 @@ impl ClipScratch {
                         .as_ref()
                         .is_some_and(|old| std::sync::Arc::ptr_eq(old, clip))
                 {
-                    let before = self.compiler.heap_bytes()
-                        + (self.cells.capacity() * size_of::<f32>()) as u64;
+                    let before =
+                        compiler.heap_bytes() + (self.cells.capacity() * size_of::<f32>()) as u64;
                     self.cells.resize(width * rows.len(), 0.0);
                     self.cells.fill(0.0);
-                    self.compiler.prepare(
+                    compiler.prepare(
                         boundary,
                         super::tiles::Fixed::default(),
                         rows.clone(),
                         width,
                     );
-                    self.compiler.rows(rows.len(), |y, range, run| {
+                    compiler.rows(rows.len(), |y, range, run| {
                         for (i, x) in range.enumerate() {
                             self.cells[y * width + x] = run.at(i);
                         }
                     });
                     if let Some((charged, meter)) = meter {
-                        let bytes = self.compiler.heap_bytes()
+                        let bytes = compiler.heap_bytes()
                             + (self.cells.capacity() * size_of::<f32>()) as u64
                             - before;
                         clip_alloc(bytes, Some(meter));
@@ -2412,20 +2414,16 @@ fn run<S: Simd>(
                 bbox,
                 paint,
                 clip,
-            } => band.draw(
-                simd,
-                acc,
-                stack,
-                (edges, *offset),
-                *bbox,
-                paint,
-                clips.prepare(
+            } => {
+                let clip = clips.prepare(
                     clip.as_ref(),
                     band.y0..band.y0 + bh,
                     band.w,
+                    acc,
                     ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
-                ),
-            ),
+                );
+                band.draw(simd, acc, stack, (edges, *offset), *bbox, paint, clip);
+            }
             Item::PushIsolate { space } => stack.push(Plane {
                 buf: buffers.take_color(slice_len(band.w, bh)),
                 space: *space,
@@ -2447,6 +2445,7 @@ fn run<S: Simd>(
                         clip.as_ref(),
                         band.y0..band.y0 + bh,
                         band.w,
+                        acc,
                         ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
                     ),
                     stack,
@@ -2534,6 +2533,7 @@ fn run<S: Simd>(
                         clip.as_ref(),
                         band.y0..band.y0 + bh,
                         band.w,
+                        acc,
                         ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
                     ),
                     stack,
@@ -2578,6 +2578,7 @@ fn run<S: Simd>(
                             clip.as_ref(),
                             band.y0..band.y0 + bh,
                             band.w,
+                            acc,
                             ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
                         ),
                         effect,
@@ -2606,6 +2607,7 @@ fn run<S: Simd>(
                     clip.as_ref(),
                     band.y0..band.y0 + bh,
                     band.w,
+                    acc,
                     ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
                 ),
             ),
@@ -2614,6 +2616,7 @@ fn run<S: Simd>(
                     item.clip.as_ref(),
                     band.y0..band.y0 + bh,
                     band.w,
+                    acc,
                     ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
                 );
                 band.project(stack, item, clip);
@@ -2630,6 +2633,7 @@ fn run<S: Simd>(
                         clip.as_ref(),
                         band.y0..band.y0 + bh,
                         band.w,
+                        acc,
                         ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
                     ),
                 );
@@ -2651,6 +2655,7 @@ fn run<S: Simd>(
                     clip.as_ref(),
                     band.y0..band.y0 + bh,
                     band.w,
+                    acc,
                     ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
                 ),
             ),
