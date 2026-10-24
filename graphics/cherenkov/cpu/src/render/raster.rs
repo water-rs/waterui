@@ -1301,29 +1301,54 @@ fn composite(
     )
 }
 
-/// The clip-coverage source of one run on a device row: [`clip_cov`]
-/// sampled per pixel column from the run's first column `x0` on.
+/// Clip coverage already resolved to one row and run origin.
 #[derive(Clone, Copy, Debug)]
 pub struct ClipRun<'a> {
-    clip: Option<ClipCoverage<'a>>,
-    /// The coverage mask's stride (the surface width).
-    w: usize,
-    /// The run's first device column.
-    x0: usize,
-    /// The run's device row.
-    py: usize,
+    span: ClipSpan<'a>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ClipSpan<'a> {
+    Full,
+    Rect { first: usize, last: usize },
+    Samples(&'a [f32]),
 }
 
 impl<'a> ClipRun<'a> {
-    /// The clip source of the run `x0..` on device row `py`.
+    /// Resolve the clip at `x0..` on device row `py` once per span.
     #[must_use]
-    pub const fn new(clip: Option<ClipCoverage<'a>>, w: usize, x0: usize, py: usize) -> Self {
-        Self { clip, w, x0, py }
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "rectangle edges are clamped non-negative"
+    )]
+    pub fn new(clip: Option<ClipCoverage<'a>>, w: usize, x0: usize, py: usize) -> Self {
+        let span = match clip {
+            None => ClipSpan::Full,
+            Some(ClipCoverage::Rect(rect)) => {
+                if py < rect.y0.max(0) as usize || py >= rect.y1.max(0) as usize {
+                    ClipSpan::Rect { first: 0, last: 0 }
+                } else {
+                    ClipSpan::Rect {
+                        first: (rect.x0.max(0) as usize).saturating_sub(x0),
+                        last: (rect.x1.max(0) as usize).saturating_sub(x0),
+                    }
+                }
+            }
+            Some(ClipCoverage::Samples { cells, top }) => {
+                let row = (py - top) * w;
+                ClipSpan::Samples(&cells[row + x0..row + w])
+            }
+        };
+        Self { span }
     }
 
     /// The clip coverage of the run's `i`th pixel.
     fn at(&self, i: usize) -> f32 {
-        clip_cov(self.clip, self.w, self.x0 + i, self.py)
+        match self.span {
+            ClipSpan::Full => 1.0,
+            ClipSpan::Rect { first, last } => f32::from(i >= first && i < last),
+            ClipSpan::Samples(cells) => cells[i],
+        }
     }
 }
 
@@ -1525,7 +1550,7 @@ pub fn composite_span<S: Simd, C: Source>(
     cov.check_len(dst.len());
     match (
         space == cherenkov::BlendSpace::SrgbEncoded,
-        clip.clip.is_some(),
+        !matches!(clip.span, ClipSpan::Full),
     ) {
         (true, true) => composite_span_in::<S, C, true, true>(simd, dst, src, cov, clip),
         (true, false) => composite_span_in::<S, C, true, false>(simd, dst, src, cov, clip),
@@ -1603,7 +1628,7 @@ fn composite_solid_in<S: Simd, C: Source, const SRGB: bool>(
         simd.splat_f32x4(stored[2]),
         simd.splat_f32x4(stored[3]),
     ];
-    if opaque && cov.full() && clip.clip.is_none() {
+    if opaque && cov.full() && matches!(clip.span, ClipSpan::Full) {
         let (groups, tail) = dst.as_chunks_mut::<4>();
         for group in groups {
             store_solid_block(stored_planes, group);
