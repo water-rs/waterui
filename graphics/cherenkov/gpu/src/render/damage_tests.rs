@@ -8,20 +8,21 @@ fn frame(items: &[(usize, f32)]) -> Frame {
     let mut frame = Frame::default();
     let layer = cherenkov::SurfaceTree::new().root();
     for &(op, x) in items {
+        let start = frame.instances.len();
         frame.command_sources.push(CommandSource {
             commands: frame.commands.len()..frame.commands.len() + 1,
+            instances: start..start + 1,
             first_op: op,
             root: Target::Part(0),
             layer,
             mask_epoch: None,
         });
-        let start = frame.instances.len();
         let mut instance = Instance::new(KIND_SPAN);
         instance.bounds = [x, 10.0, x + 10.0, 20.0];
         instance.color = [1.0; 4];
         frame.instances.push(instance);
         frame.commands.push(Command {
-            instances: start..start + 1,
+            instances_end: start + 1,
             revision: 1,
         });
     }

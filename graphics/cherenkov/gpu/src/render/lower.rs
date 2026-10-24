@@ -4456,6 +4456,7 @@ impl<'a> Lowering<'a> {
         glyphs: &GlyphContext<'_>,
     ) -> Result<(usize, bool), RenderError> {
         let first_command = self.frame.commands.len();
+        let first_instance = self.frame.instances.len();
         let mut i = range.start;
         let mut changed = false;
         for (op, cache) in ops[range.clone()].iter().zip(&mut emissions[range.clone()]) {
@@ -4465,11 +4466,10 @@ impl<'a> Lowering<'a> {
             ) {
                 break;
             }
-            let first = self.frame.instances.len();
             let (leaf_changed, revision) =
                 self.leaf((i, op), ops.get(i + 1), cache, storage, glyphs, source)?;
             self.frame.commands.push(super::damage::Command {
-                instances: first..self.frame.instances.len(),
+                instances_end: self.frame.instances.len(),
                 revision,
             });
             changed |= leaf_changed;
@@ -4479,6 +4479,7 @@ impl<'a> Lowering<'a> {
             .command_sources
             .push(super::damage::CommandSource {
                 commands: first_command..self.frame.commands.len(),
+                instances: first_instance..self.frame.instances.len(),
                 first_op: range.start,
                 root: self.root_target,
                 layer,

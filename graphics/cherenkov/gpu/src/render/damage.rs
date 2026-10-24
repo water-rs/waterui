@@ -25,8 +25,11 @@ pub struct Key {
     pub op: usize,
 }
 
+/// Consecutive leaves occupy one contiguous instance span; scope-generated
+/// instances lie between sources, never between commands of one source.
 pub struct CommandSource {
     pub commands: Range<usize>,
+    pub instances: Range<usize>,
     pub first_op: usize,
     pub root: Target,
     pub layer: LayerId,
@@ -34,7 +37,8 @@ pub struct CommandSource {
 }
 
 pub struct Command {
-    pub instances: Range<usize>,
+    /// Starts at the source start or the preceding command end.
+    pub instances_end: usize,
     pub revision: u64,
 }
 
@@ -166,7 +170,10 @@ impl Commands {
 
     fn collect(&mut self, frame: &Frame) {
         for source in &frame.command_sources {
+            let mut first_instance = source.instances.start;
             for (offset, command) in frame.commands[source.commands.clone()].iter().enumerate() {
+                let command_instances = first_instance..command.instances_end;
+                first_instance = command.instances_end;
                 let order = source.commands.start + offset;
                 let key = Key {
                     root: source.root,
@@ -175,13 +182,13 @@ impl Commands {
                 };
                 let start = self
                     .spans
-                    .partition_point(|(span, _, _)| span.end <= command.instances.start);
+                    .partition_point(|(span, _, _)| span.end <= command_instances.start);
                 for (span, pass, binding) in self.spans[start..]
                     .iter()
-                    .take_while(|(span, _, _)| span.start < command.instances.end)
+                    .take_while(|(span, _, _)| span.start < command_instances.end)
                 {
-                    let instances = &frame.instances[span.start.max(command.instances.start)
-                        ..span.end.min(command.instances.end)];
+                    let instances = &frame.instances[span.start.max(command_instances.start)
+                        ..span.end.min(command_instances.end)];
                     if instances.is_empty() {
                         continue;
                     }
@@ -290,9 +297,9 @@ fn pass_state(frame: &Frame, index: usize, version: &impl Fn(&DrawRange) -> u64)
         let mut cursor = range.instances.start as usize;
         let end = range.instances.end as usize;
         let first = frame
-            .commands
+            .command_sources
             .partition_point(|command| command.instances.end <= cursor);
-        for command in frame.commands[first..]
+        for command in frame.command_sources[first..]
             .iter()
             .take_while(|command| command.instances.start < end)
         {
