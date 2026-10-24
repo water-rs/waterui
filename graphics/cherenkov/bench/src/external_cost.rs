@@ -42,7 +42,7 @@ use cherenkov_gpu::{Gpu, GpuConfig};
 use crate::cli::{ExternalCostArgs, ExternalPath, ExternalSize, ExternalTransfer};
 use crate::memory::{
     AdapterMemory, EngineBytes, MemoryReport, MemorySnapshot, Reading, SampleDetail,
-    wgpu_allocator, wgpu_vk_memory_budget,
+    wgpu_allocator, wgpu_metal_allocated_bytes, wgpu_vk_memory_budget,
 };
 use crate::motion::Clock;
 use crate::report::{Conditions, EnergyReport, Pacing, percentiles};
@@ -1040,6 +1040,7 @@ fn memory_snapshot(
             wgpu_allocator: wgpu_allocator(&shared.device, info.backend),
             skia_budgeted: Reading::unavailable("not a Skia adapter"),
             vk_memory_budget: wgpu_vk_memory_budget(&shared.device, info.backend, &info.name),
+            metal_allocated_bytes: wgpu_metal_allocated_bytes(&shared.device, info.backend),
         },
         detail,
     )

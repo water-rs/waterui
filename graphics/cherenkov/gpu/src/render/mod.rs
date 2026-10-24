@@ -6,6 +6,7 @@ mod capabilities;
 mod colr;
 mod composite;
 pub mod composition;
+mod content_range;
 pub mod diag;
 #[cfg(target_os = "linux")]
 pub mod dmabuf_export;
@@ -14,6 +15,8 @@ pub mod filter;
 mod glyph;
 mod gpu_content;
 mod gpu_cov;
+#[cfg(any(target_vendor = "apple", target_os = "android"))]
+mod headroom;
 mod image_storage;
 mod instance;
 mod lower;
@@ -426,10 +429,13 @@ struct SurfaceState {
     /// Engine parts above the first (`target` is part 0): one per promoted
     /// plane with layers painted above it, at the surface size.
     parts: Vec<(wgpu::Texture, wgpu::TextureView)>,
+    part_ranges: Vec<present::ColorRange>,
     /// Texture-target hand-off: each rendered texture goes to the host.
     textures: Option<std::sync::mpsc::Sender<wgpu::Texture>>,
     refresh: cherenkov::RefreshRange,
     present_pending: bool,
+    #[cfg(target_os = "android")]
+    present_generation: u64,
     /// The last display properties the frame carried — a change triggers
     /// the window's output re-selection (#98).
     display: cherenkov::Display,
@@ -584,12 +590,30 @@ impl BackdropGroupState {
 impl SurfaceState {
     fn lowering_bytes(&self) -> u64 {
         self.anchor_scratch.heap_bytes()
+            + (self.part_ranges.capacity() * std::mem::size_of::<present::ColorRange>()) as u64
             + self.raster_scratch.heap_bytes()
             + self
                 .layers
                 .values()
                 .map(ContentData::gpu_input_bytes)
                 .sum::<u64>()
+    }
+
+    fn classify_parts(
+        &mut self,
+        frame: &SurfaceFrame<'_>,
+        layers: &mut FxHashMap<LayerId, ContentData>,
+        images: &FxHashMap<u64, GpuImage>,
+    ) {
+        content_range::parts(
+            frame.tree,
+            layers,
+            images,
+            &self.bindings,
+            &self.plan,
+            frame.clear,
+            &mut self.part_ranges,
+        );
     }
 
     /// Engine part `n`'s texture: `target` for part 0.
@@ -1340,16 +1364,7 @@ struct GlyphResources<'a> {
     producers: &'a FxHashMap<ProducerId, &'a external::Slot>,
 }
 
-/// Atlas origins produced by one deferred raster.
-/// The batch commit's outcome for `lower_all`'s retry loop (#169 A3).
-enum Commit {
-    /// Every surface's pending rasters committed; a surface that could
-    /// not be placed got `AtlasExhausted` in its result.
-    Done,
-    /// Resize the atlas once to this `(edge, pages)` and re-lower.
-    Resize(u32, u32),
-}
-
+/// Cell origins and raster resolutions produced by one deferred raster.
 enum PendingOrigin {
     /// Cell origins — one for a glyph, one per cell for a path
     /// emission — and the shelves the admission's cells live on, so
@@ -3315,6 +3330,7 @@ fn plane_stack<'a, 'p: 'a>(
                         planes::PlaneContent::Raster {
                             view: capture.source.as_ref().map(|(_, view)| view),
                             generation: capture.generation,
+                            range: surface.static_layers[&placement.layer].range,
                         }
                     },
                     |slot| planes::PlaneContent::Frame {
@@ -3522,7 +3538,8 @@ impl Renderer for GpuRenderer {
             GpuTarget::Texture(texture) => (None, Some(texture.textures), texture.refresh, false),
             #[cfg(target_os = "android")]
             GpuTarget::SurfaceControl(target) => {
-                (None, None, self.surface_control(id, target)?, true)
+                let refresh = self.surface_control(id, target, waker.clone())?;
+                (None, None, refresh, true)
             }
             #[cfg(target_os = "linux")]
             GpuTarget::Dmabuf(target) => (None, None, self.dmabuf_export(id, target)?, true),
@@ -3564,9 +3581,12 @@ impl Renderer for GpuRenderer {
                 static_walk: Vec::new(),
                 plan_dirty: false,
                 parts: Vec::new(),
+                part_ranges: Vec::new(),
                 textures,
                 refresh,
                 present_pending: false,
+                #[cfg(target_os = "android")]
+                present_generation: 0,
                 display: cherenkov::Display::default(),
                 size,
                 format,
@@ -4719,6 +4739,7 @@ impl GpuRenderer {
         &mut self,
         id: SurfaceId,
         target: crate::interop::android::SurfaceControlTarget,
+        waker: cherenkov::CompletionWaker,
     ) -> Result<cherenkov::RefreshRange, SurfaceError> {
         // The context is built on first need (#170); a surface-control
         // target needs it now — planes import frame buffers natively.
@@ -4735,6 +4756,7 @@ impl GpuRenderer {
             native.shared.clone(),
             std::sync::Arc::clone(&self.submit_lock),
             &target,
+            waker,
         )?;
         self.planes.insert(id, system);
         self.presenter
@@ -4933,6 +4955,10 @@ impl GpuRenderer {
                 }
                 self.finish_projective(sf.id);
                 let surface = self.surfaces.get_mut(&sf.id).expect("rendered surface");
+                #[cfg(target_os = "android")]
+                {
+                    surface.present_generation += 1;
+                }
                 surface.present_pending = surface.window.is_some()
                     || surface.promotes
                     || self.exports.contains_key(&sf.id);
@@ -5092,6 +5118,10 @@ impl GpuRenderer {
                 }
                 self.finish_projective(sf.id);
                 let surface = self.surfaces.get_mut(&sf.id).expect("rendered surface");
+                #[cfg(target_os = "android")]
+                {
+                    surface.present_generation += 1;
+                }
                 surface.present_pending = surface.window.is_some()
                     || surface.promotes
                     || self.exports.contains_key(&sf.id);
@@ -6359,6 +6389,8 @@ impl GpuRenderer {
                 } else {
                     let parts: Vec<_> = (0..surface.plan.parts())
                         .map(|n| planes::Part {
+                            #[cfg(target_os = "android")]
+                            range: surface.part_ranges[n],
                             view: match n {
                                 0 => &surface.view,
                                 n => &surface.parts[n - 1].1,
@@ -6369,6 +6401,8 @@ impl GpuRenderer {
                     planes::SystemPlanes::compose(
                         system,
                         planes::Composition {
+                            #[cfg(target_os = "android")]
+                            generation: surface.present_generation,
                             device,
                             queue,
                             presenter,
@@ -6435,141 +6469,66 @@ impl GpuRenderer {
         inputs: &[projective::Inputs],
     ) -> Vec<Result<Lowered, RenderError>> {
         let coverage_options = self.coverage_options();
-        let mut grew = false;
-        loop {
-            let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
+        let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
+            .iter()
+            .map(|surf| surf.backdrop_info(&mut self.filters))
+            .collect();
+        self.ready_planes(frames, pending);
+        // The workers share the producers' current frames, not the
+        // producers: a rendered producer's content is render-thread
+        // state (`!Sync`), and a frame slot is all the lowering
+        // reads anyway.
+        let currents: FxHashMap<ProducerId, &external::Slot> = self
+            .producers
+            .iter()
+            .filter_map(|(id, producer)| producer.current().map(|slot| (*id, slot)))
+            .collect();
+        let producers = &currents;
+        let mut results: Vec<Result<Lowered, RenderError>> = if pending.len() > 1 {
+            let (atlas, images, bitmaps) = (&self.atlas, &self.images, &self.bitmaps);
+            // `FontData`'s COLR cache is a `RefCell` — !Sync — so
+            // each worker moves in its own snapshot built here.
+            let snapshots: Vec<FxHashMap<u64, FontData>> = pending
                 .iter()
-                .map(|surf| surf.backdrop_info(&mut self.filters))
-                .collect();
-            self.ready_planes(frames, pending);
-            // The workers share the producers' current frames, not the
-            // producers: a rendered producer's content is render-thread
-            // state (`!Sync`), and a frame slot is all the lowering
-            // reads anyway.
-            let currents: FxHashMap<ProducerId, &external::Slot> = self
-                .producers
-                .iter()
-                .filter_map(|(id, producer)| producer.current().map(|slot| (*id, slot)))
-                .collect();
-            let producers = &currents;
-            let mut results: Vec<Result<Lowered, RenderError>> = if pending.len() > 1 {
-                let (atlas, images, bitmaps) = (&self.atlas, &self.images, &self.bitmaps);
-                // `FontData`'s COLR cache is a `RefCell` — !Sync — so
-                // each worker moves in its own snapshot built here.
-                let snapshots: Vec<FxHashMap<u64, FontData>> = pending
-                    .iter()
-                    .map(|_| {
-                        self.fonts
-                            .iter()
-                            .map(|(id, f)| (*id, f.snapshot()))
-                            .collect()
-                    })
-                    .collect();
-                std::thread::scope(|s| {
-                    pending
-                        .iter_mut()
-                        .zip(snapshots)
-                        .zip(frames)
-                        .zip(group_maps.iter().zip(inputs).zip(self.ready_sets.iter()))
-                        .map(|(((surf, fonts), frame), ((groups, inputs), ready))| {
-                            s.spawn(move || {
-                                Self::lower_content(
-                                    surf,
-                                    frame,
-                                    GlyphResources {
-                                        atlas,
-                                        fonts: &fonts,
-                                        images,
-                                        bitmaps,
-                                        producers,
-                                    },
-                                    groups,
-                                    inputs,
-                                    ready,
-                                    coverage_options,
-                                )
-                            })
-                        })
-                        .collect::<Vec<_>>()
-                        .into_iter()
-                        .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+                .map(|_| {
+                    self.fonts
+                        .iter()
+                        .map(|(id, f)| (*id, f.snapshot()))
                         .collect()
                 })
-            } else {
+                .collect();
+            std::thread::scope(|s| {
                 pending
                     .iter_mut()
+                    .zip(snapshots)
                     .zip(frames)
                     .zip(group_maps.iter().zip(inputs).zip(self.ready_sets.iter()))
-                    .map(|((surf, frame), ((groups, inputs), ready))| {
-                        Self::lower_content(
-                            surf,
-                            frame,
-                            GlyphResources {
-                                atlas: &self.atlas,
-                                fonts: &self.fonts,
-                                images: &self.images,
-                                bitmaps: &self.bitmaps,
-                                producers,
-                            },
-                            groups,
-                            inputs,
-                            ready,
-                            coverage_options,
-                        )
+                    .map(|(((surf, fonts), frame), ((groups, inputs), ready))| {
+                        s.spawn(move || {
+                            Self::lower_content(
+                                surf,
+                                frame,
+                                GlyphResources {
+                                    atlas,
+                                    fonts: &fonts,
+                                    images,
+                                    bitmaps,
+                                    producers,
+                                },
+                                groups,
+                                inputs,
+                                ready,
+                                coverage_options,
+                            )
+                        })
                     })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
                     .collect()
-            };
-            // The batch's pending rasters commit transactionally
-            // (#169 A3): a dry run decides fit / grow once / recycle
-            // before any placement or upload happens, so a failed
-            // placement never enqueues uploads into an atlas the same
-            // preparation abandons.
-            match self.commit_rasters(pending, &mut results, grew) {
-                Commit::Done => break results,
-                Commit::Resize(size, pages) => {
-                    self.atlas.resize_to(&self.device, size, pages);
-                    grew = true;
-                    tracing::debug!(
-                        size = self.atlas.size(),
-                        pages = self.atlas.pages(),
-                        generation = self.atlas.generation(),
-                        "atlas resized"
-                    );
-                }
-            }
-            // Resizing emptied the atlas: every hit any lowering took is
-            // now a miss, so lower the whole batch again.
-            diag::event(
-                &self.device,
-                diag::EventKind::Phase {
-                    name: "atlas retry",
-                },
-            );
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn lower_all(
-        &mut self,
-        pending: &mut [SurfaceState],
-        frames: &[&SurfaceFrame<'_>],
-        inputs: &[projective::Inputs],
-    ) -> Vec<Result<Lowered, RenderError>> {
-        let coverage_options = self.coverage_options();
-        let mut grew = false;
-        loop {
-            let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
-                .iter()
-                .map(|surf| surf.backdrop_info(&mut self.filters))
-                .collect();
-            self.ready_planes(frames, pending);
-            let currents: FxHashMap<ProducerId, &external::Slot> = self
-                .producers
-                .iter()
-                .filter_map(|(id, producer)| producer.current().map(|slot| (*id, slot)))
-                .collect();
-            let producers = &currents;
-            let mut results: Vec<Result<Lowered, RenderError>> = pending
+            })
+        } else {
+            pending
                 .iter_mut()
                 .zip(frames)
                 .zip(group_maps.iter().zip(inputs).zip(self.ready_sets.iter()))
@@ -6590,34 +6549,63 @@ impl GpuRenderer {
                         coverage_options,
                     )
                 })
-                .collect();
-            // The batch's pending rasters commit transactionally
-            // (#169 A3): a dry run decides fit / grow once / recycle
-            // before any placement or upload happens, so a failed
-            // placement never enqueues uploads into an atlas the same
-            // preparation abandons.
-            match self.commit_rasters(pending, &mut results, grew) {
-                Commit::Done => break results,
-                Commit::Resize(size, pages) => {
-                    self.atlas.resize_to(&self.device, size, pages);
-                    grew = true;
-                    tracing::debug!(
-                        size = self.atlas.size(),
-                        pages = self.atlas.pages(),
-                        generation = self.atlas.generation(),
-                        "atlas resized"
-                    );
-                }
-            }
-            // Growing emptied the atlas: every hit any lowering took is
-            // now a miss, so lower the whole batch again.
-            diag::event(
-                &self.device,
-                diag::EventKind::Phase {
-                    name: "atlas retry",
-                },
-            );
-        }
+                .collect()
+        };
+        // The batch's pending rasters commit transactionally
+        // (#169 A3): a dry run decides fit / repack / recycle before any
+        // placement or upload happens, so a failed placement never
+        // enqueues uploads into an atlas the same preparation abandons.
+        self.commit_rasters(pending, &mut results);
+        results
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn lower_all(
+        &mut self,
+        pending: &mut [SurfaceState],
+        frames: &[&SurfaceFrame<'_>],
+        inputs: &[projective::Inputs],
+    ) -> Vec<Result<Lowered, RenderError>> {
+        let coverage_options = self.coverage_options();
+        let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
+            .iter()
+            .map(|surf| surf.backdrop_info(&mut self.filters))
+            .collect();
+        self.ready_planes(frames, pending);
+        let currents: FxHashMap<ProducerId, &external::Slot> = self
+            .producers
+            .iter()
+            .filter_map(|(id, producer)| producer.current().map(|slot| (*id, slot)))
+            .collect();
+        let producers = &currents;
+        let mut results: Vec<Result<Lowered, RenderError>> = pending
+            .iter_mut()
+            .zip(frames)
+            .zip(group_maps.iter().zip(inputs).zip(self.ready_sets.iter()))
+            .map(|((surf, frame), ((groups, inputs), ready))| {
+                Self::lower_content(
+                    surf,
+                    frame,
+                    GlyphResources {
+                        atlas: &self.atlas,
+                        fonts: &self.fonts,
+                        images: &self.images,
+                        bitmaps: &self.bitmaps,
+                        producers,
+                    },
+                    groups,
+                    inputs,
+                    ready,
+                    coverage_options,
+                )
+            })
+            .collect();
+        // The batch's pending rasters commit transactionally
+        // (#169 A3): a dry run decides fit / repack / recycle before any
+        // placement or upload happens, so a failed placement never
+        // enqueues uploads into an atlas the same preparation abandons.
+        self.commit_rasters(pending, &mut results);
+        results
     }
 
     // `#[inline(never)]` keeps a symbol for the Callgrind gate's root lookup
@@ -6647,13 +6635,19 @@ impl GpuRenderer {
         if !surf.promotes || !<planes::Platform as planes::Compositor>::CAPTURES {
             return Ok(());
         }
-        let output_changed = sf.display.headroom.to_bits() != surf.display.headroom.to_bits()
-            || sf.display.scale.to_bits() != surf.display.scale.to_bits();
-        if output_changed && !surf.static_layers.is_empty() {
+        let scale_changed = sf.display.scale.to_bits() != surf.display.scale.to_bits();
+        let output_changed =
+            scale_changed || sf.display.headroom.to_bits() != surf.display.headroom.to_bits();
+        if output_changed {
             for entry in surf.static_layers.values_mut() {
-                entry.capture = None;
+                if scale_changed
+                    || (cfg!(not(target_vendor = "apple"))
+                        && entry.range == present::ColorRange::HighDynamicRange)
+                {
+                    entry.capture = None;
+                    surf.plan_dirty = true;
+                }
             }
-            surf.plan_dirty = true;
         }
         if !sf.changed && !output_changed {
             return Ok(());
@@ -6709,6 +6703,7 @@ impl GpuRenderer {
                 .entry(layer)
                 .or_insert_with(|| planes::static_layer::Observation::new(stamp, resources));
             if entry.observe(stamp, resources, density) {
+                entry.range = content_range::of_ops(ops, &self.images);
                 entry.domain = planes::static_layer::domain(
                     ops,
                     source,
@@ -7003,6 +6998,9 @@ impl GpuRenderer {
             lowered.path_arena = std::mem::take(&mut lowering.path_arena);
             result
         };
+        if result.is_ok() && surf.promotes {
+            surf.classify_parts(frame, &mut layers, resources.images);
+        }
         surf.layers = layers;
         surf.frame.content.sort_unstable_by_key(|(id, _)| id.raw());
         surf.frame.external.sort_unstable_by_key(|id| id.raw());
@@ -7117,14 +7115,15 @@ impl GpuRenderer {
     /// Commits every surface's pending rasters transactionally
     /// (#169 A3). The shelves this lowering's hits live on are marked
     /// first so no placement can evict them; [`Atlas::plan`] then
-    /// dry-runs all placements against shelf metadata alone; only a
-    /// `Fits` verdict — or the last attempt after a grow — commits for
-    /// real. When even an emptied atlas cannot hold the batch the
-    /// commit runs evicting instead of clearing: cold shelves are
-    /// reclaimed in place, so surviving entries — and the retained
-    /// emissions referencing them — stay valid (#119). The upload
-    /// batches the committed cells into one `write_texture` per newly
-    /// allocated shelf region.
+    /// dry-runs all placements against shelf metadata alone. A `Resize`
+    /// verdict repacks surviving coverage into the target shape and
+    /// remaps this batch's references (#3302); an exhausted repack
+    /// exhausts the batch rather than discard it. When even a repacked
+    /// atlas cannot hold the batch the commit reclaims cold shelves in
+    /// place, so surviving entries — and the retained emissions
+    /// referencing them — stay valid (#119). The upload batches the
+    /// committed cells into one `write_texture` per newly allocated
+    /// shelf region.
     // `never` so Callgrind can attribute the commit path's inclusive
     // cost — the one-per-frame call boundary is free evidence (#119).
     #[inline(never)]
@@ -7132,11 +7131,9 @@ impl GpuRenderer {
         &mut self,
         pending: &mut [SurfaceState],
         results: &mut [Result<Lowered, RenderError>],
-        grew: bool,
-    ) -> Commit {
-        // The frame's GPU coverage context restarts with its lowers:
-        // retry-safe — a re-committed frame records its dispatches from
-        // the same pending records (issue #2543).
+    ) {
+        // The frame's GPU coverage context restarts with its lowers
+        // (issue #2543).
         self.gpu_cov.begin_frame();
         let rasters: Vec<&glyph::PendingRaster> = results
             .iter()
@@ -7176,18 +7173,13 @@ impl GpuRenderer {
             self.commit_touches = touches;
             match self.atlas.plan(&rasters) {
                 glyph::AtlasPlan::Fits | glyph::AtlasPlan::FitsEviction => "fits-eviction",
-                glyph::AtlasPlan::Resize(size, pages) if !grew => {
-                    // The resize discards the atlas and re-lowers, so
-                    // every retained emission is dead anyway — but the
-                    // pending cells recorded this round index a raster
-                    // list that never applied, and must not survive
-                    // into the retry's hits (#119).
-                    for surf in pending.iter_mut() {
-                        Self::discard_surface(surf);
+                glyph::AtlasPlan::Resize(size, pages) => {
+                    if !self.repack_atlas(size, pages, pending, results) {
+                        return;
                     }
-                    return Commit::Resize(size, pages);
+                    "relocated"
                 }
-                glyph::AtlasPlan::Resize(..) | glyph::AtlasPlan::Recycle => {
+                glyph::AtlasPlan::Recycle => {
                     // Bounded in-place eviction makes room instead of a
                     // wholesale clear: the commit below reclaims shelves
                     // nothing touched until the batch places or nothing
@@ -7258,7 +7250,119 @@ impl GpuRenderer {
         self.commit_writes = self
             .atlas
             .upload_committed(&self.device, &self.queue, writes);
-        Commit::Done
+    }
+
+    /// `AtlasPlan::Resize`'s cold path: repacks surviving coverage into
+    /// the target shape, remaps this batch's references to the new
+    /// origins, and queues the copies ahead of the frame's uploads
+    /// (#3302). `false` — every still-`Ok` result marked
+    /// [`RenderError::AtlasExhausted`] — when even the surviving set
+    /// does not fit; the repack issued no copy work then.
+    fn repack_atlas(
+        &mut self,
+        size: u32,
+        pages: u32,
+        pending: &mut [SurfaceState],
+        results: &mut [Result<Lowered, RenderError>],
+    ) -> bool {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("atlas relocation"),
+            });
+        let Some(relocation) = self.atlas.relocate(&self.device, &mut encoder, size, pages) else {
+            Self::discard_unapplied(pending, results);
+            return false;
+        };
+        for (surf, result) in pending.iter_mut().zip(results.iter()) {
+            let Ok(lowered) = result else {
+                continue;
+            };
+            Self::remap_surface(&relocation, surf, lowered);
+        }
+        // An atlas that migrated no cells — the empty-atlas grow —
+        // recorded no copies, so there is nothing to submit.
+        if relocation.moved() > 0 {
+            #[cfg(all(unix, not(target_vendor = "apple")))]
+            let _submit = self.submit_lock.lock().expect("submit guard");
+            self.queue.submit([encoder.finish()]);
+            track_submission(&self.queue, &self.tracker);
+            diag::submit(&self.device, &self.queue, "atlas relocation");
+        }
+        true
+    }
+
+    /// Re-points one surface's retained and frame UVs at the repack's
+    /// new origins. Every live emission's sampled cells were pinned
+    /// through `replay_pins` or the pending batch, so
+    /// [`glyph::Relocation::cell`] never misses for them — a miss is an
+    /// invariant violation. Emissions whose old references were already
+    /// stale drop; the survivors' refs are rebuilt at apply from the
+    /// remapped coordinates (#3302).
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "atlas UVs are nonnegative integer texel origins stored as f32 — exact both directions"
+    )]
+    fn remap_surface(relocation: &glyph::Relocation, surf: &mut SurfaceState, lowered: &Lowered) {
+        for content in surf.layers.values_mut() {
+            let (_, emissions) = content.retained.prepared();
+            for entry in emissions.iter_mut() {
+                let Some(emission) = entry.data.as_ref() else {
+                    continue;
+                };
+                if !content.storage.refs[emission.refs_range()]
+                    .iter()
+                    .all(|&(slot, epoch)| relocation.old_ref_live(slot, epoch))
+                {
+                    entry.data = None;
+                }
+            }
+            // The dead ranges above are never read again — every
+            // surviving emission's pairs are refolded at apply — so
+            // the arena refills rather than accumulating stale pairs.
+            content.storage.refs.clear();
+            for entry in emissions.iter_mut() {
+                let Some(emission) = entry.data.as_mut() else {
+                    continue;
+                };
+                // Unplaced pending cells still hold `(0, 0)`: their
+                // deferred patches name the new origins instead (#119).
+                let pending = emission
+                    .pending_cells()
+                    .map(|i| (lowered.emission_patches[i].0 - emission.cell_inst_base()) as usize);
+                let instances = emission.instances.clone();
+                for inst in Self::placed(content.storage.instances[instances].iter_mut(), pending) {
+                    if matches!(inst.kind, instance::KIND_GLYPH | instance::KIND_REGION) {
+                        let loc = relocation
+                            .cell(inst.uv[0] as u32, inst.uv[1] as u32)
+                            .expect("a pinned emission's cells migrate with the repack");
+                        inst.uv = [loc.x as f32, loc.y as f32];
+                    }
+                }
+                emission.refs = lower::DEFERRED_REFS;
+            }
+        }
+        let cell_pending = lowered.cell_patches.iter().map(|&(i, ..)| i as usize);
+        for inst in Self::placed(surf.frame.instances.iter_mut(), cell_pending) {
+            if matches!(inst.meta[0], instance::KIND_GLYPH | instance::KIND_REGION) {
+                let loc = relocation
+                    .cell(inst.uv[0] as u32, inst.uv[1] as u32)
+                    .expect("a pinned cell migrates with the repack");
+                inst.uv[..2].copy_from_slice(&[loc.x as f32, loc.y as f32]);
+            }
+        }
+        let mask_pending = lowered.mask_patches.iter().map(|&(i, _)| i as usize);
+        for inst in Self::placed(surf.frame.instances.iter_mut(), mask_pending) {
+            let flags = inst.meta[3] >> 24;
+            if flags & instance::FLAG_HAS_MASK != 0 && flags & instance::FLAG_MASK_TEXTURE == 0 {
+                let loc = relocation
+                    .cell(inst.uv[2] as u32, inst.uv[3] as u32)
+                    .expect("a pinned mask cell migrates with the repack");
+                inst.uv[2..].copy_from_slice(&[loc.x as f32, loc.y as f32]);
+            }
+        }
     }
 
     /// The shelf slots the commit must pin: the shelves each new
@@ -7332,10 +7436,10 @@ impl GpuRenderer {
     /// still lack an atlas origin: pending cells and pending clip
     /// masks patch it in at apply, so resolving them pins the shelf
     /// covering `(0, 0)`, not one they sampled (#2440).
-    fn placed<'a, T: 'a>(
-        items: impl Iterator<Item = &'a T>,
+    fn placed<T>(
+        items: impl Iterator<Item = T>,
         mut unplaced: impl Iterator<Item = usize>,
-    ) -> impl Iterator<Item = &'a T> {
+    ) -> impl Iterator<Item = T> {
         let mut next = unplaced.next();
         items.enumerate().filter_map(move |(i, item)| {
             if next == Some(i) {
@@ -7483,7 +7587,7 @@ impl GpuRenderer {
                 // and re-lowers (#119).
                 let live = content.storage.refs[emission.refs_range()]
                     .iter()
-                    .all(|&(s, ep)| self.atlas.shelf_epoch(s) == ep);
+                    .all(|&(s, ep)| self.atlas.shelf_matches(s, ep));
                 if live {
                     emission.live_stamp = self.atlas.live_stamp();
                 }
@@ -7622,6 +7726,13 @@ impl GpuRenderer {
     /// The error is the reason the frame's images are attributed to, so
     /// a census distinguishes "this build has no executor" from "this
     /// device cannot run one".
+    #[cfg_attr(
+        not(unix),
+        expect(
+            clippy::unused_self,
+            reason = "tile executor state exists only on Unix"
+        )
+    )]
     fn tile_limits(&self) -> Result<composite::plan::Limits, composition::Materialization> {
         // Which executor this target has, and whether it is installed.
         // The mirror is absent only because the Vulkan device declined,
@@ -7654,9 +7765,6 @@ impl GpuRenderer {
         let (slots, available) = (0, Err(composition::Materialization::NoExecutor));
 
         available?;
-        if self.scratch_format != WORKING_FORMAT {
-            return Err(composition::Materialization::Format);
-        }
         Ok(composite::plan::Limits {
             slots,
             format: WORKING_FORMAT,

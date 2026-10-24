@@ -12,8 +12,8 @@ workspace = true
 
 [features]
 default = []
-vello-classic = ["dep:vello", "dep:vello_common", "dep:wgpu", "dep:pollster", "dep:ash"]
-vello-hybrid = ["dep:vello_gpu", "dep:vello_common", "dep:wgpu", "dep:pollster", "dep:glifo", "dep:ash"]
+vello-classic = ["dep:vello", "dep:vello_common", "dep:wgpu", "dep:pollster", "dep:ash", "dep:objc2", "dep:objc2-metal"]
+vello-hybrid = ["dep:vello_gpu", "dep:vello_common", "dep:wgpu", "dep:pollster", "dep:glifo", "dep:ash", "dep:objc2", "dep:objc2-metal"]
 vello-cpu = ["dep:vello_cpu", "dep:vello_common", "vello_cpu/multithreading"]
 # The `skia`/`skia-metal` features select the adapters; `skia-safe`'s GPU
 # backend features come from same-name declarations under the target tables
@@ -34,6 +34,8 @@ cherenkov = [
     "dep:cherenkov", "dep:cherenkov-gpu", "cherenkov-gpu/bench", "dep:wgpu", "dep:ash",
     "dep:half", "dep:filtrate", "cherenkov-scene/text",
     "dep:objc2", "dep:objc2-metal", "dep:objc2-core-video",
+    # `external-cost`'s IOSurface plane textures (#168).
+    "objc2-metal/objc2-io-surface",
     "dep:objc2-core-foundation", "dep:ndk-sys",
 ]
 cherenkov-cpu = ["dep:cherenkov", "dep:cherenkov-cpu", "dep:filtrate", "cherenkov-scene/text"]
@@ -104,7 +106,7 @@ objc2-metal = { version = "0.3.2", optional = true, default-features = false, fe
     # `CFTimeInterval` for `MTLCommandBuffer::GPUStartTime`/`GPUEndTime`.
     "objc2-core-foundation",
     # `external-cost`'s IOSurface plane textures (#168).
-    "MTLTexture", "MTLPixelFormat", "MTLResource", "MTLAllocation", "objc2-io-surface",
+    "MTLTexture", "MTLPixelFormat", "MTLResource", "MTLAllocation",
 ] }
 objc2-core-video = { version = "0.3", optional = true, default-features = false, features = [
     "std", "objc2-io-surface", "CVBase", "CVBuffer", "CVImageBuffer",

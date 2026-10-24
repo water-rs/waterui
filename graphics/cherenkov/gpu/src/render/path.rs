@@ -156,7 +156,7 @@ fn sweep(
     let (x0, y0, w, h, clipped) = grid(bbox, surface)?;
     let (segments, rule) = resolve(segments, rule);
     let mut data = Vec::with_capacity(w * h);
-    queue(scratch, &segments, (x0, y0, w, h), rule);
+    queue(scratch, &segments, Vec2::new(-x0, -y0), (w, h), rule);
     scratch.finish_choose(&mut |band, _| match band {
         Band::Dense(coverage) => data.extend_from_slice(coverage),
         Band::Sparse(runs, ends) => {
@@ -213,7 +213,12 @@ impl EmitScratch {
 /// band is classified and emitted directly, so the `w × h` coverage grid
 /// never materializes. Cell texels append to `arena`; the bool is
 /// `Coverage::clipped`.
-#[expect(clippy::cast_precision_loss)]
+///
+/// The direct device-space route retained geometry superseded: kept
+/// for the `emit_eq` reference tests as the same winding-processing
+/// pipeline — grid, `resolve`, then the shared [`emit_resolved`]
+/// kernel.
+#[cfg(test)]
 #[expect(clippy::type_complexity)]
 pub fn rasterize_emit(
     segments: &[(f32, f32, f32, f32)],
@@ -223,8 +228,35 @@ pub fn rasterize_emit(
     scratch: &mut EmitScratch,
     arena: &mut Vec<u8>,
 ) -> Option<Result<(PathEmit, Vec<CellTexels>, bool), RenderError>> {
-    let (x0, y0, w, h, clipped) = grid(bbox, surface)?;
+    let grid @ (x0, y0, ..) = grid(bbox, surface)?;
     let (segments, rule) = resolve(segments, rule);
+    Some(emit_resolved(
+        &segments,
+        Vec2::new(-x0, -y0),
+        grid,
+        rule,
+        scratch,
+        arena,
+    ))
+}
+
+/// The emission kernel shared by `rasterize_emit` and the retained
+/// geometry route: `segments` are already winding-resolved and stored
+/// in a frame that `offset` maps into raster space — each queued
+/// endpoint is read at `segment + offset`, so a placement needs no
+/// translated copy. `grid` is [`grid`]'s result over the placed
+/// device-space bbox: the emitted rects land in device space exactly
+/// like the direct route's. The bool is `Coverage::clipped`.
+#[expect(clippy::cast_precision_loss)]
+pub fn emit_resolved(
+    segments: &[(f32, f32, f32, f32)],
+    offset: Vec2,
+    grid: (f64, f64, usize, usize, bool),
+    rule: FillRule,
+    scratch: &mut EmitScratch,
+    arena: &mut Vec<u8>,
+) -> Result<(PathEmit, Vec<CellTexels>, bool), RenderError> {
+    let (x0, y0, w, h, clipped) = grid;
     let EmitScratch {
         raster,
         columns,
@@ -234,7 +266,7 @@ pub fn rasterize_emit(
         // One whole-bbox cell needs the texels: collect the (small)
         // coverage and emit it like `emit` does.
         let mut data = Vec::with_capacity(w * h);
-        queue(raster, &segments, (x0, y0, w, h), rule);
+        queue(raster, segments, offset, (w, h), rule);
         raster.finish(&mut |band: &[f32]| data.extend_from_slice(band));
         let coverage = Coverage {
             x: x0,
@@ -244,7 +276,7 @@ pub fn rasterize_emit(
             clipped,
             data,
         };
-        return Some(emit(&coverage, arena).map(|(p, r)| (p, r, clipped)));
+        return emit(&coverage, arena).map(|(p, r)| (p, r, clipped));
     }
     let mut out = PathEmit::default();
     let mut rasters = Vec::new();
@@ -289,16 +321,16 @@ pub fn rasterize_emit(
             err = Some(e);
         }
     };
-    queue(raster, &segments, (x0, y0, w, h), rule);
+    queue(raster, segments, offset, (w, h), rule);
     raster.finish_choose(&mut sink);
-    Some(err.map_or(Ok((out, rasters, clipped)), Err))
+    err.map_or(Ok((out, rasters, clipped)), Err)
 }
 
 /// The integer raster grid for `bbox` inflated by 1 px and clipped to
 /// the surface rect: origin, size, and whether clipping happened.
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_sign_loss)]
-fn grid(bbox: Rect, surface: (f64, f64)) -> Option<(f64, f64, usize, usize, bool)> {
+pub fn grid(bbox: Rect, surface: (f64, f64)) -> Option<(f64, f64, usize, usize, bool)> {
     let clip = Rect::new(0.0, 0.0, surface.0, surface.1);
     let inflated = bbox.inflate(1.0, 1.0);
     let r = inflated.intersect(clip);
@@ -332,25 +364,29 @@ fn resolve(segments: &[(f32, f32, f32, f32)], rule: FillRule) -> (Segments<'_>, 
     )
 }
 
-/// Queues clipped segments while preserving their input order.
+/// Queues clipped segments while preserving their input order. `offset`
+/// maps a stored coordinate into the raster grid's space: each endpoint
+/// is read at `segment + offset` in f64, so a stored frame whose
+/// coordinates sit near the origin keeps its f32 precision at any
+/// device placement.
 #[expect(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 fn queue(
     scratch: &mut BandRaster,
     segments: &[(f32, f32, f32, f32)],
-    grid: (f64, f64, usize, usize),
+    offset: Vec2,
+    size: (usize, usize),
     rule: FillRule,
 ) {
-    let (x0, y0, w, h) = grid;
+    let (w, h) = size;
     scratch.reset(w, h, rule);
     scratch.reserve_edges(segments.len());
-    let (ox, oy) = (x0 as f32, y0 as f32);
     for &(sx0, sy0, sx1, sy1) in segments {
         clip_x(
             &mut |a, b, c, d| scratch.draw(a, b, c, d),
-            sx0 - ox,
-            sy0 - oy,
-            sx1 - ox,
-            sy1 - oy,
+            (f64::from(sx0) + offset.x) as f32,
+            (f64::from(sy0) + offset.y) as f32,
+            (f64::from(sx1) + offset.x) as f32,
+            (f64::from(sy1) + offset.y) as f32,
             w as f32,
         );
     }

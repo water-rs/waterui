@@ -917,6 +917,10 @@ impl WindowSurface {
 /// Presents retained engine textures into host-owned textures.
 #[derive(Debug)]
 pub struct Presenter {
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
+    delivery: ShaderDelivery,
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
+    headroom: Option<super::headroom::Reducer>,
     program: super::shaders::RenderProgram,
     layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
@@ -951,6 +955,10 @@ impl Presenter {
         let uniform = Self::uniform(device);
         Self {
             program,
+            #[cfg(any(target_vendor = "apple", target_os = "android"))]
+            delivery,
+            #[cfg(any(target_vendor = "apple", target_os = "android"))]
+            headroom: None,
             layout,
             pipeline_layout,
             sampler,
@@ -1063,6 +1071,65 @@ impl Presenter {
         output: TextureOutput<'_>,
     ) {
         self.texture_timed(device, queue, source, output, None);
+    }
+
+    /// Derive source headroom in the caller's native submission.
+    #[cfg(target_os = "android")]
+    pub(crate) fn source_headroom(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+        size: (u32, u32),
+    ) -> Result<super::headroom::Readback, cherenkov::RenderError> {
+        self.headroom
+            .get_or_insert_with(|| super::headroom::Reducer::new(device, self.delivery))
+            .encode(device, encoder, source, size)
+    }
+
+    /// Preserve scene-referred capture pixels and derive their source headroom.
+    ///
+    /// # Errors
+    /// Returns an error when Metal cannot allocate the shared headroom buffer.
+    #[cfg(target_vendor = "apple")]
+    pub(crate) fn capture_scene(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        source: &wgpu::TextureView,
+        target: &wgpu::Texture,
+    ) -> Result<super::headroom::Readback, cherenkov::RenderError> {
+        let output = TextureOutput {
+            texture: target,
+            color: OutputColor::LinearDisplayP3,
+            alpha: OutputAlpha::Premultiplied,
+            headroom: 1.0,
+        };
+        let mut uniform = Self::uniform_bytes(&output);
+        uniform[..4].copy_from_slice(&10_u32.to_ne_bytes());
+        queue.write_buffer(&self.uniform, 0, &uniform);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("scene-referred capture"),
+        });
+        self.encode(
+            device,
+            &mut encoder,
+            source,
+            output,
+            &self.uniform.clone(),
+            None,
+        );
+        let reducer = self
+            .headroom
+            .get_or_insert_with(|| super::headroom::Reducer::new(device, self.delivery));
+        let staging = reducer.encode(
+            device,
+            &mut encoder,
+            source,
+            (target.width(), target.height()),
+        )?;
+        queue.submit([encoder.finish()]);
+        Ok(staging)
     }
 
     /// [`Self::texture`], writing GPU timestamps around the render pass —
