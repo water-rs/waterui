@@ -1126,25 +1126,17 @@ impl AndroidSession {
         // this transaction after the pump drained the flags: its wake was
         // suppressed by the gate, so this is its only path to the frame it
         // needs. One raised while hidden stays armed for the restore frame.
-        if flushed {
-            self.runtime.animation_deadline =
-                self.runtime.renderer.animation_refresh_range().map(|rate| {
-                    now + std::time::Duration::from_secs_f64(1.0 / f64::from(*rate.end()))
-                });
-        }
         let wants_next_frame = self.runtime.platform.frame_transaction.finish(
             self.runtime.platform.is_occluded(),
             FrameDemand {
-                mode: self.runtime.ready_frame_mode(Instant::now()),
+                mode: self.runtime.mode,
                 redraw_pending,
                 signals_pending: self.runtime.renderer.has_pending_frame_request(),
             },
         );
         if reports_ui_idle(
             self.presented_once.get(),
-            wants_next_frame
-                || matches!(self.runtime.engine_next, cherenkov::Next::At { .. })
-                || self.runtime.animation_deadline.is_some(),
+            wants_next_frame || matches!(self.runtime.engine_next, cherenkov::Next::At { .. }),
             self.runtime.is_hidden(),
         ) && !self.ready_logged.get()
         {
@@ -1159,11 +1151,6 @@ impl AndroidSession {
         // armed it clears itself.
         if !self.runtime.is_hidden()
             && let cherenkov::Next::At { time, .. } = self.runtime.engine_next
-        {
-            deadline = Some(deadline.map_or(time, |other| other.min(time)));
-        }
-        if !self.runtime.is_hidden()
-            && let Some(time) = self.runtime.animation_deadline
         {
             deadline = Some(deadline.map_or(time, |other| other.min(time)));
         }

@@ -272,11 +272,13 @@ pub struct RefreshDemand {
 
 impl DisplayRefresh {
     fn requested(self, demand: &RefreshDemand) -> f32 {
-        if demand.touching || demand.continuous {
+        if demand.touching {
             return self.peak;
         }
+        // Continuous callbacks also drive classified animations. Their content
+        // vote sets the vsync cadence; only unclassified work needs peak rate.
         let Some(content) = &demand.content else {
-            return 0.0;
+            return if demand.continuous { self.peak } else { 0.0 };
         };
         let minimum = crate::num_cast::f64_as_f32(f64::from(*content.start()));
         let maximum = crate::num_cast::f64_as_f32(f64::from(*content.end()));

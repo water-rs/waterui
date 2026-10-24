@@ -67,8 +67,6 @@ pub(super) struct RuntimeWindow<P: PlatformWindow> {
     pub(super) mode: FrameMode,
     #[cfg(target_os = "android")]
     pub(super) engine_next: cherenkov::Next,
-    #[cfg(any(target_os = "android", test))]
-    pub(super) animation_deadline: Option<Instant>,
     /// The pump is parked: the host reports the window cannot be seen
     /// (minimized, occluded, backgrounded or surface-less). While parked no
     /// frame is produced and no wake is posted — armed work stays armed for
@@ -135,8 +133,6 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P> {
             mode: FrameMode::Refresh,
             #[cfg(target_os = "android")]
             engine_next: cherenkov::Next::Idle,
-            #[cfg(any(target_os = "android", test))]
-            animation_deadline: None,
             hidden: false,
             presented_frames: 0,
             pointer_position: None,
@@ -153,20 +149,6 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
     /// pump builds the tree).
     pub(super) const fn request_refresh(&mut self) {
         self.mode = FrameMode::Refresh;
-    }
-
-    /// Animation continuation can wait; semantic changes always remain due.
-    pub(super) fn ready_frame_mode(&self, now: Instant) -> FrameMode {
-        #[cfg(any(target_os = "android", test))]
-        if self.mode == FrameMode::Animate
-            && self
-                .animation_deadline
-                .is_some_and(|deadline| deadline > now)
-        {
-            return FrameMode::Idle;
-        }
-        let _ = now;
-        self.mode
     }
 
     pub(super) const fn clear_frame_mode(&mut self) {
@@ -324,7 +306,7 @@ impl FrameTransaction {
         }
         let redraw_pending = take_redraw_pending(&runtime.platform);
         let redraw_requested = runtime.renderer.take_redraw_request();
-        redraw_pending || runtime.ready_frame_mode(Instant::now()).is_pending() || redraw_requested
+        redraw_pending || runtime.mode.is_pending() || redraw_requested
     }
 
     /// Closes the transaction, reopens the gate unless occluded, and returns
@@ -997,11 +979,8 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     } else if runtime.renderer.animations_active() && !runtime.mode.is_pending() {
         schedule_animation_update(runtime, true);
-        #[cfg(not(target_os = "android"))]
-        {
-            runtime.request_redraw();
-            runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
-        }
+        runtime.request_redraw();
+        runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
     phases.rebuild = pump_started_at.elapsed();
     ScenePumpOutcome { built, phases }
@@ -2327,7 +2306,7 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
     if next_deadline.is_some() {
         tracing::debug!(?next_deadline, "wake armed: engine deadline");
     }
-    if runtime.ready_frame_mode(now).is_pending() {
+    if runtime.mode.is_pending() {
         tracing::debug!("wake cause: frame mode still pending");
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;

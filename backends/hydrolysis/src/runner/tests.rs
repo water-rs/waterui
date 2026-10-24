@@ -1500,39 +1500,6 @@ fn frame_transaction_gates_wakes_and_renders_the_restore_frame() {
     assert!(!runtime.renderer.has_pending_frame_request());
 }
 
-#[test]
-fn animation_deadlines_do_not_delay_semantic_or_host_work() {
-    use super::window::FrameTransaction;
-
-    let transaction = FrameTransaction::default();
-    let mut runtime = test_runtime_window();
-    let env = crate::renderer::tests::test_environment();
-    let now = Instant::now();
-    for _ in 0..60 {
-        if !pump_frame_transaction(&mut runtime, &transaction, &env, now) {
-            break;
-        }
-    }
-    runtime.mode = FrameMode::Animate;
-    let deadline = now + Duration::from_secs(10);
-    runtime.animation_deadline = Some(deadline);
-    assert_eq!(runtime.ready_frame_mode(now), FrameMode::Idle);
-    assert_eq!(runtime.ready_frame_mode(deadline), FrameMode::Animate);
-    assert!(!FrameTransaction::take_render_request(
-        &mut runtime,
-        true,
-        HeadlessPlatformWindow::take_redraw_request,
-    ));
-    runtime.platform.request_redraw();
-    assert!(FrameTransaction::take_render_request(
-        &mut runtime,
-        true,
-        HeadlessPlatformWindow::take_redraw_request,
-    ));
-    runtime.request_refresh();
-    assert_eq!(runtime.ready_frame_mode(now), FrameMode::Refresh);
-}
-
 /// The cross-thread redraw handle's UI-thread post reads the gate as it
 /// stands when the post runs: one drained inside a transaction must not
 /// post a second frame into the one already running (water-rs/waterui#2287).

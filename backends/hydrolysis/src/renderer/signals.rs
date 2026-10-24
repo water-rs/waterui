@@ -637,7 +637,11 @@ impl SemanticCore {
     #[cfg(any(target_os = "android", test))]
     pub(crate) fn animation_refresh_range(&self) -> Option<cherenkov::RefreshRange> {
         let now = self.frame_instant;
-        if self.has_pending_interaction_releases(now) || self.navigation_animating(now) {
+        if self.has_pending_interaction_releases(now)
+            || self.navigation_animating(now)
+            || self.has_gliding_smooth_scrolls()
+            || self.has_active_touch_fling()
+        {
             Some(cherenkov_record::tree::RATE_FAST)
         } else {
             self.animation_controller.refresh_range(now)
