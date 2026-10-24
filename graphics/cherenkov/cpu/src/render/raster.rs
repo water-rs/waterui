@@ -66,6 +66,8 @@ pub struct Scratch<'a> {
 struct Buffers {
     free: Vec<Vec<[f32; 4]>>,
     coverage: Vec<Compiler>,
+    clips: Vec<ClipScratch>,
+    clip_charge: u64,
     /// Live colour-buffer bytes and their peak for the current band.
     meter: Meter,
     /// Expanded-window query scratch: each `run` depth's item selection.
@@ -198,6 +200,7 @@ fn capture_rows(
     items: &[Item],
     need: (usize, usize),
     (width, h): (usize, usize),
+    meter: Option<&FrameMeter>,
 ) -> Option<CaptureRows> {
     let (mut k0, mut k1) = kept_rows(&item.union, item.reach, need, h);
     let device = (k0, k1);
@@ -207,7 +210,15 @@ fn capture_rows(
             _ => None,
         }) == Some(item.group)
     {
-        let sampled = sample_rows_at(level, items, 0..items.len(), item.group, need, (width, h));
+        let sampled = sample_rows_at(
+            level,
+            items,
+            0..items.len(),
+            item.group,
+            need,
+            (width, h),
+            meter,
+        );
         k0 = k0.max(sampled.0);
         k1 = k1.min(sampled.1);
     }
@@ -296,9 +307,10 @@ fn sample_rows_at(
     group: u64,
     band: (usize, usize),
     (w, h): (usize, usize),
+    meter: Option<&FrameMeter>,
 ) -> (usize, usize) {
     fearless_simd::dispatch!(level, _simd => {
-        sample_rows(level, items, range, group, band, (w, h))
+        sample_rows(level, items, range, group, band, (w, h), meter)
     })
 }
 
@@ -319,8 +331,11 @@ fn sample_rows(
     group: u64,
     band: (usize, usize),
     (w, h): (usize, usize),
+    meter: Option<&FrameMeter>,
 ) -> (usize, usize) {
     let mut rows = (h, 0);
+    let mut clips = ClipScratch::default();
+    let mut charged = 0;
     let mut i = range.start;
     while i < range.end {
         match &items[i] {
@@ -333,6 +348,7 @@ fn sample_rows(
                     group,
                     (band.0.saturating_sub(*apron), (band.1 + apron).min(h)),
                     (w, h),
+                    meter,
                 );
                 rows = (rows.0.min(nested.0), rows.1.max(nested.1));
                 i = end;
@@ -355,9 +371,15 @@ fn sample_rows(
                     {
                         let x0 = (bounds.x0.max(0) as usize).min(w);
                         let x1 = (bounds.x1.max(0) as usize).min(w);
+                        let clip = clips.prepare(
+                            clip.as_ref(),
+                            first..last,
+                            w,
+                            meter.map(|m| (&mut charged, m)),
+                        );
                         for py in first..last {
                             for px in x0..x1 {
-                                if clip_cov(clip.as_ref(), w, px, py) <= 0.0 {
+                                if clip_cov(clip, w, px, py) <= 0.0 {
                                     continue;
                                 }
                                 let (field, coverage) =
@@ -379,6 +401,9 @@ fn sample_rows(
             _ => {}
         }
         i += 1;
+    }
+    if let Some(meter) = meter {
+        meter.query_live.fetch_sub(charged, Ordering::Relaxed);
     }
     rows
 }
@@ -467,6 +492,8 @@ impl<'a> Scratch<'a> {
             buffers: Buffers {
                 free: Vec::new(),
                 coverage: Vec::new(),
+                clips: Vec::new(),
+                clip_charge: 0,
                 meter: Meter::default(),
                 sel_items: Vec::new(),
                 sel_charge: Vec::new(),
@@ -488,7 +515,8 @@ impl Drop for Scratch<'_> {
         if let Some(m) = self.meter {
             let bytes = (self.buffers.sel_items_charge
                 + self.buffers.sel_charge.iter().sum::<usize>() * size_of::<usize>())
-                as u64;
+                as u64
+                + self.buffers.clip_charge;
             m.query_live
                 .fetch_sub(bytes, std::sync::atomic::Ordering::Relaxed);
         }
@@ -674,7 +702,7 @@ fn shadow_edge<S: Simd>(
     py: usize,
     cx: f32,
     inv_sqrt2_sigma: f32,
-    clip_mask: Option<&[f32]>,
+    clip_mask: Option<ClipCoverage<'_>>,
     color: &[f32; 4],
     space: cherenkov::BlendSpace,
     from: usize,
@@ -694,7 +722,7 @@ fn shadow_edge<S: Simd>(
             }
             let x = x + j;
             let cc = match clip_mask {
-                Some(m) => m[py * w + x],
+                Some(m) => clip_cov(Some(m), w, x, py),
                 None => 1.0,
             };
             if cc <= 0.0 {
@@ -707,22 +735,99 @@ fn shadow_edge<S: Simd>(
     }
 }
 
-/// The clip coverage of `(px, py)`: 1/0 for the rect fast path, the mask
-/// sample otherwise.
+/// Coverage borrowed from one raster window, never retained by the scene.
+#[derive(Clone, Copy, Debug)]
+pub enum ClipCoverage<'a> {
+    /// Integer clip, without a raster allocation.
+    Rect(IRect),
+    /// Exact-area coverage of the current row window.
+    Samples {
+        /// Row-major coverage at the surface width.
+        cells: &'a [f32],
+        /// Device row represented by the first sample row.
+        top: usize,
+    },
+}
+
+/// Reused by a worker across items and bands; one slot per recursive window.
+#[derive(Default)]
+struct ClipScratch {
+    compiler: Compiler,
+    cells: Vec<f32>,
+    previous: Option<ClipRef>,
+    rows: Range<usize>,
+    width: usize,
+}
+
+impl ClipScratch {
+    fn prepare<'a>(
+        &'a mut self,
+        clip: Option<&ClipRef>,
+        rows: Range<usize>,
+        width: usize,
+        meter: Option<(&mut u64, &FrameMeter)>,
+    ) -> Option<ClipCoverage<'a>> {
+        let clip = clip?;
+        match clip.as_ref() {
+            ClipMask::Rect(rect) => Some(ClipCoverage::Rect(*rect)),
+            ClipMask::Geometry { boundary, .. } => {
+                if self.width != width
+                    || self.rows != rows
+                    || !self
+                        .previous
+                        .as_ref()
+                        .is_some_and(|old| std::sync::Arc::ptr_eq(old, clip))
+                {
+                    let before = self.compiler.heap_bytes()
+                        + (self.cells.capacity() * size_of::<f32>()) as u64;
+                    self.cells.resize(width * rows.len(), 0.0);
+                    self.cells.fill(0.0);
+                    self.compiler.prepare(
+                        boundary,
+                        super::tiles::Fixed::default(),
+                        rows.clone(),
+                        width,
+                    );
+                    self.compiler.rows(rows.len(), |y, range, run| {
+                        for (i, x) in range.enumerate() {
+                            self.cells[y * width + x] = run.at(i);
+                        }
+                    });
+                    if let Some((charged, meter)) = meter {
+                        let bytes = self.compiler.heap_bytes()
+                            + (self.cells.capacity() * size_of::<f32>()) as u64
+                            - before;
+                        sel_alloc(bytes, Some(meter));
+                        *charged += bytes;
+                    }
+                    self.previous = Some(clip.clone());
+                    self.rows = rows;
+                    self.width = width;
+                }
+                Some(ClipCoverage::Samples {
+                    cells: &self.cells,
+                    top: self.rows.start,
+                })
+            }
+        }
+    }
+}
+
+/// The clip coverage of one device pixel in a prepared row window.
 #[expect(
     clippy::cast_sign_loss,
     reason = "clip rect edges are clamped non-negative before indexing"
 )]
-fn clip_cov(clip: Option<&ClipRef>, w: usize, px: usize, py: usize) -> f32 {
-    match clip.map(std::convert::AsRef::as_ref) {
+fn clip_cov(clip: Option<ClipCoverage<'_>>, w: usize, px: usize, py: usize) -> f32 {
+    match clip {
         None => 1.0,
-        Some(ClipMask::Rect(r)) => f32::from(
-            px >= (r.x0.max(0) as usize)
-                && px < (r.x1.max(0) as usize)
-                && py >= (r.y0.max(0) as usize)
-                && py < (r.y1.max(0) as usize),
+        Some(ClipCoverage::Rect(r)) => f32::from(
+            px >= r.x0.max(0) as usize
+                && px < r.x1.max(0) as usize
+                && py >= r.y0.max(0) as usize
+                && py < r.y1.max(0) as usize,
         ),
-        Some(ClipMask::Geometry { coverage, .. }) => coverage[py * w + px],
+        Some(ClipCoverage::Samples { cells, top }) => cells[(py - top) * w + px],
     }
 }
 
@@ -1186,7 +1291,7 @@ fn composite(
 /// sampled per pixel column from the run's first column `x0` on.
 #[derive(Clone, Copy, Debug)]
 pub struct ClipRun<'a> {
-    clip: Option<&'a ClipRef>,
+    clip: Option<ClipCoverage<'a>>,
     /// The coverage mask's stride (the surface width).
     w: usize,
     /// The run's first device column.
@@ -1198,7 +1303,7 @@ pub struct ClipRun<'a> {
 impl<'a> ClipRun<'a> {
     /// The clip source of the run `x0..` on device row `py`.
     #[must_use]
-    pub const fn new(clip: Option<&'a ClipRef>, w: usize, x0: usize, py: usize) -> Self {
+    pub const fn new(clip: Option<ClipCoverage<'a>>, w: usize, x0: usize, py: usize) -> Self {
         Self { clip, w, x0, py }
     }
 
@@ -1538,11 +1643,11 @@ fn shade_run<S: Simd>(
     py: usize,
     w: usize,
     paint: &PaintData,
-    clip: Option<&ClipRef>,
+    clip: Option<ClipCoverage<'_>>,
     space: cherenkov::BlendSpace,
     src: &mut [MaybeUninit<[f32; 4]>],
 ) {
-    let (range, cov, clip) = if let Some(ClipMask::Rect(rect)) = clip.map(AsRef::as_ref) {
+    let (range, cov, clip) = if let Some(ClipCoverage::Rect(rect)) = clip {
         if py < rect.y0.max(0) as usize || py >= rect.y1.max(0) as usize {
             return;
         }
@@ -1660,7 +1765,7 @@ fn shade(
     // A surface that used no backdrop group cannot contain a `Capture`,
     // so the scan is skipped outright.
     let top = if has_backdrop {
-        top_captures(level, items, surface, (w, h))
+        top_captures(level, items, surface, (w, h), meter)
     } else {
         TopCaptures::new()
     };
@@ -1734,6 +1839,7 @@ fn top_captures(
     items: &[Item],
     surface: (usize, usize),
     size: (usize, usize),
+    meter: Option<&FrameMeter>,
 ) -> TopCaptures {
     // (capture item, its group, the first item sampling the group)
     let mut plan: Vec<(usize, u64, usize)> = Vec::new();
@@ -1770,7 +1876,7 @@ fn top_captures(
         let Item::Capture(capture) = &items[i] else {
             unreachable!("only capture items are planned");
         };
-        top[k].1 = capture_rows(level, capture, items, need, size);
+        top[k].1 = capture_rows(level, capture, items, need, size, meter);
     }
     top
 }
@@ -2278,6 +2384,7 @@ fn run<S: Simd>(
     depth: usize,
 ) -> Result<(), cherenkov::RenderError> {
     let bh = band.fb.len() / band.w;
+    let mut clips = buffers.clips.pop().unwrap_or_default();
     let h = ctx.h;
     // Item indexes below `skip` were consumed by a filter scope's
     // nested run.
@@ -2300,7 +2407,12 @@ fn run<S: Simd>(
                 (edges, *offset),
                 *bbox,
                 paint,
-                clip.as_ref(),
+                clips.prepare(
+                    clip.as_ref(),
+                    band.y0..band.y0 + bh,
+                    band.w,
+                    ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                ),
             ),
             Item::PushIsolate { space } => stack.push(Plane {
                 buf: buffers.take_color(slice_len(band.w, bh)),
@@ -2319,7 +2431,12 @@ fn run<S: Simd>(
                     plane.space,
                     *opacity,
                     *blend,
-                    clip.as_ref(),
+                    clips.prepare(
+                        clip.as_ref(),
+                        band.y0..band.y0 + bh,
+                        band.w,
+                        ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                    ),
                     stack,
                 );
                 buffers.give_color(plane.buf);
@@ -2396,7 +2513,19 @@ fn run<S: Simd>(
                 }
                 let first = (band.y0 - top) * band.w;
                 let central = &window[first..first + band.fb.len()];
-                band.composite_isolate(central, *space, *opacity, *blend, clip.as_ref(), stack);
+                band.composite_isolate(
+                    central,
+                    *space,
+                    *opacity,
+                    *blend,
+                    clips.prepare(
+                        clip.as_ref(),
+                        band.y0..band.y0 + bh,
+                        band.w,
+                        ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                    ),
+                    stack,
+                );
                 buffers.give_color(window);
                 skip = scope_end + 1;
             }
@@ -2408,7 +2537,14 @@ fn run<S: Simd>(
             Item::Capture(capture) => {
                 let rows = match ctx.top.iter().find(|(j, _)| *j == i) {
                     Some((_, rows)) => *rows,
-                    None => capture_rows(ctx.level, capture, items, ctx.surface, (band.w, h)),
+                    None => capture_rows(
+                        ctx.level,
+                        capture,
+                        items,
+                        ctx.surface,
+                        (band.w, h),
+                        ctx.meter,
+                    ),
                 };
                 if let Some(rows) = rows {
                     capture_band(simd, band, stack.as_slice(), buffers, ctx, capture, rows)?;
@@ -2426,7 +2562,12 @@ fn run<S: Simd>(
                     band.sample(
                         capture,
                         *bounds,
-                        clip.as_ref(),
+                        clips.prepare(
+                            clip.as_ref(),
+                            band.y0..band.y0 + bh,
+                            band.w,
+                            ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                        ),
                         effect,
                         union.as_ref(),
                         *space,
@@ -2449,11 +2590,37 @@ fn run<S: Simd>(
                 *sigma_eff,
                 color,
                 *bbox,
-                clip.as_ref(),
+                clips.prepare(
+                    clip.as_ref(),
+                    band.y0..band.y0 + bh,
+                    band.w,
+                    ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                ),
             ),
-            Item::Project(item) => band.project(stack, item),
+            Item::Project(item) => {
+                let clip = clips.prepare(
+                    item.clip.as_ref(),
+                    band.y0..band.y0 + bh,
+                    band.w,
+                    ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                );
+                band.project(stack, item, clip);
+            }
             Item::Silhouette { slot, paint, clip } => {
-                band.glyph(simd, stack, slot, 0, 0, paint, clip.as_ref());
+                band.glyph(
+                    simd,
+                    stack,
+                    slot,
+                    0,
+                    0,
+                    paint,
+                    clips.prepare(
+                        clip.as_ref(),
+                        band.y0..band.y0 + bh,
+                        band.w,
+                        ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                    ),
+                );
             }
             Item::Glyph {
                 slot,
@@ -2461,8 +2628,28 @@ fn run<S: Simd>(
                 y,
                 paint,
                 clip,
-            } => band.glyph(simd, stack, slot, *x, *y, paint, clip.as_ref()),
+            } => band.glyph(
+                simd,
+                stack,
+                slot,
+                *x,
+                *y,
+                paint,
+                clips.prepare(
+                    clip.as_ref(),
+                    band.y0..band.y0 + bh,
+                    band.w,
+                    ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                ),
+            ),
         }
+    }
+    if !clips.cells.is_empty() {
+        let before = buffers.clips.capacity();
+        buffers.clips.push(clips);
+        let bytes = ((buffers.clips.capacity() - before) * size_of::<ClipScratch>()) as u64;
+        sel_alloc(bytes, ctx.meter);
+        buffers.clip_charge += bytes;
     }
     Ok(())
 }
@@ -2895,7 +3082,7 @@ impl Band<'_> {
         (edges, offset): (&EdgeTiles, super::tiles::Fixed),
         bbox: crate::render::lower::DrawBox,
         paint: &PaintData,
-        clip: Option<&ClipRef>,
+        clip: Option<ClipCoverage<'_>>,
     ) {
         let bh = self.fb.len() / self.w;
         let first = usize::from(bbox.y0).max(self.y0);
@@ -2951,7 +3138,7 @@ impl Band<'_> {
         sigma_eff: f32,
         color: &[f32; 4],
         bbox: IRect,
-        clip: Option<&ClipRef>,
+        clip: Option<ClipCoverage<'_>>,
     ) {
         let bh = self.fb.len() / self.w;
         let (y_lo, y_hi) = (
@@ -2977,13 +3164,13 @@ impl Band<'_> {
         let inv_sqrt2_sigma = 1.0 / (sigma * std::f32::consts::SQRT_2);
         // Rect-clip rows touch only `cx_lo..cx_hi`; a coverage clip stays
         // a per-pixel sample.
-        let (cx_lo, cx_hi, clip_mask) = match clip.map(AsRef::as_ref) {
-            Some(ClipMask::Rect(r)) => (
+        let (cx_lo, cx_hi, clip_mask) = match clip {
+            Some(ClipCoverage::Rect(r)) => (
                 usize::try_from(r.x0).unwrap_or(0).clamp(x_lo, x_hi),
                 usize::try_from(r.x1).unwrap_or(0).clamp(x_lo, x_hi),
                 None,
             ),
-            Some(ClipMask::Geometry { coverage, .. }) => (x_lo, x_hi, Some(coverage.as_slice())),
+            Some(mask @ ClipCoverage::Samples { .. }) => (x_lo, x_hi, Some(mask)),
             None => (x_lo, x_hi, None),
         };
         if cx_lo >= cx_hi && clip_mask.is_none() {
@@ -3091,7 +3278,7 @@ impl Band<'_> {
                                 continue;
                             }
                             let cc = match clip_mask {
-                                Some(m) => m[py_i * self.w + x],
+                                Some(m) => clip_cov(Some(m), self.w, x, py_i),
                                 None => 1.0,
                             };
                             if cc <= 0.0 {
@@ -3129,7 +3316,7 @@ impl Band<'_> {
                     );
                     for x in x_in_lo..x_in_hi {
                         let cc = match clip_mask {
-                            Some(m) => m[py_i * self.w + x],
+                            Some(m) => clip_cov(Some(m), self.w, x, py_i),
                             None => 1.0,
                         };
                         if cc <= 0.0 {
@@ -3179,7 +3366,7 @@ impl Band<'_> {
         &mut self,
         capture: &Capture,
         bounds: IRect,
-        clip: Option<&ClipRef>,
+        clip: Option<ClipCoverage<'_>>,
         effect: &SampleEffect,
         union: Option<&UnionSample>,
         member_space: cherenkov::BlendSpace,
@@ -3279,7 +3466,7 @@ impl Band<'_> {
         ox: i32,
         oy: i32,
         paint: &PaintData,
-        clip: Option<&ClipRef>,
+        clip: Option<ClipCoverage<'_>>,
     ) {
         let Some(mask) = slot.get() else { return };
         let bh = self.fb.len() / self.w;
@@ -3352,7 +3539,12 @@ impl Band<'_> {
         reason = "compiled under the dispatched CPU level so mul_add is one instruction"
     )]
     #[inline(always)]
-    fn project(&mut self, stack: &mut [Plane], item: &super::lower::ProjectItem) {
+    fn project(
+        &mut self,
+        stack: &mut [Plane],
+        item: &super::lower::ProjectItem,
+        clip: Option<ClipCoverage<'_>>,
+    ) {
         let bh = self.fb.len() / self.w;
         let [x0, y0, x1, y1] = item.placed.bounds.map(|v| v as usize);
         let (x1, y_lo, y_hi) = (x1.min(self.w), y0.max(self.y0), y1.min(self.y0 + bh));
@@ -3363,7 +3555,7 @@ impl Band<'_> {
             for px in x0..x1 {
                 let here = q;
                 q = [q[0] + step[0], q[1] + step[1], q[2] + step[2]];
-                let cc = clip_cov(item.clip.as_ref(), self.w, px, py);
+                let cc = clip_cov(clip, self.w, px, py);
                 if cc <= 0.0 {
                     continue;
                 }
@@ -3392,7 +3584,7 @@ impl Band<'_> {
         src_space: cherenkov::BlendSpace,
         opacity: f32,
         blend: (cherenkov::BlendMode, cherenkov::BlendSpace),
-        clip: Option<&ClipRef>,
+        clip: Option<ClipCoverage<'_>>,
         stack: &mut Vec<Plane>,
     ) {
         let (dst, dst_space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
@@ -3585,13 +3777,11 @@ mod tests {
         }
     }
 
-    use std::sync::Arc;
-
     use super::{
-        ClipRef, ClipRun, Edge, composite_solid, composite_span, convert_span, coverage_mask,
+        ClipCoverage, ClipRun, Edge, composite_solid, composite_span, convert_span, coverage_mask,
         member, move_space, reduce_rows, src_over,
     };
-    use crate::render::lower::{ClipMask, IRect};
+    use crate::render::lower::IRect;
     use cherenkov::{BlendSpace, FillRule};
 
     /// The long edges of water-rs/waterui#2665 against the independent f64
@@ -3739,43 +3929,35 @@ mod tests {
                                 for len in 0..=67usize {
                                     let w = x0 + len + 8;
                                     let py = 1usize;
-                                    let mask: Option<ClipRef> = match clip_kind {
-                                        1 => Some(Arc::new(ClipMask::Rect(IRect {
+                                    let mut cells = vec![0.0; w];
+                                    for (i, cell) in cells[x0..x0 + len].iter_mut().enumerate() {
+                                        *cell = match (i + x0) % 4 {
+                                            0 => 0.25,
+                                            1 => 1.0,
+                                            2 => 0.0,
+                                            _ => 0.5,
+                                        };
+                                    }
+                                    let mask = match clip_kind {
+                                        1 => Some(ClipCoverage::Rect(IRect {
                                             x0: (x0 + 2) as i32,
                                             y0: 0,
                                             x1: (x0 + 5) as i32,
                                             y1: 4,
-                                        }))),
-                                        2 => {
-                                            let mut cells = vec![0.0; (py + 1) * w];
-                                            for (i, cell) in cells[py * w + x0..py * w + x0 + len]
-                                                .iter_mut()
-                                                .enumerate()
-                                            {
-                                                *cell = match (i + x0) % 4 {
-                                                    0 => 0.25,
-                                                    1 => 1.0,
-                                                    2 => 0.0,
-                                                    _ => 0.5,
-                                                };
-                                            }
-                                            // This fixture exercises the raster mask consumer,
-                                            // not geometric lowering of the operand stack.
-                                            Some(Arc::new(ClipMask::Geometry {
-                                                operands: Vec::new(),
-                                                coverage: cells,
-                                            }))
-                                        }
-                                        // A rect covering the whole run.
-                                        3 => Some(Arc::new(ClipMask::Rect(IRect {
+                                        })),
+                                        2 => Some(ClipCoverage::Samples {
+                                            cells: &cells,
+                                            top: py,
+                                        }),
+                                        3 => Some(ClipCoverage::Rect(IRect {
                                             x0: 0,
                                             y0: 0,
                                             x1: (x0 + len) as i32,
                                             y1: 4,
-                                        }))),
+                                        })),
                                         _ => None,
                                     };
-                                    let clip = ClipRun::new(mask.as_ref(), w, x0, py);
+                                    let clip = ClipRun::new(mask, w, x0, py);
                                     let cov: Vec<f32> = if cov_kind == 1 {
                                         vec![1.0; len]
                                     } else {
