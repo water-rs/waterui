@@ -1,0 +1,127 @@
+//! Backward pixel demand through the frame's ordered image writes.
+//!
+//! Regions use each pass's virtual raster coordinates, never texture-local
+//! coordinates. A read names its last prior writer so a frozen capture cannot
+//! accidentally pull in a later write to the same allocation.
+
+use cherenkov::damage::Region;
+
+use super::plan::{ExecutionPlan, Read, ReadKind};
+use crate::render::lower::{Frame, Target};
+
+#[derive(Default)]
+pub struct Demand {
+    passes: Vec<Region>,
+}
+
+impl Demand {
+    pub fn bytes(&self) -> u64 {
+        (self.passes.capacity() * size_of::<Region>()) as u64
+            + self
+                .passes
+                .iter()
+                .map(|region| region.heap_bytes().0)
+                .sum::<u64>()
+    }
+
+    pub fn pass(&self, index: usize) -> &Region {
+        &self.passes[index]
+    }
+
+    /// Seed the last write of each persistent output, then propagate reads
+    /// backward. The caller supplies the pixels that output must replace.
+    pub fn update(
+        &mut self,
+        frame: &Frame,
+        plan: &ExecutionPlan,
+        mut output: impl FnMut(Target, [u32; 4], &mut Region),
+    ) {
+        self.passes.truncate(frame.passes.len());
+        for (index, pass) in frame.passes.iter().enumerate() {
+            let [x, y, w, h] = pass.region;
+            let extent = (x + w, y + h);
+            if let Some(region) = self.passes.get_mut(index) {
+                if region.extent() == extent {
+                    region.clear();
+                } else {
+                    *region = Region::new(extent);
+                }
+            } else {
+                self.passes.push(Region::new(extent));
+            }
+        }
+        for (index, pass) in frame.passes.iter().enumerate().rev() {
+            if matches!(
+                pass.target,
+                Target::Part(_) | Target::Plane(_) | Target::Projected(_)
+            ) && !frame.passes[index + 1..]
+                .iter()
+                .any(|later| later.target == pass.target)
+            {
+                output(pass.target, pass.region, &mut self.passes[index]);
+            }
+        }
+        for index in (0..frame.passes.len()).rev() {
+            if self.passes[index].is_empty() {
+                continue;
+            }
+            // The filter/shadow executors currently produce their whole
+            // bounded image. Demand their entire input until their kernels
+            // accept a restricted output and its sampling apron.
+            if frame.filters.iter().any(|(pass, _)| *pass == index)
+                || frame.shadows.iter().any(|(pass, _)| *pass == index)
+                || frame.reduces.iter().any(|(pass, _)| *pass == index)
+            {
+                let [x, y, w, h] = frame.passes[index].region;
+                self.passes[index].add(x, y, w, h);
+            }
+            if let Some(read) = &plan.loads[index] {
+                self.read(index, read, false, frame);
+            }
+            if let Some(read) = &plan.backdrops[index] {
+                self.read(index, read, false, frame);
+            }
+            if let Some(read) = &plan.captures[index] {
+                let scaled = frame.passes[index]
+                    .capture
+                    .is_some_and(|capture| capture.resolve.is_some());
+                self.read(index, read, scaled, frame);
+            }
+            for (read, range) in plan.reads[index].iter().zip(&frame.passes[index].ranges) {
+                if let Some(read) = read {
+                    let whole = read.kind != ReadKind::CorrespondingPixel
+                        || !super::plan::corresponds(
+                            frame,
+                            range,
+                            plan.images[read.image.0].region,
+                        );
+                    self.read(index, read, whole, frame);
+                }
+            }
+        }
+    }
+
+    fn read(&mut self, index: usize, read: &Read, whole: bool, frame: &Frame) {
+        let Some(writer) = read.writer else {
+            // Retained projected images are already valid on entry.
+            return;
+        };
+        assert!(writer < index, "a read must name an earlier writer");
+        let (before, after) = self.passes.split_at_mut(index);
+        let destination = &mut before[writer];
+        let [x, y, w, h] = frame.passes[writer].region;
+        if whole {
+            destination.add(x, y, w, h);
+        } else {
+            for rect in after[0].rectangles() {
+                let x0 = rect.x0().max(x);
+                let y0 = rect.y0().max(y);
+                let x1 = rect.x1().min(x + w);
+                let y1 = rect.y1().min(y + h);
+                if x0 < x1 && y0 < y1 {
+                    destination.add(x0, y0, x1 - x0, y1 - y0);
+                }
+            }
+        }
+    }
+}

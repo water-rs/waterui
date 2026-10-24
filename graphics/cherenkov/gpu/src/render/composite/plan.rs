@@ -4,16 +4,20 @@
 //! clear starts a new generation; reads name that generation before any
 //! physical attachment is assigned.
 //!
-//! Nothing here is platform-specific (issue #2549). A backend hands the
-//! planner the [`Limits`] its tile executor works within; a target with
-//! no executor has no limits, so an [`ExecutionPlan`] is never built
-//! there and every logical image is materialized for
-//! [`Materialization::NoExecutor`].
+//! Nothing here is platform-specific (issue #2549). The analysis —
+//! logical images, their generations, and every pass's read and capture
+//! dependencies — is platform-independent (issue #2558):
+//! [`ExecutionPlan::portable`] builds just that graph for a target with
+//! no executor, attributing every image the frame backs to the reason
+//! none exists. [`ExecutionPlan::build`] runs the same analysis and then
+//! partitions it into tile epochs for a backend that supplies the
+//! [`Limits`] its tile executor works within.
 
-// A target with no executor never calls the planner, so every item here
-// is unreachable there. Both executors — Apple's (#2549) and Vulkan's
-// (#2191) — use all of it, so only a target with neither has dead code
-// here.
+// The portable graph runs wherever a frame is lowered; only the
+// partition into epochs needs a tile executor. Both executors —
+// Apple's (#2549) and Vulkan's (#2191) — are Unix, so the partition and
+// everything reachable only from it is dead code on a target with
+// neither.
 #![cfg_attr(
     not(unix),
     expect(
@@ -127,6 +131,10 @@ pub enum ReadKind {
 pub struct Read {
     pub image: LogicalImageId,
     pub kind: ReadKind,
+    /// The last pass before the reader that wrote `image`; `None` when
+    /// no earlier pass did — the image entered the frame already written
+    /// (a retained projected image), or the reader itself opens it.
+    pub writer: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -170,23 +178,20 @@ pub struct ExecutionPlan {
     pub images: Vec<LogicalImage>,
     pub targets: Vec<LogicalImageId>,
     pub reads: Vec<Vec<Option<Read>>>,
+    /// The target contents retained by each load pass, before its draws.
+    /// A clear starts a new image and has no dependency on the old contents.
+    pub loads: Vec<Option<Read>>,
+    /// Destination snapshots copied before blended draws, including a clear pass.
+    pub backdrops: Vec<Option<Read>>,
+    /// Per pass, the read its capture performs: the source logical
+    /// image, [`ReadKind::FrozenSnapshot`], and the last pass that
+    /// wrote that image before the capture. `None` for a pass without
+    /// a capture.
+    pub captures: Vec<Option<Read>>,
     pub segments: Vec<Segment>,
     native: Vec<Option<usize>>,
-    /// Whether a backend planned this frame at all. A target whose
-    /// backend has no tile executor supplies no [`Limits`], so its plan
-    /// stays in this default state: no epoch, and every image
-    /// materialized for [`Self::unplanned`]'s reason.
+    /// Whether the current frame has a dependency graph.
     planned: bool,
-    /// Why no plan was built, while `planned` is false.
-    ///
-    /// `None` is the default state [`Materialization::NoExecutor`]
-    /// names: the target has no tile executor and nothing asked. A
-    /// backend that *has* an executor but could not install it —
-    /// because the device lacks what it needs, or the engine is
-    /// configured with a format it cannot bind — records that reason
-    /// here through [`ExecutionPlan::set_unplanned`], so the
-    /// attribution says which (#2191).
-    unplanned: Option<Materialization>,
 }
 
 impl ExecutionPlan {
@@ -200,6 +205,9 @@ impl ExecutionPlan {
                 .iter()
                 .map(|reads| reads.capacity() * std::mem::size_of::<Option<Read>>())
                 .sum::<usize>()
+            + self.captures.capacity() * std::mem::size_of::<Option<Read>>()
+            + self.loads.capacity() * std::mem::size_of::<Option<Read>>()
+            + self.backdrops.capacity() * std::mem::size_of::<Option<Read>>()
             + self.segments.capacity() * std::mem::size_of::<Segment>()
             + self
                 .segments
@@ -222,15 +230,63 @@ impl ExecutionPlan {
     /// are stored in and `limits` is what the
     /// backend's tile executor can hold.
     pub fn build(frame: &Frame, formats: Formats, limits: Limits) -> Self {
+        let mut plan = Self::analyze(frame, formats);
+        plan.partition(frame, limits);
+        plan
+    }
+
+    /// The same dependency graph [`Self::build`] records, for a frame no
+    /// tile executor exists to run: `reason` — why there is none —
+    /// attributes every image the frame backs, and the passes form one
+    /// portable segment. An image the frame does not produce (a retained
+    /// projected image) stays [`Materialization::Persistent`]: it was
+    /// already materialized, whatever the executor.
+    pub fn portable(frame: &Frame, formats: Formats, reason: Materialization) -> Self {
+        let mut plan = Self::analyze(frame, formats);
+        for image in &mut plan.images {
+            if image.producer.is_some() {
+                image.storage = Storage::Materialized(reason);
+            }
+        }
+        if !frame.passes.is_empty() {
+            plan.segments.push(Segment::Portable(0..frame.passes.len()));
+        }
+        plan
+    }
+
+    /// Logical images, generations, and read and capture dependencies —
+    /// everything about `frame` a consumer needs that does not depend on
+    /// a tile executor.
+    fn analyze(frame: &Frame, formats: Formats) -> Self {
         let mut plan = Self {
             planned: true,
             ..Self::default()
         };
-        let mut current: Vec<(Target, LogicalImageId)> = Vec::new();
+        // The logical image each pass target currently names and the
+        // last pass that wrote it. A clear opens a new generation with
+        // no writer yet; a load continues the image and becomes its
+        // latest writer; an image no pass produces — a retained
+        // projected image — has none.
+        let mut current: Vec<(Target, LogicalImageId, Option<usize>)> = Vec::new();
         for (index, pass) in frame.passes.iter().enumerate() {
             let previous = current
                 .iter()
-                .position(|(target, _)| *target == pass.target);
+                .position(|(target, ..)| *target == pass.target);
+            let prior = previous.map(|previous| Read {
+                image: current[previous].1,
+                kind: ReadKind::CorrespondingPixel,
+                writer: current[previous].2,
+            });
+            plan.loads
+                .push(prior.clone().filter(|_| pass.clear.is_none()));
+            plan.backdrops.push(
+                prior
+                    .filter(|_| pass.backdrop_copy.is_some())
+                    .map(|read| Read {
+                        kind: ReadKind::FrozenSnapshot,
+                        ..read
+                    }),
+            );
             let image = if let Some(previous) = previous.filter(|_| pass.clear.is_none()) {
                 current[previous].1
             } else {
@@ -247,68 +303,112 @@ impl ExecutionPlan {
                     storage: Storage::Materialized(initial(pass.target)),
                 });
                 if let Some(p) = previous {
-                    current[p].1 = id;
+                    current[p] = (pass.target, id, None);
                 } else {
-                    current.push((pass.target, id));
+                    current.push((pass.target, id, None));
                 }
                 id
             };
             plan.images[image.0].last_consumer = index;
             plan.targets.push(image);
+            // Reads resolve before this pass records itself as its
+            // target's last writer, so a writer never names the reading
+            // pass or a later one.
             let reads = pass
                 .ranges
                 .iter()
-                .map(|range| {
-                    let source = range.source?;
-                    let target = source_target(source);
-                    let id = if let Some((_, id)) = current.iter().find(|(t, _)| *t == target) {
-                        *id
-                    } else {
-                        // Retained projected images can be sampled without a
-                        // producer in this frame. They enter already materialized.
-                        assert!(matches!(target, Target::Projected(_)));
-                        let id = LogicalImageId(plan.images.len());
-                        plan.images.push(LogicalImage {
-                            target,
-                            generation: 0,
-                            region: [0; 4],
-                            space: cherenkov::BlendSpace::Linear,
-                            format: formats.of(frame, target),
-                            producer: None,
-                            last_consumer: index,
-                            storage: Storage::Materialized(Materialization::Persistent),
-                        });
-                        current.push((target, id));
-                        id
-                    };
-                    plan.images[id.0].last_consumer = index;
-                    let kind = read_kind(frame, range);
-                    Some(Read { image: id, kind })
-                })
+                .map(|range| plan.resolve_read(frame, formats, range, index, &mut current))
                 .collect();
             plan.reads.push(reads);
-            if let Some(capture) = pass.capture {
-                let id = current
+            // A capture freezes its source: the image the pass names and
+            // the last pass that wrote it before this one.
+            plan.captures.push(pass.capture.map(|capture| {
+                let (_, id, writer) = current
                     .iter()
-                    .find(|(t, _)| *t == capture.copy_from)
-                    .expect("capture source exists")
-                    .1;
+                    .find(|(t, ..)| *t == capture.copy_from)
+                    .expect("capture source exists");
                 plan.images[id.0].last_consumer = index;
-            }
+                Read {
+                    image: *id,
+                    kind: ReadKind::FrozenSnapshot,
+                    writer: *writer,
+                }
+            }));
+            // This pass writes its target — producing the image or
+            // continuing it — so later reads name it as the last writer.
+            current
+                .iter_mut()
+                .find(|(t, ..)| *t == pass.target)
+                .expect("the pass's target was resolved above")
+                .2 = Some(index);
         }
-        plan.partition(frame, limits);
         plan
     }
 
+    fn resolve_read(
+        &mut self,
+        frame: &Frame,
+        formats: Formats,
+        range: &DrawRange,
+        index: usize,
+        current: &mut Vec<(Target, LogicalImageId, Option<usize>)>,
+    ) -> Option<Read> {
+        let target = source_target(range.source?);
+        let (image, writer) =
+            if let Some((_, id, writer)) = current.iter().find(|(t, ..)| *t == target) {
+                (*id, *writer)
+            } else {
+                // Retained projected images can be sampled without a producer
+                // in this frame. They enter already materialized.
+                assert!(matches!(target, Target::Projected(_)));
+                let id = LogicalImageId(self.images.len());
+                self.images.push(LogicalImage {
+                    target,
+                    generation: 0,
+                    region: [0; 4],
+                    space: cherenkov::BlendSpace::Linear,
+                    format: formats.of(frame, target),
+                    producer: None,
+                    last_consumer: index,
+                    storage: Storage::Materialized(Materialization::Persistent),
+                });
+                current.push((target, id, None));
+                (id, None)
+            };
+        self.images[image.0].last_consumer = index;
+        Some(Read {
+            image,
+            kind: read_kind(frame, range),
+            writer,
+        })
+    }
+
+    /// Geometry changed but the frame's structure did not: each image's
+    /// region and space follow its pass, and the native partition is
+    /// redone against `limits`.
     pub fn update_placement(&mut self, frame: &Frame, limits: Limits) {
+        self.update_regions(frame);
+        for (index, pass) in frame.passes.iter().enumerate() {
+            self.images[self.targets[index].0].storage =
+                Storage::Materialized(initial(pass.target));
+        }
+        self.segments.clear();
+        self.partition(frame, limits);
+    }
+
+    /// The same geometry update for a portable plan: regions and spaces
+    /// follow the passes while every image keeps the backed attribution
+    /// [`Self::portable`] recorded — there is no partition to redo.
+    pub fn update_placement_portable(&mut self, frame: &Frame) {
+        self.update_regions(frame);
+    }
+
+    fn update_regions(&mut self, frame: &Frame) {
         for (index, pass) in frame.passes.iter().enumerate() {
             let image = &mut self.images[self.targets[index].0];
             image.region = pass.region;
             image.space = pass.space;
-            image.storage = Storage::Materialized(initial(pass.target));
         }
-        self.segments.clear();
-        self.partition(frame, limits);
     }
 
     fn partition(&mut self, frame: &Frame, limits: Limits) {
@@ -592,26 +692,13 @@ impl ExecutionPlan {
         })
     }
 
-    /// Whether a backend planned this frame. Only a planned frame has
-    /// logical images to report on (issue #2547's attribution).
+    /// Whether a dependency graph exists for this frame — logical
+    /// images, reads and capture reads — built natively or portably.
+    /// Only a planned frame has logical images to report on (issue
+    /// #2547's attribution), and only a graph lets damage propagation
+    /// walk image dependencies (#2558).
     pub const fn is_planned(&self) -> bool {
         self.planned
-    }
-
-    /// Records that this frame is not planned, and why.
-    ///
-    /// The backend calls this instead of [`Self::build`] when it has an
-    /// executor it could not install, so [`Self::materialization`]
-    /// names the real obstacle rather than the generic
-    /// [`Materialization::NoExecutor`]. Any plan a previous frame built
-    /// is discarded: an unplanned frame has no epochs.
-    pub fn set_unplanned(&mut self, reason: Materialization) {
-        if self.planned || self.unplanned != Some(reason) {
-            *self = Self {
-                unplanned: Some(reason),
-                ..Self::default()
-            };
-        }
     }
 
     /// Why the image `pass` writes reaches device memory; `None` when an
@@ -619,7 +706,7 @@ impl ExecutionPlan {
     /// exactly when this is `Some`.
     pub fn materialization(&self, pass: usize) -> Option<Materialization> {
         if !self.planned {
-            return Some(self.unplanned.unwrap_or(Materialization::NoExecutor));
+            return Some(Materialization::NoExecutor);
         }
         match self.images[self.targets[pass].0].storage {
             Storage::OnChip => None,
@@ -722,7 +809,7 @@ const fn contains(outer: [u32; 4], inner: [u32; 4]) -> bool {
     clippy::cast_precision_loss,
     reason = "device pixel coordinates fit f32"
 )]
-fn corresponds(frame: &Frame, range: &DrawRange, region: [u32; 4]) -> bool {
+pub(super) fn corresponds(frame: &Frame, range: &DrawRange, region: [u32; 4]) -> bool {
     let [x, y, width, height] = region.map(|v| v as f32);
     frame.instances[range.instances.start as usize..range.instances.end as usize]
         .iter()

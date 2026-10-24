@@ -430,6 +430,8 @@ struct SurfaceState {
     /// plane with layers painted above it, at the surface size.
     parts: Vec<(wgpu::Texture, wgpu::TextureView)>,
     part_ranges: Vec<present::ColorRange>,
+    #[cfg(target_os = "android")]
+    part_damage: Vec<cherenkov::damage::Region>,
     /// Texture-target hand-off: each rendered texture goes to the host.
     textures: Option<std::sync::mpsc::Sender<wgpu::Texture>>,
     refresh: cherenkov::RefreshRange,
@@ -486,12 +488,11 @@ struct SurfaceState {
     hosted: FxHashMap<LayerId, planes::HostedBinding>,
     shader_textures: FxHashMap<std::sync::Arc<paint::Key>, paint::Texture>,
     frame: LoweredFrame,
-    /// Image lifetimes and attachment assignment, before physical
-    /// allocation. Planned only where the backend has a tile executor
-    /// (issue #2549): elsewhere the plan stays empty and unplanned, and
-    /// every pass keeps its backed attachment.
+    /// Image lifetimes and attachment assignment before allocation. Every
+    /// backend has read dependencies; native executors also assign tile slots.
     composition: composite::plan::ExecutionPlan,
     composition_cache: composite::cache::Cache,
+    draw_demand: composite::demand::Demand,
     #[cfg(target_vendor = "apple")]
     tile_targets: composite::metal::Attachments,
     /// This frame's offsets into the shared buffers: instances and globals
@@ -588,8 +589,89 @@ impl BackdropGroupState {
 }
 
 impl SurfaceState {
+    fn new(
+        window: Option<present::WindowSurface>,
+        textures: Option<std::sync::mpsc::Sender<wgpu::Texture>>,
+        refresh: cherenkov::RefreshRange,
+        output: (wgpu::Texture, wgpu::TextureView),
+        waker: cherenkov::CompletionWaker,
+        promotes: bool,
+    ) -> Self {
+        let (target, view) = output;
+        Self {
+            window,
+            promotes,
+            plan: planes::Plan::default(),
+            plane_stamp: 0,
+            plane_resources: (0, 0, 0),
+            plane_clear: cherenkov::WorkingColor::TRANSPARENT,
+            plane_size: (0, 0),
+            static_layers: FxHashMap::default(),
+            static_walk: Vec::new(),
+            plan_dirty: false,
+            parts: Vec::new(),
+            part_ranges: Vec::new(),
+            #[cfg(target_os = "android")]
+            part_damage: Vec::new(),
+            textures,
+            refresh,
+            present_pending: false,
+            #[cfg(target_os = "android")]
+            present_generation: 0,
+            display: cherenkov::Display::default(),
+            size: (target.width(), target.height()),
+            format: target.format(),
+            target,
+            view,
+            scratch: FxHashMap::default(),
+            coverage_depth: None,
+            backdrop: Default::default(),
+            staging: Default::default(),
+            staging_bind: Default::default(),
+            backdrop_groups: FxHashMap::default(),
+            anchor_scratch: lower::AnchorScratch::default(),
+            raster_scratch: path::EmitScratch::new(),
+            layers: FxHashMap::default(),
+            bindings: FxHashMap::default(),
+            hosted: FxHashMap::default(),
+            shader_textures: FxHashMap::default(),
+            frame: LoweredFrame::default(),
+            composition: composite::plan::ExecutionPlan::default(),
+            composition_cache: composite::cache::Cache::default(),
+            draw_demand: composite::demand::Demand::default(),
+            #[cfg(target_vendor = "apple")]
+            tile_targets: composite::metal::Attachments::default(),
+            inst_base: 0,
+            globals_base: 0,
+            bind_gen: 0,
+            binds1: FxHashMap::default(),
+            painter_replays: FxHashMap::default(),
+            binds1_stamp: (u64::MAX, u64::MAX, u64::MAX),
+            projective: FxHashMap::default(),
+            realized: Vec::new(),
+            composed: Vec::new(),
+            interop: 0,
+            visibility: Visibility::Visible,
+            waker,
+        }
+    }
+
     fn lowering_bytes(&self) -> u64 {
-        self.anchor_scratch.heap_bytes()
+        #[cfg(target_os = "android")]
+        let damage_bytes = (self.part_damage.capacity()
+            * std::mem::size_of::<cherenkov::damage::Region>()) as u64
+            + self
+                .part_damage
+                .iter()
+                .map(|region| region.heap_bytes().0)
+                .sum::<u64>();
+        #[cfg(not(target_os = "android"))]
+        let damage_bytes = 0;
+        damage_bytes
+            + self.composition.bytes()
+            + self.composition_cache.bytes()
+            + self.draw_demand.bytes()
+            + self.anchor_scratch.heap_bytes()
             + (self.part_ranges.capacity() * std::mem::size_of::<present::ColorRange>()) as u64
             + self.raster_scratch.heap_bytes()
             + self
@@ -3569,59 +3651,7 @@ impl Renderer for GpuRenderer {
         );
         self.surfaces.insert(
             id,
-            SurfaceState {
-                window,
-                promotes,
-                plan: planes::Plan::default(),
-                plane_stamp: 0,
-                plane_resources: (0, 0, 0),
-                plane_clear: cherenkov::WorkingColor::TRANSPARENT,
-                plane_size: (0, 0),
-                static_layers: FxHashMap::default(),
-                static_walk: Vec::new(),
-                plan_dirty: false,
-                parts: Vec::new(),
-                part_ranges: Vec::new(),
-                textures,
-                refresh,
-                present_pending: false,
-                #[cfg(target_os = "android")]
-                present_generation: 0,
-                display: cherenkov::Display::default(),
-                size,
-                format,
-                target,
-                view,
-                scratch: FxHashMap::default(),
-                coverage_depth: None,
-                backdrop: Default::default(),
-                staging: Default::default(),
-                staging_bind: Default::default(),
-                backdrop_groups: FxHashMap::default(),
-                anchor_scratch: lower::AnchorScratch::default(),
-                raster_scratch: path::EmitScratch::new(),
-                layers: FxHashMap::default(),
-                bindings: FxHashMap::default(),
-                hosted: FxHashMap::default(),
-                shader_textures: FxHashMap::default(),
-                frame: LoweredFrame::default(),
-                composition: composite::plan::ExecutionPlan::default(),
-                composition_cache: composite::cache::Cache::default(),
-                #[cfg(target_vendor = "apple")]
-                tile_targets: composite::metal::Attachments::default(),
-                inst_base: 0,
-                globals_base: 0,
-                bind_gen: 0,
-                binds1: FxHashMap::default(),
-                painter_replays: FxHashMap::default(),
-                binds1_stamp: (u64::MAX, u64::MAX, u64::MAX),
-                projective: FxHashMap::default(),
-                realized: Vec::new(),
-                composed: Vec::new(),
-                interop: 0,
-                visibility: Visibility::Visible,
-                waker,
-            },
+            SurfaceState::new(window, textures, refresh, (target, view), waker, promotes),
         );
         diag::set_surface(None);
         // The system composites a surface with planes: the engine never
@@ -4277,6 +4307,11 @@ impl Renderer for GpuRenderer {
             .map(|c| format_name(c.target.texture.format()))
             .next();
         let cpu = self.atlas.cpu_bytes()
+            + self
+                .planes
+                .values()
+                .map(planes::SystemPlanes::cpu_bytes)
+                .sum::<u64>()
             + self.gpu_cov.cpu_bytes()
             + self.commit_writes.heap_bytes()
             + self
@@ -4294,12 +4329,6 @@ impl Renderer for GpuRenderer {
                             * std::mem::size_of::<(ShaderVariant, std::ops::Range<u32>)>())
                         as u64
                 })
-                .sum::<u64>();
-        let cpu = cpu
-            + self
-                .surfaces
-                .values()
-                .map(|surface| surface.composition.bytes() + surface.composition_cache.bytes())
                 .sum::<u64>();
         // The tile executor's attachments, reported apart from the rest
         // because they are the one allocation the engine makes that it
@@ -6391,6 +6420,8 @@ impl GpuRenderer {
                         .map(|n| planes::Part {
                             #[cfg(target_os = "android")]
                             range: surface.part_ranges[n],
+                            #[cfg(target_os = "android")]
+                            damage: &surface.part_damage[n],
                             view: match n {
                                 0 => &surface.view,
                                 n => &surface.parts[n - 1].1,
@@ -7862,23 +7893,22 @@ impl GpuRenderer {
                 surf.drop_resolve_binds_on(&self.device, &view, "backdrop resolve");
             }
         }
-        // Planning runs only for a backend that can execute an epoch;
-        // with no executor there is no plan, and the reason it is
-        // missing becomes every image's attribution (#2549, #2191).
-        match tile_limits {
-            Ok(limits) => {
-                surf.composition_cache.update(
-                    &mut surf.composition,
-                    &surf.frame,
-                    composite::plan::Formats {
-                        surface: surf.format,
-                        scratch: self.scratch_format,
-                    },
-                    limits,
-                );
-            }
-            Err(reason) => surf.composition.set_unplanned(reason),
-        }
+        // Damage dependencies exist on every backend; tile limits only
+        // determine whether those images can stay in a native epoch.
+        surf.composition_cache.update(
+            &mut surf.composition,
+            &surf.frame,
+            composite::plan::Formats {
+                surface: surf.format,
+                scratch: self.scratch_format,
+            },
+            tile_limits,
+        );
+        surf.draw_demand.update(
+            &surf.frame,
+            &surf.composition,
+            |_, [x, y, width, height], required| required.add(x, y, width, height),
+        );
         let max_scratch = surf
             .frame
             .passes
@@ -8714,6 +8744,19 @@ impl GpuRenderer {
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
         };
+        #[cfg(target_os = "android")]
+        {
+            surf.part_damage.resize_with(surf.plan.parts(), || {
+                cherenkov::damage::Region::new(surf.size)
+            });
+            for region in &mut surf.part_damage {
+                if region.extent() == surf.size {
+                    region.clear();
+                } else {
+                    *region = cherenkov::damage::Region::new(surf.size);
+                }
+            }
+        }
         diag::set_surface(Some(id.raw()));
         let inst_base = surf.inst_base;
         // wgpu forbids mixing its encoding API with raw `as_hal_mut`
@@ -8852,6 +8895,21 @@ impl GpuRenderer {
             None => false,
         };
         while i < surf.frame.passes.len() {
+            let end = surf
+                .composition
+                .epoch_at(i)
+                .map_or(i + 1, |epoch| epoch.passes.end);
+            if (i..end).all(|pass| surf.draw_demand.pass(pass).is_empty()) {
+                reduce_slot += surf
+                    .frame
+                    .reduces
+                    .iter()
+                    .filter(|(pass, _)| (i..end).contains(pass))
+                    .map(|(_, levels)| levels - 1)
+                    .sum::<u32>();
+                i = end;
+                continue;
+            }
             #[cfg(all(unix, not(target_vendor = "apple")))]
             if let Some(epoch) = surf.composition.epoch_at(i) {
                 let end = epoch.passes.end;
@@ -8865,6 +8923,19 @@ impl GpuRenderer {
                         format: "rgba16float",
                     });
                 }
+                #[cfg(target_os = "android")]
+                let written = {
+                    let first_output = epoch
+                        .ops
+                        .iter()
+                        .find(|op| op.target == 0)
+                        .expect("an epoch writes its output");
+                    (
+                        surf.composition.images[epoch.output.0].target,
+                        epoch.region,
+                        surf.frame.passes[first_output.pass].clear.is_some(),
+                    )
+                };
                 composite::vulkan::exec::encode(
                     self.tile_mirror.as_mut().expect("the epoch was planned"),
                     &composite::vulkan::exec::Resources {
@@ -8897,6 +8968,16 @@ impl GpuRenderer {
                     },
                 )
                 .map_err(|e| RenderError::Render(format!("tile composition: {e}")))?;
+                #[cfg(target_os = "android")]
+                if let (Target::Part(part), [x, y, w, h], cleared) = written {
+                    if cleared {
+                        // Vulkan clears the entire output attachment, even when
+                        // the epoch's draws cover a smaller region.
+                        surf.part_damage[part as usize].mark_full();
+                    } else {
+                        surf.part_damage[part as usize].add(x, y, w, h);
+                    }
+                }
                 stats.passes += 1;
                 i = end;
                 continue;
@@ -9015,6 +9096,15 @@ impl GpuRenderer {
                     width: surf.size.0,
                     height: surf.size.1,
                 });
+            }
+            #[cfg(target_os = "android")]
+            if let Target::Part(part) = pass.target {
+                if pass.clear.is_some() {
+                    surf.part_damage[part as usize].mark_full();
+                } else if !pass.ranges.is_empty() {
+                    let [x, y, width, height] = pass.region;
+                    surf.part_damage[part as usize].add(x, y, width, height);
+                }
             }
             let (view, texture) = match pass.target {
                 Target::Plane(layer) => {
@@ -10099,8 +10189,8 @@ impl GpuRenderer {
             stats.passes += 1;
             i += 1;
         }
-        // Only a planned frame has logical images to attribute; a
-        // target with no tile executor records nothing (#2549).
+        // Every analyzed frame has logical images to attribute, including
+        // portable execution with no native tile executor.
         if let Some(sink) = self
             .config
             .composition_diag
