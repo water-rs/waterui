@@ -5420,15 +5420,16 @@ impl<'a> Lowering<'a> {
             );
             return Ok(None);
         }
-        let key = GeometryKey::new(content, rule, pl.raster);
-        let digest = key.digest();
         let hit = glyphs
             .atlas
             .path(pl.key)
             .or_else(|| glyphs.atlas.path(pl.key_exact()));
         if let Some(emit) = hit {
+            // A hit needs no `GeometryKey`: the stored digest the
+            // miss recorded marks ownership the same way.
+            let geometry = emit.geometry;
             self.replay(emit, None, pl.offset, paint, shader_data.as_ref());
-            return Ok(Some(digest));
+            return Ok(geometry);
         }
         if let Some(&pending) = self
             .pending_paths
@@ -5440,10 +5441,12 @@ impl<'a> Lowering<'a> {
             };
             let emit = emit.clone();
             self.replay(&emit, Some(pending), pl.offset, paint, shader_data.as_ref());
-            return Ok(Some(digest));
+            return Ok(emit.geometry);
         }
         let [.., e, f] = pl.raster.as_coeffs();
         let (stored, pending) = 'stored: {
+            let key = GeometryKey::new(content, rule, pl.raster);
+            let digest = key.digest();
             let entry = geometry.entry(digest, key, || {
                 let local = shader_path.unwrap_or_else(|| make.take().expect("path factory")());
                 RetainedGeometry::new(local, pl.raster, rule)
@@ -5458,7 +5461,13 @@ impl<'a> Lowering<'a> {
                 // Store nothing: an exact-key insert would never hit again
                 // and could not be evicted for want of a slot (#119). The
                 // flattened geometry stays retained for other placements.
-                break 'stored (PathEmit::default(), None);
+                break 'stored (
+                    PathEmit {
+                        geometry: Some(digest),
+                        ..PathEmit::default()
+                    },
+                    None,
+                );
             };
             entry.state.resolve();
             let (segments, resolved_rule) = entry.state.segments();
@@ -5472,8 +5481,9 @@ impl<'a> Lowering<'a> {
                 &mut self.path_arena,
             )?;
             // Emission rects are relative to the placement offset; the
-            // stored record keeps that frame.
-            let stored = emit.translated(-pl.offset.x, -pl.offset.y);
+            // stored record keeps that frame and the digest hits return.
+            let mut stored = emit.translated(-pl.offset.x, -pl.offset.y);
+            stored.geometry = Some(digest);
             let key = if clipped { pl.key_exact() } else { pl.key };
             let pending = u32::try_from(self.pending.len()).expect("pending count fits u32");
             self.pending.push(PendingRaster::Path {
@@ -5485,7 +5495,7 @@ impl<'a> Lowering<'a> {
             (stored, Some(pending))
         };
         self.replay(&stored, pending, pl.offset, paint, shader_data.as_ref());
-        Ok(Some(digest))
+        Ok(stored.geometry)
     }
 
     /// Replays a cached path emission: `KIND_SPAN` runs and `KIND_GLYPH`
