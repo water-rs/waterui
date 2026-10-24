@@ -26,6 +26,7 @@ impl<'a> Scissors<'a> {
         }
     }
 
+    #[cfg(target_vendor = "apple")]
     pub const fn within(mut self, clip: [u32; 4]) -> Self {
         self.clip = clip;
         self
