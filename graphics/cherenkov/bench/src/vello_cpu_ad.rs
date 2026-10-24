@@ -340,6 +340,7 @@ impl Engine for VelloCpu {
             wgpu_allocator: Reading::unavailable("Vello CPU has no wgpu allocator"),
             skia_budgeted: Reading::unavailable("Vello CPU has no Skia budget"),
             vk_memory_budget: Reading::unavailable("Vello CPU has no Vulkan device"),
+            metal_allocated_bytes: Reading::unavailable("Vello CPU has no Metal device"),
         }
     }
 }

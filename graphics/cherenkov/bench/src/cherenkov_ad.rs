@@ -34,7 +34,10 @@ use crate::convert::AnchorLayer as _;
 use crate::convert::{
     self, Blobs, Op, ShapeKind, engine_blend, group_op, op, shape_kind, text_op, working,
 };
-use crate::memory::{AdapterMemory, EngineBytes, Reading, wgpu_allocator, wgpu_vk_memory_budget};
+use crate::memory::{
+    AdapterMemory, EngineBytes, Reading, wgpu_allocator, wgpu_metal_allocated_bytes,
+    wgpu_vk_memory_budget,
+};
 use crate::motion::{Clock, LayerMotion, LayerProjection, motion_animation};
 use crate::timing::Timings;
 use crate::{
@@ -2076,6 +2079,10 @@ impl Engine for Cherenkov {
                 &self.shared_device.device,
                 adapter_info.backend,
                 &adapter_info.name,
+            ),
+            metal_allocated_bytes: wgpu_metal_allocated_bytes(
+                &self.shared_device.device,
+                adapter_info.backend,
             ),
         }
     }
