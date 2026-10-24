@@ -78,8 +78,18 @@ constructor(
         val attachedDisplay = checkNotNull(display)
         val (normalRefreshHz, highRefreshHz) =
             if (Build.VERSION.SDK_INT >= 36 && attachedDisplay.hasArrSupport()) {
-                attachedDisplay.getSuggestedFrameRate(Display.FRAME_RATE_CATEGORY_NORMAL) to
-                    attachedDisplay.getSuggestedFrameRate(Display.FRAME_RATE_CATEGORY_HIGH)
+                val rates = attachedDisplay.supportedRefreshRates
+                val suggestions =
+                    listOf(Display.FRAME_RATE_CATEGORY_NORMAL, Display.FRAME_RATE_CATEGORY_HIGH).map {
+                        category ->
+                        val suggested =
+                            attachedDisplay.getSuggestedFrameRate(category).coerceAtMost(peakRefreshHz)
+                        // Category suggestions need not be supported rates: a 90 Hz
+                        // vote on Pixel can resolve to 80 Hz. Round upward so the
+                        // chosen display cadence does not undershoot the suggestion.
+                        rates.filter { it >= suggested }.min()
+                    }
+                suggestions[0] to suggestions[1]
             } else {
                 peakRefreshHz to peakRefreshHz
             }
