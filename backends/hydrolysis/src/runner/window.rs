@@ -1057,6 +1057,18 @@ pub struct SurfaceRenderResult {
     snapshot: Option<HeadlessSnapshot>,
 }
 
+impl SurfaceRenderResult {
+    #[cfg(target_os = "android")]
+    pub(crate) const fn engine_presented(render: Duration) -> Self {
+        Self {
+            acquire: Duration::ZERO,
+            render,
+            present: Duration::ZERO,
+            snapshot: None,
+        }
+    }
+}
+
 /// How a window's presentation kind renders one frame and gets it to the
 /// display. Host-acquired surfaces ([`SurfaceProvider`]) acquire, copy the
 /// engine output in and present; the macOS winit window's and the browser
