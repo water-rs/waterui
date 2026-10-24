@@ -379,6 +379,16 @@ jobs:
         run: cargo clippy -p cherenkov-gpu --all-targets --locked --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       - name: Clippy (cherenkov-gpu, iOS simulator)
         run: cargo clippy -p cherenkov-gpu --all-targets --locked --target aarch64-apple-ios-sim --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      # Default-feature passes skip this binary, including its Image I/O tests.
+      - name: Clippy (screenshot comparer)
+        timeout-minutes: 2
+        run: cargo clippy -p cherenkov-oracle --bin compare-screenshots --features apple-screenshots --locked --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      - name: Compile screenshot comparer tests
+        timeout-minutes: 2
+        run: cargo test -p cherenkov-oracle --bin compare-screenshots --features apple-screenshots --locked --no-run --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
+      - name: Test screenshot comparer
+        timeout-minutes: 1
+        run: cargo test -p cherenkov-oracle --bin compare-screenshots --features apple-screenshots --locked -- --nocapture
       # The apple_planes harness's UIKit/CoreVideo half is
       # `cfg(target_vendor = "apple")` and no other leg compiles it for iOS.
       - name: Clippy (apple-planes, iOS)
