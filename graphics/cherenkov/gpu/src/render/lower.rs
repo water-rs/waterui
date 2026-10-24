@@ -3,6 +3,7 @@
 
 use cherenkov::lowering::Realization;
 use std::hash::{Hash, Hasher};
+use std::num::NonZeroU64;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -657,6 +658,7 @@ impl ContentData {
         // clear them too or orphaned entries outlive every compaction
         // check (#119).
         self.storage.refs.clear();
+        self.storage.geometry.flag_reconcile();
         previous
     }
 
@@ -683,6 +685,11 @@ impl ContentData {
     }
 
     pub fn update(&mut self, updates: Vec<cherenkov::SlotUpdate>) {
+        if !updates.is_empty() {
+            // A patch can retire realizations — and their geometry
+            // digests — without `ops` reporting a changed leaf.
+            self.storage.geometry.flag_reconcile();
+        }
         self.retained.update(updates);
     }
 
@@ -758,12 +765,13 @@ impl GeometryKey {
         }
     }
 
-    /// The map slot: a compact u64 the emission carries. A lookup still
-    /// compares the whole key before reusing an entry under this digest.
-    fn digest(&self) -> u64 {
+    /// The map slot: a compact nonzero word the emission carries. A
+    /// lookup still compares the whole key before reusing an entry
+    /// under this digest, so folding zero away cannot alias a key.
+    fn digest(&self) -> NonZeroU64 {
         let mut hasher = FxHasher::default();
         self.hash(&mut hasher);
-        hasher.finish()
+        NonZeroU64::new(hasher.finish() | 1).expect("geometry digest has its low bit set")
     }
 }
 
@@ -891,41 +899,37 @@ struct GeometryEntry {
 /// A content's retained CPU-route path geometry
 /// (water-rs/waterui#3306), keyed by [`GeometryKey::digest`]: a
 /// re-recorded or re-placed path reuses its flattened,
-/// winding-resolved segments. Entries the content's latest walk did
-/// not mark — by a coverage-hit touch, a geometry lookup, or a
-/// retained leaf's stored digest — are pruned after it; the cache
-/// lives and dies with the content's storage.
+/// winding-resolved segments. Liveness reconciles only after a walk
+/// that flagged or changed realizations — the entries the current
+/// retained emissions' digests mark stay, the rest drop — so the live
+/// set tracks current emissions, never historical placements. The
+/// cache lives and dies with the content's storage.
 #[derive(Default)]
 pub struct GeometryCache {
-    entries: FxHashMap<u64, GeometryEntry>,
+    entries: FxHashMap<NonZeroU64, GeometryEntry>,
     epoch: u64,
+    /// A replace or slot update dirtied the emissions behind the walk's
+    /// back: reconcile after the next successful one even when it
+    /// reports no change (an emptied content realizes nothing).
+    reconcile: bool,
 }
 
 impl GeometryCache {
-    /// Start a content walk: marks land on the new epoch.
-    const fn begin_walk(&mut self) {
-        self.epoch = self.epoch.wrapping_add(1);
+    /// Flag a reconciliation against the next successful walk's
+    /// emissions.
+    const fn flag_reconcile(&mut self) {
+        self.reconcile = true;
     }
 
-    /// Mark the entry at `digest` used this epoch when it exists; never
-    /// builds. The key is not compared: marking a colliding entry only
-    /// retains it, never reuses its geometry.
-    fn touch(&mut self, digest: u64) {
-        if let Some(entry) = self.entries.get_mut(&digest) {
-            entry.used = self.epoch;
-        }
-    }
-
-    /// `key`'s geometry under `digest`, marked for this walk: an entry
-    /// whose stored key matches bit for bit is reused; a miss or a
-    /// digest-collision mismatch builds the normalized form.
+    /// `key`'s geometry under `digest`: an entry whose stored key
+    /// matches bit for bit is reused; a miss or a digest-collision
+    /// mismatch builds the normalized form. Lookup does not mark liveness.
     fn entry(
         &mut self,
-        digest: u64,
+        digest: NonZeroU64,
         key: GeometryKey,
         build: impl FnOnce() -> RetainedGeometry,
     ) -> &mut RetainedGeometry {
-        let epoch = self.epoch;
         let entry = match self.entries.entry(digest) {
             std::collections::hash_map::Entry::Occupied(slot) => {
                 let entry = slot.into_mut();
@@ -933,30 +937,49 @@ impl GeometryCache {
                     *entry = GeometryEntry {
                         key,
                         geometry: build(),
-                        used: epoch,
+                        used: 0,
                     };
                 }
-                entry.used = epoch;
                 entry
             }
             std::collections::hash_map::Entry::Vacant(slot) => slot.insert(GeometryEntry {
                 key,
                 geometry: build(),
-                used: epoch,
+                used: 0,
             }),
         };
         &mut entry.geometry
     }
 
-    /// Drop entries this walk did not mark.
-    fn prune(&mut self) {
+    /// Reconcile liveness after a successful walk that flagged or
+    /// changed a realization: a new epoch marks the digests `emissions`
+    /// carry and drops unmarked entries — marking a colliding digest
+    /// retains the entry, never reuses its geometry. An unflagged
+    /// all-hit walk and an empty table both return without scanning.
+    fn reconcile(&mut self, emissions: &[Realization<Emission>], changed: bool) {
+        if !std::mem::take(&mut self.reconcile) && !changed {
+            return;
+        }
+        if self.entries.is_empty() {
+            return;
+        }
+        self.epoch = self.epoch.wrapping_add(1);
         let epoch = self.epoch;
+        for digest in emissions
+            .iter()
+            .filter_map(|e| e.data.as_ref().and_then(|e| e.geometry))
+        {
+            if let Some(entry) = self.entries.get_mut(&digest) {
+                entry.used = epoch;
+            }
+        }
         self.entries.retain(|_, entry| entry.used == epoch);
     }
 
     /// Heap bytes: the table plus each entry's retained segments.
     fn heap_bytes(&self) -> u64 {
-        (self.entries.capacity() * (std::mem::size_of::<(u64, GeometryEntry)>() + size_of::<u8>())
+        (self.entries.capacity()
+            * (std::mem::size_of::<(NonZeroU64, GeometryEntry)>() + size_of::<u8>())
             + self
                 .entries
                 .values()
@@ -1169,11 +1192,11 @@ pub struct Emission {
     /// The automatic route's decisions for a GPU leaf re-placed under it,
     /// built at its first re-placement (`Lowering::replace_gpu_leaf`).
     gpu_route: Option<RouteWindow>,
-    /// A CPU-route path leaf's retained-geometry digest: retained-leaf
-    /// reuse still counts as a use, so composing this emission marks the
-    /// entry. Marking never compares keys — a colliding entry is
-    /// retained, not reused.
-    geometry: Option<u64>,
+    /// A CPU-route path leaf's retained-geometry digest, kept compact so
+    /// the niche shares the discriminant's word: the next reconciliation
+    /// marks the entry under it. Marking never compares keys — a
+    /// colliding entry is retained, not reused.
+    geometry: Option<NonZeroU64>,
 }
 
 /// The automatic route's decision (`Lowering::automatic_gpu`) for a
@@ -4214,7 +4237,6 @@ impl<'a> Lowering<'a> {
             let (ops, emissions, source) = content.retained.prepared_source();
             content.storage.retain_gpu_paths(ops);
             content.storage.compact(emissions);
-            content.storage.geometry.begin_walk();
             let changed = self.ops(
                 source,
                 ops,
@@ -4223,7 +4245,7 @@ impl<'a> Lowering<'a> {
                 0..ops.len(),
                 glyphs,
             )?;
-            content.storage.geometry.prune();
+            content.storage.geometry.reconcile(emissions, changed);
             self.layers_composed += u32::from(changed);
         }
         if let Some(binding) = binding {
@@ -4409,9 +4431,6 @@ impl<'a> Lowering<'a> {
             });
         cache.valid = true;
         if hit || replaced {
-            if let Some(digest) = cache.data.as_ref().and_then(|e| e.geometry) {
-                storage.geometry.touch(digest);
-            }
             self.compose(
                 cache.data.as_ref().expect("a retained leaf has data"),
                 storage,
@@ -4907,9 +4926,9 @@ impl<'a> Lowering<'a> {
     )]
     #[inline(always)]
     /// Realize `op` into the frame. Returns the leaf's retained-geometry
-    /// digest for a CPU-route path draw — the emission carries it so a
-    /// later retained reuse still marks the entry; other leaves and
-    /// GPU-route paths return `None`.
+    /// digest for a CPU-route path draw — the emission carries it for
+    /// the next reconciliation to mark; other leaves and GPU-route
+    /// paths return `None`.
     fn realize(
         &mut self,
         op: &Op,
@@ -4917,7 +4936,7 @@ impl<'a> Lowering<'a> {
         glyphs: &GlyphContext<'_>,
         source: &cherenkov::DisplayList,
         geometry: &mut GeometryCache,
-    ) -> Result<Option<u64>, RenderError> {
+    ) -> Result<Option<NonZeroU64>, RenderError> {
         match op {
             Op::Shaped {
                 kind,
@@ -5360,7 +5379,7 @@ impl<'a> Lowering<'a> {
     /// The geometry — flattened, winding-resolved segments in a
     /// translation-normalized frame — is retained per content in
     /// `geometry`: a new placement pays only the coverage integration,
-    /// and a coverage hit touches the entry without building it.
+    /// and a coverage hit costs only the replay.
     /// Returns the geometry's digest for the emission to carry, `None`
     /// on the GPU coverage route.
     fn path(
@@ -5371,7 +5390,7 @@ impl<'a> Lowering<'a> {
         paint: &ResolvedPaint,
         glyphs: &GlyphContext<'_>,
         geometry: &mut GeometryCache,
-    ) -> Result<Option<u64>, RenderError> {
+    ) -> Result<Option<NonZeroU64>, RenderError> {
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -5408,7 +5427,6 @@ impl<'a> Lowering<'a> {
             .path(pl.key)
             .or_else(|| glyphs.atlas.path(pl.key_exact()));
         if let Some(emit) = hit {
-            geometry.touch(digest);
             self.replay(emit, None, pl.offset, paint, shader_data.as_ref());
             return Ok(Some(digest));
         }
@@ -5417,7 +5435,6 @@ impl<'a> Lowering<'a> {
             .get(&pl.key)
             .or_else(|| self.pending_paths.get(&pl.key_exact()))
         {
-            geometry.touch(digest);
             let PendingRaster::Path { emit, .. } = &self.pending[pending as usize] else {
                 unreachable!("pending path identity addresses a path");
             };
