@@ -679,3 +679,46 @@ fn repeated_fixed_clock_captures_are_identical() {
     // the measure/layout work its own pipeline state requires, which legit-
     // imately differs once the first pump populated caches.
 }
+
+/// A paint signal reaches the retained command without another host tree pass.
+#[test]
+fn live_colour_updates_without_layout_or_recording() {
+    let color = Binding::container(Color::srgb(210, 30, 10));
+    let mut runtime = runtime_with(waterui_graphics::color::signal_color(color.clone()));
+    let mut frames = Frames::new();
+    let (_, before) = frames.render(&mut runtime);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while runtime
+        .pump_at(false, frames.at())
+        .profile
+        .counters
+        .rendered
+    {
+        assert!(
+            Instant::now() < deadline,
+            "unchanged colour must become idle"
+        );
+    }
+    color.set(Color::srgb(10, 60, 220));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let counters = loop {
+        let result = runtime.pump_at(false, frames.at());
+        if result.profile.counters.rendered {
+            break result.profile.counters;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "colour signal must wake the renderer");
+        let _ = runtime.wait_for_local_work(remaining);
+    };
+    let (_, after) = frames.render(&mut runtime);
+    super::structural_transitions::save(&before, "live_colour", "before");
+    super::structural_transitions::save(&after, "live_colour", "after");
+    let work = counters.frame_work;
+    assert_eq!(work.semantic_builds, 0);
+    assert_eq!(work.structural_patches, 0);
+    assert_eq!(work.measure_calls, 0);
+    assert_eq!(work.layout_calls, 0);
+    assert_eq!(work.recorded_view_contents, 0);
+    assert_eq!(work.layer_creations, 0);
+    assert_eq!(work.layer_removals, 0);
+}

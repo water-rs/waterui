@@ -437,6 +437,9 @@ pub struct SemanticCore {
     /// The persistent window render tree (`tree::RenderNode`), built on a structural
     /// rebuild and re-flushed each frame. `None` before the first build.
     render_tree: Option<RenderNode>,
+    /// Content minimum measured after the most recent retained-tree update.
+    /// Engine-only redraws do not change the window's layout constraints.
+    content_minimum: Option<LayoutSize>,
     /// Set when a widget-owned [`RetainedSubview`] applied a structural patch
     /// (a `Dynamic` swap or a collection membership reconcile) during a flush.
     /// The subview patch runs mid-flush — after the window pump's structural
@@ -791,6 +794,7 @@ impl SemanticCore {
             #[cfg(feature = "accessibility")]
             accessibility: AccessibilityBuilder::default(),
             render_tree: None,
+            content_minimum: None,
             rebuild_active: Rc::new(Cell::new(false)),
             emit_pass_active: Cell::new(false),
             cells,
@@ -833,8 +837,9 @@ impl SemanticCore {
     /// measurement reads advances — so each cached layout that measured text
     /// is laid out again — and the window relayouts and repaints.
     #[cfg(all(target_arch = "wasm32", feature = "web"))]
-    pub(crate) fn fonts_changed(&self) {
+    pub(crate) fn fonts_changed(&mut self) {
         self.state.text.fonts_changed();
+        self.state.text_scenes.clear();
         self.state.font_revision.with_mut(|revision| *revision += 1);
         self.root.mark_layout();
         self.root.mark(Dirty::PAINT);

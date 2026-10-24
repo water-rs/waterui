@@ -522,6 +522,7 @@ impl HydrolysisRenderer {
             Some(crate::num_cast::f64_as_f32(ctx.bounds.width())),
             tail,
             &mut state.counters,
+            &mut state.text_scenes,
         );
         scene.append(
             &fragment,
@@ -555,9 +556,13 @@ impl HydrolysisRenderer {
         let height = f64::from(metrics.line_height);
         let x = ((ctx.bounds.width() - width) * 0.5).max(0.0);
         let y = ((ctx.bounds.height() - height) * 0.5).max(0.0);
-        let fragment = state
-            .text
-            .record(&input, None, TailMark::Clip(1), &mut state.counters);
+        let fragment = state.text.record(
+            &input,
+            None,
+            TailMark::Clip(1),
+            &mut state.counters,
+            &mut state.text_scenes,
+        );
         scene.append(&fragment, ctx.local * kurbo::Affine::translate((x, y)));
     }
 

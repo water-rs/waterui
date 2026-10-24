@@ -139,12 +139,13 @@ impl RenderNode {
         match self {
             Self::Color(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
-                let color = waterui_graphics::draw::Paint::Solid(renderer.read_signal(&node.color));
-                renderer.scene_mut().fill_paint(
-                    peniko::Fill::NonZero,
+                if nami::Signal::snapshot(&node.bounds) != ctx.bounds {
+                    node.bounds.set(ctx.bounds);
+                }
+                renderer.scene_mut().live_rect(
                     ctx.local,
-                    color,
-                    &ctx.bounds,
+                    node.bounds.clone().into(),
+                    node.color.clone(),
                 );
             }
             // §7.1's fill rule, paint side: the extension layout recorded
