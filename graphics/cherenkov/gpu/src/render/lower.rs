@@ -4458,22 +4458,21 @@ impl<'a> Lowering<'a> {
         let first_command = self.frame.commands.len();
         let mut i = range.start;
         let mut changed = false;
-        while i < range.end {
-            let op = &ops[i];
+        for (op, cache) in ops[range.clone()].iter().zip(&mut emissions[range.clone()]) {
             if matches!(
                 op,
                 Op::BeginClip { .. } | Op::BeginIsolate { .. } | Op::BeginShadow { .. } | Op::End
             ) {
                 break;
             }
-            changed |= self.command(
-                (i, op),
-                ops.get(i + 1),
-                &mut emissions[i],
-                storage,
-                glyphs,
-                source,
-            )?;
+            let first = self.frame.instances.len();
+            let (leaf_changed, revision) =
+                self.leaf((i, op), ops.get(i + 1), cache, storage, glyphs, source)?;
+            self.frame.commands.push(super::damage::Command {
+                instances: first..self.frame.instances.len(),
+                revision,
+            });
+            changed |= leaf_changed;
             i += 1;
         }
         self.frame
@@ -4489,28 +4488,6 @@ impl<'a> Lowering<'a> {
                     .map(|_| glyphs.live_stamp),
             });
         Ok((i, changed))
-    }
-
-    fn command(
-        &mut self,
-        (index, op): (usize, &Op),
-        next: Option<&Op>,
-        cache: &mut Realization<Emission>,
-        storage: &mut EmissionStorage,
-        glyphs: &GlyphContext<'_>,
-        source: &cherenkov::DisplayList,
-    ) -> Result<bool, RenderError> {
-        let first = self.frame.instances.len();
-        let changed = self.leaf((index, op), next, cache, storage, glyphs, source)?;
-        self.frame.commands.push(super::damage::Command {
-            instances: first..self.frame.instances.len(),
-            revision: cache
-                .data
-                .as_ref()
-                .expect("a realized leaf has data")
-                .revision,
-        });
-        Ok(changed)
     }
 
     /// Retain each leaf's instances and gradient stops independently. A dirty
@@ -4531,7 +4508,7 @@ impl<'a> Lowering<'a> {
         storage: &mut EmissionStorage,
         glyphs: &GlyphContext<'_>,
         source: &cherenkov::DisplayList,
-    ) -> Result<bool, RenderError> {
+    ) -> Result<(bool, u64), RenderError> {
         let (_, op) = indexed;
         let cover = self.shadow_cover(op, next);
         let hit = cache.valid
@@ -4555,18 +4532,12 @@ impl<'a> Lowering<'a> {
             });
         cache.valid = true;
         if hit || replaced {
+            let emission = cache.data.as_mut().expect("a retained leaf has data");
             if replaced {
-                cache
-                    .data
-                    .as_mut()
-                    .expect("a replaced leaf has data")
-                    .revision = self.frame.revision;
+                emission.revision = self.frame.revision;
             }
-            self.compose(
-                cache.data.as_ref().expect("a retained leaf has data"),
-                storage,
-            );
-            return Ok(replaced);
+            self.compose(emission, storage);
+            return Ok((replaced, emission.revision));
         }
         // GPU leaves retain like CPU leaves (water-rs/waterui#3081): the
         // anchor instance and its coverage draw record live on the
@@ -4576,7 +4547,7 @@ impl<'a> Lowering<'a> {
         } else {
             self.realize_leaf(indexed, cover, cache, storage, glyphs, source)?;
         }
-        Ok(true)
+        Ok((true, self.frame.revision))
     }
 
     /// The automatic route's predicate (decisions R1 and R2): a path
@@ -7077,7 +7048,7 @@ mod tests {
                 if moved {
                     lowering.transform = Affine::translate((5.25, 3.0));
                 }
-                let changed = lowering
+                let (changed, _) = lowering
                     .leaf(
                         (0, &op),
                         None,
