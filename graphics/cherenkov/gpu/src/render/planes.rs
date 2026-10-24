@@ -1121,8 +1121,9 @@ pub trait SystemPlanes: Compositor {
         0
     }
 
-    /// Native immutable capture allocations, excluding the engine's source.
-    fn captured_bytes(&self) -> u64 {
+    /// Engine-owned native presentation allocations, excluding render sources
+    /// and externally owned producer images. Include buffers awaiting release.
+    fn native_bytes(&self) -> u64 {
         0
     }
     /// Hands supported tracks to the committed native layer tree. Called
