@@ -486,6 +486,20 @@ struct DistanceSample {
     gradient: vec4<f32>,
 }
 
+// Sharp-box distance and gradient, shared by general shapes and clipped glyphs.
+fn rect_sample(half: vec2<f32>, p: vec2<f32>) -> DistanceSample {
+    let sgn = select(vec2<f32>(-1.0), vec2<f32>(1.0), p >= vec2<f32>(0.0));
+    let a = abs(p) - half;
+    let d = length(max(a, vec2<f32>(0.0))) + min(max(a.x, a.y), 0.0);
+    var g: vec4<f32>;
+    if a.x > 0.0 && a.y > 0.0 {
+        g = vec4<f32>(a / length(a), 0.0, 1.0);
+    } else {
+        g = vec4<f32>(select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), a.x > a.y), 0.0, 0.0);
+    }
+    return DistanceSample(d, vec4<f32>(sgn * g.xy, g.zw));
+}
+
 fn sdf_sample(s: Shape, p: vec2<f32>, specialize_quadratic: bool) -> DistanceSample {
     let sgn = select(vec2<f32>(-1.0), vec2<f32>(1.0), p >= vec2<f32>(0.0));
     let right = p.x > 0.0;
@@ -499,14 +513,7 @@ fn sdf_sample(s: Shape, p: vec2<f32>, specialize_quadratic: bool) -> DistanceSam
     let ry = rx * s.aspect;
     let a = abs(p) - s.half;
     if rx <= 0.0 || ry <= 0.0 {
-        let d = length(max(a, vec2<f32>(0.0))) + min(max(a.x, a.y), 0.0);
-        var g: vec4<f32>;
-        if a.x > 0.0 && a.y > 0.0 {
-            g = vec4<f32>(a / length(a), 0.0, 1.0);
-        } else {
-            g = vec4<f32>(select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), a.x > a.y), 0.0, 0.0);
-        }
-        return DistanceSample(d, vec4<f32>(sgn * g.xy, g.zw));
+        return rect_sample(s.half, p);
     }
     let q = a + vec2<f32>(rx, ry);
     if abs(s.exponent - 2.0) < 1e-4 && abs(s.aspect - 1.0) < 1e-4 {
@@ -834,14 +841,11 @@ fn shape_coverage(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_qua
 // its own transpose — the same mapping `clip_mask_coverage` applies to
 // the SDF gradient.
 fn clip_planes(in: VsOut) -> ShapePlanes {
-    var out: ShapePlanes;
     let i = in.instance;
     let s = instances[i].clip;
     let ci = instances[i].clip_inv;
     let pc = apply(ci, in.device);
     let sample = sdf_sample(s, pc, false);
-    let g = sample.gradient;
-    let sgn = select(vec2<f32>(-1.0), vec2<f32>(1.0), pc >= vec2<f32>(0.0));
     let right = pc.x > 0.0;
     let bottom = pc.y > 0.0;
     let r = select(
@@ -851,8 +855,17 @@ fn clip_planes(in: VsOut) -> ShapePlanes {
     );
     let rx = max(r, 0.0);
     let ry = rx * s.aspect;
+    return clip_sample_planes(in, pc, sample, rx <= 0.0 || ry <= 0.0);
+}
+
+fn clip_sample_planes(in: VsOut, pc: vec2<f32>, sample: DistanceSample, sharp: bool) -> ShapePlanes {
+    var out: ShapePlanes;
+    let ci = instances[in.instance].clip_inv;
+    let s = instances[in.instance].clip;
+    let g = sample.gradient;
+    let sgn = select(vec2<f32>(-1.0), vec2<f32>(1.0), pc >= vec2<f32>(0.0));
     let a = abs(pc) - s.half;
-    if rx <= 0.0 || ry <= 0.0 {
+    if sharp {
         let v1 = vec2<f32>(ci[0].x * sgn.x, ci[0].z * sgn.x);
         let v2 = vec2<f32>(ci[0].y * sgn.y, ci[0].w * sgn.y);
         let h1 = 0.5 * (abs(v1.x) + abs(v1.y));
@@ -899,25 +912,22 @@ fn mask_coverage(in: VsOut) -> f32 {
 // Coverage of the instance's clip shape and mask at `in.device`: the
 // geometric clip SDF times the atlas-or-texture mask texel, matching
 // fs_full's own evaluation verbatim.
-fn clip_mask_coverage(in: VsOut) -> f32 {
-    return clip_mask_coverage_shape(in, instances[in.instance].clip);
+fn clip_sample_coverage(in: VsOut, sample: DistanceSample) -> f32 {
+    let g = sample.gradient;
+    let ci = instances[in.instance].clip_inv;
+    let dg = vec2<f32>(ci[0].x * g.x + ci[0].y * g.y, ci[0].z * g.x + ci[0].w * g.y);
+    return coverage_dir(sample.distance, dg, 1.0, g.w > 0.0, g.z);
 }
 
-fn clip_mask_coverage_shape(in: VsOut, clip: Shape) -> f32 {
+fn clip_mask_coverage(in: VsOut) -> f32 {
     let i = in.instance;
     let flags = (in.meta_.w >> 24u) & 0xffu;
     var cov = 1.0;
     if (flags & FLAG_HAS_CLIP) != 0u {
-        // `clip_inv` maps device to clip-local: J^-T is its transpose.
         let pc = apply(instances[i].clip_inv, in.device);
-        let sample = sdf_sample(clip, pc, false);
-        let g = sample.gradient;
-        let ci = instances[i].clip_inv;
-        let dg = vec2<f32>(ci[0].x * g.x + ci[0].y * g.y, ci[0].z * g.x + ci[0].w * g.y);
-        cov = coverage_dir(sample.distance, dg, 1.0, g.w > 0.0, g.z);
+        cov = clip_sample_coverage(in, sdf_sample(instances[i].clip, pc, false));
     }
-    cov *= mask_coverage(in);
-    return cov;
+    return cov * mask_coverage(in);
 }
 
 // One premultiplied pixel moved between spaces: the space fragment's

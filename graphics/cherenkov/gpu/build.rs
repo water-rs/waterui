@@ -292,6 +292,9 @@ fn main() {
     // like every other, and the runtime's WGSL delivery reads that file.
     let coverage = format!("{}\n{coverage}\n{stroke}", stroke_prelude());
     let stripped = Stripped::new(&shader, &shared);
+    let specialized = drop_marked(&stripped.shader_plain, "full-fragment");
+    let glyph = format!("{specialized}\n{}", read("shader_glyph"));
+    let composite = format!("{specialized}\n{}", read("shader_composite"));
     let specs = module_specs(&Modules {
         shared: &shared,
         shared_plain: &stripped.shared_plain,
@@ -300,6 +303,8 @@ fn main() {
         shader_long: &stripped.shader_long,
         shader_image: &stripped.shader_image,
         shader_plain: &stripped.shader_plain,
+        glyph: &glyph,
+        composite: &composite,
         union: &union,
         union_max: &union_max,
         blend: &blend,
@@ -438,6 +443,8 @@ struct Modules<'a> {
     shader_image: &'a str,
     /// `shader` minus all four marker families.
     shader_plain: &'a str,
+    glyph: &'a str,
+    composite: &'a str,
     union: &'a str,
     /// The `UNION_MAX_MEMBERS` const fragment.
     union_max: &'a str,
@@ -495,6 +502,8 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
                 4 => ("", m.shared_plain, m.shader_long, ""),
                 5 => ("", m.shared, m.shader_cell, ""),
                 6 => ("", m.shared_plain, m.shader_image, ""),
+                7 => ("", m.shared_plain, m.glyph, ""),
+                8 => ("", m.shared_plain, m.composite, ""),
                 _ => ("", m.shared_plain, m.shader_plain, ""),
             };
             Spec {
@@ -747,9 +756,29 @@ fn compile(
     if spec.attachment {
         tile::attachment_inputs(&mut module);
     }
-    let info = Validator::new(ValidationFlags::all(), capabilities::ENGINE_CAPABILITIES)
+    let validated = Validator::new(ValidationFlags::all(), capabilities::ENGINE_CAPABILITIES)
         .validate(&module)
         .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
+    let info = if spec.attachment && spirv {
+        let specialized = matches!(
+            spec.name.as_str(),
+            "engine_tile_glyph" | "engine_tile_composite"
+        );
+        module.entry_points.retain(|entry| {
+            entry.name == "vs_main"
+                || if specialized {
+                    entry.name == "tile_full"
+                } else {
+                    entry.name.starts_with("tile_")
+                }
+        });
+        naga::compact::compact(&mut module, naga::compact::KeepUnused::No);
+        Validator::new(ValidationFlags::all(), capabilities::ENGINE_CAPABILITIES)
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{}: compacted WGSL validation failed: {e:?}", spec.name))
+    } else {
+        validated
+    };
     check_programs(spec, &module);
     if !spec.programs.is_empty() {
         dxil::write_entries(&spec.name, &module, &info, entries);
@@ -886,6 +915,11 @@ fn write_spirv(out_dir: &Path, spec: &Spec, module: &naga::Module, info: &naga::
                     bindings::TILE_INPUT_GROUP,
                     bindings::TILE_INPUT_BINDINGS,
                     source_index,
+                    match spec.name.as_str() {
+                        "engine_tile_glyph" => [false, false],
+                        "engine_tile_composite" => [false, true],
+                        _ => [true, true],
+                    },
                 ),
             );
         }
@@ -1301,7 +1335,7 @@ fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option
         // the decode table among its `fs_full` parameters; the scaffold
         // declares and forwards it under this define, at the fragment
         // buffer index the binding plan gives the table.
-        let defines = if spec.attachment && spec.source.contains(IMAGE_SOURCE_NAMES[0]) {
+        let mut defines = if spec.attachment && spec.source.contains(IMAGE_SOURCE_NAMES[0]) {
             let plan = bindings::metal_plan(spec.groups, bindings::FRAGMENT);
             let buffer = plan
                 .targets
@@ -1318,6 +1352,13 @@ fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option
         } else {
             Vec::new()
         };
+        if spec.attachment {
+            match spec.name.as_str() {
+                "engine_tile_glyph" => defines.push("TILE_GLYPH".to_owned()),
+                "engine_tile_composite" => defines.push("TILE_COMPOSITE_SOURCE_OVER".to_owned()),
+                _ => {}
+            }
+        }
         metal::compile_metal(
             out_dir,
             &spec.name,

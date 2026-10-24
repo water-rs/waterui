@@ -989,22 +989,23 @@ fn fs_shadow(in: VsOut) -> vec4<f32> {
     return move_space(vec4<f32>(in.color.rgb * in.color.a, in.color.a) * cov, SPACE_LINEAR, globals.space);
 }
 
+fn glyph_coverage(in: VsOut) -> f32 {
+    let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(cell_texel_origin(in.cell.zw, in.meta_.w));
+    return path_cell_coverage(texel, in.cell.zw, in.cell_texel, in.shape_a.xy, in.meta_.w);
+}
+
+fn plain_composite(in: VsOut, cov: f32) -> vec4<f32> {
+    let flags = (in.meta_.w >> 24u) & 0xffu;
+    let tspace = select(SPACE_LINEAR, SPACE_SRGB, (flags & FLAG_TEX_SRGB) != 0u);
+    let coord = vec2<i32>(floor(in.device - instances[in.instance].grad.xy));
+    return move_space(read_composite_source(coord), tspace, globals.space) * cov;
+}
+
+// full-fragment
 fn fs_full(fragment: VsOut) -> vec4<f32> {
     // A device-space quad paints, clips and samples at its pixel, never at
     // a point interpolated across the quad.
-    var in = device_quad_pixel(fragment);
-    // Lowering chooses these modules only for the stated instance class.
-    // Keep the coverage and compositing formula shared, while making the
-    // unrelated branches unreachable before native pipeline compilation.
-    if VARIANT == VARIANT_GLYPH {
-        in.meta_.x = KIND_GLYPH;
-        in.meta_.y = PAINT_SOLID;
-    }
-    if VARIANT == VARIANT_COMPOSITE {
-        in.meta_.x = KIND_SPAN;
-        in.meta_.y = PAINT_TEXTURE;
-        in.meta_.w &= FLAG_TEX_SRGB << 24u;
-    }
+    let in = device_quad_pixel(fragment);
     // The constants every fragment needs arrive as flat varyings; the
     // storage array is read only for kind-specific fields (inner, clip,
     // mask, gradient data).
@@ -1078,8 +1079,7 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
             }
         }
         case KIND_GLYPH: {
-            let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(cell_texel_origin(in.cell.zw, in.meta_.w));
-            cov = path_cell_coverage(texel, in.cell.zw, in.cell_texel, in.shape_a.xy, in.meta_.w);
+            cov = glyph_coverage(in);
             joint = false;
         }
         case KIND_SPAN: {
@@ -1102,11 +1102,6 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
             planes[nplanes + k] = cp.p[k];
         }
         cov = planes_coverage(planes, nplanes + cp.n) * mask_coverage(in);
-    } else if VARIANT == VARIANT_GLYPH {
-        var clip = instances[i].clip;
-        // Lowering selects this module only for sharp rectangular clips.
-        clip.radii = vec4<f32>(0.0);
-        cov *= clip_mask_coverage_shape(in, clip);
     } else {
         cov *= clip_mask_coverage(in);
     }
@@ -1147,7 +1142,7 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
         let tspace = select(SPACE_LINEAR, SPACE_SRGB, (flags & FLAG_TEX_SRGB) != 0u);
         let coord = vec2<i32>(floor(in.device - instances[i].grad.xy));
         if mode == 0u && (flags & FLAG_BLEND_SRC) == 0u {
-            return move_space(read_composite_source(coord), tspace, globals.space) * cov;
+            return plain_composite(in, cov);
         }
         let cb = read_composite_backdrop(coord);
         if blend_is_destructive(mode) {
@@ -1184,3 +1179,5 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
     }
     return move_space(paint(i, in.meta_, in.color, in.local, in.device) * cov, SPACE_LINEAR, globals.space);
 }
+
+// full-fragment
