@@ -121,6 +121,7 @@ pub(super) fn pass_module(
         .collect();
 
     let result = builder.call(segment, arguments);
+    let (result, result_type) = output_colour(&mut module, &mut builder, result, result_type);
     let function = builder.finish_bound(
         result,
         result_type,
@@ -230,13 +231,28 @@ impl Inputs<'_> {
                 let level = self
                     .builder
                     .expression(Expression::Literal(Literal::I32(0)));
-                self.builder.expression(Expression::ImageLoad {
+                let colour = self.builder.expression(Expression::ImageLoad {
                     image: self.input,
                     coordinate,
                     array_index: None,
                     sample: None,
                     level: Some(level),
-                })
+                });
+                if matches!(
+                    self.module.types[ty].inner,
+                    TypeInner::Vector {
+                        scalar: cherenkov_shader::naga::Scalar::F16,
+                        ..
+                    }
+                ) {
+                    self.builder.expression(Expression::As {
+                        expr: colour,
+                        kind: ScalarKind::Float,
+                        convert: Some(2),
+                    })
+                } else {
+                    colour
+                }
             }
             SegmentArg::Input => self.input,
             SegmentArg::InputSampler => {
@@ -314,4 +330,36 @@ fn global(
         },
         Span::UNDEFINED,
     )
+}
+
+/// Fragment outputs use f32 even when the composed segment uses f16 colours.
+fn output_colour(
+    module: &mut Module,
+    builder: &mut FunctionBuilder,
+    result: Handle<Expression>,
+    result_type: Handle<Type>,
+) -> (Handle<Expression>, Handle<Type>) {
+    if matches!(
+        module.types[result_type].inner,
+        TypeInner::Vector {
+            scalar: cherenkov_shader::naga::Scalar::F16,
+            ..
+        }
+    ) {
+        let result = builder.expression(Expression::As {
+            expr: result,
+            kind: ScalarKind::Float,
+            convert: Some(4),
+        });
+        let ty = insert_type(
+            module,
+            TypeInner::Vector {
+                size: VectorSize::Quad,
+                scalar: cherenkov_shader::naga::Scalar::F32,
+            },
+        );
+        (result, ty)
+    } else {
+        (result, result_type)
+    }
 }

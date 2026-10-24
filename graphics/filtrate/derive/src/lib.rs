@@ -377,6 +377,7 @@ impl StageTokens<'_> {
             const STAGE: #core::SpatialStage = #core::SpatialStage {
                 name: #name,
                 source: #source,
+                source_f16: None,
                 params: &[#(#bindings),*],
                 space: #space,
                 shape: #shape,
