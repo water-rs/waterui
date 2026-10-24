@@ -5,7 +5,41 @@ use std::ops::Range;
 use cherenkov::LayerId;
 use rustc_hash::FxHashMap;
 
-use super::{bins, lower::Item, raster::BAND_H};
+use super::{
+    bins,
+    lower::{CaptureItem, Item},
+    raster::BAND_H,
+};
+
+struct Dependency {
+    input: Range<usize>,
+    output: (usize, usize),
+}
+
+impl Dependency {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "capture grid rows are converted outward and clamped to surface rows"
+    )]
+    fn capture(item: &CaptureItem, h: usize) -> Self {
+        let scale = f64::from(item.scale.get());
+        let start = (f64::from(item.region.y0) / scale)
+            .floor()
+            .clamp(0.0, h as f64) as usize;
+        let end = (f64::from(item.region.y1) / scale)
+            .ceil()
+            .clamp(0.0, h as f64) as usize;
+        Self {
+            input: start / BAND_H..end.div_ceil(BAND_H),
+            output: (
+                (item.union.y0.max(0) as usize).min(h),
+                (item.union.y1.max(0) as usize).min(h),
+            ),
+        }
+    }
+}
 
 pub struct Layer {
     pub id: LayerId,
@@ -26,6 +60,8 @@ pub struct Damage {
     prepared: FxHashMap<LayerId, Footprint>,
     stack: Vec<(Range<usize>, (usize, usize))>,
     bands: Vec<bool>,
+    filter_aprons: Vec<usize>,
+    captures: Vec<Dependency>,
     baseline: Option<([u32; 4], u64)>,
     pending: ([u32; 4], u64),
 }
@@ -41,6 +77,8 @@ impl Damage {
                 * size_of::<(LayerId, Footprint)>()
             + self.stack.capacity() * size_of::<(Range<usize>, (usize, usize))>()
             + self.bands.capacity() * size_of::<bool>()) as u64
+            + (self.filter_aprons.capacity() * size_of::<usize>()) as u64
+            + (self.captures.capacity() * size_of::<Dependency>()) as u64
     }
 
     pub fn prepare(
@@ -57,6 +95,7 @@ impl Damage {
         self.bands.resize(h.div_ceil(BAND_H), full);
         self.prepared.clear();
         self.stack.clear();
+        let apron = self.dependencies(items, h);
         // Layers arrive in postorder. Consume child aggregates and only scan
         // the gaps between them: every item is visited once, regardless of
         // the tree's depth.
@@ -87,28 +126,52 @@ impl Damage {
             for (id, now) in &self.prepared {
                 let old = self.previous.get(id);
                 if old != Some(now) {
-                    mark(&mut self.bands, now.rows);
+                    mark(&mut self.bands, now.rows, apron, h);
                     if let Some(old) = old {
-                        mark(&mut self.bands, old.rows);
+                        mark(&mut self.bands, old.rows, apron, h);
                     }
                 }
             }
             for (id, old) in &self.previous {
                 if !self.prepared.contains_key(id) {
-                    mark(&mut self.bands, old.rows);
+                    mark(&mut self.bands, old.rows, apron, h);
                 }
             }
-            // These CPU kernels currently evaluate the entire filter window
-            // or capture domain. Until their dependency windows are narrowed,
-            // any changed input requires that domain to be evaluated again.
-            if self.bands.iter().any(|dirty| *dirty)
-                && items
-                    .iter()
-                    .any(|item| matches!(item, Item::PushFilter { .. } | Item::Capture(_)))
-            {
-                self.bands.fill(true);
+            // A capture can read an earlier capture's output. Propagate to
+            // a fixed point; each iteration only adds selected bands.
+            loop {
+                let mut changed = false;
+                for capture in &self.captures {
+                    if self.bands[capture.input.clone()].iter().any(|dirty| *dirty) {
+                        changed |= mark(&mut self.bands, capture.output, apron, h);
+                    }
+                }
+                if !changed {
+                    break;
+                }
             }
         }
+    }
+
+    fn dependencies(&mut self, items: &[Item], h: usize) -> usize {
+        self.filter_aprons.clear();
+        self.captures.clear();
+        let (mut active, mut maximum) = (0, 0);
+        for item in items {
+            match item {
+                Item::PushFilter { apron, .. } => {
+                    self.filter_aprons.push(*apron);
+                    active += apron;
+                    maximum = maximum.max(active);
+                }
+                Item::PopFilter { .. } => {
+                    active -= self.filter_aprons.pop().expect("paired filter scope");
+                }
+                Item::Capture(capture) => self.captures.push(Dependency::capture(capture, h)),
+                _ => {}
+            }
+        }
+        maximum.min(h)
     }
 
     pub fn bands(&self) -> &[bool] {
@@ -140,8 +203,14 @@ fn extend_items(rows: &mut (usize, usize), items: &[Item], h: usize) {
     }
 }
 
-fn mark(bands: &mut [bool], (start, end): (usize, usize)) {
+fn mark(bands: &mut [bool], (start, end): (usize, usize), apron: usize, h: usize) -> bool {
     if start < end {
-        bands[start / BAND_H..end.div_ceil(BAND_H)].fill(true);
+        let selected =
+            &mut bands[start.saturating_sub(apron) / BAND_H..(end + apron).min(h).div_ceil(BAND_H)];
+        let changed = selected.iter().any(|dirty| !*dirty);
+        selected.fill(true);
+        changed
+    } else {
+        false
     }
 }

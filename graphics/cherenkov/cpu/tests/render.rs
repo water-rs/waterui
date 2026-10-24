@@ -20,19 +20,35 @@ const RED: WorkingColor = WorkingColor::new([1., 0., 0., 1.]);
 
 #[test]
 fn retained_outputs_skip_unchanged_bands_after_motion_and_clear() {
+    compare_retained_outputs(false);
+}
+
+#[test]
+fn retained_outputs_expand_damage_through_nested_filters() {
+    compare_retained_outputs(true);
+}
+
+fn compare_retained_outputs(filtered: bool) {
     for format in [OffscreenFormat::LinearF32, OffscreenFormat::LinearF16] {
         let engine = engine();
         let size = (128, 1024);
         let surface = engine.surface(Offscreen::new(size, format), || {}).unwrap();
         let moving = surface.layer();
+        let outer = surface.layer();
+        let inner = surface.layer();
+        let blur = filtered.then(|| engine.filter(filtrate::filters::GaussianBlur::new(2.0f32)));
         let background = WorkingColor::new([0.1, 0.3, 0.2, 0.5]);
         let foreground = WorkingColor::new([3.0, 0.2, 0.8, 0.6]);
         surface.update(|tx| {
-            tx[surface.root()]
-                .push(&moving)
-                .content(surface.record(|r| {
-                    r.fill(Rect::new(0.0, 0.0, 128.0, 1024.0), background);
-                }));
+            tx[surface.root()].push(&outer).content(surface.record(|r| {
+                r.fill(Rect::new(0.0, 0.0, 128.0, 1024.0), background);
+            }));
+            tx[&outer].push(&inner);
+            tx[&inner].push(&moving);
+            if let Some(blur) = &blur {
+                tx[&outer].filter(blur.id());
+                tx[&inner].filter(blur.id());
+            }
         });
         for (step, position) in [
             Some((20.0, 32.0)),
@@ -60,7 +76,7 @@ fn retained_outputs_skip_unchanged_bands_after_motion_and_clear() {
                 assert_eq!(passes, 64);
             } else {
                 assert!(
-                    passes > 0 && passes * 20 < 64,
+                    passes > 0 && passes * if filtered { 4 } else { 20 } < 64,
                     "frame {step}: {passes} bands"
                 );
             }
@@ -70,7 +86,16 @@ fn retained_outputs_skip_unchanged_bands_after_motion_and_clear() {
                 tx[reference.root()].content(reference.record(|r| {
                     r.fill(Rect::new(0.0, 0.0, 128.0, 1024.0), background);
                     if let Some((x, y)) = position {
-                        r.fill(Rect::new(x, y, x + 8.0, y + 8.0), foreground);
+                        let draw = |r: &mut cherenkov::Recorder| {
+                            r.fill(Rect::new(x, y, x + 8.0, y + 8.0), foreground);
+                        };
+                        if let Some(blur) = &blur {
+                            r.group(Group::new().filter(blur.id()), |r| {
+                                r.group(Group::new().filter(blur.id()), draw);
+                            });
+                        } else {
+                            draw(r);
+                        }
                     }
                 }));
             });
@@ -87,8 +112,9 @@ fn retained_outputs_skip_unchanged_bands_after_motion_and_clear() {
                 pixels: expected.pixels,
             };
             assert_images_match(&expected, &actual);
-            let path =
-                std::env::temp_dir().join(format!("cherenkov-cpu-damage-{format:?}-{step}.png"));
+            let path = std::env::temp_dir().join(format!(
+                "cherenkov-cpu-damage-{filtered}-{format:?}-{step}.png"
+            ));
             actual.write_png(&path).unwrap();
         }
     }
