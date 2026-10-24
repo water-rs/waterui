@@ -439,13 +439,21 @@ pub struct KeyboardTracking {
     /// `contentInset.bottom` — kept so the next pass shifts the inset by
     /// the delta instead of clobbering other bottom-inset terms.
     applied_inset: Cell<f64>,
-    /// The window-space frame and bottom safe-area inset the last
-    /// contribution computed against — a move or a safe-area change
-    /// re-derives the covered band with no notification at all, while a
-    /// content-offset pass recomputes nothing.
+    /// The window-space frame, bottom safe-area inset and keyboard
+    /// region frame the last contribution computed against — a move, a
+    /// safe-area change or a region change re-derives the covered band
+    /// with no mark at all, while a content-offset pass recomputes
+    /// nothing. The region frame sits in the guard because a surface
+    /// can miss every mark — the notification walk only reaches views
+    /// inside the window, and a window transition on a platform
+    /// version that reorders `didMoveToWindow` past the region change
+    /// leaves no other signal the band it returns to moved.
     applied_frame: Cell<CGRect>,
     /// See `applied_frame`.
     applied_safe: Cell<f64>,
+    /// See `applied_frame` — `None` inside another scroll surface or
+    /// outside a window, where the surface never carries the inset.
+    applied_keyboard: Cell<Option<CGRect>>,
     /// The mark the window's notification walk left — the next pass
     /// recomputes whatever the size did.
     marked: Cell<bool>,
@@ -474,6 +482,7 @@ impl KeyboardTracking {
             applied_inset: Cell::new(0.0),
             applied_frame: Cell::new(CGRect::ZERO),
             applied_safe: Cell::new(0.0),
+            applied_keyboard: Cell::new(None),
             marked: Cell::new(false),
             observers: RefCell::new(Vec::new()),
         }
@@ -526,30 +535,40 @@ impl KeyboardTracking {
     /// pass — only when the window's notification marked the surface or
     /// what the cover reads changed: the surface's frame in window
     /// coordinates — a banner pushing the surface down into the band
-    /// counts, a content-offset scroll does not — and the bottom
-    /// `safeAreaInsets` the covered band already carries. The covered
-    /// band depth becomes the bottom content inset — shifted by the
-    /// delta from the last applied value so other `contentInset.bottom`
-    /// terms survive. The focused field is scrolled clear only when the
-    /// contribution itself grows; a pass that re-runs because the user
-    /// scrolled must leave the offset alone.
+    /// counts, a content-offset scroll does not — the bottom
+    /// `safeAreaInsets` the covered band already carries, and the
+    /// keyboard region's frame, which can move while the surface sits
+    /// outside the window no mark reaches. The covered band depth
+    /// becomes the bottom content inset — shifted by the delta from the
+    /// last applied value so other `contentInset.bottom` terms survive.
+    /// The focused field is scrolled clear only when the contribution
+    /// itself grows; a pass that re-runs because the user scrolled must
+    /// leave the offset alone.
     pub fn apply_layout(&self, scroll: &UIScrollView) {
         let frame = scroll.convertRect_toView(scroll.bounds(), None);
         let safe_bottom = scroll.safeAreaInsets().bottom;
+        // `None` inside another scroll surface — the surface never
+        // carries a keyboard inset there — so the guard's stored value
+        // matches and a nested surface never recomputes.
+        let keyboard = if crate::view::inside_scroll_surface(scroll) {
+            None
+        } else {
+            window_keyboard(scroll).map(|(frame, _)| frame)
+        };
         if !self.marked.replace(false)
             && self.applied_frame.get() == frame
             && (self.applied_safe.get() - safe_bottom).abs() <= f64::EPSILON
+            && self.applied_keyboard.get() == keyboard
         {
             return;
         }
-        let contribution = if crate::view::inside_scroll_surface(scroll) {
-            0.0
-        } else {
-            Self::keyboard_cover(scroll, frame, safe_bottom)
-        };
+        let contribution = keyboard.map_or(0.0, |keyboard| {
+            Self::keyboard_cover(frame, safe_bottom, keyboard)
+        });
         let previous = self.applied_inset.replace(contribution);
         self.applied_frame.set(frame);
         self.applied_safe.set(safe_bottom);
+        self.applied_keyboard.set(keyboard);
         if (contribution - previous).abs() > f64::EPSILON {
             let mut inset = scroll.contentInset();
             inset.bottom += contribution - previous;
@@ -566,10 +585,7 @@ impl KeyboardTracking {
     /// the pass already read; `safe_bottom` the `safeAreaInsets` term
     /// `adjustedContentInset` already carries, so the inset only needs
     /// the covered depth beyond it.
-    fn keyboard_cover(scroll: &UIScrollView, frame: CGRect, safe_bottom: f64) -> f64 {
-        let Some((keyboard, _)) = window_keyboard(scroll) else {
-            return 0.0;
-        };
+    fn keyboard_cover(frame: CGRect, safe_bottom: f64, keyboard: CGRect) -> f64 {
         if keyboard.size.width <= 0.0 || keyboard.size.height <= 0.0 {
             return 0.0;
         }
