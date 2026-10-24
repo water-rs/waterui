@@ -114,6 +114,10 @@ pub enum ShaderVariant {
     /// image paint whose texture keeps its source encoding (non-zero
     /// `image_storage` source flags).
     Image,
+    /// Solid atlas cells and full spans with sharp rectangular clips and optional masks.
+    Glyph,
+    /// An unclipped source-over span sampling a rendered layer in its stored space.
+    Composite,
 }
 
 /// A texture identity scoped to its resource owner.
@@ -500,7 +504,11 @@ const GRADIENT_LINEAR_STOPS: u32 = 8;
 /// uber-shader when it reads rare fields (clip, mask, inner, strokes,
 /// other non-solid paint), the shadow kernel otherwise for shadows, and
 /// the trivial coverage path for solid fills, spans, and glyphs.
-const fn variant_of(inst: &Instance) -> ShaderVariant {
+#[expect(
+    clippy::float_cmp,
+    reason = "zero radii identify sharp geometry; a nonzero corner needs the general shader"
+)]
+fn variant_of(inst: &Instance) -> ShaderVariant {
     let flags = inst.meta[3] >> 24;
     if (flags & FLAG_UNION) != 0 {
         return ShaderVariant::Union;
@@ -518,6 +526,18 @@ const fn variant_of(inst: &Instance) -> ShaderVariant {
         // same instructions as without the image variant.
         if (inst.meta[3] & super::image_storage::SOURCE) != 0 && inst.meta[1] == PAINT_IMAGE {
             return ShaderVariant::Image;
+        }
+        if matches!(inst.meta[0], KIND_GLYPH | KIND_SPAN)
+            && inst.meta[1] == PAINT_SOLID
+            && inst.clip.radii == [0.0; 4]
+        {
+            return ShaderVariant::Glyph;
+        }
+        if inst.meta[0] == KIND_SPAN
+            && inst.meta[1] == PAINT_TEXTURE
+            && (inst.meta[3] & !(FLAG_TEX_SRGB << 24)) == 0
+        {
+            return ShaderVariant::Composite;
         }
         return ShaderVariant::Full;
     }
@@ -541,7 +561,7 @@ const fn is_gradient(inst: &Instance) -> bool {
 /// paint the uber-shader does, and its upper-bound search selects the
 /// same stop interval as the linear scan, so interleaved short and long
 /// gradients share one draw instead of switching pipelines per instance.
-const fn variant_after(open: ShaderVariant, inst: &Instance) -> ShaderVariant {
+fn variant_after(open: ShaderVariant, inst: &Instance) -> ShaderVariant {
     let variant = variant_of(inst);
     if matches!(open, ShaderVariant::LongGradient)
         && matches!(variant, ShaderVariant::Full)
@@ -1077,6 +1097,8 @@ impl EmissionStorage {
 /// mask coordinates and per-quad fields are reconstructed when composed.
 #[derive(Clone, Copy)]
 struct InstanceTemplate {
+    /// The non-span geometry shared by this leaf's boundary quads.
+    kind: u32,
     affine: [f32; 6],
     shape: Shape,
     inner: Shape,
@@ -1091,6 +1113,7 @@ struct InstanceTemplate {
 impl InstanceTemplate {
     fn new(inst: &Instance) -> Self {
         Self {
+            kind: inst.meta[0],
             affine: inst.affine[..6]
                 .try_into()
                 .expect("six affine coefficients"),
@@ -4660,9 +4683,10 @@ impl<'a> Lowering<'a> {
         let retained_stop = storage.stops.len();
         let template = storage.templates.len();
         storage.templates.push(InstanceTemplate::new(
-            self.frame
-                .instances
-                .get(first_instance)
+            self.frame.instances[first_instance..]
+                .iter()
+                .find(|inst| inst.meta[0] != KIND_SPAN)
+                .or_else(|| self.frame.instances.get(first_instance))
                 .unwrap_or(&Instance::new(0)),
         ));
         storage
@@ -4757,9 +4781,11 @@ impl<'a> Lowering<'a> {
         let instance_base = instance_index(self.frame.instances.len());
         let retained = &storage.instances[emission.instances.clone()];
         if let Some(first) = retained.first() {
-            // A realized leaf shares paint and clip fields. Its varying
-            // kinds (fill/span/cell) all use the same shader specialization.
-            let mut template = first.restore(&storage.templates[emission.template], offset);
+            // The boundary geometry selects the batch's shader: its full
+            // interior spans use that same module, never the reverse.
+            let stored_template = &storage.templates[emission.template];
+            let mut template = first.restore(stored_template, offset);
+            template.meta[0] = stored_template.kind;
             Self::apply_clip(&mut template, self.clip);
             self.set_variant(&template);
             if let Some(gpu) = &emission.gpu {
@@ -4783,7 +4809,10 @@ impl<'a> Lowering<'a> {
                         } else {
                             offset
                         };
-                    debug_assert_eq!(variant_of(inst), variant_of(&template));
+                    debug_assert!(
+                        source.kind == stored_template.kind || source.kind == KIND_SPAN,
+                        "a retained leaf has one boundary geometry and optional interior spans"
+                    );
                 }
                 if let Some(pending) = self.mask_pending {
                     self.mask_patches
