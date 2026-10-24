@@ -1034,10 +1034,18 @@ impl RasterRenderer {
             if local.is_none() {
                 lowering.damage_layers = std::mem::take(&mut surf.damage.layers);
                 lowering.damage_layers.clear();
+                lowering.damage_rows = std::mem::take(&mut surf.damage.command_rows);
+                lowering.damage_rows.clear();
             }
             let result = lowering.run(id, sf.tree, &mut caches, &self.images);
             if local.is_none() {
                 surf.damage.layers = std::mem::take(&mut lowering.damage_layers);
+                surf.damage.command_rows = std::mem::take(&mut lowering.damage_rows);
+                if result.is_err() {
+                    // Some command caches may already hold their new output.
+                    // A retry must not treat those cache hits as submitted pixels.
+                    surf.damage.forget();
+                }
             }
             glyphs_rasterized = lowering.glyphs_rasterized;
             stats.glyphs_rasterized += glyphs_rasterized;

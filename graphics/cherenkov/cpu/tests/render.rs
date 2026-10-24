@@ -121,6 +121,88 @@ fn compare_retained_outputs(filtered: bool) {
 }
 
 #[test]
+fn retained_command_motion_preserves_background_and_layer_changes() {
+    for format in [OffscreenFormat::LinearF32, OffscreenFormat::LinearF16] {
+        let engine = engine();
+        let size = (128, 1024);
+        let surface = engine.surface(Offscreen::new(size, format), || {}).unwrap();
+        let shape = nami::Binding::container(Rect::new(20.0, 32.0, 28.0, 40.0));
+        let background = WorkingColor::new([0.1, 0.3, 0.2, 0.5]);
+        let foreground = WorkingColor::new([3.0, 0.2, 0.8, 0.6]);
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|r| {
+                r.fill(Rect::new(0.0, 0.0, 128.0, 1024.0), background);
+                r.fill(shape.clone(), foreground);
+            }));
+        });
+        for (step, (rect, opacity, empty)) in [
+            (Rect::new(20.0, 32.0, 28.0, 40.0), 1.0_f32, false),
+            (Rect::new(80.0, 448.0, 88.0, 456.0), 1.0_f32, false),
+            (Rect::ZERO, 1.0_f32, false),
+            (Rect::new(20.0, 32.0, 28.0, 40.0), 0.5_f32, false),
+            (Rect::ZERO, 0.5_f32, true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if step > 0 && !empty {
+                shape.set(rect);
+            }
+            if step == 3 {
+                surface.update(|tx| {
+                    tx[surface.root()].opacity(opacity);
+                });
+            }
+            if empty {
+                surface.update(|tx| {
+                    tx[surface.root()].content(surface.record(|_| {}));
+                });
+            }
+            engine.render(FrameTime::now()).unwrap();
+            let passes = engine.stats().passes;
+            if step == 1 || step == 2 {
+                assert!(
+                    passes > 0 && passes < 4,
+                    "command update repainted {passes} bands"
+                );
+            } else {
+                assert_eq!(passes, 64, "whole-layer change {step}");
+            }
+            let actual = surface.readback().unwrap();
+            let reference = engine.surface(Offscreen::new(size, format), || {}).unwrap();
+            reference.update(|tx| {
+                tx[reference.root()]
+                    .opacity(opacity)
+                    .content(reference.record(|r| {
+                        if !empty {
+                            r.fill(Rect::new(0.0, 0.0, 128.0, 1024.0), background);
+                            r.fill(rect, foreground);
+                        }
+                    }));
+            });
+            engine.render(FrameTime::now()).unwrap();
+            let expected = reference.readback().unwrap();
+            let actual = F32Image {
+                width: size.0,
+                height: size.1,
+                pixels: actual.pixels,
+            };
+            let expected = F32Image {
+                width: size.0,
+                height: size.1,
+                pixels: expected.pixels,
+            };
+            assert_images_match(&expected, &actual);
+            actual
+                .write_png(&std::env::temp_dir().join(format!(
+                    "cherenkov-cpu-command-damage-{format:?}-{step}.png"
+                )))
+                .unwrap();
+        }
+    }
+}
+
+#[test]
 fn a_half_edge_rect_has_exact_coverage() {
     let engine = engine();
     let surface = engine

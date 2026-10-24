@@ -702,6 +702,8 @@ struct Member {
 /// The lowering walk state for one surface frame.
 pub struct Lowering<'a, 'b> {
     pub damage_layers: Vec<super::damage::Layer>,
+    pub damage_rows: Vec<(usize, usize)>,
+    content_damage: Option<std::ops::Range<usize>>,
     items: &'a mut Vec<Item>,
     filters: Option<&'a mut Registry>,
     frame: FrameId,
@@ -1316,6 +1318,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
         Self {
             items,
             damage_layers: Vec::new(),
+            damage_rows: Vec::new(),
+            content_damage: Some(0..0),
             filters,
             frame,
             used_filters: FxHashSet::default(),
@@ -2121,15 +2125,22 @@ impl<'a, 'b> Lowering<'a, 'b> {
         caches: &mut FxHashMap<LayerId, ContentData>,
     ) -> Result<(), RenderError> {
         let start = self.items.len();
+        let start_row = self.damage_rows.len();
+        let parent_damage = self.content_damage.replace(start_row..start_row);
         let result = self.layer_inner(id, tree, caches);
+        let changed_rows = std::mem::replace(&mut self.content_damage, parent_damage);
         if self.local.is_none() {
             self.damage_layers.push(super::damage::Layer {
                 id,
-                revision: if self.projects(id, tree) {
+                properties: if self.projects(id, tree) {
                     tree.layer(id).revision().max(tree.content_stamp(id))
                 } else {
-                    tree.layer(id).revision()
+                    tree.layer(id).property_revision()
                 },
+                commands: caches
+                    .get(&id)
+                    .map(|content| content.current().expect("content was prepared").0.len()),
+                changed_rows,
                 items: start..self.items.len(),
             });
         }
@@ -2448,6 +2459,11 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 Op::BeginClip { local, shape, end } => {
                     let saved = self.transform;
                     self.transform = saved * *local;
+                    if !emissions[i].valid
+                        || !matches!(&emissions[i].data, Some(Emission::Clip(data)) if self.placement_matches(data))
+                    {
+                        self.content_damage = None;
+                    }
                     let clip = self.cached_clip(shape, &mut emissions[i]);
                     self.transform = saved;
                     if let Some(clip) = clip {
@@ -2465,6 +2481,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
                     space,
                     end,
                 } => {
+                    if !emissions[i].valid {
+                        self.content_damage = None;
+                    }
+                    emissions[i].valid = true;
                     let clip = self.clip.clone();
                     if let Some(filter) = filter {
                         self.filter_isolate(
@@ -2536,6 +2556,16 @@ impl<'a, 'b> Lowering<'a, 'b> {
             self.items.extend_from_slice(&data.output);
             return Ok(false);
         }
+        if let Some(Emission::Draw(data)) = &cache.data {
+            super::damage::record_rows(
+                &mut self.damage_rows,
+                &mut self.content_damage,
+                &data.output,
+                self.height,
+            );
+        } else {
+            self.content_damage = None;
+        }
         let (mut items, carried) = match cache.data.take() {
             Some(Emission::Draw(data)) => {
                 let carried = match data.output.as_slice() {
@@ -2581,6 +2611,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
         self.glyphs.append(&mut compose.glyphs);
         self.glyphs_rasterized += compose.glyphs_rasterized;
         self.items.extend_from_slice(&items);
+        super::damage::record_rows(
+            &mut self.damage_rows,
+            &mut self.content_damage,
+            &items,
+            self.height,
+        );
         cache.data = Some(Emission::Draw(self.device_data(items)));
         cache.valid = true;
         Ok(true)

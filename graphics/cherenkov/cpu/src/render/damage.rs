@@ -43,19 +43,24 @@ impl Dependency {
 
 pub struct Layer {
     pub id: LayerId,
-    pub revision: u64,
+    pub properties: u64,
+    pub commands: Option<usize>,
+    /// None means the command layout or a scope changed.
+    pub changed_rows: Option<Range<usize>>,
     pub items: Range<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Footprint {
-    revision: u64,
+    properties: u64,
+    commands: Option<usize>,
     rows: (usize, usize),
     generation: u64,
 }
 
 pub struct Damage {
     pub layers: Vec<Layer>,
+    pub command_rows: Vec<(usize, usize)>,
     previous: FxHashMap<LayerId, Footprint>,
     generation: u64,
     stack: Vec<(Range<usize>, (usize, usize))>,
@@ -70,6 +75,7 @@ impl Default for Damage {
     fn default() -> Self {
         Self {
             layers: Vec::new(),
+            command_rows: Vec::new(),
             previous: FxHashMap::default(),
             generation: 0,
             stack: Vec::new(),
@@ -89,6 +95,7 @@ impl Damage {
 
     pub fn heap_bytes(&self) -> u64 {
         (self.layers.capacity() * size_of::<Layer>()
+            + self.command_rows.capacity() * size_of::<(usize, usize)>()
             + self.previous.capacity() * size_of::<(LayerId, Footprint)>()
             + self.stack.capacity() * size_of::<(Range<usize>, (usize, usize))>()) as u64
             + self.bands.heap_bytes().0
@@ -141,15 +148,25 @@ impl Damage {
             extend_items(&mut rows, &items[layer.items.start..end], h);
             self.stack.push((layer.items.clone(), rows));
             let now = Footprint {
-                revision: layer.revision,
+                properties: layer.properties,
+                commands: layer.commands,
                 rows,
                 generation: self.generation,
             };
             let old = self.previous.insert(layer.id, now);
-            if !full && old.is_none_or(|old| old.revision != now.revision || old.rows != now.rows) {
-                mark(&mut self.bands, now.rows, apron, h);
-                if let Some(old) = old {
-                    mark(&mut self.bands, old.rows, apron, h);
+            if !full {
+                let whole = old.is_none_or(|old| {
+                    old.properties != now.properties || old.commands != now.commands
+                }) || layer.changed_rows.is_none();
+                if whole {
+                    mark(&mut self.bands, now.rows, apron, h);
+                    if let Some(old) = old {
+                        mark(&mut self.bands, old.rows, apron, h);
+                    }
+                } else if let Some(rows) = &layer.changed_rows {
+                    for &rows in &self.command_rows[rows.clone()] {
+                        mark(&mut self.bands, rows, apron, h);
+                    }
                 }
             }
         }
@@ -217,7 +234,7 @@ fn union(rows: &mut (usize, usize), other: (usize, usize)) {
     }
 }
 
-fn extend_items(rows: &mut (usize, usize), items: &[Item], h: usize) {
+pub(super) fn extend_items(rows: &mut (usize, usize), items: &[Item], h: usize) {
     for item in items {
         // Normal isolation only combines its child pixels. Destructive
         // blending and filters can write transparent source pixels too.
@@ -247,4 +264,20 @@ fn mark(bands: &mut Region, (start, end): (usize, usize), apron: usize, h: usize
         );
     }
     bands.pixel_area() != before
+}
+
+pub(super) fn record_rows(
+    commands: &mut Vec<(usize, usize)>,
+    span: &mut Option<Range<usize>>,
+    items: &[Item],
+    h: usize,
+) {
+    if let Some(span) = span {
+        let mut rows = (h, 0);
+        extend_items(&mut rows, items, h);
+        if rows.0 < rows.1 {
+            commands.push(rows);
+            span.end = commands.len();
+        }
+    }
 }
