@@ -43,7 +43,7 @@ pub use lower::{ClipMask, ClipRef};
 #[cfg(any(test, feature = "testing"))]
 pub use paint::{PaintData, paint_data};
 #[cfg(any(test, feature = "testing"))]
-pub use raster::{ClipRun, Edge, composite_span};
+pub use raster::{ClipCoverage, ClipRun, Edge, composite_span};
 #[cfg(any(test, feature = "testing"))]
 pub use raster::{composite_solid, convert_span};
 
@@ -95,6 +95,8 @@ struct SurfaceState {
     /// backdrop capture last frame (window, isolation stack and capture
     /// buffers). 0 when no capture ran.
     backdrop_capture_peak: u64,
+    /// Peak clip compiler, sample and pool storage across last frame's workers.
+    clip_scratch_peak: u64,
     /// Projective layers' realized local images, by layer, one per
     /// density bucket.
     projective: FxHashMap<LayerId, Vec<projective::Entry>>,
@@ -119,10 +121,13 @@ impl SurfaceState {
 
     /// Heap bytes of the surface's own band-format working buffer.
     const fn band_bytes(&self) -> u64 {
-        match &self.output {
-            Output::Stream { emit, .. } => (emit.capacity() * size_of::<[half::f16; 4]>()) as u64,
-            _ => 0,
-        }
+        self.clip_scratch_peak
+            + match &self.output {
+                Output::Stream { emit, .. } => {
+                    (emit.capacity() * size_of::<[half::f16; 4]>()) as u64
+                }
+                _ => 0,
+            }
     }
 }
 
@@ -387,6 +392,7 @@ impl Renderer for RasterRenderer {
                 groups: Vec::new(),
                 anchor_scratch: lower::AnchorScratch::default(),
                 backdrop_capture_peak: 0,
+                clip_scratch_peak: 0,
                 projective: FxHashMap::default(),
                 visibility: Visibility::Visible,
                 waker,
@@ -948,6 +954,9 @@ impl RasterRenderer {
         };
         stats.phases.shade_seconds += shade_at.elapsed().as_secs_f64();
         surf.backdrop_capture_peak = peak.load(std::sync::atomic::Ordering::Relaxed);
+        surf.clip_scratch_peak = frame_mem
+            .clip_peak
+            .load(std::sync::atomic::Ordering::Relaxed);
         tracing::debug!(target: "cherenkov_cpu::profile",
             lower_s = stats.phases.lower_seconds - phases.lower_seconds,
             glyph_s = stats.phases.glyph_seconds - phases.glyph_seconds,
