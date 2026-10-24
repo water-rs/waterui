@@ -22,6 +22,11 @@ on:
         required: false
         default: origin/dev
         type: string
+      path_scaling:
+        description: Also profile fresh and retained solid and dashed road-network preparation
+        required: false
+        default: false
+        type: boolean
   pull_request:
     branches: [dev]
     paths:
@@ -99,6 +104,20 @@ jobs:
           python3 graphics/cherenkov/bench/scripts/ir_gate.py ab --leg ${{ matrix.leg }}
           --base "$IR_BASE" --head "$IR_HEAD"
           --work "$RUNNER_TEMP/cherenkov-ir" --out ir-results
+      - name: Measure fresh and retained path scaling
+        if: github.event_name == 'workflow_dispatch' && inputs.path_scaling && matrix.leg == 'gpu'
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          for series in solid dash; do
+            python3 graphics/cherenkov/bench/scripts/lower_scaling.py measure \
+              --binary ir-results/bench-head --tag head \
+              --repo graphics/cherenkov --out ir-results/path-scaling \
+              --series "$series" --pause-at 8 --warmup 30 --jobs 2
+            python3 graphics/cherenkov/bench/scripts/lower_scaling.py report \
+              --out ir-results/path-scaling --tag head --series "$series"
+            cat "ir-results/path-scaling/head-${series}-lower-scaling.md" >> "$GITHUB_STEP_SUMMARY"
+          done
       - name: Summarize
         if: always() && hashFiles('ir-results/comparison.md') != ''
         run: cat ir-results/comparison.md >> "$GITHUB_STEP_SUMMARY"
