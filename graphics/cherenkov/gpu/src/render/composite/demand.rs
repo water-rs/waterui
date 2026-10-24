@@ -36,20 +36,7 @@ impl Demand {
         plan: &ExecutionPlan,
         mut output: impl FnMut(Target, [u32; 4], &mut Region),
     ) {
-        self.passes.truncate(frame.passes.len());
-        for (index, pass) in frame.passes.iter().enumerate() {
-            let [x, y, w, h] = pass.region;
-            let extent = (x + w, y + h);
-            if let Some(region) = self.passes.get_mut(index) {
-                if region.extent() == extent {
-                    region.clear();
-                } else {
-                    *region = Region::new(extent);
-                }
-            } else {
-                self.passes.push(Region::new(extent));
-            }
-        }
+        self.reset(frame);
         for (index, pass) in frame.passes.iter().enumerate().rev() {
             if matches!(
                 pass.target,
@@ -101,6 +88,23 @@ impl Demand {
         }
     }
 
+    fn reset(&mut self, frame: &Frame) {
+        self.passes.truncate(frame.passes.len());
+        for (index, pass) in frame.passes.iter().enumerate() {
+            let [x, y, w, h] = pass.region;
+            let extent = (x + w, y + h);
+            if let Some(region) = self.passes.get_mut(index) {
+                if region.extent() == extent {
+                    region.clear();
+                } else {
+                    *region = Region::new(extent);
+                }
+            } else {
+                self.passes.push(Region::new(extent));
+            }
+        }
+    }
+
     fn read(&mut self, index: usize, read: &Read, whole: bool, frame: &Frame) {
         let Some(writer) = read.writer else {
             // Retained projected images are already valid on entry.
@@ -114,6 +118,93 @@ impl Demand {
             destination.add(x, y, w, h);
         } else {
             for rect in after[0].rectangles() {
+                let x0 = rect.x0().max(x);
+                let y0 = rect.y0().max(y);
+                let x1 = rect.x1().min(x + w);
+                let y1 = rect.y1().min(y + h);
+                if x0 < x1 && y0 < y1 {
+                    destination.add(x0, y0, x1 - x0, y1 - y0);
+                }
+            }
+        }
+    }
+}
+
+/// Forward changes through ordered image writes. Unlike backward demand, this
+/// records what changed, not all inputs needed to reproduce those pixels.
+#[derive(Default)]
+pub struct Changes {
+    regions: Demand,
+}
+
+impl Changes {
+    pub fn bytes(&self) -> u64 {
+        self.regions.bytes()
+    }
+
+    pub fn pass(&self, index: usize) -> &Region {
+        self.regions.pass(index)
+    }
+
+    pub fn update(
+        &mut self,
+        frame: &Frame,
+        plan: &ExecutionPlan,
+        mut changed: impl FnMut(usize, &mut Region),
+    ) {
+        self.regions.reset(frame);
+        for index in 0..frame.passes.len() {
+            changed(index, &mut self.regions.passes[index]);
+            for read in [&plan.loads[index], &plan.backdrops[index]]
+                .into_iter()
+                .flatten()
+            {
+                self.read(index, read, false, frame);
+            }
+            if let Some(read) = &plan.captures[index] {
+                let scaled = frame.passes[index]
+                    .capture
+                    .is_some_and(|capture| capture.resolve.is_some());
+                self.read(index, read, scaled, frame);
+            }
+            for (read, range) in plan.reads[index].iter().zip(&frame.passes[index].ranges) {
+                if let Some(read) = read {
+                    let whole = read.kind != ReadKind::CorrespondingPixel
+                        || !super::plan::corresponds(
+                            frame,
+                            range,
+                            plan.images[read.image.0].region,
+                        );
+                    self.read(index, read, whole, frame);
+                }
+            }
+            if !self.pass(index).is_empty()
+                && (frame.filters.iter().any(|(pass, _)| *pass == index)
+                    || frame.shadows.iter().any(|(pass, _)| *pass == index)
+                    || frame.reduces.iter().any(|(pass, _)| *pass == index))
+            {
+                let [x, y, w, h] = frame.passes[index].region;
+                self.regions.passes[index].add(x, y, w, h);
+            }
+        }
+    }
+
+    fn read(&mut self, index: usize, read: &Read, whole: bool, frame: &Frame) {
+        let Some(writer) = read.writer else {
+            // Changes to externally retained images are seeded by their owner.
+            return;
+        };
+        assert!(writer < index, "a read must name an earlier writer");
+        let (before, after) = self.regions.passes.split_at_mut(index);
+        let source = &before[writer];
+        let destination = &mut after[0];
+        let [x, y, w, h] = frame.passes[index].region;
+        if whole {
+            if !source.is_empty() {
+                destination.add(x, y, w, h);
+            }
+        } else {
+            for rect in source.rectangles() {
                 let x0 = rect.x0().max(x);
                 let y0 = rect.y0().max(y);
                 let x1 = rect.x1().min(x + w);

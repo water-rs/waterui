@@ -621,6 +621,27 @@ fn demand_follows_frozen_writes_and_severs_cleared_generations() {
         ),
         ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(4)),
     ] {
+        let mut changes = crate::render::composite::demand::Changes::default();
+        changes.update(&frame, &plan, |index, region| {
+            if index == 0 {
+                region.add(2, 3, 4, 5);
+            }
+        });
+        for index in [0, 1, 2, 3, 4] {
+            assert_eq!(changes.pass(index).pixel_area(), 20, "changed pass {index}");
+        }
+        for index in [5, 6] {
+            assert!(changes.pass(index).is_empty(), "cleared generation {index}");
+        }
+        changes.update(&frame, &plan, |index, region| {
+            if index == 3 {
+                region.add(2, 3, 4, 5);
+            }
+        });
+        assert!(
+            changes.pass(4).is_empty(),
+            "frozen capture excludes later writes"
+        );
         demand.update(&frame, &plan, |target, _, region| {
             if target == Target::Part(0) {
                 region.add(2, 3, 4, 5);
@@ -672,4 +693,19 @@ fn demand_expands_neighborhood_reads_and_tracks_destination_snapshots() {
     assert_eq!(demand.pass(0).pixel_area(), 6);
     assert_eq!(demand.pass(1).pixel_area(), 256);
     assert_eq!(demand.pass(2).pixel_area(), 6);
+    let mut changes = crate::render::composite::demand::Changes::default();
+    changes.update(&frame, &plan, |index, region| {
+        if index == 1 {
+            region.add(4, 5, 2, 3);
+        }
+    });
+    assert!(changes.pass(0).is_empty());
+    assert_eq!(changes.pass(1).pixel_area(), 6);
+    assert_eq!(changes.pass(2).pixel_area(), 256);
+    changes.update(&frame, &plan, |index, region| {
+        if index == 0 {
+            region.add(4, 5, 2, 3);
+        }
+    });
+    assert_eq!(changes.pass(2).pixel_area(), 6);
 }

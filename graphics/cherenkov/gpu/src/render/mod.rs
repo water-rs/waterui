@@ -7,6 +7,7 @@ mod colr;
 mod composite;
 pub mod composition;
 mod content_range;
+mod damage;
 pub mod diag;
 #[cfg(target_os = "linux")]
 pub mod dmabuf_export;
@@ -493,6 +494,8 @@ struct SurfaceState {
     composition: composite::plan::ExecutionPlan,
     composition_cache: composite::cache::Cache,
     draw_demand: composite::demand::Demand,
+    command_damage: damage::Commands,
+    propagated_damage: composite::demand::Changes,
     #[cfg(target_vendor = "apple")]
     tile_targets: composite::metal::Attachments,
     /// This frame's offsets into the shared buffers: instances and globals
@@ -639,6 +642,8 @@ impl SurfaceState {
             composition: composite::plan::ExecutionPlan::default(),
             composition_cache: composite::cache::Cache::default(),
             draw_demand: composite::demand::Demand::default(),
+            command_damage: damage::Commands::default(),
+            propagated_damage: composite::demand::Changes::default(),
             #[cfg(target_vendor = "apple")]
             tile_targets: composite::metal::Attachments::default(),
             inst_base: 0,
@@ -671,6 +676,9 @@ impl SurfaceState {
             + self.composition.bytes()
             + self.composition_cache.bytes()
             + self.draw_demand.bytes()
+            + self.command_damage.bytes()
+            + self.propagated_damage.bytes()
+            + (self.frame.commands.capacity() * size_of::<damage::Command>()) as u64
             + self.anchor_scratch.heap_bytes()
             + (self.part_ranges.capacity() * std::mem::size_of::<present::ColorRange>()) as u64
             + self.raster_scratch.heap_bytes()
@@ -7904,6 +7912,18 @@ impl GpuRenderer {
             },
             tile_limits,
         );
+        surf.command_damage.update(&surf.frame);
+        surf.propagated_damage
+            .update(&surf.frame, &surf.composition, |index, region| {
+                for rect in surf.command_damage.pass(index).rectangles() {
+                    let (x, y, w, h) = rect.xywh();
+                    region.add(x, y, w, h);
+                }
+            });
+        tracing::trace!(
+            command_invalidated_pass_pixels = surf.command_damage.pixels(),
+            "command damage before effect propagation"
+        );
         surf.draw_demand.update(
             &surf.frame,
             &surf.composition,
@@ -10339,6 +10359,7 @@ impl GpuRenderer {
             }
             buffers.push(encoder.finish());
             let submission = self.queue.submit(buffers);
+            surf.command_damage.submitted();
             // The coverage prologue this encoder carries has landed:
             // entries it generated are replayable and a pending
             // compaction's copies have executed (water-rs/waterui#3081).

@@ -36,7 +36,7 @@ use crate::render::projective::{LocalKey, Placement};
 use crate::render::raster;
 
 /// The target a pass draws into.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Target {
     /// The surface's render texture for engine part `n`: the whole surface
     /// is part 0, and every layer promoted to a system plane starts the
@@ -233,6 +233,9 @@ pub struct Resolve {
 /// A lowered frame.
 #[derive(Default)]
 pub struct Frame {
+    /// Command identities and spans, retained separately from geometry caches.
+    pub commands: Vec<super::damage::Command>,
+    revision: u64,
     /// Instance data.
     pub instances: Vec<Instance>,
     /// Gradient stops.
@@ -290,6 +293,7 @@ struct OpenPass {
 /// A rollback point for [`Frame::restore`] (used by speculative
 /// pass-through layers).
 struct FrameSnapshot {
+    commands: usize,
     instances: usize,
     stops: usize,
     passes: usize,
@@ -302,6 +306,7 @@ impl Frame {
     /// Captures the frame's emission state.
     fn snapshot(&self) -> FrameSnapshot {
         FrameSnapshot {
+            commands: self.commands.len(),
             instances: self.instances.len(),
             stops: self.stops.len(),
             passes: self.passes.len(),
@@ -313,6 +318,7 @@ impl Frame {
 
     /// Reverts every emission since `snap`.
     fn restore(&mut self, snap: FrameSnapshot) {
+        self.commands.truncate(snap.commands);
         self.instances.truncate(snap.instances);
         self.stops.truncate(snap.stops);
         self.passes.truncate(snap.passes);
@@ -361,6 +367,8 @@ impl Frame {
 impl Frame {
     /// Reuses this frame's allocations for the next lowering.
     pub fn reset(&mut self) {
+        self.revision += 1;
+        self.commands.clear();
         self.instances.clear();
         self.stops.clear();
         self.passes.clear();
@@ -1170,6 +1178,9 @@ fn same_linear(a: Affine, b: Affine) -> bool {
 
 /// Per-operation device output under its sampled placement.
 pub struct Emission {
+    /// The lowering revision that changed this geometry or paint, including
+    /// results replayed after a speculative frame rollback.
+    revision: u64,
     /// The leaf's `(instance, pending raster, cell)` patches in the
     /// producing frame's `Lowering::emission_patches` (#119).
     pub(crate) pending_cells: PendingCells,
@@ -4251,7 +4262,7 @@ impl<'a> Lowering<'a> {
                 ops,
                 emissions,
                 &mut content.storage,
-                0..ops.len(),
+                (id, 0..ops.len()),
                 glyphs,
             )?;
             content.storage.geometry.reconcile(emissions, changed);
@@ -4311,7 +4322,7 @@ impl<'a> Lowering<'a> {
         ops: &[Op],
         emissions: &mut [Realization<Emission>],
         storage: &mut EmissionStorage,
-        range: Range<usize>,
+        (layer, range): (LayerId, Range<usize>),
         glyphs: &GlyphContext<'_>,
     ) -> Result<bool, RenderError> {
         let mut changed = false;
@@ -4323,8 +4334,14 @@ impl<'a> Lowering<'a> {
                     self.transform = saved * *local;
                     let body = |s: &mut Self, g: &GlyphContext<'_>| {
                         s.transform = saved;
-                        changed |=
-                            s.ops(source, ops, emissions, storage, i + 1..*end as usize, g)?;
+                        changed |= s.ops(
+                            source,
+                            ops,
+                            emissions,
+                            storage,
+                            (layer, i + 1..*end as usize),
+                            g,
+                        )?;
                         Ok(())
                     };
                     match shape {
@@ -4361,8 +4378,14 @@ impl<'a> Lowering<'a> {
                         *blend,
                         *space,
                         |s, g| {
-                            changed |=
-                                s.ops(source, ops, emissions, storage, i + 1..*end as usize, g)?;
+                            changed |= s.ops(
+                                source,
+                                ops,
+                                emissions,
+                                storage,
+                                (layer, i + 1..*end as usize),
+                                g,
+                            )?;
                             Ok(())
                         },
                         glyphs,
@@ -4373,8 +4396,14 @@ impl<'a> Lowering<'a> {
                     self.silhouette_scope(
                         *parameters,
                         |s, g| {
-                            changed |=
-                                s.ops(source, ops, emissions, storage, i + 1..*end as usize, g)?;
+                            changed |= s.ops(
+                                source,
+                                ops,
+                                emissions,
+                                storage,
+                                (layer, i + 1..*end as usize),
+                                g,
+                            )?;
                             Ok(())
                         },
                         glyphs,
@@ -4383,8 +4412,8 @@ impl<'a> Lowering<'a> {
                 }
                 Op::End => unreachable!("paired scopes consume their ends"),
                 op => {
-                    changed |= self.leaf(
-                        (i, op),
+                    changed |= self.command(
+                        (layer, i, op),
                         ops.get(i + 1),
                         &mut emissions[i],
                         storage,
@@ -4395,6 +4424,37 @@ impl<'a> Lowering<'a> {
             }
             i += 1;
         }
+        Ok(changed)
+    }
+
+    fn command(
+        &mut self,
+        (layer, index, op): (LayerId, usize, &Op),
+        next: Option<&Op>,
+        cache: &mut Realization<Emission>,
+        storage: &mut EmissionStorage,
+        glyphs: &GlyphContext<'_>,
+        source: &cherenkov::DisplayList,
+    ) -> Result<bool, RenderError> {
+        let first = self.frame.instances.len();
+        let changed = self.leaf((index, op), next, cache, storage, glyphs, source)?;
+        self.frame.commands.push(super::damage::Command {
+            key: super::damage::Key {
+                root: self.root_target,
+                layer,
+                op: index,
+            },
+            instances: first..self.frame.instances.len(),
+            revision: cache
+                .data
+                .as_ref()
+                .expect("a realized leaf has data")
+                .revision,
+            mask_epoch: self
+                .clip
+                .and_then(|clip| clip.mask)
+                .map(|_| glyphs.live_stamp),
+        });
         Ok(changed)
     }
 
@@ -4440,6 +4500,13 @@ impl<'a> Lowering<'a> {
             });
         cache.valid = true;
         if hit || replaced {
+            if replaced {
+                cache
+                    .data
+                    .as_mut()
+                    .expect("a replaced leaf has data")
+                    .revision = self.frame.revision;
+            }
             self.compose(
                 cache.data.as_ref().expect("a retained leaf has data"),
                 storage,
@@ -4694,6 +4761,7 @@ impl<'a> Lowering<'a> {
         // its coverage entry on every recompose (#3081).
         let gpu = Self::leaf_gpu_draw(&self.pending[first_pending..]).map(Arc::clone);
         cache.data = Some(Emission {
+            revision: self.frame.revision,
             gpu,
             gpu_route: None,
             pending_cells: PendingCells::new(
@@ -6369,7 +6437,7 @@ pub const fn globals(size: [f32; 2], origin: [f32; 2], space: cherenkov::BlendSp
     clippy::many_single_char_names,
     reason = "a..f are the conventional affine coefficient names"
 )]
-fn device_bbox(inst: &Instance) -> [f32; 4] {
+pub(super) fn device_bbox(inst: &Instance) -> [f32; 4] {
     if matches!(inst.meta[0], KIND_GLYPH | KIND_SPAN | KIND_REGION) {
         return inst.bounds;
     }
@@ -6459,7 +6527,11 @@ fn tight_region(instances: &[Instance], width: u32, height: u32) -> [u32; 4] {
 /// The union device bbox of `bboxes` (non-finite boxes skipped), inflated
 /// by one pixel, integer-rounded and clipped to `width`×`height`, as
 /// `(x, y, w, h)`; `[0, 0, 0, 0]` when empty.
-fn union_region(bboxes: impl IntoIterator<Item = [f32; 4]>, width: u32, height: u32) -> [u32; 4] {
+pub(super) fn union_region(
+    bboxes: impl IntoIterator<Item = [f32; 4]>,
+    width: u32,
+    height: u32,
+) -> [u32; 4] {
     let mut min = [f32::INFINITY; 2];
     let mut max = [f32::NEG_INFINITY; 2];
     for b in bboxes {
@@ -6635,6 +6707,93 @@ fn clip_region(clip: Option<DeviceClip>, width: u32, height: u32) -> [u32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_damage_survives_content_replacement_and_resource_invalidation() {
+        use cherenkov::{Draw as _, Picture};
+
+        let (device, _queue) = device_and_queue().expect("GPU device for lowering test");
+        let atlas = Atlas::new(&device, u64::MAX);
+        let glyphs = GlyphContext {
+            atlas: &atlas,
+            live_stamp: atlas.live_stamp(),
+            fonts: &FxHashMap::default(),
+            images: &FxHashMap::default(),
+            bitmaps: &FxHashMap::default(),
+            content: &FxHashMap::default(),
+        };
+        let tree = SurfaceTree::new();
+        let root = tree.root();
+        let picture = |x: f64| {
+            Picture::record(|r| {
+                r.fill(Rect::new(x, 10.0, x + 8.0, 18.0), WorkingColor::WHITE);
+            })
+        };
+        let mut caches = FxHashMap::from_iter([(root, ContentData::new(picture(10.0)))]);
+        let mut frame = Frame::default();
+        let mut anchors = AnchorScratch::default();
+        let mut rasters = path::EmitScratch::new();
+        let mut history = super::super::damage::Commands::default();
+        let mut draw = |caches: &mut FxHashMap<LayerId, ContentData>| {
+            frame.reset();
+            let mut lowering = Lowering::new(
+                &mut frame,
+                (256, 256),
+                &mut anchors,
+                &mut rasters,
+                Some(test_limit()),
+            );
+            lowering.prepare(caches, &glyphs).expect("prepare content");
+            lowering
+                .run(
+                    &tree,
+                    caches,
+                    WorkingColor::BLACK,
+                    &glyphs,
+                    &FxHashMap::default(),
+                    FxHashMap::default(),
+                    &super::super::planes::Plan::default(),
+                )
+                .expect("lower scene");
+            history.update(&frame);
+            let area = history.pixels();
+            history.submitted();
+            area
+        };
+        assert_eq!(draw(&mut caches), 256 * 256);
+        assert_eq!(draw(&mut caches), 0, "retained command stays clean");
+        caches
+            .get_mut(&root)
+            .expect("root content")
+            .replace(picture(70.0));
+        assert!(caches[&root].retained.realizations().is_empty());
+        let moved = draw(&mut caches);
+        assert!(
+            moved > 0 && moved < 256 * 256 / 20,
+            "small movement remains below five percent"
+        );
+        caches.get_mut(&root).expect("root content").invalidate();
+        assert!(caches[&root].retained.realizations().is_empty());
+        let invalidated = draw(&mut caches);
+        assert!(
+            invalidated > 0 && invalidated < moved,
+            "only the current position is invalidated"
+        );
+        caches
+            .get_mut(&root)
+            .expect("root content")
+            .replace(Picture::record(|_| {}));
+        assert_eq!(
+            draw(&mut caches),
+            invalidated,
+            "removal keeps the old footprint after cache retirement"
+        );
+        assert_eq!(
+            draw(&mut caches),
+            0,
+            "submitted removal retires its footprint"
+        );
+    }
 
     /// The default device's coverage binding limit, which every engine
     /// device requests (`render/mod.rs`).
