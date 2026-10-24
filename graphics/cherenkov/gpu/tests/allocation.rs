@@ -1,5 +1,5 @@
 //! Allocation-lifetime gate tests (#169 A5): multi-surface frame growth,
-//! atlas growth/retry, stale bind-group retirement and a repeated
+//! atlas relocation, stale bind-group retirement and a repeated
 //! small→big→small run with submissions in flight.
 
 use cherenkov::Instant;
@@ -12,6 +12,11 @@ use cherenkov::{
 };
 use cherenkov_gpu::diag::{AllocEvent, EventKind, Sink};
 use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::metrics::assert_images_match;
+
+#[path = "support/visual.rs"]
+mod visual;
+use visual::crop;
 
 split_fn! {
 fn diag_engine(sink: &Sink) -> Result<Engine<Gpu>, Box<dyn std::error::Error>> {
@@ -40,13 +45,6 @@ fn bind_drops(events: &[AllocEvent]) -> Vec<(u64, &'static str)> {
             _ => None,
         })
         .collect()
-}
-
-fn uploads(events: &[AllocEvent]) -> usize {
-    events
-        .iter()
-        .filter(|event| matches!(event.kind, EventKind::Upload { .. }))
-        .count()
 }
 
 /// `(x, y, w, h)` of every `write_texture` into the glyph atlas.
@@ -151,21 +149,28 @@ fn multi_surface_frame_grows_instances_once() -> Result<(), Box<dyn std::error::
 }
 
 split_test! {
-/// Path cells exceeding the live atlas take the transactional grow
-/// path: one `Grow` on the glyph atlas from its starting size, then the
-/// committed batch uploads — the render does not abandon mid-frame.
-fn atlas_growth_retries_and_commits() -> Result<(), Box<dyn std::error::Error>> {
+/// New path cells grow the atlas without discarding existing coverage.
+/// A surface outside that commit can subsequently redraw safely.
+fn atlas_growth_preserves_coverage_and_commits() -> Result<(), Box<dyn std::error::Error>> {
     // Each sliver spans this many whole columns.
     const SLIVER: u32 = 480;
     let sink = Sink::new();
     let engine = wait!(diag_engine(&sink))?;
     let surface = wait!(engine.surface(Offscreen::new((512, 512), OffscreenFormat::LinearF16), || {}))?;
+    let idle = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let additions = surface.layer();
     let ink = WorkingColor::new([0.8, 0.3, 0.1, 1.0]);
-    // One triangle commits the first cell, which allocates the atlas at
-    // its starting size and reports it.
+    // The triangles allocate the starting atlas. Keep the active one's
+    // pixels below the slivers added in the next frame.
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
-            r.fill(polygon(&[(10.0, 10.0), (30.0, 10.0), (20.0, 28.0)]), ink);
+            r.fill(polygon(&[(10.0, 490.0), (30.0, 490.0), (20.0, 508.0)]), ink);
+        }));
+        tx[surface.root()].push(&additions);
+    });
+    idle.update(|tx| {
+        tx[idle.root()].content(idle.record(|r| {
+            r.fill(polygon(&[(8.0, 8.0), (40.0, 8.0), (24.0, 48.0)]), ink);
         }));
     });
     let _ = sink.take();
@@ -174,6 +179,8 @@ fn atlas_growth_retries_and_commits() -> Result<(), Box<dyn std::error::Error>> 
         [bytes] => bytes,
         ref other => panic!("the first cell must allocate one atlas: {other:?}"),
     };
+    let original = wait!(surface.readback())?;
+    let idle_original = wait!(idle.readback())?;
     // A sliver's top and bottom rows are half covered across all its
     // columns, so no band holding either row has a full column: each
     // sliver stores at least those two rows, `2 * SLIVER` texels, as
@@ -182,7 +189,7 @@ fn atlas_growth_retries_and_commits() -> Result<(), Box<dyn std::error::Error>> 
     // deduplicating.
     let count = u32::try_from(start.div_ceil(2 * u64::from(SLIVER)))? + 1;
     surface.update(|tx| {
-        tx[surface.root()].content(surface.record(|r| {
+        tx[&additions].content(surface.record(|r| {
             for i in 0..count {
                 let x = f64::from(8 + i / 120);
                 let y = f64::from(4 * (i % 120) + 8);
@@ -208,11 +215,33 @@ fn atlas_growth_retries_and_commits() -> Result<(), Box<dyn std::error::Error>> 
         grown.iter().any(|new| *new > start),
         "a fresh path set bigger than the atlas must grow it past {start} bytes: {grown:?}"
     );
-    // The committed batch is stable: an identical second frame produces
-    // no atlas uploads at all.
+    assert!(events.iter().any(|event| matches!(
+        event.kind,
+        EventKind::Grow { label: "glyph atlas", preserve, .. } if preserve > 0
+    )), "growth discarded the completed coverage instead of moving it");
+    let relocated = wait!(surface.readback())?;
+    assert_images_match(
+        &crop(&original, 0..64, 488..512),
+        &crop(&relocated, 0..64, 488..512),
+    );
+    // Redraw the committed batch without changing its content: relocated
+    // references must hit, with no new rasterization or atlas uploads.
+    let _ = sink.take();
+    surface.clear_color(WorkingColor::new([0.0; 4]));
     wait!(engine.render(FrameTime::now()))?;
-    let writes = uploads(&sink.take());
-    assert_eq!(writes, 0, "a cached frame re-uploaded atlas cells");
+    let redraw_events = sink.take();
+    assert!(atlas_writes(&redraw_events).is_empty(), "a cached frame re-uploaded atlas cells");
+    assert_eq!(engine.stats().paths_rasterized, 0, "relocated paths were rasterized again");
+    // This surface did not participate in the grow. Its old shelf refs
+    // must expire safely when it draws again with unchanged content.
+    idle.clear_color(WorkingColor::new([0.0; 4]));
+    wait!(engine.render(FrameTime::now()))?;
+    assert!(engine.stats().frame.is_some(), "the idle surface did not redraw");
+    let idle_redrawn = wait!(idle.readback())?;
+    assert_images_match(
+        &crop(&idle_original, 0..64, 0..64),
+        &crop(&idle_redrawn, 0..64, 0..64),
+    );
     Ok(())
 }
 }

@@ -1,15 +1,30 @@
-//! Frozen pre-batching hashing, so cache identity changes fail independently of
-//! the optimized implementation. Includes every shape, stroke field and path verb.
+//! Independent field-by-field encoding for batched cache-key inputs.
+//! Includes every shape, stroke field and path verb.
 
 use super::*;
 
 mod reference {
     use super::*;
-    fn hash_shape_fields(hasher: &mut DefaultHasher, shape: &ShapeData) {
-        fn v(hasher: &mut DefaultHasher, x: f64) {
+
+    /// Records the byte stream a hasher is fed, so this field-by-field
+    /// encoder can be compared against production's coalesced writes:
+    /// `FxHasher` write boundaries need not match, only the preimage.
+    pub(super) struct Recorder(pub(super) Vec<u8>);
+
+    impl Hasher for Recorder {
+        fn finish(&self) -> u64 {
+            unreachable!("a recorder's output is its byte stream")
+        }
+        fn write(&mut self, bytes: &[u8]) {
+            self.0.extend_from_slice(bytes);
+        }
+    }
+
+    fn hash_shape_fields(hasher: &mut Recorder, shape: &ShapeData) {
+        fn v(hasher: &mut Recorder, x: f64) {
             x.to_bits().hash(hasher);
         }
-        fn rect(hasher: &mut DefaultHasher, r: &Rect) {
+        fn rect(hasher: &mut Recorder, r: &Rect) {
             v(hasher, r.x0);
             v(hasher, r.y0);
             v(hasher, r.x1);
@@ -70,11 +85,16 @@ mod reference {
         }
     }
 
-    /// A stable hash of a stroked draw: the outline's source shape plus every
-    /// stroke parameter and the local flatten tolerance, tagged so it never
-    /// collides with a fill of the same geometry.
-    pub(super) fn hash_stroke(shape: &ShapeData, stroke: &kurbo::Stroke, tolerance: f64) -> u64 {
-        let mut hasher = DefaultHasher::new();
+    /// The field-by-field preimage of a stroked draw's hash input: the
+    /// outline's source shape plus every stroke parameter and the local
+    /// flatten tolerance, tagged so it never collides with a fill of the
+    /// same geometry.
+    pub(super) fn hash_stroke(
+        shape: &ShapeData,
+        stroke: &kurbo::Stroke,
+        tolerance: f64,
+    ) -> Vec<u8> {
+        let mut hasher = Recorder(Vec::new());
         2u64.hash(&mut hasher);
         hash_shape_fields(&mut hasher, shape);
         stroke.width.to_bits().hash(&mut hasher);
@@ -88,20 +108,21 @@ mod reference {
         }
         stroke.dash_offset.to_bits().hash(&mut hasher);
         tolerance.to_bits().hash(&mut hasher);
-        hasher.finish()
+        hasher.0
     }
 
-    /// A stable hash of a local path's element list, tagged by draw mode so a
-    /// fill, an even-odd fill and a stroke of the same outline never collide.
-    pub(super) fn hash_elements(elements: &[PathEl], tag: u64) -> u64 {
-        let mut hasher = DefaultHasher::new();
+    /// The field-by-field preimage of a local path element list's hash
+    /// input, tagged by draw mode so a fill, an even-odd fill and a stroke
+    /// of the same outline never collide.
+    pub(super) fn hash_elements(elements: &[PathEl], tag: u64) -> Vec<u8> {
+        let mut hasher = Recorder(Vec::new());
         tag.hash(&mut hasher);
         hash_elements_into(&mut hasher, elements);
-        hasher.finish()
+        hasher.0
     }
 
-    fn hash_elements_into(hasher: &mut DefaultHasher, elements: &[PathEl]) {
-        fn point(hasher: &mut DefaultHasher, disc: u8, p: Point) {
+    fn hash_elements_into(hasher: &mut Recorder, elements: &[PathEl]) {
+        fn point(hasher: &mut Recorder, disc: u8, p: Point) {
             disc.hash(hasher);
             p.x.to_bits().hash(hasher);
             p.y.to_bits().hash(hasher);
@@ -158,17 +179,22 @@ mod reference {
         let iy = f.floor();
         let qx = e - ix;
         let qy = f - iy;
-        let mut hasher = DefaultHasher::new();
-        content_hash.hash(&mut hasher);
+        let mut bytes = Recorder(Vec::new());
+        content_hash.hash(&mut bytes);
         for v in [a, b, c, d, qx, qy] {
-            (v as f32).to_bits().hash(&mut hasher);
+            (v as f32).to_bits().hash(&mut bytes);
         }
-        surface.hash(&mut hasher);
+        surface.hash(&mut bytes);
+        // Production hashes each placement preimage in one `write`.
+        let mut hasher = FxHasher::default();
+        hasher.write(&bytes.0);
         let key = hasher.finish();
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        (ix as i64).hash(&mut hasher);
-        (iy as i64).hash(&mut hasher);
+        let mut bytes = Recorder(Vec::new());
+        key.hash(&mut bytes);
+        (ix as i64).hash(&mut bytes);
+        (iy as i64).hash(&mut bytes);
+        let mut hasher = FxHasher::default();
+        hasher.write(&bytes.0);
         Placement {
             key,
             key_exact: hasher.finish(),
@@ -201,10 +227,10 @@ fn batched_hashes_preserve_every_stroke_field_and_path_verb() {
             _ => PathEl::ClosePath,
         });
         for tag in [0, 1, 2, u64::MAX] {
-            assert_eq!(
-                hash_elements(&elements, tag),
-                reference::hash_elements(&elements, tag)
-            );
+            let mut preimage = reference::Recorder(Vec::new());
+            tag.hash(&mut preimage);
+            hash_elements_into(&mut preimage, &elements);
+            assert_eq!(preimage.0, reference::hash_elements(&elements, tag));
         }
         let rect = Rect::new(-0.0, -3.5, 30.0, 120.25);
         let shapes = [
@@ -232,8 +258,10 @@ fn batched_hashes_preserve_every_stroke_field_and_path_verb() {
             stroke.dash_offset = next();
             stroke.dash_pattern.extend((0..n % 19).map(|_| next()));
             for tolerance in [0.0, -0.0, FLATTEN, next(), f64::INFINITY, f64::NAN] {
+                let mut preimage = reference::Recorder(Vec::new());
+                stroke_into(&mut preimage, shape, &stroke, tolerance);
                 assert_eq!(
-                    hash_stroke(shape, &stroke, tolerance),
+                    preimage.0,
                     reference::hash_stroke(shape, &stroke, tolerance)
                 );
             }

@@ -82,6 +82,8 @@ pub struct AdapterMemory {
     pub skia_budgeted: Reading<SkiaBudget>,
     /// Vulkan heap budget, when the adapter and platform expose it.
     pub vk_memory_budget: Reading<Vec<VkHeap>>,
+    /// Metal `MTLDevice.currentAllocatedSize` in bytes, when the adapter and platform expose it.
+    pub metal_allocated_bytes: Reading<u64>,
 }
 
 /// Process-level memory measurements for the current platform.
@@ -95,10 +97,12 @@ pub enum ProcessMemory {
         /// Per-heap Vulkan use and budget.
         vk_memory_budget: Reading<Vec<VkHeap>>,
     },
-    /// Apple task physical footprint.
+    /// Apple task physical footprint and Metal device allocation.
     Apple {
         /// `TASK_VM_INFO.phys_footprint` in bytes.
         phys_footprint_bytes: Reading<u64>,
+        /// `MTLDevice.currentAllocatedSize` in bytes.
+        metal_allocated_bytes: Reading<u64>,
     },
     /// Android process PSS and GPU memory.
     Android {
@@ -165,7 +169,11 @@ pub(crate) enum SampleDetail {
 
 impl MemorySnapshot {
     pub(crate) fn capture(adapter: AdapterMemory, detail: SampleDetail) -> Self {
-        let process = process_memory(&adapter.vk_memory_budget, detail);
+        let process = process_memory(
+            &adapter.vk_memory_budget,
+            &adapter.metal_allocated_bytes,
+            detail,
+        );
         Self {
             engine: adapter.engine,
             wgpu_allocator: adapter.wgpu_allocator,
@@ -367,7 +375,15 @@ fn merge_process<'a>(
             phys_footprint_bytes: max_u64(processes.iter().filter_map(|p| match p {
                 ProcessMemory::Apple {
                     phys_footprint_bytes,
+                    ..
                 } => Some(phys_footprint_bytes),
+                _ => None,
+            })),
+            metal_allocated_bytes: max_u64(processes.iter().filter_map(|p| match p {
+                ProcessMemory::Apple {
+                    metal_allocated_bytes,
+                    ..
+                } => Some(metal_allocated_bytes),
                 _ => None,
             })),
         },
@@ -590,10 +606,50 @@ pub(crate) fn wgpu_vk_memory_budget(
     Reading::unavailable("VK_EXT_memory_budget is sampled only on Linux")
 }
 
-fn process_memory(vk_memory_budget: &Reading<Vec<VkHeap>>, detail: SampleDetail) -> ProcessMemory {
+#[cfg(all(
+    target_vendor = "apple",
+    any(
+        feature = "cherenkov",
+        feature = "vello-classic",
+        feature = "vello-hybrid"
+    )
+))]
+pub(crate) fn wgpu_metal_allocated_bytes(
+    device: &wgpu::Device,
+    backend: wgpu::Backend,
+) -> Reading<u64> {
+    use objc2_metal::MTLDevice as _;
+    // SAFETY: the guard keeps the HAL device alive while `raw_device()` is
+    // queried; no handle escapes the guard.
+    let Some(hal_device) = (unsafe { device.as_hal::<wgpu::hal::api::Metal>() }) else {
+        return Reading::unavailable(format!("wgpu backend {backend:?} is not Metal"));
+    };
+    Reading::Measured(hal_device.raw_device().currentAllocatedSize() as u64)
+}
+
+#[cfg(all(
+    not(target_vendor = "apple"),
+    any(
+        feature = "cherenkov",
+        feature = "vello-classic",
+        feature = "vello-hybrid"
+    )
+))]
+pub(crate) fn wgpu_metal_allocated_bytes(
+    _device: &wgpu::Device,
+    _backend: wgpu::Backend,
+) -> Reading<u64> {
+    Reading::unavailable("MTLDevice.currentAllocatedSize is sampled only on Apple platforms")
+}
+
+fn process_memory(
+    vk_memory_budget: &Reading<Vec<VkHeap>>,
+    metal_allocated_bytes: &Reading<u64>,
+    detail: SampleDetail,
+) -> ProcessMemory {
     #[cfg(target_os = "linux")]
     {
-        let _ = detail;
+        let _ = (metal_allocated_bytes, detail);
         let rss_bytes = std::fs::read_to_string("/proc/self/status")
             .map_err(|error| format!("could not read /proc/self/status: {error}"))
             .and_then(|status| parse_linux_rss(&status));
@@ -604,7 +660,7 @@ fn process_memory(vk_memory_budget: &Reading<Vec<VkHeap>>, detail: SampleDetail)
     }
     #[cfg(target_os = "android")]
     {
-        let _ = vk_memory_budget;
+        let _ = (vk_memory_budget, metal_allocated_bytes);
         let pss_bytes = std::fs::read_to_string("/proc/self/smaps_rollup")
             .map_err(|error| format!("could not read /proc/self/smaps_rollup: {error}"))
             .and_then(|status| parse_android_pss(&status));
@@ -624,11 +680,12 @@ fn process_memory(vk_memory_budget: &Reading<Vec<VkHeap>>, detail: SampleDetail)
         let _ = (vk_memory_budget, detail);
         ProcessMemory::Apple {
             phys_footprint_bytes: apple_phys_footprint(),
+            metal_allocated_bytes: metal_allocated_bytes.clone(),
         }
     }
     #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
     {
-        let _ = (vk_memory_budget, detail);
+        let _ = (vk_memory_budget, metal_allocated_bytes, detail);
         ProcessMemory::Other {
             os: std::env::consts::OS.to_string(),
         }

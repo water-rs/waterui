@@ -21,7 +21,9 @@ use vello_gpu::{
 };
 
 use crate::convert::{self, Prepared};
-use crate::memory::{AdapterMemory, Reading, allocator_report, wgpu_vk_memory_budget};
+use crate::memory::{
+    AdapterMemory, Reading, allocator_report, wgpu_metal_allocated_bytes, wgpu_vk_memory_budget,
+};
 use crate::vello_like::{Lowered, VelloLikeCtx, lower, replay, vello_features, vello_missing_api};
 use crate::wgpu_ctx::{Gpu, Target, drain_and_stamp, readback, resolve_timestamps};
 use crate::{BenchError, Counters, DeviceInfo, EncodeInput, Engine, EngineInfo, GpuSample, Submit};
@@ -409,6 +411,10 @@ impl Engine for VelloHybrid {
                 &self.gpu.device,
                 self.gpu.info.backend,
                 &self.gpu.info.name,
+            ),
+            metal_allocated_bytes: wgpu_metal_allocated_bytes(
+                &self.gpu.device,
+                self.gpu.info.backend,
             ),
         }
     }
