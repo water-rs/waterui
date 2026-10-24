@@ -56,6 +56,7 @@ impl RenderNode {
         let view = match view.downcast::<Native<Color>>() {
             Ok(color) => {
                 return Self::Color(ColorNode {
+                    bounds: nami::Binding::container(kurbo::Rect::ZERO),
                     core: renderer.new_core(),
                     color: (*color).into_inner().resolve(env),
                 });

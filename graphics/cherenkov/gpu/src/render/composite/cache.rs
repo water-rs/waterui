@@ -1,6 +1,7 @@
 //! Exact structural keys: changing paint values never repeats lifetime analysis.
 
 use super::plan::{ExecutionPlan, Formats, Limits, ReadKind};
+use crate::render::composition::Materialization;
 use crate::render::lower::{Frame, ImageSource, Pass, PipelineKind, Source, Target};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -34,7 +35,10 @@ pub struct Cache {
     draws: Vec<Draw>,
     placements: Vec<Placement>,
     samples: Vec<[u32; 6]>,
-    settings: Option<(Formats, Limits)>,
+    /// The formats and the executor mode the cached structure was
+    /// analyzed under: `Ok` limits for a native partition, `Err` for a
+    /// portable graph attributed to that reason.
+    settings: Option<(Formats, Result<Limits, Materialization>)>,
 }
 
 impl Cache {
@@ -47,12 +51,16 @@ impl Cache {
 
     /// Returns whether lifetime analysis changed. Geometry-only updates
     /// retain image identities and recompute attachment eligibility.
+    ///
+    /// `limits` is what the backend's tile executor can hold, or why it
+    /// has none: `Ok` builds the native partition, `Err` the portable
+    /// dependency graph attributed to that reason (#2558).
     pub fn update(
         &mut self,
         plan: &mut ExecutionPlan,
         frame: &Frame,
         formats: Formats,
-        limits: Limits,
+        limits: Result<Limits, Materialization>,
     ) -> bool {
         let pass_shapes = || {
             frame
@@ -95,7 +103,10 @@ impl Cache {
             self.draws.clear();
             self.draws.extend(draws());
             self.settings = Some((formats, limits));
-            *plan = ExecutionPlan::build(frame, formats, limits);
+            *plan = match limits {
+                Ok(limits) => ExecutionPlan::build(frame, formats, limits),
+                Err(reason) => ExecutionPlan::portable(frame, formats, reason),
+            };
         }
         let placements = || frame.passes.iter().map(placement);
         let samples = || {
@@ -127,7 +138,10 @@ impl Cache {
             self.samples.clear();
             self.samples.extend(samples());
             if !changed {
-                plan.update_placement(frame, limits);
+                match limits {
+                    Ok(limits) => plan.update_placement(frame, limits),
+                    Err(_) => plan.update_placement_portable(frame),
+                }
             }
         }
         changed

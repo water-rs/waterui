@@ -122,6 +122,15 @@ pub struct SharedEngineState {
     pub resources: Rc<crate::renderer::recording::SceneResources>,
 }
 
+impl SharedEngineState {
+    pub(crate) fn register(context_id: u64, engine: Rc<GpuEngine>) -> Rc<Self> {
+        let resources = Rc::new(crate::renderer::recording::SceneResources::new(&engine));
+        let state = Rc::new(Self { engine, resources });
+        ENGINES.with(|pool| pool.borrow_mut().insert(context_id, Rc::downgrade(&state)));
+        state
+    }
+}
+
 thread_local! {
     /// Engines alive on this thread, keyed by GPU-context identity. Weak so a
     /// context whose surfaces have all dropped releases its engine instead of
@@ -155,12 +164,7 @@ cfg_async_fn! {
             engine_await!(GpuEngine::new(config))
                 .expect("hydrolysis renderer: failed to create the Cherenkov engine"),
         );
-        let state = Rc::new(SharedEngineState {
-            engine: Rc::clone(&engine),
-            resources: Rc::new(crate::renderer::recording::SceneResources::new(&engine)),
-        });
-        ENGINES.with(|pool| pool.borrow_mut().insert(context_id, Rc::downgrade(&state)));
-        state
+        SharedEngineState::register(context_id, engine)
     }
 }
 
@@ -273,6 +277,60 @@ pub trait EngineSurface {
     fn core(&self) -> &SurfaceCore;
     /// The engine surface this kind wraps, for resizing.
     fn core_mut(&mut self) -> &mut SurfaceCore;
+}
+
+/// Android presents retained buffers directly through the system compositor.
+#[cfg(target_os = "android")]
+pub struct AndroidCherenkovSurface {
+    core: SurfaceCore,
+}
+
+#[cfg(target_os = "android")]
+impl core::fmt::Debug for AndroidCherenkovSurface {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AndroidCherenkovSurface")
+            .field("size", &self.core.size)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(target_os = "android")]
+impl EngineSurface for AndroidCherenkovSurface {
+    fn core(&self) -> &SurfaceCore {
+        &self.core
+    }
+
+    fn core_mut(&mut self) -> &mut SurfaceCore {
+        &mut self.core
+    }
+}
+
+#[cfg(target_os = "android")]
+impl AndroidCherenkovSurface {
+    pub(crate) fn new(
+        engine: Rc<GpuEngine>,
+        window: &ndk::native_window::NativeWindow,
+        size: (u32, u32),
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        use cherenkov_gpu::interop::android::{SurfaceControl, SurfaceControlTarget};
+        // SAFETY: the host holds the live SurfaceView's ANativeWindow lease.
+        let parent = unsafe { SurfaceControl::from_window(window.ptr(), c"Hydrolysis") }
+            .expect("hydrolysis android: failed to create the compositor parent");
+        let looper = ndk::looper::ForeignLooper::for_thread()
+            .expect("hydrolysis android: surface creation requires the host Looper");
+        let surface = engine
+            .surface(SurfaceControlTarget::new(parent, size, looper), wake)
+            .expect("hydrolysis android: failed to create the compositor surface");
+        Self {
+            core: SurfaceCore::new(engine, surface, size),
+        }
+    }
+
+    pub(crate) fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        self.core
+            .own(self.core.engine.render(cherenkov::FrameTime::now()))
+    }
 }
 
 /// A host-presented surface's engine output: an engine-owned

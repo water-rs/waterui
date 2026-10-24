@@ -286,12 +286,73 @@ impl HydrolysisRenderer {
             window.surface.display_moved();
         }
 
+        let rendered = self.render_presented_window(&mut window, target, |surface| {
+            surface.render(target.display_scale)
+        });
+        *window_slot = Some(window);
+        rendered
+    }
+
+    /// Commits directly into the Android compositor target, without a
+    /// host-acquired texture or a full-window presentation copy.
+    #[cfg(target_os = "android")]
+    pub(crate) fn render_android_frame(
+        &mut self,
+        target: &FrameRenderTarget<'_>,
+        engine_target: crate::platform::EngineAndroidTarget<'_>,
+    ) -> Result<(), cherenkov::RenderError> {
+        let crate::platform::EngineAndroidTarget {
+            state,
+            window: native_window,
+            window_slot,
+        } = engine_target;
+        if !window_slot
+            .as_ref()
+            .is_some_and(|window| window.renders_on(target))
+        {
+            // The attachment may already have dropped the old window when
+            // SurfaceHolder destroyed it. Remount its surviving node tree.
+            self.unmount_for_window_replacement();
+            *window_slot = None;
+            let surface = crate::engine::AndroidCherenkovSurface::new(
+                Rc::clone(&state.engine),
+                native_window,
+                (target.width, target.height),
+                self.host_wake(),
+            );
+            *window_slot = Some(CherenkovWindow::new(
+                surface,
+                target,
+                Rc::clone(state),
+                Arc::clone(&self.applied_filter_metrics),
+                Rc::clone(&self.material_registry),
+            ));
+        }
+        let window = window_slot
+            .as_mut()
+            .expect("Android engine window was just ensured");
+        // The Vulkan host has no display luminance query. Preserve its
+        // existing display range; native buffers retain source HDR metadata.
+        let _frame =
+            self.commit_window_frame(window, target, cherenkov::Display::default().headroom);
+        self.render_presented_window(
+            window,
+            target,
+            crate::engine::AndroidCherenkovSurface::render,
+        )
+    }
+
+    /// The common completion path for engine-presented native windows.
+    #[cfg(any(target_os = "android", all(target_os = "macos", hydrolysis_winit)))]
+    fn render_presented_window<S: crate::engine::EngineSurface>(
+        &mut self,
+        window: &mut CherenkovWindow<S>,
+        target: &FrameRenderTarget<'_>,
+        render: impl FnOnce(&mut S) -> Result<cherenkov::Next, cherenkov::RenderError>,
+    ) -> Result<(), cherenkov::RenderError> {
         self.applied_filter_metrics.reset();
-        let rendered = window.surface.render(target.display_scale);
+        let rendered = render(&mut window.surface);
         self.take_applied_filter_metrics();
-        // The engine presented inside the render: the frame's last marker
-        // and its resolve follow it here, where a host-presented frame
-        // marks after its copy and resolves after its present.
         #[cfg(feature = "frame-profile")]
         {
             self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 2);
@@ -301,7 +362,8 @@ impl HydrolysisRenderer {
                 target.queue,
             );
         }
-        *window_slot = Some(window);
+        #[cfg(not(feature = "frame-profile"))]
+        let _ = target;
         self.engine_next = Some(rendered?);
         Ok(())
     }

@@ -150,6 +150,12 @@ unsafe extern "C" {
         buffer: *mut AHardwareBuffer,
         acquire_fence_fd: i32,
     );
+    fn ASurfaceTransaction_setDamageRegion(
+        transaction: *mut ASurfaceTransaction,
+        surface_control: *mut ASurfaceControl,
+        rects: *const ARect,
+        count: u32,
+    );
     // `const ARect&` in the C++ header: a pointer at the ABI.
     fn ASurfaceTransaction_setGeometry(
         transaction: *mut ASurfaceTransaction,
@@ -298,6 +304,21 @@ impl Drop for SurfaceControl {
 pub struct Transaction(NonNull<ASurfaceTransaction>);
 
 impl Transaction {
+    /// Describes the buffer pixels changed by this transaction.
+    pub fn set_damage_region(&mut self, surface: &SurfaceControl, rects: &[ARect]) {
+        let count = u32::try_from(rects.len()).expect("damage rectangle count fits the NDK ABI");
+        // SAFETY: both wrappers own live NDK objects and the rectangle slice
+        // remains valid for this call, which copies the region into the transaction.
+        unsafe {
+            ASurfaceTransaction_setDamageRegion(
+                self.0.as_ptr(),
+                surface.as_ptr(),
+                rects.as_ptr(),
+                count,
+            );
+        }
+    }
+
     /// An empty transaction.
     ///
     /// # Panics

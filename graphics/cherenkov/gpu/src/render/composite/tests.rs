@@ -299,23 +299,37 @@ fn cached_paint_updates_preserve_lifetimes_and_motion_rechecks_locality() {
     let mut cache = crate::render::composite::cache::Cache::default();
     let mut plan = ExecutionPlan::default();
     let format = formats(wgpu::TextureFormat::Rgba16Float);
-    assert!(cache.update(&mut plan, &frame, format, limits(2)));
+    assert!(cache.update(&mut plan, &frame, format, Ok(limits(2))));
     let image = plan.targets[1];
     frame.instances[1].color = [1.5, 0.3, 0.0, 0.8];
     frame.instances[2].params[1] = 0.5;
-    assert!(!cache.update(&mut plan, &frame, format, limits(2)));
+    assert!(!cache.update(&mut plan, &frame, format, Ok(limits(2))));
     assert_eq!(plan.targets[1], image);
     assert!(plan.epoch_at(1).is_some());
     // The read no longer corresponds to this framebuffer pixel. Reusing
     // the old epoch would fetch a different pixel than the canonical path.
     frame.instances[2].grad[0] = 1.0;
-    assert!(!cache.update(&mut plan, &frame, format, limits(2)));
+    assert!(!cache.update(&mut plan, &frame, format, Ok(limits(2))));
     assert_eq!(plan.targets[1], image);
     assert!(plan.epoch_at(1).is_none());
     assert_eq!(
         plan.materialization(1),
         Some(Materialization::NeighborhoodRead)
     );
+    frame.instances[2].grad[0] = 0.0;
+    assert!(!cache.update(&mut plan, &frame, format, Ok(limits(2))));
+    assert!(plan.epoch_at(1).is_some());
+    assert!(cache.update(&mut plan, &frame, format, Err(Materialization::NoExecutor)));
+    assert_eq!(plan.epochs().count(), 0);
+    assert_eq!(plan.targets[1], image);
+    frame.passes[1].region = [1, 1, 8, 8];
+    assert!(!cache.update(&mut plan, &frame, format, Err(Materialization::NoExecutor)));
+    assert_eq!(plan.images[image.0].region, [1, 1, 8, 8]);
+    assert_eq!(
+        plan.reads[2][0].as_ref().expect("scratch read").writer,
+        Some(1)
+    );
+    assert_eq!(plan.materialization(1), Some(Materialization::NoExecutor));
 }
 
 /// Every reason the planner can name, each from the frame shape that
@@ -443,6 +457,7 @@ fn frame_report_attributes_the_epoch_and_the_traffic_around_it() {
             peak_backed_bytes: 4 * REGION_BYTES,
         },
         Vec::new(),
+        256,
     );
 
     assert_eq!((report.frame, report.surface, report.passes), (7, 3, 3));
@@ -483,6 +498,7 @@ fn frame_report_attributes_the_epoch_and_the_traffic_around_it() {
         &plan,
         AttachmentBytes::default(),
         Vec::new(),
+        256,
     );
     assert!(report.epochs.is_empty());
     assert!(report.on_chip.is_empty());
@@ -505,4 +521,193 @@ fn frame_report_attributes_the_epoch_and_the_traffic_around_it() {
     assert_eq!(drained.len(), 2);
     assert_eq!(drained[0].frame, 8);
     assert!(sink.take().is_empty());
+}
+
+#[test]
+fn capture_dependencies_freeze_the_last_prior_writer() {
+    let capture_target = Target::Backdrop {
+        group: 7,
+        region: 0,
+    };
+    let mut capture = pass(capture_target, true, None, 2);
+    capture.capture = Some(crate::render::lower::Capture {
+        group: 7,
+        region: 0,
+        copy_from: Target::Scratch(0),
+        resolve: None,
+        levels: 1,
+    });
+    let frame = frame(vec![
+        pass(Target::Scratch(0), true, None, 0),
+        pass(Target::Scratch(0), false, None, 1),
+        capture,
+        pass(Target::Scratch(0), false, None, 3),
+        pass(Target::Part(0), true, Some(Source::Scratch(0)), 4),
+        pass(Target::Scratch(0), true, None, 5),
+        pass(Target::Part(1), true, Some(Source::Scratch(0)), 6),
+    ]);
+    let format = formats(wgpu::TextureFormat::Rgba16Float);
+    let native = ExecutionPlan::build(&frame, format, limits(4));
+    let portable = ExecutionPlan::portable(&frame, format, Materialization::NoExecutor);
+    for plan in [&native, &portable] {
+        assert!(plan.loads[0].is_none());
+        let continued = plan.loads[1].as_ref().expect("load retains earlier writes");
+        assert_eq!(continued.writer, Some(0));
+        assert_eq!(continued.image, plan.targets[0]);
+        assert_eq!(plan.loads[3].as_ref().expect("later load").writer, Some(1));
+        assert!(
+            plan.loads[5].is_none(),
+            "clear severs the old image dependency"
+        );
+        let capture = plan.captures[2]
+            .as_ref()
+            .expect("capture has a read dependency");
+        assert_eq!(capture.writer, Some(1));
+        assert_eq!(capture.image, plan.targets[0]);
+        assert_eq!(capture.kind, ReadKind::FrozenSnapshot);
+        let later = plan.reads[4][0].as_ref().expect("read after continuation");
+        assert_eq!(later.writer, Some(3));
+        assert_eq!(later.image, capture.image);
+        let cleared = plan.reads[6][0].as_ref().expect("read after clear");
+        assert_eq!(cleared.writer, Some(5));
+        assert_ne!(cleared.image, capture.image);
+    }
+    assert_eq!(native.targets, portable.targets);
+    assert_eq!(portable.epochs().count(), 0);
+    assert!(portable.is_planned());
+    for pass in 0..frame.passes.len() {
+        assert_eq!(
+            portable.materialization(pass),
+            Some(Materialization::NoExecutor)
+        );
+    }
+}
+
+#[test]
+fn demand_follows_frozen_writes_and_severs_cleared_generations() {
+    let backdrop = Target::Backdrop {
+        group: 9,
+        region: 0,
+    };
+    let mut capture = pass(backdrop, true, None, 2);
+    capture.capture = Some(crate::render::lower::Capture {
+        group: 9,
+        region: 0,
+        copy_from: Target::Scratch(0),
+        resolve: None,
+        levels: 1,
+    });
+    let frame = frame(vec![
+        pass(Target::Scratch(0), true, None, 0),
+        pass(Target::Scratch(0), false, None, 1),
+        capture,
+        pass(Target::Scratch(0), false, None, 3),
+        pass(
+            Target::Part(0),
+            true,
+            Some(Source::Backdrop {
+                group: 9,
+                region: 0,
+            }),
+            4,
+        ),
+        pass(Target::Scratch(0), true, None, 5),
+        pass(Target::Part(1), true, Some(Source::Scratch(0)), 6),
+    ]);
+    let mut demand = crate::render::composite::demand::Demand::default();
+    for plan in [
+        ExecutionPlan::portable(
+            &frame,
+            formats(wgpu::TextureFormat::Rgba16Float),
+            Materialization::NoExecutor,
+        ),
+        ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(4)),
+    ] {
+        let mut changes = crate::render::composite::demand::Changes::default();
+        changes.update(&frame, &plan, |index, region| {
+            if index == 0 {
+                region.add(2, 3, 4, 5);
+            }
+        });
+        for index in [0, 1, 2, 3, 4] {
+            assert_eq!(changes.pass(index).pixel_area(), 20, "changed pass {index}");
+        }
+        for index in [5, 6] {
+            assert!(changes.pass(index).is_empty(), "cleared generation {index}");
+        }
+        changes.update(&frame, &plan, |index, region| {
+            if index == 3 {
+                region.add(2, 3, 4, 5);
+            }
+        });
+        assert!(
+            changes.pass(4).is_empty(),
+            "frozen capture excludes later writes"
+        );
+        demand.update(&frame, &plan, |_, target, _, region| {
+            if target == Target::Part(0) {
+                region.add(2, 3, 4, 5);
+            }
+        });
+        for index in [0, 1, 2, 4] {
+            assert_eq!(demand.pass(index).pixel_area(), 20, "pass {index}");
+        }
+        for index in [3, 5, 6] {
+            assert!(demand.pass(index).is_empty(), "unneeded pass {index}");
+        }
+        demand.update(&frame, &plan, |_, target, _, region| {
+            if target == Target::Part(1) {
+                region.add(8, 9, 2, 3);
+            }
+        });
+        assert_eq!(demand.pass(5).pixel_area(), 6);
+        assert_eq!(demand.pass(6).pixel_area(), 6);
+        for index in 0..5 {
+            assert!(demand.pass(index).is_empty(), "old generation {index}");
+        }
+    }
+}
+
+#[test]
+fn demand_expands_neighborhood_reads_and_tracks_destination_snapshots() {
+    let mut frame = frame(vec![
+        pass(Target::Part(0), true, None, 0),
+        pass(Target::Scratch(0), true, None, 1),
+        pass(Target::Part(0), true, Some(Source::Scratch(0)), 2),
+    ]);
+    frame.passes[2].backdrop_copy = Some([0, 0, 16, 16]);
+    frame.instances[2].meta[1] = crate::render::instance::PAINT_BACKDROP;
+    let plan = ExecutionPlan::portable(
+        &frame,
+        formats(wgpu::TextureFormat::Rgba16Float),
+        Materialization::NoExecutor,
+    );
+    assert!(plan.loads[2].is_none());
+    assert_eq!(
+        plan.backdrops[2]
+            .as_ref()
+            .expect("destination snapshot")
+            .writer,
+        Some(0)
+    );
+    let mut demand = crate::render::composite::demand::Demand::default();
+    demand.update(&frame, &plan, |_, _, _, region| region.add(4, 5, 2, 3));
+    assert_eq!(demand.pass(0).pixel_area(), 6);
+    assert_eq!(demand.pass(1).pixel_area(), 256);
+    assert_eq!(demand.pass(2).pixel_area(), 6);
+    let mut changes = crate::render::composite::demand::Changes::default();
+    changes.update(&frame, &plan, |index, region| {
+        if index == 1 {
+            region.add(4, 5, 2, 3);
+        }
+    });
+    assert!(changes.pass(0).is_empty());
+    assert_eq!(changes.pass(1).pixel_area(), 6);
+    assert_eq!(changes.pass(2).pixel_area(), 256);
+    changes.update(&frame, &plan, |index, region| {
+        if index == 0 {
+            region.add(4, 5, 2, 3);
+        }
+    });
+    assert_eq!(changes.pass(2).pixel_area(), 6);
 }

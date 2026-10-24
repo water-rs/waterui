@@ -600,13 +600,12 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceCha
     generation: jlong,
 ) {
     guard(&mut env, |_env| {
-        session(session_ptr)
-            .surface_resized(
-                crate::num_cast::i32_as_u32(width.max(0)),
-                crate::num_cast::i32_as_u32(height.max(0)),
-                crate::num_cast::i64_as_u64(generation),
-            )
-            .map_err(JniError)
+        session(session_ptr).surface_resized(
+            crate::num_cast::i32_as_u32(width.max(0)),
+            crate::num_cast::i32_as_u32(height.max(0)),
+            crate::num_cast::i64_as_u64(generation),
+        );
+        Ok(())
     });
 }
 

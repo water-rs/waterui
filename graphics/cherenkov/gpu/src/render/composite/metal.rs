@@ -352,8 +352,62 @@ pub fn encode(
         .iter()
         .find(|op| op.target == 0)
         .expect("epoch writes its output");
+    let partial_clear = surf.repaint_clears.instance(first_output.pass);
+    if let Some(instance) = partial_clear {
+        let bind = surf
+            .binds1
+            .entry((None, None, None, None))
+            .or_insert_with(|| {
+                stats.bind_groups_created += 1;
+                make_bind1(
+                    resources.device,
+                    resources.layout1,
+                    resources.dummy,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            });
+        let key = Key {
+            target: 0,
+            source: 0,
+            variant: 0,
+            replace: true,
+            slots: 1,
+        };
+        let mut created = false;
+        crate::render::repaint::ClearDraw {
+            timestamps: timestamps
+                .as_ref()
+                .map(|writes| wgpu::RenderPassTimestampWrites {
+                    query_set: writes.query_set,
+                    beginning_of_pass_write_index: writes.beginning_of_pass_write_index,
+                    end_of_pass_write_index: None,
+                }),
+            pipeline: executor.pipeline(resources.device, resources.layout, key, &mut created),
+            bind0: resources.bind0,
+            bind1: bind,
+            offset: (surf.globals_base + u32::try_from(first_output.pass).expect("pass index"))
+                * 256,
+            instance: surf.inst_base + instance,
+        }
+        .encode(
+            encoder,
+            &view,
+            &crate::render::repaint::Scissors::new(
+                surf.draw_demand.pass(first_output.pass),
+                epoch.region,
+            ),
+        );
+        note(&mut pipelines, created, first_output.pass, key);
+        stats.passes += 1;
+        stats.draws += u32::try_from(surf.draw_demand.pass(first_output.pass).rectangles().len())
+            .expect("damage rectangle count");
+    }
     let load = surf.frame.passes[first_output.pass]
         .clear
+        .filter(|_| partial_clear.is_none())
         .map_or(wgpu::LoadOp::Load, |c| {
             wgpu::LoadOp::Clear(wgpu::Color {
                 r: f64::from(c[0]),
@@ -362,6 +416,12 @@ pub fn encode(
                 a: f64::from(c[3]),
             })
         });
+    let timestamps = timestamps.map(|mut writes| {
+        if partial_clear.is_some() {
+            writes.beginning_of_pass_write_index = None;
+        }
+        writes
+    });
     let temporaries = surf
         .tile_targets
         .get(resources.device, size, epoch.slots - 1);
@@ -522,11 +582,16 @@ pub fn encode(
                 });
                 pass.set_bind_group(1, &*bind, &[]);
             }
-            pass.draw(
-                0..6,
-                surf.inst_base + range.instances.start..surf.inst_base + range.instances.end,
-            );
-            stats.draws += 1;
+            let scissors =
+                crate::render::repaint::Scissors::new(surf.draw_demand.pass(op.pass), epoch.region)
+                    .within(canonical.region);
+            scissors.draw(&mut pass, |pass| {
+                pass.draw(
+                    0..6,
+                    surf.inst_base + range.instances.start..surf.inst_base + range.instances.end,
+                );
+            });
+            stats.draws += scissors.draw_count();
             stats.pipeline_switches += 1;
         }
     }

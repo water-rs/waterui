@@ -231,17 +231,6 @@ impl HydrolysisRenderer {
         self.hit_test.window_bounds = bounds;
     }
 
-    /// The renderer state and the recording node's trailing run, split so
-    /// text shaping can read the one while drawing into the other.
-    pub(crate) fn state_and_run_mut(&mut self) -> (&mut HydroState, &mut Recording) {
-        let run = self
-            .program
-            .last_mut()
-            .expect("hydrolysis renderer: drawing with no recording node")
-            .run();
-        (&mut self.core.state, run)
-    }
-
     /// Mutable access for the runner's host-side wakeup and submission
     /// sites (the ones that happen outside a renderer method).
     pub const fn frame_work_counters_mut(&mut self) -> &mut FrameWorkCounters {

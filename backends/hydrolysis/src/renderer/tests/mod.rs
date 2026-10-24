@@ -4292,3 +4292,27 @@ fn a_labelled_container_that_stands_reports_its_assigned_frame() {
         bounds.height(),
     );
 }
+
+fn diagnostic_gpu() -> (
+    crate::platform::OffscreenGpuContext,
+    cherenkov_gpu::composition::Sink,
+    Rc<crate::engine::SharedEngineState>,
+) {
+    let gpu = crate::platform::OffscreenGpuContext::new_for_tests_blocking();
+    let probe = crate::platform::OffscreenSurface::on_context(
+        gpu.clone(),
+        1,
+        1,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let context = probe.device_loss().gpu_context();
+    let diagnostics = cherenkov_gpu::composition::Sink::new();
+    let engine = crate::engine::GpuEngine::new(cherenkov_gpu::GpuConfig {
+        device: Some(context.shared_device.clone()),
+        composition_diag: Some(diagnostics.clone()),
+        ..cherenkov_gpu::GpuConfig::default()
+    })
+    .expect("diagnostic engine");
+    let state = crate::engine::SharedEngineState::register(context.context_id, Rc::new(engine));
+    (gpu, diagnostics, state)
+}
