@@ -2,10 +2,11 @@
 //! instanced-quad passes.
 
 use cherenkov::lowering::Realization;
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::Arc;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 
 use super::MAX_PASS_INSTANCES;
 use super::prepared::{ClipShape, Op, OutlineRef, PaintData, ResolvedPaint, box_shape};
@@ -667,6 +668,7 @@ impl ContentData {
                 .values()
                 .map(|entry| entry.path.elements.len() * std::mem::size_of::<path::GpuElement>())
                 .sum::<usize>()) as u64
+            + self.storage.geometry.heap_bytes()
     }
 
     pub fn into_picture(self) -> cherenkov::Picture {
@@ -712,6 +714,9 @@ impl ContentData {
 #[derive(Default)]
 pub struct EmissionStorage {
     gpu_paths: FxHashMap<usize, PreparedGpu>,
+    /// CPU-route path geometry retained across content replacements by
+    /// semantic key; bounded to the latest walk's marks.
+    pub(crate) geometry: GeometryCache,
     templates: Vec<InstanceTemplate>,
     covers: Vec<Cover>,
     pub(crate) instances: Vec<RetainedInstance>,
@@ -728,6 +733,236 @@ struct PreparedGpu {
     /// reads. `None` for a compute stroke, which has no outline on the CPU.
     local_bounds: Option<Rect>,
     path: path::GpuPath,
+}
+
+/// A retained geometry entry's identity: the draw's semantic content
+/// hash — elements and fill rule for a fill, plus stroke style and
+/// tolerance for a stroke — its fill rule, and the raster's exact
+/// linear part. Translation, surface size and clip move a placement
+/// without changing the geometry, so they are not identity.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct GeometryKey {
+    content: u64,
+    rule: FillRule,
+    /// The raster's 2x2, bit for bit.
+    linear: [u64; 4],
+}
+
+impl GeometryKey {
+    fn new(content: u64, rule: FillRule, raster: Affine) -> Self {
+        let [a, b, c, d, ..] = raster.as_coeffs();
+        Self {
+            content,
+            rule,
+            linear: [a, b, c, d].map(f64::to_bits),
+        }
+    }
+
+    /// The map slot: a compact u64 the emission carries. A lookup still
+    /// compares the whole key before reusing an entry under this digest.
+    fn digest(&self) -> u64 {
+        let mut hasher = FxHasher::default();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+/// The retained form's lazy states: flattened first, winding-resolved
+/// once a placement's surface grid is nonempty.
+enum GeometryState {
+    /// `path::flatten_segments` output under the draw's own rule.
+    Flattened {
+        segments: Vec<(f32, f32, f32, f32)>,
+        rule: FillRule,
+    },
+    /// `resolve_winding` ran once: its replacement boundary rasterizes
+    /// under `NonZero` in place of the flattened segments, or the
+    /// unchanged input stands under its own rule.
+    Resolved {
+        segments: Vec<(f32, f32, f32, f32)>,
+        rule: FillRule,
+    },
+}
+
+impl GeometryState {
+    /// The segments to rasterize and their fill rule.
+    fn segments(&self) -> (&[(f32, f32, f32, f32)], FillRule) {
+        match self {
+            Self::Flattened { segments, rule } | Self::Resolved { segments, rule } => {
+                (segments, *rule)
+            }
+        }
+    }
+
+    /// Run `resolve_winding` once: a replacement boundary supersedes the
+    /// flattened segments — their storage is dropped, not kept beside —
+    /// while an unchanged input keeps its allocation and its rule.
+    fn resolve(&mut self) {
+        let Self::Flattened { segments, rule } = self else {
+            return;
+        };
+        *self = cherenkov::lowering::resolve_winding(segments, *rule)
+            .into_resolved()
+            .map_or_else(
+                || Self::Resolved {
+                    segments: std::mem::take(segments),
+                    rule: *rule,
+                },
+                |segments| Self::Resolved {
+                    segments,
+                    rule: FillRule::NonZero,
+                },
+            );
+    }
+}
+
+/// A path's flattened segments in its translation-normalized frame:
+/// the outline anchored at its control-box corner, remapped by the
+/// raster's linear part — sequential f64 affines, never one
+/// cancellation-prone product — shifted onto positive coordinates and
+/// flattened to f32. `base + raster translation` places the frame in
+/// device space, so no placement's coordinates round the retained form.
+struct RetainedGeometry {
+    /// `linear * corner - shift`: the frame origin's device position at
+    /// zero raster translation; device space is `frame + base + t`.
+    base: Vec2,
+    /// Frame-space bounds of the flattened segments.
+    bbox: Rect,
+    state: GeometryState,
+}
+
+impl RetainedGeometry {
+    /// Flatten `local` — the draw's outline in its own space — into the
+    /// normalized frame under `raster`'s linear part at `path::FLATTEN`.
+    fn new(mut local: BezPath, raster: Affine, rule: FillRule) -> Self {
+        let [a, b, c, d, ..] = raster.as_coeffs();
+        let linear = Affine::new([a, b, c, d, 0.0, 0.0]);
+        let control = local.control_box();
+        let corner = control.origin().to_vec2();
+        // The mapped box's lowest corner relative to the anchored path:
+        // `shift` lands it in [1, 2) so frame coordinates stay positive.
+        let size = control.size();
+        let low = [
+            Point::new(size.width, 0.0),
+            Point::new(0.0, size.height),
+            Point::new(size.width, size.height),
+        ]
+        .into_iter()
+        .map(|p| linear * p)
+        .fold(Point::ORIGIN, |m, p| Point::new(m.x.min(p.x), m.y.min(p.y)));
+        let shift = Vec2::new(1.0 - low.x.floor(), 1.0 - low.y.floor());
+        local.apply_affine(Affine::translate(-corner));
+        local.apply_affine(Affine::translate(shift) * linear);
+        let (segments, bbox) = path::flatten_segments(&local, path::FLATTEN);
+        Self {
+            base: (linear * corner.to_point()).to_vec2() - shift,
+            bbox,
+            state: GeometryState::Flattened { segments, rule },
+        }
+    }
+
+    /// The frame→device offset at raster translation `t` and the frame
+    /// bounds under it: `frame + base + t` is the device point.
+    fn placed(&self, t: Vec2) -> (Vec2, Rect) {
+        let to_device = self.base + t;
+        (to_device, self.bbox + to_device)
+    }
+
+    /// Heap bytes of the retained segment allocation.
+    const fn segment_bytes(&self) -> usize {
+        let capacity = match &self.state {
+            GeometryState::Flattened { segments, .. }
+            | GeometryState::Resolved { segments, .. } => segments.capacity(),
+        };
+        capacity * std::mem::size_of::<(f32, f32, f32, f32)>()
+    }
+}
+
+/// One retained geometry: its full key — compared before reuse,
+/// replaced on a digest mismatch — its normalized segments, and the
+/// epoch that last used them.
+struct GeometryEntry {
+    key: GeometryKey,
+    geometry: RetainedGeometry,
+    /// The `GeometryCache::epoch` that last touched this entry.
+    used: u64,
+}
+
+/// A content's retained CPU-route path geometry
+/// (water-rs/waterui#3306), keyed by [`GeometryKey::digest`]: a
+/// re-recorded or re-placed path reuses its flattened,
+/// winding-resolved segments. Entries the content's latest walk did
+/// not mark — by a coverage-hit touch, a geometry lookup, or a
+/// retained leaf's stored digest — are pruned after it; the cache
+/// lives and dies with the content's storage.
+#[derive(Default)]
+pub struct GeometryCache {
+    entries: FxHashMap<u64, GeometryEntry>,
+    epoch: u64,
+}
+
+impl GeometryCache {
+    /// Start a content walk: marks land on the new epoch.
+    const fn begin_walk(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
+    }
+
+    /// Mark the entry at `digest` used this epoch when it exists; never
+    /// builds. The key is not compared: marking a colliding entry only
+    /// retains it, never reuses its geometry.
+    fn touch(&mut self, digest: u64) {
+        if let Some(entry) = self.entries.get_mut(&digest) {
+            entry.used = self.epoch;
+        }
+    }
+
+    /// `key`'s geometry under `digest`, marked for this walk: an entry
+    /// whose stored key matches bit for bit is reused; a miss or a
+    /// digest-collision mismatch builds the normalized form.
+    fn entry(
+        &mut self,
+        digest: u64,
+        key: GeometryKey,
+        build: impl FnOnce() -> RetainedGeometry,
+    ) -> &mut RetainedGeometry {
+        let epoch = self.epoch;
+        let entry = match self.entries.entry(digest) {
+            std::collections::hash_map::Entry::Occupied(slot) => {
+                let entry = slot.into_mut();
+                if entry.key != key {
+                    *entry = GeometryEntry {
+                        key,
+                        geometry: build(),
+                        used: epoch,
+                    };
+                }
+                entry.used = epoch;
+                entry
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => slot.insert(GeometryEntry {
+                key,
+                geometry: build(),
+                used: epoch,
+            }),
+        };
+        &mut entry.geometry
+    }
+
+    /// Drop entries this walk did not mark.
+    fn prune(&mut self) {
+        let epoch = self.epoch;
+        self.entries.retain(|_, entry| entry.used == epoch);
+    }
+
+    /// Heap bytes: the table plus each entry's retained segments.
+    fn heap_bytes(&self) -> u64 {
+        (self.entries.capacity() * (std::mem::size_of::<(u64, GeometryEntry)>() + size_of::<u8>())
+            + self
+                .entries
+                .values()
+                .map(|entry| entry.geometry.segment_bytes())
+                .sum::<usize>()) as u64
+    }
 }
 
 impl EmissionStorage {
@@ -770,6 +1005,7 @@ impl EmissionStorage {
         }
         let mut storage = Self {
             gpu_paths: std::mem::take(&mut self.gpu_paths),
+            geometry: std::mem::take(&mut self.geometry),
             templates: Vec::with_capacity(templates),
             covers: Vec::with_capacity(covers),
             instances: Vec::with_capacity(instances),
@@ -933,6 +1169,11 @@ pub struct Emission {
     /// The automatic route's decisions for a GPU leaf re-placed under it,
     /// built at its first re-placement (`Lowering::replace_gpu_leaf`).
     gpu_route: Option<RouteWindow>,
+    /// A CPU-route path leaf's retained-geometry digest: retained-leaf
+    /// reuse still counts as a use, so composing this emission marks the
+    /// entry. Marking never compares keys — a colliding entry is
+    /// retained, not reused.
+    geometry: Option<u64>,
 }
 
 /// The automatic route's decision (`Lowering::automatic_gpu`) for a
@@ -3973,6 +4214,7 @@ impl<'a> Lowering<'a> {
             let (ops, emissions, source) = content.retained.prepared_source();
             content.storage.retain_gpu_paths(ops);
             content.storage.compact(emissions);
+            content.storage.geometry.begin_walk();
             let changed = self.ops(
                 source,
                 ops,
@@ -3981,6 +4223,7 @@ impl<'a> Lowering<'a> {
                 0..ops.len(),
                 glyphs,
             )?;
+            content.storage.geometry.prune();
             self.layers_composed += u32::from(changed);
         }
         if let Some(binding) = binding {
@@ -4166,6 +4409,9 @@ impl<'a> Lowering<'a> {
             });
         cache.valid = true;
         if hit || replaced {
+            if let Some(digest) = cache.data.as_ref().and_then(|e| e.geometry) {
+                storage.geometry.touch(digest);
+            }
             self.compose(
                 cache.data.as_ref().expect("a retained leaf has data"),
                 storage,
@@ -4374,12 +4620,12 @@ impl<'a> Lowering<'a> {
             )
             && self.automatic_gpu_leaf(op, source, &mut storage.gpu_paths, index)?;
         let realized = if emitted_gpu {
-            Ok(())
+            Ok(None)
         } else {
-            self.realize(op, cover, glyphs, source)
+            self.realize(op, cover, glyphs, source, &mut storage.geometry)
         };
         self.transform = transform;
-        realized?;
+        let geometry = realized?;
         let stop_base = u32::try_from(first_stop).expect("stop count fits u32");
         let instance_base = u32::try_from(first_instance).expect("instance count fits u32");
         let retained_instance = storage.instances.len();
@@ -4439,6 +4685,7 @@ impl<'a> Lowering<'a> {
             }),
             transform,
             size: [self.width, self.height],
+            geometry,
             instances: retained_instance..storage.instances.len(),
             stops: retained_stop..storage.stops.len(),
             image: self
@@ -4659,13 +4906,18 @@ impl<'a> Lowering<'a> {
         reason = "preserve dev inlining of common leaf realization as capabilities grow"
     )]
     #[inline(always)]
+    /// Realize `op` into the frame. Returns the leaf's retained-geometry
+    /// digest for a CPU-route path draw — the emission carries it so a
+    /// later retained reuse still marks the entry; other leaves and
+    /// GPU-route paths return `None`.
     fn realize(
         &mut self,
         op: &Op,
         cover: Option<Cover>,
         glyphs: &GlyphContext<'_>,
         source: &cherenkov::DisplayList,
-    ) -> Result<(), RenderError> {
+        geometry: &mut GeometryCache,
+    ) -> Result<Option<u64>, RenderError> {
         match op {
             Op::Shaped {
                 kind,
@@ -4718,21 +4970,24 @@ impl<'a> Lowering<'a> {
                 ..
             } => {
                 self.transform *= *local;
-                match outline.get(source) {
+                return match outline.get(source) {
                     OutlineRef::Fill { elements, content } => self.path(
                         content,
                         *rule,
                         || BezPath::from_vec(elements.to_vec()),
                         paint,
                         glyphs,
-                    )?,
+                        geometry,
+                    ),
                     outline @ OutlineRef::Stroke { shape, stroke } => {
                         let tolerance = path::FLATTEN / path::sigma_max(self.transform).max(1e-12);
                         if self.compute.is_some()
                             && self.coverage_route == path::CoverageRoute::Gpu
                             && !matches!(paint, ResolvedPaint::Shader(_))
                         {
-                            return self.stroke_gpu(*rule, shape, stroke, paint, tolerance);
+                            return self
+                                .stroke_gpu(*rule, shape, stroke, paint, tolerance)
+                                .map(|()| None);
                         }
                         self.path(
                             outline.content(tolerance),
@@ -4740,9 +4995,10 @@ impl<'a> Lowering<'a> {
                             || outline.build(tolerance),
                             paint,
                             glyphs,
-                        )?;
+                            geometry,
+                        )
                     }
-                }
+                };
             }
             Op::Glyphs { local, run, paint } => {
                 self.transform *= *local;
@@ -4756,7 +5012,7 @@ impl<'a> Lowering<'a> {
             } => self.bitmap_glyph(*local, *font, *glyph, *size, glyphs)?,
             _ => unreachable!("scope is composed, never realized as a leaf"),
         }
-        Ok(())
+        Ok(None)
     }
 
     /// The forced GPU route of a stroke: the compute stroker consumes the
@@ -5097,9 +5353,16 @@ impl<'a> Lowering<'a> {
     /// A path or stroked outline: rasterize once per
     /// (content, matrix, subpixel, surface) and replay spans plus atlas
     /// cells. `content` hashes the draw's semantics; `make` builds the
-    /// local outline only on a cache miss, so replays cost no `BezPath` or
+    /// local outline only on a geometry miss, so replays cost no `BezPath` or
     /// stroke work. Coverage clipped by the surface is stored under the
     /// offset-specific key: it is only valid at that integer offset.
+    ///
+    /// The geometry — flattened, winding-resolved segments in a
+    /// translation-normalized frame — is retained per content in
+    /// `geometry`: a new placement pays only the coverage integration,
+    /// and a coverage hit touches the entry without building it.
+    /// Returns the geometry's digest for the emission to carry, `None`
+    /// on the GPU coverage route.
     fn path(
         &mut self,
         content: u64,
@@ -5107,7 +5370,8 @@ impl<'a> Lowering<'a> {
         make: impl FnOnce() -> BezPath,
         paint: &ResolvedPaint,
         glyphs: &GlyphContext<'_>,
-    ) -> Result<(), RenderError> {
+        geometry: &mut GeometryCache,
+    ) -> Result<Option<u64>, RenderError> {
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -5135,49 +5399,61 @@ impl<'a> Lowering<'a> {
                 surface,
                 content,
             );
-            return Ok(());
+            return Ok(None);
         }
+        let key = GeometryKey::new(content, rule, pl.raster);
+        let digest = key.digest();
         let hit = glyphs
             .atlas
             .path(pl.key)
             .or_else(|| glyphs.atlas.path(pl.key_exact()));
         if let Some(emit) = hit {
+            geometry.touch(digest);
             self.replay(emit, None, pl.offset, paint, shader_data.as_ref());
-            return Ok(());
+            return Ok(Some(digest));
         }
         if let Some(&pending) = self
             .pending_paths
             .get(&pl.key)
             .or_else(|| self.pending_paths.get(&pl.key_exact()))
         {
+            geometry.touch(digest);
             let PendingRaster::Path { emit, .. } = &self.pending[pending as usize] else {
                 unreachable!("pending path identity addresses a path");
             };
             let emit = emit.clone();
             self.replay(&emit, Some(pending), pl.offset, paint, shader_data.as_ref());
-            return Ok(());
+            return Ok(Some(digest));
         }
+        let [.., e, f] = pl.raster.as_coeffs();
         let (stored, pending) = 'stored: {
-            let device =
-                pl.raster * shader_path.unwrap_or_else(|| make.take().expect("path factory")());
-            let (segments, bbox) = path::flatten_segments(&device, path::FLATTEN);
-            let Some(emitted) = path::rasterize_emit(
-                &segments,
-                bbox,
-                (f64::from(self.width), f64::from(self.height)),
-                rule,
-                self.raster_scratch,
-                &mut self.path_arena,
-            ) else {
+            let entry = geometry.entry(digest, key, || {
+                let local = shader_path.unwrap_or_else(|| make.take().expect("path factory")());
+                RetainedGeometry::new(local, pl.raster, rule)
+            });
+            let (to_device, device_bbox) = entry.placed(Vec2::new(e, f));
+            let Some(grid @ (x0, y0, ..)) =
+                path::grid(device_bbox, (f64::from(self.width), f64::from(self.height)))
+            else {
                 // Missing the surface at this offset says nothing about
                 // other offsets — and an empty emission carries no bands,
                 // so it could never be pinned or replayed later either.
                 // Store nothing: an exact-key insert would never hit again
-                // and could not be evicted for want of a slot (#119).
+                // and could not be evicted for want of a slot (#119). The
+                // flattened geometry stays retained for other placements.
                 break 'stored (PathEmit::default(), None);
             };
+            entry.state.resolve();
+            let (segments, resolved_rule) = entry.state.segments();
             self.paths += 1;
-            let (emit, cells, clipped) = emitted?;
+            let (emit, cells, clipped) = path::emit_resolved(
+                segments,
+                to_device - Vec2::new(x0, y0),
+                grid,
+                resolved_rule,
+                self.raster_scratch,
+                &mut self.path_arena,
+            )?;
             // Emission rects are relative to the placement offset; the
             // stored record keeps that frame.
             let stored = emit.translated(-pl.offset.x, -pl.offset.y);
@@ -5192,7 +5468,7 @@ impl<'a> Lowering<'a> {
             (stored, Some(pending))
         };
         self.replay(&stored, pending, pl.offset, paint, shader_data.as_ref());
-        Ok(())
+        Ok(Some(digest))
     }
 
     /// Replays a cached path emission: `KIND_SPAN` runs and `KIND_GLYPH`
@@ -6741,8 +7017,15 @@ mod tests {
         };
         let mut ops = Vec::new();
         compiler.draw(command, Affine::IDENTITY, &mut ops)?;
+        let mut geometry = GeometryCache::default();
         for op in ops {
-            lowering.realize(&op, None, glyphs, &cherenkov::DisplayList::default())?;
+            lowering.realize(
+                &op,
+                None,
+                glyphs,
+                &cherenkov::DisplayList::default(),
+                &mut geometry,
+            )?;
         }
         Ok(())
     }
