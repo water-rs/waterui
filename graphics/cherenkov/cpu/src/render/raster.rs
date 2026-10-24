@@ -1580,10 +1580,14 @@ pub fn composite_solid<S: Simd, C: Source>(
     space: cherenkov::BlendSpace,
 ) {
     cov.check_len(dst.len());
-    if space == cherenkov::BlendSpace::SrgbEncoded {
-        composite_solid_in::<S, C, true>(simd, dst, cov, clip, color);
-    } else {
-        composite_solid_in::<S, C, false>(simd, dst, cov, clip, color);
+    match (
+        space == cherenkov::BlendSpace::SrgbEncoded,
+        !matches!(clip.span, ClipSpan::Full),
+    ) {
+        (true, true) => composite_solid_in::<S, C, true, true>(simd, dst, cov, clip, color),
+        (true, false) => composite_solid_in::<S, C, true, false>(simd, dst, cov, clip, color),
+        (false, true) => composite_solid_in::<S, C, false, true>(simd, dst, cov, clip, color),
+        (false, false) => composite_solid_in::<S, C, false, false>(simd, dst, cov, clip, color),
     }
 }
 
@@ -1609,7 +1613,7 @@ fn store_solid_block<S: Simd>(planes: [f32x4<S>; 4], pixels: &mut [[f32; 4]; 4])
     reason = "compiled under the dispatched CPU level"
 )]
 #[inline(always)]
-fn composite_solid_in<S: Simd, C: Source, const SRGB: bool>(
+fn composite_solid_in<S: Simd, C: Source, const SRGB: bool, const CLIPPED: bool>(
     simd: S,
     dst: &mut [[f32; 4]],
     cov: C,
@@ -1628,7 +1632,7 @@ fn composite_solid_in<S: Simd, C: Source, const SRGB: bool>(
         simd.splat_f32x4(stored[2]),
         simd.splat_f32x4(stored[3]),
     ];
-    if opaque && cov.full() && matches!(clip.span, ClipSpan::Full) {
+    if opaque && cov.full() && !CLIPPED {
         let (groups, tail) = dst.as_chunks_mut::<4>();
         for group in groups {
             store_solid_block(stored_planes, group);
@@ -1641,9 +1645,9 @@ fn composite_solid_in<S: Simd, C: Source, const SRGB: bool>(
     let count = dst.len();
     let mut pos = 0;
     while pos < count {
-        if opaque && cov.at(pos) == 1.0 && clip.at(pos) == 1.0 {
+        if opaque && cov.at(pos) == 1.0 && (!CLIPPED || clip.at(pos) == 1.0) {
             let start = pos;
-            while pos < count && cov.at(pos) == 1.0 && clip.at(pos) == 1.0 {
+            while pos < count && cov.at(pos) == 1.0 && (!CLIPPED || clip.at(pos) == 1.0) {
                 pos += 1;
             }
             let (groups, tail) = dst[start..pos].as_chunks_mut::<4>();
@@ -1656,11 +1660,13 @@ fn composite_solid_in<S: Simd, C: Source, const SRGB: bool>(
         } else if pos + 4 <= count {
             for lane in 0..4 {
                 let i = pos + lane;
-                blend_packed::<S, SRGB>(simd, &mut dst[i], color, cov.at(i), clip.at(i));
+                let cc = if CLIPPED { clip.at(i) } else { 1.0 };
+                blend_packed::<S, SRGB>(simd, &mut dst[i], color, cov.at(i), cc);
             }
             pos += 4;
         } else {
-            blend_packed::<S, SRGB>(simd, &mut dst[pos], color, cov.at(pos), clip.at(pos));
+            let cc = if CLIPPED { clip.at(pos) } else { 1.0 };
+            blend_packed::<S, SRGB>(simd, &mut dst[pos], color, cov.at(pos), cc);
             pos += 1;
         }
     }
