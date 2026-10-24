@@ -235,6 +235,7 @@ pub struct Resolve {
 pub struct Frame {
     /// Command identities and spans, retained separately from geometry caches.
     pub commands: Vec<super::damage::Command>,
+    pub command_sources: Vec<super::damage::CommandSource>,
     revision: u64,
     /// Instance data.
     pub instances: Vec<Instance>,
@@ -294,6 +295,7 @@ struct OpenPass {
 /// pass-through layers).
 struct FrameSnapshot {
     commands: usize,
+    command_sources: usize,
     instances: usize,
     stops: usize,
     passes: usize,
@@ -307,6 +309,7 @@ impl Frame {
     fn snapshot(&self) -> FrameSnapshot {
         FrameSnapshot {
             commands: self.commands.len(),
+            command_sources: self.command_sources.len(),
             instances: self.instances.len(),
             stops: self.stops.len(),
             passes: self.passes.len(),
@@ -319,6 +322,7 @@ impl Frame {
     /// Reverts every emission since `snap`.
     fn restore(&mut self, snap: FrameSnapshot) {
         self.commands.truncate(snap.commands);
+        self.command_sources.truncate(snap.command_sources);
         self.instances.truncate(snap.instances);
         self.stops.truncate(snap.stops);
         self.passes.truncate(snap.passes);
@@ -369,6 +373,7 @@ impl Frame {
     pub fn reset(&mut self) {
         self.revision += 1;
         self.commands.clear();
+        self.command_sources.clear();
         self.instances.clear();
         self.stops.clear();
         self.passes.clear();
@@ -4314,6 +4319,18 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
+    fn command_source(&mut self, layer: LayerId, live_stamp: u64) -> usize {
+        let command_source = self.frame.command_sources.len();
+        self.frame
+            .command_sources
+            .push(super::damage::CommandSource {
+                root: self.root_target,
+                layer,
+                mask_epoch: self.clip.and_then(|clip| clip.mask).map(|_| live_stamp),
+            });
+        command_source
+    }
+
     /// Compose retained ops under the sampled layer state. Only invalid leaf
     /// realizations produce new instances or coverage; scopes assemble passes.
     fn ops(
@@ -4325,8 +4342,8 @@ impl<'a> Lowering<'a> {
         (layer, range): (LayerId, Range<usize>),
         glyphs: &GlyphContext<'_>,
     ) -> Result<bool, RenderError> {
-        let mut changed = false;
-        let mut i = range.start;
+        let command_source = self.command_source(layer, glyphs.live_stamp);
+        let (mut changed, mut i) = (false, range.start);
         while i < range.end {
             match &ops[i] {
                 Op::BeginClip { local, shape, end } => {
@@ -4413,7 +4430,7 @@ impl<'a> Lowering<'a> {
                 Op::End => unreachable!("paired scopes consume their ends"),
                 op => {
                     changed |= self.command(
-                        (layer, i, op),
+                        (command_source, i, op),
                         ops.get(i + 1),
                         &mut emissions[i],
                         storage,
@@ -4429,7 +4446,7 @@ impl<'a> Lowering<'a> {
 
     fn command(
         &mut self,
-        (layer, index, op): (LayerId, usize, &Op),
+        (command_source, index, op): (usize, usize, &Op),
         next: Option<&Op>,
         cache: &mut Realization<Emission>,
         storage: &mut EmissionStorage,
@@ -4439,21 +4456,14 @@ impl<'a> Lowering<'a> {
         let first = self.frame.instances.len();
         let changed = self.leaf((index, op), next, cache, storage, glyphs, source)?;
         self.frame.commands.push(super::damage::Command {
-            key: super::damage::Key {
-                root: self.root_target,
-                layer,
-                op: index,
-            },
+            source: command_source,
+            op: index,
             instances: first..self.frame.instances.len(),
             revision: cache
                 .data
                 .as_ref()
                 .expect("a realized leaf has data")
                 .revision,
-            mask_epoch: self
-                .clip
-                .and_then(|clip| clip.mask)
-                .map(|_| glyphs.live_stamp),
         });
         Ok(changed)
     }

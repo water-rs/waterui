@@ -7,6 +7,11 @@ use crate::render::{
 fn frame(items: &[(usize, f32)]) -> Frame {
     let mut frame = Frame::default();
     let layer = cherenkov::SurfaceTree::new().root();
+    frame.command_sources.push(CommandSource {
+        root: Target::Part(0),
+        layer,
+        mask_epoch: None,
+    });
     for &(op, x) in items {
         let start = frame.instances.len();
         let mut instance = Instance::new(KIND_SPAN);
@@ -14,14 +19,10 @@ fn frame(items: &[(usize, f32)]) -> Frame {
         instance.color = [1.0; 4];
         frame.instances.push(instance);
         frame.commands.push(Command {
-            key: Key {
-                root: Target::Part(0),
-                layer,
-                op,
-            },
+            source: 0,
+            op,
             instances: start..start + 1,
             revision: 1,
-            mask_epoch: None,
         });
     }
     frame.passes.push(Pass {

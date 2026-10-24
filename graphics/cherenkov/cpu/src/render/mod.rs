@@ -910,9 +910,6 @@ impl RasterRenderer {
         let clear = [r * a, g * a, b * a, a];
         surf.damage
             .prepare(&items, h, clear, self.image_replacements, filter_changed);
-        // A raster error may leave partially written pixels. Only a completed
-        // pass below establishes a reusable baseline again.
-        surf.damage.forget();
         let pool = &self.pool;
         let level = self.level;
         let peak = std::sync::atomic::AtomicU64::new(0);

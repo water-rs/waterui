@@ -51,13 +51,14 @@ pub struct Layer {
 struct Footprint {
     revision: u64,
     rows: (usize, usize),
+    generation: u64,
 }
 
 #[derive(Default)]
 pub struct Damage {
     pub layers: Vec<Layer>,
     previous: FxHashMap<LayerId, Footprint>,
-    prepared: FxHashMap<LayerId, Footprint>,
+    generation: u64,
     stack: Vec<(Range<usize>, (usize, usize))>,
     bands: Vec<bool>,
     filter_aprons: Vec<usize>,
@@ -73,8 +74,7 @@ impl Damage {
 
     pub fn heap_bytes(&self) -> u64 {
         (self.layers.capacity() * size_of::<Layer>()
-            + (self.previous.capacity() + self.prepared.capacity())
-                * size_of::<(LayerId, Footprint)>()
+            + self.previous.capacity() * size_of::<(LayerId, Footprint)>()
             + self.stack.capacity() * size_of::<(Range<usize>, (usize, usize))>()
             + self.bands.capacity() * size_of::<bool>()) as u64
             + (self.filter_aprons.capacity() * size_of::<usize>()) as u64
@@ -90,10 +90,12 @@ impl Damage {
         animated: bool,
     ) {
         self.pending = (clear.map(f32::to_bits), images);
-        let full = self.baseline != Some(self.pending) || animated;
+        // Footprints update in place. Until rasterization commits, neither
+        // this metadata nor a partially written output is a valid baseline.
+        let full = self.baseline.take() != Some(self.pending) || animated;
         self.bands.clear();
         self.bands.resize(h.div_ceil(BAND_H), full);
-        self.prepared.clear();
+        self.generation += 1;
         self.stack.clear();
         let apron = self.dependencies(items, h);
         // Layers arrive in postorder. Consume child aggregates and only scan
@@ -114,29 +116,27 @@ impl Damage {
             }
             extend_items(&mut rows, &items[layer.items.start..end], h);
             self.stack.push((layer.items.clone(), rows));
-            self.prepared.insert(
-                layer.id,
-                Footprint {
-                    revision: layer.revision,
-                    rows,
-                },
-            );
-        }
-        if !full {
-            for (id, now) in &self.prepared {
-                let old = self.previous.get(id);
-                if old != Some(now) {
-                    mark(&mut self.bands, now.rows, apron, h);
-                    if let Some(old) = old {
-                        mark(&mut self.bands, old.rows, apron, h);
-                    }
-                }
-            }
-            for (id, old) in &self.previous {
-                if !self.prepared.contains_key(id) {
+            let now = Footprint {
+                revision: layer.revision,
+                rows,
+                generation: self.generation,
+            };
+            let old = self.previous.insert(layer.id, now);
+            if !full && old.is_none_or(|old| old.revision != now.revision || old.rows != now.rows) {
+                mark(&mut self.bands, now.rows, apron, h);
+                if let Some(old) = old {
                     mark(&mut self.bands, old.rows, apron, h);
                 }
             }
+        }
+        self.previous.retain(|_, old| {
+            let retained = old.generation == self.generation;
+            if !retained && !full {
+                mark(&mut self.bands, old.rows, apron, h);
+            }
+            retained
+        });
+        if !full {
             // A capture can read an earlier capture's output. Propagate to
             // a fixed point; each iteration only adds selected bands.
             loop {
@@ -179,7 +179,6 @@ impl Damage {
     }
 
     pub const fn commit(&mut self) {
-        std::mem::swap(&mut self.previous, &mut self.prepared);
         self.baseline = Some(self.pending);
     }
 }
@@ -208,7 +207,9 @@ fn mark(bands: &mut [bool], (start, end): (usize, usize), apron: usize, h: usize
         let selected =
             &mut bands[start.saturating_sub(apron) / BAND_H..(end + apron).min(h).div_ceil(BAND_H)];
         let changed = selected.iter().any(|dirty| !*dirty);
-        selected.fill(true);
+        if changed {
+            selected.fill(true);
+        }
         changed
     } else {
         false

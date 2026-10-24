@@ -25,11 +25,17 @@ pub struct Key {
     pub op: usize,
 }
 
+pub struct CommandSource {
+    pub root: Target,
+    pub layer: LayerId,
+    pub mask_epoch: Option<u64>,
+}
+
 pub struct Command {
-    pub key: Key,
+    pub source: usize,
+    pub op: usize,
     pub instances: Range<usize>,
     pub revision: u64,
-    pub mask_epoch: Option<u64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -160,6 +166,12 @@ impl Commands {
 
     fn collect(&mut self, frame: &Frame) {
         for (order, command) in frame.commands.iter().enumerate() {
+            let source = &frame.command_sources[command.source];
+            let key = Key {
+                root: source.root,
+                layer: source.layer,
+                op: command.op,
+            };
             let start = self
                 .spans
                 .partition_point(|(span, _, _)| span.end <= command.instances.start);
@@ -183,9 +195,9 @@ impl Commands {
                         extent.0,
                         extent.1,
                     ),
-                    signature: signature(command, &instances[0], *binding),
+                    signature: signature(command, source, &instances[0], *binding),
                 };
-                if let Some(before) = self.previous.get(&(command.key, *pass)) {
+                if let Some(before) = self.previous.get(&(key, *pass)) {
                     if before.order + 1 < self.last_order[*pass] {
                         // Reordering changes overlap even when each command's
                         // own pixels are unchanged. Insertions/removals alone
@@ -195,7 +207,7 @@ impl Commands {
                     self.last_order[*pass] = self.last_order[*pass].max(before.order + 1);
                 }
                 self.prepared
-                    .entry((command.key, *pass))
+                    .entry((key, *pass))
                     .and_modify(|old| {
                         old.bounds = cover(old.bounds, footprint.bounds);
                         // One leaf can split across shader/raster ranges. Fold all
@@ -358,11 +370,11 @@ fn cover(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
     ]
 }
 
-fn signature(command: &Command, instance: &Instance, binding: u64) -> u64 {
+fn signature(command: &Command, source: &CommandSource, instance: &Instance, binding: u64) -> u64 {
     let mut hash = FxHasher::default();
     binding.hash(&mut hash);
     command.revision.hash(&mut hash);
-    command.mask_epoch.hash(&mut hash);
+    source.mask_epoch.hash(&mut hash);
     let mut template = *instance;
     // Frame-local gradient offsets are allocation addresses, not paint.
     // Paint and geometry changes advance the retained emission revision.

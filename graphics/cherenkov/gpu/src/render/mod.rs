@@ -691,6 +691,7 @@ impl SurfaceState {
             + self.propagated_damage.bytes()
             + self.repaint_clears.bytes()
             + (self.frame.commands.capacity() * size_of::<damage::Command>()) as u64
+            + (self.frame.command_sources.capacity() * size_of::<damage::CommandSource>()) as u64
             + self.anchor_scratch.heap_bytes()
             + (self.part_ranges.capacity() * std::mem::size_of::<present::ColorRange>()) as u64
             + self.raster_scratch.heap_bytes()
