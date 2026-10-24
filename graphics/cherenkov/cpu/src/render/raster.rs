@@ -404,6 +404,7 @@ fn sample_rows(
     }
     if let Some(meter) = meter {
         meter.query_live.fetch_sub(charged, Ordering::Relaxed);
+        meter.clip_live.fetch_sub(charged, Ordering::Relaxed);
     }
     rows
 }
@@ -519,6 +520,8 @@ impl Drop for Scratch<'_> {
                 + self.buffers.clip_charge;
             m.query_live
                 .fetch_sub(bytes, std::sync::atomic::Ordering::Relaxed);
+            m.clip_live
+                .fetch_sub(self.buffers.clip_charge, Ordering::Relaxed);
         }
     }
 }
@@ -735,6 +738,15 @@ fn shadow_edge<S: Simd>(
     }
 }
 
+/// Charge new clip storage to both query diagnostics and the public peak.
+fn clip_alloc(bytes: u64, meter: Option<&FrameMeter>) {
+    sel_alloc(bytes, meter);
+    if let Some(meter) = meter {
+        let live = meter.clip_live.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        meter.clip_peak.fetch_max(live, Ordering::Relaxed);
+    }
+}
+
 /// Coverage borrowed from one raster window, never retained by the scene.
 #[derive(Clone, Copy, Debug)]
 pub enum ClipCoverage<'a> {
@@ -797,7 +809,7 @@ impl ClipScratch {
                         let bytes = self.compiler.heap_bytes()
                             + (self.cells.capacity() * size_of::<f32>()) as u64
                             - before;
-                        sel_alloc(bytes, Some(meter));
+                        clip_alloc(bytes, Some(meter));
                         *charged += bytes;
                     }
                     self.previous = Some(clip.clone());
@@ -2648,7 +2660,7 @@ fn run<S: Simd>(
         let before = buffers.clips.capacity();
         buffers.clips.push(clips);
         let bytes = ((buffers.clips.capacity() - before) * size_of::<ClipScratch>()) as u64;
-        sel_alloc(bytes, ctx.meter);
+        clip_alloc(bytes, ctx.meter);
         buffers.clip_charge += bytes;
     }
     Ok(())
