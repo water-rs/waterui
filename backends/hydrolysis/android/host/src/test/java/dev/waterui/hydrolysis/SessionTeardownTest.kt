@@ -652,9 +652,9 @@ class ShadowNativeBridge {
 
         @JvmStatic
         @Implementation
-        fun nativeSetHighRefresh(sessionPtr: Long, active: Boolean) {
+        fun nativeSetFrameDemand(sessionPtr: Long, continuous: Boolean, touching: Boolean) {
             assertLive(sessionPtr)
-            highRefreshDemands += active
+            highRefreshDemands += continuous || touching
         }
 
         @JvmStatic
