@@ -35,7 +35,7 @@ object NativeBridge {
      * `WindowInsetsAnimationCompat` progress pushes each IME animation frame;
      * 11 = [nativeUiThreadServices] creates the one executor per UI thread
      * at load time, and [nativeCreateSession] takes its handle so every
-     * session shares it; 12 = [nativeSetHighRefresh] takes a typed `active`
+     * session shares it; 12 = `nativeSetHighRefresh` takes a typed `active`
      * flag in place of the `-1f` sentinel float the native side decoded as a
      * release, and [nativeSurfaceAttached] carries the display's peak
      * refresh rate that flag asks for; 13 = a platform-view placement names
@@ -47,9 +47,11 @@ object NativeBridge {
      * native, which left with it; 16 = `onNativeFatalError` leaves the
      * table — a lost GPU device is recreated instead of ending the
      * session, and a recreation that exhausts its loss budget already
-     * reaches the host as the frame call's `IllegalStateException`.
+     * reaches the host as the frame call's `IllegalStateException`;
+     * 17 = [nativeSetFrameDemand] separates continuous work and touch, and
+     * surface attachment carries the display's suggested ARR rates.
      */
-    private const val SCHEMA: Int = 16
+    private const val SCHEMA: Int = 17
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -163,14 +165,16 @@ object NativeBridge {
 
     /**
      * A band surface was created. `peakRefreshHz` is the highest rate the
-     * band's display offers at its current resolution — what a
-     * [nativeSetHighRefresh] demand asks this surface for.
+     * band's display offers at its current resolution. Normal and high
+     * rates are the ARR suggestions, or the peak on a non-ARR display.
      */
     @JvmStatic
     external fun nativeSurfaceAttached(
         sessionPtr: Long,
         surface: Surface,
         peakRefreshHz: Float,
+        normalRefreshHz: Float,
+        highRefreshHz: Float,
         width: Int,
         height: Int,
         generation: Long,
@@ -193,12 +197,11 @@ object NativeBridge {
     @JvmStatic external fun nativeSetVisible(sessionPtr: Long, visible: Boolean)
 
     /**
-     * The scheduler's high-refresh demand. `active` asks the surface for the
-     * peak rate its attach reported, for as long as the pump runs or a touch
-     * is held; `false` releases the request. The native side holds the
-     * demand across surface re-creations.
+     * Continuous work and touch demand, combined with the engine's content
+     * range on the native side. The demand survives surface re-creation.
      */
-    @JvmStatic external fun nativeSetHighRefresh(sessionPtr: Long, active: Boolean)
+    @JvmStatic
+    external fun nativeSetFrameDemand(sessionPtr: Long, continuous: Boolean, touching: Boolean)
 
     /**
      * One system-back phase. `phase` is a `BACK_*` constant. `edge` is
