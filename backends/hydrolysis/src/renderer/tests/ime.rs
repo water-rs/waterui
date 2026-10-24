@@ -200,6 +200,12 @@ fn key_event(key: Key, code: Code, state: KeyState, modifiers: Modifiers) -> Inp
 /// Mounts a single-line field plus a Submit button — the form proves which
 /// keys reached ordinary handling.
 fn form_runtime() -> (HeadlessRuntime, Binding<Str>, Binding<bool>) {
+    form_runtime_on(crate::platform::OffscreenGpuContext::new_for_tests_blocking())
+}
+
+fn form_runtime_on(
+    gpu: crate::platform::OffscreenGpuContext,
+) -> (HeadlessRuntime, Binding<Str>, Binding<bool>) {
     let value = Binding::container(Str::default());
     let submitted = Binding::bool(false);
     let view = {
@@ -214,7 +220,7 @@ fn form_runtime() -> (HeadlessRuntime, Binding<Str>, Binding<bool>) {
             button("Submit").action(move || submitted_for_action.set(true)),
         )))
     };
-    let mut runtime = runtime_with(view);
+    let mut runtime = runtime_with_on(view, gpu);
     let start = Instant::now();
     settled(&mut runtime, start);
     press_text_input(&mut runtime, 0);
@@ -228,13 +234,30 @@ fn form_runtime() -> (HeadlessRuntime, Binding<Str>, Binding<bool>) {
 
 #[test]
 fn caret_blink_reuses_recording_without_layout() {
-    let (mut runtime, _value, _submitted) = form_runtime();
+    let gpu = crate::platform::OffscreenGpuContext::new_for_tests_blocking();
+    let probe = crate::platform::OffscreenSurface::on_context(
+        gpu.clone(),
+        1,
+        1,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let context = probe.device_loss().gpu_context();
+    let diagnostics = cherenkov_gpu::composition::Sink::new();
+    let engine = crate::engine::GpuEngine::new(cherenkov_gpu::GpuConfig {
+        device: Some(context.shared_device.clone()),
+        composition_diag: Some(diagnostics.clone()),
+        ..cherenkov_gpu::GpuConfig::default()
+    })
+    .expect("diagnostic engine");
+    let _state = crate::engine::SharedEngineState::register(context.context_id, Rc::new(engine));
+    let (mut runtime, _value, _submitted) = form_runtime_on(gpu);
     let start = runtime.renderer().frame_instant() + Duration::from_millis(16);
     let initial = runtime
         .pump_at(true, start)
         .snapshot
         .expect("initial frame");
     super::structural_transitions::save(&initial, "caret-live", "initial");
+    let _ = diagnostics.take();
     let mut largest_change = 0;
     let caret = runtime
         .renderer()
@@ -243,6 +266,13 @@ fn caret_blink_reuses_recording_without_layout() {
         .expect("focused caret");
     for tick in 1..=4 {
         let frame = runtime.pump_at(true, start + Duration::from_millis(tick * 530));
+        let reports = diagnostics.take();
+        assert!(!reports.is_empty(), "caret frame must report its work");
+        let repainted: u64 = reports.iter().map(|report| report.repaint_pixels).sum();
+        assert!(
+            repainted > 0 && repainted < u64::from(WINDOW_WIDTH) * u64::from(WINDOW_HEIGHT) / 20,
+            "caret frame repaint: {repainted} pixels"
+        );
         let work = frame.profile.counters.frame_work;
         assert_eq!(work.live_recordings, 0, "blink must keep its live source");
         assert_eq!(work.recorded_view_contents, 0, "blink must not record text");
@@ -271,13 +301,21 @@ fn caret_blink_reuses_recording_without_layout() {
 }
 
 fn runtime_with(view: AnyView) -> HeadlessRuntime {
+    runtime_with_on(
+        view,
+        crate::platform::OffscreenGpuContext::new_for_tests_blocking(),
+    )
+}
+
+fn runtime_with_on(view: AnyView, gpu: crate::platform::OffscreenGpuContext) -> HeadlessRuntime {
     let view = RefCell::new(Some(view));
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         view.borrow_mut()
             .take()
             .expect("the test view is built once")
     });
-    HeadlessRuntime::new_for_tests(
+    HeadlessRuntime::new_for_tests_on_context(
+        gpu,
         test_environment(),
         builder,
         WINDOW_WIDTH,

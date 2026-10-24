@@ -122,6 +122,15 @@ pub struct SharedEngineState {
     pub resources: Rc<crate::renderer::recording::SceneResources>,
 }
 
+impl SharedEngineState {
+    pub(crate) fn register(context_id: u64, engine: Rc<GpuEngine>) -> Rc<Self> {
+        let resources = Rc::new(crate::renderer::recording::SceneResources::new(&engine));
+        let state = Rc::new(Self { engine, resources });
+        ENGINES.with(|pool| pool.borrow_mut().insert(context_id, Rc::downgrade(&state)));
+        state
+    }
+}
+
 thread_local! {
     /// Engines alive on this thread, keyed by GPU-context identity. Weak so a
     /// context whose surfaces have all dropped releases its engine instead of
@@ -155,12 +164,7 @@ cfg_async_fn! {
             engine_await!(GpuEngine::new(config))
                 .expect("hydrolysis renderer: failed to create the Cherenkov engine"),
         );
-        let state = Rc::new(SharedEngineState {
-            engine: Rc::clone(&engine),
-            resources: Rc::new(crate::renderer::recording::SceneResources::new(&engine)),
-        });
-        ENGINES.with(|pool| pool.borrow_mut().insert(context_id, Rc::downgrade(&state)));
-        state
+        SharedEngineState::register(context_id, engine)
     }
 }
 
