@@ -512,12 +512,10 @@ pub struct GpuBound {
 
 impl GpuBound {
     /// Large, crossing-dense paths amortize compute dispatch and classification.
+    /// A narrow visible clip does not reduce the CPU sweep over the full path.
     pub const fn prefers_gpu(&self) -> bool {
         let strips = self.grid_h.div_ceil(STRIP_H);
-        !self.empty
-            && self.segments >= GPU_ROUTE_MIN_ELEMENTS
-            && self.grid_w * self.grid_h >= 4096
-            && self.bins >= strips * 32
+        !self.empty && self.segments >= GPU_ROUTE_MIN_ELEMENTS && self.bins >= strips * 32
     }
 
     /// The same bound seen from a frame moved by the integer vector `by`:
