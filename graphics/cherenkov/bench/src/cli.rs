@@ -1979,7 +1979,7 @@ fn stopped_interval(
     if scene.scroll_extent.is_none() {
         return Ok(None);
     }
-    engine.wait_idle()?;
+    engine.finish_gpu()?;
     let meter = measure_energy
         .then(|| energy::Meter::begin(duration))
         .transpose()?;
