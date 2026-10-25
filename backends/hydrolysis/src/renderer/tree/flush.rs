@@ -1123,6 +1123,10 @@ impl RenderNode {
                             f64::INFINITY,
                             f64::INFINITY,
                             (0.0, 0.0),
+                            // The semantic domain is not real geometry: the
+                            // painted pass's position report stays attached
+                            // and is reported against its own extents.
+                            None,
                         )
                     } else {
                         ScrollHandle::new(

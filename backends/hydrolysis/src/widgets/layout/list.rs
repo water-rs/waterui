@@ -23,7 +23,7 @@ use accesskit::{
 use waterui::accessibility::{AccessibilityHidden, AccessibilityStateSignal};
 use waterui::component::list::{ListConfig, ListItem, ListSelection, Move};
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
-use waterui_backend_core::scroll::animated_row_scroll_approach;
+use waterui_backend_core::scroll::{ScrollPositionReport, animated_row_scroll_approach};
 use waterui_core::animation::Animation;
 use waterui_core::handler::{BoxedAction, boxed_action};
 use waterui_core::id::Id as RawId;
@@ -691,15 +691,12 @@ impl ListRenderState {
     /// viewport and content by the extension layout computed, so the
     /// scrollable range keeps the resting edges on the avoided boundary
     /// while scrolling paints through the band.
-    #[expect(
-        clippy::option_if_let_else,
-        reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
-    )]
     fn bind_scroll(
         &self,
         viewport_width: f64,
         viewport_height: f64,
         content_height: f64,
+        position_report: Option<ScrollPositionReport>,
     ) -> ScrollHandle {
         let (viewport, content) = self.surface.extended(
             kurbo::Size::new(viewport_width, viewport_height),
@@ -714,16 +711,23 @@ impl ListRenderState {
             .pending_membership_offset
             .take()
             .map_or(0.0, |(rebased, recorded)| rebased - recorded);
-        let mut scroll = self.scroll.borrow_mut();
-        if let Some(handle) = scroll.as_mut() {
-            handle.rebind(
+        // Clone the slot's handle under a short borrow and rebind it with
+        // the borrow released: the rebind's report writes run watchers that
+        // may re-enter this list, and a `self.scroll` borrow held across
+        // them would panic.
+        let existing = self.scroll.borrow().clone();
+        if let Some(mut handle) = existing {
+            let rebound = handle.rebind(
                 ScrollAxis::Vertical,
                 viewport.width,
                 viewport.height,
                 content.width,
                 content.height,
                 (0.0, shift),
-            )
+                position_report,
+            );
+            *self.scroll.borrow_mut() = Some(rebound.clone());
+            rebound
         } else {
             let handle = ScrollHandle::new(
                 ScrollAxis::Vertical,
@@ -733,9 +737,28 @@ impl ListRenderState {
                 content.height,
                 None,
             );
-            *scroll = Some(handle.clone());
+            handle.set_position_report(position_report);
+            *self.scroll.borrow_mut() = Some(handle.clone());
             handle
         }
+    }
+
+    /// The position report this list's scroll controller reports through,
+    /// described by the logical — unextended — viewport and content sizes.
+    fn position_report(
+        &self,
+        viewport_width: f64,
+        viewport_height: f64,
+        content_height: f64,
+    ) -> Option<ScrollPositionReport> {
+        use crate::num_cast::f64_as_f32;
+        self.config.scroll_controller.as_ref().map(|controller| {
+            ScrollPositionReport::new(
+                controller.position_report(),
+                LayoutSize::new(f64_as_f32(viewport_width), f64_as_f32(viewport_height)),
+                LayoutSize::new(f64_as_f32(viewport_width), f64_as_f32(content_height)),
+            )
+        })
     }
 
     /// Applies the pending scroll request, if there is one. `animate` selects
@@ -1163,7 +1186,18 @@ pub fn list_accessibility(
         .borrow()
         .total_extent()
         .max(viewport.height());
-    let handle = state.bind_scroll(viewport.width(), viewport.height(), content_height);
+    // The semantic walk without a `ctx` never painted a frame: it must not
+    // report its zeroed stand-in rect over the painted geometry, so the
+    // position report is attached only when the bounds are real.
+    let position_report = is_rendered
+        .then(|| state.position_report(viewport.width(), viewport.height(), content_height))
+        .flatten();
+    let handle = state.bind_scroll(
+        viewport.width(),
+        viewport.height(),
+        content_height,
+        position_report,
+    );
     // Applied ahead of the emit below, so a move it makes is in this frame's
     // tree already.
     let _ = state.apply_scroll_request(renderer, &handle, row_count, is_rendered);
@@ -1737,9 +1771,16 @@ pub fn render_list_parts(
         .borrow()
         .total_extent()
         .max(viewport.height());
-    let handle = state
-        .borrow()
-        .bind_scroll(viewport.width(), viewport.height(), content_height);
+    let position_report =
+        state
+            .borrow()
+            .position_report(viewport.width(), viewport.height(), content_height);
+    let handle = state.borrow().bind_scroll(
+        viewport.width(),
+        viewport.height(),
+        content_height,
+        position_report,
+    );
     // Applied ahead of the rows' recording, so a move it makes is in this
     // frame's recording already.
     let _ = state
@@ -2485,10 +2526,16 @@ pub fn render_list_parts(
             .borrow()
             .total_extent()
             .max(viewport.height());
-        let rebound =
+        let position_report =
             state
                 .borrow()
-                .bind_scroll(viewport.width(), viewport.height(), content_height);
+                .position_report(viewport.width(), viewport.height(), content_height);
+        let rebound = state.borrow().bind_scroll(
+            viewport.width(),
+            viewport.height(),
+            content_height,
+            position_report,
+        );
         let moved =
             state
                 .borrow()
