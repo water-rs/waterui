@@ -68,30 +68,36 @@ fn paint(paint: &ResolvedPaint, images: &FxHashMap<u64, GpuImage>) -> ColorRange
 /// filter and encoded-space blend operations retain extended-range output.
 pub(super) fn of_ops(ops: &[Op], images: &FxHashMap<u64, GpuImage>) -> ColorRange {
     ops.iter()
-        .map(|op| match op {
-            Op::Shaped { paint: source, .. }
-            | Op::Path { paint: source, .. }
-            | Op::Glyphs { paint: source, .. } => paint(source, images),
-            Op::Shadow { color, .. } => working(*color, 1.0),
-            Op::BeginIsolate {
-                blend,
-                space,
-                filter,
-                ..
-            } if filter.is_some()
-                || *blend == BlendMode::PlusLighter
-                || *space == BlendSpace::SrgbEncoded =>
-            {
-                ColorRange::HighDynamicRange
-            }
-            Op::BitmapGlyph { .. }
-            | Op::BeginClip { .. }
-            | Op::BeginShadow { .. }
-            | Op::BeginIsolate { .. }
-            | Op::End => ColorRange::Standard,
-        })
+        .map(|op| of_op(op, images))
         .max()
         .unwrap_or_default()
+}
+
+/// Classify a single drawing operation without a slice traversal.
+#[inline]
+pub(super) fn of_op(op: &Op, images: &FxHashMap<u64, GpuImage>) -> ColorRange {
+    match op {
+        Op::Shaped { paint: source, .. }
+        | Op::Path { paint: source, .. }
+        | Op::Glyphs { paint: source, .. } => paint(source, images),
+        Op::Shadow { color, .. } => working(*color, 1.0),
+        Op::BeginIsolate {
+            blend,
+            space,
+            filter,
+            ..
+        } if filter.is_some()
+            || *blend == BlendMode::PlusLighter
+            || *space == BlendSpace::SrgbEncoded =>
+        {
+            ColorRange::HighDynamicRange
+        }
+        Op::BitmapGlyph { .. }
+        | Op::BeginClip { .. }
+        | Op::BeginShadow { .. }
+        | Op::BeginIsolate { .. }
+        | Op::End => ColorRange::Standard,
+    }
 }
 
 /// Classify the same content-first tree order that opens engine parts during

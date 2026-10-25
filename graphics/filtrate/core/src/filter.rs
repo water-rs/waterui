@@ -251,6 +251,7 @@ mod tests {
     const SPATIAL: SpatialStage = SpatialStage {
         name: "spatial",
         source: "",
+        source_f16: None,
         params: &[ParamSource::Param(0), ParamSource::Param(1)],
         space: OperatingSpace::Working,
         shape: None,

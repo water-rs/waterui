@@ -60,7 +60,7 @@ clap = { version = "4", features = ["derive"] }
 # The fork pinned in the workspace `[patch.crates-io]` declares 0.11.0.
 vello = { version = "0.11", default-features = false, optional = true, features = ["wgpu", "wgpu-profiler"] }
 vello_gpu = { version = "0.3", default-features = false, optional = true, features = ["wgpu", "text"] }
-vello_cpu = { version = "0.3", default-features = false, optional = true, features = ["std", "text", "u8_pipeline", "f32_pipeline"] }
+vello_cpu = { version = "0.3", default-features = false, optional = true, features = ["std", "text", "u8_pipeline"] }
 vello_common = { version = "0.3", default-features = false, optional = true, features = ["std"] }
 skia-safe = { version = "0.153", optional = true }
 # `no-compile` unifies onto skia-safe's transitive skia-bindings.

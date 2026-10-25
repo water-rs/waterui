@@ -342,7 +342,7 @@ mod imp {
     /// from `MenuTreeNode`s (context menus): the same title and chord, its
     /// action the same untargeted `terminate:` the application menu's item
     /// sends.
-    #[cfg(feature = "context_menu")]
+    #[cfg(any(feature = "context_menu", feature = "text_field"))]
     pub fn standard_quit_node() -> cocoa_ui::menu::MenuTreeNode {
         cocoa_ui::menu::MenuTreeNode::Standard(
             cocoa_ui::menu::Command {

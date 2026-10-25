@@ -60,8 +60,10 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// pushed native, which left with it; 16 = `onNativeFatalError` leaves the
 /// table — a lost GPU device is recreated instead of ending the session
 /// (water-rs/waterui#2742), and a recreation that exhausts its loss budget
-/// already reaches Kotlin as the frame call's `IllegalStateException`.
-pub const JNI_SCHEMA: jint = 16;
+/// already reaches Kotlin as the frame call's `IllegalStateException`;
+/// 17 = `nativeSetFrameDemand` separates continuous work and touch demand,
+/// and surface attachment supplies the display's suggested ARR rates.
+pub const JNI_SCHEMA: jint = 17;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -553,15 +555,20 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceAtt
     session_ptr: jlong,
     surface: JObject<'local>,
     peak_refresh_hz: jfloat,
+    normal_refresh_hz: jfloat,
+    high_refresh_hz: jfloat,
     width: jint,
     height: jint,
     generation: jlong,
 ) -> jboolean {
     guard_val(&mut env, false, |env| {
-        if !(peak_refresh_hz.is_finite() && peak_refresh_hz > 0.0) {
+        if ![peak_refresh_hz, normal_refresh_hz, high_refresh_hz]
+            .into_iter()
+            .all(|rate| rate.is_finite() && rate > 0.0)
+        {
             return Err(JniError(format!(
-                "hydrolysis android: surface attached with peak refresh rate {peak_refresh_hz} Hz; \
-                 the host must report its display's positive peak rate"
+                "hydrolysis android: invalid display rates: peak={peak_refresh_hz}, \
+                 normal={normal_refresh_hz}, high={high_refresh_hz}; rates must be positive and finite"
             )));
         }
         let window = unsafe {
@@ -580,7 +587,11 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceAtt
         session(session_ptr)
             .surface_attached_with_generation(
                 window,
-                peak_refresh_hz,
+                super::gpu::DisplayRefresh {
+                    peak: peak_refresh_hz,
+                    normal: normal_refresh_hz,
+                    high: high_refresh_hz,
+                },
                 crate::num_cast::i32_as_u32(width.max(0)),
                 crate::num_cast::i32_as_u32(height.max(0)),
                 crate::num_cast::i64_as_u64(generation),
@@ -637,21 +648,19 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetVisible
     });
 }
 
-/// The scheduler's high-refresh demand: `active` asks the surface for its
-/// display's peak rate — reported with the surface attach — for as long as
-/// the pump runs or a touch is held; a cleared flag releases the request.
-/// The session holds the demand across surface generations, so a
-/// re-attached band gets it back without a demand change.
+/// The host's continuous-work and touch demand. The session combines these
+/// with the current engine content-rate range before voting on its window.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetHighRefresh<'local>(
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetFrameDemand<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     session_ptr: jlong,
-    active: jboolean,
+    continuous: jboolean,
+    touching: jboolean,
 ) {
     guard(&mut env, |_env| {
         session(session_ptr)
-            .set_high_refresh_demand(active)
+            .set_frame_demand(continuous, touching)
             .map_err(JniError)
     });
 }

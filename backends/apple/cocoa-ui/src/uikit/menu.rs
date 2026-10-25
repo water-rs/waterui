@@ -25,9 +25,9 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 
 use block2::RcBlock;
+use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, sel};
 use objc2_foundation::{NSArray, NSString};
 use objc2_ui_kit::{
     UIAction, UIColor, UIImage, UIKeyCommand, UIMenu, UIMenuElement, UIMenuElementAttributes,
@@ -188,14 +188,13 @@ fn command_element(
     } else {
         let property_list = key_commands.arm(action);
         // SAFETY: `commandWithTitle:...` is `UIKeyCommand`'s designated
-        // constructor, `cocoaUiMenuCommandFired:` is a selector
-        // `AppDelegate` implements, and an `NSNumber` is a property-list
-        // object.
+        // constructor, the scope's action is a selector the recipient that
+        // armed it implements, and an `NSNumber` is a property-list object.
         let key_command = unsafe {
             UIKeyCommand::commandWithTitle_image_action_input_modifierFlags_propertyList(
                 &title,
                 image.as_deref(),
-                sel!(cocoaUiMenuCommandFired:),
+                key_commands.action(),
                 &NSString::from_str(&command.key_equivalent),
                 command.modifiers.native(),
                 Some(AsRef::<AnyObject>::as_ref(&*property_list)),
@@ -213,6 +212,39 @@ fn command_element(
 
 fn menu_image(symbol: Option<&str>) -> Option<Retained<UIImage>> {
     symbol.and_then(|symbol| UIImage::systemImageNamed(&NSString::from_str(symbol)))
+}
+
+/// A `UIMenu` for a text field's edit menu.
+///
+/// The system's `suggested` actions followed by `nodes`' elements as an
+/// inline group — the shape `textField:editMenuForCharactersInRanges:
+/// suggestedActions:` answers. `nodes` must be non-empty.
+#[must_use]
+pub fn edit_menu(
+    mtm: MainThreadMarker,
+    key_commands: &KeyCommands,
+    suggested: &NSArray<UIMenuElement>,
+    nodes: &[MenuTreeNode],
+) -> Retained<UIMenu> {
+    let custom = elements(mtm, key_commands, nodes);
+    let custom_group = UIMenu::menuWithTitle_image_identifier_options_children(
+        &NSString::new(),
+        None,
+        None,
+        UIMenuOptions::DisplayInline,
+        &NSArray::from_retained_slice(&custom),
+        mtm,
+    );
+    let mut children = suggested.to_vec();
+    children.push(custom_group.into_super());
+    UIMenu::menuWithTitle_image_identifier_options_children(
+        &NSString::new(),
+        None,
+        None,
+        UIMenuOptions::empty(),
+        &NSArray::from_retained_slice(&children),
+        mtm,
+    )
 }
 
 /// One child of a [`Menu`]: a triggerable action or a nested menu.

@@ -333,7 +333,12 @@ pub fn render_morph_shape_parts(
     let (path, fill) = {
         let resolved = shape.borrow();
         let progress = if let Some(progress) = resolved.progress.as_ref() {
-            renderer.resolve_owned_scalar(progress, shape, MORPH_PROGRESS_ANIMATION_KEY)
+            renderer.resolve_owned_scalar(
+                progress,
+                shape,
+                MORPH_PROGRESS_ANIMATION_KEY,
+                cherenkov_record::tree::RATE_FAST,
+            )
         } else {
             renderer.sample_morph_progress(resolved.animation, shape)
         };

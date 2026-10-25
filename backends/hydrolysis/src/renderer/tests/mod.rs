@@ -483,7 +483,12 @@ fn animated_scalar_subscribes_before_reading_its_snapshot() {
     let mut renderer = test_renderer();
     let owner = Rc::new(());
 
-    let resolved = renderer.resolve_owned_scalar(&signal, &owner, usize::MAX);
+    let resolved = renderer.resolve_owned_scalar(
+        &signal,
+        &owner,
+        usize::MAX,
+        cherenkov_record::tree::RATE_FAST,
+    );
 
     assert_eq!(resolved, 0.25);
     assert!(signal.subscribed.get());

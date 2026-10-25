@@ -343,6 +343,8 @@ pub struct TextureCherenkovSurface {
     /// sampling post-resize without draining is the stale-attachment case
     /// the plan bans.
     textures: mpsc::Receiver<wgpu::Texture>,
+    ranges: mpsc::Receiver<cherenkov_gpu::interop::ColorRange>,
+    content_range: Option<cherenkov_gpu::interop::ColorRange>,
     texture: Option<(wgpu::Texture, wgpu::TextureView)>,
     presenter: cherenkov_gpu::interop::Presenter,
 }
@@ -380,11 +382,12 @@ impl TextureCherenkovSurface {
         size: (u32, u32),
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
-        let (target, textures) = cherenkov_gpu::interop::TextureTarget::new(size);
+        let (mut target, textures) = cherenkov_gpu::interop::TextureTarget::new(size);
+        let ranges = target.content_ranges();
         let surface = engine
             .surface(target, wake)
             .expect("hydrolysis renderer: failed to create the Cherenkov surface");
-        Self::build(engine, device, backend, size, surface, textures)
+        Self::build(engine, device, backend, size, surface, textures, ranges)
     }
 
     /// [`Self::new`], async on wasm32 where `Engine::surface` awaits the
@@ -401,12 +404,13 @@ impl TextureCherenkovSurface {
         size: (u32, u32),
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
-        let (target, textures) = cherenkov_gpu::interop::TextureTarget::new(size);
+        let (mut target, textures) = cherenkov_gpu::interop::TextureTarget::new(size);
+        let ranges = target.content_ranges();
         let surface = engine
             .surface(target, wake)
             .await
             .expect("hydrolysis renderer: failed to create the Cherenkov surface");
-        Self::build(engine, device, backend, size, surface, textures)
+        Self::build(engine, device, backend, size, surface, textures, ranges)
     }
 
     /// The construction the sync native and async wasm32 [`Self::new`]
@@ -418,12 +422,15 @@ impl TextureCherenkovSurface {
         size: (u32, u32),
         surface: cherenkov::Surface<cherenkov_gpu::Gpu>,
         textures: mpsc::Receiver<wgpu::Texture>,
+        ranges: mpsc::Receiver<cherenkov_gpu::interop::ColorRange>,
     ) -> Self {
         let delivery = cherenkov_gpu::interop::shader_delivery(backend, device)
             .expect("hydrolysis renderer: shader delivery unsupported on this device");
         Self {
             core: SurfaceCore::new(engine, surface, size),
             textures,
+            ranges,
+            content_range: None,
             texture: None,
             presenter: cherenkov_gpu::interop::Presenter::new(device, delivery),
         }
@@ -473,7 +480,15 @@ impl TextureCherenkovSurface {
         self.texture
             .as_ref()
             .expect("hydrolysis renderer: engine produced no surface texture");
+        for range in self.ranges.try_iter() {
+            self.content_range = Some(range);
+        }
         next
+    }
+
+    pub(crate) const fn content_range(&self) -> cherenkov_gpu::interop::ColorRange {
+        self.content_range
+            .expect("hydrolysis renderer: rendered surface has no content range")
     }
 
     /// Converts the rendered engine texture into `output` through the

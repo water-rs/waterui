@@ -4,7 +4,7 @@ pub use crate::render::filter::EffectBox;
 pub use crate::render::present::{
     ColorRange, ColorRangeInterval, ColorSpaceRequest, DestinationPrimaries, DisplayProbe,
     OutputAlpha, OutputColor, OutputRequest, OutputSelection, Presenter, SelectionReason,
-    TextureOutput, TransferEncoding, select_output, surface_output_alpha,
+    TextureOutput, TransferEncoding, select_content_output, select_output, surface_output_alpha,
 };
 pub use crate::render::shaders::{ShaderDelivery, delivery as shader_delivery};
 use std::future::Future;
@@ -259,9 +259,20 @@ pub struct TextureTarget {
     pub(crate) size: (u32, u32),
     pub(crate) refresh: cherenkov::RefreshRange,
     pub(crate) textures: std::sync::mpsc::Sender<wgpu::Texture>,
+    pub(crate) ranges: Option<std::sync::mpsc::Sender<ColorRange>>,
 }
 
 impl TextureTarget {
+    /// Subscribes to the first rendered content range and subsequent changes.
+    /// Drain after a successful `Engine::render`, before choosing the host's
+    /// output format. Stable frames and texture-only resizes send no update.
+    /// A new subscription replaces the previous receiver.
+    pub fn content_ranges(&mut self) -> std::sync::mpsc::Receiver<ColorRange> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.ranges = Some(sender);
+        receiver
+    }
+
     /// Sets the refresh range for animated content.
     ///
     /// # Panics
@@ -285,6 +296,7 @@ impl TextureTarget {
             Self {
                 size,
                 textures,
+                ranges: None,
                 refresh: cherenkov::DEFAULT_REFRESH,
             },
             receiver,
@@ -1634,6 +1646,17 @@ pub mod web {
             return Err(InvalidWebTexture::Unusable);
         }
         Ok(wrapped)
+    }
+}
+
+impl crate::GpuTarget {
+    pub(crate) const fn take_content_ranges(
+        &mut self,
+    ) -> Option<std::sync::mpsc::Sender<ColorRange>> {
+        match self {
+            Self::Texture(target) => target.ranges.take(),
+            _ => None,
+        }
     }
 }
 

@@ -214,21 +214,51 @@ pub struct AndroidSurface {
     /// engine surface — valid while between surface generations too.
     width: u32,
     height: u32,
-    /// The scheduler's high-refresh demand: `true` while the pump runs or a
-    /// touch is held. It belongs to the session, not the window: `detach`
-    /// leaves it in place (the request dies with the old lease anyway) and
-    /// `attach` writes it onto the new one at that window's peak rate.
-    high_refresh: bool,
+    /// Demand belongs to the session and is reapplied to each attachment.
+    refresh_demand: RefreshDemand,
 }
 
-/// One attachment's native window together with the highest refresh rate
-/// its display offers at the current resolution — the rate a high-refresh
-/// demand asks for. The rate travels with the window because it is the
-/// window's display that bounds it.
+/// An attachment and its display's peak and content-category rates.
 struct WindowLease {
     window: NativeWindow,
     /// Positive and finite; the JNI boundary rejects anything else.
-    peak_refresh_hz: f32,
+    refresh: DisplayRefresh,
+}
+
+/// Display capabilities supplied by the platform at attachment.
+#[derive(Clone, Copy)]
+pub struct DisplayRefresh {
+    pub peak: f32,
+    pub normal: f32,
+    pub high: f32,
+}
+
+#[derive(Default, PartialEq, Eq)]
+pub struct RefreshDemand {
+    pub continuous: bool,
+    pub touching: bool,
+    pub content: Option<cherenkov::RefreshRange>,
+}
+
+impl DisplayRefresh {
+    fn requested(self, demand: &RefreshDemand) -> f32 {
+        if demand.touching {
+            return self.peak;
+        }
+        // Continuous callbacks also drive classified animations. Their content
+        // vote sets the vsync cadence; only unclassified work needs peak rate.
+        let Some(content) = &demand.content else {
+            return if demand.continuous { self.peak } else { 0.0 };
+        };
+        let minimum = crate::num_cast::f64_as_f32(f64::from(*content.start()));
+        let maximum = crate::num_cast::f64_as_f32(f64::from(*content.end()));
+        let suggested = if maximum <= self.normal {
+            self.normal
+        } else {
+            self.high
+        };
+        suggested.clamp(minimum, maximum).min(self.peak)
+    }
 }
 
 impl AndroidSurface {
@@ -243,7 +273,7 @@ impl AndroidSurface {
             native_window: None,
             width: 0,
             height: 0,
-            high_refresh: false,
+            refresh_demand: RefreshDemand::default(),
         }
     }
 
@@ -257,12 +287,12 @@ impl AndroidSurface {
     ///
     /// `native_window` is the owned lease obtained from the Kotlin `Surface`
     /// (`ANativeWindow_fromSurface` acquires the reference it returns), and
-    /// `peak_refresh_hz` the highest rate its display offers at the current
-    /// resolution. Errors leave the attachment detached.
+    /// `refresh` describes its display's supported peak and suggested rates.
+    /// Errors leave the attachment detached.
     pub(crate) fn attach(
         &mut self,
         native_window: NativeWindow,
-        peak_refresh_hz: f32,
+        refresh: DisplayRefresh,
         width: u32,
         height: u32,
         generation: u64,
@@ -273,7 +303,7 @@ impl AndroidSurface {
         self.generation = generation;
         self.native_window = Some(WindowLease {
             window: native_window,
-            peak_refresh_hz,
+            refresh,
         });
         // The frame-rate request is a property of the window, so the demand
         // the scheduler held across the re-attach goes onto the new lease.
@@ -371,16 +401,13 @@ impl AndroidSurface {
         true
     }
 
-    /// Requests the attached window's peak refresh rate while the scheduler
-    /// reports active interaction or animation, and releases the request
-    /// when it goes idle. The demand is held, not just applied: a no-change
-    /// call does not re-call the platform, and a demand held while no window
-    /// is attached is written by the next [`Self::attach`].
-    pub(crate) fn set_high_refresh_demand(&mut self, active: bool) -> Result<(), GpuError> {
-        if self.high_refresh == active {
+    /// Holds content and interaction demand across attachments. An unchanged
+    /// demand does not repeat the platform call.
+    pub(crate) fn set_refresh_demand(&mut self, demand: RefreshDemand) -> Result<(), GpuError> {
+        if self.refresh_demand == demand {
             return Ok(());
         }
-        self.high_refresh = active;
+        self.refresh_demand = demand;
         self.apply_frame_rate()
     }
 
@@ -392,11 +419,7 @@ impl AndroidSurface {
         let Some(lease) = self.native_window.as_ref() else {
             return Ok(());
         };
-        let rate = if self.high_refresh {
-            lease.peak_refresh_hz
-        } else {
-            0.0
-        };
+        let rate = lease.refresh.requested(&self.refresh_demand);
         // `ANativeWindow_setFrameRate` is API 30. The framework floor is API
         // 31, so the symbol is a direct link, not a run-time lookup.
         lease

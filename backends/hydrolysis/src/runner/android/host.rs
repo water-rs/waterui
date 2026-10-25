@@ -1057,6 +1057,10 @@ impl AndroidSession {
     /// scheduler whether another frame is owed.
     pub(crate) fn on_frame(&mut self) -> FrameOutcome {
         tracing::debug!(target: "waterui::hydrolysis::android", "frame wake");
+        // Tasks and input callbacks can start animations. Publish this frame's
+        // time before either runs so idle time is not charged to a new track.
+        let now = Instant::now();
+        self.runtime.renderer.set_frame_instant(now);
         // The transaction is open: a frame request recorded from now on
         // fires no wake — its scheduling is counted into `wants_next_frame`
         // below instead of posting into a frame already running.
@@ -1066,8 +1070,12 @@ impl AndroidSession {
         // `render_window`'s `sync_text_input_state` hold gate.
         self.platform_view_focus_sync();
         let should_close = handle_input_events(&mut self.runtime, &self.env) || self.should_close();
-        let now = Instant::now();
-        let deadline = advance_runtime(&mut self.runtime, &self.env, now);
+        let mut deadline = advance_runtime(&mut self.runtime, &self.env, now);
+        if matches!(self.runtime.engine_next, cherenkov::Next::At { time, .. } if time <= now)
+            && !self.runtime.is_hidden()
+        {
+            self.runtime.platform.request_redraw();
+        }
         let mut flushed = false;
         let surface_attached = self.runtime.platform.surface.is_attached();
         // A redraw request raised before this frame renders is served by
@@ -1128,7 +1136,7 @@ impl AndroidSession {
         );
         if reports_ui_idle(
             self.presented_once.get(),
-            wants_next_frame,
+            wants_next_frame || matches!(self.runtime.engine_next, cherenkov::Next::At { .. }),
             self.runtime.is_hidden(),
         ) && !self.ready_logged.get()
         {
@@ -1141,9 +1149,14 @@ impl AndroidSession {
         // A deadline already elapsed wakes the frame once: its tick then
         // runs at or after the deadline, which is when the recognizer that
         // armed it clears itself.
+        if !self.runtime.is_hidden()
+            && let cherenkov::Next::At { time, .. } = self.runtime.engine_next
+        {
+            deadline = Some(deadline.map_or(time, |other| other.min(time)));
+        }
         let deadline_in_nanos = deadline.map(|at| {
             i64::try_from(
-                at.checked_duration_since(now)
+                at.checked_duration_since(Instant::now())
                     .unwrap_or_default()
                     .as_nanos(),
             )
@@ -1170,7 +1183,7 @@ impl AndroidSession {
     pub(crate) fn surface_attached_with_generation(
         &mut self,
         native_window: ndk::native_window::NativeWindow,
-        peak_refresh_hz: f32,
+        refresh: super::gpu::DisplayRefresh,
         width: u32,
         height: u32,
         generation: u64,
@@ -1183,13 +1196,11 @@ impl AndroidSession {
             height,
             "wake posted: surface attached"
         );
-        let attached = self.runtime.platform.surface.attach(
-            native_window,
-            peak_refresh_hz,
-            width,
-            height,
-            generation,
-        );
+        let attached =
+            self.runtime
+                .platform
+                .surface
+                .attach(native_window, refresh, width, height, generation);
         self.runtime.platform.sync_frame_wake_gate();
         attached.map_err(|error| error.to_string())?;
         // A new surface never inherits the old one's presented frame — the
@@ -1237,13 +1248,31 @@ impl AndroidSession {
         self.runtime.sync_occlusion();
     }
 
-    /// The scheduler's interaction/animation high-refresh demand changed —
-    /// routed onto the native window (API 30+).
-    pub(crate) fn set_high_refresh_demand(&mut self, active: bool) -> Result<(), String> {
+    /// Combines host work with the engine's content-rate range for this window.
+    pub(crate) fn set_frame_demand(
+        &mut self,
+        continuous: bool,
+        touching: bool,
+    ) -> Result<(), String> {
+        let visible = !self.runtime.is_hidden();
+        let engine = match &self.runtime.engine_next {
+            cherenkov::Next::At { rate, .. } if visible => Some(rate.clone()),
+            _ => None,
+        };
+        let framework = visible
+            .then(|| self.runtime.renderer.animation_refresh_range())
+            .flatten();
+        let content = engine.into_iter().chain(framework).reduce(|left, right| {
+            (*left.start()).max(*right.start())..=(*left.end()).max(*right.end())
+        });
         self.runtime
             .platform
             .surface
-            .set_high_refresh_demand(active)
+            .set_refresh_demand(super::gpu::RefreshDemand {
+                continuous: visible && continuous,
+                touching: visible && touching,
+                content,
+            })
             .map_err(|error| error.to_string())
     }
 

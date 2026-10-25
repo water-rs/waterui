@@ -127,6 +127,7 @@ pub fn convert(capture: &Capture) -> Result<(Scene, Vec<Resource>), CaptureError
         .collect();
     let state = State { fonts, images };
     let mut scene = Scene {
+        scroll_extent: None,
         width: capture.width,
         height: capture.height,
         working_space: WorkingSpace::LinearDisplayP3,

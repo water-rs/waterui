@@ -166,6 +166,8 @@ impl DrawRange {
 /// One render pass.
 #[derive(Clone, Debug)]
 pub struct Pass {
+    /// Range of directly drawn content; sampled images are resolved by the planner.
+    pub color_range: super::present::ColorRange,
     /// What it draws into.
     pub target: Target,
     /// Clear colour; `None` loads the previous contents.
@@ -270,6 +272,7 @@ pub struct Frame {
 
 #[derive(Clone)]
 struct OpenPass {
+    color_range: super::present::ColorRange,
     target: Target,
     clear: Option<[f32; 4]>,
     /// The target's storage space, resolved when the pass opened.
@@ -679,7 +682,12 @@ impl ContentData {
     }
 
     pub fn gpu_input_bytes(&self) -> u64 {
-        (self.storage.gpu_paths.capacity() * std::mem::size_of::<(usize, PreparedGpu)>()
+        (self.storage.templates.capacity() * size_of::<InstanceTemplate>()
+            + self.storage.covers.capacity() * size_of::<Cover>()
+            + self.storage.instances.capacity() * size_of::<RetainedInstance>()
+            + self.storage.stops.capacity() * size_of::<Stop>()
+            + self.storage.refs.capacity() * size_of::<(u32, u64)>()
+            + self.storage.gpu_paths.capacity() * std::mem::size_of::<(usize, PreparedGpu)>()
             + self
                 .storage
                 .gpu_paths
@@ -2559,6 +2567,16 @@ impl<'a> Lowering<'a> {
         self.finish_pass();
         let space = self.target_space(target);
         self.frame.open = Some(OpenPass {
+            // Only scratch images choose storage from their drawn colors.
+            // Output parts are classified separately and projected images
+            // keep their explicit format. Their reads retain float precision.
+            color_range: if matches!(target, Target::Scratch(_)) {
+                clear.map_or(super::present::ColorRange::Standard, |color| {
+                    super::content_range::working(color, 1.0)
+                })
+            } else {
+                super::present::ColorRange::HighDynamicRange
+            },
             target,
             clear,
             space,
@@ -2663,6 +2681,7 @@ impl<'a> Lowering<'a> {
                     .push((self.frame.passes.len(), capture.levels));
             }
             self.frame.passes.push(Pass {
+                color_range: open.color_range,
                 target: open.target,
                 clear: open.clear,
                 ranges: open.ranges,
@@ -3148,6 +3167,11 @@ impl<'a> Lowering<'a> {
         let capture = self.capture_isolation;
         let draws = self.projective_draws;
         let part = self.part;
+        // This batch can become a scratch image even while drawing into
+        // an output part. Classify the batch independently of its parent.
+        if let Some(open) = &mut self.frame.open {
+            open.color_range = super::present::ColorRange::Standard;
+        }
         let result = body(self, glyphs);
         // The speculated level is translucent, and eligibility keeps every
         // ancestor of a promoted layer opaque: its body never crosses a
@@ -3161,6 +3185,9 @@ impl<'a> Lowering<'a> {
         let folds = result.is_ok() && self.projective_draws == draws;
         let new = &self.frame.instances[snap.instances..];
         if folds && self.frame.passes.len() == snap.passes && bboxes_disjoint(new) {
+            if let (Some(open), Some(parent)) = (&mut self.frame.open, &snap.open) {
+                open.color_range = open.color_range.max(parent.color_range);
+            }
             for inst in &mut self.frame.instances[snap.instances..] {
                 inst.params[1] *= opacity;
             }
@@ -3224,6 +3251,7 @@ impl<'a> Lowering<'a> {
             }
             self.scratch_space[self.depth] = open.space;
             self.frame.passes.push(Pass {
+                color_range: open.color_range,
                 target: Target::Scratch(self.depth),
                 clear: Some([0.0; 4]),
                 ranges: open.ranges,
@@ -4505,6 +4533,12 @@ impl<'a> Lowering<'a> {
         source: &cherenkov::DisplayList,
     ) -> Result<bool, RenderError> {
         let (_, op) = indexed;
+        if let Some(open) = &mut self.frame.open
+            && open.color_range != super::present::ColorRange::HighDynamicRange
+        {
+            let range = super::content_range::of_op(op, glyphs.images);
+            open.color_range = open.color_range.max(range);
+        }
         let cover = self.shadow_cover(op, next);
         let hit = cache.valid
             && cache.data.as_mut().is_some_and(|e| {
@@ -4534,6 +4568,25 @@ impl<'a> Lowering<'a> {
             self.compose(emission, storage);
             (replaced, emission.revision)
         } else {
+            // An unchanged retained emission has already passed visibility testing.
+            if let Op::Glyphs { local, bounds, .. } = op {
+                // Coverage cells carry a one-pixel apron and integer rounding can
+                // extend another pixel beyond the outline. Cull against this
+                // target, including the enlarged target of a silhouette capture.
+                let placed = (self.transform * *local).transform_rect_bbox(*bounds);
+                let visible = Rect::new(0.0, 0.0, f64::from(self.width), f64::from(self.height));
+                if placed.inflate(2.0, 2.0).intersect(visible).is_zero_area() {
+                    // Offscreen emissions must not pin their old atlas shelves.
+                    // The existing storage compaction reclaims their ranges.
+                    *cache = Realization::default();
+                    // Keep operation indices stable within this command run.
+                    self.frame.commands.push(super::damage::Command {
+                        instances_end: self.frame.instances.len(),
+                        revision: self.frame.revision,
+                    });
+                    return Ok(false);
+                }
+            }
             // GPU leaves retain like CPU leaves (water-rs/waterui#3081): the
             // anchor instance and its coverage draw record live on the
             // emission; the coverage entry itself survives by placement key.
@@ -5123,7 +5176,9 @@ impl<'a> Lowering<'a> {
                     }
                 };
             }
-            Op::Glyphs { local, run, paint } => {
+            Op::Glyphs {
+                local, run, paint, ..
+            } => {
                 self.transform *= *local;
                 self.glyph_run(run.get(source), paint, glyphs)?;
             }
@@ -8514,6 +8569,7 @@ mod tests {
             gpu: None,
         };
         let pass = |target: Target, clear: Option<[f32; 4]>, ranges: Vec<DrawRange>| Pass {
+            color_range: super::super::present::ColorRange::Standard,
             target,
             clear,
             ranges,

@@ -39,6 +39,7 @@ fn frame(items: &[(usize, f32)]) -> Frame {
             gpu: None,
         }],
         space: cherenkov::BlendSpace::Linear,
+        color_range: crate::render::present::ColorRange::Standard,
         region: [0, 0, 100, 100],
         backdrop_copy: None,
         capture: None,

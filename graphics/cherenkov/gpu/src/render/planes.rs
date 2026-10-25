@@ -1048,7 +1048,6 @@ pub struct Plane<'a> {
 )]
 pub struct Part<'a> {
     /// Prepared content range, excluding promoted content.
-    #[cfg(target_os = "android")]
     pub range: super::present::ColorRange,
     /// Pixels written by the latest engine encoding, stable across present retries.
     #[cfg(target_os = "android")]

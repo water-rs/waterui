@@ -125,7 +125,7 @@ impl HydrolysisRenderer {
     /// texture when the task that acquired it ends.
     pub(crate) fn present_engine_frame(
         &mut self,
-        EngineFrame { headroom }: EngineFrame,
+        EngineFrame { headroom, .. }: EngineFrame,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         texture: &wgpu::Texture,
@@ -222,7 +222,8 @@ impl HydrolysisRenderer {
         self.take_applied_filter_metrics();
         self.cherenkov_window = Some(window);
         self.engine_next = Some(rendered?);
-        Ok(EngineFrame { headroom })
+        let content_range = self.cherenkov_window.as_ref().expect("rendered window").surface.content_range();
+        Ok(EngineFrame { headroom, content_range })
     }
     }
 
@@ -523,6 +524,7 @@ impl HydrolysisRenderer {
 #[must_use = "an engine frame is shown only once present_engine_frame copies it out"]
 pub struct EngineFrame {
     headroom: f32,
+    pub(crate) content_range: cherenkov_gpu::interop::ColorRange,
 }
 
 /// The renderer's engine window on one device-creation chain: the engine

@@ -28,6 +28,8 @@ const PAD: u32 = 1;
 pub struct FontData {
     pub data: Arc<[u8]>,
     pub index: u32,
+    pub units_per_em: u16,
+    pub default_bounds: kurbo::Rect,
     /// Validated once at registration; plain runs do not reparse font tables.
     pub has_colr: bool,
     /// Resolved once at registration like `has_colr`: `bitmap` is `Some`.
@@ -39,6 +41,14 @@ pub struct FontData {
     /// the placement. Interior mutability, not shared: parallel lowering
     /// works on a per-thread snapshot.
     pub colr: std::cell::RefCell<FxHashMap<(u32, u64, u64), cherenkov::Picture>>,
+    /// Font-space bounds for glyphs used at non-default variation locations.
+    bounds: std::cell::RefCell<Vec<InstanceBounds>>,
+}
+
+#[derive(Clone)]
+struct InstanceBounds {
+    coords: Arc<[i16]>,
+    glyphs: Vec<(u32, Option<kurbo::Rect>)>,
 }
 
 /// A font validated on the caller thread by `Renderer::prepare_font`:
@@ -47,6 +57,8 @@ pub struct FontData {
 pub struct PreparedFont {
     pub data: Arc<[u8]>,
     pub index: u32,
+    pub units_per_em: u16,
+    pub default_bounds: kurbo::Rect,
     pub has_colr: bool,
     pub bitmap: Option<Arc<super::bitmap::BitmapFont>>,
 }
@@ -56,10 +68,13 @@ impl From<PreparedFont> for FontData {
         Self {
             data: font.data,
             index: font.index,
+            units_per_em: font.units_per_em,
+            default_bounds: font.default_bounds,
             has_colr: font.has_colr,
             has_bitmap: font.bitmap.is_some(),
             bitmap: font.bitmap,
             colr: std::cell::RefCell::new(FxHashMap::default()),
+            bounds: std::cell::RefCell::default(),
         }
     }
 }
@@ -72,10 +87,47 @@ impl FontData {
         Self {
             data: self.data.clone(),
             index: self.index,
+            units_per_em: self.units_per_em,
+            default_bounds: self.default_bounds,
             has_colr: self.has_colr,
             has_bitmap: self.has_bitmap,
             bitmap: self.bitmap.clone(),
             colr: std::cell::RefCell::new(self.colr.borrow().clone()),
+            bounds: std::cell::RefCell::new(self.bounds.borrow().clone()),
+        }
+    }
+
+    pub fn bounds_bytes(&self) -> u64 {
+        let instances = self.bounds.borrow();
+        (size_of_val(&self.units_per_em)
+            + size_of_val(&self.default_bounds)
+            + instances.capacity() * size_of::<InstanceBounds>()
+            + instances
+                .iter()
+                .map(|instance| {
+                    size_of_val(instance.coords.as_ref())
+                        + instance.glyphs.capacity() * size_of::<(u32, Option<kurbo::Rect>)>()
+                })
+                .sum::<usize>()) as u64
+    }
+
+    pub fn clear_bounds(&self) {
+        *self.bounds.borrow_mut() = Vec::new();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn merge_bounds(&self, other: Self) {
+        let mut instances = self.bounds.borrow_mut();
+        for incoming in other.bounds.into_inner() {
+            if let Some(existing) = instances.iter_mut().find(|i| i.coords == incoming.coords) {
+                for (id, bounds) in incoming.glyphs {
+                    if let Err(index) = existing.glyphs.binary_search_by_key(&id, |entry| entry.0) {
+                        existing.glyphs.insert(index, (id, bounds));
+                    }
+                }
+            } else {
+                instances.push(incoming);
+            }
         }
     }
 }
@@ -3043,6 +3095,96 @@ pub fn stroke_outlines(
     Ok(paths)
 }
 
+/// Conservative outline bounds in the run's local coordinates, before rasterization.
+pub fn run_bounds(font: &FontData, run: &cherenkov::GlyphRun) -> Result<kurbo::Rect, RenderError> {
+    let scale = f64::from(run.size) / f64::from(font.units_per_em);
+    if run.coords.iter().all(|coord| *coord == 0) {
+        // The head table encloses every glyph at the default location.
+        // Culling needs only a conservative box, not individual outlines.
+        let Some(first) = run.glyphs.first() else {
+            return Ok(kurbo::Rect::ZERO);
+        };
+        let mut origins = kurbo::Rect::new(
+            f64::from(first.x),
+            f64::from(first.y),
+            f64::from(first.x),
+            f64::from(first.y),
+        );
+        for glyph in &run.glyphs[1..] {
+            origins = origins.union_pt((f64::from(glyph.x), f64::from(glyph.y)));
+        }
+        return Ok(kurbo::Rect::new(
+            font.default_bounds.x0.mul_add(scale, origins.x0),
+            font.default_bounds.y1.mul_add(-scale, origins.y0),
+            font.default_bounds.x1.mul_add(scale, origins.x1),
+            font.default_bounds.y0.mul_add(-scale, origins.y1),
+        ));
+    }
+    // A non-default variable-font location can extend outside the head box.
+    let font_ref = std::cell::OnceCell::new();
+    let coords = std::cell::OnceCell::new();
+    let metrics = std::cell::OnceCell::new();
+    let mut instances = font.bounds.borrow_mut();
+    let index = instances
+        .iter()
+        .position(|instance| instance.coords == run.coords)
+        .unwrap_or_else(|| {
+            instances.push(InstanceBounds {
+                coords: run.coords.clone(),
+                glyphs: Vec::new(),
+            });
+            instances.len() - 1
+        });
+    let cached = &mut instances[index].glyphs;
+    let mut bounds = None::<kurbo::Rect>;
+    for glyph in run.glyphs.iter() {
+        let b = match cached.binary_search_by_key(&glyph.id, |entry| entry.0) {
+            Ok(index) => cached[index].1,
+            Err(index) => {
+                let parsed = font_ref
+                    .get_or_init(|| skrifa::FontRef::from_index(&font.data, font.index))
+                    .as_ref()
+                    .map_err(|e| RenderError::Font(format!("{e}")))?;
+                let metrics = metrics.get_or_init(|| {
+                    let coords: &Vec<F2Dot14> = coords.get_or_init(|| {
+                        run.coords.iter().map(|c| F2Dot14::from_bits(*c)).collect()
+                    });
+                    parsed.glyph_metrics(
+                        skrifa::instance::Size::unscaled(),
+                        skrifa::instance::LocationRef::new(coords),
+                    )
+                });
+                let bounds = metrics.bounds(skrifa::GlyphId::new(glyph.id)).map(|b| {
+                    kurbo::Rect::new(
+                        f64::from(b.x_min),
+                        f64::from(b.y_min),
+                        f64::from(b.x_max),
+                        f64::from(b.y_max),
+                    )
+                });
+                cached.insert(index, (glyph.id, bounds));
+                bounds
+            }
+        };
+        let Some(b) = b else {
+            continue;
+        };
+        if b.is_zero_area() {
+            continue;
+        }
+        let x = f64::from(glyph.x);
+        let y = f64::from(glyph.y);
+        let b = kurbo::Rect::new(
+            b.x0.mul_add(scale, x),
+            b.y1.mul_add(-scale, y),
+            b.x1.mul_add(scale, x),
+            b.y0.mul_add(-scale, y),
+        );
+        bounds = Some(bounds.map_or(b, |bounds| bounds.union(b)));
+    }
+    Ok(bounds.unwrap_or(kurbo::Rect::ZERO))
+}
+
 /// The cache key for a glyph at a quantized device position.
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_sign_loss)]
@@ -3189,15 +3331,27 @@ mod tests {
         let Some((device, queue)) = device_and_queue() else {
             return;
         };
+        let parsed =
+            skrifa::FontRef::from_index(include_bytes!("../../../scenes/fonts/NotoSans.ttf"), 0)
+                .expect("test font");
+        let head = parsed.head().expect("test font head");
         let font = FontData {
             data: include_bytes!("../../../scenes/fonts/NotoSans.ttf")
                 .as_slice()
                 .into(),
             index: 0,
+            units_per_em: head.units_per_em(),
+            default_bounds: kurbo::Rect::new(
+                f64::from(head.x_min()),
+                f64::from(head.y_min()),
+                f64::from(head.x_max()),
+                f64::from(head.y_max()),
+            ),
             has_colr: false,
             has_bitmap: false,
             bitmap: None,
             colr: std::cell::RefCell::new(FxHashMap::default()),
+            bounds: std::cell::RefCell::default(),
         };
         let key = |glyph: u32| GlyphKey {
             font: 7,
