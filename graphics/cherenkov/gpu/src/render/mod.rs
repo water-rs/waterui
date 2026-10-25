@@ -1708,7 +1708,7 @@ fn create_device(
         required_features: required,
         required_limits: limits,
         experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        memory_hints: memory_hints(info.backend),
+        memory_hints: crate::interop::memory_hints(info.backend),
         trace: wgpu::Trace::Off,
     };
     #[cfg(all(unix, not(target_vendor = "apple")))]
@@ -1965,7 +1965,7 @@ async fn create_device(
             // where `Limits::default` asks for 16.
             required_limits: wgpu::Limits::default().or_worse_values_from(&adapter.limits()),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            memory_hints: memory_hints(info.backend),
+            memory_hints: crate::interop::memory_hints(info.backend),
             trace: wgpu::Trace::Off,
         })
         .await
@@ -2273,39 +2273,6 @@ const EAGER_CORE_VARIANTS: [usize; 4] = [0, 1, 2, 4];
 #[cfg(not(target_arch = "wasm32"))]
 const fn core_pipelines_eager() -> bool {
     true
-}
-
-/// Allocator policy for the backend a device is opened on (#170).
-///
-/// `Manual { 4 MiB..16 MiB }` was measured only on Vulkan (Mali-G715,
-/// Pixel 9 Pro): 10.4 MiB idle, where `Performance`'s 64 MiB first block
-/// is most of the ~74 MiB idle reservation. The 16 MiB cap bounds a large
-/// scene (map: five blocks for 53 MiB). Vulkan reads the hint in
-/// `AllocationSizes::from_memory_hints`
-/// (`wgpu-hal/src/vulkan/adapter.rs:2951`, rev `4b35d8bc`).
-///
-/// Every other class keeps [`wgpu::MemoryHints::Performance`], the
-/// default (`wgpu-types/src/device.rs:59`). At that revision Metal
-/// (`wgpu-hal/src/metal/adapter.rs:72`) and GLES
-/// (`wgpu-hal/src/gles/adapter.rs:1083`) take `_memory_hints` and never
-/// read it. The WebGPU backend never reads it: `request_device`
-/// (`wgpu/src/backend/webgpu.rs:1772`) copies limits, features, and the
-/// label, and that module has no `memory_hints` use. DX12 does read the
-/// hint (`wgpu-hal/src/dx12/adapter.rs:1062`, through `device.rs:64` into
-/// `AllocationSizes::from_memory_hints` at `suballocation.rs:78`) but that
-/// class is unmeasured, so it stays on the default.
-const fn memory_hints(backend: wgpu::Backend) -> wgpu::MemoryHints {
-    const MIB: u64 = 1024 * 1024;
-    match backend {
-        wgpu::Backend::Vulkan => wgpu::MemoryHints::Manual {
-            suballocated_device_memory_block_size: 4 * MIB..16 * MIB,
-        },
-        wgpu::Backend::Noop
-        | wgpu::Backend::Metal
-        | wgpu::Backend::Dx12
-        | wgpu::Backend::Gl
-        | wgpu::Backend::BrowserWebGpu => wgpu::MemoryHints::Performance,
-    }
 }
 
 /// The pipeline layout every core and backdrop pipeline shares, over

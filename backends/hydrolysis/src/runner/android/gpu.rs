@@ -160,7 +160,7 @@ impl AndroidGpuContext {
                 label: Some("hydrolysis-android-device"),
                 required_features,
                 required_limits,
-                memory_hints: wgpu::MemoryHints::Performance,
+                memory_hints: cherenkov_gpu::interop::memory_hints(adapter.get_info().backend),
                 experimental_features: wgpu::ExperimentalFeatures::default(),
                 trace: wgpu::Trace::default(),
             },
