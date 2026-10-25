@@ -1,11 +1,11 @@
 //! The callbacks behind the `UIKeyCommand`s a menu arms, and the
 //! [`KeyCommandRegistry`] a fired command resolves them through — the
 //! application menu bar's registry lives on the `UIApplicationDelegate`, a
-//! field's edit menu arms its own.
+//! view-owned menus arm their own.
 //!
 //! A `UIKeyCommand` carries no block: `UIKit` sends its action to a target —
-//! the application delegate for the menu bar, the first-responder field for
-//! an edit menu. `UIKit` also takes immutable copies of the menus it
+//! the application delegate for the menu bar, the owning view for a
+//! view's menu. `UIKit` also takes immutable copies of the menus it
 //! receives, so the command a chord or a pick sends is a copy of the one a
 //! builder made, and only what `-copy` preserves can lead it back to its
 //! callback — its `propertyList`, which `UIKit` documents as the way to tell
@@ -23,17 +23,51 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::Sel;
 use objc2::sel;
-use objc2_foundation::{NSString, NSUUID};
-use objc2_ui_kit::UICommand;
+use objc2_foundation::{NSArray, NSObjectProtocol, NSString, NSUUID};
+use objc2_ui_kit::{UICommand, UIKeyCommand};
 
 /// The callback of every armed key command, by the id its `propertyList`
-/// carries. The application delegate owns the one registry.
+/// carries, owned by the menu bar's delegate or a view.
 #[derive(Default)]
 pub(super) struct KeyCommandRegistry {
     handlers: RefCell<HashMap<String, Rc<dyn Fn()>>>,
 }
 
 impl KeyCommandRegistry {
+    /// The responder's merged key-command set: every command the
+    /// superclass vends plus this registry's live commands. An inherited
+    /// command carrying this registry's private selector survives only
+    /// while still owned — stale copies of a retired scope are dropped.
+    /// `UIKit` may copy a command between queries, so a candidate already
+    /// present by `isEqual:` is not vended twice.
+    pub(super) fn commands(
+        &self,
+        candidates: &[Retained<UIKeyCommand>],
+        inherited: Option<Retained<NSArray<UIKeyCommand>>>,
+        own_action: Sel,
+    ) -> Option<Retained<NSArray<UIKeyCommand>>> {
+        let mut merged: Vec<Retained<UIKeyCommand>> = Vec::new();
+        if let Some(inherited) = inherited {
+            for command in inherited {
+                // SAFETY: `UIKeyCommand.action`'s declared getter.
+                let action = unsafe { command.action() };
+                if action != Some(own_action) || self.owns(&command) {
+                    merged.push(command);
+                }
+            }
+        }
+        for command in candidates {
+            if self.owns(command)
+                && !merged
+                    .iter()
+                    .any(|existing| existing.isEqual(Some(command.as_ref())))
+            {
+                merged.push(command.clone());
+            }
+        }
+        (!merged.is_empty()).then(|| NSArray::from_retained_slice(&merged))
+    }
+
     /// Registers `handler` under a fresh `NSUUID` token — every field's own
     /// registry arms disjoint commands, so a command addressed to the wrong
     /// responder can never land.

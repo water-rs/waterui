@@ -54,15 +54,318 @@ fn scene_window(
     window
 }
 
+#[cfg(target_os = "ios")]
+fn find<T: cocoa_ui::objc2::DowncastTarget>(
+    view: &cocoa_ui::PlatformView,
+) -> Option<cocoa_ui::Retained<cocoa_ui::PlatformView>> {
+    for sub in view::subviews(view) {
+        if sub.downcast_ref::<T>().is_some() {
+            return Some(sub);
+        }
+        if let Some(found) = find::<T>(&sub) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 /// Every `native_app` case: trials that need a running `UIApplication`.
 #[cfg(target_os = "ios")]
 fn trials() -> Vec<libtest_mimic::Trial> {
     let mut trials = scroll_animation::trials();
     trials.extend(main_menu::trials());
     trials.extend(key_commands::trials());
+    trials.extend(embedded_menus::trials());
     trials.extend(gesture_events::trials());
     trials.extend(text_selection_ios::trials());
     trials
+}
+
+#[cfg(target_os = "ios")]
+mod embedded_menus {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::{Message, msg_send, sel};
+    use cocoa_ui::objc2_core_foundation::CGPoint;
+    use cocoa_ui::objc2_foundation::NSCopying;
+    use cocoa_ui::objc2_ui_kit::{
+        UIApplication, UIButtonType, UIContextMenuConfiguration, UIContextMenuInteraction,
+        UIKeyCommand, UIMenu, UIResponder, UIView,
+    };
+    use cocoa_ui::uikit::{CocoaUiButton, HostView, KeyCommands};
+    use cocoa_ui::{Retained, view};
+    use libtest_mimic::Trial;
+    use waterui::component::menu::{Command, Menu, MenuItem, Shortcut};
+    use waterui::reactive::{SignalExt, binding};
+    use waterui::{AnyView, ViewExt};
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, mount_uikit_window, render_environment,
+    };
+
+    use crate::{find, mtm, native_test};
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "embedded_menus::menu_routes_and_retires_on_its_button",
+                || {
+                    menu_routes_and_retires_on_its_button();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "embedded_menus::context_menu_routes_and_retires_on_its_host",
+                || {
+                    context_menu_routes_and_retires_on_its_host();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn command(fired: &Rc<Cell<usize>>) -> MenuItem {
+        let fired = Rc::clone(fired);
+        MenuItem::Command(
+            Command::builder("Fire")
+                .action(move || fired.set(fired.get() + 1))
+                .shortcut(Shortcut::new('k').command()),
+        )
+    }
+
+    fn commands(owner: &UIResponder) -> Vec<Retained<UIKeyCommand>> {
+        owner
+            .keyCommands()
+            .map_or_else(Vec::new, |commands| commands.to_vec())
+    }
+
+    fn can(owner: &UIResponder, command: &UIKeyCommand) -> bool {
+        can_with_sender(owner, command, Some(command.as_ref()))
+    }
+
+    fn can_with_sender(
+        owner: &UIResponder,
+        command: &UIKeyCommand,
+        sender: Option<&objc2::runtime::AnyObject>,
+    ) -> bool {
+        // SAFETY: this is the responder's declared query signature.
+        unsafe {
+            owner.canPerformAction_withSender(
+                command.action().expect("an armed command has an action"),
+                sender,
+            )
+        }
+    }
+
+    fn fire(owner: &UIResponder, command: &UIKeyCommand) {
+        assert!(can(owner, command));
+        assert!(can_with_sender(owner, command, None));
+        // SAFETY: the command supplies the action, sender and owning responder.
+        unsafe {
+            let action = command.action().expect("an armed command has an action");
+            let target = owner
+                .targetForAction_withSender(action, Some(command.as_ref()))
+                .expect("the owner resolves its command");
+            assert!(std::ptr::eq::<objc2::runtime::AnyObject>(
+                &raw const *target,
+                owner.as_ref()
+            ));
+            assert!(
+                UIApplication::sharedApplication(mtm()).sendAction_to_from_forEvent(
+                    action,
+                    Some(&target),
+                    Some(command.as_ref()),
+                    None,
+                )
+            );
+        }
+    }
+
+    fn foreign_menu(scope: &KeyCommands) -> Retained<UIMenu> {
+        cocoa_ui::uikit::menu(
+            mtm(),
+            scope,
+            &cocoa_ui::menu::Command::default(),
+            &[cocoa_ui::menu::MenuTreeNode::Command(
+                cocoa_ui::menu::Command {
+                    key_equivalent: "f".into(),
+                    ..Default::default()
+                },
+                Rc::new(|| {}),
+            )],
+        )
+    }
+
+    fn menu_routes_and_retires_on_its_button() {
+        let mtm = mtm();
+        let fired = Rc::new(Cell::new(0));
+        let items = binding(vec![command(&fired)]);
+        let mount = mount_uikit_window(
+            mtm,
+            AnyView::new(Menu::new("More", items.computed())),
+            &render_environment(),
+            native_test::window(mtm, cocoa_ui::Rect::new(0.0, 0.0, 390.0, 844.0)),
+        );
+        let button = find::<CocoaUiButton>(&mount.host)
+            .expect("Menu mounts a kit button")
+            .downcast::<CocoaUiButton>()
+            .expect("the found view is a kit button");
+        assert_eq!(button.armed_command_count(), 1);
+        let key = commands(&button)
+            .pop()
+            .expect("the button vends its shortcut");
+        fire(&button, &key);
+        assert_eq!(fired.get(), 1);
+        // A copied command keeps its property-list token and still routes
+        // to this registry.
+        let copied = key.copy();
+        fire(&button, &copied);
+        assert_eq!(fired.get(), 2);
+        for foreign in [
+            CocoaUiButton::new(mtm),
+            CocoaUiButton::with_type(mtm, UIButtonType::System),
+        ] {
+            assert_eq!(foreign.armed_command_count(), 0);
+            assert!(!can_with_sender(&foreign, &key, None));
+            let scope = foreign.menu_commands();
+            let _menu = foreign_menu(&scope);
+            assert_eq!(foreign.armed_command_count(), 1);
+            assert!(!can(&foreign, &key));
+            assert!(can_with_sender(&foreign, &key, None));
+        }
+        items.set(vec![command(&fired)]);
+        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || !can(&button, &key));
+        assert!(!can(&button, &key));
+        assert_eq!(button.armed_command_count(), 1);
+        let rebuilt = commands(&button)
+            .pop()
+            .expect("the rebuilt shortcut is vended");
+        fire(&button, &rebuilt);
+        assert_eq!(fired.get(), 3);
+        items.set(vec![]);
+        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            button.armed_command_count() == 0
+        });
+        assert_eq!(button.armed_command_count(), 0);
+        assert!(!can(&button, &rebuilt));
+        assert!(!can_with_sender(&button, &rebuilt, None));
+        assert_eq!(commands(&button), [] as [Retained<UIKeyCommand>; 0]);
+        // The mount owns the widget tree: dropping it retires the scope
+        // even while the button and its last command stay retained.
+        items.set(vec![command(&fired)]);
+        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            button.armed_command_count() == 1
+        });
+        let live = commands(&button)
+            .pop()
+            .expect("the repopulated shortcut is vended");
+        drop(mount);
+        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            button.armed_command_count() == 0
+        });
+        assert_eq!(button.armed_command_count(), 0);
+        assert!(!can(&button, &live));
+        assert!(
+            commands(&button).iter().all(|command| {
+                // SAFETY: `UIKeyCommand.action`'s declared getter.
+                (unsafe { command.action() }) != Some(sel!(cocoaUiButtonMenuCommandFired:))
+            }),
+            "a retired private command is still vended"
+        );
+    }
+
+    fn context_host(
+        view: &UIView,
+    ) -> Option<(Retained<HostView>, Retained<UIContextMenuInteraction>)> {
+        if let Some(host) = view.downcast_ref::<HostView>()
+            && let Some(interaction) = host
+                .interactions()
+                .iter()
+                .find_map(|interaction| interaction.downcast::<UIContextMenuInteraction>().ok())
+        {
+            return Some((host.retain(), interaction));
+        }
+        view::subviews(view)
+            .iter()
+            .find_map(|child| context_host(child))
+    }
+
+    fn configure(
+        interaction: &UIContextMenuInteraction,
+    ) -> Option<Retained<UIContextMenuConfiguration>> {
+        let delegate = interaction
+            .delegate()
+            .expect("the installed interaction has a delegate");
+        // SAFETY: the installed delegate implements this UIKit protocol method.
+        unsafe {
+            msg_send![&*delegate, contextMenuInteraction: interaction, configurationForMenuAtLocation: CGPoint::ZERO]
+        }
+    }
+
+    fn context_menu_routes_and_retires_on_its_host() {
+        let mtm = mtm();
+        let fired = Rc::new(Cell::new(0));
+        let items = binding(vec![command(&fired)]);
+        let mount = mount_uikit_window(
+            mtm,
+            AnyView::new(waterui::text::Text::new("Context").context_menu(items.computed())),
+            &render_environment(),
+            native_test::window(mtm, cocoa_ui::Rect::new(0.0, 0.0, 390.0, 844.0)),
+        );
+        let (host, interaction) =
+            context_host(&mount.host).expect("ContextMenu installs an interaction on a host");
+        assert_eq!(host.armed_command_count(), 0);
+        let _configuration = configure(&interaction).expect("the installed handler builds a menu");
+        assert_eq!(host.armed_command_count(), 1);
+        let key = commands(&host).pop().expect("the host vends its shortcut");
+        fire(&host, &key);
+        assert_eq!(fired.get(), 1);
+        let copied = key.copy();
+        fire(&host, &copied);
+        assert_eq!(fired.get(), 2);
+        let foreign = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        assert!(!can(&foreign, &key));
+        assert!(!can_with_sender(&foreign, &key, None));
+        let scope = foreign.menu_commands();
+        let _menu = foreign_menu(&scope);
+        assert_eq!(foreign.armed_command_count(), 1);
+        assert!(!can(&foreign, &key));
+        assert!(can_with_sender(&foreign, &key, None));
+        let _rebuilt = configure(&interaction).expect("a new presentation rebuilds the menu");
+        assert!(!can(&host, &key));
+        assert_eq!(host.armed_command_count(), 1);
+        let rebuilt = commands(&host)
+            .pop()
+            .expect("the rebuilt shortcut is vended");
+        fire(&host, &rebuilt);
+        assert_eq!(fired.get(), 3);
+        items.set(vec![]);
+        assert!(configure(&interaction).is_none());
+        assert_eq!(host.armed_command_count(), 0);
+        assert!(!can(&host, &rebuilt));
+        assert!(!can_with_sender(&host, &rebuilt, None));
+        assert_eq!(commands(&host), [] as [Retained<UIKeyCommand>; 0]);
+        // Repopulate, configure, then drop the mount: the scope retires
+        // while the retained host and its command outlive it.
+        items.set(vec![command(&fired)]);
+        let _repopulated = configure(&interaction).expect("repopulated items build a menu");
+        let live = commands(&host)
+            .pop()
+            .expect("the repopulated shortcut is vended");
+        drop(mount);
+        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            host.armed_command_count() == 0
+        });
+        assert_eq!(host.armed_command_count(), 0);
+        assert!(!can(&host, &live));
+        assert!(
+            commands(&host).iter().all(|command| {
+                // SAFETY: `UIKeyCommand.action`'s declared getter.
+                (unsafe { command.action() }) != Some(sel!(cocoaUiContextMenuCommandFired:))
+            }),
+            "a retired private command is still vended"
+        );
+    }
 }
 
 /// The main menu — the iPad menu bar and the keyboard-shortcut list — is
@@ -976,15 +1279,14 @@ mod text_selection_ios {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use cocoa_ui::PlatformView;
+    use cocoa_ui::Retained;
     use cocoa_ui::objc2::runtime::AnyObject;
-    use cocoa_ui::objc2::{DowncastTarget, sel};
+    use cocoa_ui::objc2::sel;
     use cocoa_ui::objc2::{Message, msg_send};
     use cocoa_ui::objc2_foundation::{NSArray, NSRange, NSString, NSValue};
     use cocoa_ui::objc2_ui_kit::{
         UIAction, UIApplication, UIKeyCommand, UIMenu, UIMenuElement, UIMenuElementAttributes,
     };
-    use cocoa_ui::{Retained, view};
     use waterui::Str;
     use waterui::component::menu::{Command, MenuItem, Shortcut};
     use waterui::component::text_field::TextField;
@@ -1000,19 +1302,7 @@ mod text_selection_ios {
         MAIN_QUEUE_DEADLINE, mount_uikit_window, render_environment,
     };
 
-    use crate::mtm;
-
-    fn find<T: DowncastTarget>(view: &PlatformView) -> Option<Retained<PlatformView>> {
-        for sub in view::subviews(view) {
-            if sub.downcast_ref::<T>().is_some() {
-                return Some(sub);
-            }
-            if let Some(found) = find::<T>(&sub) {
-                return Some(found);
-            }
-        }
-        None
-    }
+    use crate::{find, mtm};
 
     /// The titles of a `UIMenu`'s flattened leaf actions.
     fn titles(menu: &UIMenu) -> Vec<String> {

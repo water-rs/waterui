@@ -504,21 +504,30 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     &host,
                     uikit::ContextMenuHandlers {
                         configuration: Rc::new({
-                            let state = Rc::clone(&state);
-                            move |_| {
+                            let state = Rc::downgrade(&state);
+                            move |view| {
+                                let state = state
+                                    .upgrade()
+                                    .expect("the owner outlives its configuration callback");
                                 let state = state.borrow();
+                                let host = view.downcast_ref::<HostView>().expect(
+                                    "a context-menu interaction is installed on its HostView",
+                                );
                                 let nodes =
                                     menu_items::tree_nodes(&state.items.snapshot(), &state.env);
                                 if nodes.is_empty() {
+                                    host.set_menu_commands(None);
+                                    state.key_commands.replace(None);
                                     return None;
                                 }
-                                let key_commands = uikit::KeyCommands::new(state.mtm);
+                                let key_commands = host.menu_commands();
                                 let menu = uikit::menu(
                                     state.mtm,
                                     &key_commands,
                                     &cocoa_ui::menu::Command::default(),
                                     &nodes,
                                 );
+                                host.set_menu_commands(Some(&menu));
                                 // `UIKit` asks for a configuration per
                                 // presentation: the previous menu is gone,
                                 // and its commands retire with its scope.
@@ -535,13 +544,15 @@ pub fn install(dispatcher: &mut Dispatcher) {
                             }
                         }),
                         preview: Rc::new({
-                            let host = host.clone();
+                            let host = cocoa_ui::objc2::rc::Weak::new(&*host);
                             move |_| {
                                 // `UITargetedPreview` requires its view to
                                 // be in a window, so the highlight always
                                 // lifts the source; a custom preview's
                                 // card is the preview controller's
-                                // content, not this view.
+                                // content, not this view. Gone host, no
+                                // preview.
+                                let host = host.load()?;
                                 Some(uikit::targeted_preview(&host))
                             }
                         }),
