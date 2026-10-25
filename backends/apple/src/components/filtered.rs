@@ -647,6 +647,12 @@ fn update_output_frame(state: &FilteredState) {
     }
 }
 
+/// An owed reveal frame does not permit drawing after the host is hidden.
+fn can_render_frame(state: &FilteredState) -> bool {
+    !presentation_occluded(&state.view)
+        || (state.first_paint_owed.get() && participates_in_first_paint_ready(state))
+}
+
 /// Whether the link may deliver frames — attached, effectively visible, in
 /// an active scene and with demand (an animating, owed or dirty frame). An
 /// in-flight frame, native-pass suppression, external rendering or a
@@ -663,7 +669,7 @@ fn update_link_demand(state: &Rc<FilteredState>) {
         && !state.frame_presentation_in_flight.get()
         && state.capture_suppression.get() == 0
         && state.external_count.get() == 0
-        && (!presentation_occluded(&state.view) || state.first_paint_owed.get());
+        && can_render_frame(state);
     if let Some(presenter) = state.presenter.borrow().as_ref() {
         presenter.set_paused(!demand);
     }
@@ -710,6 +716,12 @@ fn request_render_if_geometry_changed(state: &Rc<FilteredState>) {
 /// and its completion. Dropping it at any gate releases the lease without
 /// presenting and the next delivery answers the still-owed demand.
 fn render_frame(state: &Rc<FilteredState>, frame: DrawableFrame) {
+    if !can_render_frame(state) {
+        // A queued update can arrive after visibility suspended the link.
+        // Keep the owed work for the next visibility notification.
+        update_link_demand(state);
+        return;
+    }
     if state.park.is_held() {
         // A stale delivery — the link kept a queued update across the
         // park: nothing renders while the leaf waits out the

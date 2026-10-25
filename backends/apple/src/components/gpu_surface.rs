@@ -1012,6 +1012,12 @@ fn is_effectively_visible(view: &Retained<SurfaceView>) -> bool {
     cocoa_ui::visibility::presentable(view.as_platform_view())
 }
 
+/// First-paint demand bypasses reveal alpha only while the view still
+/// participates. Hiding after attachment must suspend that demand too.
+fn can_render_frame(view: &Retained<SurfaceView>, first_paint_owed: bool) -> bool {
+    is_effectively_visible(view) || (first_paint_owed && participates_in_first_paint(view))
+}
+
 /// Positions the presentation layer and tells Core Animation the frames are
 /// already at device-pixel size — `updatePresentationFrame`.
 fn update_presentation_frame(state: &SurfaceState, view: &Retained<SurfaceView>) {
@@ -1195,7 +1201,7 @@ fn update_presentation_demand(state: &Rc<SurfaceState>, view: &Retained<SurfaceV
     let slot = state.presentation.borrow();
     if let Epoch::Attached(attached) = &slot.epoch {
         let demand = state.runtime.context().device_lost_reason().is_none()
-            && (is_effectively_visible(view) || attached.demand.first_paint_owed.get())
+            && can_render_frame(view, attached.demand.first_paint_owed.get())
             && attached.demand.any(state.dirty.get());
         attached.presenter.set_paused(!demand);
     }
@@ -1300,7 +1306,7 @@ fn render_drawable(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, frame
         .borrow()
         .attached()
         .is_some_and(|attached| attached.demand.first_paint_owed.get());
-    if !is_effectively_visible(view) && !first_paint_pending {
+    if !can_render_frame(view, first_paint_pending) {
         owe_frame(state);
         return;
     }
@@ -1513,8 +1519,7 @@ fn settle_frame_completion(
             && matches!(&slot.epoch, Epoch::Attached(attached)
                 if state.capture_suppression.get() == 0
                     && can_present_now(view)
-                    && (is_effectively_visible(view)
-                        || attached.demand.first_paint_owed.get()))
+                    && can_render_frame(view, attached.demand.first_paint_owed.get()))
     };
     if !presentable {
         owe_and_reschedule(state, view);
@@ -2740,6 +2745,15 @@ pub mod native_test {
             let frame = DrawableFrame::unowned_for_test(drawable, media_time);
             render_drawable(&self.state, &self.view, frame);
             true
+        }
+
+        /// Whether native presentation is paused after a visibility change.
+        pub fn link_paused(&self) -> bool {
+            self.state
+                .presentation
+                .borrow()
+                .attached()
+                .is_some_and(|attached| attached.presenter.is_paused())
         }
 
         /// Whether the attached epoch still owes a frame — the flag the
