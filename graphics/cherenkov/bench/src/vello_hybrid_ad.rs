@@ -3,10 +3,9 @@
 //!
 //! Route: strips and coverage are computed on the CPU into GPU-accessible
 //! geometry, then a wgpu colour pass writes into the target texture (format
-//! chosen from queried adapter capabilities). GPU time is a real `wgpu`
-//! timestamp pair written in standalone submissions after a full queue
-//! drain — never estimated, and serialized CPU+GPU by construction (see
-//! [`crate::wgpu_ctx::drain_and_stamp`]).
+//! chosen from queried adapter capabilities). GPU time is unavailable:
+//! the renderer does not expose timestamps inside its render passes.
+//! Independent queue markers would include CPU submission gaps.
 
 use std::collections::BTreeSet;
 use std::time::Instant;
@@ -25,7 +24,7 @@ use crate::memory::{
     AdapterMemory, Reading, allocator_report, wgpu_metal_allocated_bytes, wgpu_vk_memory_budget,
 };
 use crate::vello_like::{Lowered, VelloLikeCtx, lower, replay, vello_features, vello_missing_api};
-use crate::wgpu_ctx::{Gpu, Target, drain_and_stamp, readback, resolve_timestamps};
+use crate::wgpu_ctx::{Gpu, Target, readback};
 use crate::{BenchError, Counters, DeviceInfo, EncodeInput, Engine, EngineInfo, GpuSample, Submit};
 
 /// `vello_gpu` adapter (the `vello-hybrid` baseline).
@@ -61,7 +60,7 @@ impl VelloHybrid {
     /// # Errors
     /// [`BenchError::Gpu`] when no adapter exists.
     pub fn new() -> Result<Self, BenchError> {
-        let gpu = Gpu::new()?;
+        let gpu = Gpu::new(wgpu::Features::empty())?;
         Ok(Self {
             info: EngineInfo {
                 name: Self::NAME,
@@ -329,7 +328,7 @@ impl Engine for VelloHybrid {
         Ok(())
     }
 
-    fn submit(&mut self, frame: u64, readback_flag: bool) -> Result<Submit, BenchError> {
+    fn submit(&mut self, _frame: u64, readback_flag: bool) -> Result<Submit, BenchError> {
         let (Some(scene), Some(res), Some(renderer), Some(target), Some(depth_view), Some(config)) = (
             &self.scene,
             &mut self.res,
@@ -342,12 +341,6 @@ impl Engine for VelloHybrid {
                 "vello-hybrid: submit before encode".into(),
             ));
         };
-        // Bracket the engine submission with timestamps written in their
-        // own submissions, each after a full queue drain: on job-scheduled
-        // tiled GPUs a timestamp in the same encoder shares no hazard with
-        // the render and would bracket an empty interval. The drain
-        // serializes CPU and GPU for the measured frame by design.
-        drain_and_stamp(&self.gpu, 0)?;
         let render_at = Instant::now();
         let mut encoder = self
             .gpu
@@ -375,8 +368,6 @@ impl Engine for VelloHybrid {
             )
             .map_err(|e| BenchError::Gpu(format!("vello-hybrid render: {e}")))?;
         self.gpu.queue.submit([encoder.finish()]);
-        drain_and_stamp(&self.gpu, 1)?;
-        let gpu_seconds = resolve_timestamps(&self.gpu)?;
         let render_seconds = render_at.elapsed().as_secs_f64();
         let readback_at = Instant::now();
         let image = if readback_flag {
@@ -386,12 +377,26 @@ impl Engine for VelloHybrid {
         };
         Ok(Submit {
             image,
-            gpu: GpuSample::whole_frame(frame, gpu_seconds),
+            gpu: Vec::new(),
             phases: Vec::new(),
             composition: None,
+            gpu_wait_seconds: 0.0,
             render_seconds: Some(render_seconds),
             readback_seconds: readback_flag.then(|| readback_at.elapsed().as_secs_f64()),
         })
+    }
+
+    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+        Some("Vello hybrid does not expose render-pass GPU timestamps")
+    }
+
+    fn finish_gpu(&mut self) -> Result<Vec<GpuSample>, BenchError> {
+        self.wait_idle()?;
+        Ok(Vec::new())
+    }
+
+    fn wait_idle(&mut self) -> Result<(), BenchError> {
+        crate::wgpu_ctx::wait(&self.gpu, None, "the Vello hybrid frames")
     }
 
     fn counters(&self) -> Counters {
