@@ -2380,7 +2380,7 @@ mod tests {
         reason = "one frame's setup, readback and assertions"
     )]
     fn stroke_segments_close_and_fit_their_bound() {
-        use crate::render::path::{FLATTEN, sigma_max};
+        use crate::render::path::FLATTEN;
         use cherenkov::ShapeData;
         use std::collections::HashMap;
 
@@ -2440,7 +2440,7 @@ mod tests {
                     &shape,
                     stroke,
                     raster,
-                    FLATTEN / sigma_max(raster).max(1e-12),
+                    FLATTEN / raster.spectral_norm().max(1e-12),
                     (1024.0, 1024.0),
                 )
                 .expect("the stroke encodes");

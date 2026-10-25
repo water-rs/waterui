@@ -1019,16 +1019,6 @@ fn sparse_bounds_slivers(bound_w: f64, bound_h: f64, count: u32, width: f64) -> 
     p
 }
 
-/// The largest singular value of `transform`'s linear part, as the engine's
-/// `path::sigma_max` computes it.
-fn sigma_max(transform: Affine) -> f64 {
-    let [a, b, c, d, _, _] = transform.as_coeffs();
-    let sum = a.mul_add(a, b * b) + c.mul_add(c, d * d);
-    let det = a.mul_add(d, -(b * c));
-    sum.midpoint(sum.mul_add(sum, (-4.0 * det) * det).sqrt())
-        .sqrt()
-}
-
 /// A lower bound on the chords a compute stroker emits for `stroke` of
 /// `path` at the user tolerance `tol`: one per side for every centreline
 /// element, after dashing, that kurbo's stroker does not skip as
@@ -1115,7 +1105,7 @@ fn encoder_chords_min(path: &BezPath, stroke: &cherenkov_scene::kurbo::Stroke, t
 /// ([`encoder_chords_min`]), which is what `prefers_gpu`'s segment floor
 /// reads once strokes are expanded in compute.
 ///
-/// Expansion runs in user space at `FLATTEN / sigma_max(transform)`, the
+/// Expansion runs in user space at `FLATTEN / transform.spectral_norm()`, the
 /// engine's user tolerance. Nothing here is written to the scene tree; it
 /// keeps the numbers quoted in the scene comments checkable by rerunning
 /// the generator.
@@ -1136,7 +1126,7 @@ fn log_route_inputs(
     /// segments and to the grid's pixel count.
     const GPU_ROUTE_MIN_ELEMENTS: usize = 4096;
 
-    let tol = FLATTEN / sigma_max(transform);
+    let tol = FLATTEN / transform.spectral_norm();
 
     let mut outline = stroke.map_or_else(
         || path.clone(),

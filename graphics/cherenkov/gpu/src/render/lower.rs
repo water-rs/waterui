@@ -4665,7 +4665,7 @@ impl<'a> Lowering<'a> {
         };
         let outline = outline.get(source);
         let raster = self.transform * *local;
-        let tolerance = path::FLATTEN / path::sigma_max(raster).max(1e-12);
+        let tolerance = path::FLATTEN / raster.spectral_norm().max(1e-12);
         let content = outline.content(tolerance);
         let coefficients = raster.as_coeffs();
         let linear = [
@@ -5185,7 +5185,7 @@ impl<'a> Lowering<'a> {
                         geometry,
                     ),
                     outline @ OutlineRef::Stroke { shape, stroke } => {
-                        let tolerance = path::FLATTEN / path::sigma_max(self.transform).max(1e-12);
+                        let tolerance = path::FLATTEN / self.transform.spectral_norm().max(1e-12);
                         if self.compute.is_some()
                             && self.coverage_route == path::CoverageRoute::Gpu
                             && !matches!(paint, ResolvedPaint::Shader(_))
@@ -5275,7 +5275,7 @@ impl<'a> Lowering<'a> {
             clippy::cast_possible_truncation,
             reason = "bitmap strike metadata uses f32 ppem"
         )]
-        let device_ppem = (f64::from(size) * path::sigma_max(transform)) as f32;
+        let device_ppem = (f64::from(size) * transform.spectral_norm()) as f32;
         let strike = bitmap_font.select(device_ppem);
         let key = super::bitmap::BitmapKey {
             font: font_id,

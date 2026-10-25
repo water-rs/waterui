@@ -21,7 +21,7 @@ use kurbo::{
     ParamCurveNearest, PathEl, Point, QuadBez, Rect, Stroke, Vec2,
 };
 
-use super::{GpuBound, GpuPath, encodable, shape_path, sigma_max};
+use super::{GpuBound, GpuPath, encodable, shape_path};
 use crate::render::stroke_abi::{
     CAP_BUTT, CAP_END, CAP_ROUND, CAP_SQUARE, CAP_START, CLOSE, JOIN_BEVEL, JOIN_MASK, JOIN_MITER,
     JOIN_ROUND, JOIN_SHARED, JOIN_SHIFT, JOIN_START, LINEAR_END, N_LEN_MAX, N_OFF_MAX, PIECE_CURVE,
@@ -725,7 +725,7 @@ struct Encoder<'a> {
     raster: Affine,
     tol: f64,
     hw: f64,
-    /// `sigma_max(raster)`.
+    /// `raster.spectral_norm()`.
     s: f64,
     join_thresh: f64,
     k_cap: u32,
@@ -764,7 +764,7 @@ impl<'a> Encoder<'a> {
             raster,
             tol,
             hw,
-            s: sigma_max(raster),
+            s: raster.spectral_norm(),
             join_thresh: 2.0 * tol / stroke.width,
             k_cap: 0,
             dash,
@@ -1628,7 +1628,7 @@ mod tests {
         stroke
     }
 
-    /// The raster of a test: an anisotropic scale, so `sigma_max != 1`.
+    /// The raster of a test: an anisotropic scale, so the maximum scale differs from one.
     fn raster(rng: &mut Rng) -> Affine {
         Affine::new([
             rng.range(0.5, 3.0),
@@ -1653,7 +1653,7 @@ mod tests {
     }
 
     fn encode(path: &BezPath, stroke: &Stroke, raster: Affine) -> GpuPath {
-        let tol = FLATTEN / sigma_max(raster).max(1e-12);
+        let tol = FLATTEN / raster.spectral_norm().max(1e-12);
         prepare(&shape(path), stroke, raster, tol, SURFACE).expect("the stroke encodes")
     }
 
@@ -1727,6 +1727,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn rotated_uniform_scale_keeps_stroke_bounds_local() {
+        let mut path = BezPath::new();
+        path.move_to((10.0, 10.0));
+        path.line_to((20.0, 10.0));
+        let transform = Affine::translate((64.0, 64.0)) * Affine::rotate(0.5) * Affine::scale(2.5);
+        let gpu = encode(&path, &Stroke::new(2.0), transform);
+        assert!(!gpu.bound.empty);
+        assert!(gpu.bound.grid_w < 64 && gpu.bound.grid_h < 64);
+        assert!(gpu.bound.bins > gpu.bound.segments);
     }
 
     #[test]
@@ -1932,7 +1944,7 @@ mod tests {
             let p0 = rng.point();
             let c = random_cubic(&mut rng, p0);
             let raster = raster(&mut rng);
-            let tol = FLATTEN / sigma_max(raster);
+            let tol = FLATTEN / raster.spectral_norm();
             let hw = rng.range(0.025, 5.0);
             let stroke = Stroke::new(2.0 * hw);
             let mut path = BezPath::new();
