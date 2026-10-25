@@ -140,6 +140,7 @@ struct Stripped {
     shared_plain: String,
     shader_no_long: String,
     shader_cell: String,
+    shader_cell_plain: String,
     shader_long: String,
     shader_image: String,
     shader_plain: String,
@@ -158,6 +159,10 @@ impl Stripped {
         // and `shader_image` and `shader_plain` the long-gradient branch.
         let shader_no_long = drop_marked(shader, "long-gradient-stub");
         let shader_cell = drop_marked(shader, "union-stub");
+        let shader_cell_plain = drop_marked(
+            &drop_marked(&shader_cell, "long-gradient-stub"),
+            "image-source",
+        );
         let shader_no_cell = drop_marked(&shader_cell, "cell-buffer");
         let shader_long = drop_marked(&shader_no_cell, "image-source");
         let shader_image = drop_marked(&shader_no_cell, "long-gradient-stub");
@@ -165,6 +170,7 @@ impl Stripped {
         let shared_plain = drop_marked(shared, "cell-buffer");
         for (product, source) in [
             ("shader_cell", &shader_cell),
+            ("shader_cell_plain", &shader_cell_plain),
             ("shader_long", &shader_long),
             ("shader_image", &shader_image),
             ("shader_plain", &shader_plain),
@@ -182,6 +188,7 @@ impl Stripped {
         for (product, source) in [
             ("shader_long", &shader_long),
             ("shader_plain", &shader_plain),
+            ("shader_cell_plain", &shader_cell_plain),
         ] {
             assert_absent(source, product, IMAGE_SOURCE_NAMES);
         }
@@ -189,6 +196,7 @@ impl Stripped {
             shared_plain,
             shader_no_long,
             shader_cell,
+            shader_cell_plain,
             shader_long,
             shader_image,
             shader_plain,
@@ -294,12 +302,16 @@ fn main() {
     let stripped = Stripped::new(&shader, &shared);
     let specialized = drop_marked(&stripped.shader_plain, "full-fragment");
     let glyph = format!("{specialized}\n{}", read("shader_glyph"));
+    let cell_specialized = drop_marked(&stripped.shader_cell_plain, "full-fragment");
+    let cell_glyph = format!("{cell_specialized}\n{}", read("shader_glyph"));
     let composite = format!("{specialized}\n{}", read("shader_composite"));
     let specs = module_specs(&Modules {
         shared: &shared,
         shared_plain: &stripped.shared_plain,
         shader_no_long: &stripped.shader_no_long,
         shader_cell: &stripped.shader_cell,
+        shader_cell_plain: &stripped.shader_cell_plain,
+        cell_glyph: &cell_glyph,
         shader_long: &stripped.shader_long,
         shader_image: &stripped.shader_image,
         shader_plain: &stripped.shader_plain,
@@ -435,6 +447,8 @@ struct Modules<'a> {
     shader_no_long: &'a str,
     /// `shader` minus its `// union-stub` spans only.
     shader_cell: &'a str,
+    shader_cell_plain: &'a str,
+    cell_glyph: &'a str,
     /// `shader` minus its `// union-stub`, `// cell-buffer` and
     /// `// image-source` spans.
     shader_long: &'a str,
@@ -477,7 +491,7 @@ const TILE_FAMILIES: [(&str, usize); 5] = [
     ("engine_tile_composite", 8),
 ];
 
-/// The fixed module set `render` creates: nine VARIANT specializations
+/// The fixed module set `render` creates: twelve paint/coverage specializations
 /// of `shader.wgsl` plus `present`, `external`, `external_native`,
 /// `projective`, `mip`, `resolve`, `reduce`, `shadow`, `coverage` and
 /// `space_convert`.
@@ -491,11 +505,12 @@ const TILE_FAMILIES: [(&str, usize); 5] = [
 /// without union; the plain variants drop every marker family, so their
 /// modules carry neither the union fold and member-cap arrays, the binary
 /// stop search nor the source conversion. Variant 5 (`Cell`), which only
-/// GPU-routed draws use, keeps every span but the union's; every variant
-/// but the union's and the cell's also drops the `// cell-buffer` spans of
-/// `shared.wgsl` and `shader.wgsl`, the cell-texel reads.
+/// GPU-routed rich paints use, keeps every span but the union's. GPU
+/// ordinary paints retain the same cell-buffer reads with their simple,
+/// glyph or full paint specialization, without source conversion or long
+/// gradient code. Other variants drop the cell-buffer spans.
 fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
-    let mut specs: Vec<Spec> = (0..9u32)
+    let mut specs: Vec<Spec> = (0..12u32)
         .map(|variant| {
             let (cap, shared, shader, union) = match variant {
                 3 => (m.union_max, m.shared, m.shader_no_long, m.union),
@@ -504,12 +519,20 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
                 6 => ("", m.shared_plain, m.shader_image, ""),
                 7 => ("", m.shared_plain, m.glyph, ""),
                 8 => ("", m.shared_plain, m.composite, ""),
+                9 | 11 => ("", m.shared, m.shader_cell_plain, ""),
+                10 => ("", m.shared, m.cell_glyph, ""),
                 _ => ("", m.shared_plain, m.shader_plain, ""),
+            };
+            let paint_variant = match variant {
+                9 => 0,
+                10 => 7,
+                11 => 2,
+                _ => variant,
             };
             Spec {
                 name: format!("engine{variant}"),
                 source: format!(
-                    "const VARIANT: u32 = {variant}u;\n{cap}{shared}\n{shader}\n{union}{}",
+                    "const VARIANT: u32 = {paint_variant}u;\n{cap}{shared}\n{shader}\n{union}{}",
                     m.blend
                 ),
                 groups: bindings::ENGINE_GROUPS,
