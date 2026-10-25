@@ -1053,7 +1053,10 @@ impl Planes {
         let acquire_fence =
             unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(acquire_fence) };
         let ready = Arc::new(AtomicBool::new(false));
-        if !waits.is_empty() || !headrooms.is_empty() {
+        // Reclaim completed wgpu resources even when this is the last frame
+        // before idle and no HDR readback or imported wait needs a callback.
+        {
+            let device = device.clone();
             let completed = Arc::clone(&ready);
             let waker = self.waker.clone();
             let wake = !headrooms.is_empty();
@@ -1073,6 +1076,9 @@ impl Planes {
                             // SAFETY: the submission's sync fence has signalled,
                             // so no queue still waits on these semaphores.
                             unsafe { owner.vk.device.destroy_semaphore(wait, None) };
+                        }
+                        if let Err(error) = device.poll(wgpu::PollType::Poll) {
+                            tracing::error!(%error, "GPU completion resource reclamation failed");
                         }
                         completed.store(true, Ordering::Release);
                         if wake {
