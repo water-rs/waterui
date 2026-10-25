@@ -110,6 +110,12 @@ pub enum ShaderVariant {
     /// [`DrawRange::module`] selects it for GPU-routed ranges, so the
     /// pipelines every other draw uses carry none of the cell-buffer code.
     Cell,
+    /// GPU coverage with the ordinary solid-colour program.
+    CellSimple,
+    /// GPU coverage with the sharp-clip solid-cell program.
+    CellGlyph,
+    /// GPU coverage without source-image conversion or long-gradient code.
+    CellFull,
     /// `Full` plus the per-tap conversion of source image texels: an
     /// image paint whose texture keeps its source encoding (non-zero
     /// `image_storage` source flags).
@@ -157,11 +163,14 @@ pub struct DrawRange {
 
 impl DrawRange {
     /// The engine module the range's pipeline is built from: its
-    /// `variant`, except that a GPU-routed range reads its cells from the
-    /// cell-texel buffer, which only the `Cell` and `Union` modules carry.
+    /// `variant`, with GPU coverage reads added for a GPU-routed range.
+    /// Ordinary paints retain their specialization; rich paints use `Cell`.
     pub const fn module(&self) -> ShaderVariant {
         match (self.gpu, self.variant) {
             (Some(_), ShaderVariant::Union) | (None, _) => self.variant,
+            (Some(_), ShaderVariant::Simple) => ShaderVariant::CellSimple,
+            (Some(_), ShaderVariant::Glyph) => ShaderVariant::CellGlyph,
+            (Some(_), ShaderVariant::Full) => ShaderVariant::CellFull,
             (Some(_), _) => ShaderVariant::Cell,
         }
     }

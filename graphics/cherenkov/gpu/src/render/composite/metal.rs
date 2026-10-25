@@ -543,7 +543,12 @@ pub fn encode(
                 // `ExecutionPlan::epoch` never admits into a tile epoch.
                 // `Cell` is a draw module (`DrawRange::module`), never a
                 // range's lowered variant.
-                ShaderVariant::Cell => unreachable!("no range is lowered with the cell module"),
+                ShaderVariant::Cell
+                | ShaderVariant::CellSimple
+                | ShaderVariant::CellGlyph
+                | ShaderVariant::CellFull => {
+                    unreachable!("no range is lowered with the cell module")
+                }
                 ShaderVariant::Union => {
                     unreachable!("a union sample reads its capture; no tile epoch admits it")
                 }

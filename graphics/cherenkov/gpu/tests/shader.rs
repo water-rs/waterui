@@ -6,10 +6,10 @@ use naga::back::{hlsl, msl, spv};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use naga::{Module, front::wgsl};
 
-/// The nine engine modules exactly as `build.rs` composed, validated
+/// The engine modules exactly as `build.rs` composed, validated
 /// and emitted them — read from `OUT_DIR` so the test exercises the
 /// shipped source rather than a copy of its composition logic.
-const ENGINE_SOURCES: [&str; 9] = [
+const ENGINE_SOURCES: [&str; 12] = [
     include_str!(concat!(env!("OUT_DIR"), "/engine0.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine1.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine2.wgsl")),
@@ -19,6 +19,9 @@ const ENGINE_SOURCES: [&str; 9] = [
     include_str!(concat!(env!("OUT_DIR"), "/engine6.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine7.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine8.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine9.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine10.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine11.wgsl")),
 ];
 const SHARED: &str = include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl"));
 const BLEND: &str = include_str!("../src/render/blend.wgsl");

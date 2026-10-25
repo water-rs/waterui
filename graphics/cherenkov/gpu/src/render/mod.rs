@@ -1257,7 +1257,7 @@ pub struct GpuRenderer {
     /// outer-band member, the first GPU-routed draw and the first image
     /// paint with source flags (on wasm, by `prepare_lazy_pipelines`
     /// before the frame that needs them).
-    pipelines: FormatCells<[[Option<wgpu::RenderPipeline>; 9]; 2]>,
+    pipelines: FormatCells<[[Option<wgpu::RenderPipeline>; 12]; 2]>,
     /// `[format slot][module][opaque, partial]` coverage pipelines, same cell policy
     /// as the core set: the simple module's pair is built at init under
     /// `core_pipelines_eager()` (always, on wasm), else created at the
@@ -2251,6 +2251,9 @@ const fn variant_index(variant: ShaderVariant) -> usize {
         ShaderVariant::Union => 3,
         ShaderVariant::LongGradient => 4,
         ShaderVariant::Cell => 5,
+        ShaderVariant::CellSimple => 9,
+        ShaderVariant::CellGlyph => 10,
+        ShaderVariant::CellFull => 11,
         ShaderVariant::Image => 6,
         ShaderVariant::Glyph => 7,
         ShaderVariant::Composite => 8,
@@ -2490,7 +2493,7 @@ impl PipelineFactory<'_> {
 /// layers whose formats coincide, and an empty cell is created at first
 /// use so preparation lands inside the frame that needs it (#170).
 fn core_pipeline<'m>(
-    pipelines: &'m mut FormatCells<[[Option<wgpu::RenderPipeline>; 9]; 2]>,
+    pipelines: &'m mut FormatCells<[[Option<wgpu::RenderPipeline>; 12]; 2]>,
     factory: &PipelineFactory<'_>,
     format: wgpu::TextureFormat,
     replace: bool,
@@ -11448,22 +11451,21 @@ impl GpuRenderer {
             // Init builds every eager cell of the working and scratch
             // formats; a surface's own format has none of them.
             let eager = format == WORKING_FORMAT || format == self.scratch_format;
-            if !eager && coverage_order(pass) {
-                coverage.insert(format_i);
+            if coverage_order(pass) {
+                if !eager {
+                    coverage.insert((format_i, false));
+                }
+                if pass.ranges.iter().any(|range| range.gpu.is_some()) {
+                    coverage.insert((format_i, true));
+                }
             }
             for range in &pass.ranges {
                 let union = range.variant == ShaderVariant::Union;
                 if let PipelineKind::Effect { id, replace } = range.pipeline {
                     effects.insert((id, union, replace, format_i));
-                } else if matches!(
-                    range.variant,
-                    ShaderVariant::Union
-                        | ShaderVariant::Image
-                        | ShaderVariant::Glyph
-                        | ShaderVariant::Composite
-                ) {
+                } else if !EAGER_CORE_VARIANTS.contains(&variant_index(range.module())) {
                     core.insert((
-                        variant_index(range.variant),
+                        variant_index(range.module()),
                         format_i,
                         range.pipeline == PipelineKind::Replace,
                     ));
@@ -11482,8 +11484,8 @@ impl GpuRenderer {
         for (variant, format_i, replace) in core {
             self.prepare_lazy_core(variant, format_i, replace).await?;
         }
-        for format_i in coverage {
-            self.prepare_lazy_coverage(format_i).await?;
+        for (format_i, gpu) in coverage {
+            self.prepare_lazy_coverage(format_i, gpu).await?;
         }
         for (id, union, replace, format_i) in effects {
             let Some(entry) = self.backdrop_shaders.get_mut(&id) else {
@@ -11531,7 +11533,7 @@ impl GpuRenderer {
     }
 
     /// wasm: the demand-built core cell `(variant, format slot, replace)`
-    /// of a union or image range, with its engine module.
+    /// not built at initialization, with its engine module.
     #[cfg(target_arch = "wasm32")]
     #[expect(
         clippy::future_not_send,
@@ -11567,29 +11569,34 @@ impl GpuRenderer {
         Ok(())
     }
 
-    /// wasm: the simple-module `[opaque, partial]` coverage pair of a
-    /// surface format init did not build.
+    /// wasm: a `[opaque, partial]` coverage pair not built at initialization.
     #[cfg(target_arch = "wasm32")]
     #[expect(
         clippy::future_not_send,
         reason = "the browser engine is single-threaded and its futures run on the page's event loop"
     )]
-    async fn prepare_lazy_coverage(&mut self, format_i: usize) -> Result<(), RenderError> {
-        if self.coverage_pipelines[format_i][0]
+    async fn prepare_lazy_coverage(
+        &mut self,
+        format_i: usize,
+        gpu: bool,
+    ) -> Result<(), RenderError> {
+        if self.coverage_pipelines[format_i][usize::from(gpu)]
             .iter()
             .all(Option::is_some)
         {
             return Ok(());
         }
+        let variant = variant_index(if gpu {
+            ShaderVariant::Cell
+        } else {
+            ShaderVariant::Simple
+        });
         let module = self
             .lazy_modules
-            .entry(variant_index(ShaderVariant::Simple))
-            .or_insert_with(|| {
-                self.shader_delivery
-                    .engine_programs(&self.device, variant_index(ShaderVariant::Simple))
-            });
+            .entry(variant)
+            .or_insert_with(|| self.shader_delivery.engine_programs(&self.device, variant));
         for phase in [CoveragePhase::Opaque, CoveragePhase::Partial] {
-            self.coverage_pipelines[format_i][0][phase as usize] = Some(
+            self.coverage_pipelines[format_i][usize::from(gpu)][phase as usize] = Some(
                 create_pipeline(
                     &self.device,
                     &self.config,
