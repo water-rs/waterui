@@ -3047,11 +3047,33 @@ pub fn stroke_outlines(
 pub fn run_bounds(font: &FontData, run: &cherenkov::GlyphRun) -> Result<kurbo::Rect, RenderError> {
     let font_ref = skrifa::FontRef::from_index(&font.data, font.index)
         .map_err(|e| RenderError::Font(format!("{e}")))?;
-    let upem = font_ref
+    let head = font_ref
         .head()
-        .map_err(|e| RenderError::Font(format!("head: {e}")))?
-        .units_per_em();
-    let scale = f64::from(run.size) / f64::from(upem);
+        .map_err(|e| RenderError::Font(format!("head: {e}")))?;
+    let scale = f64::from(run.size) / f64::from(head.units_per_em());
+    if run.coords.iter().all(|coord| *coord == 0) {
+        // The head table encloses every glyph at the default location.
+        // Culling needs only a conservative box, not individual outlines.
+        let Some(first) = run.glyphs.first() else {
+            return Ok(kurbo::Rect::ZERO);
+        };
+        let mut origins = kurbo::Rect::new(
+            f64::from(first.x),
+            f64::from(first.y),
+            f64::from(first.x),
+            f64::from(first.y),
+        );
+        for glyph in &run.glyphs[1..] {
+            origins = origins.union_pt((f64::from(glyph.x), f64::from(glyph.y)));
+        }
+        return Ok(kurbo::Rect::new(
+            f64::from(head.x_min()).mul_add(scale, origins.x0),
+            f64::from(head.y_max()).mul_add(-scale, origins.y0),
+            f64::from(head.x_max()).mul_add(scale, origins.x1),
+            f64::from(head.y_min()).mul_add(-scale, origins.y1),
+        ));
+    }
+    // A non-default variable-font location can extend outside the head box.
     let coords: Vec<F2Dot14> = run.coords.iter().map(|c| F2Dot14::from_bits(*c)).collect();
     let metrics = font_ref.glyph_metrics(
         skrifa::instance::Size::unscaled(),
