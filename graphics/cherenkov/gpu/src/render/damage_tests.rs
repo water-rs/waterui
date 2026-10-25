@@ -63,12 +63,12 @@ fn movement_and_removal_keep_last_submitted_footprints() {
     history.update(&frame(&[(0, 10.0)]));
     assert_eq!(history.pixels(), 0);
     history.update(&frame(&[(0, 40.0)]));
-    assert_eq!(history.pixels(), 288);
+    assert_eq!(history.pixels(), 504);
     assert!(contains(&history, 10, 10) && contains(&history, 40, 10));
     // A preparation that never reached the queue is not the old picture.
     history.update(&frame(&[(0, 60.0)]));
     assert!(contains(&history, 10, 10) && contains(&history, 60, 10));
-    assert!(!contains(&history, 40, 10));
+    assert_eq!(history.pixels(), 744); // enclosing the submitted and prepared footprints
     history.submitted();
     history.submitted();
     history.update(&frame(&[]));
@@ -173,8 +173,8 @@ fn resource_versions_and_animated_ranges_are_local() {
     history.update_resources(&scene, |_| 2);
     assert_eq!(
         history.pixels(),
-        288,
-        "new external frame updates its two commands"
+        864,
+        "new external frame encloses its two changed commands"
     );
     history.submitted();
     history.update_resources(&scene, |_| 2);
@@ -191,4 +191,22 @@ fn resource_versions_and_animated_ranges_are_local() {
         history.pass(0).is_full(),
         "filter can affect its entire output"
     );
+}
+
+#[test]
+fn scattered_changes_keep_one_bounded_redraw() {
+    let mut history = Commands::default();
+    let items: Vec<_> = (0_u16..2000)
+        .map(|op| (usize::from(op), f32::from(op % 80)))
+        .collect();
+    let mut scene = frame(&items);
+    history.update(&scene);
+    history.submitted();
+    for command in &mut scene.commands {
+        command.revision += 1;
+    }
+    history.update(&scene);
+    assert_eq!(history.pass(0).rectangles().len(), 1);
+    assert_eq!(history.pixels(), 90 * 12);
+    assert!(contains(&history, 0, 10) && contains(&history, 88, 19));
 }
