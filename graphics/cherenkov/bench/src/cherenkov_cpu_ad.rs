@@ -1655,6 +1655,11 @@ impl Engine for Cherenkov {
         Ok(self.timings.samples(timings))
     }
 
+    fn wait_idle(&mut self) -> Result<(), BenchError> {
+        // submit completes the CPU raster work before returning.
+        Ok(())
+    }
+
     fn counters(&self) -> Counters {
         let mut counters = self.counters.clone();
         let stats = self.engine.stats();

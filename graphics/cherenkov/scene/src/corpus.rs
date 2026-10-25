@@ -35,7 +35,7 @@ pub struct FontSpec {
 /// Latin sample text (Noto Sans).
 pub const LATIN: &str = "The quick brown fox jumps over the lazy dog 0123456789!?";
 /// Simplified Chinese sample text (Noto Sans SC).
-pub const CJK: &str = "。，0123456789";
+pub const CJK: &str = "天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。0123456789";
 /// Arabic sample text (Noto Sans Arabic, RTL with joining).
 pub const ARABIC: &str = "مرحبا بالعالم! أهلا وسهلا ١٢٣";
 /// Hebrew sample text (Noto Sans Hebrew, RTL).
