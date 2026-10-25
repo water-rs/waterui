@@ -28,22 +28,6 @@ const SMALL_BBOX: f64 = 32.0;
 /// Flattening tolerance in device pixels.
 pub const FLATTEN: f64 = 0.02;
 
-/// The largest singular value of `t`'s linear part — the worst-case factor
-/// by which a local distance error grows under the transform. Mirrors
-/// `cherenkov_oracle::path::sigma_max`.
-#[must_use]
-#[expect(
-    clippy::many_single_char_names,
-    reason = "a/b/c/d are the conventional affine coefficient names"
-)]
-pub fn sigma_max(t: Affine) -> f64 {
-    let [a, b, c, d, _, _] = t.as_coeffs();
-    let p = a.mul_add(a, b * b) + c.mul_add(c, d * d);
-    let det = a.mul_add(d, -(b * c));
-    let disc = p.mul_add(p, (-4.0 * det) * det).sqrt();
-    p.midpoint(disc).sqrt()
-}
-
 /// A semantic shape as a local `BezPath`: its outline (shared with every
 /// other lowering through [`cherenkov::lowering::shape_outline`]), or the
 /// open segment of a line.

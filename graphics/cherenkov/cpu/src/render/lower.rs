@@ -801,20 +801,6 @@ impl AnchorScratch {
     }
 }
 
-/// The largest singular value of `t`'s linear part — the worst-case factor
-/// by which a user-space distance error can grow under the transform.
-#[expect(
-    clippy::many_single_char_names,
-    reason = "a/b/c/d are the conventional affine matrix coefficient names"
-)]
-fn sigma_max(t: Affine) -> f64 {
-    let [a, b, c, d, _, _] = t.as_coeffs();
-    let p = a.mul_add(a, b * b) + c.mul_add(c, d * d);
-    let det = a.mul_add(d, -(b * c));
-    let disc = p.mul_add(p, (-4.0 * det) * det).sqrt();
-    p.midpoint(disc).sqrt()
-}
-
 /// Resolves a member's engine effect into a [`SampleEffect`], also
 /// returning its sampling reach (the member's bounds grow by it).
 /// `clip` is the member clip's box; a path clip has none and gives SDF
@@ -951,7 +937,7 @@ fn draw_boundary(
     transform: Affine,
     frame: &Frame,
 ) -> Option<(Vec<Edge>, FillRule)> {
-    let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
+    let tol_u = FLATTEN_TOL / transform.spectral_norm().max(1e-12);
     let (path, rule) = if let Some(stroke) = stroke {
         let path = match shape {
             ShapeData::Line(l) => {
@@ -1964,7 +1950,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         }
         // Mixed and general stacks retain their filled operands. Their
         // intersection is indexed once and rasterized on demand by band.
-        let sm = sigma_max(self.transform).max(1e-12);
+        let sm = self.transform.spectral_norm().max(1e-12);
         let tol_u = FLATTEN_TOL / sm;
         let (path, rule) = shape_outline(shape, tol_u)?;
         let edges = boundary_edges(&flatten_edges(self.transform * path, FLATTEN_TOL), rule);
@@ -2686,7 +2672,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let resolved = carried.or_else(|| {
             self.geometry
                 .resolve(shape, None, transform, self.edge_scratch, || {
-                    let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
+                    let tol_u = FLATTEN_TOL / transform.spectral_norm().max(1e-12);
                     let (path, rule) = shape_outline(shape, tol_u)?;
                     Some((
                         flatten_edges(frame.map(frame.anchored(path)), FLATTEN_TOL),
@@ -2886,7 +2872,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             .bitmap_fonts
             .get(&font_id)
             .ok_or_else(|| RenderError::Font(format!("unregistered bitmap font {font_id}")))?;
-        let device_ppem = (f64::from(size) * sigma_max(self.transform)) as f32;
+        let device_ppem = (f64::from(size) * self.transform.spectral_norm()) as f32;
         let strike = bitmap_font.select(device_ppem);
         let key = super::bitmap::BitmapKey {
             font: font_id,
