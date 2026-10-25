@@ -1,5 +1,7 @@
 //! Exact structural keys: changing paint values never repeats lifetime analysis.
 
+use crate::render::composition::Materialization;
+
 use super::plan::{ExecutionPlan, Formats, Limits, ReadKind};
 use crate::render::lower::{Frame, ImageSource, Pass, PipelineKind, Source, Target};
 
@@ -34,7 +36,7 @@ pub struct Cache {
     draws: Vec<Draw>,
     placements: Vec<Placement>,
     samples: Vec<[u32; 6]>,
-    settings: Option<(Formats, Limits)>,
+    settings: Option<(Formats, Result<Limits, Materialization>)>,
 }
 
 impl Cache {
@@ -52,7 +54,7 @@ impl Cache {
         plan: &mut ExecutionPlan,
         frame: &Frame,
         formats: Formats,
-        limits: Limits,
+        limits: Result<Limits, Materialization>,
     ) -> bool {
         let pass_shapes = || {
             frame

@@ -4,23 +4,9 @@
 //! clear starts a new generation; reads name that generation before any
 //! physical attachment is assigned.
 //!
-//! Nothing here is platform-specific (issue #2549). A backend hands the
-//! planner the [`Limits`] its tile executor works within; a target with
-//! no executor has no limits, so an [`ExecutionPlan`] is never built
-//! there and every logical image is materialized for
-//! [`Materialization::NoExecutor`].
-
-// A target with no executor never calls the planner, so every item here
-// is unreachable there. Both executors — Apple's (#2549) and Vulkan's
-// (#2191) — use all of it, so only a target with neither has dead code
-// here.
-#![cfg_attr(
-    not(unix),
-    expect(
-        dead_code,
-        reason = "no tile executor on this target, so nothing plans (#2549)"
-    )
-)]
+//! Logical images exist independently of native tile execution. A backend
+//! without an executor keeps the same lifetimes and records why every image
+//! requires materialized storage.
 
 use std::ops::Range;
 
@@ -172,21 +158,8 @@ pub struct ExecutionPlan {
     pub reads: Vec<Vec<Option<Read>>>,
     pub segments: Vec<Segment>,
     native: Vec<Option<usize>>,
-    /// Whether a backend planned this frame at all. A target whose
-    /// backend has no tile executor supplies no [`Limits`], so its plan
-    /// stays in this default state: no epoch, and every image
-    /// materialized for [`Self::unplanned`]'s reason.
+    /// Whether this frame's logical images have been analyzed.
     planned: bool,
-    /// Why no plan was built, while `planned` is false.
-    ///
-    /// `None` is the default state [`Materialization::NoExecutor`]
-    /// names: the target has no tile executor and nothing asked. A
-    /// backend that *has* an executor but could not install it —
-    /// because the device lacks what it needs, or the engine is
-    /// configured with a format it cannot bind — records that reason
-    /// here through [`ExecutionPlan::set_unplanned`], so the
-    /// attribution says which (#2191).
-    unplanned: Option<Materialization>,
 }
 
 impl ExecutionPlan {
@@ -221,7 +194,7 @@ impl ExecutionPlan {
     /// The plan for `frame`, where `formats` are what the frame's images
     /// are stored in and `limits` is what the
     /// backend's tile executor can hold.
-    pub fn build(frame: &Frame, formats: Formats, limits: Limits) -> Self {
+    pub fn build(frame: &Frame, formats: Formats, limits: Result<Limits, Materialization>) -> Self {
         let mut plan = Self {
             planned: true,
             ..Self::default()
@@ -300,7 +273,7 @@ impl ExecutionPlan {
         plan
     }
 
-    pub fn update_placement(&mut self, frame: &Frame, limits: Limits) {
+    pub fn update_placement(&mut self, frame: &Frame, limits: Result<Limits, Materialization>) {
         for (index, pass) in frame.passes.iter().enumerate() {
             let image = &mut self.images[self.targets[index].0];
             image.region = pass.region;
@@ -311,10 +284,22 @@ impl ExecutionPlan {
         self.partition(frame, limits);
     }
 
-    fn partition(&mut self, frame: &Frame, limits: Limits) {
+    fn partition(&mut self, frame: &Frame, limits: Result<Limits, Materialization>) {
         let plan = self;
         plan.native.clear();
         plan.native.resize(frame.passes.len(), None);
+        let limits = match limits {
+            Ok(limits) => limits,
+            Err(reason) => {
+                for image in &mut plan.images {
+                    image.storage = Storage::Materialized(reason);
+                }
+                if !frame.passes.is_empty() {
+                    plan.segments.push(Segment::Portable(0..frame.passes.len()));
+                }
+                return;
+            }
+        };
         let mut index = 0;
         while index < frame.passes.len() {
             // An epoch's draws read slots earlier draws of the same pass
@@ -598,28 +583,12 @@ impl ExecutionPlan {
         self.planned
     }
 
-    /// Records that this frame is not planned, and why.
-    ///
-    /// The backend calls this instead of [`Self::build`] when it has an
-    /// executor it could not install, so [`Self::materialization`]
-    /// names the real obstacle rather than the generic
-    /// [`Materialization::NoExecutor`]. Any plan a previous frame built
-    /// is discarded: an unplanned frame has no epochs.
-    pub fn set_unplanned(&mut self, reason: Materialization) {
-        if self.planned || self.unplanned != Some(reason) {
-            *self = Self {
-                unplanned: Some(reason),
-                ..Self::default()
-            };
-        }
-    }
-
     /// Why the image `pass` writes reaches device memory; `None` when an
     /// epoch keeps it on chip. The pass needs a backed scratch attachment
     /// exactly when this is `Some`.
     pub fn materialization(&self, pass: usize) -> Option<Materialization> {
         if !self.planned {
-            return Some(self.unplanned.unwrap_or(Materialization::NoExecutor));
+            return Some(Materialization::NoExecutor);
         }
         match self.images[self.targets[pass].0].storage {
             Storage::OnChip => None,

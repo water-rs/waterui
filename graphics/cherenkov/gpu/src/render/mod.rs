@@ -7866,23 +7866,17 @@ impl GpuRenderer {
                 surf.drop_resolve_binds_on(&self.device, &view, "backdrop resolve");
             }
         }
-        // Planning runs only for a backend that can execute an epoch;
-        // with no executor there is no plan, and the reason it is
-        // missing becomes every image's attribution (#2549, #2191).
-        match tile_limits {
-            Ok(limits) => {
-                surf.composition_cache.update(
-                    &mut surf.composition,
-                    &surf.frame,
-                    composite::plan::Formats {
-                        surface: surf.format,
-                        scratch: self.scratch_format,
-                    },
-                    limits,
-                );
-            }
-            Err(reason) => surf.composition.set_unplanned(reason),
-        }
+        // Image lifetimes also drive materialized storage when this device
+        // cannot execute native tile epochs.
+        surf.composition_cache.update(
+            &mut surf.composition,
+            &surf.frame,
+            composite::plan::Formats {
+                surface: surf.format,
+                scratch: self.scratch_format,
+            },
+            tile_limits,
+        );
         let max_scratch = surf
             .frame
             .passes
@@ -10103,8 +10097,8 @@ impl GpuRenderer {
             stats.passes += 1;
             i += 1;
         }
-        // Only a planned frame has logical images to attribute; a
-        // target with no tile executor records nothing (#2549).
+        // Attribute every analyzed image, including materialized images
+        // on targets without a native tile executor.
         if let Some(sink) = self
             .config
             .composition_diag
