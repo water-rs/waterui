@@ -529,11 +529,10 @@ impl GpuCoverage {
     /// The frame's submit landed: entries it generated are replayable
     /// and a compaction's copies have executed (water-rs/waterui#3081).
     pub fn submitted(&mut self) {
-        // Consecutive generation frames reuse their working set. Once a frame
-        // only replays retained coverage, its sort/flatten buffers are unused.
-        if !self.has_misses() {
-            self.buffers = None;
-        }
+        // Submitted commands retain these buffers until the GPU finishes.
+        // Do not keep generation scratch waiting for another frame: a static
+        // application may never submit a retained-only frame to release it.
+        self.buffers = None;
         if !self.encoded {
             return;
         }
@@ -2147,6 +2146,10 @@ mod tests {
             }
         }
         frame.submitted();
+        assert!(
+            frame.buffers.is_none(),
+            "idle frames release generation scratch"
+        );
         assert_eq!(frame.uploads.len(), 0);
         frame.begin_frame();
         frame.draw(&device, first).expect("first cache hit");
