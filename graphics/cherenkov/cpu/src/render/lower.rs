@@ -121,22 +121,30 @@ pub struct DrawBox {
     pub y1: u16,
 }
 
-/// A rasterized clip: an integer rect fast path or a full-surface
-/// coverage mask.
-#[derive(Debug, PartialEq)]
+/// Retained clip geometry, rasterized only for the rows a consumer needs.
+#[derive(Debug)]
 pub enum ClipMask {
     /// Axis-aligned rect with integer edges: coverage is 1 inside, 0
     /// outside.
     Rect(IRect),
-    /// Canonical filled boundaries of the clip stack and their exact-area
-    /// coverage, `w * h` cells. Draws intersect the boundaries before AA;
-    /// sampling consumers use the coverage.
+    /// Canonical filled boundaries. Draws intersect the operands before AA;
+    /// sampling consumers rasterize the resolved boundary by band.
     Geometry {
         /// Complete filled boundaries, with compatible winding directions.
         operands: Vec<Arc<[intersect::Segment]>>,
-        /// Exact intersection coverage for sampling consumers.
-        coverage: Vec<f32>,
+        /// Indexed intersection boundary for sampling consumers.
+        boundary: EdgeTiles,
     },
+}
+
+impl PartialEq for ClipMask {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Rect(a), Self::Rect(b)) => a == b,
+            (Self::Geometry { operands: a, .. }, Self::Geometry { operands: b, .. }) => a == b,
+            _ => false,
+        }
+    }
 }
 
 /// A clip shared by items; cheap to clone.
@@ -451,15 +459,14 @@ impl<T> DeviceData<T> {
     }
 }
 
-/// Heap bytes of a rasterized clip: the coverage mask or nothing for the
-/// rect fast path.
+/// Heap bytes of retained clip operands and their sampling boundary.
 pub fn clip_bytes(clip: &ClipMask) -> u64 {
     match clip {
         ClipMask::Rect(_) => 0,
-        ClipMask::Geometry { operands, coverage } => {
+        ClipMask::Geometry { operands, boundary } => {
             (operands.capacity() * size_of::<Arc<[intersect::Segment]>>()
-                + operands.iter().map(|o| size_of_val(&**o)).sum::<usize>()
-                + coverage.capacity() * size_of::<f32>()) as u64
+                + operands.iter().map(|o| size_of_val(&**o)).sum::<usize>()) as u64
+                + boundary.heap_bytes()
         }
     }
 }
@@ -963,17 +970,17 @@ fn draw_boundary(
     Some((flatten_edges(frame.map(path), FLATTEN_TOL), rule))
 }
 
-/// Exact stack coverage for sampling consumers. Filled draw boundaries
+/// Exact stack boundary for sampling consumers. Filled draw boundaries
 /// join this intersection before their own antialiasing instead.
-fn clip_coverage(operands: &[Arc<[intersect::Segment]>], w: usize, h: usize) -> Vec<f32> {
+fn clip_boundary(operands: &[Arc<[intersect::Segment]>]) -> EdgeTiles {
     let Some((first, rest)) = operands.split_first() else {
-        return Vec::new();
+        return intersection_tiles(&[]);
     };
     let mut segments = first.to_vec();
     for operand in rest {
         segments = intersect::intersect_edges(&segments, FillRule::NonZero, operand);
     }
-    super::raster::boundary_mask(&intersection_boundaries(&segments), w, h)
+    intersection_tiles(&segments)
 }
 
 /// Beyond this band the draw's and clip's partial coverages cannot meet.
@@ -1950,8 +1957,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             return integer_edges(new_rect).map(|r| Arc::new(ClipMask::Rect(r)));
         }
         // Mixed and general stacks retain their filled operands. Their
-        // intersection is rasterized once, never multiplied after AA.
-        let (w, h) = (self.width, self.height);
+        // intersection is indexed once and rasterized on demand by band.
         let sm = sigma_max(self.transform).max(1e-12);
         let tol_u = FLATTEN_TOL / sm;
         let (path, rule) = shape_outline(shape, tol_u)?;
@@ -1972,8 +1978,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
             }
         };
         operands.push(edges.into());
-        let coverage = self.pool.install(|| clip_coverage(&operands, w, h));
-        Some(Arc::new(ClipMask::Geometry { operands, coverage }))
+        let boundary = clip_boundary(&operands);
+        Some(Arc::new(ClipMask::Geometry { operands, boundary }))
     }
 
     /// Applies `clip` around `body`: `None` passes through.

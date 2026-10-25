@@ -20,6 +20,10 @@ pub struct FrameMeter {
     pub query_live: AtomicU64,
     /// `query_live`'s maximum over the frame's render calls.
     pub query_peak: AtomicU64,
+    /// Simultaneously live clip samples, compilers and pool bookkeeping.
+    pub clip_live: AtomicU64,
+    /// Clip working storage peak, included in the surface memory report.
+    pub clip_peak: AtomicU64,
 }
 
 impl FrameMeter {

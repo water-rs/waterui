@@ -8,7 +8,7 @@
 //! submissions inside [`cherenkov::Engine::render`] with `GpuConfig::timestamps` set.
 //!
 //! `CHERENKOV_SCRATCH_FORMAT=rgba8` selects `Rgba8Unorm` isolation targets
-//! (default `Rgba16Float`) to compare intermediate precision/bandwidth.
+//! or `rgba16` forces `Rgba16Float`. By default storage follows content.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -1727,7 +1727,13 @@ impl Cherenkov {
             timestamps: true,
             scratch_format: match std::env::var("CHERENKOV_SCRATCH_FORMAT").as_deref() {
                 Ok("rgba8") => ScratchFormat::Rgba8Unorm,
-                _ => ScratchFormat::LinearF16,
+                Ok("rgba16") => ScratchFormat::LinearF16,
+                Err(std::env::VarError::NotPresent) | Ok("content") => ScratchFormat::Content,
+                value => {
+                    return Err(BenchError::Gpu(format!(
+                        "invalid CHERENKOV_SCRATCH_FORMAT: {value:?}"
+                    )));
+                }
             },
             alloc_diag: alloc_diag.clone(),
             composition_diag: composition_diag.clone(),
@@ -2004,12 +2010,16 @@ impl Engine for Cherenkov {
                 .composition_diag
                 .as_ref()
                 .map(|sink| composition_sample(&sink.take())),
+            gpu_wait_seconds: stats.phases.wait_seconds,
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
     }
 
     fn finish_gpu(&mut self) -> Result<Vec<GpuSample>, BenchError> {
+        // finish_timings only waits for submissions that carry queries.
+        // Completion must also be guaranteed when GPU timing is disabled.
+        self.wait_idle()?;
         let timings = self.engine.finish_timings().map_err(render_error)?;
         Ok(self.timings.samples(timings))
     }

@@ -136,6 +136,16 @@ pub struct EdgeScratch {
     sweep: super::topology::Sweep,
 }
 
+impl std::fmt::Debug for EdgeScratch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EdgeScratch")
+            .field("decoded", &self.decoded)
+            .field("ends", &self.ends)
+            .field("heap_bytes", &self.heap_bytes())
+            .finish_non_exhaustive()
+    }
+}
+
 impl EdgeScratch {
     pub(crate) fn heap_bytes(&self) -> u64 {
         (self.decoded.capacity() * size_of::<IntegerEdge>()

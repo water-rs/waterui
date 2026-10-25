@@ -2683,7 +2683,7 @@ impl SystemPlanes for LayerPlanes {
     /// frame's [`CommitApply`] otherwise.
     type Commit = Option<Box<dyn CommitApply>>;
 
-    fn captured_bytes(&self) -> u64 {
+    fn native_bytes(&self) -> u64 {
         self.buffers.values().map(raster::Buffer::bytes).sum()
     }
     fn animate(&mut self, tree: &cherenkov::SurfaceTree, plan: &super::Plan) {
@@ -2806,7 +2806,10 @@ impl SystemPlanes for LayerPlanes {
             return Ok((super::Presentation::Pending, None));
         }
         let mut frames = Vec::with_capacity(c.parts.len());
-        for (part, target) in c.parts.iter().zip(&self.parts) {
+        for (part, target) in c.parts.iter().zip(&mut self.parts) {
+            target
+                .content(c.device, part.range)
+                .map_err(|error| RenderError::Render(error.to_string()))?;
             let Some(frame) =
                 c.presenter
                     .prepare(c.device, c.queue, target, part.view, c.display.headroom)?

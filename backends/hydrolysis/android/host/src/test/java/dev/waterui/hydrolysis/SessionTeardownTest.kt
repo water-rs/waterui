@@ -58,6 +58,28 @@ class SessionTeardownTest {
     }
 
     @Test
+    fun aDelayedWakeReleasesHighRefreshUnlessTouchIsHeld() {
+        val session = HydrolysisSession(context, onCloseRequested = {})
+        val scheduler = FrameScheduler(session)
+        ShadowNativeBridge.onFrame = { WANTS_NEXT_FRAME }
+        scheduler.pumpNow("test")
+        assertEquals(listOf(true), ShadowNativeBridge.highRefreshDemands)
+
+        ShadowNativeBridge.onFrame = { HAS_DEADLINE }
+        ShadowNativeBridge.deadlineNanos = Duration.ofSeconds(10).toNanos()
+        shadowOf(Looper.getMainLooper()).idleFor(FRAME_WINDOW)
+        assertEquals(listOf(true, false), ShadowNativeBridge.highRefreshDemands)
+
+        scheduler.setInteractionActive(true)
+        shadowOf(Looper.getMainLooper()).idleFor(FRAME_WINDOW)
+        assertEquals(listOf(true, false, true), ShadowNativeBridge.highRefreshDemands)
+        scheduler.setInteractionActive(false)
+        assertEquals(listOf(true, false, true, false), ShadowNativeBridge.highRefreshDemands)
+        scheduler.stop()
+        session.destroy()
+    }
+
+    @Test
     fun aFrameRequestedDuringTeardownNeverReachesNative() {
         val session = HydrolysisSession(context, onCloseRequested = {})
         HydrolysisHostView(context, session)
@@ -505,6 +527,9 @@ class ShadowNativeBridge {
         var deadlineQueries = 0
             private set
 
+        var deadlineNanos = 0L
+        val highRefreshDemands = mutableListOf<Boolean>()
+
         /** Every `nativeSetVisible` call, in order. */
         val visibilities = mutableListOf<Boolean>()
 
@@ -535,6 +560,8 @@ class ShadowNativeBridge {
             loads = 0
             destroyed = false
             deadlineQueries = 0
+            deadlineNanos = 0L
+            highRefreshDemands.clear()
             visibilities.clear()
             backEvents.clear()
             onDestroy = {}
@@ -594,7 +621,7 @@ class ShadowNativeBridge {
         fun nativeFrameDeadlineInNanos(sessionPtr: Long): Long {
             assertLive(sessionPtr)
             deadlineQueries += 1
-            return 0L
+            return deadlineNanos
         }
 
         @JvmStatic
@@ -625,8 +652,9 @@ class ShadowNativeBridge {
 
         @JvmStatic
         @Implementation
-        fun nativeSetHighRefresh(sessionPtr: Long, @Suppress("UNUSED_PARAMETER") active: Boolean) {
+        fun nativeSetFrameDemand(sessionPtr: Long, continuous: Boolean, touching: Boolean) {
             assertLive(sessionPtr)
+            highRefreshDemands += continuous || touching
         }
 
         @JvmStatic

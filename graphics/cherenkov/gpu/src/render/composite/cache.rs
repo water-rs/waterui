@@ -1,5 +1,7 @@
 //! Exact structural keys: changing paint values never repeats lifetime analysis.
 
+use crate::render::composition::Materialization;
+
 use super::plan::{ExecutionPlan, Formats, Limits, ReadKind};
 use crate::render::lower::{Frame, ImageSource, Pass, PipelineKind, Source, Target};
 
@@ -23,6 +25,8 @@ struct PassShape {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Placement {
+    color_range: crate::render::present::ColorRange,
+    extended_range: bool,
     region: [u32; 4],
     space: cherenkov::BlendSpace,
     transparent_clear: bool,
@@ -34,7 +38,7 @@ pub struct Cache {
     draws: Vec<Draw>,
     placements: Vec<Placement>,
     samples: Vec<[u32; 6]>,
-    settings: Option<(Formats, Limits)>,
+    settings: Option<(Formats, Result<Limits, Materialization>)>,
 }
 
 impl Cache {
@@ -52,7 +56,7 @@ impl Cache {
         plan: &mut ExecutionPlan,
         frame: &Frame,
         formats: Formats,
-        limits: Limits,
+        limits: Result<Limits, Materialization>,
     ) -> bool {
         let pass_shapes = || {
             frame
@@ -97,7 +101,11 @@ impl Cache {
             self.settings = Some((formats, limits));
             *plan = ExecutionPlan::build(frame, formats, limits);
         }
-        let placements = || frame.passes.iter().map(placement);
+        let placements = || {
+            frame.passes.iter().enumerate().map(|(index, pass)| {
+                placement(pass, super::plan::requires_extended_range(frame, index))
+            })
+        };
         let samples = || {
             frame
                 .passes
@@ -127,15 +135,17 @@ impl Cache {
             self.samples.clear();
             self.samples.extend(samples());
             if !changed {
-                plan.update_placement(frame, limits);
+                plan.update_placement(frame, formats, limits);
             }
         }
         changed
     }
 }
 
-fn placement(pass: &Pass) -> Placement {
+fn placement(pass: &Pass, extended_range: bool) -> Placement {
     Placement {
+        color_range: pass.color_range,
+        extended_range,
         region: pass.region,
         space: pass.space,
         transparent_clear: pass

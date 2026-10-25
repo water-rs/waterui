@@ -16,17 +16,11 @@
 //! | `skia-vulkan` | `skia-safe` | Ganesh/Vulkan | `RGBAF16` premul surface, linear-P3 colours |
 //! | `skia-metal` | `skia-safe` | Graphite/Metal | `RGBAF16` premul render target, linear-P3 colours |
 //!
-//! GPU time is reported only where a real GPU timestamp source exists.
-//! The external wgpu adapters and skia-vulkan bracket the engine submission with
-//! timestamps written in standalone submissions after a full queue drain
-//! (see `wgpu_ctx::drain_and_stamp` when those adapters are enabled); skia-metal brackets Graphite's
-//! submission with empty `MTLCommandBuffer` markers on the same serial
-//! queue, each preceded by a drain (`commit` + `waitUntilCompleted`),
-//! and reads their `GPUStartTime`/`GPUEndTime`. This **serializes CPU
-//! and GPU** for the measured frame — a synchronous probe, not a
-//! pipelined frame rate. Where no timestamp source exists the field is
-//! `null` — it is never estimated. The Cherenkov GPU adapter instead collects
-//! timestamps from completed earlier submissions without draining each frame.
+//! GPU execution time is separate from host submission time and synchronous
+//! encode-to-completion latency. Unavailable GPU time remains `null`, with
+//! the adapter's reason in the measurement report. Skia Graphite Metal,
+//! Ganesh Vulkan and Vello hybrid lack usable GPU timing in the pinned versions.
+//! The Cherenkov GPU adapter collects timestamps from completed submissions.
 #![expect(
     clippy::exhaustive_enums,
     clippy::exhaustive_structs,
@@ -349,9 +343,12 @@ pub struct Submit {
     /// attribution (#2547).
     pub composition: Option<Composition>,
     /// Wall-clock seconds this call spent rasterizing before any readback
-    /// began (queue drains and timestamp markers included), where the
+    /// began (completion waits included), where the
     /// adapter separates the two stages; `None` otherwise.
     pub render_seconds: Option<f64>,
+    /// Seconds spent explicitly waiting for GPU completion during submission.
+    /// Excluded from CPU submission work, retained in synchronous frame latency.
+    pub gpu_wait_seconds: f64,
     /// Wall-clock seconds this call spent reading the pixels back;
     /// `None` when `readback` was false.
     pub readback_seconds: Option<f64>,
@@ -432,6 +429,10 @@ impl PresentKind {
 pub trait Engine {
     /// Provenance pinned into every result JSON.
     fn info(&self) -> &EngineInfo;
+    /// Why this adapter cannot report GPU execution time using engine APIs.
+    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+        None
+    }
     /// The feature set this adapter can execute faithfully.
     fn supported(&self) -> BTreeSet<Feature>;
     /// Prepare the scene's resources once, outside the timed loop.
@@ -469,9 +470,10 @@ pub trait Engine {
     /// # Errors
     /// [`BenchError`] on engine or GPU failure.
     fn submit(&mut self, frame: u64, readback: bool) -> Result<Submit, BenchError>;
-    /// Wait for the GPU timings of every submitted frame not yet
-    /// returned by [`Engine::submit`]. Only a backend whose timestamps
-    /// resolve after its submit returns has any.
+    /// Wait for all submitted rendering work to complete, then return GPU
+    /// timings not yet returned by [`Engine::submit`]. GPU adapters must
+    /// wait even when timestamps are unavailable. The default applies only
+    /// to adapters whose submit already completes all rendering work.
     ///
     /// # Errors
     /// [`BenchError`] on engine or GPU failure.
@@ -575,8 +577,9 @@ pub fn create_engine(name: &str) -> Result<Box<dyn Engine>, BenchError> {
 /// Reads the host CPU model name, best-effort.
 ///
 /// On Android `/proc/cpuinfo` has no `model name` line and sysinfo's
-/// brand is empty, so the `Hardware` line is used; everywhere else
-/// sysinfo's CPU brand answers.
+/// brand is empty, so the `Hardware` line is used. iOS uses only the
+/// system-reported brand, without inferring a chip from its device model.
+/// Other platforms use sysinfo's CPU brand.
 #[must_use]
 pub fn cpu_model() -> Option<String> {
     #[cfg(target_os = "android")]
@@ -593,7 +596,47 @@ pub fn cpu_model() -> Option<String> {
         }
         None
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "ios")]
+    {
+        let name = c"machdep.cpu.brand_string";
+        let mut length = 0;
+        // SAFETY: the name is NUL-terminated and length points to writable
+        // storage. A null output buffer requests the required byte count.
+        if unsafe {
+            libc::sysctlbyname(
+                name.as_ptr(),
+                std::ptr::null_mut(),
+                &raw mut length,
+                std::ptr::null_mut(),
+                0,
+            )
+        } != 0
+        {
+            return None;
+        }
+        let mut bytes = vec![0_u8; length];
+        // SAFETY: bytes owns the output allocation sized by the same sysctl;
+        // length describes its capacity. No new value is supplied.
+        if unsafe {
+            libc::sysctlbyname(
+                name.as_ptr(),
+                bytes.as_mut_ptr().cast(),
+                &raw mut length,
+                std::ptr::null_mut(),
+                0,
+            )
+        } != 0
+        {
+            return None;
+        }
+        bytes.truncate(length);
+        let brand = std::ffi::CStr::from_bytes_with_nul(&bytes)
+            .ok()?
+            .to_str()
+            .ok()?;
+        (!brand.is_empty()).then(|| brand.to_owned())
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         sysinfo::System::new_with_specifics(
             sysinfo::RefreshKind::nothing().with_cpu(sysinfo::CpuRefreshKind::everything()),

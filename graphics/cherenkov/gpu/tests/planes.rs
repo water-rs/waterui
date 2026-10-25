@@ -90,6 +90,10 @@ mod macos {
         };
         vec![
             case(
+                "window_storage_promotes_for_hdr_and_stays_stable",
+                window_storage_promotes_for_hdr_and_stays_stable,
+            ),
+            case(
                 "periodic_replacements_preserve_static_readmission_history",
                 periodic_replacements_preserve_static_readmission_history,
             ),
@@ -1195,6 +1199,41 @@ mod macos {
             || sublayers(layer)
                 .iter()
                 .any(|inner| is::<CAMetalLayer>(inner))
+    }
+
+    fn window_storage_promotes_for_hdr_and_stays_stable() {
+        let fixture = Fixture::new();
+        for (red, compact) in [(0.6, true), (2.0, false), (0.4, false)] {
+            fixture
+                .window
+                .clear_color(WorkingColor::new([red, 0.2, 0.1, 1.0]));
+            fixture.render();
+            let parts: Vec<_> = stack(&fixture)
+                .into_iter()
+                .flat_map(|layer| std::iter::once(layer.clone()).chain(sublayers(&layer)))
+                .filter_map(|layer| layer.downcast::<CAMetalLayer>().ok())
+                .collect();
+            assert_eq!(parts.len(), 1, "clear-only window has one engine part");
+            let format = parts[0].pixelFormat();
+            if compact {
+                assert!(
+                    matches!(
+                        format,
+                        MTLPixelFormat::BGRA8Unorm
+                            | MTLPixelFormat::BGRA8Unorm_sRGB
+                            | MTLPixelFormat::RGBA8Unorm
+                            | MTLPixelFormat::RGBA8Unorm_sRGB
+                    ),
+                    "SDR window should use four-byte storage, got {format:?}"
+                );
+            } else {
+                assert_eq!(
+                    format,
+                    MTLPixelFormat::RGBA16Float,
+                    "HDR promotion persists"
+                );
+            }
+        }
     }
 
     /// Every part's metal layer is configured with the present mode the

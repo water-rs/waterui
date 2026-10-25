@@ -4,25 +4,13 @@
 //! clear starts a new generation; reads name that generation before any
 //! physical attachment is assigned.
 //!
-//! Nothing here is platform-specific (issue #2549). A backend hands the
-//! planner the [`Limits`] its tile executor works within; a target with
-//! no executor has no limits, so an [`ExecutionPlan`] is never built
-//! there and every logical image is materialized for
-//! [`Materialization::NoExecutor`].
-
-// A target with no executor never calls the planner, so every item here
-// is unreachable there. Both executors — Apple's (#2549) and Vulkan's
-// (#2191) — use all of it, so only a target with neither has dead code
-// here.
-#![cfg_attr(
-    not(unix),
-    expect(
-        dead_code,
-        reason = "no tile executor on this target, so nothing plans (#2549)"
-    )
-)]
+//! Logical images exist independently of native tile execution. A backend
+//! without an executor keeps the same lifetimes and records why every image
+//! requires materialized storage.
 
 use std::ops::Range;
+
+use crate::render::present::ColorRange;
 
 use super::super::composition::Materialization;
 use super::super::instance::PAINT_TEXTURE;
@@ -64,6 +52,8 @@ pub struct Limits {
 /// image's the working format, and a capture's that of what it copies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Formats {
+    /// Select compact storage for eligible materialized images.
+    pub content: bool,
     /// The surface target's format.
     pub surface: wgpu::TextureFormat,
     /// The isolation scratch format.
@@ -95,6 +85,9 @@ pub struct LogicalImageId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct LogicalImage {
+    /// Physical texture slot for a materialized scratch image.
+    pub backing: Option<usize>,
+    pub color_range: ColorRange,
     pub target: Target,
     pub generation: usize,
     pub region: [u32; 4],
@@ -132,14 +125,30 @@ pub struct Read {
 #[derive(Clone, Debug)]
 pub struct TileOp {
     pub pass: usize,
+    #[cfg_attr(
+        not(any(unix, test)),
+        expect(dead_code, reason = "read by native tile executors")
+    )]
     pub target: u8,
     pub sources: Vec<Option<u8>>,
+    #[cfg_attr(
+        not(any(unix, test)),
+        expect(dead_code, reason = "read by native tile executors")
+    )]
     pub begin: bool,
     /// Where a `begin` whose slot still holds a dead image has to clear:
     /// every region this epoch writes that image over, and every region
     /// it reads the image from, so the slot reads transparent everywhere
     /// the image's own clear would have. Only `begin` consults it.
+    #[cfg_attr(
+        not(any(unix, test)),
+        expect(dead_code, reason = "read by native tile executors")
+    )]
     pub clear_region: [u32; 4],
+    #[cfg_attr(
+        not(any(unix, test)),
+        expect(dead_code, reason = "read by native tile executors")
+    )]
     pub backdrop: Option<ReadKind>,
 }
 
@@ -165,33 +174,31 @@ pub enum Segment {
     NativeEpoch(TileEpoch),
 }
 
+#[derive(Clone, Debug)]
+pub struct ScratchSlot {
+    pub format: wgpu::TextureFormat,
+    pub size: (u32, u32),
+    last_consumer: usize,
+}
+
 #[derive(Default)]
 pub struct ExecutionPlan {
+    pub scratch: Vec<ScratchSlot>,
+    captures: Vec<Option<LogicalImageId>>,
     pub images: Vec<LogicalImage>,
     pub targets: Vec<LogicalImageId>,
     pub reads: Vec<Vec<Option<Read>>>,
     pub segments: Vec<Segment>,
     native: Vec<Option<usize>>,
-    /// Whether a backend planned this frame at all. A target whose
-    /// backend has no tile executor supplies no [`Limits`], so its plan
-    /// stays in this default state: no epoch, and every image
-    /// materialized for [`Self::unplanned`]'s reason.
+    /// Whether this frame's logical images have been analyzed.
     planned: bool,
-    /// Why no plan was built, while `planned` is false.
-    ///
-    /// `None` is the default state [`Materialization::NoExecutor`]
-    /// names: the target has no tile executor and nothing asked. A
-    /// backend that *has* an executor but could not install it —
-    /// because the device lacks what it needs, or the engine is
-    /// configured with a format it cannot bind — records that reason
-    /// here through [`ExecutionPlan::set_unplanned`], so the
-    /// attribution says which (#2191).
-    unplanned: Option<Materialization>,
 }
 
 impl ExecutionPlan {
     pub fn bytes(&self) -> u64 {
-        (self.images.capacity() * std::mem::size_of::<LogicalImage>()
+        (self.scratch.capacity() * std::mem::size_of::<ScratchSlot>()
+            + self.captures.capacity() * std::mem::size_of::<Option<LogicalImageId>>()
+            + self.images.capacity() * std::mem::size_of::<LogicalImage>()
             + self.native.capacity() * std::mem::size_of::<Option<usize>>()
             + self.targets.capacity() * std::mem::size_of::<LogicalImageId>()
             + self.reads.capacity() * std::mem::size_of::<Vec<Option<Read>>>()
@@ -221,7 +228,7 @@ impl ExecutionPlan {
     /// The plan for `frame`, where `formats` are what the frame's images
     /// are stored in and `limits` is what the
     /// backend's tile executor can hold.
-    pub fn build(frame: &Frame, formats: Formats, limits: Limits) -> Self {
+    pub fn build(frame: &Frame, formats: Formats, limits: Result<Limits, Materialization>) -> Self {
         let mut plan = Self {
             planned: true,
             ..Self::default()
@@ -237,6 +244,8 @@ impl ExecutionPlan {
                 let generation = previous.map_or(0, |p| plan.images[current[p].1.0].generation + 1);
                 let id = LogicalImageId(plan.images.len());
                 plan.images.push(LogicalImage {
+                    backing: None,
+                    color_range: ColorRange::Standard,
                     target: pass.target,
                     generation,
                     region: pass.region,
@@ -269,6 +278,8 @@ impl ExecutionPlan {
                         assert!(matches!(target, Target::Projected(_)));
                         let id = LogicalImageId(plan.images.len());
                         plan.images.push(LogicalImage {
+                            backing: None,
+                            color_range: ColorRange::HighDynamicRange,
                             target,
                             generation: 0,
                             region: [0; 4],
@@ -287,34 +298,149 @@ impl ExecutionPlan {
                 })
                 .collect();
             plan.reads.push(reads);
-            if let Some(capture) = pass.capture {
+            let capture = pass.capture.map(|capture| {
                 let id = current
                     .iter()
                     .find(|(t, _)| *t == capture.copy_from)
                     .expect("capture source exists")
                     .1;
                 plan.images[id.0].last_consumer = index;
-            }
+                id
+            });
+            plan.captures.push(capture);
         }
+        plan.classify_ranges(frame);
         plan.partition(frame, limits);
+        plan.assign_backing(frame, formats);
         plan
     }
 
-    pub fn update_placement(&mut self, frame: &Frame, limits: Limits) {
+    pub fn update_placement(
+        &mut self,
+        frame: &Frame,
+        formats: Formats,
+        limits: Result<Limits, Materialization>,
+    ) {
         for (index, pass) in frame.passes.iter().enumerate() {
             let image = &mut self.images[self.targets[index].0];
+            image.format = formats.of(frame, pass.target);
             image.region = pass.region;
             image.space = pass.space;
             image.storage = Storage::Materialized(initial(pass.target));
         }
+        self.classify_ranges(frame);
         self.segments.clear();
         self.partition(frame, limits);
+        self.assign_backing(frame, formats);
     }
 
-    fn partition(&mut self, frame: &Frame, limits: Limits) {
+    /// Resolve a semantic target at this pass to its materialized image.
+    pub fn scratch_slot(&self, pass: usize, target: Target) -> usize {
+        let id = if self.images[self.targets[pass].0].target == target {
+            self.targets[pass]
+        } else if let Some(id) = self.captures[pass].filter(|id| self.images[id.0].target == target)
+        {
+            id
+        } else {
+            self.reads[pass]
+                .iter()
+                .flatten()
+                .find(|read| self.images[read.image.0].target == target)
+                .expect("scratch source is a planned read")
+                .image
+        };
+        self.images[id.0]
+            .backing
+            .expect("materialized scratch has backing")
+    }
+
+    fn assign_backing(&mut self, frame: &Frame, formats: Formats) {
+        self.scratch.clear();
+        for (index, image) in self.images.iter_mut().enumerate() {
+            image.backing = None;
+            if !matches!(image.target, Target::Scratch(_)) || image.storage == Storage::OnChip {
+                continue;
+            }
+            let id = LogicalImageId(index);
+            let native_output = self.segments.iter().any(
+                |segment| matches!(segment, Segment::NativeEpoch(epoch) if epoch.output == id),
+            );
+            // Copy captures and pixel-processing scopes retain their existing
+            // representation. Tile outputs must match their native attachments.
+            if formats.content
+                && image.color_range != ColorRange::HighDynamicRange
+                && image.space == cherenkov::BlendSpace::Linear
+                && !native_output
+                && !self.captures.contains(&Some(id))
+            {
+                image.format = wgpu::TextureFormat::Rgba8UnormSrgb;
+            }
+            let producer = image.producer.expect("scratch has a producer");
+            let slot = self
+                .scratch
+                .iter()
+                .position(|slot| slot.format == image.format && slot.last_consumer < producer)
+                .unwrap_or_else(|| {
+                    self.scratch.push(ScratchSlot {
+                        format: image.format,
+                        size: (0, 0),
+                        last_consumer: 0,
+                    });
+                    self.scratch.len() - 1
+                });
+            let backing = &mut self.scratch[slot];
+            backing.size.0 = backing.size.0.max(image.region[2]);
+            backing.size.1 = backing.size.1.max(image.region[3]);
+            backing.last_consumer = image.last_consumer;
+            image.backing = Some(slot);
+        }
+        for (pass, id) in frame.passes.iter().zip(&self.targets) {
+            if let Some(slot) = self.images[id.0].backing {
+                let size = &mut self.scratch[slot].size;
+                size.0 = size.0.max(pass.region[2]);
+                size.1 = size.1.max(pass.region[3]);
+            }
+        }
+    }
+
+    fn classify_ranges(&mut self, frame: &Frame) {
+        for image in &mut self.images {
+            image.color_range = if image.producer.is_some() {
+                ColorRange::Standard
+            } else {
+                ColorRange::HighDynamicRange
+            };
+        }
+        for (index, pass) in frame.passes.iter().enumerate() {
+            let mut range = if requires_extended_range(frame, index) {
+                ColorRange::HighDynamicRange
+            } else {
+                pass.color_range
+            };
+            for read in self.reads[index].iter().flatten() {
+                range = range.max(self.images[read.image.0].color_range);
+            }
+            let image = &mut self.images[self.targets[index].0];
+            image.color_range = image.color_range.max(range);
+        }
+    }
+
+    fn partition(&mut self, frame: &Frame, limits: Result<Limits, Materialization>) {
         let plan = self;
         plan.native.clear();
         plan.native.resize(frame.passes.len(), None);
+        let limits = match limits {
+            Ok(limits) => limits,
+            Err(reason) => {
+                for image in &mut plan.images {
+                    image.storage = Storage::Materialized(reason);
+                }
+                if !frame.passes.is_empty() {
+                    plan.segments.push(Segment::Portable(0..frame.passes.len()));
+                }
+                return;
+            }
+        };
         let mut index = 0;
         while index < frame.passes.len() {
             // An epoch's draws read slots earlier draws of the same pass
@@ -598,28 +724,13 @@ impl ExecutionPlan {
         self.planned
     }
 
-    /// Records that this frame is not planned, and why.
-    ///
-    /// The backend calls this instead of [`Self::build`] when it has an
-    /// executor it could not install, so [`Self::materialization`]
-    /// names the real obstacle rather than the generic
-    /// [`Materialization::NoExecutor`]. Any plan a previous frame built
-    /// is discarded: an unplanned frame has no epochs.
-    pub fn set_unplanned(&mut self, reason: Materialization) {
-        if self.planned || self.unplanned != Some(reason) {
-            *self = Self {
-                unplanned: Some(reason),
-                ..Self::default()
-            };
-        }
-    }
-
     /// Why the image `pass` writes reaches device memory; `None` when an
     /// epoch keeps it on chip. The pass needs a backed scratch attachment
     /// exactly when this is `Some`.
+    #[cfg(any(test, target_arch = "wasm32"))]
     pub fn materialization(&self, pass: usize) -> Option<Materialization> {
         if !self.planned {
-            return Some(self.unplanned.unwrap_or(Materialization::NoExecutor));
+            return Some(Materialization::NoExecutor);
         }
         match self.images[self.targets[pass].0].storage {
             Storage::OnChip => None,
@@ -641,6 +752,7 @@ impl ExecutionPlan {
         self.native.get(pass).copied().flatten()
     }
 
+    #[cfg(any(unix, test))]
     pub fn epoch_at(&self, pass: usize) -> Option<&TileEpoch> {
         self.native_segment(pass)
             .and_then(|index| match &self.segments[index] {
@@ -685,6 +797,23 @@ const fn initial(target: Target) -> Materialization {
     } else {
         Materialization::Persistent
     }
+}
+
+pub(super) fn requires_extended_range(frame: &Frame, index: usize) -> bool {
+    let pass = &frame.passes[index];
+    // GPU coverage changes where geometry is evaluated, not the paint's range.
+    frame.filters.iter().any(|(pass, _)| *pass == index)
+        || frame.shadows.iter().any(|(pass, _)| *pass == index)
+        || frame.mips.iter().any(|(pass, _)| *pass == index)
+        || pass.capture.is_some()
+        || pass.space != cherenkov::BlendSpace::Linear
+        || pass.ranges.iter().any(|draw| {
+            draw.pipeline != PipelineKind::SrcOver
+                || matches!(
+                    draw.image,
+                    Some(ImageSource::Content(_) | ImageSource::Shader(_))
+                )
+        })
 }
 
 pub fn materialization_boundary(frame: &Frame, index: usize) -> bool {

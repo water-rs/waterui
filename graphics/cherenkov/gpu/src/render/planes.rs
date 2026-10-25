@@ -1048,7 +1048,6 @@ pub struct Plane<'a> {
 )]
 pub struct Part<'a> {
     /// Prepared content range, excluding promoted content.
-    #[cfg(target_os = "android")]
     pub range: super::present::ColorRange,
     /// The engine texture holding the part.
     pub view: &'a wgpu::TextureView,
@@ -1113,8 +1112,9 @@ pub trait SystemPlanes: Compositor {
     /// empty commit a frame that commits nothing off-thread produces.
     type Commit: cherenkov::RenderTransfer + Default + 'static;
 
-    /// Native immutable capture allocations, excluding the engine's source.
-    fn captured_bytes(&self) -> u64 {
+    /// Engine-owned native presentation allocations, excluding render sources
+    /// and externally owned producer images. Include buffers awaiting release.
+    fn native_bytes(&self) -> u64 {
         0
     }
     /// Hands supported tracks to the committed native layer tree. Called

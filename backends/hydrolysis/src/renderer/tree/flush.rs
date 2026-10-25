@@ -232,6 +232,7 @@ impl RenderNode {
                     &node.value.value,
                     &node.core.cell,
                     OPACITY_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_SLOW,
                 );
                 let program = renderer.program().program_mut();
                 program.opacity = alpha;
@@ -250,11 +251,13 @@ impl RenderNode {
                     &node.value.x,
                     &node.core.cell,
                     SCALE_X_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 );
                 let scale_y = renderer.resolve_owned_scalar(
                     &node.value.y,
                     &node.core.cell,
                     SCALE_Y_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 );
                 let transform = kurbo::Affine::translate((center.x, center.y))
                     * kurbo::Affine::scale_non_uniform(f64::from(scale_x), f64::from(scale_y))
@@ -268,6 +271,7 @@ impl RenderNode {
                     &node.value.angle,
                     &node.core.cell,
                     ROTATION_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 ))
                 .to_radians();
                 let transform = kurbo::Affine::translate((center.x, center.y))
@@ -281,11 +285,13 @@ impl RenderNode {
                     &node.value.x,
                     &node.core.cell,
                     OFFSET_X_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 );
                 let offset_y = renderer.resolve_owned_scalar(
                     &node.value.y,
                     &node.core.cell,
                     OFFSET_Y_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 );
                 let transform =
                     kurbo::Affine::translate((f64::from(offset_x), f64::from(offset_y)));

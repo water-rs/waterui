@@ -3,9 +3,8 @@
 //! Planning is platform-neutral (issue #2549): [`plan`] derives logical
 //! image lifetimes and tile epochs from the canonical frame alone, and a
 //! backend supplies an executor plus the [`plan::Limits`] it works
-//! within. Where no executor exists — every non-Apple target until
-//! issue #2191 adds Vulkan — there are no limits, so no planning runs at
-//! all and every logical image is materialized for
+//! within. Logical lifetimes and materialized storage are planned on every
+//! backend. Without a native executor, images remain in device memory with
 //! [`crate::render::composition::Materialization::NoExecutor`].
 
 pub mod cache;
