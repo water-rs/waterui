@@ -320,7 +320,7 @@ fn many_timed_frames(engine: &Engine<Gpu>) -> Result<(), Box<dyn std::error::Err
         assert_eq!(next, Next::Idle, "frame {frame}");
         let stats = engine.stats();
         assert!(stats.passes > 0, "frame {frame} drew nothing: {stats:?}");
-        submitted.push((stats.frame.expect("a drawing render submits"), stats.passes));
+        submitted.push(stats.frame.expect("a drawing render submits"));
     }
     let timings = wait!(engine.finish_timings())?;
     assert!(
@@ -335,11 +335,14 @@ fn many_timed_frames(engine: &Engine<Gpu>) -> Result<(), Box<dyn std::error::Err
         // tagged with its frame, and spans that frame's passes.
         assert_eq!(
             timings.iter().map(|t| t.frame).collect::<Vec<_>>(),
-            submitted.iter().map(|(f, _)| *f).collect::<Vec<_>>(),
+            submitted,
             "every frame is timed once, in order"
         );
-        for (timing, (_, passes)) in timings.iter().zip(&submitted) {
-            assert_eq!(timing.passes.len(), *passes as usize, "{timing:?}");
+        for timing in &timings {
+            // Partial clearing and drawing can use separate physical passes,
+            // but their shared timestamp bracket is one surface interval.
+            assert_eq!(timing.passes.len(), 1, "{timing:?}");
+            assert_eq!(timing.passes[0].name, "surface", "{timing:?}");
             let gpu = timing.gpu_seconds.expect("the frame's timestamps increase");
             let spanned: f64 = timing
                 .passes
