@@ -434,3 +434,78 @@ pub fn strip_bidi_controls(text: &str) -> String {
         })
         .collect()
 }
+
+/// `text`'s length in UTF-16 code units — the count `AppKit`/`UIKit`
+/// selection and marked-text ranges use.
+#[must_use]
+pub fn utf16_len(text: &str) -> usize {
+    text.chars().map(char::len_utf16).sum()
+}
+
+/// The byte offset `utf16_offset` code units into `text`, or `None` when the
+/// offset is past the end or lands inside a surrogate pair — an offset the
+/// platform never reports for valid content.
+#[must_use]
+pub fn byte_offset_at_utf16(text: &str, utf16_offset: usize) -> Option<usize> {
+    let mut units = 0usize;
+    let mut byte = 0usize;
+    for ch in text.chars() {
+        if units == utf16_offset {
+            return Some(byte);
+        }
+        if units > utf16_offset {
+            return None;
+        }
+        units += ch.len_utf16();
+        byte += ch.len_utf8();
+    }
+    (units == utf16_offset).then_some(byte)
+}
+
+/// The UTF-16 code-unit offset `byte_offset` lands on, or `None` when it is
+/// past the end or not a char boundary — an edge a plain-text range contract
+/// rejects.
+#[must_use]
+pub fn utf16_offset_at_byte(text: &str, byte_offset: usize) -> Option<usize> {
+    if byte_offset > text.len() || !text.is_char_boundary(byte_offset) {
+        return None;
+    }
+    Some(text[..byte_offset].chars().map(char::len_utf16).sum())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{byte_offset_at_utf16, utf16_len, utf16_offset_at_byte};
+
+    /// ASCII, CJK (UTF-16 BMP) and emoji (surrogate pairs) exercise every
+    /// branch of the offset mapping.
+    const TEXT: &str = "a中😀b";
+    // UTF-8 bytes: a(1) 中(3) 😀(4) b(1) → 9 bytes; UTF-16: 1+1+2+1 = 5.
+
+    #[test]
+    fn utf16_len_counts_code_units() {
+        assert_eq!(utf16_len(TEXT), 5);
+        assert_eq!(utf16_len(""), 0);
+    }
+
+    #[test]
+    fn utf16_offsets_map_to_byte_offsets() {
+        // a|中|😀|b → units 0,1,2,4,5 ↔ bytes 0,1,4,8,9.
+        for (unit, byte) in [(0, 0), (1, 1), (2, 4), (4, 8), (5, 9)] {
+            assert_eq!(byte_offset_at_utf16(TEXT, unit), Some(byte), "unit {unit}");
+        }
+        // Mid-pair and past-the-end are not positions the contract accepts.
+        assert_eq!(byte_offset_at_utf16(TEXT, 3), None);
+        assert_eq!(byte_offset_at_utf16(TEXT, 6), None);
+    }
+
+    #[test]
+    fn byte_offsets_map_to_utf16_offsets() {
+        for (byte, unit) in [(0, 0), (1, 1), (4, 2), (8, 4), (9, 5)] {
+            assert_eq!(utf16_offset_at_byte(TEXT, byte), Some(unit), "byte {byte}");
+        }
+        assert_eq!(utf16_offset_at_byte(TEXT, 2), None);
+        assert_eq!(utf16_offset_at_byte(TEXT, 5), None);
+        assert_eq!(utf16_offset_at_byte(TEXT, 10), None);
+    }
+}
