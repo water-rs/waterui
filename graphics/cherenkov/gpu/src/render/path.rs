@@ -97,10 +97,10 @@ pub enum CoverageRoute {
 /// Keep ordinary UI geometry out of the GPU preparation pass.
 pub const GPU_ROUTE_MIN_ELEMENTS: usize = 4096;
 
-/// Source elements from which a stroked path is a GPU candidate: half of
-/// [`GPU_ROUTE_MIN_ELEMENTS`], because the stroke expands on the GPU and the
-/// outline is two to five times its source (water-rs/waterui#2544).
-pub const GPU_STROKE_MIN_ELEMENTS: usize = GPU_ROUTE_MIN_ELEMENTS / 2;
+/// Admit strokes using the upper end of their typical two-to-fivefold
+/// outline expansion. This is only a candidate filter: the prepared segment,
+/// incidence and grid bounds still decide whether compute is worthwhile.
+pub const GPU_STROKE_MIN_ELEMENTS: usize = GPU_ROUTE_MIN_ELEMENTS / 5;
 
 /// A coverage grid over an integer device-space rect.
 pub struct Coverage {
