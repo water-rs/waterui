@@ -933,8 +933,7 @@ impl GpuCoverage {
     /// compaction's copies, the miss dispatch that fills each new
     /// block, then one 4-byte copy per phase record feeding the count
     /// words `emit_counts` wrote. A frame whose draws are all hits
-    /// records no compute at all. Idempotent per frame. Returns whether new
-    /// pipelines were created so the caller can persist its updated cache.
+    /// records no compute at all. Idempotent per frame.
     pub fn record_prologue(
         &mut self,
         device: &wgpu::Device,
@@ -942,10 +941,9 @@ impl GpuCoverage {
         encoder: &mut wgpu::CommandEncoder,
         delivery: crate::render::shaders::ShaderDelivery,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
-        cache: Option<&wgpu::PipelineCache>,
-    ) -> Result<bool, RenderError> {
+    ) -> Result<(), RenderError> {
         if self.encoded || !self.has_draws() {
-            return Ok(false);
+            return Ok(());
         }
         self.encoded = true;
         let arena = self.arena.buffer().expect("coverage arena sized").clone();
@@ -954,9 +952,7 @@ impl GpuCoverage {
                 encoder.copy_buffer_to_buffer(&compaction.source, src, &arena, dst, len);
             }
         }
-        let mut created_pipelines = false;
         if self.has_misses() {
-            created_pipelines = self.ensure_pipes(device, delivery, cache);
             let timestamp_writes = timestamp_writes.map(|writes| {
                 (
                     writes.query_set,
@@ -985,7 +981,7 @@ impl GpuCoverage {
                         },
                     }
                 });
-                self.dispatch(device, batch, queue, encoder, timestamps);
+                self.dispatch(device, batch, queue, encoder, delivery, timestamps);
             }
         }
         let draws_buffer = self.draws_buffer.clone().expect("draws buffer");
@@ -1005,7 +1001,7 @@ impl GpuCoverage {
                 );
             }
         }
-        Ok(created_pipelines)
+        Ok(())
     }
 
     fn size_buffers(&mut self, device: &wgpu::Device, sizes: [u64; 7]) -> Result<(), RenderError> {
@@ -1098,8 +1094,10 @@ impl GpuCoverage {
         batch: Batch,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
+        delivery: crate::render::shaders::ShaderDelivery,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
+        self.ensure_pipes(device, delivery);
         self.work.clear();
         self.elements.clear();
         self.strokes.clear();
@@ -1385,16 +1383,10 @@ impl GpuCoverage {
         &mut self,
         device: &wgpu::Device,
         delivery: crate::render::shaders::ShaderDelivery,
-        cache: Option<&wgpu::PipelineCache>,
-    ) -> bool {
+    ) {
         if self.pipes.is_some() {
-            return false;
+            return;
         }
-        let temporary_cache = cache
-            .is_none()
-            .then(|| super::open_pipeline_cache(device, &crate::GpuConfig::default()))
-            .flatten();
-        let cache = cache.or(temporary_cache.as_ref());
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("gpu coverage"),
             entries: &super::layout_entries(bindings::COVERAGE_MAIN_GROUP0),
@@ -1427,7 +1419,7 @@ impl GpuCoverage {
                     module: &program.module,
                     entry_point: Some(program.entry),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    cache,
+                    cache: None,
                 });
                 (program.entry, pipeline)
             })
@@ -1476,7 +1468,6 @@ impl GpuCoverage {
         );
         self.layout = Some(layout);
         self.args_layout = Some(args_layout);
-        true
     }
 }
 
@@ -2087,7 +2078,7 @@ mod tests {
         frame.ensure(&device);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         frame
-            .record_prologue(&device, &queue, &mut encoder, delivery, None, None)
+            .record_prologue(&device, &queue, &mut encoder, delivery, None)
             .expect("batched prologue");
         let arena = frame.arena().expect("retained arena");
         let first_entry = &frame.entries[&first.key];
@@ -2121,7 +2112,7 @@ mod tests {
         frame.ensure(&device);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         frame
-            .record_prologue(&device, &queue, &mut encoder, delivery, None, None)
+            .record_prologue(&device, &queue, &mut encoder, delivery, None)
             .expect("cached prologue");
         let replay = read_back(
             &device,
@@ -2539,7 +2530,7 @@ mod tests {
             let mut encoder =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             frame
-                .record_prologue(&device, &queue, &mut encoder, delivery, None, None)
+                .record_prologue(&device, &queue, &mut encoder, delivery, None)
                 .expect("the prologue records");
             let buffers = frame.buffers.as_ref().expect("buffers sized");
             // Every slot starts as NaN, so an unwritten chord cannot pass as

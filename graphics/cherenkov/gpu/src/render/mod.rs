@@ -8977,17 +8977,13 @@ impl GpuRenderer {
                     });
                 }
             }
-            let created_pipelines = self.gpu_cov.record_prologue(
+            self.gpu_cov.record_prologue(
                 &self.device,
                 &self.queue,
                 &mut encoder,
                 self.shader_delivery,
                 timestamp_writes,
-                self.pipeline_cache.as_ref(),
             )?;
-            if created_pipelines {
-                persist_pipeline_cache(self.pipeline_cache.as_ref(), &self.config);
-            }
         }
         let mut i = 0;
         // The pyramid steps' globals-slot index within this surface:
