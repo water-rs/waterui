@@ -128,6 +128,7 @@ fn poll_device(
 /// Metal and Vulkan (water-rs/cherenkov#57); adapters that lack it get the
 /// same hard `Engine::new` failure the engine documents. Normalized 16-bit
 /// textures feed HDR media paths wherever the adapter provides them.
+/// Indirect first instances enable the engine's optional GPU path coverage.
 #[must_use]
 pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Features {
     if cfg!(target_vendor = "apple") {
@@ -144,7 +145,8 @@ pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Featur
     let mut required = adapter_features
         & (wgpu::Features::PIPELINE_CACHE
             | wgpu::Features::PASSTHROUGH_SHADERS
-            | wgpu::Features::SHADER_F16);
+            | wgpu::Features::SHADER_F16
+            | wgpu::Features::INDIRECT_FIRST_INSTANCE);
     if adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
         required |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
     }
