@@ -515,9 +515,7 @@ impl GpuBound {
     /// A narrow visible clip does not reduce the CPU sweep over the full path.
     pub const fn prefers_gpu(&self) -> bool {
         let strips = self.grid_h.div_ceil(STRIP_H);
-        !self.empty
-            && self.segments >= GPU_ROUTE_MIN_ELEMENTS
-            && self.bins >= strips * 32
+        !self.empty && self.segments >= GPU_ROUTE_MIN_ELEMENTS && self.bins >= strips * 32
     }
 
     /// The same bound seen from a frame moved by the integer vector `by`:
