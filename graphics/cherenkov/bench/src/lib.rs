@@ -577,8 +577,9 @@ pub fn create_engine(name: &str) -> Result<Box<dyn Engine>, BenchError> {
 /// Reads the host CPU model name, best-effort.
 ///
 /// On Android `/proc/cpuinfo` has no `model name` line and sysinfo's
-/// brand is empty, so the `Hardware` line is used; everywhere else
-/// sysinfo's CPU brand answers.
+/// brand is empty, so the `Hardware` line is used. iOS uses only the
+/// system-reported brand, without inferring a chip from its device model.
+/// Other platforms use sysinfo's CPU brand.
 #[must_use]
 pub fn cpu_model() -> Option<String> {
     #[cfg(target_os = "android")]
@@ -595,7 +596,47 @@ pub fn cpu_model() -> Option<String> {
         }
         None
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "ios")]
+    {
+        let name = c"machdep.cpu.brand_string";
+        let mut length = 0;
+        // SAFETY: the name is NUL-terminated and length points to writable
+        // storage. A null output buffer requests the required byte count.
+        if unsafe {
+            libc::sysctlbyname(
+                name.as_ptr(),
+                std::ptr::null_mut(),
+                &raw mut length,
+                std::ptr::null_mut(),
+                0,
+            )
+        } != 0
+        {
+            return None;
+        }
+        let mut bytes = vec![0_u8; length];
+        // SAFETY: bytes owns the output allocation sized by the same sysctl;
+        // length describes its capacity. No new value is supplied.
+        if unsafe {
+            libc::sysctlbyname(
+                name.as_ptr(),
+                bytes.as_mut_ptr().cast(),
+                &raw mut length,
+                std::ptr::null_mut(),
+                0,
+            )
+        } != 0
+        {
+            return None;
+        }
+        bytes.truncate(length);
+        let brand = std::ffi::CStr::from_bytes_with_nul(&bytes)
+            .ok()?
+            .to_str()
+            .ok()?;
+        (!brand.is_empty()).then(|| brand.to_owned())
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         sysinfo::System::new_with_specifics(
             sysinfo::RefreshKind::nothing().with_cpu(sysinfo::CpuRefreshKind::everything()),
