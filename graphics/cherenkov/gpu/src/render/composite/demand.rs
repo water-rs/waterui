@@ -7,7 +7,10 @@
 use cherenkov::damage::Region;
 
 use super::plan::{ExecutionPlan, Read, ReadKind};
-use crate::render::lower::{Frame, Target};
+use crate::render::{
+    damage::add,
+    lower::{Frame, Target},
+};
 
 #[derive(Default)]
 pub struct Demand {
@@ -85,6 +88,9 @@ impl Demand {
             if self.passes[index].is_empty() {
                 continue;
             }
+            // Enclose before following reads: the pixels between separate
+            // changes will also be rasterized and need valid input images.
+            add(&mut self.passes[index], [0; 4]);
             // The filter/shadow executors currently produce their whole
             // bounded image. Demand their entire input until their kernels
             // accept a restricted output and its sampling apron.
@@ -93,7 +99,7 @@ impl Demand {
                 || frame.reduces.iter().any(|(pass, _)| *pass == index)
             {
                 let [x, y, w, h] = frame.passes[index].region;
-                self.passes[index].add(x, y, w, h);
+                add(&mut self.passes[index], [x, y, w, h]);
             }
             if let Some(read) = &plan.loads[index] {
                 self.read(index, read, false, frame);
@@ -187,7 +193,7 @@ impl Demand {
         let destination = &mut before[writer];
         let [x, y, w, h] = frame.passes[writer].region;
         if whole {
-            destination.add(x, y, w, h);
+            add(destination, [x, y, w, h]);
         } else {
             for rect in after[0].rectangles() {
                 let x0 = rect.x0().max(x);
@@ -195,7 +201,7 @@ impl Demand {
                 let x1 = rect.x1().min(x + w);
                 let y1 = rect.y1().min(y + h);
                 if x0 < x1 && y0 < y1 {
-                    destination.add(x0, y0, x1 - x0, y1 - y0);
+                    add(destination, [x0, y0, x1 - x0, y1 - y0]);
                 }
             }
         }
@@ -227,6 +233,7 @@ impl Changes {
         self.regions.reset(frame);
         for index in 0..frame.passes.len() {
             changed(index, &mut self.regions.passes[index]);
+            add(&mut self.regions.passes[index], [0; 4]);
             for read in [&plan.loads[index], &plan.backdrops[index]]
                 .into_iter()
                 .flatten()
@@ -256,7 +263,7 @@ impl Changes {
                     || frame.reduces.iter().any(|(pass, _)| *pass == index))
             {
                 let [x, y, w, h] = frame.passes[index].region;
-                self.regions.passes[index].add(x, y, w, h);
+                add(&mut self.regions.passes[index], [x, y, w, h]);
             }
         }
     }
@@ -273,7 +280,7 @@ impl Changes {
         let [x, y, w, h] = frame.passes[index].region;
         if whole {
             if !source.is_empty() {
-                destination.add(x, y, w, h);
+                add(destination, [x, y, w, h]);
             }
         } else {
             for rect in source.rectangles() {
@@ -282,7 +289,7 @@ impl Changes {
                 let x1 = rect.x1().min(x + w);
                 let y1 = rect.y1().min(y + h);
                 if x0 < x1 && y0 < y1 {
-                    destination.add(x0, y0, x1 - x0, y1 - y0);
+                    add(destination, [x0, y0, x1 - x0, y1 - y0]);
                 }
             }
         }

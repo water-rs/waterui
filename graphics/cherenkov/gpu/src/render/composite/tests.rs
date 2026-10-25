@@ -720,6 +720,21 @@ fn demand_follows_frozen_writes_and_severs_cleared_generations() {
         for index in [3, 5, 6] {
             assert!(demand.pass(index).is_empty(), "unneeded pass {index}");
         }
+        // The gap is rasterized too, so its frozen inputs must be demanded
+        // before traversing the prior writers, including a capture.
+        demand.update(&frame, &plan, |_, target, _, region| {
+            if target == Target::Part(0) {
+                region.add(2, 3, 2, 2);
+                region.add(10, 11, 2, 2);
+            }
+        });
+        for index in [0, 1, 2, 4] {
+            assert_eq!(demand.pass(index).rectangles().len(), 1);
+            assert_eq!(demand.pass(index).pixel_area(), 100, "pass {index}");
+        }
+        for index in [3, 5, 6] {
+            assert!(demand.pass(index).is_empty(), "unneeded pass {index}");
+        }
         demand.update(&frame, &plan, |_, target, _, region| {
             if target == Target::Part(1) {
                 region.add(8, 9, 2, 3);
