@@ -185,6 +185,7 @@ pub struct UIKitMount {
 #[cfg(target_os = "ios")]
 impl Drop for UIKitMount {
     fn drop(&mut self) {
+        self.host.clear_handlers();
         self.window.setHidden(true);
         self.window.setRootViewController(None);
     }

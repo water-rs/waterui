@@ -15,7 +15,7 @@
 //! # Safety
 //!
 //! The `unsafe` here builds `UIAction`s from `RcBlock`s and `UIKeyCommand`s
-//! from a selector `AppDelegate` implements, and calls `objc2`/`UIKit`
+//! from a selector their owner implements, and calls `objc2`/`UIKit`
 //! bindings marked unsafe because `UIKit` objects are main-thread only,
 //! which [`MainThreadMarker`] guarantees at construction. `UIAction`'s
 //! handler block is `copy`ed by the call that consumes it, so the stack
@@ -25,9 +25,9 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 
 use block2::RcBlock;
-use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
+use objc2::{MainThreadMarker, Message};
 use objc2_foundation::{NSArray, NSString};
 use objc2_ui_kit::{
     UIAction, UIColor, UIImage, UIKeyCommand, UIMenu, UIMenuElement, UIMenuElementAttributes,
@@ -37,6 +37,24 @@ use objc2_ui_kit::{
 use super::key_commands::KeyCommands;
 use crate::menu::{Command, MenuTreeNode};
 use crate::uikit::button::{Button, Chrome};
+
+pub(super) fn key_commands(menu: &UIMenu) -> Vec<Retained<UIKeyCommand>> {
+    menu.children()
+        .iter()
+        .flat_map(|element| {
+            element.downcast_ref::<UIMenu>().map_or_else(
+                || {
+                    element
+                        .downcast_ref::<UIKeyCommand>()
+                        .map(Message::retain)
+                        .into_iter()
+                        .collect()
+                },
+                key_commands,
+            )
+        })
+        .collect()
+}
 
 /// A `UIMenu` from a menu tree, its shortcut commands armed in
 /// `key_commands`.
@@ -351,6 +369,12 @@ pub struct MenuButton {
 }
 
 impl MenuButton {
+    /// A scope routing menu commands through the trigger's own registry.
+    #[must_use]
+    pub fn menu_commands(&self) -> KeyCommands {
+        self.button.menu_commands()
+    }
+
     /// A plain-chrome button whose primary action opens its menu.
     #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Self {

@@ -17,14 +17,19 @@ use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
-use objc2::rc::Retained;
-use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_foundation::{NSAttributedString, NSObjectProtocol, NSString};
+use objc2::rc::{Allocated, Retained};
+use objc2::runtime::{AnyObject, Bool, Sel};
+use objc2::{
+    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
+};
+use objc2_core_foundation::CGRect;
+use objc2_foundation::{NSArray, NSAttributedString, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    NSDirectionalEdgeInsets, UIButton, UIButtonConfiguration, UIButtonType, UIColor, UIControl,
-    UIControlState,
+    NSDirectionalEdgeInsets, UIButton, UIButtonConfiguration, UIButtonType, UIColor, UICommand,
+    UIControl, UIControlState, UIKeyCommand,
 };
 
+use super::key_commands::{KeyCommandRegistry, KeyCommands};
 use crate::callback::{emit, guarded};
 use crate::geometry::EdgeInsets;
 
@@ -50,20 +55,20 @@ type EnabledHandler = Rc<dyn Fn(bool)>;
 pub struct CocoaUiButtonIvars {
     /// Called with the new value after each `setEnabled:`.
     enabled_handler: RefCell<Option<EnabledHandler>>,
+    key_commands: Rc<KeyCommandRegistry>,
 }
 
 impl fmt::Debug for CocoaUiButtonIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CocoaUiButtonIvars")
             .field("enabled_handler", &self.enabled_handler.borrow().is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 define_class!(
     // SAFETY: `UIButton`'s designated initializer is `initWithFrame:`;
-    // `CocoaUiButton::new` reaches it through `init` and `with_type`
-    // through `+buttonWithType:`'s own initialization, and the class does
+    // both `new` and `+buttonWithType:` reach the override, and the class does
     // not implement `Drop`.
     #[unsafe(super(UIButton))]
     #[name = "CocoaUiButton"]
@@ -81,6 +86,56 @@ define_class!(
     unsafe impl NSObjectProtocol for CocoaUiButton {}
 
     impl CocoaUiButton {
+        // SAFETY: the designated initializer writes ivars before calling super.
+        #[unsafe(method_id(initWithFrame:))]
+        fn init_with_frame(this: Allocated<Self>, frame: CGRect) -> Retained<Self> {
+            let this = this.set_ivars(CocoaUiButtonIvars {
+                enabled_handler: RefCell::new(None),
+                key_commands: Rc::new(KeyCommandRegistry::default()),
+            });
+            // SAFETY: the inherited designated initializer has this signature.
+            unsafe { msg_send![super(this), initWithFrame: frame] }
+        }
+
+        // SAFETY: armed commands send this selector with themselves as sender.
+        #[unsafe(method(cocoaUiButtonMenuCommandFired:))]
+        fn menu_command_fired(&self, command: &UICommand) {
+            guarded("CocoaUiButton cocoaUiButtonMenuCommandFired:", || {
+                self.ivars().key_commands.fire(command);
+            });
+        }
+
+        // SAFETY: UIResponder's declared signature, forwarding other selectors to super.
+        #[unsafe(method(canPerformAction:withSender:))]
+        fn can_perform_action_with_sender(&self, action: Sel, sender: Option<&AnyObject>) -> Bool {
+            if action != sel!(cocoaUiButtonMenuCommandFired:) {
+                // SAFETY: the inherited responder query has this signature.
+                return unsafe { msg_send![super(self), canPerformAction: action, withSender: sender] };
+            }
+            Bool::from(sender.and_then(|sender| sender.downcast_ref::<UICommand>()).map_or_else(
+                || self.ivars().key_commands.any_armed(),
+                |command| self.ivars().key_commands.owns(command),
+            ))
+        }
+
+        // SAFETY: the responder property returns retained commands from the menu.
+        #[unsafe(method_id(keyCommands))]
+        fn key_commands_override(&self) -> Option<Retained<NSArray<UIKeyCommand>>> {
+            guarded("CocoaUiButton keyCommands", || {
+                // SAFETY: `UIResponder.keyCommands`' declared signature.
+                let inherited: Option<Retained<NSArray<UIKeyCommand>>> =
+                    unsafe { msg_send![super(self), keyCommands] };
+                let Some(menu) = self.menu() else {
+                    return inherited;
+                };
+                self.ivars().key_commands.commands(
+                    &super::menu::key_commands(&menu),
+                    inherited,
+                    sel!(cocoaUiButtonMenuCommandFired:),
+                )
+            })
+        }
+
         // SAFETY: `setEnabled:` is `UIControl`'s setter; the override
         // forwards to `super` unchanged.
         #[unsafe(method(setEnabled:))]
@@ -88,14 +143,7 @@ define_class!(
             guarded("CocoaUiButton setEnabled", || {
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), setEnabled: enabled] };
-                // `setEnabled:` may run inside `buttonWithType:`'s own
-                // initialization, before `mark_ivars_initialized` could
-                // have run — read the storage without the initialized
-                // check.
-                // SAFETY: the storage is `set_ivars`-written, marked, or
-                // still zero-filled, all valid `CocoaUiButtonIvars` states.
-                let ivars = unsafe { crate::defined_class::raw_ivars(self) };
-                emit(&ivars.enabled_handler, enabled);
+                emit(&self.ivars().enabled_handler, enabled);
             });
         }
     }
@@ -104,29 +152,37 @@ define_class!(
 impl CocoaUiButton {
     /// A button of `button_type` — `+[UIButton buttonWithType:]` invoked
     /// on this subclass.
-    ///
-    /// The factory's own `alloc` zero-fills the ivar storage, which is
-    /// exactly the state `CocoaUiButtonIvars` starts in, so no `set_ivars`
-    /// step is needed — only `objc2`'s initialized marker.
     #[must_use]
     pub fn with_type(mtm: MainThreadMarker, button_type: UIButtonType) -> Retained<Self> {
         let _ = mtm;
         // SAFETY: invoked on the subclass itself, `buttonWithType:`
         // allocates through `self`, so the result is a `CocoaUiButton`.
         let this: Retained<Self> = unsafe { msg_send![Self::class(), buttonWithType: button_type] };
-        crate::defined_class::mark_ivars_initialized(&*this);
         this
     }
 
-    /// A button through `-[UIButton init]` — the plain initializer the
+    /// A button through `-[UIButton initWithFrame:]` — the plain initializer the
     /// `UIButton::new` sites share.
     #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(CocoaUiButtonIvars {
-            enabled_handler: RefCell::new(None),
-        });
-        // SAFETY: `init` is `UIView`'s designated-initializer chain.
-        unsafe { msg_send![super(this), init] }
+        // SAFETY: the designated initializer initializes this subclass's ivars.
+        unsafe { msg_send![Self::alloc(mtm), initWithFrame: CGRect::ZERO] }
+    }
+
+    /// A scope routing menu commands through this button's own registry.
+    #[must_use]
+    pub fn menu_commands(&self) -> KeyCommands {
+        KeyCommands::in_registry_with_action(
+            Rc::clone(&self.ivars().key_commands),
+            sel!(cocoaUiButtonMenuCommandFired:),
+        )
+    }
+
+    /// How many commands this button's menu has armed.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn armed_command_count(&self) -> usize {
+        self.ivars().key_commands.armed()
     }
 
     /// Runs `handler` with the new value after each `setEnabled:` —
@@ -146,6 +202,12 @@ pub struct Button {
 }
 
 impl Button {
+    /// A scope routing menu commands through this button's own registry.
+    #[must_use]
+    pub fn menu_commands(&self) -> KeyCommands {
+        self.inner.menu_commands()
+    }
+
     /// A `.system`-type button with no title.
     #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Self {
