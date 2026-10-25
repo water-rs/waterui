@@ -23,6 +23,8 @@ const VARIANT_LONG_GRADIENT: u32 = 4u;
 // Every span but the union's: GPU-routed path draws (#2543).
 const VARIANT_CELL: u32 = 5u;
 const VARIANT_IMAGE: u32 = 6u;
+const VARIANT_GLYPH: u32 = 7u;
+const VARIANT_COMPOSITE: u32 = 8u;
 
 @group(1) @binding(0) var source: texture_2d<f32>;
 // The blend backdrop: a copy of the target's region, sampled like `source`.
@@ -987,6 +989,19 @@ fn fs_shadow(in: VsOut) -> vec4<f32> {
     return move_space(vec4<f32>(in.color.rgb * in.color.a, in.color.a) * cov, SPACE_LINEAR, globals.space);
 }
 
+fn glyph_coverage(in: VsOut) -> f32 {
+    let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(cell_texel_origin(in.cell.zw, in.meta_.w));
+    return path_cell_coverage(texel, in.cell.zw, in.cell_texel, in.shape_a.xy, in.meta_.w);
+}
+
+fn plain_composite(in: VsOut, cov: f32) -> vec4<f32> {
+    let flags = (in.meta_.w >> 24u) & 0xffu;
+    let tspace = select(SPACE_LINEAR, SPACE_SRGB, (flags & FLAG_TEX_SRGB) != 0u);
+    let coord = vec2<i32>(floor(in.device - instances[in.instance].grad.xy));
+    return move_space(read_composite_source(coord), tspace, globals.space) * cov;
+}
+
+// full-fragment
 fn fs_full(fragment: VsOut) -> vec4<f32> {
     // A device-space quad paints, clips and samples at its pixel, never at
     // a point interpolated across the quad.
@@ -1064,8 +1079,7 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
             }
         }
         case KIND_GLYPH: {
-            let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(cell_texel_origin(in.cell.zw, in.meta_.w));
-            cov = path_cell_coverage(texel, in.cell.zw, in.cell_texel, in.shape_a.xy, in.meta_.w);
+            cov = glyph_coverage(in);
             joint = false;
         }
         case KIND_SPAN: {
@@ -1128,7 +1142,7 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
         let tspace = select(SPACE_LINEAR, SPACE_SRGB, (flags & FLAG_TEX_SRGB) != 0u);
         let coord = vec2<i32>(floor(in.device - instances[i].grad.xy));
         if mode == 0u && (flags & FLAG_BLEND_SRC) == 0u {
-            return move_space(read_composite_source(coord), tspace, globals.space) * cov;
+            return plain_composite(in, cov);
         }
         let cb = read_composite_backdrop(coord);
         if blend_is_destructive(mode) {
@@ -1165,3 +1179,5 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
     }
     return move_space(paint(i, in.meta_, in.color, in.local, in.device) * cov, SPACE_LINEAR, globals.space);
 }
+
+// full-fragment
