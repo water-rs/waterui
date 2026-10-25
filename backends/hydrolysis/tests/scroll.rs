@@ -320,9 +320,12 @@ fn a_nested_scroll_reports_its_content_extent_and_scrolls_the_last_chip_in() {
     );
 }
 
-/// With an offer wider than the chip row the rail fits either way: the rail
-/// claims the offer on both variants, every chip is whole, and the icon sits
-/// at the row's trailing edge.
+/// With an offer wider than the chip row, every chip is whole on both
+/// variants. The horizontal rail claims the row's width — its scrolling
+/// axis — so the icon tiles out to the trailing edge. The vertical rail
+/// hugs the chips' width instead: the row's main axis is the scroll's
+/// non-scrolling axis, which follows the content (layout-spec.md §6,
+/// water-rs/waterui#1208), leaving the row content-sized and centred.
 #[test]
 fn chip_rail_fills_offer_when_row_fits() {
     for horizontal in [false, true] {
@@ -346,12 +349,24 @@ fn chip_rail_fills_offer_when_row_fits() {
             "the rail has room for the whole chip row: extent={extent} rail={rail:?}"
         );
         let icon = node_bounds_with_role(app.tree(), Role::Button, "More filters");
-        // The rail claims the offer: icon, gap and rail tile the full row.
-        assert!(
-            (icon.x0 - rail.width() - 8.0).abs() < 1.0
-                && (icon.x0 + icon.width() - 900.0).abs() < 1.0,
-            "rail and icon fill the 900-pt row: icon={icon:?} rail={rail:?}"
-        );
+        if horizontal {
+            // The rail claims the offer on its scrolling axis: icon, gap
+            // and rail tile the full row.
+            assert!(
+                (icon.x0 - rail.width() - 8.0).abs() < 1.0
+                    && (icon.x0 + icon.width() - 900.0).abs() < 1.0,
+                "rail and icon fill the 900-pt row: icon={icon:?} rail={rail:?}"
+            );
+        } else {
+            // The rail hugs the content on its non-scrolling axis and the
+            // icon sits right after it — the row no longer tiles to 900.
+            assert!(
+                (rail.width() - extent).abs() < 1.0
+                    && (icon.x0 - (rail.x0 + rail.width() + 8.0)).abs() < 1.0,
+                "vertical rail hugs the chip extent, icon follows: icon={icon:?} \
+                 rail={rail:?} extent={extent}"
+            );
+        }
     }
 }
 
@@ -760,8 +775,12 @@ fn horizontal_scrollbar_drag_moves_the_offset() {
                     .spacing(12.0),
                 )
                 .report_offset(&offset)
-                .size(120.0, 120.0)
+                // The label lands on the scroll leaf itself, not the frame
+                // slot: under §6 a horizontal scroll hugs its content's
+                // height, so the gutter the drag targets lives in the
+                // hugged bounds, not the 120x120 frame (water-rs/waterui#1208).
                 .a11y_label("h-rail")
+                .size(120.0, 120.0)
             }
         },
         180,
@@ -794,7 +813,7 @@ fn horizontal_scrollbar_drag_moves_the_offset() {
     assert!(
         (x - expected).abs() <= 2.0,
         "the thumb maps pointer travel through its geometry: expected \
-         ≈{expected}, got {x}"
+         ≈{expected}, got {x} (rail={rail:?})"
     );
     assert!(
         x <= 396.0,
@@ -858,6 +877,85 @@ fn report_offset_writes_under_the_semantic_runtime() {
         writes.get() > baseline,
         "semantic scrolling wrote {baseline} -> {} offsets",
         writes.get()
+    );
+}
+
+// water-rs/waterui#1208: a scroll answers the content's own answer on its
+// non-scrolling axis (docs/layout-spec.md §6) — a horizontal scroll hugs
+// the chip row's height instead of claiming the stack's whole offer, so a
+// horizontal `ScrollView` inside a `VStack` needs no height literal.
+
+/// The issue scenario: `VStack { ScrollView(.horizontal) { chips } }` sizes
+/// the scroll to the chips' height.
+#[test]
+fn horizontal_scrollview_hugs_content_height_in_a_vstack() {
+    let mut app = mount_rendered(
+        Environment::new(),
+        || vstack((scroll_horizontal(chips()).a11y_label("chip-rail"),)),
+        340,
+        300,
+    );
+    app.settle();
+    let chip_height = node_bounds_with_role(app.tree(), Role::Button, "All").height();
+    let rail = node_bounds(app.tree(), "chip-rail");
+    assert!(
+        (rail.height() - chip_height).abs() < 1.0,
+        "horizontal scroll should hug the chips' height instead of claiming \
+         the stack's offer (#1208): rail={rail:?} chip height={chip_height}"
+    );
+}
+
+/// The vertical symmetric case: a vertical scroll in an `HStack` hugs the
+/// content's width.
+#[test]
+fn vertical_scrollview_hugs_content_width_in_an_hstack() {
+    let mut app = mount_rendered(
+        Environment::new(),
+        || {
+            hstack((scroll(
+                vstack((
+                    button("All").action(|| {}),
+                    button("Personal").action(|| {}),
+                    button("Archive").action(|| {}),
+                ))
+                .spacing(8.0),
+            )
+            .a11y_label("chip-rail"),))
+        },
+        340,
+        300,
+    );
+    app.settle();
+    let chip_width = node_bounds_with_role(app.tree(), Role::Button, "All")
+        .width()
+        .max(node_bounds_with_role(app.tree(), Role::Button, "Personal").width())
+        .max(node_bounds_with_role(app.tree(), Role::Button, "Archive").width());
+    let rail = node_bounds(app.tree(), "chip-rail");
+    assert!(
+        (rail.width() - chip_width).abs() < 1.0,
+        "vertical scroll should hug the content's width instead of claiming \
+         the stack's offer (#1208): rail={rail:?} content width={chip_width}"
+    );
+}
+
+/// Content that itself fills the non-scrolling axis still fills it through
+/// the scroll: a horizontal scroll of `max_height(INFINITY)` content in a
+/// `VStack` claims the whole height offer.
+#[test]
+fn scrollview_fills_the_non_scrolling_axis_with_filling_content() {
+    let mut app = mount_rendered(
+        Environment::new(),
+        || vstack((scroll_horizontal(chips().max_height(f32::INFINITY)).a11y_label("chip-rail"),)),
+        340,
+        300,
+    );
+    app.settle();
+    let chip_height = node_bounds_with_role(app.tree(), Role::Button, "All").height();
+    let rail = node_bounds(app.tree(), "chip-rail");
+    assert!(
+        rail.height() > 3.0 * chip_height,
+        "a scroll of height-filling content fills the stack's offer (#1208): \
+         rail={rail:?} chip height={chip_height}"
     );
 }
 

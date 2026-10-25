@@ -1,9 +1,10 @@
 //! The `scroll` leaf: `Native<ScrollView>` rendered through the kit's
 //! scroll surface.
 //!
-//! Mirrors `WuiScroll`: the scroll view claims the space it is offered and
-//! answers `0` on a min query it cannot satisfy, `stretchAxis` is `.both`,
-//! the content keeps its measured extent on the non-scrolling axis — centred
+//! Mirrors `WuiScroll`: the scroll view claims the space it is offered on
+//! its scrolling axis, answers `0` on a min query it cannot satisfy, and
+//! stretches on the non-scrolling axis only when its content does; the
+//! content keeps its measured extent on the non-scrolling axis — centred
 //! in the viewport and clipped on both edges when wider — and the scrollable
 //! extent is the placement's answer. The controller drives the offset
 //! through generation bumps; the offset binding reports every scroll,
@@ -20,7 +21,9 @@ use core::cell::Cell;
 
 use cocoa_ui::{MainThreadMarker, Retained};
 use waterui::animation::Animation;
-use waterui::layout::scroll::{Axis, ScrollController, ScrollPosition, ScrollRequest, ScrollView};
+use waterui::layout::scroll::{
+    Axis, ScrollController, ScrollPosition, ScrollRequest, ScrollView, scroll_stretch_axis,
+};
 use waterui::reactive::{Binding, Signal};
 use waterui_core::layout::{Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions};
 
@@ -45,83 +48,92 @@ fn as_view(scroll: &ScrollSurface) -> &PlatformView {
     scroll
 }
 
-/// The scroll's answer to a size proposal, matching `scrollMinSize`.
+/// The scroll's answer to a size proposal, matching `scrollMinSize`
+/// (layout-spec.md §6, water-rs/waterui#1208).
 ///
-/// A finite proposal is claimed. An unspecified axis asks for the content's
-/// intrinsic extent — the measure runs only when an axis is actually
-/// unspecified, so a fully finite proposal never reads the answer. A min
-/// (zero) query answers the content's minimum on the non-scrolling axis and
-/// `0` on the scrolling one.
+/// On the scrolling axis a finite proposal is claimed, `None` asks for the
+/// content's intrinsic extent and `0` answers `0`. On the non-scrolling axis
+/// the scroll answers the content's own answer to the content proposal —
+/// the offer on that axis, `None` on the scrolling axis — clamped to a
+/// finite offer, so a scroll hugs non-filling content; `0` and `None` keep
+/// their existing behaviour (the content's minimum and intrinsic extent).
+/// The one content measure under that content proposal serves the
+/// non-scrolling answer and an unspecified scrolling-axis extent together.
 fn scroll_min_size(
     axis: Axis,
     proposal: ProposalSize,
     measure_content: impl Fn(ProposalSize) -> Size,
 ) -> Size {
-    let min_width = proposal.width == Some(0.0);
-    let min_height = proposal.height == Some(0.0);
-    let dimension = |value: Option<f32>| value.unwrap_or(0.0);
-    if !min_width && !min_height {
-        if proposal.width.is_some() && proposal.height.is_some() {
-            return Size::new(dimension(proposal.width), dimension(proposal.height));
+    // A `0` proposal measures the content's minimum: clamp a non-finite or
+    // negative answer out of the layout arithmetic.
+    let minimum = |value: f32| {
+        if value.is_finite() {
+            value.max(0.0)
+        } else {
+            0.0
         }
-        let intrinsic = measure_content(ProposalSize::UNSPECIFIED);
-        return Size::new(
-            proposal.width.unwrap_or(intrinsic.width),
-            proposal.height.unwrap_or(intrinsic.height),
-        );
-    }
-    let content_minimum = |content_proposal: ProposalSize| {
-        let minimum = measure_content(content_proposal);
-        Size::new(
-            if minimum.width.is_finite() {
-                minimum.width.max(0.0)
-            } else {
-                0.0
-            },
-            if minimum.height.is_finite() {
-                minimum.height.max(0.0)
-            } else {
-                0.0
-            },
-        )
+    };
+    // A finite offer caps the content's own answer on the non-scrolling
+    // axis; an unbounded answer fills the offer.
+    let cross = |answer: f32, offer: f32| {
+        if answer.is_finite() {
+            answer.clamp(0.0, offer)
+        } else {
+            offer
+        }
     };
     match axis {
-        Axis::Vertical => Size::new(
-            if min_width {
-                content_minimum(ProposalSize::new(Some(0.0), None)).width
-            } else {
-                dimension(proposal.width)
-            },
-            if min_height {
-                0.0
-            } else {
-                dimension(proposal.height)
-            },
-        ),
-        Axis::Horizontal => Size::new(
-            if min_width {
-                0.0
-            } else {
-                dimension(proposal.width)
-            },
-            if min_height {
-                content_minimum(ProposalSize::new(None, Some(0.0))).height
-            } else {
-                dimension(proposal.height)
-            },
-        ),
-        Axis::All => Size::new(
-            if min_width {
-                0.0
-            } else {
-                dimension(proposal.width)
-            },
-            if min_height {
-                0.0
-            } else {
-                dimension(proposal.height)
-            },
-        ),
+        Axis::Vertical => {
+            // The §6 content proposal for a vertical scroll: the width offer
+            // on the content, its height free.
+            let measured = measure_content(ProposalSize::new(proposal.width, None));
+            Size::new(
+                match proposal.width {
+                    Some(0.0) => minimum(measured.width),
+                    Some(offer) => cross(measured.width, offer),
+                    None => measured.width,
+                },
+                match proposal.height {
+                    Some(0.0) => 0.0,
+                    Some(height) => height,
+                    None => measured.height,
+                },
+            )
+        }
+        Axis::Horizontal => {
+            let measured = measure_content(ProposalSize::new(None, proposal.height));
+            Size::new(
+                match proposal.width {
+                    Some(0.0) => 0.0,
+                    Some(width) => width,
+                    None => measured.width,
+                },
+                match proposal.height {
+                    Some(0.0) => minimum(measured.height),
+                    Some(offer) => cross(measured.height, offer),
+                    None => measured.height,
+                },
+            )
+        }
+        Axis::All => {
+            // `Axis::All` is unchanged: both axes scroll, so a finite
+            // proposal is claimed, `None` asks for the intrinsic extent and
+            // `0` answers `0`.
+            let measured = (proposal.width.is_none() || proposal.height.is_none())
+                .then(|| measure_content(ProposalSize::UNSPECIFIED));
+            Size::new(
+                match proposal.width {
+                    Some(0.0) => 0.0,
+                    Some(width) => width,
+                    None => measured.map_or(0.0, |measured| measured.width),
+                },
+                match proposal.height {
+                    Some(0.0) => 0.0,
+                    Some(height) => height,
+                    None => measured.map_or(0.0, |measured| measured.height),
+                },
+            )
+        }
         _ => panic!("unsupported WaterUI scroll axis: {axis:?}"),
     }
 }
@@ -228,7 +240,10 @@ impl SubView for ScrollSubView {
     }
 
     fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
+        scroll_stretch_axis(
+            self.content.axis,
+            self.content.child.layout().stretch_axis(),
+        )
     }
 
     fn priority(&self) -> i32 {
@@ -781,5 +796,107 @@ mod tests {
             Size::new(60.0, 300.0)
         });
         assert_eq!(twin, Size::new(60.0, 80.0));
+    }
+
+    /// A rigid 28 pt-tall chip row: whatever the height offer, it answers
+    /// 28 — the shape that exposed water-rs/waterui#1208.
+    fn chip_row(proposal: ProposalSize) -> Size {
+        Size::new(proposal.width.unwrap_or(328.5), 28.0)
+    }
+
+    /// The issue scenario (water-rs/waterui#1208): a horizontal scroll of
+    /// 28 pt-tall content under a 240x160 offer answers 240x28 — it hugs the
+    /// content on the non-scrolling axis instead of claiming the slot.
+    #[test]
+    fn horizontal_scroll_hugs_the_contents_height() {
+        let size = scroll_min_size(
+            Axis::Horizontal,
+            ProposalSize::new(Some(240.0), Some(160.0)),
+            chip_row,
+        );
+        assert_eq!(size, Size::new(240.0, 28.0));
+    }
+
+    /// The symmetric case: a vertical scroll of 28 pt-wide content under a
+    /// 240x160 offer answers 28x160.
+    #[test]
+    fn vertical_scroll_hugs_the_contents_width() {
+        let size = scroll_min_size(
+            Axis::Vertical,
+            ProposalSize::new(Some(240.0), Some(160.0)),
+            |proposal| Size::new(28.0, proposal.height.unwrap_or(328.5)),
+        );
+        assert_eq!(size, Size::new(28.0, 160.0));
+    }
+
+    /// The hug clamps to a finite offer: 28 pt content under a 10 pt offer
+    /// answers 10, never more. `0` still answers the content's minimum and
+    /// `None` its intrinsic extent.
+    #[test]
+    fn non_scrolling_answer_clamps_to_the_offer() {
+        let clamped = scroll_min_size(
+            Axis::Horizontal,
+            ProposalSize::new(Some(240.0), Some(10.0)),
+            chip_row,
+        );
+        assert_eq!(clamped, Size::new(240.0, 10.0));
+        let floor = scroll_min_size(
+            Axis::Horizontal,
+            ProposalSize::new(Some(240.0), Some(0.0)),
+            chip_row,
+        );
+        assert_eq!(floor, Size::new(240.0, 28.0));
+        let intrinsic = scroll_min_size(
+            Axis::Horizontal,
+            ProposalSize::new(Some(240.0), None),
+            chip_row,
+        );
+        assert_eq!(intrinsic, Size::new(240.0, 28.0));
+        // The scrolling axis is unchanged: `None` asks for the content's
+        // intrinsic extent.
+        let unspecified = scroll_min_size(
+            Axis::Horizontal,
+            ProposalSize::new(None, Some(160.0)),
+            chip_row,
+        );
+        assert_eq!(unspecified, Size::new(328.5, 28.0));
+    }
+
+    /// Content that itself fills the non-scrolling axis still fills it —
+    /// the paragraph wraps to the offered width, so a vertical scroll under
+    /// a finite width fills it.
+    #[test]
+    fn filling_content_still_fills_the_non_scrolling_axis() {
+        let size = scroll_min_size(
+            Axis::Vertical,
+            ProposalSize::new(Some(240.0), Some(160.0)),
+            paragraph,
+        );
+        assert_eq!(size, Size::new(240.0, 160.0));
+    }
+
+    /// An unspecified scrolling-axis answer reports the content's extent at
+    /// the offered non-scrolling extent — the wrapped height, not the
+    /// unwrapped intrinsic the previous claim-everything rule also
+    /// measured, but the height the layout pass will actually place.
+    #[test]
+    fn unspecified_scrolling_axis_answers_at_the_offered_cross_extent() {
+        let size = scroll_min_size(
+            Axis::Vertical,
+            ProposalSize::new(Some(240.0), None),
+            paragraph,
+        );
+        assert_eq!(size, Size::new(240.0, 200.0));
+    }
+
+    /// `Axis::All` is unchanged: it fills a fully finite offer.
+    #[test]
+    fn bidirectional_scroll_fills_the_offer() {
+        let size = scroll_min_size(
+            Axis::All,
+            ProposalSize::new(Some(240.0), Some(160.0)),
+            chip_row,
+        );
+        assert_eq!(size, Size::new(240.0, 160.0));
     }
 }
