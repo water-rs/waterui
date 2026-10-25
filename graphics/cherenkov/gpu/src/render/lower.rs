@@ -4452,6 +4452,16 @@ impl<'a> Lowering<'a> {
             let range = super::content_range::of_op(op, glyphs.images);
             open.color_range = open.color_range.max(range);
         }
+        if let Op::Glyphs { local, bounds, .. } = op {
+            // Coverage cells carry a one-pixel apron and integer rounding can
+            // extend another pixel beyond the outline. Cull against this
+            // target, including the enlarged target of a silhouette capture.
+            let placed = (self.transform * *local).transform_rect_bbox(*bounds);
+            let visible = Rect::new(0.0, 0.0, f64::from(self.width), f64::from(self.height));
+            if placed.inflate(2.0, 2.0).intersect(visible).is_zero_area() {
+                return Ok(false);
+            }
+        }
         let cover = self.shadow_cover(op, next);
         let hit = cache.valid
             && cache.data.as_mut().is_some_and(|e| {
@@ -5062,7 +5072,9 @@ impl<'a> Lowering<'a> {
                     }
                 };
             }
-            Op::Glyphs { local, run, paint } => {
+            Op::Glyphs {
+                local, run, paint, ..
+            } => {
                 self.transform *= *local;
                 self.glyph_run(run.get(source), paint, glyphs)?;
             }
