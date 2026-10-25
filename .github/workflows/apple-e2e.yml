@@ -166,6 +166,7 @@ jobs:
         run: cargo install --path "${WATER_CLI_DIR:?WATER_CLI_DIR is required; run .github/scripts/setup-e2e.sh first}" --locked --root "${{ github.workspace }}/cli-bin"
 
       - name: Build the screenshot comparer
+        if: github.event_name != 'schedule' || inputs.full_suite
         timeout-minutes: 10
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
@@ -184,6 +185,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload the screenshot comparer
+        if: github.event_name != 'schedule' || inputs.full_suite
         uses: actions/upload-artifact@v4
         with:
           name: compare-screenshots
