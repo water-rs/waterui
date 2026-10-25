@@ -5987,64 +5987,84 @@ fn run(root: &Path) -> Result<(), SceneError> {
         silhouette_scene(&mut perf, name, 1280, shape, Affine::scale(10.0), blue);
     }
 
-    // Scrolling UI list: 30 rows, each a shadowed rounded card with an
+    // Static UI list: 30 rows, each a shadowed rounded card with an
     // avatar, two text runs and a chevron icon path.
     {
-        let title = ctx.shape(
+        let text_width = f32::from(PERF_WIDTH) - 96.0 - 80.0;
+        let title = ctx.paragraph(
             "NotoSans.ttf",
             "Message from Ada",
             30.0,
             FontWeight::NORMAL,
             &solid(dark),
+            text_width,
         );
-        let sub = ctx.shape(
+        let sub = ctx.paragraph(
             "NotoSans.ttf",
             "See you at the renderer sync-up",
             22.0,
             FontWeight::NORMAL,
             &solid(srgb(0.4, 0.42, 0.45)),
+            text_width,
         );
-        let blobs = font_blobs(&ctx, &[&title, &sub]);
-        perf.scene_with_blobs(
-            "ui-list",
-            pw,
-            ph,
-            srgb(0.96, 0.96, 0.97),
-            |l| {
-                let pitch = 72.0;
-                for i in 0u8..30 {
-                    let y = 24.0 + f64::from(i) * pitch;
-                    let card = RoundedRect::from_rect(
-                        Rect::new(24.0, y, 1000.0, y + 64.0),
-                        RoundedRectRadii::new(14.0, 14.0, 14.0, 14.0),
-                    );
-                    l.shadow(
-                        Shape::RoundedRect(card),
-                        4.0,
-                        [0.0, 3.0],
-                        srgba(0.0, 0.0, 0.0, 0.22),
-                    );
-                    l.fill(Shape::RoundedRect(card), solid(white));
-                    l.fill(
-                        Shape::circle(60.0, y + 32.0, 20.0),
-                        solid(srgb(0.3 + 0.02 * f32::from(i), 0.4, 0.8)),
-                    );
-                    for run in &title {
-                        l.glyphs(offset_run(run, 96.0, y + 28.0));
+        let blobs = font_blobs(&ctx, &[&title.runs, &sub.runs]);
+        let padding = 8.0;
+        let row_height = f64::from(title.height + sub.height) + 2.0 * padding;
+        let pitch = row_height + 8.0;
+        for (name, rows) in [("ui-list", 30u8), ("ui-list-scroll", 120u8)] {
+            let mut builder = Scene::builder(pw, ph).clear(srgb(0.96, 0.96, 0.97));
+            if rows > 30 {
+                builder = builder.scroll_extent(Vec2::new(
+                    0.0,
+                    48.0 + f64::from(rows - 1) * pitch + row_height - f64::from(ph),
+                ));
+            }
+            perf.scene_from(
+                name,
+                builder,
+                |l| {
+                    for i in 0u8..rows {
+                        let y = 24.0 + f64::from(i) * pitch;
+                        let card = RoundedRect::from_rect(
+                            Rect::new(24.0, y, 1000.0, y + row_height),
+                            RoundedRectRadii::new(14.0, 14.0, 14.0, 14.0),
+                        );
+                        l.shadow(
+                            Shape::RoundedRect(card),
+                            4.0,
+                            [0.0, 3.0],
+                            srgba(0.0, 0.0, 0.0, 0.22),
+                        );
+                        l.fill(Shape::RoundedRect(card), solid(white));
+                        l.fill(
+                            Shape::circle(60.0, y + row_height / 2.0, 20.0),
+                            solid(srgb(0.3 + 0.02 * f32::from(i % 30), 0.4, 0.8)),
+                        );
+                        for run in &title.runs {
+                            l.glyphs(offset_run(
+                                run,
+                                96.0 - f64::from(TEXT_PAD),
+                                y + padding - f64::from(TEXT_PAD),
+                            ));
+                        }
+                        for run in &sub.runs {
+                            l.glyphs(offset_run(
+                                run,
+                                96.0 - f64::from(TEXT_PAD),
+                                y + padding + f64::from(title.height) - f64::from(TEXT_PAD),
+                            ));
+                        }
+                        l.fill(
+                            Shape::Path {
+                                path: chevron(960.0, y + row_height / 2.0),
+                            },
+                            solid(srgb(0.6, 0.6, 0.62)),
+                        );
                     }
-                    for run in &sub {
-                        l.glyphs(offset_run(run, 96.0, y + 54.0));
-                    }
-                    l.fill(
-                        Shape::Path {
-                            path: chevron(960.0, y + 32.0),
-                        },
-                        solid(srgb(0.6, 0.6, 0.62)),
-                    );
-                }
-            },
-            blobs,
-        );
+                },
+                blobs.clone(),
+            );
+        }
     }
 
     // The static page and its panning counterpart share the same paragraphs.
