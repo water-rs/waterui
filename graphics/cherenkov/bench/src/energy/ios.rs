@@ -95,14 +95,14 @@ pub(super) fn report(
         .ok_or_else(|| {
             BenchError::Engine("energy: the iOS process energy counter went backwards".into())
         })?;
-    if delta == 0 {
+    if delta == 0 && frames > 0 {
         return Err(BenchError::Engine(
             "energy: iOS returned no process energy over the measured window".into(),
         ));
     }
     let joules = delta as f64 / 1e9;
     let seconds = window.as_secs_f64();
-    let per_frame = joules / f64::from(frames);
+    let per_frame = (frames > 0).then(|| joules / f64::from(frames));
     let watts = joules / seconds;
     Ok(EnergyReport {
         source: "proc_pid_rusage_v6",

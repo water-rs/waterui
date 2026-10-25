@@ -22,6 +22,23 @@ pub struct Runtime {
     fonts: std::cell::RefCell<crate::fonts::FontRegistrations>,
 }
 
+impl Runtime {
+    /// A runtime over a minimal environment, for trials driving [`mount`]
+    /// directly — `runtime_create`'s startup and GPU preparation stay out
+    /// of the harness.
+    #[cfg(all(target_os = "macos", feature = "native-test"))]
+    #[must_use]
+    pub fn for_test() -> Self {
+        let mut env = Environment::new();
+        env.insert(crate::first_paint::FirstPaint::default());
+        waterui::text::install_system_font_collection(&mut env);
+        Self {
+            env,
+            fonts: std::cell::RefCell::default(),
+        }
+    }
+}
+
 /// An attached application instance. Dropping it detaches the entire subtree.
 pub struct Mount {
     /// The mounted subtree. Declared first because Rust drops fields in
@@ -198,18 +215,18 @@ pub unsafe fn mount(
     cocoa_ui::uikit::view_controller::did_move_to_parent(&controller);
     let content = mount_content(&root, declaration.build_content(), &env, &mut keepalive);
     #[cfg(target_os = "macos")]
-    for window in windows {
-        keepalive.keep(crate::windows::realize(window, &env, mtm));
-    }
-    #[cfg(target_os = "macos")]
     {
-        bind_root(&root, declaration, &env, &mut keepalive, mtm);
-        keepalive.keep(crate::menus::install_declared(
-            mtm,
-            &cocoa_ui::appkit::Application::shared(mtm),
-            &parts.menu_bar,
+        crate::windows::bind_background(
+            &mut keepalive,
+            &root,
+            &declaration.resolved_background(&env),
             &env,
-        ));
+            mtm,
+        );
+        for window in windows {
+            keepalive.keep(crate::windows::realize(window, &env, mtm));
+        }
+        keepalive.keep(parts.menu_bar);
     }
     #[cfg(target_os = "ios")]
     {
@@ -247,12 +264,20 @@ fn create_root(
     keepalive: &mut KeepAlive,
     mtm: MainThreadMarker,
 ) -> Retained<HostView> {
-    let application = cocoa_ui::appkit::Application::shared(mtm);
-    let theme = Rc::new(crate::theme::install(env, application.color_scheme()));
+    // The embedded tree follows the host view's effective appearance: its
+    // own `appearance`, else the chain above it — never the application's
+    // override, which is the host's to manage.
+    let theme = Rc::new(crate::theme::install(
+        env,
+        cocoa_ui::appkit::effective_color_scheme(host),
+    ));
     let observed = theme.clone();
-    keepalive.keep(application.observe_color_scheme(move |scheme| {
-        crate::theme::refresh(&observed, scheme);
-    }));
+    keepalive.keep(cocoa_ui::appkit::observe_effective_appearance(
+        host,
+        move |scheme| {
+            crate::theme::refresh(&observed, scheme);
+        },
+    ));
     keepalive.keep(theme);
     HostView::new(mtm, cocoa_ui::view::bounds(host))
 }
@@ -285,59 +310,6 @@ pub(crate) fn mount_content(
         cocoa_ui::view::layout_immediately(placed.view());
     });
     content
-}
-
-#[cfg(target_os = "macos")]
-fn bind_root(
-    root: &HostView,
-    declaration: waterui::window::Window,
-    env: &Environment,
-    keepalive: &mut KeepAlive,
-    mtm: MainThreadMarker,
-) {
-    use std::cell::RefCell;
-    use waterui::SignalExt;
-    let declaration = Rc::new(RefCell::new(declaration));
-    let binding = Rc::new(RefCell::new(None));
-    let observed_env = env.clone();
-    let observed_binding = binding.clone();
-    let attach = Rc::new(move |root: &HostView| {
-        let Some(window) = cocoa_ui::view::window(root) else {
-            observed_binding.borrow_mut().take();
-            return;
-        };
-        let mut declaration = declaration.borrow_mut();
-        let toolbar = declaration.toolbar.take();
-        declaration.arm_close_requests(&observed_env);
-        let bound = crate::windows::bind_root_window(
-            window,
-            root,
-            &observed_env,
-            &declaration.title,
-            &declaration.frame,
-            &declaration.state,
-            toolbar,
-            &declaration.style.computed(),
-            &declaration.level,
-            &declaration.attention,
-            declaration.resize_increments.as_ref(),
-            &declaration.background.computed(),
-            declaration.closable,
-            declaration.resizable,
-            declaration
-                .has_close_handler()
-                .then(|| declaration.handle()),
-            mtm,
-        );
-        // `WindowHandle::focus` — armed here, where the declaration and the
-        // realized window meet.
-        crate::windows::wire_focus_requests(&declaration, bound.window(), mtm);
-        *observed_binding.borrow_mut() = Some(bound);
-    });
-    let on_window = attach.clone();
-    root.set_window_handler(move |root| on_window(root));
-    attach(root);
-    keepalive.keep(binding);
 }
 
 /// Detaches and destroys one mounted instance.
