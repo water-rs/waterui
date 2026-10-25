@@ -7094,7 +7094,7 @@ mod tests {
                     Op::Path {
                         local: Affine::IDENTITY,
                         rule: FillRule::NonZero,
-                        gpu_candidate: elements.len() >= path::GPU_STROKE_MIN_ELEMENTS,
+                        gpu_candidate: path::stroke_gpu_candidate(elements.len(), &stroke),
                         outline: super::super::prepared::Outline::Stroke { shape, stroke },
                         paint: if kind == Kind::ShaderStroke {
                             ResolvedPaint::Shader(Box::new(

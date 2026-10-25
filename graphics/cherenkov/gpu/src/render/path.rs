@@ -97,10 +97,20 @@ pub enum CoverageRoute {
 /// Keep ordinary UI geometry out of the GPU preparation pass.
 pub const GPU_ROUTE_MIN_ELEMENTS: usize = 4096;
 
-/// Admit strokes using the upper end of their typical two-to-fivefold
-/// outline expansion. This is only a candidate filter: the prepared segment,
-/// incidence and grid bounds still decide whether compute is worthwhile.
-pub const GPU_STROKE_MIN_ELEMENTS: usize = GPU_ROUTE_MIN_ELEMENTS / 5;
+/// Rounded joins and caps expand into arcs, unlike a plain offset outline.
+/// Admit them earlier for actual segment/incidence/grid assessment; keep
+/// ordinary polylines on the existing two-sided-outline candidate threshold.
+pub const fn stroke_gpu_candidate(elements: usize, stroke: &kurbo::Stroke) -> bool {
+    let expansion = if matches!(stroke.join, kurbo::Join::Round)
+        || matches!(stroke.start_cap, kurbo::Cap::Round)
+        || matches!(stroke.end_cap, kurbo::Cap::Round)
+    {
+        5
+    } else {
+        2
+    };
+    elements >= GPU_ROUTE_MIN_ELEMENTS / expansion
+}
 
 /// A coverage grid over an integer device-space rect.
 pub struct Coverage {
