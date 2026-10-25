@@ -288,9 +288,8 @@ struct Batch {
     list_total: u32,
     dash_table_words: u32,
     seg_total: u32,
-    cov_total: u32,
     bin_total: u32,
-    fragment_total: u32,
+    totals: FrameTotals,
     row_total: u32,
     bound: BufferBounds,
 }
@@ -571,15 +570,7 @@ impl GpuCoverage {
             ..
         } = prepared;
         let append = |batch: &Batch| {
-            path_rows(
-                prepared,
-                bound,
-                FrameTotals {
-                    fragments: batch.fragment_total,
-                    columns: batch.cov_total,
-                },
-            )
-            .and_then(|(rows, totals)| {
+            path_rows(prepared, bound, batch.totals).and_then(|(rows, totals)| {
                 let mut next = batch.bound;
                 next.add(&rows);
                 if next.total() + FRAME_FIXED_BYTES > GPU_COV_MAX_BYTES {
@@ -610,10 +601,6 @@ impl GpuCoverage {
             }
             Err(error) => return Err(error),
         };
-        let FrameTotals {
-            fragments: fragment_total,
-            columns: cov_total,
-        } = totals;
         self.batch.bound = next;
         let record = u32::try_from(self.paths.len()).expect("path count fits u32");
         let elem_base = self.batch.element_total;
@@ -621,7 +608,7 @@ impl GpuCoverage {
         let texels =
             u32::try_from(bound.texels.div_ceil(4) + bound.cell_cap).expect("texel words fit u32");
         let (base, texel_base, block_words) = self.alloc_block(device, geometry_slots, texels)?;
-        let grid_base = self.batch.cov_total;
+        let grid_base = self.batch.totals.columns;
         let [xx, yx, xy, yy, tx, ty] = raster.as_coeffs();
         let mut words = [0u32; PATH_WORDS];
         // atom[0..3]: bbox ordered-bits +inf/-inf seeds (the kernel's
@@ -704,8 +691,7 @@ impl GpuCoverage {
         self.draws.push(Draw { key, shift });
         self.batch.seg_total += u32::try_from(bound.segments).expect("segments");
         self.batch.bin_total += u32::try_from(bound.bins).expect("bins");
-        self.batch.fragment_total = fragment_total;
-        self.batch.cov_total = cov_total;
+        self.batch.totals = totals;
         self.batch.row_total += u32::try_from(bound.grid_h).expect("rows");
 
         Ok(u32::try_from(self.draws.len() - 1).expect("draw count fits u32"))
@@ -971,7 +957,7 @@ impl GpuCoverage {
             });
             let mut sizes = [0; 7];
             for &batch in self.batches.iter().chain(std::iter::once(&self.batch)) {
-                let plan = BatchPlan::new(batch, &self.paths[batch.start..batch.end]);
+                let plan = BatchPlan::new(batch);
                 for (peak, size) in sizes.iter_mut().zip(plan.sizes) {
                     *peak = (*peak).max(size);
                 }
@@ -1137,7 +1123,7 @@ impl GpuCoverage {
             work_header_bytes,
             radix_pass_count,
             ..
-        } = BatchPlan::new(batch, &self.paths[batch.start..batch.end]);
+        } = BatchPlan::new(batch);
         let stroke_total = params[18];
         let dash_total = params[19];
         let dash_blocks = params[21];
@@ -1541,19 +1527,12 @@ struct BatchPlan {
 }
 
 impl BatchPlan {
-    fn new(batch: Batch, paths: &[[u32; PATH_WORDS]]) -> Self {
-        let strip_total: u32 = paths
-            .iter()
-            .map(|path| {
-                path[17].div_ceil(
-                    u32::try_from(crate::render::path::STRIP_H).expect("strip height fits u32"),
-                )
-            })
-            .sum();
-        let tile_total: u32 = paths
-            .iter()
-            .map(|path| path[16].div_ceil(CLASSIFY_WIDTH) * path[17].div_ceil(4))
-            .sum();
+    fn new(batch: Batch) -> Self {
+        let FrameTotals {
+            strips: strip_total,
+            tiles: tile_total,
+            ..
+        } = batch.totals;
         // The compute stroker's scratch precedes the bins: the vertex slots,
         // then the dashed passes' per-record words, scan blocks, staging and
         // compacted list. It is empty in a frame without strokes, which
@@ -1572,10 +1551,10 @@ impl BatchPlan {
             bin_base,
         } = scratch;
         let fragment_base = bin_base + batch.bin_total * 3;
-        let sorted = fragment_base + batch.fragment_total * 8;
-        let groups = sorted + batch.fragment_total * 2;
-        let sort_scratch = groups + group_words(batch.fragment_total, batch.cov_total);
-        let radix_pass_count = radix_passes(batch.cov_total);
+        let sorted = fragment_base + batch.totals.fragments * 8;
+        let groups = sorted + batch.totals.fragments * 2;
+        let sort_scratch = groups + group_words(batch.totals.fragments, batch.totals.columns);
+        let radix_pass_count = radix_passes(batch.totals.columns);
         // Start on the opposite side for odd pass counts so the result always
         // precedes the group arena, leaving sort_scratch free for tokens.
         let (sort_a, sort_b) = if radix_pass_count.is_multiple_of(2) {
@@ -1583,13 +1562,10 @@ impl BatchPlan {
         } else {
             (sort_scratch, sorted)
         };
-        let histogram = sort_scratch + batch.fragment_total * 2;
-        let histogram_end =
-            histogram + batch.fragment_total.div_ceil(WORKGROUP).div_ceil(256) * 256 * 16;
+        let histogram = sort_scratch + batch.totals.fragments * 2;
         // Classification starts after radix sorting has released sort_scratch and
         // its histogram. The sorted keys stay live through texel generation.
         let tokens = sort_scratch;
-        let token_end = tokens + (batch.fragment_total.min(batch.cov_total) * 2 + strip_total) * 3;
         let params: [u32; PARAMS_WORDS] = [
             batch.element_total,
             batch.row_total,
@@ -1597,11 +1573,11 @@ impl BatchPlan {
             u32::try_from(batch.end - batch.start).expect("coverage capacity fits u32"),
             tile_total,
             CLASSIFY_WIDTH,
-            batch.cov_total,
+            batch.totals.columns,
             bin_base,
             sort_scratch,
             fragment_base,
-            batch.fragment_total,
+            batch.totals.fragments,
             sort_a,
             sort_b,
             histogram,
@@ -1620,11 +1596,7 @@ impl BatchPlan {
             list_base,
             0,
         ];
-        let cov_words = u64::from(
-            token_end
-                .max(histogram_end)
-                .max(sort_scratch + tile_total * 4),
-        );
+        let cov_words = u64::from(groups) + batch.totals.scratch_words();
         let scratch_bytes = cov_words * 4;
         let work_header_bytes = u64::from(5 + batch.row_total) * 4;
         let strokes_bytes = (u64::from(stroke_total) * u64::from(RECORD_WORDS)
@@ -1735,6 +1707,20 @@ impl CoverageLimit {
 struct FrameTotals {
     fragments: u32,
     columns: u32,
+    strips: u32,
+    tiles: u32,
+}
+
+impl FrameTotals {
+    /// Sort groups remain live; radix sort, classification tokens and tile
+    /// records reuse the following arena at different points in the prologue.
+    fn scratch_words(self) -> u64 {
+        let radix = u64::from(self.fragments) * 2
+            + u64::from(self.fragments.div_ceil(WORKGROUP).div_ceil(256)) * 256 * 16;
+        let tokens = (u64::from(self.fragments.min(self.columns)) * 2 + u64::from(self.strips)) * 3;
+        u64::from(group_words(self.fragments, self.columns))
+            + radix.max(tokens).max(u64::from(self.tiles) * 4)
+    }
 }
 
 /// The rows the draw of `path` at `bound` adds to decision R2's bound of
@@ -1751,6 +1737,7 @@ fn path_rows(
     let strips = bound.grid_h.div_ceil(crate::render::path::STRIP_H);
     let to64 = |n: usize| u64::try_from(n).expect("bound fits u64");
     let key_range = || RenderError::Unsupported("GPU coverage key range exceeds u32");
+    let tiles = strips * bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize);
     // The sort groups take up to 16 words per fragment at u32 word
     // offsets, so a frame past this many fragments cannot be laid out.
     let after = FrameTotals {
@@ -1765,21 +1752,16 @@ fn path_rows(
             .ok()
             .and_then(|columns| before.columns.checked_add(columns))
             .ok_or_else(key_range)?,
+        strips: before.strips + u32::try_from(strips).map_err(|_| key_range())?,
+        tiles: before.tiles + u32::try_from(tiles).map_err(|_| key_range())?,
     };
-    let groups =
-        group_words(after.fragments, after.columns) - group_words(before.fragments, before.columns);
-    let tokens = after.fragments.min(after.columns) * 6 - before.fragments.min(before.columns) * 6;
-    let tiles = to64(strips * bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize));
     let mut bounds = BufferBounds {
         elements: to64(path.elements.len()) * (std::mem::size_of::<GpuElement>() as u64),
         segments: to64(bound.segments) * 16,
         scratch: to64(bound.bins) * 12
             + to64(bound.fragments) * 40
-            + to64(bound.fragments.div_ceil(64)) * 64
-            + to64(strips) * 12
-            + tiles * 16
-            + u64::from(groups + tokens) * 4,
-        work: to64(rows) * 4 + (to64(strips) + tiles) * 8,
+            + (after.scratch_words() - before.scratch_words()) * 4,
+        work: to64(rows) * 4 + (to64(strips) + to64(tiles)) * 8,
         paths: (PATH_WORDS as u64) * 4,
         arena: to64(bound.texels.div_ceil(4) + bound.cell_cap) * 4
             + to64(bound.instance_cap) * u64::from(GEOMETRY_WORDS) * 4,
@@ -1868,6 +1850,38 @@ mod tests {
         assert_eq!(radix_passes(1 << 16), 5);
         assert_eq!(radix_passes(1 << 24), 7);
         assert_eq!(radix_passes(u32::MAX), 8);
+    }
+
+    #[test]
+    fn dense_path_scratch_bound_covers_radix_sort() {
+        let Some(device) = device() else {
+            return;
+        };
+        let mut elements = Vec::new();
+        for _ in 0..256 {
+            elements.extend([
+                PathEl::MoveTo(Point::new(0.0, 0.0)),
+                PathEl::LineTo(Point::new(64.0, 64.0)),
+                PathEl::LineTo(Point::new(0.0, 64.0)),
+                PathEl::ClosePath,
+            ]);
+        }
+        let path = crate::render::path::prepare_gpu(&elements, Affine::IDENTITY, (64.0, 64.0));
+        let mut frame = GpuCoverage::new(&device, u64::MAX);
+        frame.begin_frame();
+        frame
+            .draw(
+                &device,
+                &GpuDraw::new(1, 0, Affine::IDENTITY, path, (64, 64)),
+            )
+            .expect("dense path fits");
+        let plan = BatchPlan::new(frame.batch);
+        assert!(
+            plan.sizes[0] <= frame.batch.bound.scratch,
+            "allocation {} exceeds admitted scratch {}",
+            plan.sizes[0],
+            frame.batch.bound.scratch
+        );
     }
 
     #[test]
