@@ -21,19 +21,20 @@ use super::lower::ImageSource;
 pub struct LocalKey {
     /// The projective layer.
     pub layer: LayerId,
+    /// Retained picture allocation, or the entire projective layer.
+    pub picture: Option<usize>,
     /// `log2(density)`.
-    pub bucket: u32,
+    pub bucket: i32,
 }
 
-/// The density bucket of `density`, a power of two of at least one.
+/// The signed exponent of the power-of-two raster density.
 #[must_use]
 #[expect(
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "the planner's density is a power of two in 1..=2^20"
+    reason = "a finite positive f64 power of two has an exponent within i32"
 )]
-pub fn bucket(density: f64) -> u32 {
-    density.log2() as u32
+pub fn bucket(density: f64) -> i32 {
+    density.log2() as i32
 }
 
 /// How a planned layer composes into its parent raster this frame.
@@ -187,6 +188,8 @@ impl Deps {
 /// current once the frame's encode succeeded.
 #[derive(Clone, Debug)]
 pub struct Realize {
+    /// Keeps picture identity alive until its pixels are retired.
+    pub picture: Option<PictureImage>,
     /// Where it is stored.
     pub key: LocalKey,
     /// What it is realized from.
@@ -210,10 +213,25 @@ pub struct Inputs {
     pub stale: FxHashSet<LocalKey>,
 }
 
+/// Immutable source and raster bounds of a retained picture.
+#[derive(Clone, Debug)]
+pub struct PictureImage {
+    pub source: cherenkov::Picture,
+    pub domain: super::planes::static_layer::Domain,
+}
+
+impl PictureImage {
+    pub fn identity(&self) -> usize {
+        std::ptr::from_ref(self.source.display_list()) as usize
+    }
+}
+
 /// One retained local image and its mip chain.
 pub struct Entry {
+    /// Snapshot and local raster domain for a nested picture.
+    pub picture: Option<PictureImage>,
     /// Its density bucket.
-    pub bucket: u32,
+    pub bucket: i32,
     /// What the texture holds; `None` until a realization completed.
     pub key: Option<Key>,
     /// The inputs its realization read.
@@ -238,14 +256,48 @@ pub struct Entry {
 }
 
 impl Entry {
+    pub fn matches(&self, key: LocalKey) -> bool {
+        self.bucket == key.bucket
+            && self.picture.as_ref().map(PictureImage::identity) == key.picture
+    }
+
+    pub fn local_key(&self, layer: LayerId) -> LocalKey {
+        LocalKey {
+            layer,
+            picture: self.picture.as_ref().map(PictureImage::identity),
+            bucket: self.bucket,
+        }
+    }
+
+    /// CPU allocations retained by an image, including the immutable source.
+    /// Shared source allocations follow Content's per-retain accounting.
+    pub fn cpu_bytes(&self) -> u64 {
+        (std::mem::size_of::<Self>()
+            + self.levels.capacity() * std::mem::size_of::<wgpu::TextureView>()
+            + self.mips.capacity() * std::mem::size_of::<wgpu::BindGroup>()
+            + self.binds.capacity()
+                * std::mem::size_of::<((Option<usize>, Option<u64>), wgpu::BindGroup)>())
+            as u64
+            + self.picture.as_ref().map_or(0, |picture| {
+                picture
+                    .source
+                    .display_list()
+                    .heap_bytes(cherenkov::lowering::memory::command_bytes)
+            })
+    }
+
     /// Bytes of the texture: `8 · Σ w·h` over its levels.
     #[must_use]
     pub fn bytes(&self) -> u64 {
         let size = self.texture.size();
-        cherenkov::lowering::projective::mip_levels((size.width, size.height))
-            .iter()
-            .map(|&(w, h)| 8 * u64::from(w) * u64::from(h))
-            .sum()
+        let (mut w, mut h) = (size.width, size.height);
+        let mut bytes = 0;
+        for _ in 0..self.texture.mip_level_count() {
+            bytes += 8 * u64::from(w) * u64::from(h);
+            w = (w / 2).max(1);
+            h = (h / 2).max(1);
+        }
+        bytes
     }
 }
 
@@ -260,7 +312,7 @@ impl Entry {
     pub fn new(
         device: &wgpu::Device,
         pipelines: &Pipelines,
-        bucket: u32,
+        bucket: i32,
         levels: &[(u32, u32)],
     ) -> Self {
         let (w, h) = levels[0];
@@ -308,6 +360,7 @@ impl Entry {
             .collect();
         Self {
             bucket,
+            picture: None,
             key: None,
             deps: Deps::default(),
             texture,
@@ -572,6 +625,7 @@ mod tests {
         let placement = Placement {
             key: LocalKey {
                 layer: LayerId::new(1),
+                picture: None,
                 bucket: 0,
             },
             inverse,

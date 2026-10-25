@@ -1720,8 +1720,20 @@ impl Isolation {
     }
 }
 
+mod picture;
+
+/// Retained local images available to nested picture composition.
+pub struct PictureInputs<'a> {
+    pub retained: &'a FxHashMap<LayerId, Vec<super::projective::Entry>>,
+    pub inputs: &'a super::projective::Inputs,
+    pub available: u64,
+}
+
 /// The lowering walk state for one surface frame.
 pub struct Lowering<'a> {
+    pub pictures: Option<PictureInputs<'a>>,
+    pub picture_realize: Vec<super::projective::Realize>,
+    pub picture_composed: Vec<LocalKey>,
     frame: &'a mut Frame,
     anchor_scratch: &'a mut AnchorScratch,
     /// Path emission buffers, owned by the surface so their capacity
@@ -1861,6 +1873,9 @@ impl<'a> Lowering<'a> {
     ) -> Self {
         anchor_scratch.clear();
         Self {
+            pictures: None,
+            picture_realize: Vec::new(),
+            picture_composed: Vec::new(),
             frame,
             anchor_scratch,
             raster_scratch,
@@ -3204,7 +3219,11 @@ impl<'a> Lowering<'a> {
         if let Some(open) = &mut self.frame.open {
             open.color_range = super::present::ColorRange::Standard;
         }
+        // A speculative pass may roll back its local render passes. Only
+        // the final surface walk may retain picture pixels.
+        let pictures = self.pictures.take();
         let result = body(self, glyphs);
+        self.pictures = pictures;
         // The speculated level is translucent, and eligibility keeps every
         // ancestor of a promoted layer opaque: its body never crosses a
         // part boundary.
@@ -4381,6 +4400,10 @@ impl<'a> Lowering<'a> {
 
     /// Compose retained ops under the sampled layer state. Only invalid leaf
     /// realizations produce new instances or coverage; scopes assemble passes.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "paired scope dispatch keeps traversal and restoration together"
+    )]
     fn ops(
         &mut self,
         source: &cherenkov::DisplayList,
@@ -4393,6 +4416,35 @@ impl<'a> Lowering<'a> {
         let (mut changed, mut i) = (false, range.start);
         while i < range.end {
             match &ops[i] {
+                Op::BeginPicture {
+                    picture,
+                    local,
+                    end,
+                } => {
+                    if let Some(realized) = self.cached_picture(
+                        picture,
+                        *local,
+                        source,
+                        ops,
+                        emissions,
+                        storage,
+                        (layer, i + 1..*end as usize),
+                        glyphs,
+                    )? {
+                        changed |= realized;
+                        i = *end as usize + 1;
+                        continue;
+                    }
+                    changed |= self.ops(
+                        source,
+                        ops,
+                        emissions,
+                        storage,
+                        (layer, i + 1..*end as usize),
+                        glyphs,
+                    )?;
+                    i = *end as usize;
+                }
                 Op::BeginClip { local, shape, end } => {
                     let saved = self.transform;
                     self.transform = saved * *local;
@@ -4522,7 +4574,11 @@ impl<'a> Lowering<'a> {
         for (op, cache) in ops[range.clone()].iter().zip(&mut emissions[range.clone()]) {
             if matches!(
                 op,
-                Op::BeginClip { .. } | Op::BeginIsolate { .. } | Op::BeginShadow { .. } | Op::End
+                Op::BeginPicture { .. }
+                    | Op::BeginClip { .. }
+                    | Op::BeginIsolate { .. }
+                    | Op::BeginShadow { .. }
+                    | Op::End
             ) {
                 break;
             }
@@ -4844,7 +4900,7 @@ impl<'a> Lowering<'a> {
         storage.templates.push(InstanceTemplate::new(
             self.frame.instances[first_instance..]
                 .iter()
-                .find(|inst| inst.meta[0] != KIND_SPAN)
+                .find(|inst| !matches!(inst.meta[0], KIND_SPAN | KIND_REGION))
                 .or_else(|| self.frame.instances.get(first_instance))
                 .unwrap_or(&Instance::new(0)),
         ));
@@ -4970,8 +5026,9 @@ impl<'a> Lowering<'a> {
                             offset
                         };
                     debug_assert!(
-                        source.kind == stored_template.kind || source.kind == KIND_SPAN,
-                        "a retained leaf has one boundary geometry and optional interior spans"
+                        source.kind == stored_template.kind
+                            || matches!(source.kind, KIND_SPAN | KIND_REGION),
+                        "a retained leaf has one boundary geometry and optional interior spans or regions"
                     );
                 }
                 if let Some(pending) = self.mask_pending {

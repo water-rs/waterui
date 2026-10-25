@@ -200,6 +200,7 @@ fn path_bounds(outline: &Outline, list: &DisplayList) -> Rect {
 }
 
 fn bounds(
+    space: Affine,
     ops: &[Op],
     list: &DisplayList,
     fonts: &FxHashMap<u64, glyph::FontData>,
@@ -269,7 +270,7 @@ fn bounds(
                 margins.push(kurbo::Vec2::new(a.hypot(c) * margin, b.hypot(d) * margin));
                 continue;
             }
-            Op::BeginClip { .. } => {
+            Op::BeginPicture { .. } | Op::BeginClip { .. } => {
                 margins.push(kurbo::Vec2::ZERO);
                 continue;
             }
@@ -291,18 +292,29 @@ fn bounds(
         let margin: kurbo::Vec2 = margins.iter().copied().sum();
         union(
             &mut result,
-            local.transform_rect_bbox(rect).inflate(margin.x, margin.y),
+            space.transform_rect_bbox(local.transform_rect_bbox(rect).inflate(margin.x, margin.y)),
         );
     }
     Ok(result)
 }
 
+pub fn domain(
+    ops: &[Op],
+    list: &DisplayList,
+    fonts: &FxHashMap<u64, glyph::FontData>,
+    density: f64,
+    max: u32,
+) -> Result<Option<Domain>, RenderError> {
+    domain_in(Affine::IDENTITY, ops, list, fonts, density, max)
+}
+
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "finite positive extents bounded by the device limit"
+    reason = "finite extents bounded by the device limit"
 )]
-pub fn domain(
+pub fn domain_in(
+    space: Affine,
     ops: &[Op],
     list: &DisplayList,
     fonts: &FxHashMap<u64, glyph::FontData>,
@@ -312,7 +324,7 @@ pub fn domain(
     if !density.is_finite() || density <= 0.0 {
         return Ok(None);
     }
-    let Some(bounds) = bounds(ops, list, fonts)? else {
+    let Some(bounds) = bounds(space, ops, list, fonts)? else {
         return Ok(None);
     };
     if bounds.is_zero_area() {

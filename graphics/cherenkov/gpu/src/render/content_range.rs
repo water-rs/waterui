@@ -93,6 +93,7 @@ pub(super) fn of_op(op: &Op, images: &FxHashMap<u64, GpuImage>) -> ColorRange {
             ColorRange::HighDynamicRange
         }
         Op::BitmapGlyph { .. }
+        | Op::BeginPicture { .. }
         | Op::BeginClip { .. }
         | Op::BeginShadow { .. }
         | Op::BeginIsolate { .. }

@@ -715,6 +715,12 @@ pub enum Op {
         /// The run size.
         size: f32,
     },
+    /// An immutable picture and its placement in the enclosing recording.
+    BeginPicture {
+        picture: cherenkov::Picture,
+        local: Affine,
+        end: u32,
+    },
     /// Open a clip scope.
     BeginClip {
         /// The ambient transform (the clip's own `extra` is inside
@@ -755,7 +761,8 @@ pub enum Op {
 impl cherenkov::lowering::Operation for Op {
     fn end_mut(&mut self) -> Option<&mut u32> {
         match self {
-            Self::BeginClip { end, .. }
+            Self::BeginPicture { end, .. }
+            | Self::BeginClip { end, .. }
             | Self::BeginIsolate { end, .. }
             | Self::BeginShadow { end, .. } => Some(end),
             _ => None,
@@ -861,6 +868,18 @@ impl cherenkov::lowering::Compiler for Lowerer<'_> {
                 end: 0,
             }))
     }
+    fn picture(
+        &mut self,
+        picture: &cherenkov::Picture,
+        ambient: Affine,
+    ) -> Result<Option<Op>, RenderError> {
+        Ok(Some(Op::BeginPicture {
+            picture: picture.clone(),
+            local: ambient,
+            end: 0,
+        }))
+    }
+
     fn end(&mut self) -> Op {
         Op::End
     }

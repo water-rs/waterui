@@ -3,7 +3,7 @@
 
 use std::mem::size_of;
 
-use cherenkov::kurbo::PathEl;
+use cherenkov::lowering::memory::{command_bytes, glyph_run_bytes, shape_bytes};
 
 use super::lower::{ContentData, Emission, Item, clip_bytes};
 use super::paint::{PaintData, TransformedPaint};
@@ -45,24 +45,6 @@ impl Categories {
             + self.bitmaps
             + self.geometry
             + self.projective
-    }
-}
-
-/// Heap bytes of one retained source-list command.
-pub fn command_bytes(command: &cherenkov::Command) -> u64 {
-    match command {
-        cherenkov::Command::Fill { shape, paint }
-        | cherenkov::Command::Stroke { shape, paint, .. } => {
-            shape_bytes(shape) + paint_bytes(paint)
-        }
-        cherenkov::Command::Shadow { shape, .. } | cherenkov::Command::BeginClip { shape, .. } => {
-            shape_bytes(shape)
-        }
-        cherenkov::Command::Glyphs { run, paint } => glyph_run_bytes(run) + paint_bytes(paint),
-        cherenkov::Command::Picture { picture, .. } => {
-            picture.display_list().heap_bytes(command_bytes)
-        }
-        _ => 0,
     }
 }
 
@@ -111,42 +93,6 @@ fn item_bytes(item: &Item) -> u64 {
                 + item.clip.as_deref().map_or(0, clip_bytes)
         }
         Item::PushIsolate { .. } | Item::PushFilter { .. } | Item::Capture(_) => 0,
-    }
-}
-
-/// Heap bytes of a shape's path elements.
-fn shape_bytes(shape: &cherenkov::ShapeData) -> u64 {
-    match shape {
-        cherenkov::ShapeData::Path { elements, .. } => {
-            (elements.len() * size_of::<PathEl>()) as u64
-        }
-        _ => 0,
-    }
-}
-
-/// Heap bytes of a glyph run's positioned glyphs and coordinates.
-fn glyph_run_bytes(run: &cherenkov::GlyphRun) -> u64 {
-    (run.glyphs.len() * size_of::<cherenkov::Glyph>() + run.coords.len() * size_of::<i16>()) as u64
-}
-
-/// Heap bytes of a front-end paint's own allocations.
-fn paint_bytes(paint: &cherenkov::Paint) -> u64 {
-    match paint {
-        cherenkov::Paint::Linear(g) => {
-            (g.stops.capacity() * size_of::<cherenkov::ColorStop>()) as u64
-        }
-        cherenkov::Paint::Radial(g) => {
-            (g.stops.capacity() * size_of::<cherenkov::ColorStop>()) as u64
-        }
-        cherenkov::Paint::Sweep(g) => {
-            (g.stops.capacity() * size_of::<cherenkov::ColorStop>()) as u64
-        }
-        cherenkov::Paint::Mesh(m) => (size_of_val(m.points()) + size_of_val(m.colors())) as u64,
-        cherenkov::Paint::Shader(s) => (s.uniforms.capacity() * size_of::<f32>()) as u64,
-        cherenkov::Paint::Transformed(t) => {
-            size_of::<cherenkov::Paint>() as u64 + paint_bytes(&t.paint)
-        }
-        _ => 0,
     }
 }
 

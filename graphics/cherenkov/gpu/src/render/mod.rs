@@ -701,6 +701,12 @@ impl SurfaceState {
             + (self.part_ranges.capacity() * std::mem::size_of::<present::ColorRange>()) as u64
             + self.raster_scratch.heap_bytes()
             + self
+                .projective
+                .values()
+                .flatten()
+                .map(projective::Entry::cpu_bytes)
+                .sum::<u64>()
+            + self
                 .layers
                 .values()
                 .map(ContentData::gpu_input_bytes)
@@ -805,10 +811,7 @@ impl SurfaceState {
                         _ => false,
                     })
             })
-            .map(|(layer, e)| projective::LocalKey {
-                layer,
-                bucket: e.bucket,
-            })
+            .map(|(layer, e)| e.local_key(layer))
             .collect()
     }
 
@@ -1024,7 +1027,7 @@ fn projective_entry(
 ) -> &projective::Entry {
     entries
         .get(&key.layer)
-        .and_then(|entries| entries.iter().find(|e| e.bucket == key.bucket))
+        .and_then(|entries| entries.iter().find(|e| e.matches(key)))
         .expect("a composed local image is retained")
 }
 
@@ -1035,7 +1038,7 @@ fn projective_entry_mut(
 ) -> &mut projective::Entry {
     entries
         .get_mut(&key.layer)
-        .and_then(|entries| entries.iter_mut().find(|e| e.bucket == key.bucket))
+        .and_then(|entries| entries.iter_mut().find(|e| e.matches(key)))
         .expect("a composed local image is retained")
 }
 
@@ -1055,10 +1058,7 @@ fn retire_projective(
                 return true;
             }
             bytes += entry.bytes();
-            let key = projective::LocalKey {
-                layer: *layer,
-                bucket: entry.bucket,
-            };
+            let key = entry.local_key(*layer);
             let before = surf.composed.len();
             surf.composed.retain(|k| *k != key);
             composed |= surf.composed.len() != before;
@@ -4155,10 +4155,7 @@ impl Renderer for GpuRenderer {
             let mut bytes = 0;
             for (layer, entries) in &mut surf.projective {
                 entries.retain(|e| {
-                    let keep = composed.contains(&projective::LocalKey {
-                        layer: *layer,
-                        bucket: e.bucket,
-                    });
+                    let keep = composed.contains(&e.local_key(*layer));
                     if !keep {
                         bytes += e.bytes();
                     }
@@ -6125,6 +6122,9 @@ impl GpuRenderer {
             &self.device,
             "projective content changed",
             |layer, entry| {
+                if entry.picture.is_some() {
+                    return !entry.key.is_some_and(|key| key.is_current(0, replacements));
+                }
                 tree.projective_pose(layer).is_none()
                     || !entry
                         .key
@@ -6186,16 +6186,19 @@ impl GpuRenderer {
         }
         for r in &realize {
             let entries = surf.projective.entry(r.key.layer).or_default();
-            let slot = entries.iter().position(|e| e.bucket == r.key.bucket);
+            let slot = entries.iter().position(|e| e.matches(r.key));
             if let Some(entry) = slot.map(|i| &mut entries[i])
                 && entry.fits(r.levels[0])
             {
                 entry.key = None;
+                entry.picture.clone_from(&r.picture);
                 continue;
             }
             let pipelines = self.projective.as_ref().expect("built above");
             surf.command_damage.forget();
-            let entry = projective::Entry::new(&self.device, pipelines, r.key.bucket, &r.levels);
+            let mut entry =
+                projective::Entry::new(&self.device, pipelines, r.key.bucket, &r.levels);
+            entry.picture.clone_from(&r.picture);
             let bytes = entry.bytes();
             if let Some(i) = slot {
                 let old = std::mem::replace(&mut entries[i], entry);
@@ -6258,16 +6261,7 @@ impl GpuRenderer {
                 surf.projective.iter().flat_map(move |(layer, entries)| {
                     entries
                         .iter()
-                        .map(move |e| {
-                            (
-                                e.last_used,
-                                *sid,
-                                projective::LocalKey {
-                                    layer: *layer,
-                                    bucket: e.bucket,
-                                },
-                            )
-                        })
+                        .map(move |e| (e.last_used, *sid, e.local_key(*layer)))
                         .filter(|(_, _, key)| !surf.composed.contains(key))
                 })
             })
@@ -6284,7 +6278,7 @@ impl GpuRenderer {
             else {
                 continue;
             };
-            if let Some(i) = entries.iter().position(|e| e.bucket == key.bucket) {
+            if let Some(i) = entries.iter().position(|e| e.matches(key)) {
                 let entry = entries.swap_remove(i);
                 total -= entry.bytes();
                 diag::retire(
@@ -7031,6 +7025,10 @@ impl GpuRenderer {
         clippy::too_many_arguments,
         reason = "one surface's prepared inputs and lowering resources"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one surface transaction assembles local images before composition"
+    )]
     fn lower_content(
         surf: &mut SurfaceState,
         frame: &SurfaceFrame<'_>,
@@ -7115,6 +7113,26 @@ impl GpuRenderer {
                     (&surf.projective, inputs, surf.size),
                     &mut lowered,
                 )?;
+                let projective_bytes: u64 = lowered
+                    .composed
+                    .iter()
+                    .map(|key| {
+                        lowered.realize.iter().find(|r| r.key == *key).map_or_else(
+                            || projective_entry(&surf.projective, *key).bytes(),
+                            |r| {
+                                r.levels
+                                    .iter()
+                                    .map(|&(w, h)| 8 * u64::from(w) * u64::from(h))
+                                    .sum()
+                            },
+                        )
+                    })
+                    .sum();
+                lowering.pictures = Some(lower::PictureInputs {
+                    retained: &surf.projective,
+                    inputs,
+                    available: inputs.limits.max_bytes.saturating_sub(projective_bytes),
+                });
                 lowering.run(
                     frame.tree,
                     &mut layers,
@@ -7125,6 +7143,8 @@ impl GpuRenderer {
                     &surf.plan,
                 )
             });
+            lowered.realize.append(&mut lowering.picture_realize);
+            lowered.composed.append(&mut lowering.picture_composed);
             lowered.commands += lowering.commands_lowered;
             lowered.layers = lowering.layers_composed;
             lowered.glyphs = lowering.glyphs_rasterized();
@@ -7171,6 +7191,7 @@ impl GpuRenderer {
             let nested = placed.remove(&Some(plan.layer)).unwrap_or_default();
             let key = projective::LocalKey {
                 layer: plan.layer,
+                picture: None,
                 bucket: projective::bucket(image.density),
             };
             let cache =
@@ -7179,7 +7200,7 @@ impl GpuRenderer {
                 && retained.get(&plan.layer).is_some_and(|entries| {
                     entries
                         .iter()
-                        .any(|e| e.bucket == key.bucket && e.key == Some(cache))
+                        .any(|e| e.matches(key) && e.key == Some(cache))
                 });
             if !current {
                 let (filters, passes) = (
@@ -7200,6 +7221,7 @@ impl GpuRenderer {
                 let deps = projective::Deps::of(lowered_frame, filters, passes, inputs.interop);
                 lowering.push_mips(last, key);
                 lowered.realize.push(projective::Realize {
+                    picture: None,
                     key,
                     cache,
                     levels: image.levels.clone(),
@@ -7937,8 +7959,16 @@ impl GpuRenderer {
         stats.layers_composed += layers;
         stats.glyphs_rasterized += glyphs;
         stats.paths_rasterized += paths;
-        stats.projective_realized += u32::try_from(realize.len()).unwrap_or(u32::MAX);
-        stats.projective_composed += u32::try_from(composed.len()).unwrap_or(u32::MAX);
+        stats.projective_realized += u32::try_from(
+            realize
+                .iter()
+                .filter(|image| image.key.picture.is_none())
+                .count(),
+        )
+        .unwrap_or(u32::MAX);
+        stats.projective_composed +=
+            u32::try_from(composed.iter().filter(|key| key.picture.is_none()).count())
+                .unwrap_or(u32::MAX);
         self.allocate_projective(id, realize, composed)?;
         // What the backend's tile executor can hold, read before the
         // surface is borrowed for the frame's attachment planning.
