@@ -31,6 +31,8 @@
 # packaged artifact is what users ship, so size, startup, memory, and visual
 # comparison all describe the production binary.
 #
+# Requires compare-screenshots on PATH, built once by the workflows' prepare job.
+#
 # Requires bash >= 4.2, asserted below (#2683): the shard keeps background
 # children alive by design — the marker/reference log streams and `water
 # package` — and a builtin write that races a child's exit fails with EINTR
@@ -153,6 +155,11 @@ fi
 
 echo "Running ${#shard_examples[@]} examples on ${platform}: ${shard_examples[*]}"
 
+if ! compare_tool="$(command -v compare-screenshots)" || [[ ! -x "${compare_tool}" ]]; then
+  echo "::error::Missing prepared compare-screenshots executable; download its prepare-job artifact and add it to PATH."
+  exit 1
+fi
+
 if [[ "${platform}" == "ios" ]]; then
   # A `simctl launch` opens the app over whatever is currently frontmost, and
   # iOS answers with the status-bar "back to <app>" breadcrumb — pixels the
@@ -184,38 +191,13 @@ if [[ "${platform}" == "ios" ]]; then
   trap 'xcrun simctl status_bar "${SIMULATOR_UDID}" clear >/dev/null 2>&1 || true' EXIT
 fi
 
-# Compile helpers once per job, not once per capture poll. The Rust tool
-# reuses the oracle's FLIP implementation; the Swift tools only handle
-# macOS launch/window discovery. Cargo reports its executable path.
+# Compile the macOS launch/window helpers once per job, not per capture poll.
 swift_tools_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-swift-tools.XXXXXX")"
 if [[ "${platform}" == "ios" ]]; then
   trap 'rm -rf "${swift_tools_dir}"; xcrun simctl status_bar "${SIMULATOR_UDID}" clear >/dev/null 2>&1 || true' EXIT
 else
   trap 'rm -rf "${swift_tools_dir}"' EXIT
 fi
-compare_build_log="${logs_dir}/compare-tool-build-${platform}-${shard_index}.jsonl"
-if ! gtimeout --kill-after=10 300 cargo build --locked \
-     --manifest-path "${workspace}/Cargo.toml" \
-     -p cherenkov-oracle --bin compare-screenshots --features apple-screenshots \
-     --message-format=json > "${compare_build_log}"; then
-  echo "::error::Failed to build the FLIP comparer; compiler output: ${compare_build_log}."
-  exit 1
-fi
-compare_tool="$(python3 - "${compare_build_log}" <<'PY'
-import json, sys
-with open(sys.argv[1]) as stream:
-    artifacts = [
-        message["executable"]
-        for message in map(json.loads, stream)
-        if message.get("reason") == "compiler-artifact"
-        and message["target"]["name"] == "compare-screenshots"
-        and message.get("executable")
-    ]
-if len(artifacts) != 1:
-    raise SystemExit("Expected one compare-screenshots executable in Cargo artifacts")
-print(artifacts[0])
-PY
-)"
 if [[ "${platform}" == "macos" ]]; then
   if ! swiftc -O -o "${swift_tools_dir}/window-id" \
        "${workspace}/.github/scripts/window-id.swift"; then
