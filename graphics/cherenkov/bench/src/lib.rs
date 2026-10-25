@@ -16,17 +16,11 @@
 //! | `skia-vulkan` | `skia-safe` | Ganesh/Vulkan | `RGBAF16` premul surface, linear-P3 colours |
 //! | `skia-metal` | `skia-safe` | Graphite/Metal | `RGBAF16` premul render target, linear-P3 colours |
 //!
-//! GPU time is reported only where a real GPU timestamp source exists.
-//! The external wgpu adapters and skia-vulkan bracket the engine submission with
-//! timestamps written in standalone submissions after a full queue drain
-//! (see `wgpu_ctx::drain_and_stamp` when those adapters are enabled); skia-metal brackets Graphite's
-//! submission with empty `MTLCommandBuffer` markers on the same serial
-//! queue, each preceded by a drain (`commit` + `waitUntilCompleted`),
-//! and reads their `GPUStartTime`/`GPUEndTime`. This **serializes CPU
-//! and GPU** for the measured frame — a synchronous probe, not a
-//! pipelined frame rate. Where no timestamp source exists the field is
-//! `null` — it is never estimated. The Cherenkov GPU adapter instead collects
-//! timestamps from completed earlier submissions without draining each frame.
+//! GPU execution time is separate from host submission time and synchronous
+//! encode-to-completion latency. Unavailable GPU time remains `null`, with
+//! the adapter's reason in the measurement report. Skia Graphite Metal,
+//! Ganesh Vulkan and Vello hybrid lack usable GPU timing in the pinned versions.
+//! The Cherenkov GPU adapter collects timestamps from completed submissions.
 #![expect(
     clippy::exhaustive_enums,
     clippy::exhaustive_structs,
@@ -349,9 +343,12 @@ pub struct Submit {
     /// attribution (#2547).
     pub composition: Option<Composition>,
     /// Wall-clock seconds this call spent rasterizing before any readback
-    /// began (queue drains and timestamp markers included), where the
+    /// began (completion waits included), where the
     /// adapter separates the two stages; `None` otherwise.
     pub render_seconds: Option<f64>,
+    /// Seconds spent explicitly waiting for GPU completion during submission.
+    /// Excluded from CPU submission work, retained in synchronous frame latency.
+    pub gpu_wait_seconds: f64,
     /// Wall-clock seconds this call spent reading the pixels back;
     /// `None` when `readback` was false.
     pub readback_seconds: Option<f64>,
@@ -432,6 +429,10 @@ impl PresentKind {
 pub trait Engine {
     /// Provenance pinned into every result JSON.
     fn info(&self) -> &EngineInfo;
+    /// Why this adapter cannot report GPU execution time using engine APIs.
+    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+        None
+    }
     /// The feature set this adapter can execute faithfully.
     fn supported(&self) -> BTreeSet<Feature>;
     /// Prepare the scene's resources once, outside the timed loop.
@@ -469,9 +470,10 @@ pub trait Engine {
     /// # Errors
     /// [`BenchError`] on engine or GPU failure.
     fn submit(&mut self, frame: u64, readback: bool) -> Result<Submit, BenchError>;
-    /// Wait for the GPU timings of every submitted frame not yet
-    /// returned by [`Engine::submit`]. Only a backend whose timestamps
-    /// resolve after its submit returns has any.
+    /// Wait for all submitted rendering work to complete, then return GPU
+    /// timings not yet returned by [`Engine::submit`]. GPU adapters must
+    /// wait even when timestamps are unavailable. The default applies only
+    /// to adapters whose submit already completes all rendering work.
     ///
     /// # Errors
     /// [`BenchError`] on engine or GPU failure.
