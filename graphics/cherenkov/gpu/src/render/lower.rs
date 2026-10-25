@@ -1731,6 +1731,8 @@ pub struct Lowering<'a> {
     /// Path identities admitted during this lowering, before atlas commit.
     /// A second use must replay the admitted layout as well as its texels.
     pending_paths: FxHashMap<u64, u32>,
+    /// Glyphs rasterized in this lowering, shared before atlas commit.
+    pending_glyphs: FxHashMap<glyph::GlyphKey, (glyph::Entry, u32)>,
     pub commands_lowered: u32,
     pub layers_composed: u32,
     /// Backdrop groups planned before lowering.
@@ -1834,6 +1836,7 @@ impl<'a> Lowering<'a> {
             pending: Vec::new(),
             path_arena: Vec::new(),
             pending_paths: FxHashMap::default(),
+            pending_glyphs: FxHashMap::default(),
             commands_lowered: 0,
             layers_composed: 0,
             backdrops: FxHashMap::default(),
@@ -5988,6 +5991,7 @@ impl<'a> Lowering<'a> {
             let y = origin.y.floor();
             let fraction = (f32_f64(origin.x - x), f32_f64(origin.y - y));
             let key = key.at(glyph.id, fraction);
+            let pending_before = self.pending.len();
             let (entry, pending) = glyph::entry(
                 glyphs.atlas,
                 font,
@@ -5998,8 +6002,9 @@ impl<'a> Lowering<'a> {
                 self.transform,
                 &run.coords,
                 &mut self.pending,
+                &mut self.pending_glyphs,
             )?;
-            self.glyphs += u32::from(pending.is_some());
+            self.glyphs += u32::from(self.pending.len() != pending_before);
             if entry.w == 0 || entry.h == 0 {
                 continue;
             }
@@ -6065,6 +6070,7 @@ impl<'a> Lowering<'a> {
             let fx = o.x - ix;
             let fy = o.y - iy;
             let key = key.at(glyph.id, (f32_f64(fx), f32_f64(fy)));
+            let pending_before = self.pending.len();
             let (entry, pending) = glyph::entry(
                 glyphs.atlas,
                 font,
@@ -6075,8 +6081,9 @@ impl<'a> Lowering<'a> {
                 self.transform,
                 &run.coords,
                 &mut self.pending,
+                &mut self.pending_glyphs,
             )?;
-            self.glyphs += u32::from(pending.is_some());
+            self.glyphs += u32::from(self.pending.len() != pending_before);
             if entry.w == 0 || entry.h == 0 {
                 continue;
             }
