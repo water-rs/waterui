@@ -584,27 +584,46 @@ impl RenderNode {
                 let viewport_height = viewport.height;
                 let content_width = content.width;
                 let content_height = content.height;
-                let handle = if let Some(handle) = node.handle.borrow_mut().as_mut() {
-                    handle.rebind(
+                // The position sink reports the logical (unextended)
+                // viewport and content: the safe-area extension is the
+                // surface's presentation detail, not the semantic scroll
+                // geometry the controller reads back.
+                let position_report = node.controller.as_ref().map(|controller| {
+                    crate::scroll::ScrollPositionReport::new(
+                        controller.position_report(),
+                        size,
+                        content_size,
+                    )
+                });
+                let existing = node.handle.borrow().clone();
+                let handle = if let Some(mut handle) = existing {
+                    // Rebind outside the `node.handle` borrow — the report
+                    // writes inside may run watchers that re-enter the tree.
+                    let rebound = handle.rebind(
                         node.axis,
                         viewport_width,
                         viewport_height,
                         content_width,
                         content_height,
                         (0.0, 0.0),
-                    )
+                        position_report,
+                    );
+                    *node.handle.borrow_mut() = Some(rebound.clone());
+                    rebound
                 } else {
                     // `report_offset`: the handle writes the content offset
                     // into this binding on every change, glide frames
                     // included, from here on.
-                    ScrollHandle::new(
+                    let handle = ScrollHandle::new(
                         node.axis,
                         viewport_width,
                         viewport_height,
                         content_width,
                         content_height,
                         node.offset.clone(),
-                    )
+                    );
+                    handle.set_position_report(position_report);
+                    handle
                 };
                 if let Some(controller) = &node.controller {
                     let generation = renderer.read_signal(&controller.generation());

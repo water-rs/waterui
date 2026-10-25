@@ -860,3 +860,63 @@ fn report_offset_writes_under_the_semantic_runtime() {
         writes.get()
     );
 }
+
+// Issue #1259: the controller's `position()` reports the last measured
+// actual position — user scrolls and applied requests — and never a
+// pending request's target.
+#[test]
+fn scroll_position_reports_actual_geometry_not_pending_requests() {
+    let offset = waterui::binding(waterui::layout::Point::zero());
+    let controller = waterui_layout::scroll::ScrollController::new(waterui::layout::Point::zero());
+    let mut app = mount_rendered(
+        Environment::new(),
+        {
+            let offset = offset.clone();
+            let controller = controller.clone();
+            move || offset_rail(offset.clone(), Some(controller.clone()))
+        },
+        180,
+        180,
+    );
+    app.settle();
+
+    // The first real layout reports the viewport's actual geometry.
+    let position = controller
+        .position()
+        .snapshot()
+        .expect("the first painted layout reports a position");
+    assert_eq!(position.offset, waterui::layout::Point::zero());
+    assert!(position.at_start && !position.at_end);
+    assert_eq!(
+        position.viewport_size,
+        waterui::layout::Size::new(120.0, 120.0)
+    );
+    assert!(position.content_size.height > position.viewport_size.height);
+
+    // A user scroll moves the reported offset.
+    let rail = node_id(app.tree(), "offset-rail");
+    app.scroll_down(rail);
+    let scrolled = controller.position().snapshot().unwrap();
+    assert!(
+        scrolled.offset.y > 0.0,
+        "a user scroll must report the new offset, got {:?}",
+        scrolled.offset
+    );
+
+    // A request not yet applied stays pending: position() still reports the
+    // last actual offset, not the requested target.
+    controller.scroll_to(waterui::layout::Point::new(0.0, 200.0));
+    assert_eq!(
+        controller.position().snapshot().unwrap().offset,
+        scrolled.offset,
+        "a pending request must never pose as the actual position"
+    );
+
+    // The next frame applies the request, and the actual offset reports it.
+    app.pump_for(std::time::Duration::from_millis(16));
+    let applied = controller.position().snapshot().unwrap();
+    assert!(
+        applied.offset.y > scrolled.offset.y && applied.at_end,
+        "the applied request reports the landed offset, clamped at the extent: {applied:?}"
+    );
+}

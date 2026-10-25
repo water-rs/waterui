@@ -16,9 +16,10 @@
 
 mod support;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use nami::Signal as _;
 use nami::collection::List as ReactiveList;
 use support::{
     count_role_label, mount_rendered, mount_semantic, node_id_contains, node_label_exists, nodes,
@@ -943,5 +944,104 @@ fn an_update_between_the_frames_passes_translates_once_offscreen() {
     assert!(
         (landed - expected).abs() < 1.0,
         "six rows prepended above the anchor must translate the viewport by six rows: expected scroll_y≈{expected}, got {landed}"
+    );
+}
+
+// Issue #1259: a list's controller reports the actual scroll position —
+// first layout, applied requests — and never a pending request's target row.
+#[test]
+fn scroll_position_reports_actual_offset_not_pending_requests() {
+    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
+    let controller = ScrollController::new(0);
+    let mut app = mount_messages(&items, &controller);
+
+    let position = controller
+        .position()
+        .snapshot()
+        .expect("the first painted layout reports a position");
+    assert_eq!(position.offset.y, 0.0);
+    assert!(position.at_start && !position.at_end);
+    assert!(position.content_size.height > position.viewport_size.height);
+
+    // A queued row request must not present itself as the actual position.
+    controller.scroll_to(GROWN_ROW_COUNT - 1);
+    assert_eq!(
+        controller.position().snapshot().unwrap().offset,
+        position.offset,
+        "a pending request must never pose as the actual position"
+    );
+    app.pump_for(FRAME);
+    let applied = controller.position().snapshot().unwrap();
+    assert!(
+        applied.offset.y > 0.0,
+        "the applied request reports the landed offset: {applied:?}"
+    );
+}
+
+// Issue #1259: content growth with the offset held updates the reported
+// geometry and edge flags — the tail the controller was on moves away.
+#[test]
+fn scroll_position_updates_edge_flags_when_content_grows() {
+    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
+    let controller = ScrollController::new(0);
+    let mut app = mount_messages(&items, &controller);
+
+    controller.scroll_to(GROWN_ROW_COUNT - 1);
+    app.pump_for(FRAME);
+    let bottom = controller.position().snapshot().unwrap();
+    assert!(bottom.at_end, "scrolled to the last row must be at_end");
+    let extent = bottom.content_size.height;
+
+    // Appending rows grows the extent; the offset holds while `at_end`
+    // clears — geometry must report without a scroll happening.
+    let _ = items.replace((0..GROWN_ROW_COUNT + 10).map(SelfId::new).collect());
+    app.pump_for(FRAME);
+    let after = controller.position().snapshot().unwrap();
+    assert_eq!(after.offset, bottom.offset);
+    assert!(
+        !after.at_end,
+        "growth past the tail must clear at_end, got {after:?}"
+    );
+    assert!(after.content_size.height > extent);
+}
+
+// Issue #1259: a position observer may mutate the list collection during
+// the report write — the flush must not hold a borrow it would deadlock.
+#[test]
+fn scroll_position_watcher_may_mutate_the_list_collection() {
+    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
+    let controller = ScrollController::new(0);
+    let mut app = mount_messages(&items, &controller);
+
+    let fired = Rc::new(Cell::new(false));
+    // The report binding is the sink the handle writes — the same
+    // post-write seam the backend reentry test proves; a `Computed`
+    // watcher can sit behind lazy re-evaluation, which is not what this
+    // borrow-safety regression is about.
+    let _guard = controller.position_report().watch({
+        let items = RefCell::new(items.clone());
+        let fired = Rc::clone(&fired);
+        move |_| {
+            if !fired.replace(true) {
+                let _ = items
+                    .borrow_mut()
+                    .replace((0..GROWN_ROW_COUNT + 5).map(SelfId::new).collect());
+            }
+        }
+    });
+    // A move publishes the position, whose write runs the watcher — and
+    // the collection mutation it makes must not trip a held borrow.
+    controller.scroll_to(3);
+    app.settle();
+    assert!(
+        controller.position().snapshot().unwrap().offset.y > 0.0,
+        "the applied scroll must have moved the reported offset"
+    );
+    assert!(
+        fired.get(),
+        "the position watcher ran without a borrow panic"
     );
 }

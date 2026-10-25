@@ -8,10 +8,10 @@
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use nami::Binding;
+use nami::{Binding, Signal as _};
 use waterui_core::animation::Animation;
-use waterui_core::layout::Point;
-use waterui_layout::scroll::Axis;
+use waterui_core::layout::{Point, Size};
+use waterui_layout::scroll::{Axis, ScrollPosition};
 
 use crate::time::Instant;
 
@@ -53,6 +53,43 @@ const SMOOTH_SCROLL_TAU: f64 = 0.06;
 /// Remaining gap below which a smoothed scroll snaps to its target and the
 /// animation ends.
 const SMOOTH_SCROLL_SETTLE_EPSILON: f64 = 0.1;
+
+/// The position sink a scroll view reports through, plus the logical —
+/// pre-safe-area-extension — viewport and content sizes that geometry is
+/// measured in.
+///
+/// Backends build one from a `ScrollController`'s `position_report()`
+/// binding and the semantic layout's own extents, then hand it to
+/// [`ScrollHandle::rebind`]/[`ScrollHandle::set_position_report`]: the sink
+/// and the sizes move together, so a report never pairs the new offset with
+/// stale extents.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct ScrollPositionReport {
+    /// The binding the measured [`ScrollPosition`] is written into.
+    pub binding: Binding<Option<ScrollPosition>>,
+    /// The logical viewport size the report describes, in points.
+    pub viewport_size: Size,
+    /// The logical content size the report describes, in points.
+    pub content_size: Size,
+}
+
+impl ScrollPositionReport {
+    /// Creates the report channel: `binding` receives every measured
+    /// [`ScrollPosition`] computed from `viewport_size` and `content_size`.
+    #[must_use]
+    pub const fn new(
+        binding: Binding<Option<ScrollPosition>>,
+        viewport_size: Size,
+        content_size: Size,
+    ) -> Self {
+        Self {
+            binding,
+            viewport_size,
+            content_size,
+        }
+    }
+}
 
 /// Cloneable reference to one scroll view's offset state, valid for the
 /// layout generation it was bound against.
@@ -249,6 +286,19 @@ struct ScrollState {
     /// Offset queued by [`ScrollState::report_offset`], written once the
     /// state borrow is released so a binding watcher may re-enter the state.
     pending_report: Option<Point>,
+    /// Binding a `ScrollController`'s position report connected to this
+    /// scroll view — the sink the controller's `position()` signal reads.
+    /// Written — never read for control — whenever the measured position
+    /// changes: offset moves and geometry updates alike.
+    position_report: Option<Binding<Option<ScrollPosition>>>,
+    /// The logical viewport and content sizes the position sink reports —
+    /// the semantic scroll surface's own extents before any platform
+    /// (safe-area) extension.
+    position_viewport: Size,
+    position_content: Size,
+    /// Position queued by [`ScrollState::report_position`], written once the
+    /// state borrow is released.
+    pending_position_report: Option<ScrollPosition>,
 }
 
 impl ScrollHandle {
@@ -291,6 +341,10 @@ impl ScrollHandle {
     /// owning it. Everything then clamps to the new extents once. Pass
     /// `(0.0, 0.0)` when the content did not move.
     #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "rebind mirrors `new`'s geometry parameters plus the scroll shift and the position report; bundling them further would obscure the call"
+    )]
     pub fn rebind(
         &mut self,
         axis: Axis,
@@ -299,16 +353,35 @@ impl ScrollHandle {
         content_width: f64,
         content_height: f64,
         shift: (f64, f64),
+        position_report: Option<ScrollPositionReport>,
     ) -> Self {
-        self.generation = self.state.borrow_mut().prepare_generation(
-            axis,
-            viewport_width,
-            viewport_height,
-            content_width,
-            content_height,
-            shift,
-        );
-        self.flush_offset_report();
+        self.generation = {
+            let mut state = self.state.borrow_mut();
+            // Sink and geometry move inside the same borrow the rebind
+            // clamps and reports under: a watcher never sees the new offset
+            // paired with the previous layout's extents. `None` disconnects:
+            // a rebind to geometry that is not a measured frame (the semantic
+            // walk's unbounded extents) must not publish a fake position —
+            // the controller keeps the last real snapshot until a measured
+            // rebind attaches `Some` again.
+            if let Some(report) = position_report {
+                state.position_report = Some(report.binding);
+                state.position_viewport = report.viewport_size;
+                state.position_content = report.content_size;
+            } else {
+                state.position_report = None;
+                state.pending_position_report = None;
+            }
+            state.prepare_generation(
+                axis,
+                viewport_width,
+                viewport_height,
+                content_width,
+                content_height,
+                shift,
+            )
+        };
+        self.flush_reports();
         self.clone()
     }
 
@@ -324,19 +397,61 @@ impl ScrollHandle {
             state.pending_report = None;
             state.report_offset();
         }
-        self.flush_offset_report();
+        self.flush_reports();
     }
 
-    /// Writes a queued offset into the connected report binding. The write
-    /// happens outside the state borrow so a binding watcher may safely
+    /// Connects the position sink a `ScrollController` produced for this
+    /// scroll view, with the viewport's logical — pre-safe-area-extension —
+    /// viewport and content sizes. The current measured position is queued
+    /// at once and then on every offset or geometry change; the write goes
+    /// to the sink only when it actually differs from what the sink holds,
+    /// so a rebind with unchanged geometry does not re-notify. `None`
+    /// disconnects the sink. The binding is written, never read.
+    pub fn set_position_report(&self, report: Option<ScrollPositionReport>) {
+        {
+            let mut state = self.state.borrow_mut();
+            if let Some(report) = report {
+                state.position_report = Some(report.binding);
+                state.position_viewport = report.viewport_size;
+                state.position_content = report.content_size;
+            } else {
+                state.position_report = None;
+            }
+            // The sizes may have moved even when the offset did not: queue
+            // unconditionally, and let the sink-side compare in
+            // `flush_reports` drop a report that changes nothing.
+            state.report_position();
+        }
+        self.flush_reports();
+    }
+
+    /// Writes every queued report into its connected binding. The writes
+    /// happen outside the state borrow so a binding watcher may safely
     /// re-enter this handle.
-    fn flush_offset_report(&self) {
-        let write = {
+    fn flush_reports(&self) {
+        let offset_write = {
             let mut state = self.state.borrow_mut();
             state.pending_report.take().zip(state.offset_report.clone())
         };
-        if let Some((point, report)) = write {
+        if let Some((point, report)) = offset_write {
             report.set(point);
+        }
+        // The offset write just ran watchers that may have scrolled: take the
+        // position report under a fresh borrow so a queued newer position is
+        // what the sink sees, never a pre-callback capture.
+        let position_write = {
+            let mut state = self.state.borrow_mut();
+            state
+                .pending_position_report
+                .take()
+                .zip(state.position_report.clone())
+        };
+        if let Some((position, report)) = position_write {
+            // The binding is write-only for control but shared: a report
+            // identical to what it already holds must not notify.
+            if report.snapshot() != Some(position) {
+                report.set(Some(position));
+            }
         }
     }
     /// Returns a key identifying the underlying scroll slot, stable for the
@@ -380,7 +495,7 @@ impl ScrollHandle {
             }
             state.apply_scroll_delta(f64::from(dx), f64::from(dy), is_line_delta)
         };
-        self.flush_offset_report();
+        self.flush_reports();
         changed
     }
 
@@ -396,7 +511,7 @@ impl ScrollHandle {
             }
             state.tick_smooth_scroll(now)
         };
-        self.flush_offset_report();
+        self.flush_reports();
         active
     }
 
@@ -423,7 +538,7 @@ impl ScrollHandle {
             }
             state.scroll_to(x, y)
         };
-        self.flush_offset_report();
+        self.flush_reports();
         changed
     }
 
@@ -441,7 +556,7 @@ impl ScrollHandle {
             }
             state.user_scroll_to(x, y)
         };
-        self.flush_offset_report();
+        self.flush_reports();
         changed
     }
 
@@ -470,7 +585,7 @@ impl ScrollHandle {
             }
             state.scroll_to_animated(x, y, animation, now)
         };
-        self.flush_offset_report();
+        self.flush_reports();
         Some(ScrollRun {
             state: Rc::downgrade(&self.state),
             token,
@@ -550,7 +665,7 @@ impl ScrollHandle {
             }
             state.apply_gesture_delta(dx, dy)
         };
-        self.flush_offset_report();
+        self.flush_reports();
         changed
     }
 
@@ -597,7 +712,7 @@ impl ScrollHandle {
             }
             state.apply_fling_offset(x, y)
         };
-        self.flush_offset_report();
+        self.flush_reports();
         changed
     }
 
@@ -641,7 +756,7 @@ impl ScrollHandle {
             }
             state.write_unclamped(x, y)
         };
-        self.flush_offset_report();
+        self.flush_reports();
         changed
     }
 
@@ -670,7 +785,7 @@ impl ScrollHandle {
             let (shift_x, shift_y) = (state.fling_shift_x, state.fling_shift_y);
             state.write_unclamped(x.map(|x| x + shift_x), y.map(|y| y + shift_y))
         };
-        self.flush_offset_report();
+        self.flush_reports();
         changed
     }
 
@@ -693,7 +808,7 @@ impl ScrollHandle {
             }
             state.clamp_unclamped()
         };
-        self.flush_offset_report();
+        self.flush_reports();
         changed
     }
 
@@ -737,6 +852,10 @@ impl ScrollState {
             offset_report: None,
             reported_offset: None,
             pending_report: None,
+            position_report: None,
+            position_viewport: Size::zero(),
+            position_content: Size::zero(),
+            pending_position_report: None,
         };
         state.clamp_offsets();
         state
@@ -782,23 +901,43 @@ impl ScrollState {
     }
 
     /// Queues the current offset for [`ScrollState::offset_report`] when it
-    /// differs from what was last written. The write itself is deferred into
-    /// `pending_report` because it happens under a `RefCell` borrow the
-    /// caller still holds.
+    /// differs from what was last written, and the current measured position
+    /// for [`ScrollState::position_report`]. The writes themselves are
+    /// deferred into the pending slots because they happen under a `RefCell`
+    /// borrow the caller still holds.
     #[allow(
         clippy::cast_possible_truncation,
         reason = "the report binding is in points — the f32 precision of a scroll offset"
     )]
     fn report_offset(&mut self) {
-        if self.offset_report.is_none() {
+        if self.offset_report.is_some() {
+            let offset = (self.offset_x, self.offset_y);
+            if self.reported_offset != Some(offset) {
+                self.reported_offset = Some(offset);
+                self.pending_report = Some(Point::new(self.offset_x as f32, self.offset_y as f32));
+            }
+        }
+        self.report_position();
+    }
+
+    /// Queues the current measured position for
+    /// [`ScrollState::position_report`] when it differs from what was last
+    /// queued. Independent of `offset_report`: a scroll view with only a
+    /// position sink attached still reports every change.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the report binding is in points — the f32 precision of a scroll offset"
+    )]
+    fn report_position(&mut self) {
+        if self.position_report.is_none() {
             return;
         }
-        let offset = (self.offset_x, self.offset_y);
-        if self.reported_offset == Some(offset) {
-            return;
-        }
-        self.reported_offset = Some(offset);
-        self.pending_report = Some(Point::new(self.offset_x as f32, self.offset_y as f32));
+        self.pending_position_report = Some(ScrollPosition::new(
+            self.axis,
+            Point::new(self.offset_x as f32, self.offset_y as f32),
+            self.position_viewport,
+            self.position_content,
+        ));
     }
 
     /// Takes the next claim on the offset for a writer — a request, a jump,
@@ -1328,7 +1467,7 @@ mod tests {
         // A row measured taller than its estimate grows the content: the
         // rebind advances the generation, so the handle the drag captured is
         // stale for per-frame input ...
-        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 312.0, (0.0, 0.0));
+        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 312.0, (0.0, 0.0), None);
         assert!(!drag_handle.apply_scroll_delta(0.0, -10.0, false));
         assert_eq!(handle.metrics().offset_y, 50.0);
 
@@ -1415,7 +1554,15 @@ mod tests {
         assert!(handle.apply_gesture_delta(&claim, 0.0, 50.0));
         // 40pt of rows land above the viewport mid-drag: the anchor shifts
         // the offset with the content and the drag keeps owning it.
-        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 340.0, (0.0, 40.0));
+        let _ = handle.rebind(
+            Axis::Vertical,
+            100.0,
+            100.0,
+            100.0,
+            340.0,
+            (0.0, 40.0),
+            None,
+        );
         assert_eq!(handle.metrics().offset_y, 90.0);
         assert!(handle.apply_gesture_delta(&claim, 0.0, 10.0));
         assert_eq!(handle.metrics().offset_y, 100.0);
@@ -1427,7 +1574,15 @@ mod tests {
         assert_eq!(handle.metrics().offset_y, 120.0);
 
         // A shift after the fling began still applies to its positions.
-        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 360.0, (0.0, 20.0));
+        let _ = handle.rebind(
+            Axis::Vertical,
+            100.0,
+            100.0,
+            100.0,
+            360.0,
+            (0.0, 20.0),
+            None,
+        );
         assert!(handle.apply_fling_offset(&claim, None, Some(130.0)));
         assert_eq!(handle.metrics().offset_y, 150.0);
     }
@@ -1491,11 +1646,19 @@ mod tests {
         assert_eq!(report.snapshot().y, -30.0);
         // A rebind — rows measured mid-gesture — leaves the claim's offset
         // alone.
-        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 320.0, (0.0, 0.0));
+        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 320.0, (0.0, 0.0), None);
         assert_eq!(handle.metrics().offset_y, -30.0);
         // The fling writes past the edge too, carrying a rebind's shift.
         assert!(handle.begin_fling(&claim));
-        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 330.0, (0.0, 10.0));
+        let _ = handle.rebind(
+            Axis::Vertical,
+            100.0,
+            100.0,
+            100.0,
+            330.0,
+            (0.0, 10.0),
+            None,
+        );
         assert!(handle.apply_overscroll_fling_offset(&claim, None, Some(-25.0)));
         assert_eq!(handle.metrics().offset_y, -15.0);
         // The spring settles on the edge and the gesture ends: nothing left
@@ -1510,7 +1673,7 @@ mod tests {
         assert_eq!(handle.metrics().offset_y, 230.0);
         assert_eq!(report.snapshot().y, 230.0);
         // Once ended, a rebind clamps as usual.
-        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, (0.0, 0.0));
+        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, (0.0, 0.0), None);
         assert_eq!(handle.metrics().offset_y, 200.0);
     }
 
@@ -1554,7 +1717,7 @@ mod tests {
             assert!(!handle.end_gesture(&claim), "{name}");
             // The extents clamp again on a rebind.
             let mut rebound = handle.clone();
-            let _ = rebound.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 150.0, (0.0, 0.0));
+            let _ = rebound.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 150.0, (0.0, 0.0), None);
             assert!(handle.metrics().offset_y <= 50.0, "{name}");
         }
     }
@@ -1773,7 +1936,15 @@ mod tests {
         // of rows land above: the fling's claim survives — it owned the
         // offset before and owns it still — and the shift moves both the
         // offset and the origin the fling's next positions are measured from.
-        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 340.0, (0.0, 40.0));
+        let _ = handle.rebind(
+            Axis::Vertical,
+            100.0,
+            100.0,
+            100.0,
+            340.0,
+            (0.0, 40.0),
+            None,
+        );
         assert_eq!(handle.metrics().offset_y, 90.0);
         assert!(handle.apply_fling_offset(&claim, None, Some(60.0)));
         assert_eq!(handle.metrics().offset_y, 100.0);
@@ -1790,7 +1961,15 @@ mod tests {
                 start,
             )
             .expect("the run must arm");
-        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 380.0, (0.0, 40.0));
+        let _ = handle.rebind(
+            Axis::Vertical,
+            100.0,
+            100.0,
+            100.0,
+            380.0,
+            (0.0, 40.0),
+            None,
+        );
         assert_eq!(handle.scroll_run_outcome(&run), ScrollRunOutcome::Running);
         assert!(handle.tick_smooth_scroll(start + Duration::from_millis(50)));
         assert_eq!(
@@ -1803,7 +1982,15 @@ mod tests {
         // aims at 250, the +40 shift past the 280 end clamps it there.
         assert!(handle.apply_scroll_delta(0.0, -2.0, true));
         assert_eq!(handle.state.borrow().smooth_target_y, Some(250.0));
-        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 380.0, (0.0, 40.0));
+        let _ = handle.rebind(
+            Axis::Vertical,
+            100.0,
+            100.0,
+            100.0,
+            380.0,
+            (0.0, 40.0),
+            None,
+        );
         assert_eq!(handle.metrics().offset_y, 210.0);
         assert_eq!(
             handle.state.borrow().smooth_target_y,
@@ -1820,7 +2007,15 @@ mod tests {
         // remove the deleted height twice, landing on 80.
         let mut handle = vertical_handle();
         let _ = handle.scroll_to(0.0, 200.0);
-        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 240.0, (0.0, -60.0));
+        let _ = handle.rebind(
+            Axis::Vertical,
+            100.0,
+            100.0,
+            100.0,
+            240.0,
+            (0.0, -60.0),
+            None,
+        );
         assert_eq!(handle.metrics().offset_y, 140.0);
 
         // Same with a run in flight: 150 of its way to 200, the deletion
@@ -1838,7 +2033,15 @@ mod tests {
             .expect("the run must arm");
         assert!(handle.tick_smooth_scroll(start + Duration::from_millis(75)));
         assert_eq!(handle.metrics().offset_y, 150.0);
-        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 240.0, (0.0, -60.0));
+        let _ = handle.rebind(
+            Axis::Vertical,
+            100.0,
+            100.0,
+            100.0,
+            240.0,
+            (0.0, -60.0),
+            None,
+        );
         assert_eq!(handle.metrics().offset_y, 90.0);
         assert_eq!(handle.scroll_run_outcome(&run), ScrollRunOutcome::Running);
         assert!(!handle.tick_smooth_scroll(start + Duration::from_millis(100)));
@@ -1851,7 +2054,7 @@ mod tests {
         let mut handle = ScrollHandle::new(Axis::All, 100.0, 100.0, 300.0, 300.0, None);
         let _ = handle.scroll_to(50.0, 50.0);
         let claim = touch_fling(&handle);
-        let _ = handle.rebind(Axis::All, 100.0, 100.0, 340.0, 340.0, (40.0, 40.0));
+        let _ = handle.rebind(Axis::All, 100.0, 100.0, 340.0, 340.0, (40.0, 40.0), None);
         assert_eq!(
             (handle.metrics().offset_x, handle.metrics().offset_y),
             (90.0, 90.0)
@@ -1911,7 +2114,15 @@ mod tests {
         // Rows above the viewport deleted: the run's origin translates from
         // 200 to 32 and its target from 0 to -168, which the clamp pulls back
         // to the edge.
-        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, (0.0, -168.0));
+        let _ = handle.rebind(
+            Axis::Vertical,
+            100.0,
+            100.0,
+            100.0,
+            300.0,
+            (0.0, -168.0),
+            None,
+        );
         assert_eq!(handle.metrics().offset_y, 32.0);
         assert_eq!(
             handle
@@ -2236,7 +2447,7 @@ mod tests {
         let mut owner = vertical_handle();
         let handle = owner.clone();
         assert!(handle.apply_scroll_delta(0.0, -50.0, false));
-        let rebound = owner.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, (0.0, 0.0));
+        let rebound = owner.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, (0.0, 0.0), None);
         assert_eq!(rebound.metrics().offset_y, 50.0);
         // The previous handle still targets the same generation.
         assert!(handle.apply_scroll_delta(0.0, -10.0, false));
@@ -2246,7 +2457,7 @@ mod tests {
     fn layout_change_invalidates_stale_handles() {
         let mut owner = vertical_handle();
         let handle = owner.clone();
-        let rebound = owner.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 500.0, (0.0, 0.0));
+        let rebound = owner.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 500.0, (0.0, 0.0), None);
         // The stale handle's generation no longer matches: input is dropped.
         assert!(!handle.apply_scroll_delta(0.0, -10.0, false));
         assert!(
@@ -2262,7 +2473,7 @@ mod tests {
         assert!(handle.apply_scroll_delta(0.0, -10_000.0, false));
         assert_eq!(handle.metrics().offset_y, 200.0);
         // The viewport now shows the whole content: the offset clamps home.
-        let rebound = owner.rebind(Axis::Vertical, 100.0, 300.0, 100.0, 300.0, (0.0, 0.0));
+        let rebound = owner.rebind(Axis::Vertical, 100.0, 300.0, 100.0, 300.0, (0.0, 0.0), None);
         assert_eq!(rebound.metrics().offset_y, 0.0);
         assert_eq!(rebound.metrics().max_y, 0.0);
     }
@@ -2388,5 +2599,303 @@ mod tests {
         assert_eq!(animated_row_scroll_approach(BOUND + 1, 0), Some(BOUND));
         assert_eq!(animated_row_scroll_approach(BOUND, 0), None);
         assert_eq!(animated_row_scroll_approach(7, 7), None);
+    }
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::*;
+    use core::cell::{Cell, RefCell};
+    use waterui_layout::scroll::ScrollPosition;
+
+    fn position_report(
+        binding: Binding<Option<ScrollPosition>>,
+        viewport: f64,
+        content: f64,
+    ) -> ScrollPositionReport {
+        ScrollPositionReport::new(
+            binding,
+            Size::new(viewport as f32, viewport as f32),
+            Size::new(viewport as f32, content as f32),
+        )
+    }
+
+    /// A sink that appends every received position to `seen`.
+    fn recording_position_sink() -> (
+        Binding<Option<ScrollPosition>>,
+        Rc<RefCell<Vec<ScrollPosition>>>,
+    ) {
+        let seen: Rc<RefCell<Vec<ScrollPosition>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink: Binding<Option<ScrollPosition>> = nami::binding(None);
+        let counted = sink.filter({
+            let seen = Rc::clone(&seen);
+            move |position| {
+                seen.borrow_mut().push(position.unwrap());
+                true
+            }
+        });
+        (counted, seen)
+    }
+
+    fn counting_position_sink() -> (Binding<Option<ScrollPosition>>, Rc<Cell<usize>>) {
+        let writes = Rc::new(Cell::new(0usize));
+        let sink: Binding<Option<ScrollPosition>> = nami::binding(None);
+        let counted = sink.filter({
+            let writes = Rc::clone(&writes);
+            move |_| {
+                writes.set(writes.get() + 1);
+                true
+            }
+        });
+        (counted, writes)
+    }
+
+    #[test]
+    fn scroll_position_reports_without_an_offset_sink() {
+        let handle = ScrollHandle::new(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, None);
+        let (sink, writes) = counting_position_sink();
+        handle.set_position_report(Some(position_report(sink.clone(), 100.0, 300.0)));
+        assert_eq!(writes.get(), 1);
+        let position = sink.snapshot().expect("attach reports at once");
+        assert!(position.at_start && !position.at_end);
+        assert_eq!(position.offset, Point::zero());
+
+        assert!(handle.scroll_to(0.0, 200.0));
+        let position = sink.snapshot().unwrap();
+        assert!(!position.at_start && position.at_end);
+        assert_eq!(position.offset.y, 200.0);
+    }
+
+    #[test]
+    fn scroll_position_tracks_user_wheel_and_animated_moves() {
+        let mut handle = ScrollHandle::new(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, None);
+        let (sink, _) = counting_position_sink();
+        let mut handle = handle.rebind(
+            Axis::Vertical,
+            100.0,
+            100.0,
+            100.0,
+            300.0,
+            (0.0, 0.0),
+            Some(position_report(sink.clone(), 100.0, 300.0)),
+        );
+
+        // Trackpad pixel delta.
+        assert!(handle.apply_scroll_delta(0.0, -40.0, false));
+        assert_eq!(sink.snapshot().unwrap().offset.y, 40.0);
+
+        // Wheel glide lands on its eased target through ticks on a
+        // synthetic clock — one 8ms frame step per tick, bounded.
+        assert!(handle.apply_scroll_delta(0.0, -1.0, true));
+        let mut now = Instant::now();
+        for _ in 0..10_000 {
+            if !handle.tick_smooth_scroll(now) {
+                break;
+            }
+            now += core::time::Duration::from_millis(8);
+        }
+        let position = sink.snapshot().unwrap();
+        assert_eq!(position.offset.y, 80.0);
+        assert!(!position.at_start && !position.at_end);
+
+        // A programmatic animation lands on its target and reports it.
+        let run = handle
+            .scroll_to_animated(0.0, 200.0, Animation::default(), Instant::now())
+            .expect("fresh handle owns the offset");
+        let mut now = Instant::now();
+        for _ in 0..10_000 {
+            if !handle.tick_smooth_scroll(now) {
+                break;
+            }
+            now += core::time::Duration::from_millis(8);
+        }
+        assert_eq!(handle.scroll_run_outcome(&run), ScrollRunOutcome::Landed);
+        assert_eq!(sink.snapshot().unwrap().offset.y, 200.0);
+        assert!(sink.snapshot().unwrap().at_end);
+
+        // User jumps: scrollbar drag / accessibility route.
+        assert!(handle.user_scroll_to(0.0, 0.0));
+        let position = sink.snapshot().unwrap();
+        assert!(position.at_start && !position.at_end);
+    }
+
+    #[test]
+    fn scroll_position_updates_edge_flags_on_geometry_change_alone() {
+        let mut handle = ScrollHandle::new(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, None);
+        let (sink, writes) = counting_position_sink();
+        handle.set_position_report(Some(position_report(sink.clone(), 100.0, 300.0)));
+        assert_eq!(writes.get(), 1);
+
+        // A rebind carrying identical geometry does not re-notify.
+        let mut handle = handle.rebind(
+            Axis::Vertical,
+            100.0,
+            100.0,
+            100.0,
+            300.0,
+            (0.0, 0.0),
+            Some(position_report(sink.clone(), 100.0, 300.0)),
+        );
+        assert_eq!(writes.get(), 1);
+
+        // Content shrinking to the viewport flips at_end with the offset
+        // unmoved.
+        let _ = handle.rebind(
+            Axis::Vertical,
+            100.0,
+            100.0,
+            100.0,
+            100.0,
+            (0.0, 0.0),
+            Some(position_report(sink.clone(), 100.0, 100.0)),
+        );
+        assert_eq!(writes.get(), 2);
+        let position = sink.snapshot().unwrap();
+        assert!(position.at_start && position.at_end);
+    }
+
+    /// The resize-rebind publishes the offset clamp and the new extents in
+    /// one transaction: a watcher never observes the post-clamp offset
+    /// paired with the previous layout's sizes.
+    #[test]
+    fn scroll_position_rebind_reports_coherent_geometry() {
+        let mut handle = ScrollHandle::new(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, None);
+        let (sink, seen) = recording_position_sink();
+        handle.set_position_report(Some(position_report(sink.clone(), 100.0, 300.0)));
+        assert!(handle.scroll_to(0.0, 200.0));
+        seen.borrow_mut().clear();
+
+        // The content shrinks so the offset clamps to its new max through
+        // the *same* sink: exactly one report, already carrying the new
+        // extents — never a stale report pairing the clamped offset with
+        // the previous layout's geometry.
+        let _ = handle.rebind(
+            Axis::Vertical,
+            100.0,
+            100.0,
+            100.0,
+            250.0,
+            (0.0, 0.0),
+            Some(position_report(sink.clone(), 100.0, 250.0)),
+        );
+        let reports = seen.borrow();
+        assert_eq!(
+            reports.len(),
+            1,
+            "the clamp publishes one coherent report, got {reports:?}"
+        );
+        let last = reports[0];
+        assert_eq!(last.offset.y, 150.0);
+        assert_eq!(last.content_size, Size::new(100.0, 250.0));
+        assert_eq!(last.viewport_size, Size::new(100.0, 100.0));
+        assert!(!last.at_start && last.at_end);
+    }
+
+    /// An offset watcher that scrolls must not let the outer flush publish
+    /// a stale pre-callback position afterwards.
+    #[test]
+    fn scroll_position_reports_the_offset_watchers_final_offset() {
+        let handle = ScrollHandle::new(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, None);
+        let (position_sink, _) = counting_position_sink();
+        handle.set_position_report(Some(position_report(position_sink.clone(), 100.0, 300.0)));
+
+        let offset = nami::binding(Point::zero());
+        let offset_report = offset.filter({
+            let handle = handle.clone();
+            let fired = Cell::new(false);
+            move |point: &Point| {
+                if !fired.replace(true) && point.y > 0.0 {
+                    // The watcher scrolls: the position report that follows
+                    // must describe *this* offset, not the one that woke it.
+                    handle.scroll_to(0.0, 90.0);
+                }
+                true
+            }
+        });
+        handle.set_offset_report(Some(offset_report));
+
+        assert!(handle.scroll_to(0.0, 50.0));
+        assert_eq!(
+            position_sink.snapshot().unwrap().offset.y,
+            90.0,
+            "the position sink must report the offset the watcher left, not the queued one"
+        );
+    }
+
+    /// A `None` position report disconnects: a rebind into geometry that
+    /// was never painted must not publish fake extents over the last real
+    /// snapshot — which stays until a measured rebind reattaches `Some`.
+    #[test]
+    fn scroll_position_disconnect_keeps_last_snapshot_through_fake_rebind() {
+        let mut handle = ScrollHandle::new(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, None);
+        let (sink, _) = counting_position_sink();
+        handle.set_position_report(Some(position_report(sink.clone(), 100.0, 300.0)));
+        assert!(handle.scroll_to(0.0, 50.0));
+        let measured = sink.snapshot().expect("attach reported");
+
+        // The semantic walk's unbounded rebind carries no report: the sink
+        // disconnects, and a move under the fake domain never publishes.
+        let mut handle = handle.rebind(
+            Axis::Vertical,
+            0.0,
+            0.0,
+            f64::INFINITY,
+            f64::INFINITY,
+            (0.0, 0.0),
+            None,
+        );
+        let _ = handle.scroll_to(0.0, 5000.0);
+        assert_eq!(
+            sink.snapshot(),
+            Some(measured),
+            "a fake rebind and its scrolls must not overwrite the last real position"
+        );
+
+        // The next measured rebind reattaches with real geometry, clamps
+        // the runaway offset and reports the coherent landing.
+        let _ = handle.rebind(
+            Axis::Vertical,
+            100.0,
+            100.0,
+            100.0,
+            300.0,
+            (0.0, 0.0),
+            Some(position_report(sink.clone(), 100.0, 300.0)),
+        );
+        let position = sink.snapshot().expect("measured rebind reattached");
+        assert_eq!(position.offset.y, 200.0);
+        assert!(position.at_end);
+    }
+
+    #[test]
+    fn scroll_position_sink_may_reenter_the_handle() {
+        let handle = ScrollHandle::new(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, None);
+        let reentered = Rc::new(Cell::new(false));
+        let sink: Binding<Option<ScrollPosition>> = nami::binding(None);
+        handle.set_position_report(Some(position_report(sink.clone(), 100.0, 300.0)));
+
+        // The observer seam is `watch` — the post-write path consumers
+        // get. A filtering binding would interpose a pre-write seam, so
+        // the final-value assertion must go through the real observer.
+        let fired = Cell::new(false);
+        let _guard = sink.watch({
+            let handle = handle.clone();
+            let reentered = Rc::clone(&reentered);
+            move |_| {
+                // Reading — and scrolling — mid-write must not panic on a
+                // held borrow.
+                let _ = handle.metrics();
+                if !fired.replace(true) {
+                    handle.scroll_to(0.0, 10.0);
+                }
+                reentered.set(true);
+            }
+        });
+
+        assert!(handle.scroll_to(0.0, 5.0));
+        assert!(reentered.get());
+        // The watcher's scroll is the newest write: the sink ends on the
+        // offset it landed, not the one that woke the watcher.
+        assert_eq!(sink.snapshot().unwrap().offset.y, 10.0);
     }
 }
