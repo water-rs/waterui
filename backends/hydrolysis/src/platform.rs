@@ -7,15 +7,14 @@ use waterui::window::{Window as WuiWindow, WindowState};
 use waterui_graphics::gpu::RedrawHandle;
 
 /// The output request every Hydrolysis host surface is negotiated by:
-/// the engine's `select_output` resolves the best advertised (format,
-/// colour space) pair among the surface's offers — HDR where the display
-/// chain carries it — paced FIFO, with a transparency-capable composite
+/// the engine selects compact SDR storage and upgrades for HDR content
+/// where the display chain carries it, paced FIFO, with a transparency-capable composite
 /// alpha mode iff the window is transparent (#2445).
 #[cfg(any(hydrolysis_winit, target_os = "android"))]
 pub const fn hydrolysis_output_request(transparent: bool) -> cherenkov_gpu::interop::OutputRequest {
     cherenkov_gpu::interop::OutputRequest {
         transparent,
-        color_space: cherenkov_gpu::interop::ColorSpaceRequest::Best,
+        color_space: cherenkov_gpu::interop::ColorSpaceRequest::Content,
         sync: cherenkov_gpu::DisplaySync::Synchronized,
     }
 }

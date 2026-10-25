@@ -6367,54 +6367,58 @@ impl GpuRenderer {
         system: Option<&mut planes::Platform>,
         frames_only: bool,
         present: (&wgpu::Device, &wgpu::Queue, &mut present::Presenter),
-        surface: &SurfaceState,
+        surface: &mut SurfaceState,
         sf: &SurfaceFrame<'_>,
         currents: &FxHashMap<ProducerId, &external::Slot>,
     ) -> Result<(planes::Presentation, PlatformCommit), RenderError> {
         let (device, queue, presenter) = present;
-        match system {
-            Some(system) => {
-                // The frame's own `plane_frames` carries the update set —
-                // admitted by this render's `plane_only`, so it cannot be
-                // a stale frame's.
-                if frames_only {
-                    // The frame's only change is new frames on these
-                    // promoted layers: present them alone, leaving every
-                    // part's shown buffer in place (#90).
-                    planes::SystemPlanes::refresh(
-                        system,
-                        plane_stack(surface, currents, sf.plane_frames),
-                    )?;
-                    Ok((planes::Presentation::Presented, PlatformCommit::default()))
-                } else {
-                    let parts: Vec<_> = (0..surface.plan.parts())
-                        .map(|n| planes::Part {
-                            #[cfg(target_os = "android")]
-                            range: surface.part_ranges[n],
-                            view: match n {
-                                0 => &surface.view,
-                                n => &surface.parts[n - 1].1,
-                            },
-                        })
-                        .collect();
-                    let stack: Vec<_> = plane_stack(surface, currents, None).collect();
-                    planes::SystemPlanes::compose(
-                        system,
-                        planes::Composition {
-                            #[cfg(target_os = "android")]
-                            generation: surface.present_generation,
-                            device,
-                            queue,
-                            presenter,
-                            size: surface.size,
-                            display: sf.display,
-                            parts: &parts,
-                            planes: &stack,
+        if let Some(system) = system {
+            // The frame's own `plane_frames` carries the update set —
+            // admitted by this render's `plane_only`, so it cannot be
+            // a stale frame's.
+            if frames_only {
+                // The frame's only change is new frames on these
+                // promoted layers: present them alone, leaving every
+                // part's shown buffer in place (#90).
+                planes::SystemPlanes::refresh(
+                    system,
+                    plane_stack(surface, currents, sf.plane_frames),
+                )?;
+                Ok((planes::Presentation::Presented, PlatformCommit::default()))
+            } else {
+                let parts: Vec<_> = (0..surface.plan.parts())
+                    .map(|n| planes::Part {
+                        range: surface.part_ranges[n],
+                        view: match n {
+                            0 => &surface.view,
+                            n => &surface.parts[n - 1].1,
                         },
-                    )
-                }
+                    })
+                    .collect();
+                let stack: Vec<_> = plane_stack(surface, currents, None).collect();
+                planes::SystemPlanes::compose(
+                    system,
+                    planes::Composition {
+                        #[cfg(target_os = "android")]
+                        generation: surface.present_generation,
+                        device,
+                        queue,
+                        presenter,
+                        size: surface.size,
+                        display: sf.display,
+                        parts: &parts,
+                        planes: &stack,
+                    },
+                )
             }
-            None => Ok((
+        } else {
+            surface
+                .window
+                .as_mut()
+                .expect("pending window")
+                .content(device, surface.part_ranges[0])
+                .map_err(|error| RenderError::Render(error.to_string()))?;
+            Ok((
                 if presenter.present(
                     device,
                     queue,
@@ -6427,7 +6431,7 @@ impl GpuRenderer {
                     planes::Presentation::Retry
                 },
                 PlatformCommit::default(),
-            )),
+            ))
         }
     }
 

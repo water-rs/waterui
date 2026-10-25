@@ -321,7 +321,7 @@ impl WindowTarget {
             refresh: cherenkov::DEFAULT_REFRESH,
             output: render::present::OutputRequest {
                 transparent: false,
-                color_space: render::present::ColorSpaceRequest::Best,
+                color_space: render::present::ColorSpaceRequest::Content,
                 sync: DisplaySync::Synchronized,
             },
             probe: None,
@@ -339,9 +339,9 @@ impl WindowTarget {
     }
 
     /// Sets the swapchain's colour-space request (#98, #2445). The
-    /// default, [`ColorSpaceRequest::Best`](interop::ColorSpaceRequest::Best),
-    /// negotiates the surface's best advertised pair — an extended or HDR
-    /// space where offered, otherwise a reported SDR selection.
+    /// default, [`ColorSpaceRequest::Content`](interop::ColorSpaceRequest::Content),
+    /// uses compact SDR storage until HDR content requires extended output.
+    /// [`Best`](interop::ColorSpaceRequest::Best) always selects the best advertised pair.
     /// [`Range`](interop::ColorSpaceRequest::Range) takes the best pair
     /// inside a [`ColorRangeInterval`](interop::ColorRangeInterval) of
     /// classes, and [`Exact`](interop::ColorSpaceRequest::Exact) one space.
