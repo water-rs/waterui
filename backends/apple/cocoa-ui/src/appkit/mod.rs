@@ -68,7 +68,9 @@ mod window;
 #[cfg(feature = "dialog")]
 pub use alert::SheetAlert;
 pub use animate::{run_animation, set_animated_alpha};
-pub use appearance::ColorSchemeObservation;
+pub use appearance::{
+    ColorSchemeObservation, effective_color_scheme, observe_effective_appearance,
+};
 pub use application::{
     ActivationPolicy, Application, ApplicationHandlers, AttentionRequest, AttentionRequestToken,
     TerminateReply,
