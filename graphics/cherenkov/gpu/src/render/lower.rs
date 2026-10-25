@@ -4449,7 +4449,7 @@ impl<'a> Lowering<'a> {
         if let Some(open) = &mut self.frame.open
             && open.color_range != super::present::ColorRange::HighDynamicRange
         {
-            let range = super::content_range::of_ops(std::slice::from_ref(op), glyphs.images);
+            let range = super::content_range::of_op(op, glyphs.images);
             open.color_range = open.color_range.max(range);
         }
         let cover = self.shadow_cover(op, next);
