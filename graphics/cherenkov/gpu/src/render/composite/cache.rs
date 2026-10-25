@@ -25,6 +25,8 @@ struct PassShape {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Placement {
+    color_range: crate::render::present::ColorRange,
+    extended_range: bool,
     region: [u32; 4],
     space: cherenkov::BlendSpace,
     transparent_clear: bool,
@@ -99,7 +101,11 @@ impl Cache {
             self.settings = Some((formats, limits));
             *plan = ExecutionPlan::build(frame, formats, limits);
         }
-        let placements = || frame.passes.iter().map(placement);
+        let placements = || {
+            frame.passes.iter().enumerate().map(|(index, pass)| {
+                placement(pass, super::plan::requires_extended_range(frame, index))
+            })
+        };
         let samples = || {
             frame
                 .passes
@@ -136,8 +142,10 @@ impl Cache {
     }
 }
 
-fn placement(pass: &Pass) -> Placement {
+fn placement(pass: &Pass, extended_range: bool) -> Placement {
     Placement {
+        color_range: pass.color_range,
+        extended_range,
         region: pass.region,
         space: pass.space,
         transparent_clear: pass

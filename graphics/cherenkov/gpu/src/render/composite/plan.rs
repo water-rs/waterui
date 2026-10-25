@@ -10,6 +10,8 @@
 
 use std::ops::Range;
 
+use crate::render::present::ColorRange;
+
 use super::super::composition::Materialization;
 use super::super::instance::PAINT_TEXTURE;
 use super::super::lower::{DrawRange, Frame, ImageSource, PipelineKind, Source, Target};
@@ -81,6 +83,7 @@ pub struct LogicalImageId(pub usize);
 
 #[derive(Clone, Debug)]
 pub struct LogicalImage {
+    pub color_range: ColorRange,
     pub target: Target,
     pub generation: usize,
     pub region: [u32; 4],
@@ -210,6 +213,7 @@ impl ExecutionPlan {
                 let generation = previous.map_or(0, |p| plan.images[current[p].1.0].generation + 1);
                 let id = LogicalImageId(plan.images.len());
                 plan.images.push(LogicalImage {
+                    color_range: ColorRange::Standard,
                     target: pass.target,
                     generation,
                     region: pass.region,
@@ -242,6 +246,7 @@ impl ExecutionPlan {
                         assert!(matches!(target, Target::Projected(_)));
                         let id = LogicalImageId(plan.images.len());
                         plan.images.push(LogicalImage {
+                            color_range: ColorRange::HighDynamicRange,
                             target,
                             generation: 0,
                             region: [0; 4],
@@ -269,6 +274,7 @@ impl ExecutionPlan {
                 plan.images[id.0].last_consumer = index;
             }
         }
+        plan.classify_ranges(frame);
         plan.partition(frame, limits);
         plan
     }
@@ -280,8 +286,31 @@ impl ExecutionPlan {
             image.space = pass.space;
             image.storage = Storage::Materialized(initial(pass.target));
         }
+        self.classify_ranges(frame);
         self.segments.clear();
         self.partition(frame, limits);
+    }
+
+    fn classify_ranges(&mut self, frame: &Frame) {
+        for image in &mut self.images {
+            image.color_range = if image.producer.is_some() {
+                ColorRange::Standard
+            } else {
+                ColorRange::HighDynamicRange
+            };
+        }
+        for (index, pass) in frame.passes.iter().enumerate() {
+            let mut range = if requires_extended_range(frame, index) {
+                ColorRange::HighDynamicRange
+            } else {
+                pass.color_range
+            };
+            for read in self.reads[index].iter().flatten() {
+                range = range.max(self.images[read.image.0].color_range);
+            }
+            let image = &mut self.images[self.targets[index].0];
+            image.color_range = image.color_range.max(range);
+        }
     }
 
     fn partition(&mut self, frame: &Frame, limits: Result<Limits, Materialization>) {
@@ -654,6 +683,23 @@ const fn initial(target: Target) -> Materialization {
     } else {
         Materialization::Persistent
     }
+}
+
+pub(super) fn requires_extended_range(frame: &Frame, index: usize) -> bool {
+    let pass = &frame.passes[index];
+    // GPU coverage changes where geometry is evaluated, not the paint's range.
+    frame.filters.iter().any(|(pass, _)| *pass == index)
+        || frame.shadows.iter().any(|(pass, _)| *pass == index)
+        || frame.mips.iter().any(|(pass, _)| *pass == index)
+        || pass.capture.is_some()
+        || pass.space != cherenkov::BlendSpace::Linear
+        || pass.ranges.iter().any(|draw| {
+            draw.pipeline != PipelineKind::SrcOver
+                || matches!(
+                    draw.image,
+                    Some(ImageSource::Content(_) | ImageSource::Shader(_))
+                )
+        })
 }
 
 pub fn materialization_boundary(frame: &Frame, index: usize) -> bool {

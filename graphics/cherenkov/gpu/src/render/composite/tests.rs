@@ -8,6 +8,7 @@ use crate::render::lower::{DrawRange, Pass, ShaderVariant};
 
 fn pass(target: Target, clear: bool, source: Option<Source>, instance: u32) -> Pass {
     Pass {
+        color_range: crate::render::present::ColorRange::Standard,
         target,
         clear: clear.then_some([0.0; 4]),
         ranges: vec![DrawRange {
@@ -564,4 +565,71 @@ fn frame_report_attributes_the_epoch_and_the_traffic_around_it() {
     assert_eq!(drained.len(), 2);
     assert_eq!(drained[0].frame, 8);
     assert!(sink.take().is_empty());
+}
+
+#[test]
+fn cached_content_range_changes_propagate_through_nested_images() {
+    use crate::render::present::ColorRange;
+    let mut frame = frame(vec![
+        pass(Target::Part(0), true, None, 0),
+        pass(Target::Scratch(0), true, None, 1),
+        pass(Target::Scratch(1), true, None, 2),
+        pass(Target::Scratch(0), false, Some(Source::Scratch(1)), 3),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 4),
+    ]);
+    let mut cache = crate::render::composite::cache::Cache::default();
+    let mut plan = ExecutionPlan::default();
+    let format = formats(wgpu::TextureFormat::Rgba16Float);
+    let executor = Err(Materialization::NoExecutor);
+    assert!(cache.update(&mut plan, &frame, format, executor));
+    assert_eq!(
+        plan.images[plan.targets[3].0].color_range,
+        ColorRange::Standard
+    );
+    frame.passes[2].color_range = ColorRange::HighDynamicRange;
+    assert!(!cache.update(&mut plan, &frame, format, executor));
+    assert_eq!(
+        plan.images[plan.targets[3].0].color_range,
+        ColorRange::HighDynamicRange
+    );
+    assert_eq!(
+        plan.images[plan.targets[4].0].color_range,
+        ColorRange::HighDynamicRange
+    );
+    frame.passes[2].color_range = ColorRange::WideGamut;
+    assert!(!cache.update(&mut plan, &frame, format, executor));
+    assert_eq!(
+        plan.images[plan.targets[3].0].color_range,
+        ColorRange::WideGamut
+    );
+    frame.passes[2].ranges[0].gpu = Some(0);
+    assert!(cache.update(&mut plan, &frame, format, executor));
+    assert_eq!(
+        plan.images[plan.targets[3].0].color_range,
+        ColorRange::WideGamut
+    );
+    frame.passes[2].ranges[0].pipeline = PipelineKind::Effect {
+        id: 0,
+        replace: false,
+    };
+    assert!(cache.update(&mut plan, &frame, format, executor));
+    assert_eq!(
+        plan.images[plan.targets[3].0].color_range,
+        ColorRange::HighDynamicRange
+    );
+    frame.passes[2].ranges[0].pipeline = PipelineKind::SrcOver;
+    assert!(cache.update(&mut plan, &frame, format, executor));
+    // Replace and SrcOver share the lifetime key, but not the range policy.
+    frame.passes[2].ranges[0].pipeline = PipelineKind::Replace;
+    assert!(!cache.update(&mut plan, &frame, format, executor));
+    assert_eq!(
+        plan.images[plan.targets[3].0].color_range,
+        ColorRange::HighDynamicRange
+    );
+    frame.passes[2].ranges[0].pipeline = PipelineKind::SrcOver;
+    assert!(!cache.update(&mut plan, &frame, format, executor));
+    assert_eq!(
+        plan.images[plan.targets[3].0].color_range,
+        ColorRange::WideGamut
+    );
 }
