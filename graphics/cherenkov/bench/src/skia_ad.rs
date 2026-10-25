@@ -15,20 +15,12 @@
 //! list: the `Canvas` draw calls themselves (Skia's recording API — on a
 //! raster surface they rasterize immediately; on the Ganesh surface they
 //! record into the deferred display list that `submit` flushes). `submit`
-//! is flush + readback/GPU timestamps.
+//! is flush + optional readback.
 //!
-//! GPU time for `skia-vulkan` comes from an adapter-owned `VkQueryPool`:
-//! after a full `vkDeviceWaitIdle` drain, a standalone command buffer
-//! writes a timestamp on the same `VkQueue` Skia uses, then Skia's
-//! flush+submit runs, then a second timestamp submission and readback.
-//! `skia-metal` instead brackets Graphite's insert+submit with empty
-//! `MTLCommandBuffer` markers on the same serial queue, each preceded by
-//! a full drain (`commit` + `waitUntilCompleted`) — Graphite exposes no
-//! GPU timestamp source through `skia-safe` (`GpuStats` is Ganesh-only),
-//! and command buffers on one Metal queue may overlap in execution on
-//! Apple GPUs, so an undrained marker could bracket an empty interval.
-//! This serializes CPU and GPU for the measured frame — a synchronous
-//! probe, not a pipelined frame rate.
+//! Ganesh Vulkan and Graphite Metal submit asynchronously. Neither pinned
+//! backend implements GPU timing statistics, so GPU time is unavailable.
+//! Completion is awaited at the measurement-window boundary, or per frame
+//! for a synchronous capacity probe.
 //!
 //! Variable fonts: scene `normalized_coords` are post-avar normalized
 //! values; Skia wants design (user) coordinates, so the adapter inverts
@@ -64,8 +56,6 @@ use skia_safe::{
     surfaces,
 };
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
-use crate::GpuSample;
 use crate::convert::{self, Blobs};
 use crate::memory::{AdapterMemory, Reading};
 #[cfg(all(feature = "skia", any(target_os = "linux", target_os = "android")))]
@@ -966,9 +956,15 @@ impl Engine for SkiaCpu {
             gpu: Vec::new(),
             phases: Vec::new(),
             composition: None,
+            gpu_wait_seconds: 0.0,
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
+    }
+
+    fn wait_idle(&mut self) -> Result<(), BenchError> {
+        // Raster canvas commands are synchronous.
+        Ok(())
     }
 
     fn counters(&self) -> Counters {
@@ -991,6 +987,7 @@ impl Engine for SkiaCpu {
             wgpu_allocator: Reading::unavailable("Skia raster has no wgpu allocator"),
             skia_budgeted: Reading::unavailable("Skia raster has no budgeted GPU resources"),
             vk_memory_budget: Reading::unavailable("Skia raster has no Vulkan device"),
+            metal_allocated_bytes: Reading::unavailable("Skia raster has no Metal device"),
         }
     }
 }
@@ -1003,13 +1000,6 @@ pub struct SkiaVk {
     _bctx: skia_safe::gpu::vk::BackendContext<'static>,
     vk_instance: &'static ash::Instance,
     vk_physical_device: ash::vk::PhysicalDevice,
-    /// Raw device handle for our own timestamp submissions.
-    vk_dev: &'static ash::Device,
-    /// The queue Skia submits on — the timestamps must run on it too.
-    vk_queue: ash::vk::Queue,
-    /// Timestamp pool + command buffers (None when the queue family
-    /// reports `timestamp_valid_bits == 0`).
-    vk_ts: Option<VkTs>,
     /// Prepared scene state: the Ganesh surface and resolved `Cmd` list.
     prepared: Option<SkiaPrepared>,
     size: (u32, u32),
@@ -1030,16 +1020,6 @@ impl std::fmt::Debug for SkiaVk {
     }
 }
 
-/// Adapter-owned timestamp resources: a `VkQueryPool` and command buffers
-/// that write markers on Skia's queue around its flush+submit.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-struct VkTs {
-    query_pool: ash::vk::QueryPool,
-    bufs: [ash::vk::CommandBuffer; 2],
-    /// `VkPhysicalDeviceLimits::timestampPeriod` — nanoseconds per tick.
-    period_ns: f64,
-}
-
 #[cfg(any(target_os = "linux", target_os = "android"))]
 impl SkiaVk {
     /// Adapter key.
@@ -1057,10 +1037,6 @@ impl SkiaVk {
     ///
     /// # Panics
     /// On internal setup invariants asserted with `expect`.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one-pass Vulkan bring-up; splitting it adds plumbing, not clarity"
-    )]
     pub fn new() -> Result<Self, BenchError> {
         use ash::vk::{self, Handle};
         use std::ffi::CStr;
@@ -1113,59 +1089,6 @@ impl SkiaVk {
             .to_string_lossy()
             .into_owned();
 
-        // Timestamp resources on the queue family Skia uses. `None` when
-        // the family reports `timestamp_valid_bits == 0` — GPU time then
-        // stays `null` rather than fabricated.
-        // SAFETY: `instance` and `pd` are the live handles from above.
-        let timestamps_valid = unsafe { instance.get_physical_device_queue_family_properties(pd) }
-            .get(qfam as usize)
-            .is_some_and(|q| q.timestamp_valid_bits > 0);
-        let period_ns = f64::from(props.limits.timestamp_period);
-        let vk_ts = if timestamps_valid {
-            // SAFETY: `device` is the live leaked device and the
-            // create-info is fully initialized.
-            let qp = unsafe {
-                device.create_query_pool(
-                    &vk::QueryPoolCreateInfo::default()
-                        .query_type(vk::QueryType::TIMESTAMP)
-                        .query_count(2),
-                    None,
-                )
-            }
-            .map_err(gerr)?;
-            // SAFETY: `device` is the live leaked device; the pool is
-            // bound to the graphics queue family `qfam`.
-            let cp = unsafe {
-                device.create_command_pool(
-                    &vk::CommandPoolCreateInfo::default()
-                        .queue_family_index(qfam)
-                        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
-                    None,
-                )
-            }
-            .map_err(gerr)?;
-            // SAFETY: `cp` is the live pool just created on `device`;
-            // count 2 returns two buffers.
-            let mut it = unsafe {
-                device.allocate_command_buffers(
-                    &vk::CommandBufferAllocateInfo::default()
-                        .command_pool(cp)
-                        .level(vk::CommandBufferLevel::PRIMARY)
-                        .command_buffer_count(2),
-                )
-            }
-            .map_err(gerr)?;
-            let b1 = it.pop().expect("two buffers allocated");
-            let b0 = it.pop().expect("two buffers allocated");
-            Some(VkTs {
-                query_pool: qp,
-                bufs: [b0, b1],
-                period_ns,
-            })
-        } else {
-            None
-        };
-
         let resolver: &'static _ = Box::leak(Box::new(move |of: skia_safe::gpu::vk::GetProcOf| {
             // SAFETY: `inst`/`dev` are raw handles Skia derived from the
             // leaked `BackendContext` handles; a lookup miss maps to a
@@ -1216,94 +1139,11 @@ impl SkiaVk {
             _bctx: bctx,
             vk_instance: instance,
             vk_physical_device: pd,
-            vk_dev: device,
-            vk_queue: queue,
-            vk_ts,
             prepared: None,
             size: (0, 0),
             counters: Counters::default(),
             device_name,
         })
-    }
-
-    /// Records a `vkCmdWriteTimestamp` (`index` into the pool) into
-    /// `buf` and submits it on Skia's queue. `reset` clears the pool
-    /// before the first marker of a pair.
-    ///
-    /// # Errors
-    /// [`BenchError::Gpu`] on a Vulkan error.
-    fn vk_stamp(
-        &self,
-        buf: ash::vk::CommandBuffer,
-        index: u32,
-        reset: bool,
-    ) -> Result<(), BenchError> {
-        use ash::vk;
-        fn gerr(e: impl std::fmt::Display) -> BenchError {
-            BenchError::Gpu(format!("vulkan timestamp: {e}"))
-        }
-        let Some(ts) = &self.vk_ts else {
-            return Ok(());
-        };
-        let dev = self.vk_dev;
-        // SAFETY: `buf` is one of the two buffers allocated from `ts`'s
-        // command pool on `dev`, and `self.vk_queue` belongs to the pool's
-        // queue family.
-        unsafe {
-            dev.reset_command_buffer(buf, vk::CommandBufferResetFlags::empty())
-                .map_err(gerr)?;
-            dev.begin_command_buffer(
-                buf,
-                &vk::CommandBufferBeginInfo::default()
-                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-            )
-            .map_err(gerr)?;
-            if reset {
-                dev.cmd_reset_query_pool(buf, ts.query_pool, 0, 2);
-            }
-            dev.cmd_write_timestamp(
-                buf,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                ts.query_pool,
-                index,
-            );
-            dev.end_command_buffer(buf).map_err(gerr)?;
-            let bufs = [buf];
-            let si = vk::SubmitInfo::default().command_buffers(&bufs);
-            dev.queue_submit(self.vk_queue, std::slice::from_ref(&si), vk::Fence::null())
-                .map_err(gerr)?;
-        }
-        Ok(())
-    }
-
-    /// Reads the resolved timestamp pair, scaled by
-    /// `VkPhysicalDeviceLimits::timestampPeriod`, in seconds.
-    fn vk_read_seconds(&self) -> Result<Option<f64>, BenchError> {
-        use ash::vk;
-        fn gerr(e: impl std::fmt::Display) -> BenchError {
-            BenchError::Gpu(format!("vulkan timestamp: {e}"))
-        }
-        let Some(ts) = &self.vk_ts else {
-            return Ok(None);
-        };
-        let mut data = [0u64; 2];
-        // SAFETY: `ts.query_pool` is live on `self.vk_dev`; `data` is a
-        // `[u64; 2]` matching the pool's `query_count` of 2 with TYPE_64.
-        unsafe {
-            self.vk_dev.get_query_pool_results(
-                ts.query_pool,
-                0,
-                &mut data,
-                vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT,
-            )
-        }
-        .map_err(gerr)?;
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "tick deltas are well below 2^53"
-        )]
-        let secs = (data[1] - data[0]) as f64 * ts.period_ns * 1e-9;
-        Ok((data[1] > data[0]).then_some(secs))
     }
 }
 
@@ -1311,6 +1151,22 @@ impl SkiaVk {
 impl Engine for SkiaVk {
     fn info(&self) -> &EngineInfo {
         &self.info
+    }
+
+    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+        Some("This Skia Ganesh Vulkan version does not implement GPU timing statistics")
+    }
+
+    fn finish_gpu(&mut self) -> Result<Vec<crate::GpuSample>, BenchError> {
+        self.wait_idle()?;
+        Ok(Vec::new())
+    }
+
+    fn wait_idle(&mut self) -> Result<(), BenchError> {
+        if !self.dctx.submit(skia_safe::gpu::SyncCpu::Yes) {
+            return Err(BenchError::Gpu("Skia Vulkan GPU completion failed".into()));
+        }
+        Ok(())
     }
 
     fn supported(&self) -> BTreeSet<Feature> {
@@ -1358,40 +1214,17 @@ impl Engine for SkiaVk {
         Ok(())
     }
 
-    fn submit(&mut self, frame: u64, readback: bool) -> Result<Submit, BenchError> {
+    fn submit(&mut self, _frame: u64, readback: bool) -> Result<Submit, BenchError> {
         if self.prepared.is_none() {
             return Err(BenchError::Engine(
                 "skia-vulkan: submit before prepare".into(),
             ));
         }
-        // GPU time: bracket Skia's flush+submit with our own
-        // `vkCmdWriteTimestamp` submissions on the same queue, each
-        // preceded by a full device drain so the marker cannot run
-        // concurrently with the render (job-scheduled tiled GPUs would
-        // otherwise execute it in parallel and bracket an empty
-        // interval). This serializes CPU and GPU for the measured frame.
-        let no_ts = self.vk_ts.is_none();
-        if !no_ts {
-            // SAFETY: `self.vk_dev` is the live leaked device; wait-idle
-            // has no handle preconditions.
-            unsafe { self.vk_dev.device_wait_idle() }
-                .map_err(|e| BenchError::Gpu(format!("vulkan drain: {e}")))?;
-            self.vk_stamp(self.vk_ts.as_ref().expect("checked").bufs[0], 0, true)?;
-        }
         let render_at = Instant::now();
-        self.dctx.flush_submit_and_sync_cpu();
-        let gpu_seconds = if no_ts {
-            None
-        } else {
-            // SAFETY: `self.vk_dev` is the live leaked device.
-            unsafe { self.vk_dev.device_wait_idle() }
-                .map_err(|e| BenchError::Gpu(format!("vulkan drain: {e}")))?;
-            self.vk_stamp(self.vk_ts.as_ref().expect("checked").bufs[1], 1, false)?;
-            // SAFETY: `self.vk_dev` is the live leaked device.
-            unsafe { self.vk_dev.device_wait_idle() }
-                .map_err(|e| BenchError::Gpu(format!("vulkan drain: {e}")))?;
-            self.vk_read_seconds()?
-        };
+        self.dctx.flush(None);
+        if !self.dctx.submit(skia_safe::gpu::SyncCpu::No) {
+            return Err(BenchError::Gpu("Skia Vulkan submission failed".into()));
+        }
         let render_seconds = render_at.elapsed().as_secs_f64();
         let readback_at = Instant::now();
         let image = if readback {
@@ -1406,9 +1239,10 @@ impl Engine for SkiaVk {
         };
         Ok(Submit {
             image,
-            gpu: GpuSample::whole_frame(frame, gpu_seconds),
+            gpu: Vec::new(),
             phases: Vec::new(),
             composition: None,
+            gpu_wait_seconds: 0.0,
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
@@ -1438,6 +1272,7 @@ impl Engine for SkiaVk {
                 self.vk_physical_device,
                 &self.device_name,
             ),
+            metal_allocated_bytes: Reading::unavailable("Skia Vulkan uses Vulkan, not Metal"),
         }
     }
 }
@@ -1457,7 +1292,7 @@ mod graphite_metal {
 
     use objc2::rc::Retained;
     use objc2::runtime::ProtocolObject;
-    use objc2_metal::{MTLCommandBuffer, MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice};
+    use objc2_metal::{MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice};
     use skia_safe::gpu::graphite::{self, mtl as gmtl};
     use skia_safe::gpu::{Mipmapped, graphite::surfaces};
     use skia_safe::wrapper::PointerWrapper;
@@ -1474,12 +1309,12 @@ mod graphite_metal {
     };
 
     /// Skia Graphite on Metal: an offscreen `RGBAF16` linear-P3 render
-    /// target on the system device, timed by command-buffer markers.
+    /// target on the system device. This Graphite Metal backend does not expose GPU timing.
     pub struct SkiaMtl {
         info: EngineInfo,
         device: Retained<ProtocolObject<dyn MTLDevice>>,
-        /// The queue Graphite submits on — the markers run on it too.
-        queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+        /// Retained for the lifetime of the Graphite backend context.
+        _queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
         _bctx: gmtl::BackendContext,
         ctx: graphite::Context,
         recorder: graphite::Recorder,
@@ -1551,7 +1386,7 @@ mod graphite_metal {
                                    — `submit` inserts it on the shared Metal queue",
                 },
                 device,
-                queue,
+                _queue: queue,
                 _bctx: bctx,
                 ctx,
                 recorder,
@@ -1560,22 +1395,6 @@ mod graphite_metal {
                 size: (0, 0),
                 counters: Counters::default(),
             })
-        }
-
-        /// Commits an empty command buffer and waits for it, which on a
-        /// serial `MTLCommandQueue` means every buffer committed before it
-        /// — including Graphite's — has completed.
-        ///
-        /// # Errors
-        /// [`BenchError::Gpu`] when the queue returns no command buffer.
-        fn drain(&self) -> Result<(), BenchError> {
-            let cb = self
-                .queue
-                .commandBuffer()
-                .ok_or_else(|| BenchError::Gpu("metal drain: no command buffer".into()))?;
-            cb.commit();
-            cb.waitUntilCompleted();
-            Ok(())
         }
 
         /// Reads the render target as premultiplied `f16` linear-P3
@@ -1681,7 +1500,7 @@ mod graphite_metal {
             Ok(())
         }
 
-        fn submit(&mut self, frame: u64, readback: bool) -> Result<Submit, BenchError> {
+        fn submit(&mut self, _frame: u64, readback: bool) -> Result<Submit, BenchError> {
             if self.prepared.is_none() {
                 return Err(BenchError::Engine(
                     "skia-metal: submit before prepare".into(),
@@ -1691,21 +1510,7 @@ mod graphite_metal {
                 .recording
                 .take()
                 .ok_or_else(|| BenchError::Engine("skia-metal: submit before encode".into()))?;
-            // GPU time: bracket Graphite's insert+submit with empty marker
-            // command buffers on the same serial queue, each preceded by
-            // a full drain so a marker cannot overlap the render in
-            // execution (command buffers on one Metal queue may run
-            // concurrently on Apple GPUs and would otherwise bracket an
-            // empty interval). This serializes CPU and GPU for the
-            // measured frame — a synchronous probe, not a pipelined
-            // frame rate.
-            self.drain()?;
             let render_at = Instant::now();
-            let start = self
-                .queue
-                .commandBuffer()
-                .ok_or_else(|| BenchError::Gpu("metal marker: no command buffer".into()))?;
-            start.commit();
             if !matches!(
                 self.ctx
                     .insert_recording(&graphite::InsertRecordingInfo::new(&mut recording)),
@@ -1718,18 +1523,6 @@ mod graphite_metal {
             if !self.ctx.submit(None) {
                 return Err(BenchError::Gpu("skia-metal: submit failed".into()));
             }
-            self.drain()?;
-            let end = self
-                .queue
-                .commandBuffer()
-                .ok_or_else(|| BenchError::Gpu("metal marker: no command buffer".into()))?;
-            end.commit();
-            end.waitUntilCompleted();
-            // The drained start marker finished before Graphite's work
-            // began; the drained end marker began after it finished, so
-            // [start.GPUEndTime, end.GPUStartTime] brackets it exactly.
-            let (s, e) = (start.GPUEndTime(), end.GPUStartTime());
-            let gpu_seconds = (s > 0.0 && e > s).then_some(e - s);
             let render_seconds = render_at.elapsed().as_secs_f64();
             let readback_at = Instant::now();
             let image = if readback {
@@ -1739,12 +1532,29 @@ mod graphite_metal {
             };
             Ok(Submit {
                 image,
-                gpu: GpuSample::whole_frame(frame, gpu_seconds),
+                gpu: Vec::new(),
                 phases: Vec::new(),
                 composition: None,
+                gpu_wait_seconds: 0.0,
                 render_seconds: Some(render_seconds),
                 readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
             })
+        }
+
+        fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+            Some("This Skia Graphite Metal version does not implement GPU timing statistics")
+        }
+
+        fn finish_gpu(&mut self) -> Result<Vec<GpuSample>, BenchError> {
+            self.wait_idle()?;
+            Ok(Vec::new())
+        }
+
+        fn wait_idle(&mut self) -> Result<(), BenchError> {
+            if !self.ctx.submit_and_wait() {
+                return Err(BenchError::Gpu("skia-metal: completion wait failed".into()));
+            }
+            Ok(())
         }
 
         fn counters(&self) -> Counters {
@@ -1773,6 +1583,7 @@ mod graphite_metal {
                 wgpu_allocator: Reading::unavailable("Skia Graphite does not use wgpu"),
                 skia_budgeted: skia_budget("graphite", budgeted_bytes),
                 vk_memory_budget: Reading::unavailable("Skia Graphite uses Metal, not Vulkan"),
+                metal_allocated_bytes: Reading::Measured(self.device.currentAllocatedSize() as u64),
             }
         }
     }

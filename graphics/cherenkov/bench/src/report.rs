@@ -50,13 +50,17 @@ pub struct PresentInfo {
 pub struct FrameSample {
     /// Wall-clock seconds of the CPU encode phase.
     pub encode_seconds: f64,
-    /// Wall-clock seconds of submit + device wait. For CPU engines this is
-    /// the rasterization cost; for GPU engines it brackets queue submission
-    /// and device poll (host-side wall time, not GPU time).
+    /// Submission wall time excluding explicitly measured GPU waits. For CPU
+    /// engines this includes rasterization. This is not process CPU time.
     pub submit_seconds: f64,
+    /// Explicit GPU completion waits inside submission, excluded above.
+    pub gpu_wait_seconds: f64,
     /// GPU seconds from real GPU timestamps where the backend provides
     /// them; `null` otherwise. Never estimated.
     pub gpu_seconds: Option<f64>,
+    /// Encode-to-completion wall time, only when this run waits for each frame.
+    /// This is synchronous latency, not inferred pipelined throughput.
+    pub latency_seconds: Option<f64>,
     /// CPU the measuring thread ran on when the timed phases started
     /// (`sched_getcpu`); `null` where the kernel does not report it.
     pub cpu_start: Option<u32>,
@@ -89,6 +93,10 @@ pub struct FrameSample {
 /// idle after it. Cycles are counted at each block's own clock.
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct GpuCounterSample {
+    /// External memory read beats, summed over L2 slices; not bytes.
+    pub external_read_beats: u64,
+    /// External memory write beats, summed over L2 slices; not bytes.
+    pub external_write_beats: u64,
     /// Cycles the shader cores were executing work, summed over cores —
     /// the frame's cost.
     pub shader_core_active_cycles: u64,
@@ -112,6 +120,8 @@ pub struct GpuCountersInfo {
     pub gpu: &'static str,
     /// Shader cores the counters are summed over.
     pub shader_cores: u32,
+    /// L2 slices included in the external-memory counters.
+    pub l2_slices: u32,
 }
 
 /// CPU placement of a `measure` run.
@@ -288,6 +298,11 @@ pub struct MeasureReport {
     pub engine: &'static str,
     /// The adapter's pinned provenance.
     pub info: EngineInfo,
+    /// Why GPU execution time is unavailable for this adapter, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_timing_unavailable: Option<&'static str>,
+    /// Whether every frame was explicitly completed before the next encode.
+    pub wait_for_completion: bool,
     /// Scene directory name.
     pub scene: String,
     /// Scene pixel size — the native surface size under `--native`.
@@ -378,21 +393,20 @@ pub struct PhasePercentiles {
     pub seconds: [f64; 3],
 }
 
-/// One load-level probe of a `capacity` sweep: the p99 frame time the
-/// engine sustained at repetition factor `k`.
+/// One load-level probe of a `capacity` sweep: p99 synchronous completion
+/// latency at repetition factor `k`.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct CapacityProbe {
     /// The draw-list repetition factor probed.
     pub k: u32,
-    /// p99 frame seconds at `k`. A frame's seconds are
-    /// `encode_seconds + submit_seconds`, raised to the frame's
-    /// `gpu_seconds` where the backend reports them — the throughput
-    /// limit of a pipelined renderer is its slowest stage.
+    /// p99 synchronous encode-to-completion seconds at `k`.
+    /// Each probe waits for the frame to finish; this is not an estimate
+    /// of pipelined throughput from CPU/GPU stage times.
     pub p99_seconds: f64,
 }
 
 /// One engine's `capacity` result on one scene: the largest repetition
-/// factor whose p99 frame time stayed within the budget.
+/// factor whose p99 synchronous completion latency stayed within the budget.
 #[derive(Debug, Serialize)]
 pub struct CapacityResult {
     /// Adapter key.

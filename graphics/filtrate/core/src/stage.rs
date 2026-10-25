@@ -81,6 +81,8 @@ pub struct SpatialStage {
     pub name: &'static str,
     /// The WGSL source of the snippet (its `f32` variant).
     pub source: &'static str,
+    /// Optional half-precision colour variant; parameters and coordinates stay f32.
+    pub source_f16: Option<&'static str>,
     /// One source per member of the snippet's `Params` struct, in order.
     pub params: &'static [ParamSource],
     /// The colour space the stage operates in.

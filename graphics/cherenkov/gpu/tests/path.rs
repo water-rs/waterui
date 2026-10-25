@@ -158,9 +158,8 @@ fn overhang() -> BezPath {
 }
 
 split_test! {
-/// Coverage clipped by the surface is cached per integer offset: the same
-/// path drawn first half off-screen, then shifted, must not replay the
-/// clipped coverage.
+/// Re-recorded geometry can be retained across translations, but coverage
+/// clipped at one placement must not leak into a later fractional placement.
 fn a_clipped_path_is_cached_per_offset() -> Result<(), Box<dyn std::error::Error>> {
     let engine = match wait!(Engine::<Gpu>::new(GpuConfig::default())) {
         Ok(engine) => engine,
@@ -173,39 +172,34 @@ fn a_clipped_path_is_cached_per_offset() -> Result<(), Box<dyn std::error::Error
     surface.update(|tx| {
         tx[surface.root()].push(&layer);
     });
-    // Frame 1: the path hangs off the top-left, so its coverage is clipped.
-    surface.update(|tx| {
-        tx[&layer].content(surface.record(|c| c.fill(overhang(), RED)));
-    });
-    wait!(engine.render(cherenkov::FrameTime::now()))?;
-    // Frame 2: the same path at a different integer offset.
-    surface.update(|tx| {
-        tx[&layer].content(surface.record(|c| {
-            c.transform(cherenkov::kurbo::Affine::translate((64.0, 64.0)), |c| {
-                c.fill(overhang(), RED);
-            });
-        }));
-    });
-    wait!(engine.render(cherenkov::FrameTime::now()))?;
-    let shifted = wait!(surface.readback())?;
-    // A fresh engine renders the same shifted draw for comparison.
-    let Some(fresh) = wait!(render(|c| {
-        c.transform(cherenkov::kurbo::Affine::translate((64.0, 64.0)), |c| {
-            c.fill(overhang(), RED);
+    // Preparing outside the surface must not round the stored geometry in
+    // that distant device frame. Moving it back then exercises both clipping
+    // and a changed subpixel phase, through the map's full-recording path.
+    for offset in [
+        (-1.0e9, -1.0e9),
+        (0.0, 0.0),
+        (64.0, 64.0),
+        (0.125, 0.25),
+        (64.25, 64.375),
+    ] {
+        let transform = cherenkov::kurbo::Affine::translate(offset);
+        surface.update(|tx| {
+            tx[&layer].content(surface.record(|c| {
+                c.transform(transform, |c| c.fill(overhang(), RED));
+            }));
         });
-    }))?
-    else {
-        return Ok(());
-    };
-    for (i, (a, b)) in shifted.pixels.iter().zip(&fresh.pixels).enumerate() {
-        for c in 0..4 {
-            assert!(
-                (a[c] - b[c]).abs() < 1e-3,
-                "pixel {i} channel {c}: {} vs {}",
-                a[c],
-                b[c]
-            );
-        }
+        wait!(engine.render(cherenkov::FrameTime::now()))?;
+        let shifted = wait!(surface.readback())?;
+        let Some(fresh) = wait!(render(|c| {
+            c.transform(transform, |c| c.fill(overhang(), RED));
+        }))?
+        else {
+            return Ok(());
+        };
+        assert_images_match(
+            &crop(&shifted, 0..64, 0..64),
+            &crop(&fresh, 0..64, 0..64),
+        );
     }
     Ok(())
 }

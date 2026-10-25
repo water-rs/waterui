@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use cherenkov::kurbo::{Affine, BezPath, PathEl, Point, Rect};
+use cherenkov::kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape as _};
 use cherenkov::lowering::rounded_box::{BoxForm, RoundedBox, box_form};
 use cherenkov::{BlendMode, FillRule, FrameId, GlyphRun, GlyphStyle, ShapeData};
 
@@ -16,11 +16,12 @@ use cherenkov::{LayerId, RenderError, SurfaceId, SurfaceTree};
 
 use super::filter::{Erased, Registry};
 use super::geometry::{Frame, GeometryCache, Offers, Resolved, same_linear};
+use super::intersect;
 use super::prepared::Op;
 use crate::names;
 use crate::render::paint::PaintData;
 use crate::render::raster::{Edge, coverage_mask};
-use crate::render::tiles::{EdgeScratch, EdgeTiles};
+use crate::render::tiles::{EdgeScratch, EdgeTiles, Fixed, IntegerEdge};
 
 /// Curve-to-path and stroke tolerance in device pixels.
 pub const FLATTEN_TOL: f64 = 0.02;
@@ -120,15 +121,30 @@ pub struct DrawBox {
     pub y1: u16,
 }
 
-/// A rasterized clip: an integer rect fast path or a full-surface
-/// coverage mask.
-#[derive(Debug, PartialEq)]
+/// Retained clip geometry, rasterized only for the rows a consumer needs.
+#[derive(Debug)]
 pub enum ClipMask {
     /// Axis-aligned rect with integer edges: coverage is 1 inside, 0
     /// outside.
     Rect(IRect),
-    /// Exact-area coverage of a general clip shape, `w * h` cells.
-    Cover(Vec<f32>),
+    /// Canonical filled boundaries. Draws intersect the operands before AA;
+    /// sampling consumers rasterize the resolved boundary by band.
+    Geometry {
+        /// Complete filled boundaries, with compatible winding directions.
+        operands: Vec<Arc<[intersect::Segment]>>,
+        /// Indexed intersection boundary for sampling consumers.
+        boundary: EdgeTiles,
+    },
+}
+
+impl PartialEq for ClipMask {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Rect(a), Self::Rect(b)) => a == b,
+            (Self::Geometry { operands: a, .. }, Self::Geometry { operands: b, .. }) => a == b,
+            _ => false,
+        }
+    }
 }
 
 /// A clip shared by items; cheap to clone.
@@ -443,12 +459,15 @@ impl<T> DeviceData<T> {
     }
 }
 
-/// Heap bytes of a rasterized clip: the coverage mask or nothing for the
-/// rect fast path.
-pub const fn clip_bytes(clip: &ClipMask) -> u64 {
+/// Heap bytes of retained clip operands and their sampling boundary.
+pub fn clip_bytes(clip: &ClipMask) -> u64 {
     match clip {
         ClipMask::Rect(_) => 0,
-        ClipMask::Cover(mask) => (mask.capacity() * size_of::<f32>()) as u64,
+        ClipMask::Geometry { operands, boundary } => {
+            (operands.capacity() * size_of::<Arc<[intersect::Segment]>>()
+                + operands.iter().map(|o| size_of_val(&**o)).sum::<usize>()) as u64
+                + boundary.heap_bytes()
+        }
     }
 }
 
@@ -915,6 +934,167 @@ fn flatten_edges(path: BezPath, tol: f64) -> Vec<Edge> {
     edges
 }
 
+/// A complete, consistently directed filled boundary, including the
+/// horizontals that the area-only edge stream omits.
+fn boundary_edges(edges: &[Edge], rule: FillRule) -> Vec<intersect::Segment> {
+    intersect::filled_boundary(edges, rule)
+}
+
+/// A raw draw in its translation-normalized frame. The same construction
+/// feeds retained stroke geometry and, lazily, geometric clipping.
+fn draw_boundary(
+    shape: &ShapeData,
+    stroke: Option<&kurbo::Stroke>,
+    transform: Affine,
+    frame: &Frame,
+) -> Option<(Vec<Edge>, FillRule)> {
+    let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
+    let (path, rule) = if let Some(stroke) = stroke {
+        let path = match shape {
+            ShapeData::Line(l) => {
+                let mut p = BezPath::new();
+                p.move_to(l.p0);
+                p.line_to(l.p1);
+                p
+            }
+            shape => shape_outline(shape, tol_u)?.0,
+        };
+        (
+            cherenkov_stroke::stroke(frame.anchored(path), stroke, tol_u),
+            FillRule::NonZero,
+        )
+    } else {
+        let (path, rule) = shape_outline(shape, tol_u)?;
+        (frame.anchored(path), rule)
+    };
+    Some((flatten_edges(frame.map(path), FLATTEN_TOL), rule))
+}
+
+/// Exact stack boundary for sampling consumers. Filled draw boundaries
+/// join this intersection before their own antialiasing instead.
+fn clip_boundary(operands: &[Arc<[intersect::Segment]>]) -> EdgeTiles {
+    let Some((first, rest)) = operands.split_first() else {
+        return intersection_tiles(&[]);
+    };
+    let mut segments = first.to_vec();
+    for operand in rest {
+        segments = intersect::intersect_edges(&segments, FillRule::NonZero, operand);
+    }
+    intersection_tiles(&segments)
+}
+
+/// Beyond this band the draw's and clip's partial coverages cannot meet.
+const CLIP_REACH: f64 = 2.0;
+
+enum DrawClip {
+    Outside,
+    Inside,
+    /// A complete device-space boundary, consistently directed and filled
+    /// under `NonZero`, regardless of the original draw's fill rule.
+    Intersected(Vec<intersect::Segment>),
+}
+
+/// Resolve a draw against geometric operands only where their boundaries
+/// can share partial pixels. Retained geometry and integer placement stay
+/// untouched on the inside fast path.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "placement-grid coordinates fit within f64's integer precision"
+)]
+fn intersect_draw(
+    edges: &EdgeTiles,
+    offset: Fixed,
+    operands: &[Arc<[intersect::Segment]>],
+    boundary: impl FnOnce() -> Option<(Vec<Edge>, FillRule)>,
+) -> DrawClip {
+    let [ox, oy] = offset.units().map(|v| v as f64 / 65536.0);
+    let bounds = edges.bounds();
+    let mut boundary = Some(boundary);
+    let mut segments: Option<Vec<intersect::Segment>> = None;
+    for operand in operands {
+        let clip = operand.as_ref();
+        let (x0, y0, x1, y1) = segments.as_ref().map_or_else(
+            || {
+                (
+                    bounds[0] as f64 / 65536.0 + ox,
+                    bounds[1] as f64 / 65536.0 + oy,
+                    bounds[2] as f64 / 65536.0 + ox,
+                    bounds[3] as f64 / 65536.0 + oy,
+                )
+            },
+            |segments| {
+                segments.iter().fold(
+                    (
+                        f64::INFINITY,
+                        f64::INFINITY,
+                        f64::NEG_INFINITY,
+                        f64::NEG_INFINITY,
+                    ),
+                    |(x0, y0, x1, y1), &(ax, ay, bx, by)| {
+                        (
+                            x0.min(ax.min(bx)),
+                            y0.min(ay.min(by)),
+                            x1.max(ax.max(bx)),
+                            y1.max(ay.max(by)),
+                        )
+                    },
+                )
+            },
+        );
+        let bounds = (
+            x0 - CLIP_REACH,
+            y0 - CLIP_REACH,
+            x1 + CLIP_REACH,
+            y1 + CLIP_REACH,
+        );
+        if !intersect::boundary_touches(clip, bounds) {
+            if intersect::point_inside(clip, x0.midpoint(x1), y0.midpoint(y1)) {
+                continue;
+            }
+            return DrawClip::Outside;
+        }
+        let current = if let Some(segments) = segments.take() {
+            segments
+        } else {
+            let Some((full, rule)) = boundary.take().and_then(|b| b()) else {
+                return DrawClip::Outside;
+            };
+            boundary_edges(&full, rule)
+                .into_iter()
+                .map(|e| intersect::placed(e, ox, oy))
+                .collect()
+        };
+        let intersection = intersect::intersect_edges(&current, FillRule::NonZero, clip);
+        if intersection.is_empty() {
+            return DrawClip::Outside;
+        }
+        segments = Some(intersection);
+    }
+    segments.map_or(DrawClip::Inside, DrawClip::Intersected)
+}
+
+/// Transient intersections use the placement grid, not retained geometry's
+/// coarser tile quantization. Compile their visible intervals once, then
+/// let the unchanged sparse rasterizer integrate them.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "intersection coordinates are rounded to the placement grid"
+)]
+fn intersection_boundaries(segments: &[intersect::Segment]) -> Vec<IntegerEdge> {
+    let raw: Vec<_> = segments
+        .iter()
+        .map(|&(x0, y0, x1, y1)| {
+            let at = |v: f64| (v * 65536.0).round() as i64;
+            IntegerEdge::new(at(x0), at(y0), at(x1), at(y1))
+        })
+        .collect();
+    super::topology::Sweep::default().boundaries(&raw, FillRule::NonZero)
+}
+
+fn intersection_tiles(segments: &[intersect::Segment]) -> EdgeTiles {
+    EdgeTiles::from_boundaries(&intersection_boundaries(segments))
+}
+
 /// Stroke construction shared by realization and geometry-change benchmarks.
 fn compile_stroke(
     geometry: &GeometryCache,
@@ -925,21 +1105,7 @@ fn compile_stroke(
     frame: &Frame,
 ) -> Option<Resolved> {
     geometry.resolve(shape, Some(stroke), transform, scratch, || {
-        let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
-        let path = match shape {
-            ShapeData::Line(l) => {
-                let mut p = BezPath::new();
-                p.move_to(l.p0);
-                p.line_to(l.p1);
-                p
-            }
-            shape => shape_outline(shape, tol_u)?.0,
-        };
-        let outline = cherenkov_stroke::stroke(frame.anchored(path), stroke, tol_u);
-        Some((
-            flatten_edges(frame.map(outline), FLATTEN_TOL),
-            FillRule::NonZero,
-        ))
+        draw_boundary(shape, Some(stroke), transform, frame)
     })
 }
 
@@ -1007,6 +1173,10 @@ impl GeometryChange {
 /// Offers a draw's geometry before its realization is dropped: a fill
 /// or a stroke realized as one draw.
 fn offer(offers: &mut Offers<'_>, op: &Op, data: &DeviceData<Vec<Item>>) {
+    // Intersected draws hold device geometry, not reusable frame geometry.
+    if matches!(data.clip.as_deref(), Some(ClipMask::Geometry { .. })) {
+        return;
+    }
     let (local, shape, stroke) = match op {
         Op::Fill { local, shape, .. } => (local, shape, None),
         Op::Stroke {
@@ -1765,21 +1935,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
         });
     }
 
-    /// The coverage a clip contributes at `(px, py)`.
-    fn clip_cov_at(clip: &ClipMask, px: usize, py: usize, w: usize) -> f32 {
-        match clip {
-            ClipMask::Rect(r) => f32::from(
-                px >= usize::try_from(r.x0).unwrap_or(0)
-                    && px < usize::try_from(r.x1).unwrap_or(0)
-                    && py >= usize::try_from(r.y0).unwrap_or(0)
-                    && py < usize::try_from(r.y1).unwrap_or(0),
-            ),
-            ClipMask::Cover(mask) => mask[py * w + px],
-        }
-    }
-
     /// A clip shape under the current transform becomes a [`ClipRef`],
-    /// combined (coverage product) with the clip already in force.
+    /// intersected geometrically with the clip already in force.
     fn make_clip(&self, shape: &ShapeData) -> Option<ClipRef> {
         // The rect fast path: an axis-aligned rect with integer-ish edges.
         let new_rect = match shape {
@@ -1799,23 +1956,30 @@ impl<'a, 'b> Lowering<'a, 'b> {
         } else if new_is_rect {
             return integer_edges(new_rect).map(|r| Arc::new(ClipMask::Rect(r)));
         }
-        // General path: rasterize the new clip's coverage over the full
-        // surface, multiplied by the coverage of the clip already in
-        // force (coverage product — the oracle intersects geometry; the
-        // product is the accepted approximation, as on the GPU slice).
-        let (w, h) = (self.width, self.height);
+        // Mixed and general stacks retain their filled operands. Their
+        // intersection is indexed once and rasterized on demand by band.
         let sm = sigma_max(self.transform).max(1e-12);
         let tol_u = FLATTEN_TOL / sm;
         let (path, rule) = shape_outline(shape, tol_u)?;
-        let edges = flatten_edges(self.transform * path, FLATTEN_TOL);
-        let mut mask = self.pool.install(|| coverage_mask(&edges, rule, w, h));
-        if let Some(current) = &self.clip {
-            for (i, m) in mask.iter_mut().enumerate() {
-                let (px, py) = (i % w, i / w);
-                *m *= Self::clip_cov_at(current, px, py, w);
-            }
+        let edges = boundary_edges(&flatten_edges(self.transform * path, FLATTEN_TOL), rule);
+        if edges.is_empty() {
+            return None;
         }
-        Some(Arc::new(ClipMask::Cover(mask)))
+        let mut operands = match self.clip.as_deref() {
+            None => Vec::new(),
+            Some(ClipMask::Geometry { operands, .. }) => operands.clone(),
+            Some(ClipMask::Rect(r)) => {
+                let rect = Rect::new(r.x0.into(), r.y0.into(), r.x1.into(), r.y1.into());
+                let edges = boundary_edges(
+                    &flatten_edges(rect.to_path(FLATTEN_TOL), FLATTEN_TOL),
+                    FillRule::NonZero,
+                );
+                vec![edges.into()]
+            }
+        };
+        operands.push(edges.into());
+        let boundary = clip_boundary(&operands);
+        Some(Arc::new(ClipMask::Geometry { operands, boundary }))
     }
 
     /// Applies `clip` around `body`: `None` passes through.
@@ -2360,7 +2524,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
                     [Item::Draw { edges, .. }]
                         if cache.valid
                             && matches!(op, Op::Fill { .. } | Op::Stroke { .. })
-                            && same_linear(data.transform, self.transform) =>
+                            && same_linear(data.transform, self.transform)
+                            && !matches!(data.clip.as_deref(), Some(ClipMask::Geometry { .. })) =>
                     {
                         Some(Resolved {
                             edges: edges.clone(),
@@ -2469,7 +2634,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
                     ))
                 })
         });
-        self.place(&frame, resolved, paint, true);
+        self.place(&frame, resolved, paint, true, || {
+            draw_boundary(shape, None, transform, &frame)
+        });
     }
 
     /// `Stroke`: stroke the content-space path with `cherenkov_stroke::stroke`, map it into the
@@ -2494,21 +2661,47 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 &frame,
             )
         });
-        self.place(&frame, resolved, paint, false);
+        self.place(&frame, resolved, paint, false, || {
+            draw_boundary(shape, Some(stroke), transform, &frame)
+        });
     }
 
     /// Places `resolved` frame geometry under the current transform as a
     /// draw. With `cull`, a draw whose box misses the surface emits
     /// nothing.
-    fn place(&mut self, frame: &Frame, resolved: Option<Resolved>, paint: &PaintData, cull: bool) {
-        let Some(Resolved { edges }) = resolved else {
+    fn place(
+        &mut self,
+        frame: &Frame,
+        resolved: Option<Resolved>,
+        paint: &PaintData,
+        cull: bool,
+        boundary: impl FnOnce() -> Option<(Vec<Edge>, FillRule)>,
+    ) {
+        let Some(Resolved { mut edges }) = resolved else {
             return;
         };
         if edges.is_empty() {
             return;
         }
         let paint = paint.transformed(self.transform.inverse());
-        let offset = frame.offset;
+        let mut offset = frame.offset;
+        let clip = match self.clip.as_deref() {
+            Some(ClipMask::Geometry { operands, .. }) => {
+                match intersect_draw(&edges, offset, operands, boundary) {
+                    DrawClip::Outside => return,
+                    DrawClip::Inside => {}
+                    DrawClip::Intersected(segments) => {
+                        edges = intersection_tiles(&segments);
+                        offset = Fixed::default();
+                        if edges.is_empty() {
+                            return;
+                        }
+                    }
+                }
+                None
+            }
+            _ => self.clip.clone(),
+        };
         let bbox = bbox_of(&edges, offset, self.width, self.height);
         if cull && (bbox.x0 >= bbox.x1 || bbox.y0 >= bbox.y1) {
             return;
@@ -2518,7 +2711,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             offset,
             bbox,
             paint,
-            clip: self.clip.clone(),
+            clip,
         });
     }
 

@@ -334,6 +334,11 @@ pub struct Compiler {
 }
 
 impl Compiler {
+    /// Allocated compiler scratch, including row cells and edge selection.
+    pub const fn heap_bytes(&self) -> u64 {
+        (self.storage.capacity() * size_of::<MaybeUninit<u64>>()) as u64
+    }
+
     /// Reserves one allocation for a band or filter window.
     pub fn reserve(&mut self, width: usize, edges: usize, height: usize) {
         if width <= self.width

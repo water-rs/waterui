@@ -1644,6 +1644,7 @@ impl Engine for Cherenkov {
                 ("shade", phases.shade_seconds),
             ]),
             composition: None,
+            gpu_wait_seconds: 0.0,
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
@@ -1652,6 +1653,11 @@ impl Engine for Cherenkov {
     fn finish_gpu(&mut self) -> Result<Vec<GpuSample>, BenchError> {
         let timings = self.engine.finish_timings().map_err(render_error)?;
         Ok(self.timings.samples(timings))
+    }
+
+    fn wait_idle(&mut self) -> Result<(), BenchError> {
+        // submit completes the CPU raster work before returning.
+        Ok(())
     }
 
     fn counters(&self) -> Counters {
@@ -1702,6 +1708,7 @@ impl Engine for Cherenkov {
             wgpu_allocator: Reading::unavailable("cherenkov-cpu has no wgpu allocator"),
             skia_budgeted: Reading::unavailable("cherenkov-cpu has no Skia budget"),
             vk_memory_budget: Reading::unavailable("cherenkov-cpu has no Vulkan device"),
+            metal_allocated_bytes: Reading::unavailable("cherenkov-cpu has no Metal device"),
         }
     }
 }

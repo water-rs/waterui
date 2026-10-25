@@ -117,7 +117,7 @@ impl Measurement {
         let memory = memory();
         let result = Result {
             run_id: self.run_id.clone(),
-            scenario: if spec.animated { "animated" } else { "static" }.into(),
+            scenario: spec.name().into(),
             side: spec.side,
             count: spec.count,
             in_engine: spec.engine,

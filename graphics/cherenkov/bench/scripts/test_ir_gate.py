@@ -178,6 +178,18 @@ class Sampling(unittest.TestCase):
         self.assertEqual([(s['ir'], s['ncalls'], s['alloc_ir'], s['allocs'], s['rust_ir']) for s in samples],
                          [(65, 1, 10, 1, 55)] * 2)
 
+    def test_fresh_sample_requires_the_first_complete_call(self):
+        [sample] = ir_gate.call_samples(DATA, 'first', ROOT, after=[2, 4],
+                                        count=1, allow_inflight=False)
+        self.assertEqual(sample['rust_ir'], 55)
+        with self.assertRaises(AssertionError):
+            ir_gate.call_samples(DATA, 'run', ROOT, after=[1, 5],
+                                 count=1, allow_inflight=False)
+        self.assertTrue(ir_gate.sampled({'lower': [2], 'encode': [3], 'run_transaction': [1]},
+                                        ir_gate.EVERY_FRAME, 'fresh', returns=1))
+        self.assertFalse(ir_gate.sampled({'lower': [], 'encode': [], 'run_transaction': [1]},
+                                         ir_gate.EVERY_FRAME, 'fresh', returns=1))
+
     def test_call_nested_in_a_subtracted_call_counts_once(self):
         # glibc's realloc copies through _int_realloc and an unnamed local
         # function: that memcpy is inside __rust_realloc's 60, not another 28.

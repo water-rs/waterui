@@ -19,10 +19,12 @@ SIZES = lower_scaling.SERIES['solid']
 def results(out, tag, costs, series='solid'):
     """Writes one `ir_gate` result per size with `lower` Rust Ir from `costs`."""
     for (scene, segments), cost in zip(lower_scaling.SERIES[series], costs):
-        (out / f'{tag}-{scene}.result.json').write_text(json.dumps({
-            'tag': tag, 'scene': scene, 'sha256': '0' * 64,
-            'lower': {'second': {'ir': cost + 1_000, 'rust_ir': cost}},
-        }))
+        for mode, key, value, pause in [('fresh', 'first', cost, 0), ('retained', 'second', 40, 8)]:
+            (out / f'{tag}-{mode}-{scene}.result.json').write_text(json.dumps({
+                'tag': tag, 'scene': scene, 'sha256': '0' * 64,
+                'sample_mode': mode, 'pause_at': pause,
+                'lower': {key: {'ir': value + 1_000, 'rust_ir': value}},
+            }))
         assert segments > 0
 
 
@@ -87,7 +89,7 @@ class Report(unittest.TestCase):
         with tempfile.TemporaryDirectory() as dir:
             out = pathlib.Path(dir)
             results(out, 'cpu', [40 * segments for _, segments in SIZES])
-            (out / f'cpu-{SIZES[2][0]}.result.json').unlink()
+            (out / f'cpu-fresh-{SIZES[2][0]}.result.json').unlink()
             with self.assertRaises(FileNotFoundError):
                 run(out, 'cpu', lower_scaling.EXPONENT, gate=False)
 

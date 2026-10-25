@@ -24,7 +24,7 @@
 //! - `capacity --engine E [--engine E2 ...] --corpus scenes/perf
 //!   --budget-ms 8.333 --out-dir DIR` sweeps each perf scene's load:
 //!   the draw list is repeated `k` times (`transform::repeated`),
-//!   doubling `k` per interleaved engine round until p99 frame time
+//!   doubling `k` per interleaved engine round until p99 completion latency
 //!   exceeds the budget, then binary-searching the largest `k` within
 //!   it. The report records each engine's max sustained `k`, the p99
 //!   at `k` and at `k + 1`.
@@ -200,6 +200,10 @@ enum Sub {
         /// Warmup frames discarded before measuring.
         #[arg(long, default_value_t = 5)]
         warmup: u32,
+        /// Wait for each frame to finish and report encode-to-completion latency.
+        /// This serializes frames; omit it to measure asynchronous submission.
+        #[arg(long)]
+        wait_for_completion: bool,
         /// Pause before this zero-based encode frame (warmup included)
         /// until one line is read from stdin.
         #[arg(long, value_name = "FRAME")]
@@ -285,10 +289,10 @@ enum Sub {
         #[arg(long, value_name = "LIST")]
         cpu: Option<String>,
     },
-    /// Sweep scene load to find each engine's sustained capacity.
+    /// Sweep scene load against each engine's synchronous completion latency.
     ///
     /// The draw list is repeated `k` times, doubling `k` until a probe's
-    /// p99 frame time exceeds `--budget-ms`, then binary-searching the
+    /// p99 encode-to-completion latency exceeds `--budget-ms`, then binary-searching the
     /// largest `k` that stays within it. Every probe is one interleaved
     /// round across the given engines, in `--engine` order, with the
     /// same warmup and frame counts as `measure`.
@@ -570,6 +574,7 @@ fn run(cli: Cli) -> Result<(), BenchError> {
             corpus,
             frames,
             warmup,
+            wait_for_completion,
             pause_at,
             out,
             out_dir,
@@ -586,6 +591,7 @@ fn run(cli: Cli) -> Result<(), BenchError> {
                 corpus: corpus.as_deref(),
                 frames,
                 warmup,
+                wait_for_completion,
                 pause_at,
                 out: out.as_deref(),
                 out_dir: out_dir.as_deref(),
@@ -838,6 +844,7 @@ fn alloc_diag_cmd(
             pause_at: None,
             period,
             window_hint,
+            wait_for_completion: false,
             measure_energy: false,
         },
         None,
@@ -912,11 +919,16 @@ fn alloc_diag_cmd(
 
 /// The `measure` subcommand's fields, borrowed to avoid cloning paths.
 #[derive(Clone, Copy)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent command-line switches, not mutually exclusive states"
+)]
 struct MeasureOpts<'a> {
     scene: Option<&'a Path>,
     corpus: Option<&'a Path>,
     frames: u32,
     warmup: u32,
+    wait_for_completion: bool,
     pause_at: Option<u32>,
     out: Option<&'a Path>,
     out_dir: Option<&'a Path>,
@@ -1250,6 +1262,7 @@ fn measure_cmd(engine: &str, opts: MeasureOpts<'_>) -> Result<(), BenchError> {
             MeasureSceneOptions {
                 frames: opts.frames,
                 warmup: opts.warmup,
+                wait_for_completion: opts.wait_for_completion,
                 pause_at: opts.pause_at,
                 pinned: pinned.as_deref(),
                 rate: opts.rate,
@@ -1574,6 +1587,7 @@ struct FrameLoopOptions {
     period: Option<Duration>,
     window_hint: Duration,
     measure_energy: bool,
+    wait_for_completion: bool,
 }
 
 /// The warmup + measured frame loop.
@@ -1602,6 +1616,7 @@ fn run_frames(
         period,
         window_hint,
         measure_energy,
+        wait_for_completion,
     } = options;
     let mut meter = None;
     let mut gpu_clock = None;
@@ -1653,6 +1668,10 @@ fn run_frames(
         let t1 = Instant::now();
         let submit = engine.submit(u64::from(frame), false)?;
         let t2 = Instant::now();
+        if wait_for_completion {
+            engine.wait_idle()?;
+        }
+        let latency_seconds = wait_for_completion.then(|| t0.elapsed().as_secs_f64());
         let cpu_end = affinity::current_cpu();
         let frame_counters = match gpu_counters.as_deref_mut() {
             Some(counters) if frame >= warmup => {
@@ -1670,8 +1689,10 @@ fn run_frames(
         if frame >= warmup {
             samples.push(FrameSample {
                 encode_seconds: t1.duration_since(t0).as_secs_f64(),
-                submit_seconds: t2.duration_since(t1).as_secs_f64(),
+                submit_seconds: t2.duration_since(t1).as_secs_f64() - submit.gpu_wait_seconds,
+                gpu_wait_seconds: submit.gpu_wait_seconds,
                 gpu_seconds: None,
+                latency_seconds,
                 cpu_start,
                 cpu_end,
                 migrated: matches!((cpu_start, cpu_end), (Some(a), Some(b)) if a != b),
@@ -1682,6 +1703,11 @@ fn run_frames(
             });
         }
         attribute_gpu(&mut samples, warmup, submit.gpu);
+        if wait_for_completion {
+            // Drain instrumentation after this frame's measured interval so it
+            // cannot be carried into the next render's submission or wait.
+            attribute_gpu(&mut samples, warmup, engine.finish_gpu()?);
+        }
     }
     attribute_gpu(&mut samples, warmup, engine.finish_gpu()?);
     Ok(Window {
@@ -1753,6 +1779,7 @@ fn pacing(rate: f64, frames: u32) -> Result<(Duration, Duration), BenchError> {
 struct MeasureSceneOptions<'a> {
     frames: u32,
     warmup: u32,
+    wait_for_completion: bool,
     pause_at: Option<u32>,
     pinned: Option<&'a [u32]>,
     rate: Option<f64>,
@@ -1811,6 +1838,7 @@ fn measure_scene(
     let MeasureSceneOptions {
         frames,
         warmup,
+        wait_for_completion,
         pause_at,
         pinned,
         rate,
@@ -1851,6 +1879,7 @@ fn measure_scene(
             period,
             window_hint,
             measure_energy,
+            wait_for_completion,
         },
         gpu_counters.as_deref_mut(),
     )?;
@@ -1884,6 +1913,8 @@ fn measure_scene(
     Ok(MeasureReport {
         engine: engine.info().name,
         info: engine.info().clone(),
+        gpu_timing_unavailable: engine.gpu_timing_unavailable(),
+        wait_for_completion,
         scene: dir
             .file_name()
             .unwrap_or_default()
@@ -2097,15 +2128,6 @@ impl Sweep {
     }
 }
 
-/// A sample's frame seconds for the capacity budget: the measuring
-/// thread's wall time (encode + submit), raised to the GPU time where
-/// the backend reports it — a pipelined renderer's sustained rate is
-/// limited by its slowest stage.
-fn frame_seconds(s: &FrameSample) -> f64 {
-    let cpu = s.encode_seconds + s.submit_seconds;
-    s.gpu_seconds.map_or(cpu, |gpu| cpu.max(gpu))
-}
-
 /// One capacity probe: prepare `scene` (already at factor `k`) and run
 /// the same warmup + measured frame loop `measure` runs, flat out.
 /// Returns the p99 frame seconds and the probe's memory snapshots:
@@ -2130,13 +2152,22 @@ fn probe_once(
             pause_at: None,
             period: None,
             window_hint: Duration::ZERO,
+            wait_for_completion: true,
             measure_energy: false,
         },
         None,
     )?;
     let steady_memory = MemorySnapshot::capture(engine.memory(), SampleDetail::Full);
     let memory = memory_samples(prepare_memory, &window.memory_samples, steady_memory);
-    let times: Vec<f64> = window.samples.iter().map(frame_seconds).collect();
+    let times: Vec<f64> = window
+        .samples
+        .iter()
+        .map(|sample| {
+            sample
+                .latency_seconds
+                .expect("capacity waits for each frame")
+        })
+        .collect();
     let p99 = percentiles(&times).map(|p| p[2]).ok_or_else(|| {
         BenchError::Engine("capacity: --frames 0 leaves nothing to measure".into())
     })?;
@@ -2376,4 +2407,108 @@ fn write_json<T: serde::Serialize>(v: &T, path: &Path) -> Result<(), BenchError>
     text.push('\n');
     std::fs::write(path, text)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Probe {
+        events: Vec<&'static str>,
+        pending_frame: Option<u64>,
+    }
+
+    impl Engine for Probe {
+        fn info(&self) -> &crate::EngineInfo {
+            unreachable!("frame loop does not request provenance")
+        }
+        fn supported(&self) -> std::collections::BTreeSet<cherenkov_scene::Feature> {
+            std::collections::BTreeSet::new()
+        }
+        fn prepare(&mut self, _: &EncodeInput<'_>) -> Result<(), BenchError> {
+            Ok(())
+        }
+        fn encode(&mut self, _: &EncodeInput<'_>) -> Result<(), BenchError> {
+            self.events.push("encode");
+            Ok(())
+        }
+        fn submit(&mut self, frame: u64, _: bool) -> Result<crate::Submit, BenchError> {
+            self.events.push("submit");
+            self.pending_frame = Some(frame);
+            Ok(crate::Submit {
+                image: None,
+                gpu: Vec::new(),
+                phases: Vec::new(),
+                composition: None,
+                gpu_wait_seconds: 0.0,
+                render_seconds: None,
+                readback_seconds: None,
+            })
+        }
+        fn wait_idle(&mut self) -> Result<(), BenchError> {
+            self.events.push("complete");
+            Ok(())
+        }
+        fn finish_gpu(&mut self) -> Result<Vec<crate::GpuSample>, BenchError> {
+            self.events.push("collect timestamps");
+            Ok(self
+                .pending_frame
+                .take()
+                .into_iter()
+                .flat_map(|frame| crate::GpuSample::whole_frame(frame, Some(0.001)))
+                .collect())
+        }
+        fn counters(&self) -> crate::Counters {
+            crate::Counters::default()
+        }
+        fn memory(&self) -> crate::memory::AdapterMemory {
+            unreachable!("test has no warmup memory samples")
+        }
+        fn device(&self) -> crate::DeviceInfo {
+            unreachable!("frame loop does not request device metadata")
+        }
+    }
+
+    #[test]
+    fn completes_each_frame_before_draining_its_timestamps() {
+        let scene = Scene::new(1, 1, cherenkov_scene::Color::srgb(0.0, 0.0, 0.0));
+        let blobs = std::collections::BTreeMap::new();
+        let input = EncodeInput {
+            scene: &scene,
+            blobs: &blobs,
+        };
+        let mut engine = Probe::default();
+        let window = run_frames(
+            &mut engine,
+            &input,
+            2,
+            0,
+            FrameLoopOptions {
+                pause_at: None,
+                period: None,
+                window_hint: Duration::ZERO,
+                measure_energy: false,
+                wait_for_completion: true,
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            engine.events,
+            [
+                "encode",
+                "submit",
+                "complete",
+                "collect timestamps",
+                "encode",
+                "submit",
+                "complete",
+                "collect timestamps",
+                "collect timestamps"
+            ]
+        );
+        assert_eq!(window.samples.len(), 2);
+        assert!(window.samples.iter().all(|sample| sample.latency_seconds.is_some() && sample.gpu_seconds == Some(0.001)));
+    }
 }

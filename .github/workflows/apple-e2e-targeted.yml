@@ -119,11 +119,29 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
         run: cargo install --path "${WATER_CLI_DIR:?WATER_CLI_DIR is required; run .github/scripts/setup-e2e.sh first}" --locked --root "${{ github.workspace }}/cli-bin"
 
+      - name: Build the screenshot comparer
+        timeout-minutes: 10
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
+        run: |
+          export PATH="${{ github.workspace }}/cli-bin/bin:${PATH}"
+          cargo install --path "${WATERUI_DIR}/graphics/cherenkov/oracle" --locked \
+            --features apple-screenshots --bin compare-screenshots --debug \
+            --root "${{ github.workspace }}/cli-bin"
+
       - name: Upload the water CLI
         uses: actions/upload-artifact@v4
         with:
           name: water-cli
           path: cli-bin/bin/water
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload the screenshot comparer
+        uses: actions/upload-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin/compare-screenshots
           retention-days: 1
           if-no-files-found: error
 
@@ -173,6 +191,13 @@ jobs:
           chmod +x cli-bin/bin/water
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
 
+      - name: Install the screenshot comparer
+        uses: actions/download-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin
+      - run: chmod +x cli-bin/bin/compare-screenshots
+
       - name: Boot iOS simulator
         run: |
           set -euo pipefail
@@ -204,6 +229,10 @@ jobs:
       # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
       - name: Set up modern bash
         uses: ./.github/actions/setup-bash
+
+      - name: Prepare comparison tools
+        uses: ./.github/actions/setup-e2e-tools
+        timeout-minutes: 1
 
       - name: Run iOS e2e examples
         env:
@@ -298,6 +327,17 @@ jobs:
       # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
       - name: Set up modern bash
         uses: ./.github/actions/setup-bash
+
+      - name: Prepare comparison tools
+        uses: ./.github/actions/setup-e2e-tools
+        timeout-minutes: 1
+
+      - name: Install the screenshot comparer
+        uses: actions/download-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin
+      - run: chmod +x cli-bin/bin/compare-screenshots
 
       - name: Run macOS e2e examples
         env:

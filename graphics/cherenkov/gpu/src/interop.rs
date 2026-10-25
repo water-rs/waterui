@@ -4,7 +4,7 @@ pub use crate::render::filter::EffectBox;
 pub use crate::render::present::{
     ColorRange, ColorRangeInterval, ColorSpaceRequest, DestinationPrimaries, DisplayProbe,
     OutputAlpha, OutputColor, OutputRequest, OutputSelection, Presenter, SelectionReason,
-    TextureOutput, TransferEncoding, select_output, surface_output_alpha,
+    TextureOutput, TransferEncoding, select_content_output, select_output, surface_output_alpha,
 };
 pub use crate::render::shaders::{ShaderDelivery, delivery as shader_delivery};
 use std::future::Future;
@@ -259,9 +259,20 @@ pub struct TextureTarget {
     pub(crate) size: (u32, u32),
     pub(crate) refresh: cherenkov::RefreshRange,
     pub(crate) textures: std::sync::mpsc::Sender<wgpu::Texture>,
+    pub(crate) ranges: Option<std::sync::mpsc::Sender<ColorRange>>,
 }
 
 impl TextureTarget {
+    /// Subscribes to the first rendered content range and subsequent changes.
+    /// Drain after a successful `Engine::render`, before choosing the host's
+    /// output format. Stable frames and texture-only resizes send no update.
+    /// A new subscription replaces the previous receiver.
+    pub fn content_ranges(&mut self) -> std::sync::mpsc::Receiver<ColorRange> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.ranges = Some(sender);
+        receiver
+    }
+
     /// Sets the refresh range for animated content.
     ///
     /// # Panics
@@ -285,6 +296,7 @@ impl TextureTarget {
             Self {
                 size,
                 textures,
+                ranges: None,
                 refresh: cherenkov::DEFAULT_REFRESH,
             },
             receiver,
@@ -334,6 +346,10 @@ pub struct ExternalFrame {
     pub color: FrameColor,
     /// An optional GPU-side wait the sampled planes are ordered behind.
     pub wait: Option<FrameSync>,
+    /// HDR attachments copied from the producer's Core Video pixel buffer.
+    /// Preserve these when importing Apple video for native composition.
+    #[cfg(target_vendor = "apple")]
+    pub attachments: Option<metal::VideoAttachments>,
 }
 
 /// The planes an [`ExternalFrame`] samples.
@@ -640,6 +656,10 @@ pub enum InvalidFrame {
     /// `reference_white` or `hlg_peak` is not positive and finite.
     #[error("reference_white and hlg_peak must be positive and finite")]
     ColorLevel,
+    /// A native video HDR attachment has the wrong type or encoded size.
+    #[cfg(target_vendor = "apple")]
+    #[error("invalid Core Video HDR attachment: {0}")]
+    VideoAttachment(&'static str),
 }
 
 fn check_plane(texture: &wgpu::Texture) -> Result<wgpu::Extent3d, InvalidFrame> {
@@ -704,6 +724,8 @@ impl ExternalFrame {
             planes: FramePlanes::Yuv { y, uv },
             color,
             wait: None,
+            #[cfg(target_vendor = "apple")]
+            attachments: None,
         })
     }
 
@@ -731,6 +753,8 @@ impl ExternalFrame {
             planes: FramePlanes::Rgb { plane, alpha },
             color,
             wait: None,
+            #[cfg(target_vendor = "apple")]
+            attachments: None,
         })
     }
 
@@ -774,6 +798,8 @@ impl ExternalFrame {
             color: frame.generation.color,
             planes: FramePlanes::Native(frame),
             wait: None,
+            #[cfg(target_vendor = "apple")]
+            attachments: None,
         })
     }
 
@@ -1063,6 +1089,7 @@ pub mod android {
     #[derive(Debug)]
     pub struct SurfaceControlTarget {
         pub(crate) parent: SurfaceControl,
+        pub(crate) looper: ndk::looper::ForeignLooper,
         pub(crate) size: (u32, u32),
         pub(crate) transparent: bool,
         pub(crate) refresh: cherenkov::RefreshRange,
@@ -1070,10 +1097,16 @@ pub mod android {
 
     impl SurfaceControlTarget {
         /// Presents under `parent` at `size` device pixels.
+        /// The host must keep polling `looper` while this target is alive.
         #[must_use]
-        pub const fn new(parent: SurfaceControl, size: (u32, u32)) -> Self {
+        pub const fn new(
+            parent: SurfaceControl,
+            size: (u32, u32),
+            looper: ndk::looper::ForeignLooper,
+        ) -> Self {
             Self {
                 parent,
+                looper,
                 size,
                 transparent: false,
                 refresh: cherenkov::DEFAULT_REFRESH,
@@ -1129,6 +1162,115 @@ pub mod apple {
 /// Apple interop: importing Metal resources onto the shared device.
 #[cfg(target_vendor = "apple")]
 pub mod metal {
+    /// Source HDR metadata preserved through Core Video plane promotion.
+    ///
+    /// The standard SEI payloads remain encoded as supplied by the producer:
+    /// no luminance defaults or floating-point re-quantization are introduced.
+    #[derive(Debug, Clone, Copy)]
+    pub struct VideoAttachments {
+        mastering: Option<[u8; 24]>,
+        light: Option<[u8; 4]>,
+        environment: Option<[u8; 8]>,
+    }
+
+    impl VideoAttachments {
+        /// Copies HDR attachments before the producer releases its pixel buffer.
+        /// Missing source metadata stays absent.
+        ///
+        /// # Errors
+        /// Returns [`super::InvalidFrame::VideoAttachment`] for an attachment
+        /// whose type or length does not match Core Video's SEI payload format.
+        pub fn from_pixel_buffer(
+            buffer: &objc2_core_video::CVPixelBuffer,
+        ) -> Result<Self, super::InvalidFrame> {
+            use objc2_core_foundation::{CFData, CFRange, CFString};
+            use objc2_core_video::{
+                kCVImageBufferAmbientViewingEnvironmentKey, kCVImageBufferContentLightLevelInfoKey,
+                kCVImageBufferMasteringDisplayColorVolumeKey,
+            };
+            fn read<const N: usize>(
+                buffer: &objc2_core_video::CVPixelBuffer,
+                key: &CFString,
+                name: &'static str,
+            ) -> Result<Option<[u8; N]>, super::InvalidFrame> {
+                // SAFETY: the attachment is borrowed only while the source buffer lives.
+                let Some(value) = (unsafe { buffer.attachment(key, std::ptr::null_mut()) }) else {
+                    return Ok(None);
+                };
+                let data = value
+                    .downcast_ref::<CFData>()
+                    .filter(|data| data.len() == N)
+                    .ok_or(super::InvalidFrame::VideoAttachment(name))?;
+                let mut bytes = [0; N];
+                // SAFETY: the checked data length is exactly the destination array length.
+                unsafe {
+                    data.bytes(
+                        CFRange {
+                            location: 0,
+                            length: data.length(),
+                        },
+                        bytes.as_mut_ptr(),
+                    );
+                };
+                Ok(Some(bytes))
+            }
+            // SAFETY: attachment keys are immutable framework constants.
+            unsafe {
+                Ok(Self {
+                    mastering: read(
+                        buffer,
+                        kCVImageBufferMasteringDisplayColorVolumeKey,
+                        "mastering display colour volume",
+                    )?,
+                    light: read(
+                        buffer,
+                        kCVImageBufferContentLightLevelInfoKey,
+                        "content light level",
+                    )?,
+                    environment: read(
+                        buffer,
+                        kCVImageBufferAmbientViewingEnvironmentKey,
+                        "ambient viewing environment",
+                    )?,
+                })
+            }
+        }
+
+        pub(crate) fn apply(&self, buffer: &objc2_core_video::CVPixelBuffer) {
+            use objc2_core_foundation::CFData;
+            use objc2_core_video::{
+                CVAttachmentMode, kCVImageBufferAmbientViewingEnvironmentKey,
+                kCVImageBufferContentLightLevelInfoKey,
+                kCVImageBufferMasteringDisplayColorVolumeKey,
+            };
+            // SAFETY: keys are immutable framework constants; values are retained CFData.
+            unsafe {
+                for (value, key) in [
+                    (
+                        self.mastering.as_ref().map(<[u8; 24]>::as_slice),
+                        kCVImageBufferMasteringDisplayColorVolumeKey,
+                    ),
+                    (
+                        self.light.as_ref().map(<[u8; 4]>::as_slice),
+                        kCVImageBufferContentLightLevelInfoKey,
+                    ),
+                    (
+                        self.environment.as_ref().map(<[u8; 8]>::as_slice),
+                        kCVImageBufferAmbientViewingEnvironmentKey,
+                    ),
+                ] {
+                    if let Some(bytes) = value {
+                        buffer.set_attachment(
+                            key,
+                            &CFData::from_bytes(bytes),
+                            CVAttachmentMode::ShouldPropagate,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Wraps an `MTLTexture` as a `wgpu::Texture` on the engine's device, for
     /// use as an [`ExternalFrame`](super::ExternalFrame) plane.
     ///
@@ -1504,6 +1646,17 @@ pub mod web {
             return Err(InvalidWebTexture::Unusable);
         }
         Ok(wrapped)
+    }
+}
+
+impl crate::GpuTarget {
+    pub(crate) const fn take_content_ranges(
+        &mut self,
+    ) -> Option<std::sync::mpsc::Sender<ColorRange>> {
+        match self {
+            Self::Texture(target) => target.ranges.take(),
+            _ => None,
+        }
     }
 }
 

@@ -449,3 +449,14 @@ pub fn vulkan_slot(group: &[Entry], binding: u32) -> u32 {
         .try_into()
         .expect("layout fits u32")
 }
+
+/// Unfiltered source texture for immutable-capture headroom reduction.
+pub const HEADROOM_GROUP0: &[Entry] = &[Entry {
+    binding: 0,
+    stages: FRAGMENT,
+    kind: Kind::Texture { filterable: false },
+    dynamic_offset: false,
+    min_size: 0,
+}];
+#[allow(dead_code)]
+pub const HEADROOM_GROUPS: &[&[Entry]] = &[HEADROOM_GROUP0];
