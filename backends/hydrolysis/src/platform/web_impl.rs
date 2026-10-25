@@ -108,7 +108,7 @@ impl BrowserSurface {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-web-device"),
-                required_features: super::required_media_features(adapter.features()),
+                required_features: adapter.features() & wgpu::Features::SHADER_F16,
                 ..Default::default()
             })
             .await
