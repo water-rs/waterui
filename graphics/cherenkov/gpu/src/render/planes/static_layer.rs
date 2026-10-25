@@ -240,7 +240,9 @@ fn bounds(
                 }
                 (*local, path_bounds(outline, list))
             }
-            Op::Glyphs { local, run, paint } => {
+            Op::Glyphs {
+                local, run, paint, ..
+            } => {
                 if matches!(paint, ResolvedPaint::Shader(_)) {
                     return Ok(None);
                 }

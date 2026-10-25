@@ -3836,11 +3836,23 @@ impl Renderer for GpuRenderer {
         if parsed.data_for_tag(skrifa::Tag::new(b"SVG ")).is_some() {
             return Err(ResourceError::Unsupported(names::COLOR_FONT));
         }
+        let head = parsed
+            .head()
+            .map_err(|e| ResourceError::Font(format!("head: {e}")))?;
+        let units_per_em = head.units_per_em();
+        let default_bounds = kurbo::Rect::new(
+            f64::from(head.x_min()),
+            f64::from(head.y_min()),
+            f64::from(head.x_max()),
+            f64::from(head.y_max()),
+        );
         let has_colr = parsed.colr().is_ok();
         let bitmap = bitmap::BitmapFont::detect(&font.data, font.index)?.map(Arc::new);
         Ok(PreparedFont {
             data: font.data,
             index: font.index,
+            units_per_em,
+            default_bounds,
             has_colr,
             bitmap,
         })
@@ -4154,6 +4166,7 @@ impl Renderer for GpuRenderer {
         self.images_gen += 1;
         for font in self.fonts.values() {
             font.colr.borrow_mut().clear();
+            font.clear_bounds();
         }
         for surf in self.surfaces.values_mut() {
             for content in surf.layers.values_mut() {
@@ -4288,6 +4301,7 @@ impl Renderer for GpuRenderer {
             .map(|c| format_name(c.target.texture.format()))
             .next();
         let cpu = self.atlas.cpu_bytes()
+            + self.fonts.values().map(FontData::bounds_bytes).sum::<u64>()
             + self.gpu_cov.cpu_bytes()
             + self.commit_writes.heap_bytes()
             + self
@@ -6512,7 +6526,7 @@ impl GpuRenderer {
                         .collect()
                 })
                 .collect();
-            std::thread::scope(|s| {
+            let outputs = std::thread::scope(|s| {
                 pending
                     .iter_mut()
                     .zip(snapshots)
@@ -6520,7 +6534,7 @@ impl GpuRenderer {
                     .zip(group_maps.iter().zip(inputs).zip(self.ready_sets.iter()))
                     .map(|(((surf, fonts), frame), ((groups, inputs), ready))| {
                         s.spawn(move || {
-                            Self::lower_content(
+                            let result = Self::lower_content(
                                 surf,
                                 frame,
                                 GlyphResources {
@@ -6534,14 +6548,24 @@ impl GpuRenderer {
                                 inputs,
                                 ready,
                                 coverage_options,
-                            )
+                            );
+                            (result, fonts)
                         })
                     })
                     .collect::<Vec<_>>()
                     .into_iter()
                     .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
-                    .collect()
-            })
+                    .collect::<Vec<_>>()
+            });
+            outputs
+                .into_iter()
+                .map(|(result, fonts)| {
+                    for (id, font) in fonts {
+                        self.fonts[&id].merge_bounds(font);
+                    }
+                    result
+                })
+                .collect()
         } else {
             pending
                 .iter_mut()
