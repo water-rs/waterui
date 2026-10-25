@@ -123,7 +123,9 @@ wrapped at the proposal the column was measured with.
   they are realised, so it reports its layout's axis over an empty child set:
   `None` for a lazy stack. A lazy stack that must fill is placed by a parent
   that stretches it (`ScrollView`, `Absolute`, a `Frame` with `max = INFINITY`).
-- `ScrollView` is `Both`; `Spacer` is `MainAxis`; `Divider` is `CrossAxis`;
+- A `ScrollView` stretches on its scrolling axis, and on the non-scrolling
+  axis only when its content stretches there (`Axis::All` is `Both`);
+  `Spacer` is `MainAxis`; `Divider` is `CrossAxis`;
   `Color` and shapes are `Both`; text, buttons and other content controls
   are `None`; a text field is `Horizontal`; a toggle is `Horizontal` when it
   draws the switch style with a visible label, and `None` otherwise; a stepper
@@ -418,15 +420,20 @@ A backend hosts native leaves inside Rust-driven containers. The leaf's
   intrinsic height, dividing the width into equal segments; an unbounded
   width proposal answers the intrinsic width. Every other picker style
   answers the control's intrinsic size.
-- **ScrollView**: a scroll claims the whole offer — a finite proposal on
-  either axis is answered with that proposal; only a `0` proposal measures the
-  content, answering its intrinsic extent on the non-scrolling axis and `0` on
-  the scrolling axis. The content is measured with the viewport extent on the
-  non-scrolling axis and `None` on the scrolling axis; its frame is its own
-  answer on the non-scrolling axis, and it is **centred** there whether it is
-  narrower or wider than the viewport (a wider content crosses both edges by
-  the same amount). A scroll surface that touches window chrome extends under
-  it (safe-area extension rule).
+- **ScrollView**: on the scrolling axis a scroll claims the whole offer — a
+  finite proposal is answered with the proposal, `None` with the content's
+  intrinsic extent, `0` with `0`. On the non-scrolling axis it answers the
+  content's own answer to the content proposal — that axis gets the scroll's
+  offer, the scrolling axis `None` — clamped to a finite offer, so a scroll
+  hugs non-filling content instead of claiming the slot; `0` and `None` keep
+  their existing behaviour (the content's minimum and intrinsic extent).
+  Content that itself fills the non-scrolling axis still fills it.
+  `Axis::All` fills both axes. The content is measured with the viewport
+  extent on the non-scrolling axis and `None` on the scrolling axis; its
+  frame is its own answer on the non-scrolling axis, and it is **centred**
+  there whether it is narrower or wider than the viewport (a wider content
+  crosses both edges by the same amount). A scroll surface that touches
+  window chrome extends under it (safe-area extension rule).
 - **Spacer** hosted natively answers its minimum length on the stack's main
   axis and zero on the cross axis, whatever the proposal (§5).
 - **GPU surfaces, shapes, colours**: `Both`.
@@ -516,7 +523,6 @@ gap; changing one is a contract change.
 | A finite-width Grid divides the proposal into equal columns and answers the proposal width. | `Grid` columns are intrinsic-sized; only flexible columns share the remainder. | Equal columns keep every backend's grid identical and the answer predictable. |
 | `AspectRatio` reports the resolved ratio box and hands it to the child as its frame. | `aspectRatio` transforms the proposal but reports the child's answer. | The ratio box is the contract; the child receives it resolved, not re-negotiated. |
 | `Background` places the secondary view over the whole bounds and proposes them. | The secondary view may keep a smaller rigid answer inside the base's size. | Whole-bounds allocation keeps a background flush with what it backs. |
-| `ScrollView` fills the finite cross-axis offer. | A scroll view hugs non-filling content on the cross axis. | One fill rule keeps scroll surfaces flush with their slots on every backend. |
 | A window or navigation page root is proposed the window's content size and fills it. | On macOS, a page whose ideal width is below the window's is placed in a centred column of that width. | One root rule on every backend: content-sized pages are already centred by the scroll's own centring rule, and filling pages keep the whole window. |
 | `overlay(alignment:)` anchors a decoration on the envelope its own guide forms inside the bounds. | A decoration's guides offset it against the base's alignment lines. | Anchoring the decoration's own envelope keeps a badge inside the bounds that a base-anchored offset would cross. |
 
