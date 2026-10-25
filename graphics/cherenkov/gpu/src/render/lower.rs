@@ -4452,19 +4452,6 @@ impl<'a> Lowering<'a> {
             let range = super::content_range::of_op(op, glyphs.images);
             open.color_range = open.color_range.max(range);
         }
-        if let Op::Glyphs { local, bounds, .. } = op {
-            // Coverage cells carry a one-pixel apron and integer rounding can
-            // extend another pixel beyond the outline. Cull against this
-            // target, including the enlarged target of a silhouette capture.
-            let placed = (self.transform * *local).transform_rect_bbox(*bounds);
-            let visible = Rect::new(0.0, 0.0, f64::from(self.width), f64::from(self.height));
-            if placed.inflate(2.0, 2.0).intersect(visible).is_zero_area() {
-                // Offscreen emissions must not pin their old atlas shelves.
-                // The existing storage compaction reclaims their ranges.
-                *cache = Realization::default();
-                return Ok(false);
-            }
-        }
         let cover = self.shadow_cover(op, next);
         let hit = cache.valid
             && cache.data.as_mut().is_some_and(|e| {
@@ -4492,6 +4479,20 @@ impl<'a> Lowering<'a> {
                 storage,
             );
             return Ok(replaced);
+        }
+        // An unchanged retained emission has already passed visibility testing.
+        if let Op::Glyphs { local, bounds, .. } = op {
+            // Coverage cells carry a one-pixel apron and integer rounding can
+            // extend another pixel beyond the outline. Cull against this
+            // target, including the enlarged target of a silhouette capture.
+            let placed = (self.transform * *local).transform_rect_bbox(*bounds);
+            let visible = Rect::new(0.0, 0.0, f64::from(self.width), f64::from(self.height));
+            if placed.inflate(2.0, 2.0).intersect(visible).is_zero_area() {
+                // Offscreen emissions must not pin their old atlas shelves.
+                // The existing storage compaction reclaims their ranges.
+                *cache = Realization::default();
+                return Ok(false);
+            }
         }
         // GPU leaves retain like CPU leaves (water-rs/waterui#3081): the
         // anchor instance and its coverage draw record live on the
