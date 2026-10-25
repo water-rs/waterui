@@ -190,8 +190,17 @@ struct Pipes {
     classify: wgpu::ComputePipeline,
     fill_cells: wgpu::ComputePipeline,
     emit_counts: wgpu::ComputePipeline,
+    strokes: Option<StrokePipes>,
+    dashes: Option<DashPipes>,
+}
+
+struct StrokePipes {
     stroke_vertices: wgpu::ComputePipeline,
     stroke_emit: wgpu::ComputePipeline,
+    bin_strokes: wgpu::ComputePipeline,
+}
+
+struct DashPipes {
     dash_length: wgpu::ComputePipeline,
     dash_scan_reduce: wgpu::ComputePipeline,
     dash_scan_blocks: wgpu::ComputePipeline,
@@ -199,7 +208,6 @@ struct Pipes {
     dash_fragments: wgpu::ComputePipeline,
     dash_args: wgpu::ComputePipeline,
     dash_emit: wgpu::ComputePipeline,
-    bin_strokes: wgpu::ComputePipeline,
     bin_dashes: wgpu::ComputePipeline,
 }
 
@@ -1097,7 +1105,7 @@ impl GpuCoverage {
         delivery: crate::render::shaders::ShaderDelivery,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
-        self.ensure_pipes(device, delivery);
+        self.ensure_pipes(device, delivery, batch);
         self.work.clear();
         self.elements.clear();
         self.strokes.clear();
@@ -1287,12 +1295,14 @@ impl GpuCoverage {
             pass.set_pipeline(&pipes.flatten);
             dispatch(&mut pass, params[0]);
             if stroke_total > 0 {
+                let pipes = pipes.strokes.as_ref().expect("stroke pipelines prepared");
                 pass.set_pipeline(&pipes.stroke_vertices);
                 dispatch(&mut pass, stroke_total);
                 pass.set_pipeline(&pipes.stroke_emit);
                 dispatch(&mut pass, stroke_total);
             }
             if dash_total > 0 {
+                let pipes = pipes.dashes.as_ref().expect("dash pipelines prepared");
                 // Lengths, their per-subpath prefix, the dashes of every
                 // record, then the fragment and chord offsets that compact
                 // them (7.4); the scans read their operation from the
@@ -1323,10 +1333,12 @@ impl GpuCoverage {
             pass.set_pipeline(&pipes.bin);
             dispatch(&mut pass, params[0]);
             if stroke_total > 0 {
+                let pipes = pipes.strokes.as_ref().expect("stroke pipelines prepared");
                 pass.set_pipeline(&pipes.bin_strokes);
                 dispatch(&mut pass, stroke_total);
             }
             if dash_total > 0 {
+                let pipes = pipes.dashes.as_ref().expect("dash pipelines prepared");
                 pass.set_pipeline(&pipes.bin_dashes);
                 pass.dispatch_workgroups_indirect(&buffers.args, ARGS_DASH);
             }
@@ -1377,61 +1389,61 @@ impl GpuCoverage {
         }
     }
 
-    /// Lazily build the bind layout and the pipelines from the
-    /// precompiled coverage module.
+    /// Build only the kernel families this batch dispatches.
     fn ensure_pipes(
         &mut self,
         device: &wgpu::Device,
         delivery: crate::render::shaders::ShaderDelivery,
+        batch: Batch,
     ) {
-        if self.pipes.is_some() {
+        if self.pipes.as_ref().is_some_and(|pipes| {
+            (batch.stroke_total == 0 || pipes.strokes.is_some())
+                && (batch.dash_total == 0 || pipes.dashes.is_some())
+        }) {
             return;
         }
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("gpu coverage"),
-            entries: &super::layout_entries(bindings::COVERAGE_MAIN_GROUP0),
+        let layout = self.layout.get_or_insert_with(|| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("gpu coverage"),
+                entries: &super::layout_entries(bindings::COVERAGE_MAIN_GROUP0),
+            })
         });
-        let args_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("gpu coverage argument writes"),
-            entries: &super::layout_entries(bindings::COVERAGE_GROUP0),
+        let args_layout = self.args_layout.get_or_insert_with(|| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("gpu coverage argument writes"),
+                entries: &super::layout_entries(bindings::COVERAGE_GROUP0),
+            })
         });
         let pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("gpu coverage"),
-            bind_group_layouts: &[Some(&layout)],
+            bind_group_layouts: &[Some(layout)],
             immediate_size: 0,
         });
         let args_pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("gpu coverage argument writes"),
-            bind_group_layouts: &[Some(&args_layout)],
+            bind_group_layouts: &[Some(args_layout)],
             immediate_size: 0,
         });
-        let mut kernels: Vec<_> = delivery
-            .coverage_programs(device)
-            .into_iter()
-            .map(|program| {
-                let pipeline_layout = match program.layout {
-                    super::programs::ComputeLayout::CoverageMain => &pipe_layout,
-                    super::programs::ComputeLayout::CoverageArguments => &args_pipe_layout,
-                };
-                let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some(program.entry),
-                    layout: Some(pipeline_layout),
-                    module: &program.module,
-                    entry_point: Some(program.entry),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    cache: None,
-                });
-                (program.entry, pipeline)
-            })
-            .collect();
-        let mut make = |entry: &str| {
-            let at = kernels
+        let programs = delivery.coverage_programs(device);
+        let make = |entry| {
+            let program = programs
                 .iter()
-                .position(|(name, _)| *name == entry)
-                .unwrap_or_else(|| panic!("`{entry}` is a coverage kernel"));
-            kernels.swap_remove(at).1
+                .find(|program| program.entry == entry)
+                .expect("coverage kernel has a shader program");
+            let layout = match program.layout {
+                super::programs::ComputeLayout::CoverageMain => &pipe_layout,
+                super::programs::ComputeLayout::CoverageArguments => &args_pipe_layout,
+            };
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(entry),
+                layout: Some(layout),
+                module: &program.module,
+                entry_point: Some(entry),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            })
         };
-        self.pipes = Some(Pipes {
+        let pipes = self.pipes.get_or_insert_with(|| Pipes {
             prepare_dispatch: make("prepare_dispatch"),
             prepare_cells: make("prepare_cells"),
             radix_count: make("radix_count"),
@@ -1449,25 +1461,28 @@ impl GpuCoverage {
             classify: make("classify"),
             fill_cells: make("fill_cells"),
             emit_counts: make("emit_counts"),
-            stroke_vertices: make("stroke_vertices"),
-            stroke_emit: make("stroke_emit"),
-            dash_length: make("dash_length"),
-            dash_scan_reduce: make("dash_scan_reduce"),
-            dash_scan_blocks: make("dash_scan_blocks"),
-            dash_scan_apply: make("dash_scan_apply"),
-            dash_fragments: make("dash_fragments"),
-            dash_args: make("dash_args"),
-            dash_emit: make("dash_emit"),
-            bin_strokes: make("bin_strokes"),
-            bin_dashes: make("bin_dashes"),
+            strokes: None,
+            dashes: None,
         });
-        let missing: Vec<_> = kernels.iter().map(|(name, _)| *name).collect();
-        assert!(
-            missing.is_empty(),
-            "coverage kernels without a pipe: {missing:?}"
-        );
-        self.layout = Some(layout);
-        self.args_layout = Some(args_layout);
+        if batch.stroke_total > 0 {
+            pipes.strokes.get_or_insert_with(|| StrokePipes {
+                stroke_vertices: make("stroke_vertices"),
+                stroke_emit: make("stroke_emit"),
+                bin_strokes: make("bin_strokes"),
+            });
+        }
+        if batch.dash_total > 0 {
+            pipes.dashes.get_or_insert_with(|| DashPipes {
+                dash_length: make("dash_length"),
+                dash_scan_reduce: make("dash_scan_reduce"),
+                dash_scan_blocks: make("dash_scan_blocks"),
+                dash_scan_apply: make("dash_scan_apply"),
+                dash_fragments: make("dash_fragments"),
+                dash_args: make("dash_args"),
+                dash_emit: make("dash_emit"),
+                bin_dashes: make("bin_dashes"),
+            });
+        }
     }
 }
 
@@ -1847,6 +1862,34 @@ mod tests {
     use super::*;
     use crate::render::stroke_abi::{CLOSE, FRAG_START_CAP};
     use kurbo::{Affine, PathEl, Point};
+
+    #[test]
+    fn coverage_pipelines_follow_later_stroke_and_dash_use() {
+        let Some((device, _, delivery)) = delivery_device() else {
+            return;
+        };
+        let mut coverage = GpuCoverage::new(&device, u64::MAX);
+        let mut batch = Batch::default();
+        coverage.ensure_pipes(&device, delivery, batch);
+        let pipes = coverage.pipes.as_ref().unwrap();
+        let fill = pipes.flatten.clone();
+        assert!(pipes.strokes.is_none());
+        assert!(pipes.dashes.is_none());
+
+        batch.stroke_total = 1;
+        coverage.ensure_pipes(&device, delivery, batch);
+        let pipes = coverage.pipes.as_ref().unwrap();
+        let stroke = pipes.strokes.as_ref().unwrap().stroke_emit.clone();
+        assert_eq!(pipes.flatten, fill);
+        assert!(pipes.dashes.is_none());
+
+        batch.dash_total = 1;
+        coverage.ensure_pipes(&device, delivery, batch);
+        let pipes = coverage.pipes.as_ref().unwrap();
+        assert_eq!(pipes.flatten, fill);
+        assert_eq!(pipes.strokes.as_ref().unwrap().stroke_emit, stroke);
+        assert!(pipes.dashes.is_some());
+    }
 
     #[test]
     fn radix_passes_order_keys_below_the_sentinel() {
