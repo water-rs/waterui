@@ -3493,14 +3493,16 @@ fn plane_candidates<'a>(
     }));
     candidates.extend(surf.static_layers.iter().filter_map(|(&layer, entry)| {
         let domain = entry.domain?;
-        (entry.quiet_frames >= entry.quiet_required).then_some((
-            layer,
-            planes::Candidate {
-                size: domain.size,
-                raster: domain.raster(),
-                source: planes::Source::Recorded,
-            },
-        ))
+        (entry.range == present::ColorRange::HighDynamicRange
+            || entry.quiet_frames >= entry.quiet_required)
+            .then_some((
+                layer,
+                planes::Candidate {
+                    size: domain.size,
+                    raster: domain.raster(),
+                    source: planes::Source::Recorded,
+                },
+            ))
     }));
     candidates
 }
@@ -4918,6 +4920,10 @@ impl GpuRenderer {
         self.frame_count += 1;
         self.drain_timestamps();
         self.plane_only.clear();
+        let t_prepare = Instant::now();
+        let prepared = self.prepare_plane_content(frame)?;
+        let prepared_seconds = t_prepare.elapsed().as_secs_f64();
+        stats.phases.lower_seconds = prepared_seconds;
         for sf in frame.surfaces {
             self.observe_static(sf)?;
         }
@@ -4936,7 +4942,7 @@ impl GpuRenderer {
         let mut full = 0;
         for i in 0..dirty.len() {
             let sf = dirty[i];
-            if self.plane_only_frames(sf) {
+            if !prepared.contains_key(&sf.id) && self.plane_only_frames(sf) {
                 self.plane_only.push(sf.id);
                 self.surfaces
                     .get_mut(&sf.id)
@@ -4979,7 +4985,7 @@ impl GpuRenderer {
             })
             .collect();
         diag::set_phase("lower");
-        let results = self.lower_all(&mut pending, &dirty, &inputs);
+        let results = self.lower_all(&mut pending, &dirty, &inputs, prepared);
         // GPU coverage generations count once per commit, wherever the
         // entry landed (water-rs/waterui#3081).
         stats.paths_rasterized += self.gpu_cov.generated();
@@ -5010,7 +5016,7 @@ impl GpuRenderer {
             result = self.upload_frame(&dirty, stats).await;
         }
         stats.phases.lower_seconds =
-            t_lower.elapsed().as_secs_f64() - (stats.phases.wait_seconds - wait);
+            prepared_seconds + t_lower.elapsed().as_secs_f64() - (stats.phases.wait_seconds - wait);
         tracing::debug!(
             surfaces = dirty.len(),
             lower_ms = stats.phases.lower_seconds * 1e3,
@@ -5090,6 +5096,10 @@ impl GpuRenderer {
         #[cfg(all(unix, not(target_vendor = "apple")))]
         self.flush_native_releases();
         self.plane_only.clear();
+        let t_prepare = Instant::now();
+        let prepared = self.prepare_plane_content(frame)?;
+        let prepared_seconds = t_prepare.elapsed().as_secs_f64();
+        stats.phases.lower_seconds = prepared_seconds;
         for sf in frame.surfaces {
             self.observe_static(sf)?;
         }
@@ -5108,7 +5118,7 @@ impl GpuRenderer {
         let mut full = 0;
         for i in 0..dirty.len() {
             let sf = dirty[i];
-            if self.plane_only_frames(sf) {
+            if !prepared.contains_key(&sf.id) && self.plane_only_frames(sf) {
                 self.plane_only.push(sf.id);
                 self.surfaces
                     .get_mut(&sf.id)
@@ -5151,7 +5161,7 @@ impl GpuRenderer {
             })
             .collect();
         diag::set_phase("lower");
-        let results = self.lower_all(&mut pending, &dirty, &inputs);
+        let results = self.lower_all(&mut pending, &dirty, &inputs, prepared);
         // GPU coverage generations count once per commit, wherever the
         // entry landed (water-rs/waterui#3081).
         stats.paths_rasterized += self.gpu_cov.generated();
@@ -5180,7 +5190,7 @@ impl GpuRenderer {
         let wait = stats.phases.wait_seconds;
         result = result.and_then(|()| self.upload_frame(&dirty, stats));
         stats.phases.lower_seconds =
-            t_lower.elapsed().as_secs_f64() - (stats.phases.wait_seconds - wait);
+            prepared_seconds + t_lower.elapsed().as_secs_f64() - (stats.phases.wait_seconds - wait);
         tracing::debug!(
             surfaces = dirty.len(),
             lower_ms = stats.phases.lower_seconds * 1e3,
@@ -5730,6 +5740,7 @@ impl GpuRenderer {
             &self.instance,
             &self.adapter,
             &self.device,
+            &self.queue,
             window.parent,
             size,
             window.output,
@@ -6564,6 +6575,7 @@ impl GpuRenderer {
         pending: &mut [SurfaceState],
         frames: &[&SurfaceFrame<'_>],
         inputs: &[projective::Inputs],
+        mut prepared: FxHashMap<SurfaceId, Lowered>,
     ) -> Vec<Result<Lowered, RenderError>> {
         let coverage_options = self.coverage_options();
         let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
@@ -6601,6 +6613,7 @@ impl GpuRenderer {
                     .zip(frames)
                     .zip(group_maps.iter().zip(inputs).zip(self.ready_sets.iter()))
                     .map(|(((surf, fonts), frame), ((groups, inputs), ready))| {
+                        let prepared = prepared.remove(&frame.id).unwrap_or_default();
                         s.spawn(move || {
                             let result = Self::lower_content(
                                 surf,
@@ -6616,6 +6629,7 @@ impl GpuRenderer {
                                 inputs,
                                 ready,
                                 coverage_options,
+                                prepared,
                             );
                             (result, fonts)
                         })
@@ -6654,6 +6668,7 @@ impl GpuRenderer {
                         inputs,
                         ready,
                         coverage_options,
+                        prepared.remove(&frame.id).unwrap_or_default(),
                     )
                 })
                 .collect()
@@ -6672,6 +6687,7 @@ impl GpuRenderer {
         pending: &mut [SurfaceState],
         frames: &[&SurfaceFrame<'_>],
         inputs: &[projective::Inputs],
+        mut prepared: FxHashMap<SurfaceId, Lowered>,
     ) -> Vec<Result<Lowered, RenderError>> {
         let coverage_options = self.coverage_options();
         let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
@@ -6704,6 +6720,7 @@ impl GpuRenderer {
                     inputs,
                     ready,
                     coverage_options,
+                    prepared.remove(&frame.id).unwrap_or_default(),
                 )
             })
             .collect();
@@ -6732,6 +6749,37 @@ impl GpuRenderer {
                 .shader_textures
                 .keys()
                 .any(|key| self.shaders.animated(key))
+    }
+
+    /// Prepare native-plane content before admission and output classification.
+    /// The normal lowering consumes these rasters and command counts, so early
+    /// preparation neither repeats work nor loses its transactional uploads.
+    fn prepare_plane_content(
+        &mut self,
+        frame: &Frame<'_>,
+    ) -> Result<FxHashMap<SurfaceId, Lowered>, RenderError> {
+        let mut prepared = FxHashMap::default();
+        if !<planes::Platform as planes::Compositor>::CAPTURES {
+            return Ok(prepared);
+        }
+        for sf in frame.surfaces {
+            let surf = self.surfaces.get_mut(&sf.id).expect("registered surface");
+            if !surf.promotes || !sf.changed {
+                continue;
+            }
+            let mut lowered = Lowered::default();
+            for content in surf.layers.values_mut() {
+                lowered.commands += content.retained.prepare(&mut prepared::Lowerer {
+                    fonts: &self.fonts,
+                    images: &self.images,
+                    pending: &mut lowered.pending,
+                })?;
+            }
+            if lowered.commands != 0 {
+                prepared.insert(sf.id, lowered);
+            }
+        }
+        Ok(prepared)
     }
 
     /// Observe content lifetimes without outlining glyphs until admission.
@@ -6809,8 +6857,16 @@ impl GpuRenderer {
                 .static_layers
                 .entry(layer)
                 .or_insert_with(|| planes::static_layer::Observation::new(stamp, resources));
-            if entry.observe(stamp, resources, density) {
+            let quiet = entry.observe(stamp, resources, density);
+            if entry.quiet_frames == 1 {
                 entry.range = content_range::of_ops(ops, &self.images);
+            }
+            let admit = if entry.range == present::ColorRange::HighDynamicRange {
+                entry.quiet_frames == 1
+            } else {
+                quiet
+            };
+            if admit {
                 entry.domain = planes::static_layer::domain(
                     ops,
                     source,
@@ -7001,6 +7057,10 @@ impl GpuRenderer {
     }
 
     #[inline(never)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one surface's prepared inputs and lowering resources"
+    )]
     fn lower_content(
         surf: &mut SurfaceState,
         frame: &SurfaceFrame<'_>,
@@ -7009,6 +7069,7 @@ impl GpuRenderer {
         inputs: &projective::Inputs,
         ready: &FxHashSet<LayerId>,
         coverage_options: (Option<gpu_cov::CoverageLimit>, path::CoverageRoute),
+        mut lowered: Lowered,
     ) -> Result<Lowered, RenderError> {
         surf.frame.reset();
         surf.plan_dirty = false;
@@ -7039,7 +7100,6 @@ impl GpuRenderer {
         // Lowering borrows `layers` immutably while mutating `frame`;
         // taking the map out keeps the two borrows disjoint.
         let mut layers = std::mem::take(&mut surf.layers);
-        let mut lowered = Lowered::default();
         let result = {
             let glyphs = GlyphContext {
                 atlas: resources.atlas,
@@ -7061,6 +7121,7 @@ impl GpuRenderer {
                 coverage_options.0,
             );
             lowering.coverage_route = coverage_options.1;
+            lowering.pending = std::mem::take(&mut lowered.pending);
             let result = lowering.prepare(&mut layers, &glyphs).and_then(|()| {
                 for placement in &surf.plan.planes {
                     if let Some(entry) = surf.static_layers.get(&placement.layer)
@@ -7094,7 +7155,7 @@ impl GpuRenderer {
                     &surf.plan,
                 )
             });
-            lowered.commands = lowering.commands_lowered;
+            lowered.commands += lowering.commands_lowered;
             lowered.layers = lowering.layers_composed;
             lowered.glyphs = lowering.glyphs_rasterized();
             lowered.paths = lowering.paths_rasterized();

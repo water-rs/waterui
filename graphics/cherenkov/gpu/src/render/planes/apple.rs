@@ -1179,6 +1179,9 @@ struct Configuration {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
+    // Surface configuration polls the queue, including after its render owner
+    // exits while main-thread part creation is still queued.
+    _queue: wgpu::Queue,
     size: (u32, u32),
     output: OutputRequest,
 }
@@ -2346,6 +2349,7 @@ impl LayerPlanes {
         instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         parent: Parent,
         size: (u32, u32),
         output: OutputRequest,
@@ -2358,6 +2362,7 @@ impl LayerPlanes {
                 instance: instance.clone(),
                 adapter: adapter.clone(),
                 device: device.clone(),
+                _queue: queue.clone(),
                 size,
                 output,
             },
