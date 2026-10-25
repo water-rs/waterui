@@ -441,6 +441,11 @@ impl Engine for VelloClassic {
         })
     }
 
+    fn wait_idle(&mut self) -> Result<(), BenchError> {
+        // submit waits for every render attempt before verifying its overflow feedback.
+        Ok(())
+    }
+
     fn counters(&self) -> Counters {
         self.counters.clone()
     }

@@ -1691,11 +1691,9 @@ fn run_frames(
         let t1 = Instant::now();
         let submit = engine.submit(u64::from(frame), false)?;
         let t2 = Instant::now();
-        let completed_gpu = if wait_for_completion {
-            engine.finish_gpu()?
-        } else {
-            Vec::new()
-        };
+        if wait_for_completion {
+            engine.wait_idle()?;
+        }
         let latency_seconds = wait_for_completion.then(|| t0.elapsed().as_secs_f64());
         let cpu_end = affinity::current_cpu();
         let frame_counters = match gpu_counters.as_deref_mut() {
@@ -1728,7 +1726,11 @@ fn run_frames(
             });
         }
         attribute_gpu(&mut samples, warmup, submit.gpu);
-        attribute_gpu(&mut samples, warmup, completed_gpu);
+        if wait_for_completion {
+            // Drain instrumentation after this frame's measured interval so it
+            // cannot be carried into the next render's submission or wait.
+            attribute_gpu(&mut samples, warmup, engine.finish_gpu()?);
+        }
     }
     attribute_gpu(&mut samples, warmup, engine.finish_gpu()?);
     Ok(Window {
@@ -2492,5 +2494,110 @@ mod scroll_tests {
             })
             .collect();
         assert_eq!(offsets, [0.0, 100.0, 200.0, 0.0, 200.0]);
+    }
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Probe {
+        events: Vec<&'static str>,
+        pending_frame: Option<u64>,
+    }
+
+    impl Engine for Probe {
+        fn info(&self) -> &crate::EngineInfo {
+            unreachable!("frame loop does not request provenance")
+        }
+        fn supported(&self) -> std::collections::BTreeSet<cherenkov_scene::Feature> {
+            std::collections::BTreeSet::new()
+        }
+        fn prepare(&mut self, _: &EncodeInput<'_>) -> Result<(), BenchError> {
+            Ok(())
+        }
+        fn encode(&mut self, _: &EncodeInput<'_>) -> Result<(), BenchError> {
+            self.events.push("encode");
+            Ok(())
+        }
+        fn submit(&mut self, frame: u64, _: bool) -> Result<crate::Submit, BenchError> {
+            self.events.push("submit");
+            self.pending_frame = Some(frame);
+            Ok(crate::Submit {
+                image: None,
+                gpu: Vec::new(),
+                phases: Vec::new(),
+                composition: None,
+                gpu_wait_seconds: 0.0,
+                render_seconds: None,
+                readback_seconds: None,
+            })
+        }
+        fn wait_idle(&mut self) -> Result<(), BenchError> {
+            self.events.push("complete");
+            Ok(())
+        }
+        fn finish_gpu(&mut self) -> Result<Vec<crate::GpuSample>, BenchError> {
+            self.events.push("collect timestamps");
+            Ok(self
+                .pending_frame
+                .take()
+                .into_iter()
+                .flat_map(|frame| crate::GpuSample::whole_frame(frame, Some(0.001)))
+                .collect())
+        }
+        fn counters(&self) -> crate::Counters {
+            crate::Counters::default()
+        }
+        fn memory(&self) -> crate::memory::AdapterMemory {
+            unreachable!("test has no warmup memory samples")
+        }
+        fn device(&self) -> crate::DeviceInfo {
+            unreachable!("frame loop does not request device metadata")
+        }
+    }
+
+    #[test]
+    fn completes_each_frame_before_draining_its_timestamps() {
+        let scene = Scene::new(1, 1, cherenkov_scene::Color::srgb(0.0, 0.0, 0.0));
+        let blobs = std::collections::BTreeMap::new();
+        let input = EncodeInput {
+            scene: &scene,
+            blobs: &blobs,
+            scroll_offset: None,
+        };
+        let mut engine = Probe::default();
+        let window = run_frames(
+            &mut engine,
+            &input,
+            2,
+            0,
+            FrameLoopOptions {
+                pause_at: None,
+                period: None,
+                window_hint: Duration::ZERO,
+                measure_energy: false,
+                wait_for_completion: true,
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            engine.events,
+            [
+                "encode",
+                "submit",
+                "complete",
+                "collect timestamps",
+                "encode",
+                "submit",
+                "complete",
+                "collect timestamps",
+                "collect timestamps"
+            ]
+        );
+        assert_eq!(window.samples.len(), 2);
+        assert!(window.samples.iter().all(|sample| sample.latency_seconds.is_some() && sample.gpu_seconds == Some(0.001)));
     }
 }

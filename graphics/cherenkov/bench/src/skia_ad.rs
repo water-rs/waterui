@@ -977,6 +977,11 @@ impl Engine for SkiaCpu {
         })
     }
 
+    fn wait_idle(&mut self) -> Result<(), BenchError> {
+        // Raster canvas commands are synchronous.
+        Ok(())
+    }
+
     fn counters(&self) -> Counters {
         self.counters.clone()
     }
