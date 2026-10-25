@@ -4459,6 +4459,9 @@ impl<'a> Lowering<'a> {
             let placed = (self.transform * *local).transform_rect_bbox(*bounds);
             let visible = Rect::new(0.0, 0.0, f64::from(self.width), f64::from(self.height));
             if placed.inflate(2.0, 2.0).intersect(visible).is_zero_area() {
+                // Offscreen emissions must not pin their old atlas shelves.
+                // The existing storage compaction reclaims their ranges.
+                *cache = Realization::default();
                 return Ok(false);
             }
         }
