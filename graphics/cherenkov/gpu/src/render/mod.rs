@@ -11461,23 +11461,15 @@ impl GpuRenderer {
             }
             for range in &pass.ranges {
                 let union = range.variant == ShaderVariant::Union;
+                let module = variant_index(range.module());
                 if let PipelineKind::Effect { id, replace } = range.pipeline {
                     effects.insert((id, union, replace, format_i));
-                } else if !EAGER_CORE_VARIANTS.contains(&variant_index(range.module())) {
-                    core.insert((
-                        variant_index(range.module()),
-                        format_i,
-                        range.pipeline == PipelineKind::Replace,
-                    ));
-                } else if !eager
-                    && !matches!(range.pipeline, PipelineKind::Projective { .. })
-                    && !matches!(range.image, Some(lower::ImageSource::Content(_)))
+                } else if !EAGER_CORE_VARIANTS.contains(&module)
+                    || (!eager
+                        && !matches!(range.pipeline, PipelineKind::Projective { .. })
+                        && !matches!(range.image, Some(lower::ImageSource::Content(_))))
                 {
-                    core.insert((
-                        variant_index(range.module()),
-                        format_i,
-                        range.pipeline == PipelineKind::Replace,
-                    ));
+                    core.insert((module, format_i, range.pipeline == PipelineKind::Replace));
                 }
             }
         }
