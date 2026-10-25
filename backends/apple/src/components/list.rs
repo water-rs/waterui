@@ -27,7 +27,7 @@ use waterui::component::list::{
 };
 use waterui::id::Id as RawId;
 use waterui::layout::padding::EdgeInsets;
-use waterui::layout::scroll::{ScrollController, ScrollRequest};
+use waterui::layout::scroll::{Axis, ScrollController, ScrollPosition, ScrollRequest};
 use waterui::reactive::Signal;
 use waterui::reactive::binding::Binding;
 use waterui::reactive::collection::{CollectionChange, diff, has_duplicate_ids};
@@ -40,7 +40,7 @@ use waterui_backend_core::Environment;
 use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_core::Computed;
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{Point, ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext, Renderer};
 use crate::proposal;
@@ -2026,10 +2026,149 @@ fn render(config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
 
     if let Some(controller) = config.scroll_controller {
         wire_controller(&mut leaf, &table, &state, &controller);
+        wire_position_report(&mut leaf, &table, &controller, ctx.mtm());
     }
 
     leaf.keep(state);
     leaf
+}
+
+/// `UIKit`: the table is itself the scroll surface — every offset change
+/// (`scrollViewDidScroll:`) and every layout pass (bounds, content-size and
+/// adjusted-inset changes all land there) reports the completed geometry:
+/// the offset normalized by the adjusted content insets, the viewport
+/// excluding them, the content extent as `UIKit` keeps it. Writes dedupe
+/// against the sink's current value; nothing reads a pending request.
+#[cfg(target_os = "ios")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "kit geometry is f64; the report binding is f32"
+)]
+fn wire_position_report(
+    leaf: &mut NativeLeaf,
+    table: &Retained<TableView>,
+    controller: &ScrollController<usize>,
+    _mtm: cocoa_ui::MainThreadMarker,
+) {
+    let position = controller.position_report();
+    // Nothing publishes until the first `layoutSubviews` — the surface's
+    // geometry before then is placeholder, not a measured position.
+    let measured = Rc::new(Cell::new(false));
+    let report = {
+        let measured = Rc::clone(&measured);
+        move |table: &TableView| {
+            if !measured.get() {
+                return;
+            }
+            let inset = table.adjustedContentInset();
+            let raw = table.contentOffset();
+            let bounds = table.bounds().size;
+            let extent = table.contentSize();
+            let current = ScrollPosition::new(
+                Axis::Vertical,
+                Point::new((raw.x + inset.left) as f32, (raw.y + inset.top) as f32),
+                Size::new(
+                    (bounds.width - inset.left - inset.right).max(0.0) as f32,
+                    (bounds.height - inset.top - inset.bottom).max(0.0) as f32,
+                ),
+                Size::new(extent.width as f32, extent.height as f32),
+            );
+            if position.snapshot() != Some(current) {
+                position.set(Some(current));
+            }
+        }
+    };
+    table.on_scroll({
+        let report = report.clone();
+        move |table| report(table)
+    });
+    table.set_layout_handler({
+        let measured = Rc::clone(&measured);
+        let report = report.clone();
+        move |table| {
+            measured.set(true);
+            report(table);
+        }
+    });
+    // Clears the source, scroll and layout slots — and cancels the owned
+    // flight — at the leaf's release boundary.
+    leaf.keep(cocoa_ui::HandlerTeardown::new(Retained::clone(table)));
+}
+
+/// `AppKit`: `ListTableView` is itself the `NSScrollView` — its clip bounds
+/// are the offset and viewport, its `InnerTable` document's frame the
+/// content extent. Scrolls and resizes reach the reporter through the
+/// clip's bounds-changed notifications; reflow through the document's
+/// frame-changed notifications, whose first delivery is also the first
+/// real layout — nothing publishes before it. Writes dedupe against the
+/// sink's current value; nothing reads a pending request. Both
+/// observations are leaf-kept, so they unregister at release.
+#[cfg(target_os = "macos")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "kit geometry is f64; the report binding is f32"
+)]
+fn wire_position_report(
+    leaf: &mut NativeLeaf,
+    table: &Retained<TableView>,
+    controller: &ScrollController<usize>,
+    mtm: cocoa_ui::MainThreadMarker,
+) {
+    // `table` is itself the `NSScrollView` — `ListTableView` wraps its
+    // `InnerTable` document — so it is observed directly, not through an
+    // ancestor lookup. The document's frame is the content extent; its
+    // first frame change is the first real layout, and nothing publishes
+    // before it.
+    let scroll_view = table
+        .clone()
+        .downcast::<cocoa_ui::scroll::ScrollView>()
+        .ok()
+        .expect("apple list: ListTableView is an NSScrollView");
+    let document = table.table_view();
+    let position = controller.position_report();
+    let measured = Rc::new(Cell::new(false));
+    let report = {
+        let scroll_view = scroll_view.clone();
+        let document = document.clone();
+        let measured = Rc::clone(&measured);
+        move || {
+            if !measured.get() {
+                return;
+            }
+            let bounds = scroll_view.contentView().bounds();
+            let extent = document.frame().size;
+            let current = ScrollPosition::new(
+                Axis::Vertical,
+                Point::new(bounds.origin.x as f32, bounds.origin.y as f32),
+                Size::new(bounds.size.width as f32, bounds.size.height as f32),
+                Size::new(extent.width as f32, extent.height as f32),
+            );
+            if position.snapshot() != Some(current) {
+                position.set(Some(current));
+            }
+        }
+    };
+    leaf.keep(cocoa_ui::scroll::observe_scroll_viewport(&scroll_view, {
+        let report = report.clone();
+        move || report()
+    }));
+    document.setPostsFrameChangedNotifications(true);
+    leaf.keep(cocoa_ui::notification::observe_object(
+        mtm,
+        // SAFETY: reads a notification-name constant `AppKit` owns for the
+        // process's lifetime.
+        &cocoa_ui::notification::NotificationName::framework(unsafe {
+            cocoa_ui::objc2_app_kit::NSViewFrameDidChangeNotification
+        }),
+        document.as_ref(),
+        {
+            let measured = Rc::clone(&measured);
+            move || {
+                measured.set(true);
+                report();
+            }
+        },
+    ));
 }
 
 /// Installs the `list` handler on the dispatcher: `Native<ListConfig>` →

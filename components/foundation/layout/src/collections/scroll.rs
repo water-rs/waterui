@@ -3,7 +3,7 @@
 use nami::{Binding, Computed};
 use waterui_core::{AnyView, Environment, Native, NativeView, View, animation::Animation};
 
-use crate::{Point, StretchAxis};
+use crate::{Point, Size, StretchAxis};
 
 /// One programmatic scroll request: where the scroll view goes and how it
 /// gets there.
@@ -22,6 +22,60 @@ pub struct ScrollRequest<T> {
     /// runtime, which consumes it, jumps for every request
     /// (water-rs/waterui#2084).
     pub animation: Option<Animation>,
+}
+
+/// The scroll viewport's last reported actual position.
+///
+/// A backend writes one of these into a [`ScrollController`] after every
+/// layout or scroll that moves the viewport: user drags and wheel ticks,
+/// programmatic requests, resizes and content-size changes alike. `offset`
+/// is the content offset the viewport's origin sits at, `viewport_size` the
+/// visible scroll area, `content_size` the scrollable extent — all in points.
+///
+/// `at_start`/`at_end` report edge contact across every axis the view
+/// scrolls along: a view smaller than its viewport is both at start and at
+/// end. Follow-tail UIs read them through [`Computed::map`] — for example
+/// `controller.position().map(|p| p.is_some_and(|p| p.at_end))`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct ScrollPosition {
+    /// The content offset the viewport's origin sits at, in points.
+    pub offset: Point,
+    /// The size of the visible scroll area, in points.
+    pub viewport_size: Size,
+    /// The scrollable extent, in points.
+    pub content_size: Size,
+    /// Whether the viewport touches the start of every scrollable axis.
+    pub at_start: bool,
+    /// Whether the viewport touches the end of every scrollable axis.
+    pub at_end: bool,
+}
+
+impl ScrollPosition {
+    /// Computes a position snapshot from the viewport's offset and extents.
+    ///
+    /// Edge flags consider only the axes `axis` scrolls along: an offset of
+    /// `0` or less is at start, an offset at or past
+    /// `max(content - viewport, 0)` is at end — no tolerance is applied.
+    /// Content that does not exceed its viewport reports both flags on that
+    /// axis.
+    #[must_use]
+    pub fn new(axis: Axis, offset: Point, viewport_size: Size, content_size: Size) -> Self {
+        let (horizontal, vertical) = match axis {
+            Axis::Horizontal => (true, false),
+            Axis::Vertical => (false, true),
+            Axis::All => (true, true),
+        };
+        let max_x = (content_size.width - viewport_size.width).max(0.0);
+        let max_y = (content_size.height - viewport_size.height).max(0.0);
+        Self {
+            offset,
+            viewport_size,
+            content_size,
+            at_start: (!horizontal || offset.x <= 0.0) && (!vertical || offset.y <= 0.0),
+            at_end: (!horizontal || offset.x >= max_x) && (!vertical || offset.y >= max_y),
+        }
+    }
 }
 
 /// Explicit programmatic control for a scrollable view.
@@ -44,6 +98,11 @@ pub struct ScrollRequest<T> {
 pub struct ScrollController<T: Clone + 'static> {
     request: Binding<ScrollRequest<T>>,
     generation: Binding<i32>,
+    /// The viewport's last reported actual [`ScrollPosition`]: `None` until
+    /// the backend lays the view out once, then the latest measured
+    /// position, kept across clones of this controller and across the view
+    /// unmounting — it is never reset.
+    position: Binding<Option<ScrollPosition>>,
 }
 
 impl<T: Clone + 'static> ScrollController<T> {
@@ -56,6 +115,7 @@ impl<T: Clone + 'static> ScrollController<T> {
                 animation: None,
             }),
             generation: Binding::container(0),
+            position: Binding::container(None),
         }
     }
 
@@ -98,6 +158,36 @@ impl<T: Clone + 'static> ScrollController<T> {
     #[must_use]
     pub fn generation(&self) -> Computed<i32> {
         self.generation.clone().into()
+    }
+
+    /// Returns the viewport's last reported actual position as a read-only
+    /// signal.
+    ///
+    /// `None` until the backend lays the bound view out once; afterwards the
+    /// latest [`ScrollPosition`] the backend measured — user scrolls,
+    /// requests this controller issued, resizes and content-size changes
+    /// alike. It is the last actual position, never a pending request, and
+    /// it is retained: cloning the controller shares the same reported
+    /// position, and unmounting the view does not clear it. The signal is
+    /// read-only for the app — writing it does not scroll; use
+    /// [`Self::scroll_to`] for that.
+    ///
+    /// Read edge contact through [`Computed::map`], e.g.
+    /// `controller.position().map(|p| p.is_some_and(|p| p.at_end))` for a
+    /// follow-tail chat view.
+    #[must_use]
+    pub fn position(&self) -> Computed<Option<ScrollPosition>> {
+        self.position.clone().into()
+    }
+
+    /// The sink a backend writes the measured [`ScrollPosition`] into.
+    ///
+    /// Backend realization crates attach this binding and write every actual
+    /// position change; it is not part of the app's API.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn position_report(&self) -> Binding<Option<ScrollPosition>> {
+        self.position.clone()
     }
 }
 
@@ -324,8 +414,8 @@ pub fn scroll_both(content: impl View) -> ScrollView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Axis, ScrollController, ScrollRequest, scroll_stretch_axis};
-    use crate::{Point, StretchAxis};
+    use super::{Axis, ScrollController, ScrollPosition, ScrollRequest, scroll_stretch_axis};
+    use crate::{Point, Size, StretchAxis};
     use core::time::Duration;
     use nami::Signal;
     use waterui_core::animation::Animation;
@@ -440,5 +530,68 @@ mod tests {
                 "omnidirectional scroll under {content:?}"
             );
         }
+    }
+
+    #[test]
+    fn scroll_position_edges_follow_the_scrolling_axis() {
+        let viewport = Size::new(100.0, 100.0);
+        let content = Size::new(400.0, 300.0);
+
+        // Vertical: only y decides the edges.
+        let top = ScrollPosition::new(Axis::Vertical, Point::new(0.0, 0.0), viewport, content);
+        assert!(top.at_start && !top.at_end);
+        let middle =
+            ScrollPosition::new(Axis::Vertical, Point::new(390.0, 150.0), viewport, content);
+        assert!(!middle.at_start && !middle.at_end);
+        let bottom = ScrollPosition::new(Axis::Vertical, Point::new(0.0, 200.0), viewport, content);
+        assert!(!bottom.at_start && bottom.at_end);
+
+        // Horizontal: only x decides the edges.
+        let left = ScrollPosition::new(Axis::Horizontal, Point::new(0.0, 0.0), viewport, content);
+        assert!(left.at_start && !left.at_end);
+        let right =
+            ScrollPosition::new(Axis::Horizontal, Point::new(300.0, 0.0), viewport, content);
+        assert!(!right.at_start && right.at_end);
+
+        // Both axes must reach an edge together.
+        let corner = ScrollPosition::new(Axis::All, Point::new(300.0, 200.0), viewport, content);
+        assert!(!corner.at_start && corner.at_end);
+        let half = ScrollPosition::new(Axis::All, Point::new(300.0, 0.0), viewport, content);
+        assert!(!half.at_start && !half.at_end);
+        let origin = ScrollPosition::new(Axis::All, Point::new(0.0, 0.0), viewport, content);
+        assert!(origin.at_start && !origin.at_end);
+    }
+
+    #[test]
+    fn scroll_position_shorter_content_is_at_both_edges() {
+        let position = ScrollPosition::new(
+            Axis::Vertical,
+            Point::new(0.0, 0.0),
+            Size::new(100.0, 200.0),
+            Size::new(100.0, 50.0),
+        );
+        assert!(position.at_start && position.at_end);
+    }
+
+    #[test]
+    fn scroll_position_is_shared_and_unmoved_by_requests() {
+        let controller = ScrollController::new(Point::zero());
+        assert_eq!(controller.position().snapshot(), None);
+
+        let reported = ScrollPosition::new(
+            Axis::Vertical,
+            Point::new(0.0, 20.0),
+            Size::new(100.0, 100.0),
+            Size::new(100.0, 300.0),
+        );
+        controller.position_report().set(Some(reported));
+
+        // Clones share the same reported position …
+        let clone = controller.clone();
+        assert_eq!(clone.position().snapshot(), Some(reported));
+
+        // … and submitting a request does not move the actual position.
+        controller.scroll_to(Point::new(0.0, 240.0));
+        assert_eq!(controller.position().snapshot(), Some(reported));
     }
 }

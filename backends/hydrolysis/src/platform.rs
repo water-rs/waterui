@@ -10,7 +10,7 @@ use waterui_graphics::gpu::RedrawHandle;
 /// the engine selects compact SDR storage and upgrades for HDR content
 /// where the display chain carries it, paced FIFO, with a transparency-capable composite
 /// alpha mode iff the window is transparent (#2445).
-#[cfg(any(hydrolysis_winit, target_os = "android"))]
+#[cfg(hydrolysis_winit)]
 pub const fn hydrolysis_output_request(transparent: bool) -> cherenkov_gpu::interop::OutputRequest {
     cherenkov_gpu::interop::OutputRequest {
         transparent,
@@ -22,15 +22,15 @@ pub const fn hydrolysis_output_request(transparent: bool) -> cherenkov_gpu::inte
 /// Negotiates the output of a host-configured window surface — the
 /// engine's `select_content_output` over the surface's advertised capabilities
 /// with [`hydrolysis_output_request`], the display's reported headroom
-/// sampled alongside (#2445). The winit (Linux, Windows) and Android
-/// hosts configure their swapchains from the result; the macOS host
+/// sampled alongside (#2445). The winit Linux and Windows hosts
+/// configure their swapchains from the result; the macOS host
 /// hands the same request to the engine's `WindowTarget` instead.
 ///
 /// # Errors
 /// [`cherenkov::SurfaceError::UnsupportedTarget`] when the surface
 /// advertises nothing the request admits; the error names the request
 /// and the offer.
-#[cfg(any(all(hydrolysis_winit, not(target_os = "macos")), target_os = "android"))]
+#[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
 pub fn negotiate_host_output(
     surface: &wgpu::Surface<'_>,
     adapter: &wgpu::Adapter,
@@ -128,6 +128,7 @@ fn poll_device(
 /// Metal and Vulkan (water-rs/cherenkov#57); adapters that lack it get the
 /// same hard `Engine::new` failure the engine documents. Normalized 16-bit
 /// textures feed HDR media paths wherever the adapter provides them.
+/// Indirect first instances enable the engine's optional GPU path coverage.
 #[must_use]
 pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Features {
     if cfg!(target_vendor = "apple") {
@@ -144,7 +145,8 @@ pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Featur
     let mut required = adapter_features
         & (wgpu::Features::PIPELINE_CACHE
             | wgpu::Features::PASSTHROUGH_SHADERS
-            | wgpu::Features::SHADER_F16);
+            | wgpu::Features::SHADER_F16
+            | wgpu::Features::INDIRECT_FIRST_INSTANCE);
     if adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
         required |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
     }
@@ -1325,15 +1327,6 @@ pub enum SurfaceFrame {
         /// A view of `texture` to render into or read from.
         view: wgpu::TextureView,
     },
-    /// A platform surface frame presented through Android's `ANativeWindow`.
-    #[cfg(target_os = "android")]
-    Android {
-        /// The surface texture this frame was acquired into; presenting it
-        /// queues the frame for display.
-        output: wgpu::SurfaceTexture,
-        /// A view of `texture` to render into or read from.
-        view: wgpu::TextureView,
-    },
 }
 
 impl SurfaceFrame {
@@ -1344,8 +1337,6 @@ impl SurfaceFrame {
             Self::Offscreen { texture, .. } => texture,
             #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
             Self::Window { output, .. } => &output.texture,
-            #[cfg(target_os = "android")]
-            Self::Android { output, .. } => &output.texture,
         }
     }
 
@@ -1356,14 +1347,11 @@ impl SurfaceFrame {
             Self::Offscreen { view, .. } => view,
             #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
             Self::Window { view, .. } => view,
-            #[cfg(target_os = "android")]
-            Self::Android { view, .. } => view,
         }
     }
 }
 
-#[cfg(any(hydrolysis_winit, target_os = "android"))]
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
 pub fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,
 ) -> Result<wgpu::SurfaceTexture, SurfaceError> {
@@ -1468,6 +1456,15 @@ pub struct EngineWindowTarget<'a> {
     pub(crate) transparent: bool,
     /// Whether the window crossed displays since the previous frame.
     pub(crate) display_moved: bool,
+}
+
+/// Android's engine-presented window, owned by its `SurfaceView` attachment.
+#[cfg(target_os = "android")]
+pub struct EngineAndroidTarget<'a> {
+    pub state: &'a std::rc::Rc<crate::engine::SharedEngineState>,
+    pub window: &'a ndk::native_window::NativeWindow,
+    pub window_slot:
+        &'a mut Option<crate::renderer::CherenkovWindow<crate::engine::AndroidCherenkovSurface>>,
 }
 
 /// The window's platform safe area in logical units.
@@ -1894,7 +1891,7 @@ impl OffscreenGpuContext {
                 label: Some("hydrolysis-offscreen-device"),
                 required_features,
                 required_limits,
-                memory_hints: wgpu::MemoryHints::Performance,
+                memory_hints: cherenkov_gpu::interop::memory_hints(adapter.get_info().backend),
                 experimental_features: wgpu::ExperimentalFeatures::default(),
                 trace: wgpu::Trace::default(),
             },
@@ -2555,10 +2552,6 @@ impl OffscreenSurface {
             #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
             SurfaceFrame::Window { .. } => {
                 panic!("hydrolysis offscreen surface received a window frame");
-            }
-            #[cfg(target_os = "android")]
-            SurfaceFrame::Android { .. } => {
-                panic!("hydrolysis offscreen surface received an android frame");
             }
         }
     }
@@ -3237,7 +3230,7 @@ mod winit_impl {
                     label: Some("hydrolysis-winit-device"),
                     required_features,
                     required_limits,
-                    memory_hints: wgpu::MemoryHints::Performance,
+                    memory_hints: cherenkov_gpu::interop::memory_hints(adapter.get_info().backend),
                     experimental_features: wgpu::ExperimentalFeatures::default(),
                     trace: wgpu::Trace::default(),
                 },

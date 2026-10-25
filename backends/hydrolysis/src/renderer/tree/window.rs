@@ -441,6 +441,7 @@ impl SemanticCore {
             tree.emit_accessibility(self, env);
             self.finish_emit_pass();
         }
+        self.content_minimum = None;
         self.render_tree = Some(tree);
         self.finish_semantic_rebuild_frame(&live_dynamics);
         self.finish_rebuild();
@@ -485,12 +486,27 @@ impl SemanticCore {
             self.finish_emit_pass();
         }
         self.finish_semantic_emit_frame(&tree, structural_change);
+        self.content_minimum = None;
         self.render_tree = Some(tree);
         true
     }
 }
 
 impl HydrolysisRenderer {
+    /// Refreshes text presentation without walking or laying out the view tree.
+    pub(crate) fn record_text_input_overlay(
+        &mut self,
+        env: &Environment,
+        transform: kurbo::Affine,
+    ) {
+        let host = self.core.presentation_hosts.text_overlay.clone();
+        self.record_host(&host, |renderer| {
+            renderer.registries();
+            renderer.render_active_text_context_menu_overlay(env, transform);
+            renderer.prepare_transient_text_input_overlay(env, transform);
+        });
+    }
+
     /// Records every presentation under its host cell — the text context
     /// menu overlay, the open `.context_menu` presentation and the anchored
     /// overlays — after the window content's flush. Each host's record
@@ -507,11 +523,7 @@ impl HydrolysisRenderer {
         // The overlay-mode text context menu re-encodes with the frame it
         // floats over; drawing it only on the one-time build path would
         // leave it visible for a single frame.
-        let host = self.core.presentation_hosts.text_overlay.clone();
-        self.record_host(&host, |renderer| {
-            renderer.render_active_text_context_menu_overlay(env, transform);
-            renderer.prepare_transient_text_input_overlay(env, transform);
-        });
+        self.record_text_input_overlay(env, transform);
         // Same for an open `.context_menu` presentation: its dim backdrop,
         // lifted preview and anchored accessory re-encode per frame and the
         // pass is where dismiss_requests/menu-close is observed.
@@ -551,6 +563,7 @@ impl HydrolysisRenderer {
         // Build-time marks are consumed by the build itself.
         self.clear_all_marks();
         let _ = self.signals.take_patch_request();
+        self.content_minimum = None;
         self.render_tree = Some(tree);
         self.finish_rebuild_frame();
     }
@@ -618,6 +631,7 @@ impl HydrolysisRenderer {
             {
                 self.frame_stage_times.encode += encode_started_at.elapsed();
             }
+            self.content_minimum = None;
             self.render_tree = Some(tree);
             return;
         }
@@ -656,6 +670,7 @@ impl HydrolysisRenderer {
         {
             self.frame_stage_times.encode += encode_started_at.elapsed();
         }
+        self.content_minimum = None;
         self.render_tree = Some(node);
     }
 
@@ -767,6 +782,7 @@ impl HydrolysisRenderer {
         self.clear_focused_fields();
         #[cfg(feature = "accessibility")]
         self.finalize_accessibility_tree_update();
+        self.content_minimum = None;
         self.render_tree = Some(tree);
         true
     }
@@ -782,6 +798,9 @@ impl HydrolysisRenderer {
     /// axis is laid out inside a larger offer per the layout spec, so an app
     /// pins a maximum only through `Window::max_size`.
     pub(crate) fn measure_content_minimum(&mut self, env: &Environment) -> Option<Size> {
+        if let Some(minimum) = self.content_minimum {
+            return Some(minimum);
+        }
         let tree = self.render_tree.take()?;
         let theme = self.theme();
         // Both axes are probed together, not independently: what a view
@@ -793,10 +812,12 @@ impl HydrolysisRenderer {
             .measure(&mut self.state, env, &theme, ProposalSize::ZERO)
             .size;
         self.render_tree = Some(tree);
-        Some(Size::new(
+        let minimum = Size::new(
             validated_minimum_axis(min_box.width, "width"),
             validated_minimum_axis(min_box.height, "height"),
-        ))
+        );
+        self.content_minimum = Some(minimum);
+        Some(minimum)
     }
 
     /// The retained window tree's root, for render-identity probes.

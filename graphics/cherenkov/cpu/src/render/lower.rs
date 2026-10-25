@@ -708,6 +708,9 @@ struct Member {
 
 /// The lowering walk state for one surface frame.
 pub struct Lowering<'a, 'b> {
+    pub damage_layers: Vec<super::damage::Layer>,
+    pub damage_rows: Vec<(usize, usize)>,
+    content_damage: Option<std::ops::Range<usize>>,
     items: &'a mut Vec<Item>,
     filters: Option<&'a mut Registry>,
     frame: FrameId,
@@ -796,20 +799,6 @@ impl AnchorScratch {
             + self.members.capacity() * size_of::<(u64, Option<LayerId>, usize)>()
             + self.links.capacity() * size_of::<(LayerId, u64)>()) as u64
     }
-}
-
-/// The largest singular value of `t`'s linear part — the worst-case factor
-/// by which a user-space distance error can grow under the transform.
-#[expect(
-    clippy::many_single_char_names,
-    reason = "a/b/c/d are the conventional affine matrix coefficient names"
-)]
-fn sigma_max(t: Affine) -> f64 {
-    let [a, b, c, d, _, _] = t.as_coeffs();
-    let p = a.mul_add(a, b * b) + c.mul_add(c, d * d);
-    let det = a.mul_add(d, -(b * c));
-    let disc = p.mul_add(p, (-4.0 * det) * det).sqrt();
-    p.midpoint(disc).sqrt()
 }
 
 /// Resolves a member's engine effect into a [`SampleEffect`], also
@@ -948,7 +937,7 @@ fn draw_boundary(
     transform: Affine,
     frame: &Frame,
 ) -> Option<(Vec<Edge>, FillRule)> {
-    let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
+    let tol_u = FLATTEN_TOL / transform.spectral_norm().max(1e-12);
     let (path, rule) = if let Some(stroke) = stroke {
         let path = match shape {
             ShapeData::Line(l) => {
@@ -1321,6 +1310,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
         anchor_scratch.clear();
         Self {
             items,
+            damage_layers: Vec::new(),
+            damage_rows: Vec::new(),
+            content_damage: Some(0..0),
             filters,
             frame,
             used_filters: FxHashSet::default(),
@@ -1958,7 +1950,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         }
         // Mixed and general stacks retain their filled operands. Their
         // intersection is indexed once and rasterized on demand by band.
-        let sm = sigma_max(self.transform).max(1e-12);
+        let sm = self.transform.spectral_norm().max(1e-12);
         let tol_u = FLATTEN_TOL / sm;
         let (path, rule) = shape_outline(shape, tol_u)?;
         let edges = boundary_edges(&flatten_edges(self.transform * path, FLATTEN_TOL), rule);
@@ -2119,6 +2111,35 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// space; content and children draw in `content_transform` space,
     /// which is where `scroll_offset` bites.
     fn layer(
+        &mut self,
+        id: LayerId,
+        tree: &SurfaceTree,
+        caches: &mut FxHashMap<LayerId, ContentData>,
+    ) -> Result<(), RenderError> {
+        let start = self.items.len();
+        let start_row = self.damage_rows.len();
+        let parent_damage = self.content_damage.replace(start_row..start_row);
+        let result = self.layer_inner(id, tree, caches);
+        let changed_rows = std::mem::replace(&mut self.content_damage, parent_damage);
+        if self.local.is_none() {
+            self.damage_layers.push(super::damage::Layer {
+                id,
+                properties: if self.projects(id, tree) {
+                    tree.layer(id).revision().max(tree.content_stamp(id))
+                } else {
+                    tree.layer(id).property_revision()
+                },
+                commands: caches
+                    .get(&id)
+                    .map(|content| content.current().expect("content was prepared").0.len()),
+                changed_rows,
+                items: start..self.items.len(),
+            });
+        }
+        result
+    }
+
+    fn layer_inner(
         &mut self,
         id: LayerId,
         tree: &SurfaceTree,
@@ -2430,6 +2451,11 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 Op::BeginClip { local, shape, end } => {
                     let saved = self.transform;
                     self.transform = saved * *local;
+                    if !emissions[i].valid
+                        || !matches!(&emissions[i].data, Some(Emission::Clip(data)) if self.placement_matches(data))
+                    {
+                        self.content_damage = None;
+                    }
                     let clip = self.cached_clip(shape, &mut emissions[i]);
                     self.transform = saved;
                     if let Some(clip) = clip {
@@ -2447,6 +2473,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
                     space,
                     end,
                 } => {
+                    if !emissions[i].valid {
+                        self.content_damage = None;
+                    }
+                    emissions[i].valid = true;
                     let clip = self.clip.clone();
                     if let Some(filter) = filter {
                         self.filter_isolate(
@@ -2518,6 +2548,16 @@ impl<'a, 'b> Lowering<'a, 'b> {
             self.items.extend_from_slice(&data.output);
             return Ok(false);
         }
+        if let Some(Emission::Draw(data)) = &cache.data {
+            super::damage::record_rows(
+                &mut self.damage_rows,
+                &mut self.content_damage,
+                &data.output,
+                self.height,
+            );
+        } else {
+            self.content_damage = None;
+        }
         let (mut items, carried) = match cache.data.take() {
             Some(Emission::Draw(data)) => {
                 let carried = match data.output.as_slice() {
@@ -2563,6 +2603,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
         self.glyphs.append(&mut compose.glyphs);
         self.glyphs_rasterized += compose.glyphs_rasterized;
         self.items.extend_from_slice(&items);
+        super::damage::record_rows(
+            &mut self.damage_rows,
+            &mut self.content_damage,
+            &items,
+            self.height,
+        );
         cache.data = Some(Emission::Draw(self.device_data(items)));
         cache.valid = true;
         Ok(true)
@@ -2626,7 +2672,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let resolved = carried.or_else(|| {
             self.geometry
                 .resolve(shape, None, transform, self.edge_scratch, || {
-                    let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
+                    let tol_u = FLATTEN_TOL / transform.spectral_norm().max(1e-12);
                     let (path, rule) = shape_outline(shape, tol_u)?;
                     Some((
                         flatten_edges(frame.map(frame.anchored(path)), FLATTEN_TOL),
@@ -2826,7 +2872,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             .bitmap_fonts
             .get(&font_id)
             .ok_or_else(|| RenderError::Font(format!("unregistered bitmap font {font_id}")))?;
-        let device_ppem = (f64::from(size) * sigma_max(self.transform)) as f32;
+        let device_ppem = (f64::from(size) * self.transform.spectral_norm()) as f32;
         let strike = bitmap_font.select(device_ppem);
         let key = super::bitmap::BitmapKey {
             font: font_id,

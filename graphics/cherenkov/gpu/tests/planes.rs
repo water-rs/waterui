@@ -84,7 +84,7 @@ mod macos {
     pub fn trials() -> Vec<Trial> {
         let case = |name: &str, run: fn()| {
             Trial::test(name, move || {
-                run();
+                objc2::rc::autoreleasepool(|_| run());
                 Ok(())
             })
         };
@@ -100,6 +100,10 @@ mod macos {
             case(
                 "static_pixels_are_captured_once_and_match_engine_composition",
                 static_pixels_are_captured_once_and_match_engine_composition,
+            ),
+            case(
+                "first_frame_hdr_capture_keeps_window_parts_compact",
+                first_frame_hdr_capture_keeps_window_parts_compact,
             ),
             case(
                 "static_content_range_changes_replace_native_storage",
@@ -175,7 +179,7 @@ mod macos {
     fn hosted_trials() -> Vec<Trial> {
         let case = |name: &str, run: fn()| {
             Trial::test(name, move || {
-                run();
+                objc2::rc::autoreleasepool(|_| run());
                 Ok(())
             })
         };
@@ -609,8 +613,8 @@ mod macos {
     }
 
     objc2::define_class!(
-        // SAFETY: `NSView` has no subclassing requirements; the class
-        // implements no Drop.
+        // SAFETY: `NSView` has no subclassing requirements. Drop detaches
+        // children before superclass destruction can call our overrides.
         #[unsafe(super(NSView))]
         #[name = "CountingHostView"]
         #[thread_kind = MainThreadOnly]
@@ -659,6 +663,16 @@ mod macos {
             }
         }
     );
+
+    impl Drop for CountingHostView {
+        fn drop(&mut self) {
+            // NSView's dealloc removes children and calls willRemoveSubview:.
+            // Do that while our Rust ivars are still alive.
+            for child in &self.subviews() {
+                child.removeFromSuperview();
+            }
+        }
+    }
 
     impl CountingHostView {
         /// The `addSubview:` and removal calls seen since `reset_writes`.
@@ -1664,10 +1678,9 @@ mod macos {
                 });
                 fixture.render();
                 if cycle > 0 {
-                    assert_eq!(
-                        fixture.engine.stats().passes,
-                        1,
-                        "a periodic edit must stay in one engine pass, without a capture pass"
+                    assert!(
+                        stack(&fixture).iter().all(|layer| is_part(layer)),
+                        "periodic edits must remain engine-composited without a captured plane"
                     );
                 }
             }
@@ -1698,6 +1711,49 @@ mod macos {
         }
         for child in sublayers(layer) {
             raster_formats(&child, found);
+        }
+    }
+
+    fn first_frame_hdr_capture_keeps_window_parts_compact() {
+        let fixture = Fixture::new();
+        let layer = fixture.window.layer();
+        fixture.window.update(|tx| {
+            tx[fixture.window.root()].push(&layer);
+            tx[&layer].content(fixture.window.record(|draw| {
+                draw.fill(
+                    Rect::new(8., 6., 80., 54.),
+                    WorkingColor::new([2.0, 0.2, 0.1, 1.0]),
+                );
+            }));
+        });
+        fixture.render();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let parts: Vec<_> = stack(&fixture)
+                .into_iter()
+                .flat_map(|layer| std::iter::once(layer.clone()).chain(sublayers(&layer)))
+                .filter_map(|layer| layer.downcast::<CAMetalLayer>().ok())
+                .collect();
+            for part in &parts {
+                assert_ne!(
+                    part.pixelFormat(),
+                    MTLPixelFormat::RGBA16Float,
+                    "HDR capture must not promote an SDR window part"
+                );
+            }
+            let mut formats = Vec::new();
+            raster_formats(&fixture.host(), &mut formats);
+            if matches!(formats.as_slice(), [(format, true, _, _)]
+                if *format == objc2_core_video::kCVPixelFormatType_64RGBAHalf)
+                && !parts.is_empty()
+            {
+                break;
+            }
+            drive(deadline, &|| fixture.woke.load(Ordering::Acquire), &|| {
+                format!("HDR capture not published: {formats:?}")
+            });
+            fixture.woke.store(false, Ordering::Release);
+            fixture.render();
         }
     }
 
@@ -1742,7 +1798,7 @@ mod macos {
                 }
                 fixture.woke.store(false, Ordering::Release);
                 fixture.render();
-                capturing |= fixture.engine.stats().passes > 1;
+                capturing |= stack(&fixture).iter().any(|layer| !is_part(layer));
                 let mut formats = Vec::new();
                 raster_formats(&fixture.host(), &mut formats);
                 if matches!(formats.as_slice(), [(actual, extended, headroom, _)]

@@ -141,6 +141,13 @@ const ENGINE_WGSL5: &str = include_str!(concat!(env!("OUT_DIR"), "/engine5.wgsl"
 /// `// image-source` spans, which convert source image texels per tap.
 /// Only ranges drawing an image paint with source flags use it.
 const ENGINE_WGSL6: &str = include_str!(concat!(env!("OUT_DIR"), "/engine6.wgsl"));
+/// Solid clipped glyph specialization.
+const ENGINE_WGSL7: &str = include_str!(concat!(env!("OUT_DIR"), "/engine7.wgsl"));
+/// Span composite specialization.
+const ENGINE_WGSL8: &str = include_str!(concat!(env!("OUT_DIR"), "/engine8.wgsl"));
+const ENGINE_WGSL9: &str = include_str!(concat!(env!("OUT_DIR"), "/engine9.wgsl"));
+const ENGINE_WGSL10: &str = include_str!(concat!(env!("OUT_DIR"), "/engine10.wgsl"));
+const ENGINE_WGSL11: &str = include_str!(concat!(env!("OUT_DIR"), "/engine11.wgsl"));
 
 /// The effect-module text for a user `backdrop_effect` source.
 ///
@@ -203,9 +210,9 @@ pub fn validate_wgsl(text: &str) -> Result<naga::Module, ResourceError> {
 /// exactly those targets, so the condition lives in one place (issue #241).
 #[cfg(cherenkov_spirv)]
 pub mod spirv {
-    /// naga SPIR-V for the seven `VARIANT` specializations of
+    /// naga SPIR-V for the nine `VARIANT` specializations of
     /// `shader.wgsl`.
-    pub const ENGINE: [&[u8]; 7] = [
+    pub const ENGINE: [&[u8]; 12] = [
         include_bytes!(concat!(env!("OUT_DIR"), "/engine0.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine1.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine2.spv")),
@@ -213,6 +220,11 @@ pub mod spirv {
         include_bytes!(concat!(env!("OUT_DIR"), "/engine4.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine5.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine6.spv")),
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine7.spv")),
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine8.spv")),
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine9.spv")),
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine10.spv")),
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine11.spv")),
     ];
     /// `present.wgsl`.
     pub const PRESENT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/present.spv"));
@@ -272,13 +284,32 @@ pub mod spirv {
     #[cfg(all(cherenkov_spirv, unix))]
     pub const TILE_IMAGE_SELF: &[u8] =
         include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_image_self.spv"));
+    /// Precompiled glyph tile module.
+    #[cfg(all(cherenkov_spirv, unix))]
+    pub const TILE_GLYPH: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_glyph.spv"));
+
+    /// Precompiled glyph tile module.
+    #[cfg(all(cherenkov_spirv, unix))]
+    pub const TILE_GLYPH_SELF: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_glyph_self.spv"));
+
+    /// Precompiled composite tile module.
+    #[cfg(all(cherenkov_spirv, unix))]
+    pub const TILE_COMPOSITE: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_composite.spv"));
+
+    /// Precompiled composite tile module.
+    #[cfg(all(cherenkov_spirv, unix))]
+    pub const TILE_COMPOSITE_SELF: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_composite_self.spv"));
 }
 
 // `.metallib` files exist only in Apple builds (`build.rs` refuses to
 // produce them otherwise, and a Metal backend cannot appear on a
 // non-Apple build), so the empty slices are unreachable.
 #[cfg(target_vendor = "apple")]
-const ENGINE_METALLIB: [&[u8]; 7] = [
+const ENGINE_METALLIB: [&[u8]; 12] = [
     include_bytes!(concat!(env!("OUT_DIR"), "/engine0.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine1.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine2.metallib")),
@@ -286,9 +317,14 @@ const ENGINE_METALLIB: [&[u8]; 7] = [
     include_bytes!(concat!(env!("OUT_DIR"), "/engine4.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine5.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine6.metallib")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine7.metallib")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine8.metallib")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine9.metallib")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine10.metallib")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine11.metallib")),
 ];
 #[cfg(not(target_vendor = "apple"))]
-const ENGINE_METALLIB: [&[u8]; 7] = [&[], &[], &[], &[], &[], &[], &[]];
+const ENGINE_METALLIB: [&[u8]; 12] = [&[]; 12];
 #[cfg(target_vendor = "apple")]
 const PRESENT_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/present.metallib"));
 #[cfg(not(target_vendor = "apple"))]
@@ -332,9 +368,9 @@ const HEADROOM_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/headr
 #[cfg(target_os = "android")]
 const HEADROOM_METALLIB: &[u8] = &[];
 
-/// The seven `VARIANT` specializations of `shader.wgsl`, indexed by
+/// The paint/coverage specializations of `shader.wgsl`, indexed by
 /// `variant_index`.
-const ENGINE: [Fixed; 7] = [
+const ENGINE: [Fixed; 12] = [
     Fixed {
         wgsl: ENGINE_WGSL0,
         #[cfg(cherenkov_spirv)]
@@ -404,6 +440,56 @@ const ENGINE: [Fixed; 7] = [
         dxil: dxil::ENGINE6,
         programs: programs::ENGINE,
         entries: entries::ENGINE6,
+    },
+    Fixed {
+        wgsl: ENGINE_WGSL7,
+        #[cfg(cherenkov_spirv)]
+        spirv: spirv::ENGINE[7],
+        metallib: ENGINE_METALLIB[7],
+        #[cfg(cherenkov_dxil)]
+        dxil: dxil::ENGINE7,
+        programs: programs::ENGINE,
+        entries: entries::ENGINE7,
+    },
+    Fixed {
+        wgsl: ENGINE_WGSL8,
+        #[cfg(cherenkov_spirv)]
+        spirv: spirv::ENGINE[8],
+        metallib: ENGINE_METALLIB[8],
+        #[cfg(cherenkov_dxil)]
+        dxil: dxil::ENGINE8,
+        programs: programs::ENGINE,
+        entries: entries::ENGINE8,
+    },
+    Fixed {
+        wgsl: ENGINE_WGSL9,
+        #[cfg(cherenkov_spirv)]
+        spirv: spirv::ENGINE[9],
+        metallib: ENGINE_METALLIB[9],
+        #[cfg(cherenkov_dxil)]
+        dxil: dxil::ENGINE9,
+        programs: programs::ENGINE,
+        entries: entries::ENGINE9,
+    },
+    Fixed {
+        wgsl: ENGINE_WGSL10,
+        #[cfg(cherenkov_spirv)]
+        spirv: spirv::ENGINE[10],
+        metallib: ENGINE_METALLIB[10],
+        #[cfg(cherenkov_dxil)]
+        dxil: dxil::ENGINE10,
+        programs: programs::ENGINE,
+        entries: entries::ENGINE10,
+    },
+    Fixed {
+        wgsl: ENGINE_WGSL11,
+        #[cfg(cherenkov_spirv)]
+        spirv: spirv::ENGINE[11],
+        metallib: ENGINE_METALLIB[11],
+        #[cfg(cherenkov_dxil)]
+        dxil: dxil::ENGINE11,
+        programs: programs::ENGINE,
+        entries: entries::ENGINE11,
     },
 ];
 

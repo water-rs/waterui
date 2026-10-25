@@ -493,14 +493,13 @@ fn view_has_plain_alignment_dimensions(view: &AnyView) -> bool {
 
 impl HydrolysisRenderer {
     pub(crate) fn render_styled_text(
-        state: &mut HydroState,
-        scene: &mut Recording,
+        &mut self,
         ctx: RenderContext,
         styled: StyledStr,
         alignment: HorizontalAlignment,
         env: &Environment,
     ) {
-        Self::render_styled_text_limited(state, scene, ctx, styled, alignment, env, TailMark::None);
+        self.render_styled_text_limited(ctx, styled, alignment, env, TailMark::None);
     }
 
     #[expect(
@@ -508,24 +507,29 @@ impl HydrolysisRenderer {
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
     )]
     pub(crate) fn render_styled_text_limited(
-        state: &mut HydroState,
-        scene: &mut Recording,
+        &mut self,
         ctx: RenderContext,
         styled: StyledStr,
         alignment: HorizontalAlignment,
         env: &Environment,
         tail: TailMark,
     ) {
+        let state = &mut self.state;
         let input = resolve_text_layout_input(&styled, alignment, env);
         let fragment = state.text.record(
             &input,
             Some(crate::num_cast::f64_as_f32(ctx.bounds.width())),
             tail,
             &mut state.counters,
+            &mut state.text_scenes,
         );
-        scene.append(
-            &fragment,
-            ctx.local * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0)),
+        let source: Rc<dyn crate::renderer::chrome::LiveSource> = fragment;
+        self.push_live(
+            RenderContext {
+                local: ctx.local * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0)),
+                ..ctx
+            },
+            &source,
         );
     }
 
@@ -534,12 +538,12 @@ impl HydrolysisRenderer {
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
     )]
     pub(crate) fn render_styled_text_single_line_centered(
-        state: &mut HydroState,
-        scene: &mut Recording,
+        &mut self,
         ctx: RenderContext,
         styled: StyledStr,
         env: &Environment,
     ) {
+        let state = &mut self.state;
         let input = resolve_text_layout_input(&styled, HorizontalAlignment::Leading, env);
         let layout = state.measuring_text().shape(&input, None);
         if layout.line_count() == 0 {
@@ -555,10 +559,21 @@ impl HydrolysisRenderer {
         let height = f64::from(metrics.line_height);
         let x = ((ctx.bounds.width() - width) * 0.5).max(0.0);
         let y = ((ctx.bounds.height() - height) * 0.5).max(0.0);
-        let fragment = state
-            .text
-            .record(&input, None, TailMark::Clip(1), &mut state.counters);
-        scene.append(&fragment, ctx.local * kurbo::Affine::translate((x, y)));
+        let fragment = state.text.record(
+            &input,
+            None,
+            TailMark::Clip(1),
+            &mut state.counters,
+            &mut state.text_scenes,
+        );
+        let source: Rc<dyn crate::renderer::chrome::LiveSource> = fragment;
+        self.push_live(
+            RenderContext {
+                local: ctx.local * kurbo::Affine::translate((x, y)),
+                ..ctx
+            },
+            &source,
+        );
     }
 
     #[expect(
@@ -1655,22 +1670,16 @@ mod background_tests {
         scene.solid_fill_colours()
     }
 
-    fn rendered_fill_colours(styled: StyledStr, width: f64) -> Vec<u32> {
+    fn rendered_fill_colours(styled: &StyledStr, width: f64) -> Vec<u32> {
         let env = test_environment();
         let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
-        let mut scene = Recording::new();
-        let ctx = RenderContext {
-            local: kurbo::Affine::IDENTITY,
-            bounds: kurbo::Rect::new(0.0, 0.0, width, 200.0),
-        };
-        HydrolysisRenderer::render_styled_text_limited(
-            &mut state,
-            &mut scene,
-            ctx,
-            styled,
-            HorizontalAlignment::Leading,
-            &env,
+        let input = resolve_text_layout_input(styled, HorizontalAlignment::Leading, &env);
+        let scene = state.text.record(
+            &input,
+            Some(crate::num_cast::f64_as_f32(width)),
             TailMark::None,
+            &mut state.counters,
+            &mut state.text_scenes,
         );
         solid_fill_colours(&scene)
     }
@@ -1688,7 +1697,7 @@ mod background_tests {
             TextStyle::new().background(Color::srgb(0, 128, 0)),
         );
         single.push(" after", TextStyle::new());
-        let colours = rendered_fill_colours(single, 300.0);
+        let colours = rendered_fill_colours(&single, 300.0);
         assert!(
             colours.contains(&expected),
             "a mid-line span paints its background fill"
@@ -1704,7 +1713,7 @@ mod background_tests {
             TextStyle::new().background(Color::srgb(0, 128, 0)),
         );
         wrapped.push(" and out", TextStyle::new());
-        let colours = rendered_fill_colours(wrapped, 120.0);
+        let colours = rendered_fill_colours(&wrapped, 120.0);
         assert!(
             colours.iter().filter(|colour| **colour == expected).count() >= 2,
             "a span wrapped over two lines paints one fill per line"

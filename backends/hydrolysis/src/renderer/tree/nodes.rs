@@ -1124,6 +1124,7 @@ pub struct GestureObserverEffect {
 }
 
 pub struct ColorNode {
+    pub(crate) bounds: nami::Binding<kurbo::Rect>,
     pub(crate) core: NodeCore,
     pub(crate) color: Computed<waterui_graphics::draw::WorkingColor>,
 }

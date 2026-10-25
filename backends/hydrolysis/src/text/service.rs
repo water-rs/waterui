@@ -4,10 +4,10 @@
 //! Shaping is by far the heaviest part of measuring a text leaf — tens of
 //! microseconds against the tens of nanoseconds every other leaf costs — so
 //! it is the one measure that genuinely must be cached. The service owns that
-//! layout cache plus the encoded glyph-scene cache; the engine it was built
-//! with owns every cache that keys on the engine's own types.
+//! layout cache; the render state owns encoded glyph scenes on the UI thread.
+//! The engine owns every cache keyed on its own types.
 
-use std::sync::{Arc, Mutex};
+use std::{rc::Rc, sync::Mutex};
 
 use lru::LruCache;
 use waterui_core::layout::{Size as LayoutSize, VerticalAlignment, ViewDimensions};
@@ -47,14 +47,29 @@ pub struct TextService<E: TextEngine> {
     /// least-recently-shaped entries. Layouts are cheap handles, so a hit
     /// hands out a clone instead of copying the glyph runs.
     layouts: Mutex<LruCache<TextLayoutCacheKey, E::Layout>>,
-    /// Encoded glyph scenes, keyed by the shaped layout's identity plus the
-    /// draw-time line limit. The render path redraws every text leaf on every
-    /// frame (whole-scene re-encode), and re-emitting glyph runs — font
-    /// resolution, per-glyph iteration, run encoding — dominates a text leaf's
-    /// flush cost. A fragment is encoded once at the local origin and appended
-    /// under the frame's transform, so a scrolled or animated frame pays one
-    /// encoding copy per text instead of a full glyph-run walk.
-    scenes: Mutex<LruCache<TextSceneCacheKey, Arc<Recording>>>,
+}
+
+/// UI-thread glyph recordings; layout workers share only `TextService`.
+pub struct TextScenes {
+    entries: LruCache<TextSceneCacheKey, Rc<Recording>>,
+}
+
+impl Default for TextScenes {
+    fn default() -> Self {
+        Self {
+            entries: LruCache::new(
+                core::num::NonZeroUsize::new(TEXT_LAYOUT_CACHE_CAPACITY)
+                    .expect("text scene cache capacity must be non-zero"),
+            ),
+        }
+    }
+}
+
+impl TextScenes {
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
 }
 
 impl<E: TextEngine> TextService<E> {
@@ -65,24 +80,16 @@ impl<E: TextEngine> TextService<E> {
                 core::num::NonZeroUsize::new(TEXT_LAYOUT_CACHE_CAPACITY)
                     .expect("text layout cache capacity must be non-zero"),
             )),
-            scenes: Mutex::new(LruCache::new(
-                core::num::NonZeroUsize::new(TEXT_LAYOUT_CACHE_CAPACITY)
-                    .expect("text scene cache capacity must be non-zero"),
-            )),
         }
     }
 
-    /// The session's fonts gained faces: drops every layout and recording
-    /// shaped against the old set, here and in the engine.
+    /// The session's fonts gained faces: drops layouts shaped against the
+    /// old set, here and in the engine. The owner also clears `TextScenes`.
     #[cfg(all(target_arch = "wasm32", feature = "web"))]
     pub(crate) fn fonts_changed(&self) {
         self.layouts
             .lock()
             .expect("text layout cache mutex must not be poisoned")
-            .clear();
-        self.scenes
-            .lock()
-            .expect("text scene cache mutex must not be poisoned")
             .clear();
         self.engine.fonts_changed();
     }
@@ -230,20 +237,16 @@ impl<E: TextEngine> TextService<E> {
         max_width: Option<f32>,
         tail: TailMark,
         counters: &mut FrameWorkCounters,
-    ) -> Arc<Recording> {
+        scenes: &mut TextScenes,
+    ) -> Rc<Recording> {
         let (max_lines, tail_ellipsis) = tail.parts();
         let key = TextSceneCacheKey {
             layout: input.cache_key(max_width),
             max_lines,
             tail_ellipsis,
         };
-        if let Some(scene) = self
-            .scenes
-            .lock()
-            .expect("text scene cache mutex must not be poisoned")
-            .get(&key)
-        {
-            return Arc::clone(scene);
+        if let Some(scene) = scenes.entries.get(&key) {
+            return Rc::clone(scene);
         }
         let layout = if tail_ellipsis {
             self.shape_limited(input, max_width, max_lines)
@@ -259,11 +262,8 @@ impl<E: TextEngine> TextService<E> {
             self.engine
                 .record(&layout, max_lines, x_shift, &mut scene, counters);
         }
-        let scene = Arc::new(scene);
-        self.scenes
-            .lock()
-            .expect("text scene cache mutex must not be poisoned")
-            .put(key, Arc::clone(&scene));
+        let scene = Rc::new(scene);
+        scenes.entries.put(key, Rc::clone(&scene));
         scene
     }
 }
