@@ -366,6 +366,13 @@ pub struct EncodeInput<'a> {
     pub scroll_offset: Option<kurbo::Vec2>,
 }
 
+#[cfg(any(
+    feature = "skia",
+    feature = "skia-metal",
+    feature = "vello-classic",
+    feature = "vello-cpu",
+    feature = "vello-hybrid"
+))]
 impl EncodeInput<'_> {
     /// Map a root-content scroll into the device-space recording transform.
     pub(crate) fn scroll_transform(&self) -> Option<kurbo::Affine> {
