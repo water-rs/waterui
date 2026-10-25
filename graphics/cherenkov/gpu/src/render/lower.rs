@@ -4844,7 +4844,7 @@ impl<'a> Lowering<'a> {
         storage.templates.push(InstanceTemplate::new(
             self.frame.instances[first_instance..]
                 .iter()
-                .find(|inst| inst.meta[0] != KIND_SPAN)
+                .find(|inst| !matches!(inst.meta[0], KIND_SPAN | KIND_REGION))
                 .or_else(|| self.frame.instances.get(first_instance))
                 .unwrap_or(&Instance::new(0)),
         ));
@@ -4970,8 +4970,9 @@ impl<'a> Lowering<'a> {
                             offset
                         };
                     debug_assert!(
-                        source.kind == stored_template.kind || source.kind == KIND_SPAN,
-                        "a retained leaf has one boundary geometry and optional interior spans"
+                        source.kind == stored_template.kind
+                            || matches!(source.kind, KIND_SPAN | KIND_REGION),
+                        "a retained leaf has one boundary geometry and optional interior spans or regions"
                     );
                 }
                 if let Some(pending) = self.mask_pending {
