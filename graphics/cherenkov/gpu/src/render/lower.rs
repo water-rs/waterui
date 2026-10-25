@@ -4727,6 +4727,9 @@ impl<'a> Lowering<'a> {
                 Vec2::new(coefficients[4], coefficients[5]),
                 (f64::from(self.width), f64::from(self.height)),
             );
+        if prepared.bound.empty {
+            return Ok(true);
+        }
         if !self.automatic_gpu(&prepared, &prepared.bound) {
             return Ok(false);
         }
@@ -7120,6 +7123,38 @@ mod tests {
             let mut retained = ContentData::new(cherenkov::Picture::record(|_| {}));
             let mut previous_geometry = None;
             let mut previous_draw = std::ptr::null();
+            if has_compute && large {
+                // A culled GPU candidate must not outline/rasterize on the CPU,
+                // and its empty retained emission must not hide it after a move.
+                let mut frame = Frame::default();
+                let mut anchors = AnchorScratch::default();
+                let mut raster = path::EmitScratch::new();
+                let mut lowering = Lowering::new(
+                    &mut frame,
+                    (128, 128),
+                    &mut anchors,
+                    &mut raster,
+                    Some(test_limit()),
+                );
+                lowering.begin_pass(Target::Part(0), None);
+                lowering.transform = Affine::translate((1000.25, 1000.25));
+                lowering
+                    .leaf(
+                        (0, &op),
+                        None,
+                        &mut cache,
+                        &mut retained.storage,
+                        &glyphs,
+                        &cherenkov::DisplayList::default(),
+                    )
+                    .expect("offscreen automatic coverage");
+                assert_eq!(lowering.paths_rasterized(), 0);
+                assert!(lowering.pending.is_empty());
+                assert!(lowering.frame.instances.is_empty());
+                assert!(cache.data.as_ref().unwrap().geometry.is_none());
+            }
+
+            let templates_before = retained.storage.templates.len();
             // CPU pending atlas patches are applied by the renderer before reuse.
             // The GPU leaf's second frame hits the retained emission and
             // re-pushes its draw record — the coverage entry joins at
@@ -7213,7 +7248,7 @@ mod tests {
                                 retained.storage.instances.len(),
                                 retained.storage.templates.len()
                             ),
-                            (1, 1),
+                            (1, templates_before + 1),
                             "re-placement does not grow the retained storage"
                         );
                     }
