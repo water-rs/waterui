@@ -2788,9 +2788,13 @@ pub fn entry(
     transform: Affine,
     coords: &[i16],
     pending: &mut Vec<PendingRaster>,
+    pending_glyphs: &mut FxHashMap<GlyphKey, (Entry, u32)>,
 ) -> Result<(Entry, Option<u32>), RenderError> {
     if let Some(entry) = atlas.get(&key) {
         return Ok((entry, None));
+    }
+    if let Some(&(entry, index)) = pending_glyphs.get(&key) {
+        return Ok((entry, Some(index)));
     }
     let cell = rasterize_texels(font, glyph_id, size, subpixel, transform, coords)?;
     let (left, top, w, h, texels) = cell.map_or((0, 0, 0, 0, Vec::new()), |c| {
@@ -2805,17 +2809,16 @@ pub fn entry(
         h,
         texels,
     });
-    Ok((
-        Entry {
-            x: 0,
-            y: 0,
-            w: w as u16,
-            h: h as u16,
-            left,
-            top,
-        },
-        Some(idx),
-    ))
+    let entry = Entry {
+        x: 0,
+        y: 0,
+        w: w as u16,
+        h: h as u16,
+        left,
+        top,
+    };
+    pending_glyphs.insert(key, (entry, idx));
+    Ok((entry, Some(idx)))
 }
 
 /// Rasterizes the glyph's outline into coverage texels — pure CPU work
@@ -3144,8 +3147,9 @@ mod tests {
         /// Lower `keys` against `atlas`, collecting the pending rasters.
         fn lower(atlas: &Atlas, font: &FontData, keys: &[GlyphKey]) -> Vec<PendingRaster> {
             let mut pending = Vec::new();
+            let mut pending_glyphs = FxHashMap::default();
             for &k in keys {
-                entry(
+                let first = entry(
                     atlas,
                     font,
                     k,
@@ -3155,8 +3159,25 @@ mod tests {
                     Affine::IDENTITY,
                     &[],
                     &mut pending,
+                    &mut pending_glyphs,
                 )
                 .expect("entry");
+                let count = pending.len();
+                let repeated = entry(
+                    atlas,
+                    font,
+                    k,
+                    k.glyph,
+                    16.0,
+                    (0.0, 0.0),
+                    Affine::IDENTITY,
+                    &[],
+                    &mut pending,
+                    &mut pending_glyphs,
+                )
+                .expect("repeated entry");
+                assert_eq!(first, repeated);
+                assert_eq!(pending.len(), count);
             }
             pending
         }
