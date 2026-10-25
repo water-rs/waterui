@@ -521,6 +521,11 @@ impl GpuCoverage {
     /// The frame's submit landed: entries it generated are replayable
     /// and a compaction's copies have executed (water-rs/waterui#3081).
     pub fn submitted(&mut self) {
+        // Consecutive generation frames reuse their working set. Once a frame
+        // only replays retained coverage, its sort/flatten buffers are unused.
+        if !self.has_misses() {
+            self.buffers = None;
+        }
         if !self.encoded {
             return;
         }
@@ -2104,6 +2109,23 @@ mod tests {
         frame.draw(&device, first).expect("first cache hit");
         frame.draw(&device, second).expect("second cache hit");
         assert!(!frame.has_misses(), "both batches remain cached");
+        frame.ensure(&device);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        frame
+            .record_prologue(&device, &queue, &mut encoder, delivery, None)
+            .expect("cached prologue");
+        let replay = read_back(
+            &device,
+            &queue,
+            &[(frame.draws_buffer(), 0, u64::from(ARGS_WORDS) * 8)],
+            encoder,
+        );
+        assert_eq!(replay[0], words[2], "cached coverage preserves draw counts");
+        frame.submitted();
+        assert!(
+            frame.buffers.is_none(),
+            "replay releases generation scratch"
+        );
     }
 
     fn device() -> Option<wgpu::Device> {
