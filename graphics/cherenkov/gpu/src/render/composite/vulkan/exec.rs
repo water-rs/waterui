@@ -309,7 +309,8 @@ pub fn encode(
                     &Epoch {
                         views: &views[..slot_count],
                         images: &images[..slot_count],
-                        extent: size,
+                        region: epoch.region,
+                        repaint: surf.draw_demand.pass(first_output.pass),
                         clear,
                         engine_set,
                         dummy,
@@ -333,7 +334,8 @@ pub fn encode(
 struct Epoch<'a> {
     views: &'a [vk::ImageView],
     images: &'a [vk::Image],
-    extent: (u32, u32),
+    region: [u32; 4],
+    repaint: &'a cherenkov::damage::Region,
     clear: Option<[f32; 4]>,
     engine_set: vk::DescriptorSet,
     dummy: vk::ImageView,
@@ -442,154 +444,169 @@ unsafe fn record(
             }
         })
         .collect();
-    let area = vk::Rect2D {
-        offset: vk::Offset2D { x: 0, y: 0 },
-        extent: vk::Extent2D {
-            width: epoch.extent.0,
-            height: epoch.extent.1,
-        },
-    };
-    // SAFETY: `cb` is recording with no rendering open and the
-    // attachments are live views of images in the declared layout.
-    unsafe {
-        mirror.begin_rendering(
-            cb,
-            &vk::RenderingInfo::default()
-                .render_area(area)
-                .layer_count(1)
-                .color_attachments(&attachments),
-        );
-    }
-
-    // The state the rendering has already been given. An epoch spans
-    // many canonical passes that share a region, a pipeline or a
-    // sampled binding, and rebinding what is already bound is the
-    // executor's own host cost (#2549).
-    let mut viewport: Option<[u32; 4]> = None;
-    let mut bound_sampled: Option<vk::DescriptorSet> = None;
-    let mut bound_input: Option<vk::DescriptorSet> = None;
-    let mut bound_offset: Option<u32> = None;
-    let mut remapped: Option<(u8, u8)> = None;
     let mut result = Ok(());
-    for draw in draws {
-        let mut created = false;
-        let pipeline = match mirror.pipeline(draw.key, &mut created) {
-            Ok(pipeline) => pipeline,
-            Err(error) => {
-                result = Err(error);
-                break;
-            }
-        };
-        note(pipelines, created, draw.pass, draw.key);
-        let sampled = match mirror.sampled_set(epoch.stamp, epoch.dummy, draw.image, draw.mask) {
-            Ok(set) => set,
-            Err(error) => {
-                result = Err(error);
-                break;
-            }
-        };
-        let input = match mirror.input_set(
-            epoch.stamp,
-            epoch.views[usize::from(draw.key.target)],
-            epoch.views[usize::from(draw.key.source)],
-        ) {
-            Ok(set) => set,
-            Err(error) => {
-                result = Err(error);
-                break;
-            }
-        };
-        if remapped != Some((draw.key.target, draw.key.source)) {
-            remapped = Some((draw.key.target, draw.key.source));
-            // SAFETY: `cb` is recording inside the rendering begun
-            // above, whose attachment count is `draw.key.slots`.
-            unsafe { mirror.remap(cb, draw.key.slots, draw.key.target, draw.key.source) };
+    let mut first_region = true;
+    for repaint in crate::render::repaint::Scissors::new(epoch.repaint, epoch.region).rectangles() {
+        if !std::mem::take(&mut first_region) {
+            stats.passes += 1;
         }
-        if viewport != Some(draw.region) {
-            viewport = Some(draw.region);
-            let [x, y, width, height] = draw.region;
-            // wgpu's clip convention needs the Y-flip viewport: every
-            // wgpu pass of the frame is issued `y + h / -h` by
-            // wgpu-hal, and the epoch draws the same instances.
-            // SAFETY: `cb` is recording and both states are dynamic in
-            // every tile pipeline.
-            unsafe {
-                device.cmd_set_viewport(
-                    cb,
-                    0,
-                    &[vk::Viewport {
-                        x: x as f32,
-                        y: (y + height) as f32,
-                        width: width as f32,
-                        height: -(height as f32),
-                        min_depth: 0.0,
-                        max_depth: 1.0,
-                    }],
-                );
-                device.cmd_set_scissor(
-                    cb,
-                    0,
-                    &[vk::Rect2D {
-                        offset: vk::Offset2D {
-                            x: i32::try_from(x).unwrap_or(i32::MAX),
-                            y: i32::try_from(y).unwrap_or(i32::MAX),
-                        },
-                        extent: vk::Extent2D { width, height },
-                    }],
-                );
-            }
-        }
-        // SAFETY: `cb` is recording inside the rendering; `pipeline`
-        // and the sets were produced by the mirror for this layout.
+        let [x, y, width, height] = repaint;
+        let area = vk::Rect2D {
+            offset: vk::Offset2D {
+                x: i32::try_from(x).expect("attachment x"),
+                y: i32::try_from(y).expect("attachment y"),
+            },
+            extent: vk::Extent2D { width, height },
+        };
+        // SAFETY: `cb` is recording with no rendering open and the
+        // attachments are live views of images in the declared layout.
         unsafe {
-            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
-            if bound_offset != Some(draw.dynamic_offset) {
-                bound_offset = Some(draw.dynamic_offset);
-                device.cmd_bind_descriptor_sets(
-                    cb,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    layout,
-                    0,
-                    &[epoch.engine_set],
-                    &[draw.dynamic_offset],
-                );
-            }
-            if bound_sampled != Some(sampled) {
-                bound_sampled = Some(sampled);
-                device.cmd_bind_descriptor_sets(
-                    cb,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    layout,
-                    1,
-                    &[sampled],
-                    &[],
-                );
-            }
-            if bound_input != Some(input) {
-                bound_input = Some(input);
-                device.cmd_bind_descriptor_sets(
-                    cb,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    layout,
-                    2,
-                    &[input],
-                    &[],
-                );
-            }
-            device.cmd_draw(
+            mirror.begin_rendering(
                 cb,
-                draw.vertices.end - draw.vertices.start,
-                draw.instances.end - draw.instances.start,
-                draw.vertices.start,
-                draw.instances.start,
+                &vk::RenderingInfo::default()
+                    .render_area(area)
+                    .layer_count(1)
+                    .color_attachments(&attachments),
             );
         }
-        stats.draws += 1;
-        stats.pipeline_switches += 1;
-    }
 
-    // SAFETY: `cb` is recording inside the rendering begun above.
-    unsafe { mirror.end_rendering(cb) };
+        // The state the rendering has already been given. An epoch spans
+        // many canonical passes that share a region, a pipeline or a
+        // sampled binding, and rebinding what is already bound is the
+        // executor's own host cost (#2549).
+        let mut viewport: Option<[u32; 4]> = None;
+        let mut bound_sampled: Option<vk::DescriptorSet> = None;
+        let mut bound_input: Option<vk::DescriptorSet> = None;
+        let mut bound_offset: Option<u32> = None;
+        let mut remapped: Option<(u8, u8)> = None;
+        for draw in draws {
+            let Some(scissor) = crate::render::repaint::intersection(draw.region, repaint) else {
+                continue;
+            };
+            let mut created = false;
+            let pipeline = match mirror.pipeline(draw.key, &mut created) {
+                Ok(pipeline) => pipeline,
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            };
+            note(pipelines, created, draw.pass, draw.key);
+            let sampled = match mirror.sampled_set(epoch.stamp, epoch.dummy, draw.image, draw.mask)
+            {
+                Ok(set) => set,
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            };
+            let input = match mirror.input_set(
+                epoch.stamp,
+                epoch.views[usize::from(draw.key.target)],
+                epoch.views[usize::from(draw.key.source)],
+            ) {
+                Ok(set) => set,
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            };
+            if remapped != Some((draw.key.target, draw.key.source)) {
+                remapped = Some((draw.key.target, draw.key.source));
+                // SAFETY: `cb` is recording inside the rendering begun
+                // above, whose attachment count is `draw.key.slots`.
+                unsafe { mirror.remap(cb, draw.key.slots, draw.key.target, draw.key.source) };
+            }
+            if viewport != Some(draw.region) {
+                viewport = Some(draw.region);
+                let [x, y, width, height] = draw.region;
+                // wgpu's clip convention needs the Y-flip viewport: every
+                // wgpu pass of the frame is issued `y + h / -h` by
+                // wgpu-hal, and the epoch draws the same instances.
+                // SAFETY: `cb` is recording and both states are dynamic in
+                // every tile pipeline.
+                unsafe {
+                    device.cmd_set_viewport(
+                        cb,
+                        0,
+                        &[vk::Viewport {
+                            x: x as f32,
+                            y: (y + height) as f32,
+                            width: width as f32,
+                            height: -(height as f32),
+                            min_depth: 0.0,
+                            max_depth: 1.0,
+                        }],
+                    );
+                    let [x, y, width, height] = scissor;
+                    device.cmd_set_scissor(
+                        cb,
+                        0,
+                        &[vk::Rect2D {
+                            offset: vk::Offset2D {
+                                x: i32::try_from(x).unwrap_or(i32::MAX),
+                                y: i32::try_from(y).unwrap_or(i32::MAX),
+                            },
+                            extent: vk::Extent2D { width, height },
+                        }],
+                    );
+                }
+            }
+            // SAFETY: `cb` is recording inside the rendering; `pipeline`
+            // and the sets were produced by the mirror for this layout.
+            unsafe {
+                device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+                if bound_offset != Some(draw.dynamic_offset) {
+                    bound_offset = Some(draw.dynamic_offset);
+                    device.cmd_bind_descriptor_sets(
+                        cb,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        layout,
+                        0,
+                        &[epoch.engine_set],
+                        &[draw.dynamic_offset],
+                    );
+                }
+                if bound_sampled != Some(sampled) {
+                    bound_sampled = Some(sampled);
+                    device.cmd_bind_descriptor_sets(
+                        cb,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        layout,
+                        1,
+                        &[sampled],
+                        &[],
+                    );
+                }
+                if bound_input != Some(input) {
+                    bound_input = Some(input);
+                    device.cmd_bind_descriptor_sets(
+                        cb,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        layout,
+                        2,
+                        &[input],
+                        &[],
+                    );
+                }
+                device.cmd_draw(
+                    cb,
+                    draw.vertices.end - draw.vertices.start,
+                    draw.instances.end - draw.instances.start,
+                    draw.vertices.start,
+                    draw.instances.start,
+                );
+            }
+            stats.draws += 1;
+            stats.pipeline_switches += 1;
+        }
+
+        // SAFETY: `cb` is recording inside the rendering begun above.
+        unsafe { mirror.end_rendering(cb) };
+        if result.is_err() {
+            break;
+        }
+    }
     // Slot zero goes back to the layout wgpu's tracker believes it is
     // in, so the frame's remaining passes need no knowledge of the
     // epoch. The transient slots are the mirror's own and are left in

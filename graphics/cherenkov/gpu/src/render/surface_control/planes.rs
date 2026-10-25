@@ -139,6 +139,7 @@ enum Entry<'a> {
         format: wgpu::TextureFormat,
         color: OutputColor,
         properties: Properties,
+        damage: std::borrow::Cow<'a, cherenkov::damage::Region>,
     },
     /// A frame shown on its own plane.
     Frame(Promotion<'a>),
@@ -286,7 +287,10 @@ fn raster_entry<'a>(
 ) -> Result<Entry<'a>, RenderError> {
     let layer = placement.layer;
     let (format, output_color, dataspace) = engine_encoding(range)?;
+    let mut damage = cherenkov::damage::Region::new(placement.size);
+    damage.mark_full();
     Ok(Entry::Engine {
+        damage: std::borrow::Cow::Owned(damage),
         view,
         size: placement.size,
         raster: Some((layer, generation)),
@@ -316,6 +320,7 @@ fn stack<'a>(composition: &Composition<'a>) -> Result<Vec<Entry<'a>>, RenderErro
             Slot::Part(n) => {
                 let (format, color, dataspace) = engine_encoding(composition.parts[n].range)?;
                 entries.push(Entry::Engine {
+                    damage: std::borrow::Cow::Borrowed(composition.parts[n].damage),
                     view: Some(composition.parts[n].view),
                     size: composition.size,
                     raster: None,
@@ -441,6 +446,14 @@ struct Pending {
 // Every other field is `Send`.
 unsafe impl Send for Pending {}
 
+const fn output_alpha(part: usize, transparent: bool) -> OutputAlpha {
+    if part == 0 && !transparent {
+        OutputAlpha::Opaque
+    } else {
+        OutputAlpha::Premultiplied
+    }
+}
+
 /// One engine part's surface control and buffers.
 struct Part {
     surface: SurfaceControl,
@@ -453,6 +466,38 @@ struct Part {
     raster: Option<(LayerId, u64)>,
     headroom: f32,
     format: wgpu::TextureFormat,
+    damage: cherenkov::damage::Region,
+    damage_generation: Option<u64>,
+    mapping: Option<(OutputColor, OutputAlpha)>,
+    damage_rects: Vec<ndk_sys::ARect>,
+}
+
+impl Part {
+    fn retains_raster(&self, raster: Option<(LayerId, u64)>) -> bool {
+        raster.is_some()
+            && self.raster == raster
+            && self.current.is_some_and(|id| {
+                self.buffers
+                    .iter()
+                    .find(|buffer| buffer.id == id)
+                    .expect("the current buffer belongs to this part")
+                    .repair
+                    .is_empty()
+            })
+    }
+
+    fn publish_damage(&mut self, transaction: &mut Transaction) {
+        self.damage_rects.clear();
+        self.damage_rects
+            .extend(self.damage.rectangles().iter().map(|rect| ndk_sys::ARect {
+                left: i32::try_from(rect.x0()).expect("buffer extent fits i32"),
+                top: i32::try_from(rect.y0()).expect("buffer extent fits i32"),
+                right: i32::try_from(rect.x1()).expect("buffer extent fits i32"),
+                bottom: i32::try_from(rect.y1()).expect("buffer extent fits i32"),
+            }));
+        transaction.set_damage_region(&self.surface, &self.damage_rects);
+        self.damage.clear();
+    }
 }
 
 /// One promoted frame's surface control.
@@ -677,6 +722,10 @@ impl Planes {
                 // this buffer holds only this submitted frame's reduction result.
                 let peak = unsafe { readback.read() };
                 let part = &mut self.parts[part];
+                if part.headroom.to_bits() != peak.to_bits() {
+                    part.damage.mark_full();
+                    part.publish_damage(&mut pending.transaction);
+                }
                 part.headroom = peak;
                 self.extended_range
                     .as_ref()
@@ -740,6 +789,10 @@ impl Planes {
                 raster: None,
                 headroom: display.headroom,
                 format: buffer::FORMAT,
+                damage: cherenkov::damage::Region::new(self.size),
+                damage_generation: None,
+                mapping: None,
+                damage_rects: Vec::new(),
             });
         }
         // Immutable captures follow layer identity, not their current slot
@@ -771,6 +824,8 @@ impl Planes {
                 size,
                 raster,
                 format,
+                color,
+                damage,
                 ..
             } = entry
             else {
@@ -787,8 +842,44 @@ impl Planes {
                 this.size = *size;
                 this.format = format;
                 this.raster = None;
+                this.damage = cherenkov::damage::Region::new(*size);
+                this.damage_generation = None;
+                this.mapping = None;
             }
-            if raster.is_some() && this.raster == *raster && this.current.is_some() {
+            // HDR is scene-referred; SDR content never enters the tone
+            // shoulder. Display headroom therefore does not alter stored pixels.
+            let mapping = (*color, output_alpha(part, self.transparent));
+            let invalidated = this.mapping != Some(mapping) || this.raster != *raster;
+            if invalidated {
+                this.damage.mark_full();
+                for buffer in &mut this.buffers {
+                    buffer.repair.mark_full();
+                }
+                this.mapping = Some(mapping);
+            }
+            if this.damage_generation != Some(composition.generation)
+                && !this.retains_raster(*raster)
+            {
+                for rect in damage.rectangles() {
+                    let (x, y, width, height) = rect.xywh();
+                    this.damage.add(x, y, width, height);
+                    for buffer in &mut this.buffers {
+                        buffer.repair.add(x, y, width, height);
+                    }
+                }
+                this.damage_generation = Some(composition.generation);
+            }
+        }
+        for (part, entry) in stack
+            .iter()
+            .filter(|entry| matches!(entry, Entry::Engine { .. }))
+            .enumerate()
+        {
+            let Entry::Engine { raster, .. } = entry else {
+                unreachable!("engine entry")
+            };
+            let this = &self.parts[part];
+            if this.retains_raster(*raster) {
                 chosen.push(None);
             } else {
                 match self.free_buffer(part).map_err(native)? {
@@ -818,10 +909,15 @@ impl Planes {
 
         // One submission: acquire every chosen buffer, blit each part,
         // hand the buffers back, signal the exported fence.
-        let images: Vec<vk::Image> = chosen
+        let images: Vec<(vk::Image, bool)> = chosen
             .iter()
             .enumerate()
-            .filter_map(|(part, &at)| at.map(|at| self.parts[part].buffers[at].image))
+            .filter_map(|(part, &at)| {
+                at.map(|at| {
+                    let buffer = &self.parts[part].buffers[at];
+                    (buffer.image, buffer.initialized)
+                })
+            })
             .collect();
         let mut waits = Vec::new();
         for (part, &at) in chosen.iter().enumerate() {
@@ -883,11 +979,7 @@ impl Planes {
             let output = TextureOutput {
                 texture: &self.parts[part].buffers[at].texture,
                 color,
-                alpha: if part == 0 && !self.transparent {
-                    OutputAlpha::Opaque
-                } else {
-                    OutputAlpha::Premultiplied
-                },
+                alpha: output_alpha(part, self.transparent),
                 headroom: display.headroom,
             };
             let source = source.expect("a new native buffer has engine pixels");
@@ -905,7 +997,12 @@ impl Planes {
                 device,
                 &mut blits,
                 source,
-                output,
+                &crate::render::present::Presentation {
+                    texture: output,
+                    coverage: crate::render::present::RetainedRegion(
+                        &self.parts[part].buffers[at].repair,
+                    ),
+                },
                 &self.parts[part].uniform,
                 None,
             );
@@ -928,6 +1025,12 @@ impl Planes {
             }
             hal_queue.add_signal_semaphore(self.signal, None);
             queue.submit([acquire, blits, hand_back]);
+        }
+        for (part, &at) in chosen.iter().enumerate() {
+            if let Some(at) = at {
+                self.parts[part].buffers[at].initialized = true;
+                self.parts[part].buffers[at].repair.clear();
+            }
         }
         crate::diag::submit(device, queue, "plane present");
         // SAFETY: `self.signal` is a live semaphore created with `SYNC_FD`
@@ -1038,6 +1141,7 @@ impl Planes {
                             });
                         }
                     }
+                    this.publish_damage(&mut transaction);
                     let properties = Properties {
                         z,
                         opaque: raster.is_none() && part == 0 && !self.transparent,
@@ -1418,6 +1522,31 @@ impl SystemPlanes for Planes {
     // Android parts present inside `Transaction::apply` on the render
     // thread; nothing travels to a platform compositor thread.
     type Commit = ();
+
+    fn cpu_bytes(&self) -> u64 {
+        (self.parts.capacity() * std::mem::size_of::<Part>()
+            + self.retiring.capacity() * std::mem::size_of::<Buffer>()) as u64
+            + self
+                .parts
+                .iter()
+                .map(|part| {
+                    (part.buffers.capacity() * std::mem::size_of::<Buffer>()
+                        + part.damage_rects.capacity() * std::mem::size_of::<ndk_sys::ARect>())
+                        as u64
+                        + part.damage.heap_bytes().0
+                        + part
+                            .buffers
+                            .iter()
+                            .map(|buffer| buffer.repair.heap_bytes().0)
+                            .sum::<u64>()
+                })
+                .sum::<u64>()
+            + self
+                .retiring
+                .iter()
+                .map(|buffer| buffer.repair.heap_bytes().0)
+                .sum::<u64>()
+    }
 
     fn native_bytes(&self) -> u64 {
         self.parts

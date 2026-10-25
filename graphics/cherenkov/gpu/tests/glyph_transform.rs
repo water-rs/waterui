@@ -170,6 +170,7 @@ fn offscreen_runs_skip_rasterization_and_reappear_after_scroll_or_edit() {
     ));
     wait!(engine.render(FrameTime::now())).expect("offscreen frame");
     assert_eq!(engine.stats().glyphs_rasterized, 0);
+    let empty = wait!(pixels(&surface));
 
     surface.update(|tx| {
         tx[surface.root()].scroll_offset(cherenkov::kurbo::Vec2::new(0.0, 400.25));
@@ -183,6 +184,7 @@ fn offscreen_runs_skip_rasterization_and_reappear_after_scroll_or_edit() {
     });
     wait!(engine.render(FrameTime::now())).expect("scroll out of view");
     assert_eq!(engine.stats().glyphs_rasterized, 0);
+    assert_images_match(&empty, &wait!(pixels(&surface)));
 
     value.set(run(font.id(), vec![glyph(12.25, 52.25, None)], GlyphStyle::Fill));
     wait!(engine.render(FrameTime::now())).expect("edited run enters view");

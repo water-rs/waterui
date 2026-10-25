@@ -29,6 +29,7 @@ use cherenkov_record::{animation, color, display_list, glyph, paint, record, sha
 mod backend;
 mod capability;
 mod config;
+pub mod damage;
 mod engine;
 mod error;
 mod frame;

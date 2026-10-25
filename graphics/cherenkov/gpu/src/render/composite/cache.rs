@@ -1,8 +1,7 @@
 //! Exact structural keys: changing paint values never repeats lifetime analysis.
 
-use crate::render::composition::Materialization;
-
 use super::plan::{ExecutionPlan, Formats, Limits, ReadKind};
+use crate::render::composition::Materialization;
 use crate::render::lower::{Frame, ImageSource, Pass, PipelineKind, Source, Target};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -38,6 +37,9 @@ pub struct Cache {
     draws: Vec<Draw>,
     placements: Vec<Placement>,
     samples: Vec<[u32; 6]>,
+    /// The formats and the executor mode the cached structure was
+    /// analyzed under: `Ok` limits for a native partition, `Err` for a
+    /// portable graph attributed to that reason.
     settings: Option<(Formats, Result<Limits, Materialization>)>,
 }
 
@@ -51,6 +53,10 @@ impl Cache {
 
     /// Returns whether lifetime analysis changed. Geometry-only updates
     /// retain image identities and recompute attachment eligibility.
+    ///
+    /// `limits` is what the backend's tile executor can hold, or why it
+    /// has none: `Ok` builds the native partition, `Err` the portable
+    /// dependency graph attributed to that reason (#2558).
     pub fn update(
         &mut self,
         plan: &mut ExecutionPlan,

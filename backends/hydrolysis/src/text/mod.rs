@@ -21,6 +21,7 @@ pub use engine::Affinity;
 pub use engine::FontFamilyResolution;
 pub use engine::{TailMark, TextEngine, TextLayout, TextPosition, TextSelection};
 pub use input::{ResolvedTextLayoutInput, resolve_text_layout_input};
+pub use service::TextScenes;
 pub use service::TextService;
 
 pub use parley_engine::fonts;

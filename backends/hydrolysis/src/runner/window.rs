@@ -927,7 +927,11 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
 
     let mut built = false;
     match runtime.mode {
-        FrameMode::Idle => {}
+        FrameMode::Idle => {
+            runtime
+                .renderer
+                .record_text_input_overlay(env, kurbo::Affine::IDENTITY);
+        }
         FrameMode::Refresh | FrameMode::Animate if !runtime.renderer.has_render_tree() => {
             build_window_scene(
                 runtime,
@@ -1055,6 +1059,18 @@ pub struct SurfaceRenderResult {
     render: Duration,
     present: Duration,
     snapshot: Option<HeadlessSnapshot>,
+}
+
+impl SurfaceRenderResult {
+    #[cfg(target_os = "android")]
+    pub(crate) const fn engine_presented(render: Duration) -> Self {
+        Self {
+            acquire: Duration::ZERO,
+            render,
+            present: Duration::ZERO,
+            snapshot: None,
+        }
+    }
 }
 
 /// How a window's presentation kind renders one frame and gets it to the

@@ -100,7 +100,7 @@ fn near(left: f64, right: f64) -> bool {
 }
 
 /// Writes `snapshot` under the test artifacts for visual review.
-fn save(snapshot: &HeadlessSnapshot, case: &str, name: &str) {
+pub(super) fn save(snapshot: &HeadlessSnapshot, case: &str, name: &str) {
     let path = crate::testing::artifact_snapshot_path("hydrolysis", case, name);
     std::fs::create_dir_all(path.parent().expect("the case directory"))
         .expect("the capture directory must be creatable");
