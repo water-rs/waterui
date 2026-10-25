@@ -311,6 +311,7 @@ impl Engine for VelloCpu {
             gpu: Vec::new(),
             phases: Vec::new(),
             composition: None,
+            gpu_wait_seconds: 0.0,
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
