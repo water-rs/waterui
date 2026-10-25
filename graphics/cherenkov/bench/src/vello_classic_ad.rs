@@ -22,7 +22,7 @@ use crate::convert::{self, Prepared};
 use crate::memory::{
     AdapterMemory, Reading, allocator_report, wgpu_metal_allocated_bytes, wgpu_vk_memory_budget,
 };
-use crate::vello_like::{Lowered, Op, lower, vello_features};
+use crate::vello_like::{Lowered, Op, lower, scrolled, vello_features};
 use crate::wgpu_ctx::{Gpu, Target, readback, wait};
 use crate::{BenchError, Counters, DeviceInfo, EncodeInput, Engine, EngineInfo, GpuSample, Submit};
 
@@ -86,7 +86,12 @@ impl VelloClassic {
 
 /// Replays a lowered op into `vello::Scene` — the timed `encode` is a
 /// single loop of these recording calls.
-fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
+fn replay_op(
+    scene: &mut VelloScene,
+    op: &Op<Brush>,
+    counters: &mut Counters,
+    scroll: Option<Affine>,
+) {
     match op {
         Op::PushLayer {
             transform,
@@ -94,8 +99,9 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
             blend,
             opacity,
         } => {
+            let transform = scrolled(*transform, scroll);
             let clip = clip.as_ref().expect("classic lowering fills opaque clips");
-            scene.push_layer(Fill::NonZero, *blend, *opacity, *transform, clip);
+            scene.push_layer(Fill::NonZero, *blend, *opacity, transform, clip);
         }
         Op::PopLayer => scene.pop_layer(),
         Op::Fill {
@@ -105,8 +111,9 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
             paint_transform,
             path,
         } => {
+            let transform = scrolled(*transform, scroll);
             counters.draw_commands += 1;
-            scene.fill(*rule, *transform, paint, *paint_transform, path);
+            scene.fill(*rule, transform, paint, *paint_transform, path);
         }
         Op::Stroke {
             transform,
@@ -115,8 +122,9 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
             paint_transform,
             path,
         } => {
+            let transform = scrolled(*transform, scroll);
             counters.draw_commands += 1;
-            scene.stroke(stroke, *transform, paint, *paint_transform, path);
+            scene.stroke(stroke, transform, paint, *paint_transform, path);
         }
         Op::ImageFill {
             transform,
@@ -125,10 +133,11 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
             dst_path,
             ..
         } => {
+            let transform = scrolled(*transform, scroll);
             counters.draw_commands += 1;
             scene.fill(
                 Fill::NonZero,
-                *transform,
+                transform,
                 paint,
                 Some(*paint_transform),
                 dst_path,
@@ -143,6 +152,7 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
             glyphs,
             ..
         } => {
+            let transform = scrolled(*transform, scroll);
             counters.draw_commands += 1;
             scene
                 .draw_glyphs(font)
@@ -150,7 +160,7 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
                 .normalized_coords(coords)
                 .hint(false)
                 .brush(paint)
-                .transform(*transform)
+                .transform(transform)
                 .draw(
                     Fill::NonZero,
                     glyphs.iter().map(|g| vello::Glyph {
@@ -167,8 +177,9 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
             std_dev,
             color,
         } => {
+            let transform = scrolled(*transform, scroll);
             counters.draw_commands += 1;
-            scene.draw_blurred_rounded_rect(*transform, *rect, *color, *radius, *std_dev);
+            scene.draw_blurred_rounded_rect(transform, *rect, *color, *radius, *std_dev);
         }
     }
 }
@@ -361,8 +372,9 @@ impl Engine for VelloClassic {
             ),
         );
         self.counters.draw_commands += 1;
+        let scroll = input.scroll_transform();
         for op in &lowered.ops {
-            replay_op(&mut scene, op, &mut self.counters);
+            replay_op(&mut scene, op, &mut self.counters, scroll);
         }
         self.scene = Some(scene);
         // `bytes_uploaded` counts the decoded texels the GPU receives, not

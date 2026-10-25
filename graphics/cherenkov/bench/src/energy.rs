@@ -116,14 +116,9 @@ impl Meter {
     /// path diffs counters read at the window's edges instead).
     ///
     /// # Errors
-    /// [`BenchError::Engine`] when `frames` is zero or the post-window
-    /// read fails.
+    /// [`BenchError::Engine`] when the post-window read fails.
+    /// A zero frame count reports energy without per-frame normalization.
     pub fn finish(self, start: Instant, end: Instant, frames: u32) -> Result<Outcome, BenchError> {
-        if frames == 0 {
-            return Err(BenchError::Engine(
-                "energy: --energy requires at least one measured frame (--frames > 0)".into(),
-            ));
-        }
         match self {
             Self::Odpm(before, opened) => {
                 let after = odpm::snapshot()?;
@@ -402,7 +397,7 @@ pub mod odpm {
                 RailEnergy {
                     subsystem: after.subsystems.get(rail).cloned(),
                     joules,
-                    joules_per_frame: joules / frames,
+                    joules_per_frame: (frames > 0.0).then_some(joules / frames),
                     watts: joules / window_s,
                 },
             );
@@ -412,7 +407,7 @@ pub mod odpm {
             window_seconds: window_s,
             rails,
             total_joules,
-            joules_per_frame: total_joules / frames,
+            joules_per_frame: (frames > 0.0).then_some(total_joules / frames),
             watts: total_joules / window_s,
         })
     }
@@ -608,7 +603,7 @@ pub mod powermetrics {
                     RailEnergy {
                         subsystem: None,
                         joules,
-                        joules_per_frame: joules / frames,
+                        joules_per_frame: (frames > 0.0).then_some(joules / frames),
                         watts: joules / window_s,
                     },
                 )
@@ -620,7 +615,7 @@ pub mod powermetrics {
             window_seconds: window_s,
             rails,
             total_joules,
-            joules_per_frame: total_joules / frames,
+            joules_per_frame: (frames > 0.0).then_some(total_joules / frames),
             watts: total_joules / window_s,
         }
     }
@@ -1373,9 +1368,13 @@ CH7(T=349894)[S1M_VDD_MIF], 21091363
         // 2 J over 40 frames / 2 s: 0.05 J/frame, 1 W.
         let cpu = &report.rails["CPU"];
         assert_close(cpu.joules, 2.0);
-        assert_close(cpu.joules_per_frame, 0.05);
+        assert_close(cpu.joules_per_frame.expect("measured frames"), 0.05);
         assert_close(cpu.watts, 1.0);
         assert_close(report.total_joules, 2.2);
+        let stopped = odpm::diff_report(&before, &after, Duration::from_secs(2), 0).unwrap();
+        assert_close(stopped.total_joules, 2.2);
+        assert!(stopped.joules_per_frame.is_none());
+        assert!(stopped.rails["CPU"].joules_per_frame.is_none());
     }
 
     #[test]

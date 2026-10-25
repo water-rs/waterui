@@ -827,6 +827,7 @@ fn alloc_diag_cmd(
     let (scene, _native) = load_scene(dir, native)?;
     let blobs = convert::load_blobs(&scene, dir)?;
     let input = EncodeInput {
+        scroll_offset: None,
         scene: &scene,
         blobs: &blobs,
     };
@@ -1484,6 +1485,7 @@ fn render_scene(
     };
     t.reference = at.elapsed().as_secs_f64();
     let input = EncodeInput {
+        scroll_offset: None,
         scene: &scene,
         blobs: &blobs,
     };
@@ -1590,6 +1592,27 @@ struct FrameLoopOptions {
     wait_for_completion: bool,
 }
 
+fn scroll_frame_input<'a>(
+    input: &EncodeInput<'a>,
+    frame: u32,
+    warmup: u32,
+    frames: u32,
+) -> EncodeInput<'a> {
+    let scroll_offset = input.scene.scroll_extent.map(|extent| {
+        let (index, count) = if frame < warmup {
+            (frame, warmup)
+        } else {
+            (frame - warmup, frames)
+        };
+        extent * (f64::from(index) / f64::from(count.saturating_sub(1).max(1)))
+    });
+    EncodeInput {
+        scene: input.scene,
+        blobs: input.blobs,
+        scroll_offset,
+    }
+}
+
 /// The warmup + measured frame loop.
 ///
 /// With `--rate` each measured frame starts on `start + n / rate` —
@@ -1664,7 +1687,7 @@ fn run_frames(
         if pause_at == Some(frame) {
             pause_before_frame(frame)?;
         }
-        engine.encode(input)?;
+        engine.encode(&scroll_frame_input(input, frame, warmup, frames))?;
         let t1 = Instant::now();
         let submit = engine.submit(u64::from(frame), false)?;
         let t2 = Instant::now();
@@ -1828,6 +1851,17 @@ fn pacing_report(
     }
 }
 
+fn warn_uncontrolled_placement(pinned: Option<&[u32]>) -> bool {
+    let heterogeneous = affinity::cpu_freqs_differ();
+    if pinned.is_none() && heterogeneous {
+        tracing::warn!(
+            "CPUs report differing max frequencies; this run's placement is uncontrolled — \
+             pass --cpu (e.g. --cpu 7) to pin to one cluster"
+        );
+    }
+    heterogeneous
+}
+
 fn measure_scene(
     engine: &mut dyn Engine,
     dir: &Path,
@@ -1848,16 +1882,11 @@ fn measure_scene(
     let (scene, native) = load_scene(dir, native)?;
     let blobs = convert::load_blobs(&scene, dir)?;
     let input = EncodeInput {
+        scroll_offset: None,
         scene: &scene,
         blobs: &blobs,
     };
-    let heterogeneous = affinity::cpu_freqs_differ();
-    if pinned.is_none() && heterogeneous {
-        tracing::warn!(
-            "CPUs report differing max frequencies; this run's placement is uncontrolled — \
-             pass --cpu (e.g. --cpu 7) to pin to one cluster"
-        );
-    }
+    let heterogeneous = warn_uncontrolled_placement(pinned);
     let prepare_cpu = affinity::current_cpu();
     let t_prepare = Instant::now();
     engine.prepare(&input)?;
@@ -1894,6 +1923,13 @@ fn measure_scene(
     // Counters embed a memory snapshot; take them at steady state,
     // before retirement shrinks what the engine reports.
     let counters = engine.counters();
+    let conditions = conditions::collect(
+        energy_outcome
+            .as_ref()
+            .and_then(|o| o.thermal_pressure.clone()),
+    );
+    let device = engine.device();
+    let stopped = stopped_interval(engine, &scene, window_hint, measure_energy)?;
     // #169 A5: retire, then take the post-retirement observation.
     engine.trim()?;
     let post_retire_memory = MemorySnapshot::capture(engine.memory(), SampleDetail::Full);
@@ -1901,11 +1937,6 @@ fn measure_scene(
     let missed_deadlines = window.missed_deadlines;
     let samples = window.samples;
     let pacing = rate.map(|hz| pacing_report(hz, frames, missed_deadlines, window_seconds));
-    let conditions = conditions::collect(
-        energy_outcome
-            .as_ref()
-            .and_then(|o| o.thermal_pressure.clone()),
-    );
     let placement = measure_placement(pinned, heterogeneous, prepare_cpu, &samples);
     let percentiles = frame_percentiles(&samples);
     Ok(MeasureReport {
@@ -1921,6 +1952,8 @@ fn measure_scene(
         width: scene.width,
         height: scene.height,
         native,
+        scroll_extent: scene.scroll_extent.map(|extent| [extent.x, extent.y]),
+        stopped,
         prepare_seconds,
         warmup_frames: warmup,
         samples,
@@ -1933,8 +1966,33 @@ fn measure_scene(
         gpu_counters: gpu_counters.map(|session| session.info()),
         counters,
         memory: MemoryReport::new(idle_memory, &memory_samples, Some(post_retire_memory)),
-        device: engine.device(),
+        device,
     })
+}
+
+fn stopped_interval(
+    engine: &mut dyn Engine,
+    scene: &Scene,
+    duration: Duration,
+    measure_energy: bool,
+) -> Result<Option<crate::report::StoppedInterval>, BenchError> {
+    if scene.scroll_extent.is_none() {
+        return Ok(None);
+    }
+    engine.wait_idle()?;
+    let meter = measure_energy
+        .then(|| energy::Meter::begin(duration))
+        .transpose()?;
+    let start = Instant::now();
+    std::thread::sleep(duration);
+    let end = Instant::now();
+    Ok(Some(crate::report::StoppedInterval {
+        seconds: end.duration_since(start).as_secs_f64(),
+        submissions: 0,
+        energy: meter
+            .map(|meter| meter.finish(start, end, 0).map(|outcome| outcome.report))
+            .transpose()?,
+    }))
 }
 
 /// The GPU clock residency from the window's opening read to now.
@@ -2138,7 +2196,11 @@ fn probe_once(
     frames: u32,
     warmup: u32,
 ) -> Result<(f64, Vec<MemorySnapshot>), BenchError> {
-    let input = EncodeInput { scene, blobs };
+    let input = EncodeInput {
+        scene,
+        blobs,
+        scroll_offset: None,
+    };
     engine.prepare(&input)?;
     let prepare_memory = MemorySnapshot::capture(engine.memory(), SampleDetail::Full);
     let window = run_frames(
@@ -2405,4 +2467,30 @@ fn write_json<T: serde::Serialize>(v: &T, path: &Path) -> Result<(), BenchError>
     text.push('\n');
     std::fs::write(path, text)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+
+    #[test]
+    fn warmup_and_measured_sweeps_restart_independently() {
+        let mut scene = Scene::new(100, 100, cherenkov_scene::Color::srgb(1.0, 1.0, 1.0));
+        scene.scroll_extent = Some(kurbo::Vec2::new(0.0, 200.0));
+        let blobs = std::collections::BTreeMap::default();
+        let input = EncodeInput {
+            scene: &scene,
+            blobs: &blobs,
+            scroll_offset: None,
+        };
+        let offsets: Vec<_> = (0..5)
+            .map(|frame| {
+                scroll_frame_input(&input, frame, 3, 2)
+                    .scroll_offset
+                    .unwrap()
+                    .y
+            })
+            .collect();
+        assert_eq!(offsets, [0.0, 100.0, 200.0, 0.0, 200.0]);
+    }
 }

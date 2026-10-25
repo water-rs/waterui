@@ -361,6 +361,19 @@ pub struct EncodeInput<'a> {
     pub scene: &'a Scene,
     /// Its resource blobs (fonts, images).
     pub blobs: &'a Blobs,
+    /// Additional root-content scroll in scene coordinates for this frame.
+    /// `None` retains the static workload's recording behavior.
+    pub scroll_offset: Option<kurbo::Vec2>,
+}
+
+impl EncodeInput<'_> {
+    /// Map a root-content scroll into the device-space recording transform.
+    pub(crate) fn scroll_transform(&self) -> Option<kurbo::Affine> {
+        self.scroll_offset.map(|offset| {
+            let root = self.scene.root.transform;
+            root * kurbo::Affine::translate(-offset) * root.inverse()
+        })
+    }
 }
 
 /// A presentation output kind for `render --present` — the destination a

@@ -315,6 +315,17 @@ fn encode_draw(
     Ok(())
 }
 
+fn replay_scrolled(canvas: &Canvas, cmds: &[Cmd], scroll: Option<Affine>) {
+    if let Some(scroll) = scroll {
+        canvas.save();
+        canvas.concat(&sk_matrix(scroll));
+        replay(canvas, cmds);
+        canvas.restore();
+    } else {
+        replay(canvas, cmds);
+    }
+}
+
 #[expect(clippy::cast_precision_loss, reason = "image pixel dims fit f32")]
 fn replay(canvas: &Canvas, cmds: &[Cmd]) {
     for cmd in cmds {
@@ -922,12 +933,16 @@ impl Engine for SkiaCpu {
         Ok(())
     }
 
-    fn encode(&mut self, _input: &EncodeInput<'_>) -> Result<(), BenchError> {
+    fn encode(&mut self, input: &EncodeInput<'_>) -> Result<(), BenchError> {
         let prepared = self
             .prepared
             .as_mut()
             .ok_or_else(|| BenchError::Engine("skia-cpu: encode before prepare".into()))?;
-        replay(prepared.surface.canvas(), &prepared.cmds);
+        replay_scrolled(
+            prepared.surface.canvas(),
+            &prepared.cmds,
+            input.scroll_transform(),
+        );
         Ok(())
     }
 
@@ -1200,12 +1215,16 @@ impl Engine for SkiaVk {
         Ok(())
     }
 
-    fn encode(&mut self, _input: &EncodeInput<'_>) -> Result<(), BenchError> {
+    fn encode(&mut self, input: &EncodeInput<'_>) -> Result<(), BenchError> {
         let prepared = self
             .prepared
             .as_mut()
             .ok_or_else(|| BenchError::Engine("skia-vulkan: encode before prepare".into()))?;
-        replay(prepared.surface.canvas(), &prepared.cmds);
+        replay_scrolled(
+            prepared.surface.canvas(),
+            &prepared.cmds,
+            input.scroll_transform(),
+        );
         Ok(())
     }
 
@@ -1296,7 +1315,9 @@ mod graphite_metal {
     use cherenkov_oracle::F32Image;
     use cherenkov_scene::Feature;
 
-    use super::{SkiaPrepared, build_cmds, p3_cs, replay, skia_features, skia_missing_api};
+    use super::{
+        SkiaPrepared, build_cmds, p3_cs, replay_scrolled, skia_features, skia_missing_api,
+    };
     use crate::convert;
     use crate::memory::{AdapterMemory, Reading, skia_budget};
     use crate::{
@@ -1481,12 +1502,16 @@ mod graphite_metal {
         /// Records the frame: the `Canvas` draw calls accumulate in the
         /// `Recorder` and `snap()` finalizes them into a `Recording` —
         /// Graphite's own recording API, and nothing else.
-        fn encode(&mut self, _input: &EncodeInput<'_>) -> Result<(), BenchError> {
+        fn encode(&mut self, input: &EncodeInput<'_>) -> Result<(), BenchError> {
             let prepared = self
                 .prepared
                 .as_mut()
                 .ok_or_else(|| BenchError::Engine("skia-metal: encode before prepare".into()))?;
-            replay(prepared.surface.canvas(), &prepared.cmds);
+            replay_scrolled(
+                prepared.surface.canvas(),
+                &prepared.cmds,
+                input.scroll_transform(),
+            );
             self.recording = Some(
                 self.recorder
                     .snap()

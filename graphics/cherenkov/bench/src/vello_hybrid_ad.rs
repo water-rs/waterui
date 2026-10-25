@@ -320,7 +320,12 @@ impl Engine for VelloHybrid {
             .lowered
             .as_ref()
             .ok_or_else(|| BenchError::Engine("vello-hybrid: encode before prepare".into()))?;
-        replay(&mut ctx, lowered, &mut self.counters);
+        replay(
+            &mut ctx,
+            lowered,
+            &mut self.counters,
+            input.scroll_transform(),
+        );
         // `bytes_uploaded` counts the decoded texels uploaded to the
         // atlas in `prepare` — the same quantity vello-classic reports
         // for its texture uploads.
