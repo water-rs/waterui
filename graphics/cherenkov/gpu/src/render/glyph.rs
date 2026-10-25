@@ -3116,11 +3116,8 @@ pub fn run_bounds(font: &FontData, run: &cherenkov::GlyphRun) -> Result<kurbo::R
         ));
     }
     // A non-default variable-font location can extend outside the head box.
-    let coords: Vec<F2Dot14> = run.coords.iter().map(|c| F2Dot14::from_bits(*c)).collect();
-    let metrics = font_ref.glyph_metrics(
-        skrifa::instance::Size::unscaled(),
-        skrifa::instance::LocationRef::new(&coords),
-    );
+    let coords = std::cell::OnceCell::new();
+    let metrics = std::cell::OnceCell::new();
     let mut instances = font.bounds.borrow_mut();
     let index = instances
         .iter()
@@ -3138,6 +3135,15 @@ pub fn run_bounds(font: &FontData, run: &cherenkov::GlyphRun) -> Result<kurbo::R
         let b = match cached.binary_search_by_key(&glyph.id, |entry| entry.0) {
             Ok(index) => cached[index].1,
             Err(index) => {
+                let metrics = metrics.get_or_init(|| {
+                    let coords: &Vec<F2Dot14> = coords.get_or_init(|| {
+                        run.coords.iter().map(|c| F2Dot14::from_bits(*c)).collect()
+                    });
+                    font_ref.glyph_metrics(
+                        skrifa::instance::Size::unscaled(),
+                        skrifa::instance::LocationRef::new(coords),
+                    )
+                });
                 let bounds = metrics.bounds(skrifa::GlyphId::new(glyph.id)).map(|b| {
                     kurbo::Rect::new(
                         f64::from(b.x_min),
