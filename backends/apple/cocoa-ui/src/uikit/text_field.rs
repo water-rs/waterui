@@ -12,22 +12,27 @@
 //! only — which the `MainThreadOnly` thread kind and [`MainThreadMarker`]
 //! constructor guarantee.
 
+use std::cell::RefCell;
 use std::fmt;
+use std::rc::Rc;
 
 use objc2::ffi;
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyObject, Sel};
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::runtime::{AnyObject, ProtocolObject, Sel};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_core_foundation::{CGFloat, CGRect, CGSize};
-use objc2_foundation::{NSAttributedString, NSObjectProtocol};
+use objc2_foundation::{NSArray, NSAttributedString, NSObjectProtocol, NSRange, NSString, NSValue};
 use objc2_ui_kit::{
-    NSTextAlignment, UIKeyboardType, UITextAutocapitalizationType, UITextAutocorrectionType,
-    UITextBorderStyle, UITextContentTypePassword, UITextField,
+    NSTextAlignment, UICommand, UIKeyboardType, UIMenu, UIMenuElement,
+    UITextAutocapitalizationType, UITextAutocorrectionType, UITextBorderStyle,
+    UITextContentTypePassword, UITextField, UITextFieldDelegate, UITextInput,
 };
 
 use crate::ActionTarget;
 use crate::action::ControlEvents;
+use crate::callback::guarded;
 use crate::geometry::Size;
+use crate::uikit::key_commands::{KeyCommandRegistry, KeyCommands};
 
 /// The on-screen keyboard a [`TextField`] requests while editing.
 ///
@@ -61,12 +66,25 @@ impl Keyboard {
     }
 }
 
+/// Runs when the field asks for its edit menu — the field and the actions
+/// the system suggests; the answer replaces the default menu, `None` keeps
+/// it.
+type EditMenuHandler = Rc<dyn Fn(&TextField, &NSArray<UIMenuElement>) -> Option<Retained<UIMenu>>>;
+
 /// A single-line `UITextField` used as a text-input leaf.
-pub struct TextFieldIvars {}
+pub struct TextFieldIvars {
+    edit_menu: RefCell<Option<EditMenuHandler>>,
+    /// The field's own key-command registry: its edit-menu shortcut
+    /// commands route back to the first-responder field through
+    /// `cocoaUiTextSelectionCommandFired:`, not the application delegate.
+    key_commands: Rc<KeyCommandRegistry>,
+}
 
 impl fmt::Debug for TextFieldIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TextFieldIvars").finish_non_exhaustive()
+        f.debug_struct("TextFieldIvars")
+            .field("has_edit_menu", &self.edit_menu.borrow().is_some())
+            .finish_non_exhaustive()
     }
 }
 
@@ -83,16 +101,81 @@ define_class!(
 
     // SAFETY: `NSObjectProtocol` asks nothing of a `UITextField` subclass.
     unsafe impl NSObjectProtocol for TextField {}
+
+    // SAFETY: `UITextFieldDelegate` is an all-optional protocol; the field
+    // answers the edit-menu methods it implements with their declared
+    // signatures. `delegate` is an assign reference, so self-delegation
+    // retains nothing.
+    unsafe impl UITextFieldDelegate for TextField {
+        // SAFETY: the signature `UITextFieldDelegate` declares. `method_id`
+        // because the implementation hands back a `Retained`.
+        #[unsafe(method_id(textField:editMenuForCharactersInRanges:suggestedActions:))]
+        fn text_field_edit_menu_for_characters_in_ranges_suggested_actions(
+            &self,
+            _text_field: &UITextField,
+            _ranges: &NSArray<NSValue>,
+            suggested_actions: &NSArray<UIMenuElement>,
+        ) -> Option<Retained<UIMenu>> {
+            self.edit_menu(suggested_actions)
+        }
+    }
+
+    // SAFETY: the selector is the field's own armed-command route; the
+    // sender is the `UICommand` the registry armed.
+    impl TextField {
+        #[unsafe(method(cocoaUiTextSelectionCommandFired:))]
+        fn text_selection_command_fired(&self, command: &UICommand) {
+            guarded("cocoaUiTextSelectionCommandFired:", || {
+                self.ivars().key_commands.fire(command);
+            });
+        }
+
+        // SAFETY: `canPerformAction:withSender:` is `UIResponder`'s
+        // declared signature; the override answers the field's own route
+        // and defers everything else to `super`.
+        #[unsafe(method(canPerformAction:withSender:))]
+        fn can_perform_action_with_sender(
+            &self,
+            action: Sel,
+            sender: Option<&AnyObject>,
+        ) -> objc2::runtime::Bool {
+            if action != sel!(cocoaUiTextSelectionCommandFired:) {
+                // SAFETY: `canPerformAction:withSender:` is `UIResponder`'s
+                // declared signature; `super` answers every selector not
+                // ours.
+                return unsafe {
+                    msg_send![super(self), canPerformAction: action, withSender: sender]
+                };
+            }
+            // Own selector: a `UICommand` sender answers by ownership —
+            // foreign-field or retired commands are declined; a plain
+            // capability query (nil/other sender) answers whether the
+            // field has anything armed.
+            objc2::runtime::Bool::from(
+                sender
+                    .and_then(|sender| sender.downcast_ref::<UICommand>())
+                    .map_or_else(
+                        || self.ivars().key_commands.any_armed(),
+                        |command| self.ivars().key_commands.owns(command),
+                    ),
+            )
+        }
+    }
 );
 
 impl TextField {
     /// An empty, chromeless, enabled single-line field.
     #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(TextFieldIvars {});
+        let this = Self::alloc(mtm).set_ivars(TextFieldIvars {
+            edit_menu: RefCell::new(None),
+            key_commands: Rc::new(KeyCommandRegistry::default()),
+        });
         // SAFETY: `initWithFrame:` is the inherited designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };
         this.setBorderStyle(UITextBorderStyle::None);
+        // `delegate` is assign; self-delegation retains nothing.
+        this.setDelegate(Some(ProtocolObject::from_ref(&*this)));
         this
     }
 
@@ -180,6 +263,107 @@ impl TextField {
             }
         })
     }
+
+    /// Answers `handler`'s menu each time the field asks for its edit
+    /// menu — `textField:editMenuForCharactersInRanges:suggestedActions:` —
+    /// `None` keeping the system's default.
+    pub fn install_edit_menu_handler(
+        &self,
+        handler: impl Fn(&Self, &NSArray<UIMenuElement>) -> Option<Retained<UIMenu>> + 'static,
+    ) {
+        self.ivars().edit_menu.replace(Some(Rc::new(handler)));
+    }
+
+    /// A key-command scope over the field's own registry: commands it
+    /// arms send `cocoaUiTextSelectionCommandFired:` back to the
+    /// first-responder field — no application delegate is involved.
+    pub fn edit_menu_commands(&self) -> KeyCommands {
+        KeyCommands::in_registry_with_action(
+            Rc::clone(&self.ivars().key_commands),
+            sel!(cocoaUiTextSelectionCommandFired:),
+        )
+    }
+
+    /// How many commands the field's registry has armed — the
+    /// native-test seam for scope retirement.
+    #[cfg(feature = "native-test")]
+    pub fn armed_command_count(&self) -> usize {
+        self.ivars().key_commands.armed()
+    }
+
+    /// Runs the installed edit-menu handler on `suggested_actions` —
+    /// `None` (no handler, or its answer) means the system's default menu.
+    #[must_use]
+    pub fn edit_menu(
+        &self,
+        suggested_actions: &NSArray<UIMenuElement>,
+    ) -> Option<Retained<UIMenu>> {
+        let handler = self.ivars().edit_menu.borrow().clone();
+        handler.and_then(|handler| handler(self, suggested_actions))
+    }
+
+    /// Makes the field first responder — begins an editing session, the
+    /// state `selectedTextRange` writes require. Answers `becomeFirstResponder`'s
+    /// result — false for a field that cannot take input (no window,
+    /// disabled).
+    pub fn begin_editing(&self) -> bool {
+        self.becomeFirstResponder()
+    }
+
+    /// The selected UTF-16 range of the live edit — `selectedTextRange`'s
+    /// offsets from the document start. `None` while the field has no
+    /// selection, which includes not being edited.
+    #[must_use]
+    pub fn selected_range(&self) -> Option<NSRange> {
+        let range = self.selectedTextRange()?;
+        let beginning = self.beginningOfDocument();
+        let location = self
+            .offsetFromPosition_toPosition(&beginning, &range.start())
+            .cast_unsigned();
+        let end = self
+            .offsetFromPosition_toPosition(&beginning, &range.end())
+            .cast_unsigned();
+        Some(NSRange::new(location, end - location))
+    }
+
+    /// The `UITextRange` spanning `utf16` code units from the document
+    /// start — `None` when the range reaches past the text.
+    fn text_range(&self, utf16: NSRange) -> Option<Retained<objc2_ui_kit::UITextRange>> {
+        let beginning = self.beginningOfDocument();
+        let start =
+            self.positionFromPosition_offset(&beginning, utf16.location.try_into().ok()?)?;
+        let end = self.positionFromPosition_offset(&start, utf16.length.try_into().ok()?)?;
+        self.textRangeFromPosition_toPosition(&start, &end)
+    }
+
+    /// Selects `utf16` code units from the document start — a caret when
+    /// `utf16` is empty. Requires an editing session; see
+    /// [`Self::begin_editing`].
+    ///
+    /// # Panics
+    ///
+    /// If `utf16` reaches past the field's text.
+    pub fn set_selected_range(&self, utf16: NSRange) {
+        let range = self
+            .text_range(utf16)
+            .expect("set_selected_range reaches past the field's text");
+        self.setSelectedTextRange(Some(&range));
+    }
+
+    /// Replaces `utf16` code units of the live edit with `text` through
+    /// `replaceRange:withText:` — the field's normal edit path, so the
+    /// change surfaces as the same edit a typed replacement produces and
+    /// the caret lands after the inserted text.
+    ///
+    /// # Panics
+    ///
+    /// If `utf16` reaches past the field's text.
+    pub fn replace_range(&self, utf16: NSRange, text: &NSString) {
+        let range = self
+            .text_range(utf16)
+            .expect("replace_range reaches past the field's text");
+        self.replaceRange_withText(&range, text);
+    }
 }
 
 /// Sends a `UITextInputTraits` property setter through a raw
@@ -242,7 +426,10 @@ impl SecureField {
     /// password field needs, drawn with `UIKit`'s rounded-rect border.
     #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(TextFieldIvars {});
+        let this = Self::alloc(mtm).set_ivars(TextFieldIvars {
+            edit_menu: RefCell::new(None),
+            key_commands: Rc::new(KeyCommandRegistry::default()),
+        });
         // SAFETY: `initWithFrame:` is the inherited designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };
         this.setBorderStyle(UITextBorderStyle::RoundedRect);

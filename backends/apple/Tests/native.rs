@@ -105,6 +105,14 @@ fn trials() -> Vec<Trial> {
                     Ok(())
                 },
             ),
+            #[cfg(feature = "text_field")]
+            Trial::test(
+                "text_selection::a_selection_menu_command_edits_the_live_selection",
+                || {
+                    text_selection::a_selection_menu_command_edits_the_live_selection();
+                    Ok(())
+                },
+            ),
             Trial::test(
                 "navigation::a_searchable_page_rests_its_field_in_the_titlebar_row",
                 || {
@@ -9269,5 +9277,255 @@ mod gesture_events {
                 Box::new(a_then_gesture_forwards_after_the_first_completes),
             ),
         ])
+    }
+}
+/// `selection_menu` rows on the field editor's real context menu —
+/// `textView:menu:forEvent:atIndex:` — resolved each request on an
+/// environment carrying the live `TextSelection` (water-rs/waterui#3037).
+#[cfg(all(target_os = "macos", feature = "native-test", feature = "text_field"))]
+mod text_selection {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use cocoa_ui::PlatformView;
+    use cocoa_ui::appkit::TextField as KitTextField;
+    use cocoa_ui::objc2::DowncastTarget;
+    use cocoa_ui::objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSMenu, NSTextView};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRange, NSString};
+    use cocoa_ui::{Retained, view};
+    use waterui::Str;
+    use waterui::component::menu::{Command, MenuItem};
+    use waterui::component::text_field::TextField;
+    use waterui::component::text_selection::TextSelection;
+    use waterui::reactive::{Signal, binding};
+    use waterui::text::StyledStr;
+
+    use crate::{leaf, mtm, resolve};
+
+    /// The first view of type `T` in a depth-first walk — the macOS
+    /// counterpart of the iOS suite's `find_view`.
+    fn find<T: DowncastTarget>(view: &PlatformView) -> Option<Retained<PlatformView>> {
+        for sub in view::subviews(view) {
+            if sub.downcast_ref::<T>().is_some() {
+                return Some(sub);
+            }
+            if let Some(found) = find::<T>(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The menu the field editor answers a right-click with — the path
+    /// `textView:menu:forEvent:atIndex:` rides.
+    fn edit_menu(window: &cocoa_ui::appkit::Window, editor: &NSTextView) -> Retained<NSMenu> {
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                NSEventType::RightMouseDown,
+                NSPoint::new(5.0, 5.0),
+                NSEventModifierFlags::empty(),
+                0.0,
+                window.native().windowNumber(),
+                None,
+                1,
+                1,
+                0.0,
+            )
+            .expect("a right-mouse-down event constructs");
+        editor
+            .menuForEvent(&event)
+            .expect("the field editor produced a menu")
+    }
+
+    /// Fires the menu row titled `title` the way the platform does —
+    /// `performActionForItemAtIndex:` sends the item's action at its target.
+    fn perform(menu: &NSMenu, title: &str) {
+        let item = menu
+            .itemWithTitle(&NSString::from_str(title))
+            .unwrap_or_else(|| panic!("no menu row titled {title}"));
+        menu.performActionForItemAtIndex(menu.indexOfItem(&item));
+    }
+
+    /// A `selection_menu` command reads the selection the moment it fires —
+    /// not the one the menu was built over — edits it through the native
+    /// path, sees its write in the value binding, and lets the editor's
+    /// undo restore both. `Option<TextSelection>` extracts `Some`, a
+    /// disabled command renders disabled, and `styled_value` is the
+    /// field's value binding.
+    /// Undo restores the pre-command text exactly and the editor's
+    /// `DidUndo` session observer reports it to the value binding; redo
+    /// writes the replacement back through both legs. A synchronous
+    /// external normalization inside the same write-back window still
+    /// reaches the field: echo suppression skips only the exact echo.
+    fn undo_and_normalization_roundtrip(
+        field: &cocoa_ui::appkit::TextField,
+        value: &waterui::reactive::Binding<Str>,
+        editor: &NSTextView,
+    ) {
+        let undo = editor
+            .undoManager()
+            .expect("the field editor carries an undo manager");
+        undo.undo();
+        assert_eq!(field.string(), "hé😀b");
+        assert_eq!(
+            value.snapshot(),
+            Str::from("hé😀b"),
+            "undo reports the restored text to the value binding"
+        );
+        undo.redo();
+        assert_eq!(field.string(), "hé《b");
+        assert_eq!(
+            value.snapshot(),
+            Str::from("hé《b"),
+            "redo reports the replayed text to the value binding"
+        );
+        undo.undo();
+        assert_eq!(field.string(), "hé😀b");
+
+        let _normalizer = value.watch({
+            let value = value.clone();
+            move |ctx| {
+                if ctx.value() == &Str::from("x") {
+                    value.set(Str::from("X"));
+                }
+            }
+        });
+        field.replace_range(NSRange::new(0, 5), &NSString::from_str("x"));
+        assert_eq!(
+            value.snapshot(),
+            Str::from("X"),
+            "the watcher rewrote the value synchronously"
+        );
+        assert_eq!(
+            field.string(),
+            "X",
+            "the normalized value pushed back onto the field"
+        );
+    }
+
+    pub fn a_selection_menu_command_edits_the_live_selection() {
+        let mtm = mtm();
+        let value = binding(Str::from("hé😀b"));
+        let observed = Rc::new(RefCell::new((String::new(), 0usize, 0usize)));
+        let optional_seen = Rc::new(RefCell::new(false));
+
+        let observe = Command::builder("Observe").action({
+            let observed = Rc::clone(&observed);
+            move |selection: TextSelection| {
+                let range = selection.range();
+                *observed.borrow_mut() = (selection.text().to_string(), range.start, range.end);
+            }
+        });
+        let optional = Command::builder("Optional").action({
+            let optional_seen = Rc::clone(&optional_seen);
+            move |selection: Option<TextSelection>| {
+                *optional_seen.borrow_mut() = selection.is_some();
+            }
+        });
+        // Selects a byte range of the live text — `Observe` proves it lands.
+        let mark =
+            Command::builder("Mark").action(|selection: TextSelection| selection.select(3..7));
+        // Replaces whatever the selection covers when the command fires.
+        let wrap_fired = Rc::new(RefCell::new(None));
+        let wrap = Command::builder("Wrap").action({
+            let wrap_fired = Rc::clone(&wrap_fired);
+            move |selection: TextSelection| {
+                let range = selection.range();
+                *wrap_fired.borrow_mut() = Some(range);
+                selection.replace("《");
+            }
+        });
+        let styled = Command::builder("Styled").action(|selection: TextSelection| {
+            selection
+                .styled_value()
+                .expect("a plain field answers styled_value")
+                .set(StyledStr::plain("ZZ"));
+        });
+        let off = Command::builder("Off").action(|| {}).disabled(true);
+
+        let mount = resolve::render(TextField::new("Name", &value).selection_menu(vec![
+            MenuItem::Command(observe),
+            MenuItem::Command(optional),
+            MenuItem::Command(mark),
+            MenuItem::Command(wrap),
+            MenuItem::Command(styled),
+            MenuItem::Command(off),
+        ]));
+        let window = leaf::attach(mtm, mount.view());
+        let field_view =
+            find::<KitTextField>(mount.view()).expect("the leaf mounts a kit TextField");
+        let field = field_view
+            .downcast::<KitTextField>()
+            .expect("the found view is the kit TextField");
+        assert!(field.begin_editing(), "the field never began editing");
+        let editor = field.field_editor().expect("the field editor is live");
+
+        // UTF-16 units: h=1 é=1 😀=2 b=1 — 😀 spans units 2..4, bytes 3..7.
+        field.set_selected_range(NSRange::new(2, 2));
+        let menu = edit_menu(&window, &editor);
+
+        // The platform's own rows survive the custom append.
+        assert!(
+            menu.numberOfItems() > 6,
+            "the standard edit rows were replaced rather than kept"
+        );
+        for title in ["Observe", "Optional", "Mark", "Wrap", "Styled", "Off"] {
+            assert!(
+                menu.itemWithTitle(&NSString::from_str(title)).is_some(),
+                "the {title} row is missing from the editor's menu"
+            );
+        }
+
+        // The selection moved after the menu was built: a command reads
+        // the live range when it fires, not the built-over range.
+        field.set_selected_range(NSRange::new(0, 2));
+        perform(&menu, "Observe");
+        let (text, start, end) = observed.borrow().clone();
+        assert_eq!((text.as_str(), start, end), ("hé😀b", 0, 3));
+
+        perform(&menu, "Optional");
+        assert!(
+            *optional_seen.borrow(),
+            "Option<TextSelection> did not extract the live selection"
+        );
+
+        // A disabled command renders a disabled row.
+        let off_item = menu
+            .itemWithTitle(&NSString::from_str("Off"))
+            .expect("the Off row");
+        assert!(!off_item.isEnabled(), "a disabled command is not disabled");
+
+        // `Mark` selects  😀 (bytes 3..7 → UTF-16 2..4).
+
+        perform(&menu, "Mark");
+        assert_eq!(
+            field.selected_range(),
+            Some(NSRange::new(2, 2)),
+            "Mark selected 😀 through the command"
+        );
+
+        // `replace` edits through the native path: the field, the value
+        // binding and the caret all reflect it.
+        perform(&menu, "Wrap");
+        assert_eq!(field.string(), "hé《b");
+        assert_eq!(
+            value.snapshot(),
+            Str::from("hé《b"),
+            "the native edit wrote through to the value binding"
+        );
+        assert_eq!(
+            field.selected_range(),
+            Some(NSRange::new(3, 0)),
+            "the caret lands after the inserted text"
+        );
+
+        undo_and_normalization_roundtrip(&field, &value, &editor);
+
+        // `styled_value` is the field's value binding: writing it lands on
+        // `value` and the field shows the pushed text.
+        perform(&menu, "Styled");
+        assert_eq!(value.snapshot(), Str::from("ZZ"));
+        assert_eq!(field.string(), "ZZ");
+
+        window.close();
     }
 }

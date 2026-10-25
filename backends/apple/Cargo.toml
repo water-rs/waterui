@@ -279,6 +279,7 @@ objc2-core-image = { version = "0.3", default-features = false, features = [
 ignored = ["cfg_aliases", "objc2-app-kit"]
 
 [dev-dependencies]
+block2 = { workspace = true }
 criterion = "0.8.2"
 pollster = { workspace = true }
 libtest-mimic = "0.8"

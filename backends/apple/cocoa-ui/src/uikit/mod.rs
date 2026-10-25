@@ -88,7 +88,7 @@ pub use host_view::{HitTest, HostView, window_root};
 pub use image::ImageView;
 pub mod label;
 pub use key_commands::KeyCommands;
-pub use menu::{Menu, MenuAction, MenuButton, MenuElement};
+pub use menu::{Menu, MenuAction, MenuButton, MenuElement, edit_menu};
 mod picker;
 mod pointer;
 pub use picker::Picker;
