@@ -2,6 +2,9 @@
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum SceneError {
+    /// A benchmark scroll sweep must have a finite endpoint.
+    #[error("scroll extent must be finite")]
+    InvalidScrollExtent,
     /// An independent paint transform cannot be inverted to sample its paint.
     #[error("paint transform must be finite and invertible")]
     PaintTransform,

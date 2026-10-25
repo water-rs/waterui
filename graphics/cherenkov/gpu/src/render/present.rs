@@ -375,10 +375,13 @@ impl ColorRangeInterval {
 pub enum ColorSpaceRequest {
     /// The best advertised (format, colour space) pair — an extended or
     /// HDR space where the surface offers one, otherwise a reported SDR
-    /// selection. The default; the same as
+    /// selection. The same as
     /// `Range(ColorRangeInterval::ALL)`.
-    #[default]
     Best,
+    /// Choose compact SDR storage until the window has rendered HDR content.
+    /// Explicit colour-space requests are unaffected by this policy.
+    #[default]
+    Content,
     /// The best advertised pair inside an interval of classes: the
     /// backend's preference order restricted to the spaces whose
     /// [`ColorRange`] the interval contains.
@@ -492,7 +495,7 @@ fn select_color_pair(
     request: ColorSpaceRequest,
 ) -> Result<ColorPair, SurfaceError> {
     match request {
-        ColorSpaceRequest::Best => {
+        ColorSpaceRequest::Best | ColorSpaceRequest::Content => {
             select_in_interval(caps, backend, request, ColorRangeInterval::ALL)
         }
         ColorSpaceRequest::Range(interval) => select_in_interval(caps, backend, request, interval),
@@ -617,6 +620,73 @@ pub fn select_output(
     })
 }
 
+/// Resolve content-driven output without changing explicit host requests.
+/// SDR content prefers compact storage while retaining the advertised gamut.
+///
+/// # Errors
+/// Returns an unsupported-target error if the surface offers no admissible pair.
+pub fn select_content_output(
+    caps: &wgpu::SurfaceCapabilities,
+    backend: wgpu::Backend,
+    request: OutputRequest,
+    range: ColorRange,
+) -> Result<OutputSelection, SurfaceError> {
+    use wgpu::{SurfaceColorSpace as Cs, TextureFormat as F};
+    if request.color_space != ColorSpaceRequest::Content || range == ColorRange::HighDynamicRange {
+        return select_output(caps, backend, request);
+    }
+    // Keep alpha at eight bits: RGB10A2 is unsuitable for translucent parts.
+    let spaces: &[Cs] = match range {
+        ColorRange::Standard => &[Cs::Srgb],
+        ColorRange::WideGamut => &[Cs::DisplayP3, Cs::Srgb],
+        ColorRange::HighDynamicRange => unreachable!("HDR selected above"),
+    };
+    for &space in spaces {
+        for format in [
+            F::Bgra8UnormSrgb,
+            F::Rgba8UnormSrgb,
+            F::Bgra8Unorm,
+            F::Rgba8Unorm,
+        ] {
+            if advertised(caps, format, space) {
+                let mut selection = select_output(
+                    caps,
+                    backend,
+                    OutputRequest {
+                        color_space: ColorSpaceRequest::Exact(space),
+                        ..request
+                    },
+                )?;
+                selection.format = format;
+                selection.reason = selection_reason(space);
+                return Ok(selection);
+            }
+        }
+        // Preserve the available gamut even when this display only offers float storage.
+        if first_for_space(caps, space).is_some() {
+            return select_output(
+                caps,
+                backend,
+                OutputRequest {
+                    color_space: ColorSpaceRequest::Exact(space),
+                    ..request
+                },
+            );
+        }
+    }
+    select_output(
+        caps,
+        backend,
+        OutputRequest {
+            color_space: ColorSpaceRequest::Range(ColorRangeInterval::new(
+                ColorRange::Standard,
+                range,
+            )),
+            ..request
+        },
+    )
+}
+
 /// The surface handle shared between a window's swapchain and its
 /// [`DisplayProbe`]: `Arc` where the probe can be sampled on another
 /// thread, `Rc` on wasm32, where the surface is DOM-bound and the engine
@@ -663,7 +733,8 @@ impl DisplayProbe {
 
     /// Re-enumerates the surface's capabilities and re-runs selection —
     /// the pair a window moved to a different display would be
-    /// configured with now.
+    /// configured with now. A content-driven request reports the display
+    /// capability here; the renderer selects storage from its content range.
     ///
     /// # Errors
     /// [`SurfaceError::UnsupportedTarget`] when nothing advertised can be
@@ -686,6 +757,8 @@ impl core::fmt::Debug for DisplayProbe {
 #[derive(Debug)]
 pub struct WindowSurface {
     surface: SharedSurface,
+    adapter: wgpu::Adapter,
+    content_range: ColorRange,
     config: wgpu::SurfaceConfiguration,
     /// The negotiated output — changes only when a re-selection finds a
     /// different advertised pair (#98).
@@ -790,7 +863,8 @@ impl WindowSurface {
     ) -> Result<Self, SurfaceError> {
         let backend = adapter.get_info().backend;
         let caps = surface.get_capabilities(adapter);
-        let mut selection = select_output(&caps, backend, request)?;
+        let content_range = ColorRange::WideGamut;
+        let mut selection = select_content_output(&caps, backend, request, content_range)?;
         // `display_hdr_info` answers only on the main thread on Apple;
         // there the host's probe reports instead (#98).
         if backend != wgpu::Backend::Metal {
@@ -826,6 +900,8 @@ impl WindowSurface {
         }
         Ok(Self {
             surface,
+            adapter: adapter.clone(),
+            content_range,
             config,
             selection,
             backend,
@@ -838,6 +914,22 @@ impl WindowSurface {
     #[must_use]
     pub const fn selection(&self) -> &OutputSelection {
         &self.selection
+    }
+
+    /// Upgrades automatic output before acquiring a drawable. Retaining the
+    /// highest range avoids reallocating a window's pool during animations.
+    ///
+    /// # Errors
+    /// Returns an error when the surface cannot satisfy output negotiation.
+    pub fn content(
+        &mut self,
+        device: &wgpu::Device,
+        range: ColorRange,
+    ) -> Result<(), SurfaceError> {
+        if self.request.color_space == ColorSpaceRequest::Content && range > self.content_range {
+            self.reselect_content(&self.adapter.clone(), device, range)?;
+        }
+        Ok(())
     }
 
     /// Reconfigures the swapchain to `size`.
@@ -860,8 +952,18 @@ impl WindowSurface {
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
     ) -> Result<(), SurfaceError> {
+        self.reselect_content(adapter, device, self.content_range)
+    }
+
+    fn reselect_content(
+        &mut self,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        range: ColorRange,
+    ) -> Result<(), SurfaceError> {
         let caps = self.surface.get_capabilities(adapter);
-        let mut selection = select_output(&caps, self.backend, self.request)?;
+        let mut selection = select_content_output(&caps, self.backend, self.request, range)?;
+        self.content_range = range;
         if self.backend != wgpu::Backend::Metal {
             selection.reported_headroom =
                 self.surface.display_hdr_info(adapter).tone_map_headroom();
@@ -1115,7 +1217,10 @@ impl Presenter {
             device,
             &mut encoder,
             source,
-            output,
+            &Presentation {
+                texture: output,
+                coverage: WholeOutput,
+            },
             &self.uniform.clone(),
             None,
         );
@@ -1151,7 +1256,17 @@ impl Presenter {
             label: Some("present"),
         });
         let uniform = self.uniform.clone();
-        self.encode(device, &mut encoder, source, output, &uniform, timestamps);
+        self.encode(
+            device,
+            &mut encoder,
+            source,
+            &Presentation {
+                texture: output,
+                coverage: WholeOutput,
+            },
+            &uniform,
+            timestamps,
+        );
         queue.submit([encoder.finish()]);
         crate::diag::submit(device, queue, "present");
     }
@@ -1231,16 +1346,19 @@ impl Presenter {
     ///
     /// # Panics
     /// If the textures violate wgpu's attachment and sampling requirements.
-    pub(crate) fn encode(
+    pub(crate) fn encode<C: Coverage>(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         source: &wgpu::TextureView,
-        output: TextureOutput<'_>,
+        output: &Presentation<'_, C>,
         uniform: &wgpu::Buffer,
         timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
-        let target = output.texture;
+        if output.coverage.is_empty() {
+            return;
+        }
+        let target = output.texture.texture;
         let format = target.format();
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1268,7 +1386,7 @@ impl Presenter {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    load: output.coverage.load(),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -1279,12 +1397,64 @@ impl Presenter {
         });
         pass.set_pipeline(self.pipeline(device, format));
         pass.set_bind_group(0, &bind, &[]);
+        output.coverage.draw(&mut pass);
+    }
+}
+
+/// The write contract of one presentation attachment.
+pub struct Presentation<'a, C> {
+    pub texture: TextureOutput<'a>,
+    pub coverage: C,
+}
+
+pub trait Coverage {
+    fn is_empty(&self) -> bool;
+    fn load(&self) -> wgpu::LoadOp<wgpu::Color>;
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>);
+}
+
+/// Acquired drawables have no preserved-content contract.
+pub struct WholeOutput;
+
+impl Coverage for WholeOutput {
+    fn is_empty(&self) -> bool {
+        false
+    }
+    fn load(&self) -> wgpu::LoadOp<wgpu::Color> {
+        wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+    }
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.draw(0..3, 0..1);
     }
 }
 
+/// Repair regions in an attachment whose other pixels remain initialized.
+#[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
+pub struct RetainedRegion<'a>(pub &'a cherenkov::damage::Region);
+
+#[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
+impl Coverage for RetainedRegion<'_> {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    fn load(&self) -> wgpu::LoadOp<wgpu::Color> {
+        if self.0.is_full() {
+            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+        } else {
+            wgpu::LoadOp::Load
+        }
+    }
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+        for rect in self.0.rectangles() {
+            let (x, y, width, height) = rect.xywh();
+            pass.set_scissor_rect(x, y, width, height);
+            pass.draw(0..3, 0..1);
+        }
+    }
+}
+
 /// Color space of a host-owned presentation texture.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputColor {
     /// sRGB primaries and transfer; sRGB texture formats encode in hardware.
     Srgb,
@@ -1424,6 +1594,45 @@ mod tests {
 
     fn opaque() -> Vec<CompositeAlphaMode> {
         vec![CompositeAlphaMode::Opaque]
+    }
+
+    #[test]
+    fn content_storage_preserves_p3_hdr_and_explicit_requests() {
+        let caps = surface(
+            &[
+                (
+                    F::Rgba16Float,
+                    Spaces::DISPLAY_P3 | Spaces::EXTENDED_DISPLAY_P3,
+                ),
+                (F::Bgra8Unorm, Spaces::DISPLAY_P3 | Spaces::SRGB),
+            ],
+            &[F::Rgba16Float, F::Bgra8Unorm],
+            opaque(),
+        );
+        let auto = request(false, ColorSpaceRequest::Content);
+        let sdr = super::select_content_output(&caps, Backend::Metal, auto, ColorRange::WideGamut)
+            .unwrap();
+        assert_eq!(
+            (sdr.format, sdr.color_space),
+            (F::Bgra8Unorm, Cs::DisplayP3)
+        );
+        let hdr =
+            super::select_content_output(&caps, Backend::Metal, auto, ColorRange::HighDynamicRange)
+                .unwrap();
+        assert_eq!(
+            (hdr.format, hdr.color_space),
+            (F::Rgba16Float, Cs::ExtendedDisplayP3)
+        );
+        for explicit in [best(false), exact(false, Cs::DisplayP3)] {
+            let selected = super::select_content_output(
+                &caps,
+                Backend::Metal,
+                explicit,
+                ColorRange::WideGamut,
+            )
+            .unwrap();
+            assert_eq!(selected.format, F::Rgba16Float);
+        }
     }
 
     #[test]
@@ -2084,3 +2293,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "present_retained_tests.rs"]
+mod retained_tests;

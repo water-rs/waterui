@@ -61,6 +61,7 @@ fn trials() -> Vec<libtest_mimic::Trial> {
     trials.extend(main_menu::trials());
     trials.extend(key_commands::trials());
     trials.extend(gesture_events::trials());
+    trials.extend(text_selection_ios::trials());
     trials
 }
 
@@ -967,5 +968,504 @@ mod gesture_events {
         let e = fire(UIGestureRecognizerState::Ended, 3.0);
         assert_eq!((e.phase, e.velocity), (GesturePhase::Ended, 0.0));
         assert!((e.scale - 0.02).abs() < 1e-6);
+    }
+}
+
+#[cfg(all(target_os = "ios", feature = "native-test", feature = "text_field"))]
+mod text_selection_ios {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use cocoa_ui::PlatformView;
+    use cocoa_ui::objc2::runtime::AnyObject;
+    use cocoa_ui::objc2::{DowncastTarget, sel};
+    use cocoa_ui::objc2::{Message, msg_send};
+    use cocoa_ui::objc2_foundation::{NSArray, NSRange, NSString, NSValue};
+    use cocoa_ui::objc2_ui_kit::{
+        UIAction, UIApplication, UIKeyCommand, UIMenu, UIMenuElement, UIMenuElementAttributes,
+    };
+    use cocoa_ui::{Retained, view};
+    use waterui::Str;
+    use waterui::component::menu::{Command, MenuItem, Shortcut};
+    use waterui::component::text_field::TextField;
+    use waterui::component::text_selection::TextSelection;
+    use waterui::reactive::{Signal, SignalExt, binding};
+    use waterui::text::StyledStr;
+
+    use cocoa_ui::geometry::Rect;
+    use cocoa_ui::native_test::pump_main_until;
+    use cocoa_ui::objc2::MainThreadMarker;
+    use cocoa_ui::uikit::native_test;
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, mount_uikit_window, render_environment,
+    };
+
+    use crate::mtm;
+
+    fn find<T: DowncastTarget>(view: &PlatformView) -> Option<Retained<PlatformView>> {
+        for sub in view::subviews(view) {
+            if sub.downcast_ref::<T>().is_some() {
+                return Some(sub);
+            }
+            if let Some(found) = find::<T>(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The titles of a `UIMenu`'s flattened leaf actions.
+    fn titles(menu: &UIMenu) -> Vec<String> {
+        fn walk(out: &mut Vec<String>, el: &UIMenuElement) {
+            if let Some(action) = el.downcast_ref::<UIAction>() {
+                out.push(action.title().to_string());
+            } else if let Some(sub) = el.downcast_ref::<UIMenu>() {
+                for child in &sub.children() {
+                    walk(out, &child);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for el in &menu.children() {
+            walk(&mut out, &el);
+        }
+        out
+    }
+
+    /// Invokes the menu action titled `title` through the public
+    /// `UIControl.sendAction(_:)` API — the generated `UIAction` runs its
+    /// handler as if the row had been picked.
+    fn perform(field: &cocoa_ui::uikit::TextField, menu: &UIMenu, title: &str) {
+        fn find_action(el: &UIMenuElement, title: &str) -> Option<Retained<UIAction>> {
+            if let Some(action) = el.downcast_ref::<UIAction>() {
+                if action.title().to_string() == title {
+                    return Some(action.retain());
+                }
+            } else if let Some(sub) = el.downcast_ref::<UIMenu>() {
+                for child in &sub.children() {
+                    if let Some(a) = find_action(&child, title) {
+                        return Some(a);
+                    }
+                }
+            }
+            None
+        }
+        let action = (0..menu.children().count())
+            .find_map(|i| {
+                menu.children()
+                    .objectAtIndex(i)
+                    .downcast::<UIMenuElement>()
+                    .ok()
+                    .and_then(|el| find_action(&el, title))
+            })
+            .unwrap_or_else(|| panic!("no menu action titled {title}"));
+        field.sendAction(&action);
+    }
+
+    /// The field's edit menu — the delegate method invoked directly with
+    /// empty suggestions.
+    fn edit_menu(field: &cocoa_ui::uikit::TextField) -> Retained<UIMenu> {
+        let suggested: Retained<NSArray<UIMenuElement>> = NSArray::new();
+        let ranges: Retained<NSArray<NSValue>> = NSArray::new();
+        // SAFETY: the plural `editMenuForCharactersInRanges:` selector is
+        // `UITextFieldDelegate`'s declared signature.
+        let menu: Option<Retained<UIMenu>> = unsafe {
+            msg_send![&**field, textField: &**field, editMenuForCharactersInRanges: &*ranges, suggestedActions: &*suggested]
+        };
+        menu.expect("the field produced an edit menu")
+    }
+
+    /// A `selection_menu` command reads the live selection and edits it
+    /// through `replaceRange:withText:` — the field's text and the value
+    /// binding both move.
+    pub fn a_selection_menu_command_edits_the_live_selection() {
+        let mtm = mtm();
+        let value = binding(Str::from("hé😀b"));
+        let observed = Rc::new(RefCell::new((String::new(), 0usize, 0usize)));
+        let optional_seen = Rc::new(RefCell::new(false));
+
+        let observe = Command::builder("Observe").action({
+            let observed = Rc::clone(&observed);
+            move |selection: TextSelection| {
+                let range = selection.range();
+                *observed.borrow_mut() = (selection.text().to_string(), range.start, range.end);
+            }
+        });
+        let optional = Command::builder("Optional").action({
+            let optional_seen = Rc::clone(&optional_seen);
+            move |selection: Option<TextSelection>| {
+                *optional_seen.borrow_mut() = selection.is_some();
+            }
+        });
+        let mark =
+            Command::builder("Mark").action(|selection: TextSelection| selection.select(3..7));
+        let wrap_fired: Rc<RefCell<Option<std::ops::Range<usize>>>> = Rc::new(RefCell::new(None));
+        let wrap = Command::builder("Wrap").action({
+            let wrap_fired = Rc::clone(&wrap_fired);
+            move |selection: TextSelection| {
+                *wrap_fired.borrow_mut() = Some(selection.range());
+                selection.replace("《");
+            }
+        });
+        let styled = Command::builder("Styled").action(|selection: TextSelection| {
+            selection
+                .styled_value()
+                .expect("a plain field answers styled_value")
+                .set(StyledStr::plain("ZZ"));
+        });
+        let brk = Command::builder("Break").action(|selection: TextSelection| {
+            selection.replace("M\r\nN");
+        });
+        let off = Command::builder("Off").action(|| {}).disabled(true);
+        let chord_seen = Rc::new(RefCell::new(None));
+        let chord = Command::builder("Chord")
+            .action({
+                let chord_seen = Rc::clone(&chord_seen);
+                move |selection: TextSelection| {
+                    *chord_seen.borrow_mut() = Some(selection.range());
+                }
+            })
+            .shortcut(Shortcut::new('x').command());
+
+        let items = binding(vec![
+            MenuItem::Command(observe),
+            MenuItem::Command(optional),
+            MenuItem::Command(mark),
+            MenuItem::Command(wrap),
+            MenuItem::Command(styled),
+            MenuItem::Command(brk),
+            MenuItem::Command(off),
+            MenuItem::Command(chord),
+        ]);
+        let window = native_test::window(mtm, Rect::new(0.0, 0.0, 400.0, 300.0));
+        let mount = mount_uikit_window(
+            mtm,
+            waterui::AnyView::new(TextField::new("Name", &value).selection_menu(items.computed())),
+            &render_environment(),
+            window,
+        );
+        let field_view = find::<cocoa_ui::uikit::TextField>(&mount.host)
+            .expect("the leaf mounts a kit TextField");
+        let field = field_view
+            .downcast::<cocoa_ui::uikit::TextField>()
+            .expect("the found view is the kit TextField");
+
+        assert!(field.begin_editing(), "the field never began editing");
+
+        // UTF-16 units: h=1 é=1 😀=2 b=1 — 😀 spans units 2..4.
+        field.set_selected_range(NSRange::new(2, 2));
+        let menu = edit_menu(&field);
+        let built_titles = titles(&menu);
+        for title in [
+            "Observe", "Optional", "Mark", "Wrap", "Styled", "Break", "Off",
+        ] {
+            assert!(
+                built_titles.contains(&title.to_owned()),
+                "the {title} row is missing"
+            );
+        }
+
+        field.set_selected_range(NSRange::new(0, 2));
+        perform(&field, &menu, "Observe");
+        let (text, start, end) = observed.borrow().clone();
+        assert_eq!((text.as_str(), start, end), ("hé😀b", 0, 3));
+
+        perform(&field, &menu, "Optional");
+        assert!(*optional_seen.borrow());
+
+        perform(&field, &menu, "Mark");
+        assert_eq!(field.selected_range(), Some(NSRange::new(2, 2)));
+
+        assert!(field.isEditing(), "the field is not editing");
+
+        wrap_undo_and_single_line(&field, &menu, &value, &wrap_fired);
+
+        perform(&field, &menu, "Styled");
+        assert_eq!(value.snapshot(), Str::from("ZZ"));
+        assert_eq!(field.string(), "ZZ");
+
+        edit_menu_routes_and_retires(mtm, &field, &menu, &items, &chord_seen);
+    }
+
+    /// The `Wrap` edit's live range, caret, undo/redo roundtrip and the
+    /// single-line newline invariant — kept out of the trial so each
+    /// section reads as one step.
+    fn wrap_undo_and_single_line(
+        field: &cocoa_ui::uikit::TextField,
+        menu: &UIMenu,
+        value: &waterui::Binding<Str>,
+        wrap_fired: &Rc<RefCell<Option<std::ops::Range<usize>>>>,
+    ) {
+        perform(field, menu, "Wrap");
+        assert_eq!(
+            *wrap_fired.borrow(),
+            Some(3..7),
+            "Wrap fired with the live byte range"
+        );
+        assert_eq!(field.string(), "hé《b");
+        assert_eq!(value.snapshot(), Str::from("hé《b"));
+        assert_eq!(
+            field.selected_range(),
+            Some(NSRange::new(3, 0)),
+            "the caret landed after the replacement"
+        );
+
+        // The field's own undo manager rewinds the menu edit — undo
+        // restores the original text on both the field and the binding,
+        // redo brings the replacement back.
+        let undo = field
+            .undoManager()
+            .expect("an editing field carries an undo manager");
+        pump_main_until(MAIN_QUEUE_DEADLINE, || undo.canUndo());
+        assert!(undo.canUndo(), "the native edit registered no undo");
+        undo.undo();
+        pump_main_until(MAIN_QUEUE_DEADLINE, || field.string() == "hé😀b");
+        assert_eq!(field.string(), "hé😀b");
+        assert_eq!(value.snapshot(), Str::from("hé😀b"));
+        pump_main_until(MAIN_QUEUE_DEADLINE, || undo.canRedo());
+        assert!(undo.canRedo(), "the native undo registered no redo");
+        undo.redo();
+        pump_main_until(MAIN_QUEUE_DEADLINE, || field.string() == "hé《b");
+        assert_eq!(field.string(), "hé《b");
+        assert_eq!(value.snapshot(), Str::from("hé《b"));
+
+        // A single-line field accepts no line breaks through the native
+        // edit path — an LF or a CRLF in the replacement normalizes away.
+        perform(field, menu, "Break");
+        let normalized = field.string();
+        assert_eq!(
+            value.snapshot(),
+            Str::from(normalized.clone()),
+            "the binding diverged from the normalized field text"
+        );
+        assert!(
+            !normalized.contains(['\n', '\r']),
+            "a line break survived the replacement"
+        );
+    }
+
+    /// The `UIKeyCommand` route, the disabled row, suggested-action
+    /// preservation and scope retirement — split out of the trial so the
+    /// mounted-field assertions stay readable.
+    fn edit_menu_routes_and_retires(
+        mtm: MainThreadMarker,
+        field: &cocoa_ui::uikit::TextField,
+        menu: &UIMenu,
+        items: &waterui::Binding<Vec<MenuItem>>,
+        chord_seen: &Rc<RefCell<Option<std::ops::Range<usize>>>>,
+    ) {
+        // A shortcut row is a native `UIKeyCommand` armed on the field's
+        // own registry; firing its declared action through the public
+        // `sendAction:to:from:forEvent:` route lands on the field's own
+        // registry — the application registry is never consulted.
+        field.set_selected_range(NSRange::new(1, 1));
+        let chord = find_key_command(menu, "Chord");
+        let app = UIApplication::sharedApplication(mtm);
+        // SAFETY: the selector is the field's armed-command route; the
+        // target is the first-responder field, the sender the armed
+        // `UIKeyCommand`, and `None` is a valid event.
+        let delivered = unsafe {
+            app.sendAction_to_from_forEvent(
+                sel!(cocoaUiTextSelectionCommandFired:),
+                Some(AsRef::<AnyObject>::as_ref(field)),
+                Some(AsRef::<AnyObject>::as_ref(&*chord)),
+                None,
+            )
+        };
+        assert!(delivered, "the field declined its own command route");
+        assert_eq!(
+            chord_seen.borrow().as_ref().map(|r| (r.start, r.end)),
+            Some((1, 2)),
+            "the chord fired the live selection's handler"
+        );
+
+        // A disabled command renders a disabled native row.
+        let off = find_element(menu, "Off")
+            .downcast::<UIAction>()
+            .expect("the Off row is a UIAction");
+        assert!(
+            off.attributes().contains(UIMenuElementAttributes::Disabled),
+            "a disabled command is not disabled"
+        );
+
+        // A suggested system element survives beside the custom rows.
+        // SAFETY: `actionWithTitle:...` is `UIAction`'s declared
+        // constructor; the handler is a valid `RcBlock` it copies.
+        let suggested_action = unsafe {
+            UIAction::actionWithTitle_image_identifier_handler(
+                &NSString::from_str("Suggested"),
+                None,
+                None,
+                block2::RcBlock::as_ptr(&block2::RcBlock::new(
+                    |_action: core::ptr::NonNull<UIAction>| {},
+                ))
+                .cast(),
+                mtm,
+            )
+        };
+        let suggested: Retained<NSArray<UIMenuElement>> =
+            NSArray::from_retained_slice(&[suggested_action.into_super()]);
+        let ranges: Retained<NSArray<NSValue>> = NSArray::new();
+        // SAFETY: the plural delegate signature, as `edit_menu` uses.
+        let with_suggested: Option<Retained<UIMenu>> = unsafe {
+            msg_send![field, textField: field, editMenuForCharactersInRanges: &*ranges, suggestedActions: &*suggested]
+        };
+        let with_suggested = with_suggested.expect("the field produced an edit menu");
+        assert!(
+            titles(&with_suggested).contains(&"Suggested".to_owned()),
+            "the suggested action was dropped"
+        );
+
+        // Emptying the items retires the armed scope outright — nothing
+        // stays registered for a menu that is no longer presented.
+        items.set(vec![]);
+        // SAFETY: the plural delegate signature, as `edit_menu` uses.
+        let empty: Option<Retained<UIMenu>> = unsafe {
+            msg_send![field, textField: field, editMenuForCharactersInRanges: &*ranges, suggestedActions: &*suggested]
+        };
+        assert!(empty.is_none(), "an empty menu still presented rows");
+        assert_eq!(
+            field.armed_command_count(),
+            0,
+            "the retired menu's commands were left armed"
+        );
+    }
+
+    /// Two fields each arm their own `KeyCommandRegistry`: a command from
+    /// `A`'s menu is declined by `B` and accepted by `A`, and retiring `B`'s
+    /// scope by emptying its items makes `B` decline its own command — a
+    /// `UIKeyCommand` delivered to the wrong responder can never invoke a
+    /// foreign action.
+    pub fn two_fields_own_their_commands_and_retire_them() {
+        let mtm = mtm();
+        let items_a = binding(vec![MenuItem::Command(
+            Command::builder("ChordA")
+                .action(|_: TextSelection| {})
+                .shortcut(Shortcut::new('a').command()),
+        )]);
+        let items_b = binding(vec![MenuItem::Command(
+            Command::builder("ChordB")
+                .action(|_: TextSelection| {})
+                .shortcut(Shortcut::new('b').command()),
+        )]);
+
+        let mount_field = |items: &waterui::Binding<Vec<MenuItem>>, placeholder| {
+            let window = native_test::window(mtm, Rect::new(0.0, 0.0, 400.0, 300.0));
+            let mount = mount_uikit_window(
+                mtm,
+                waterui::AnyView::new(
+                    TextField::new(placeholder, &binding(Str::from("t")))
+                        .selection_menu(items.computed()),
+                ),
+                &render_environment(),
+                window,
+            );
+            let field = find::<cocoa_ui::uikit::TextField>(&mount.host)
+                .expect("the leaf mounts a kit TextField")
+                .downcast::<cocoa_ui::uikit::TextField>()
+                .expect("the found view is the kit TextField");
+            (mount, field)
+        };
+        let (_mount_a, field_a) = mount_field(&items_a, "A");
+        let (_mount_b, field_b) = mount_field(&items_b, "B");
+
+        let menu_a = edit_menu(&field_a);
+        let menu_b = edit_menu(&field_b);
+        let chord_a = find_key_command(&menu_a, "ChordA");
+        let chord_b = find_key_command(&menu_b, "ChordB");
+        let action = sel!(cocoaUiTextSelectionCommandFired:);
+        let can = |field: &cocoa_ui::uikit::TextField, command: &UIKeyCommand| -> bool {
+            // SAFETY: `canPerformAction:withSender:` is `UIResponder`'s
+            // declared signature; the sender is a `UICommand`.
+            unsafe {
+                msg_send![field, canPerformAction: action, withSender: AsRef::<AnyObject>::as_ref(command)]
+            }
+        };
+        assert!(can(&field_a, &chord_a), "A declined its own command");
+        assert!(can(&field_b, &chord_b), "B declined its own command");
+        assert!(
+            !can(&field_b, &chord_a),
+            "B accepted a foreign field's command"
+        );
+        assert!(
+            !can(&field_a, &chord_b),
+            "A accepted a foreign field's command"
+        );
+
+        // Emptying B's items retires its scope — B then declines even its
+        // own command.
+        items_b.set(vec![]);
+        // SAFETY: the plural delegate signature, as `edit_menu` uses.
+        let retired: Option<Retained<UIMenu>> = unsafe {
+            msg_send![&*field_b, textField: &*field_b, editMenuForCharactersInRanges: &*NSArray::<NSValue>::new(), suggestedActions: &*NSArray::<UIMenuElement>::new()]
+        };
+        assert!(retired.is_none(), "an empty menu still presented rows");
+        assert!(
+            !can(&field_b, &chord_b),
+            "B still accepted a retired command"
+        );
+        assert_eq!(
+            field_b.armed_command_count(),
+            0,
+            "B's retired commands stayed armed"
+        );
+    }
+
+    /// The `UIMenuElement` titled `title` anywhere in `menu`.
+    fn find_element(menu: &UIMenu, title: &str) -> Retained<UIMenuElement> {
+        fn walk(el: &UIMenuElement, title: &str) -> Option<Retained<UIMenuElement>> {
+            if let Some(action) = el.downcast_ref::<UIAction>() {
+                if action.title().to_string() == title {
+                    return Some(el.retain());
+                }
+            } else if let Some(command) = el.downcast_ref::<UIKeyCommand>() {
+                if command.title().to_string() == title {
+                    return Some(el.retain());
+                }
+            } else if let Some(sub) = el.downcast_ref::<UIMenu>() {
+                for child in &sub.children() {
+                    if let Some(found) = walk(&child, title) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+        (0..menu.children().count())
+            .find_map(|i| {
+                menu.children()
+                    .objectAtIndex(i)
+                    .downcast::<UIMenuElement>()
+                    .ok()
+                    .and_then(|el| walk(&el, title))
+            })
+            .unwrap_or_else(|| panic!("no menu element titled {title}"))
+    }
+
+    /// The `UIKeyCommand` titled `title` anywhere in `menu`.
+    fn find_key_command(menu: &UIMenu, title: &str) -> Retained<UIKeyCommand> {
+        find_element(menu, title)
+            .downcast::<UIKeyCommand>()
+            .unwrap_or_else(|_| panic!("the {title} row is not a UIKeyCommand"))
+    }
+
+    /// The `text_selection_ios::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "text_selection_ios::two_fields_own_their_commands_and_retire_them",
+                || {
+                    two_fields_own_their_commands_and_retire_them();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "text_selection_ios::a_selection_menu_command_edits_the_live_selection",
+                || {
+                    a_selection_menu_command_edits_the_live_selection();
+                    Ok(())
+                },
+            ),
+        ]
     }
 }

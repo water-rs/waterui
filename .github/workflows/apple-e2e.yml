@@ -165,11 +165,31 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
         run: cargo install --path "${WATER_CLI_DIR:?WATER_CLI_DIR is required; run .github/scripts/setup-e2e.sh first}" --locked --root "${{ github.workspace }}/cli-bin"
 
+      - name: Build the screenshot comparer
+        if: github.event_name != 'schedule' || inputs.full_suite
+        timeout-minutes: 10
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
+        run: |
+          export PATH="${{ github.workspace }}/cli-bin/bin:${PATH}"
+          cargo install --path "${WATERUI_DIR}/graphics/cherenkov/oracle" --locked \
+            --features apple-screenshots --bin compare-screenshots --debug \
+            --root "${{ github.workspace }}/cli-bin"
+
       - name: Upload the water CLI
         uses: actions/upload-artifact@v4
         with:
           name: water-cli
           path: cli-bin/bin/water
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload the screenshot comparer
+        if: github.event_name != 'schedule' || inputs.full_suite
+        uses: actions/upload-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin/compare-screenshots
           retention-days: 1
           if-no-files-found: error
 
@@ -402,6 +422,13 @@ jobs:
           chmod +x cli-bin/bin/water
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
 
+      - name: Install the screenshot comparer
+        uses: actions/download-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin
+      - run: chmod +x cli-bin/bin/compare-screenshots
+
       - name: Download packaged iOS apps
         uses: actions/download-artifact@v4
         with:
@@ -531,6 +558,13 @@ jobs:
       - run: |
           chmod +x cli-bin/bin/water
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
+
+      - name: Install the screenshot comparer
+        uses: actions/download-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin
+      - run: chmod +x cli-bin/bin/compare-screenshots
 
       - name: Download packaged macOS apps
         uses: actions/download-artifact@v4

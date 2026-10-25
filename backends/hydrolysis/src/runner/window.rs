@@ -927,7 +927,11 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
 
     let mut built = false;
     match runtime.mode {
-        FrameMode::Idle => {}
+        FrameMode::Idle => {
+            runtime
+                .renderer
+                .record_text_input_overlay(env, kurbo::Affine::IDENTITY);
+        }
         FrameMode::Refresh | FrameMode::Animate if !runtime.renderer.has_render_tree() => {
             build_window_scene(
                 runtime,
@@ -1057,6 +1061,18 @@ pub struct SurfaceRenderResult {
     snapshot: Option<HeadlessSnapshot>,
 }
 
+impl SurfaceRenderResult {
+    #[cfg(target_os = "android")]
+    pub(crate) const fn engine_presented(render: Duration) -> Self {
+        Self {
+            acquire: Duration::ZERO,
+            render,
+            present: Duration::ZERO,
+            snapshot: None,
+        }
+    }
+}
+
 /// How a window's presentation kind renders one frame and gets it to the
 /// display. Host-acquired surfaces ([`SurfaceProvider`]) acquire, copy the
 /// engine output in and present; the macOS winit window's and the browser
@@ -1143,7 +1159,6 @@ crate::engine::cfg_async_fn! {
     surface.ensure_live();
     let (width, height) = surface.size();
     let format = surface.format();
-    let output_alpha = surface.output_alpha();
     let context = surface.device_loss().gpu_context();
     let context_id = context.context_id;
     // The engine renders into its own retained output before the swapchain
@@ -1171,6 +1186,8 @@ crate::engine::cfg_async_fn! {
     .unwrap_or_else(|error| {
         panic!("hydrolysis renderer: engine render failed: {error:#}")
     });
+    surface.set_content_range(engine_frame.content_range);
+    let output_alpha = surface.output_alpha();
     let engine_render = render_started_at.elapsed();
     let acquire_started_at = Instant::now();
     let frame = acquire_surface_frame(surface)?;

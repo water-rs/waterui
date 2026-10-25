@@ -8,6 +8,7 @@ mod bitmap;
 mod blend;
 mod colr;
 pub mod coverage;
+mod damage;
 mod filter;
 mod font;
 mod geometry;
@@ -43,7 +44,7 @@ pub use lower::{ClipMask, ClipRef};
 #[cfg(any(test, feature = "testing"))]
 pub use paint::{PaintData, paint_data};
 #[cfg(any(test, feature = "testing"))]
-pub use raster::{ClipRun, Edge, composite_span};
+pub use raster::{ClipCoverage, ClipRun, Edge, composite_span};
 #[cfg(any(test, feature = "testing"))]
 pub use raster::{composite_solid, convert_span};
 
@@ -79,6 +80,7 @@ enum Output {
 
 /// One surface's render-thread state.
 struct SurfaceState {
+    damage: damage::Damage,
     size: (u32, u32),
     /// Where finished pixels land; only `Offscreen` targets retain a
     /// full-frame buffer, in the format the host asked for.
@@ -95,6 +97,8 @@ struct SurfaceState {
     /// backdrop capture last frame (window, isolation stack and capture
     /// buffers). 0 when no capture ran.
     backdrop_capture_peak: u64,
+    /// Peak clip compiler, sample and pool storage across last frame's workers.
+    clip_scratch_peak: u64,
     /// Projective layers' realized local images, by layer, one per
     /// density bucket.
     projective: FxHashMap<LayerId, Vec<projective::Entry>>,
@@ -108,6 +112,16 @@ struct SurfaceState {
 }
 
 impl SurfaceState {
+    fn rendered_bands(&self) -> u32 {
+        let count = match &self.output {
+            Output::Stream { .. } => (self.size.1 as usize).div_ceil(raster::BAND_H),
+            Output::F32(_) | Output::F16(_) => {
+                usize::try_from(self.damage.bands().pixel_area()).expect("band count fits usize")
+            }
+        };
+        u32::try_from(count).expect("surface band count fits u32")
+    }
+
     /// Heap bytes of the output storage (`Stream` keeps none).
     const fn output_bytes(&self) -> u64 {
         match &self.output {
@@ -119,10 +133,13 @@ impl SurfaceState {
 
     /// Heap bytes of the surface's own band-format working buffer.
     const fn band_bytes(&self) -> u64 {
-        match &self.output {
-            Output::Stream { emit, .. } => (emit.capacity() * size_of::<[half::f16; 4]>()) as u64,
-            _ => 0,
-        }
+        self.clip_scratch_peak
+            + match &self.output {
+                Output::Stream { emit, .. } => {
+                    (emit.capacity() * size_of::<[half::f16; 4]>()) as u64
+                }
+                _ => 0,
+            }
     }
 }
 
@@ -379,6 +396,7 @@ impl Renderer for RasterRenderer {
         self.surfaces.insert(
             id,
             SurfaceState {
+                damage: damage::Damage::default(),
                 size,
                 output,
                 refresh,
@@ -387,6 +405,7 @@ impl Renderer for RasterRenderer {
                 groups: Vec::new(),
                 anchor_scratch: lower::AnchorScratch::default(),
                 backdrop_capture_peak: 0,
+                clip_scratch_peak: 0,
                 projective: FxHashMap::default(),
                 visibility: Visibility::Visible,
                 waker,
@@ -406,6 +425,7 @@ impl Renderer for RasterRenderer {
             return;
         };
         state.size = size;
+        state.damage.forget();
         let pixels = (size.0 * size.1) as usize;
         match &mut state.output {
             Output::F32(fb) => *fb = vec![[0.0; 4]; pixels],
@@ -656,6 +676,7 @@ impl Renderer for RasterRenderer {
         for surface in self.surfaces.values() {
             categories.output += surface.output_bytes();
             categories.retained += surface.anchor_scratch.heap_bytes();
+            categories.retained += surface.damage.heap_bytes();
             categories.retained += surface
                 .layers
                 .values()
@@ -764,7 +785,7 @@ impl RasterRenderer {
                     .band_index
                     .take()
                     .expect("the band index is lent only for one surface render");
-                let result = self.render_surface(sf, frame.id, stats, &mut index);
+                let result = self.render_surface(sf, frame.id, stats, &mut index, filter_changed);
                 self.band_index = Some(index);
                 result?;
             }
@@ -862,12 +883,12 @@ impl RasterRenderer {
         frame: cherenkov::FrameId,
         stats: &mut FrameStats,
         index: &mut bins::FrameIndex,
+        filter_changed: bool,
     ) -> Result<(), RenderError> {
         let phases = stats.phases;
         let id = sf.id;
-        let size = match self.surfaces.get(&id) {
-            Some(surf) => surf.size,
-            None => return Ok(()),
+        let Some(size) = self.surfaces.get(&id).map(|surf| surf.size) else {
+            return Ok(());
         };
         // The frame's transient band-index metrics, shared by the
         // projective realizations and the surface render: each records
@@ -885,16 +906,16 @@ impl RasterRenderer {
             (None, projected),
             &mut used,
         )?;
-        if let Some(surf) = self.surfaces.get_mut(&id) {
-            surf.filters = used.filters.into_iter().collect();
-            surf.groups = used.groups.into_iter().collect();
-        }
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
         };
+        surf.filters = used.filters.into_iter().collect();
+        surf.groups = used.groups.into_iter().collect();
         let (w, h) = (surf.size.0 as usize, surf.size.1 as usize);
         let [r, g, b, a] = sf.clear.components;
         let clear = [r * a, g * a, b * a, a];
+        surf.damage
+            .prepare(&items, h, clear, self.image_replacements, filter_changed);
         let pool = &self.pool;
         let level = self.level;
         let peak = std::sync::atomic::AtomicU64::new(0);
@@ -913,6 +934,7 @@ impl RasterRenderer {
                     Some(&peak),
                     has_backdrop,
                     &mut frame_mem,
+                    Some(surf.damage.bands()),
                 )
             })?,
             Output::F16(out) => pool.install(|| {
@@ -927,6 +949,7 @@ impl RasterRenderer {
                     Some(&peak),
                     has_backdrop,
                     &mut frame_mem,
+                    Some(surf.damage.bands()),
                 )
             })?,
             Output::Stream { format, sink, emit } => {
@@ -946,8 +969,12 @@ impl RasterRenderer {
                 )?
             }
         };
+        surf.damage.commit();
         stats.phases.shade_seconds += shade_at.elapsed().as_secs_f64();
         surf.backdrop_capture_peak = peak.load(std::sync::atomic::Ordering::Relaxed);
+        surf.clip_scratch_peak = frame_mem
+            .clip_peak
+            .load(std::sync::atomic::Ordering::Relaxed);
         tracing::debug!(target: "cherenkov_cpu::profile",
             lower_s = stats.phases.lower_seconds - phases.lower_seconds,
             glyph_s = stats.phases.glyph_seconds - phases.glyph_seconds,
@@ -959,7 +986,7 @@ impl RasterRenderer {
             "raster phases");
         stats.draws += draws;
         stats.instances += edges;
-        stats.passes += u32::try_from(h.div_ceil(raster::BAND_H)).unwrap_or(u32::MAX);
+        stats.passes += surf.rendered_bands();
         Ok(())
     }
 
@@ -1013,7 +1040,22 @@ impl RasterRenderer {
                 &self.pool,
             );
             lowering.project(local, projected);
+            if local.is_none() {
+                lowering.damage_layers = std::mem::take(&mut surf.damage.layers);
+                lowering.damage_layers.clear();
+                lowering.damage_rows = std::mem::take(&mut surf.damage.command_rows);
+                lowering.damage_rows.clear();
+            }
             let result = lowering.run(id, sf.tree, &mut caches, &self.images);
+            if local.is_none() {
+                surf.damage.layers = std::mem::take(&mut lowering.damage_layers);
+                surf.damage.command_rows = std::mem::take(&mut lowering.damage_rows);
+                if result.is_err() {
+                    // Some command caches may already hold their new output.
+                    // A retry must not treat those cache hits as submitted pixels.
+                    surf.damage.forget();
+                }
+            }
             glyphs_rasterized = lowering.glyphs_rasterized;
             stats.glyphs_rasterized += glyphs_rasterized;
             stats.commands_lowered += lowering.commands_lowered;
@@ -1117,6 +1159,7 @@ impl RasterRenderer {
                         None,
                         has_backdrop,
                         meter,
+                        None,
                     )
                 })?;
                 stats.draws += draws;

@@ -78,6 +78,35 @@ fn main() {
     libtest_mimic::run(&args, trials()).exit();
 }
 
+/// The `embedding::` mount-ownership trials — kept beside `trials` so the
+/// registrars stay one-per-line.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+fn embedding_trials() -> Vec<Trial> {
+    vec![
+        Trial::test(
+            "embedding::an_embedded_mount_leaves_the_hosts_window_and_menu_bar_alone",
+            || {
+                embedding::an_embedded_mount_leaves_the_hosts_window_and_menu_bar_alone();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "embedding::each_host_views_appearance_drives_its_own_mounted_scheme",
+            || {
+                embedding::each_host_views_appearance_drives_its_own_mounted_scheme();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "embedding::the_embedded_root_follows_the_host_bounds_and_detaches_on_drop",
+            || {
+                embedding::the_embedded_root_follows_the_host_bounds_and_detaches_on_drop();
+                Ok(())
+            },
+        ),
+    ]
+}
+
 fn trials() -> Vec<Trial> {
     let mut tests = base_trials();
     #[cfg(all(target_os = "macos", feature = "native-test"))]
@@ -87,10 +116,13 @@ fn trials() -> Vec<Trial> {
                 window::manager_installs_into_the_environment(mtm());
                 Ok(())
             }),
-            Trial::test("window::bind_root_window_wires_a_live_window", || {
-                window::bind_root_window_wires_a_live_window(mtm());
+            Trial::test("window::a_declared_window_realizes_its_declaration", || {
+                window::a_declared_window_realizes_its_declaration(mtm());
                 Ok(())
             }),
+        ]);
+        tests.extend(embedding_trials());
+        tests.extend([
             Trial::test(
                 "menus::the_window_menu_opens_with_the_standard_close_item",
                 || {
@@ -102,6 +134,14 @@ fn trials() -> Vec<Trial> {
                 "menus::a_pull_down_validates_its_callback_rows_from_their_command",
                 || {
                     menus::a_pull_down_validates_its_callback_rows_from_their_command();
+                    Ok(())
+                },
+            ),
+            #[cfg(feature = "text_field")]
+            Trial::test(
+                "text_selection::a_selection_menu_command_edits_the_live_selection",
+                || {
+                    text_selection::a_selection_menu_command_edits_the_live_selection();
                     Ok(())
                 },
             ),
@@ -1996,7 +2036,7 @@ mod tabs {
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod window {
     pub use waterui_apple::native_test_support::{
-        bind_root_window_wires_a_live_window, manager_installs_into_the_environment,
+        a_declared_window_realizes_its_declaration, manager_installs_into_the_environment,
     };
 }
 
@@ -8755,6 +8795,250 @@ mod a11y_extent {
     }
 }
 
+/// `embedding::mount` leaves everything the embedder owns alone: the host
+/// window's title, frame, style and resizability, the close gate the host
+/// armed, and the process's main menu. The embedded root follows the host
+/// view's bounds and detaches when the mount drops.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+mod embedding {
+    use std::cell::RefCell;
+    use std::ffi::c_void;
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::MainThreadOnly;
+    use cocoa_ui::objc2_app_kit::{
+        NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
+        NSApplication, NSMenu, NSView, NSWindowStyleMask,
+    };
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+    use cocoa_ui::{MainThreadMarker, Retained, view};
+    use waterui::app::App;
+    use waterui::component::menu::{Command, Menu, MenuItem};
+    use waterui::component::text::Text;
+    use waterui::graphics::color::ColorScheme;
+    use waterui::reactive::{Computed, binding};
+    use waterui::window::WindowState;
+    use waterui::{Environment, Signal};
+
+    use crate::mtm;
+
+    /// A live mount plus the test runtime it borrows — `mount` requires the
+    /// runtime to outlive it.
+    struct Embed {
+        mount: *mut c_void,
+        _runtime: Box<waterui_apple::embedding::Runtime>,
+    }
+
+    impl Embed {
+        fn new(host: &NSView, app: impl FnOnce(Environment) -> App) -> Self {
+            let runtime = Box::new(waterui_apple::embedding::Runtime::for_test());
+            // SAFETY: `_runtime` keeps the runtime box alive past the mount's
+            // drop; `host` is a live view and the paths are NUL-terminated.
+            let mount = unsafe {
+                waterui_apple::embedding::mount(
+                    (&raw const *runtime).cast::<c_void>(),
+                    std::ptr::from_ref(host).cast_mut().cast(),
+                    c"/tmp/waterui-embed-test-assets".as_ptr(),
+                    c"/tmp/waterui-embed-test-fonts".as_ptr(),
+                    app,
+                )
+            };
+            Self {
+                mount,
+                _runtime: runtime,
+            }
+        }
+    }
+
+    impl Drop for Embed {
+        fn drop(&mut self) {
+            // SAFETY: `mount` was returned by `embedding::mount` and dropped
+            // once on the main thread.
+            unsafe { waterui_apple::embedding::waterui_apple_mount_drop(self.mount) };
+        }
+    }
+
+    /// The named appearance — the constants are `AppKit` strings exported
+    /// for the process's lifetime.
+    fn appearance(name: &'static NSString) -> Retained<NSAppearance> {
+        NSAppearance::appearanceNamed(name).expect("the named appearance exists")
+    }
+
+    /// `(dark, aqua)` — the pair the trials flip between.
+    fn appearances() -> (&'static NSString, &'static NSString) {
+        // SAFETY: reads string constants `AppKit` owns for the process's
+        // lifetime.
+        unsafe { (NSAppearanceNameDarkAqua, NSAppearanceNameAqua) }
+    }
+
+    /// A plain `NSView`, never touched by our kit — the embedder's own.
+    fn plain_view(mtm: MainThreadMarker) -> Retained<NSView> {
+        // SAFETY: `initWithFrame:` is `NSView`'s documented initializer.
+        NSView::initWithFrame(
+            NSView::alloc(mtm),
+            NSRect::new(NSPoint::ZERO, NSSize::new(120.0, 80.0)),
+        )
+    }
+
+    /// The mount must not reach across the boundary: a declared window
+    /// title/style/state and a declared menu bar change nothing on the
+    /// host's window or the application's menu.
+    pub fn an_embedded_mount_leaves_the_hosts_window_and_menu_bar_alone() {
+        let mtm = mtm();
+        let window = cocoa_ui::appkit::Window::new(
+            mtm,
+            cocoa_ui::Rect::new(200.0, 200.0, 640.0, 480.0),
+            cocoa_ui::appkit::WindowStyle::TITLED,
+        );
+        let native = window.native();
+        native.setTitle(&NSString::from_str("Host Title"));
+        native.setStyleMask(
+            native.styleMask() | NSWindowStyleMask::Resizable | NSWindowStyleMask::Closable,
+        );
+        let host_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("HostMenu"));
+        let application = NSApplication::sharedApplication(mtm);
+        let saved_menu = application.mainMenu();
+        application.setMainMenu(Some(&host_menu));
+        let close_called = Rc::new(RefCell::new(false));
+        window.on_should_close({
+            let close_called = Rc::clone(&close_called);
+            move || {
+                *close_called.borrow_mut() = true;
+                false
+            }
+        });
+        let content_view = native
+            .contentView()
+            .expect("a titled window has a content view");
+        let host = plain_view(mtm);
+        content_view.addSubview(&host);
+        let host_frame = native.frame();
+        let host_mask = native.styleMask();
+
+        let embed = Embed::new(&host, |env| {
+            App::new_with_windows(
+                vec![waterui::window::Window::new(
+                    "Declared Title",
+                    binding(WindowState::Normal),
+                    || Text::new("embedded"),
+                )],
+                env,
+            )
+            .menu_bar(Menu::new(
+                "Embed",
+                vec![MenuItem::Command(
+                    Command::builder("DeclaredItem").action(|| {}),
+                )],
+            ))
+        });
+
+        assert_eq!(native.title().to_string(), "Host Title");
+        assert_eq!(native.styleMask(), host_mask);
+        assert!(native.isResizable());
+        assert_eq!(native.frame(), host_frame);
+        assert_eq!(
+            application
+                .mainMenu()
+                .expect("the host menu stays")
+                .title()
+                .to_string(),
+            "HostMenu"
+        );
+        // The host's close gate still answers — the mount armed no veto of
+        // its own.
+        native.performClose(None);
+        assert!(*close_called.borrow());
+
+        // Detach and remount on the same host.
+        drop(embed);
+        assert_eq!(view::subviews(&host).len(), 0, "drop detaches the root");
+        let _remounted = Embed::new(&host, |env| App::new(|| Text::new("again"), env));
+        assert_eq!(view::subviews(&host).len(), 1);
+        application.setMainMenu(saved_menu.as_deref());
+    }
+
+    /// Each host view's `effectiveAppearance` drives its own mounted tree's
+    /// color scheme; a change on one never reaches the other, and a mount
+    /// dropped stops hearing its host entirely.
+    pub fn each_host_views_appearance_drives_its_own_mounted_scheme() {
+        let mtm = mtm();
+        let host_a = plain_view(mtm);
+        let host_b = plain_view(mtm);
+        let (dark, aqua) = appearances();
+        host_a.setAppearance(Some(&appearance(dark)));
+        host_b.setAppearance(Some(&appearance(aqua)));
+
+        let scheme_a = Rc::new(RefCell::new(None::<Computed<ColorScheme>>));
+        let scheme_b = Rc::new(RefCell::new(None::<Computed<ColorScheme>>));
+        let capture = |slot: &Rc<RefCell<Option<Computed<ColorScheme>>>>| {
+            let slot = Rc::clone(slot);
+            move |env: Environment| {
+                *slot.borrow_mut() = Some(
+                    env.query::<ColorScheme, Computed<ColorScheme>>()
+                        .cloned()
+                        .expect("the mount installs a color scheme"),
+                );
+                App::new(|| Text::new("x"), env)
+            }
+        };
+        let embed_a = Embed::new(&host_a, capture(&scheme_a));
+        let _embed_b = Embed::new(&host_b, capture(&scheme_b));
+
+        let scheme_a = scheme_a
+            .borrow()
+            .clone()
+            .expect("mount A installed a scheme");
+        let scheme_b = scheme_b
+            .borrow()
+            .clone()
+            .expect("mount B installed a scheme");
+        assert_eq!(scheme_a.snapshot(), ColorScheme::Dark);
+        assert_eq!(scheme_b.snapshot(), ColorScheme::Light);
+
+        // Changing one host's appearance reaches only its own mount.
+        host_a.setAppearance(Some(&appearance(aqua)));
+        assert_eq!(scheme_a.snapshot(), ColorScheme::Light);
+        assert_eq!(scheme_b.snapshot(), ColorScheme::Light);
+
+        host_b.setAppearance(Some(&appearance(dark)));
+        assert_eq!(scheme_a.snapshot(), ColorScheme::Light);
+        assert_eq!(scheme_b.snapshot(), ColorScheme::Dark);
+
+        // A dropped mount stops hearing its host: mutating it changes
+        // nothing and fires nothing (a leaked observer would fire into the
+        // freed signal graph).
+        drop(embed_a);
+        host_a.setAppearance(Some(&appearance(dark)));
+        assert_eq!(scheme_a.snapshot(), ColorScheme::Light);
+        assert_eq!(scheme_b.snapshot(), ColorScheme::Dark);
+    }
+
+    /// The embedded root tracks the host view's bounds through autoresizing
+    /// and `drop` removes it without touching the host.
+    pub fn the_embedded_root_follows_the_host_bounds_and_detaches_on_drop() {
+        let mtm = mtm();
+        let host = plain_view(mtm);
+        let embed = Embed::new(&host, |env| App::new(|| Text::new("x"), env));
+
+        let root = view::subviews(&host)
+            .into_iter()
+            .next()
+            .expect("the mount attaches a root");
+        assert_eq!(root.frame().size, host.bounds().size);
+
+        host.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(300.0, 200.0)));
+        assert_eq!(
+            root.frame().size,
+            NSSize::new(300.0, 200.0),
+            "the root autoresizes with the host"
+        );
+
+        drop(embed);
+        assert_eq!(view::subviews(&host).len(), 0);
+        assert_eq!(host.frame().size, NSSize::new(300.0, 200.0));
+    }
+}
+
 /// The shared gesture contract end to end on `AppKit`: a completed
 /// gesture inserts the observed `Gesture` and its typed event —
 /// `TapEvent`, `RotationEvent`, `MagnificationEvent` — into the action's
@@ -9269,5 +9553,255 @@ mod gesture_events {
                 Box::new(a_then_gesture_forwards_after_the_first_completes),
             ),
         ])
+    }
+}
+/// `selection_menu` rows on the field editor's real context menu —
+/// `textView:menu:forEvent:atIndex:` — resolved each request on an
+/// environment carrying the live `TextSelection` (water-rs/waterui#3037).
+#[cfg(all(target_os = "macos", feature = "native-test", feature = "text_field"))]
+mod text_selection {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use cocoa_ui::PlatformView;
+    use cocoa_ui::appkit::TextField as KitTextField;
+    use cocoa_ui::objc2::DowncastTarget;
+    use cocoa_ui::objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSMenu, NSTextView};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRange, NSString};
+    use cocoa_ui::{Retained, view};
+    use waterui::Str;
+    use waterui::component::menu::{Command, MenuItem};
+    use waterui::component::text_field::TextField;
+    use waterui::component::text_selection::TextSelection;
+    use waterui::reactive::{Signal, binding};
+    use waterui::text::StyledStr;
+
+    use crate::{leaf, mtm, resolve};
+
+    /// The first view of type `T` in a depth-first walk — the macOS
+    /// counterpart of the iOS suite's `find_view`.
+    fn find<T: DowncastTarget>(view: &PlatformView) -> Option<Retained<PlatformView>> {
+        for sub in view::subviews(view) {
+            if sub.downcast_ref::<T>().is_some() {
+                return Some(sub);
+            }
+            if let Some(found) = find::<T>(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The menu the field editor answers a right-click with — the path
+    /// `textView:menu:forEvent:atIndex:` rides.
+    fn edit_menu(window: &cocoa_ui::appkit::Window, editor: &NSTextView) -> Retained<NSMenu> {
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                NSEventType::RightMouseDown,
+                NSPoint::new(5.0, 5.0),
+                NSEventModifierFlags::empty(),
+                0.0,
+                window.native().windowNumber(),
+                None,
+                1,
+                1,
+                0.0,
+            )
+            .expect("a right-mouse-down event constructs");
+        editor
+            .menuForEvent(&event)
+            .expect("the field editor produced a menu")
+    }
+
+    /// Fires the menu row titled `title` the way the platform does —
+    /// `performActionForItemAtIndex:` sends the item's action at its target.
+    fn perform(menu: &NSMenu, title: &str) {
+        let item = menu
+            .itemWithTitle(&NSString::from_str(title))
+            .unwrap_or_else(|| panic!("no menu row titled {title}"));
+        menu.performActionForItemAtIndex(menu.indexOfItem(&item));
+    }
+
+    /// A `selection_menu` command reads the selection the moment it fires —
+    /// not the one the menu was built over — edits it through the native
+    /// path, sees its write in the value binding, and lets the editor's
+    /// undo restore both. `Option<TextSelection>` extracts `Some`, a
+    /// disabled command renders disabled, and `styled_value` is the
+    /// field's value binding.
+    /// Undo restores the pre-command text exactly and the editor's
+    /// `DidUndo` session observer reports it to the value binding; redo
+    /// writes the replacement back through both legs. A synchronous
+    /// external normalization inside the same write-back window still
+    /// reaches the field: echo suppression skips only the exact echo.
+    fn undo_and_normalization_roundtrip(
+        field: &cocoa_ui::appkit::TextField,
+        value: &waterui::reactive::Binding<Str>,
+        editor: &NSTextView,
+    ) {
+        let undo = editor
+            .undoManager()
+            .expect("the field editor carries an undo manager");
+        undo.undo();
+        assert_eq!(field.string(), "hé😀b");
+        assert_eq!(
+            value.snapshot(),
+            Str::from("hé😀b"),
+            "undo reports the restored text to the value binding"
+        );
+        undo.redo();
+        assert_eq!(field.string(), "hé《b");
+        assert_eq!(
+            value.snapshot(),
+            Str::from("hé《b"),
+            "redo reports the replayed text to the value binding"
+        );
+        undo.undo();
+        assert_eq!(field.string(), "hé😀b");
+
+        let _normalizer = value.watch({
+            let value = value.clone();
+            move |ctx| {
+                if ctx.value() == &Str::from("x") {
+                    value.set(Str::from("X"));
+                }
+            }
+        });
+        field.replace_range(NSRange::new(0, 5), &NSString::from_str("x"));
+        assert_eq!(
+            value.snapshot(),
+            Str::from("X"),
+            "the watcher rewrote the value synchronously"
+        );
+        assert_eq!(
+            field.string(),
+            "X",
+            "the normalized value pushed back onto the field"
+        );
+    }
+
+    pub fn a_selection_menu_command_edits_the_live_selection() {
+        let mtm = mtm();
+        let value = binding(Str::from("hé😀b"));
+        let observed = Rc::new(RefCell::new((String::new(), 0usize, 0usize)));
+        let optional_seen = Rc::new(RefCell::new(false));
+
+        let observe = Command::builder("Observe").action({
+            let observed = Rc::clone(&observed);
+            move |selection: TextSelection| {
+                let range = selection.range();
+                *observed.borrow_mut() = (selection.text().to_string(), range.start, range.end);
+            }
+        });
+        let optional = Command::builder("Optional").action({
+            let optional_seen = Rc::clone(&optional_seen);
+            move |selection: Option<TextSelection>| {
+                *optional_seen.borrow_mut() = selection.is_some();
+            }
+        });
+        // Selects a byte range of the live text — `Observe` proves it lands.
+        let mark =
+            Command::builder("Mark").action(|selection: TextSelection| selection.select(3..7));
+        // Replaces whatever the selection covers when the command fires.
+        let wrap_fired = Rc::new(RefCell::new(None));
+        let wrap = Command::builder("Wrap").action({
+            let wrap_fired = Rc::clone(&wrap_fired);
+            move |selection: TextSelection| {
+                let range = selection.range();
+                *wrap_fired.borrow_mut() = Some(range);
+                selection.replace("《");
+            }
+        });
+        let styled = Command::builder("Styled").action(|selection: TextSelection| {
+            selection
+                .styled_value()
+                .expect("a plain field answers styled_value")
+                .set(StyledStr::plain("ZZ"));
+        });
+        let off = Command::builder("Off").action(|| {}).disabled(true);
+
+        let mount = resolve::render(TextField::new("Name", &value).selection_menu(vec![
+            MenuItem::Command(observe),
+            MenuItem::Command(optional),
+            MenuItem::Command(mark),
+            MenuItem::Command(wrap),
+            MenuItem::Command(styled),
+            MenuItem::Command(off),
+        ]));
+        let window = leaf::attach(mtm, mount.view());
+        let field_view =
+            find::<KitTextField>(mount.view()).expect("the leaf mounts a kit TextField");
+        let field = field_view
+            .downcast::<KitTextField>()
+            .expect("the found view is the kit TextField");
+        assert!(field.begin_editing(), "the field never began editing");
+        let editor = field.field_editor().expect("the field editor is live");
+
+        // UTF-16 units: h=1 é=1 😀=2 b=1 — 😀 spans units 2..4, bytes 3..7.
+        field.set_selected_range(NSRange::new(2, 2));
+        let menu = edit_menu(&window, &editor);
+
+        // The platform's own rows survive the custom append.
+        assert!(
+            menu.numberOfItems() > 6,
+            "the standard edit rows were replaced rather than kept"
+        );
+        for title in ["Observe", "Optional", "Mark", "Wrap", "Styled", "Off"] {
+            assert!(
+                menu.itemWithTitle(&NSString::from_str(title)).is_some(),
+                "the {title} row is missing from the editor's menu"
+            );
+        }
+
+        // The selection moved after the menu was built: a command reads
+        // the live range when it fires, not the built-over range.
+        field.set_selected_range(NSRange::new(0, 2));
+        perform(&menu, "Observe");
+        let (text, start, end) = observed.borrow().clone();
+        assert_eq!((text.as_str(), start, end), ("hé😀b", 0, 3));
+
+        perform(&menu, "Optional");
+        assert!(
+            *optional_seen.borrow(),
+            "Option<TextSelection> did not extract the live selection"
+        );
+
+        // A disabled command renders a disabled row.
+        let off_item = menu
+            .itemWithTitle(&NSString::from_str("Off"))
+            .expect("the Off row");
+        assert!(!off_item.isEnabled(), "a disabled command is not disabled");
+
+        // `Mark` selects  😀 (bytes 3..7 → UTF-16 2..4).
+
+        perform(&menu, "Mark");
+        assert_eq!(
+            field.selected_range(),
+            Some(NSRange::new(2, 2)),
+            "Mark selected 😀 through the command"
+        );
+
+        // `replace` edits through the native path: the field, the value
+        // binding and the caret all reflect it.
+        perform(&menu, "Wrap");
+        assert_eq!(field.string(), "hé《b");
+        assert_eq!(
+            value.snapshot(),
+            Str::from("hé《b"),
+            "the native edit wrote through to the value binding"
+        );
+        assert_eq!(
+            field.selected_range(),
+            Some(NSRange::new(3, 0)),
+            "the caret lands after the inserted text"
+        );
+
+        undo_and_normalization_roundtrip(&field, &value, &editor);
+
+        // `styled_value` is the field's value binding: writing it lands on
+        // `value` and the field shows the pushed text.
+        perform(&menu, "Styled");
+        assert_eq!(value.snapshot(), Str::from("ZZ"));
+        assert_eq!(field.string(), "ZZ");
+
+        window.close();
     }
 }

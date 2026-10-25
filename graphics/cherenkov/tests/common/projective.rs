@@ -377,7 +377,9 @@ pub fn released_resources_leave_no_local_image<B: Backend + ProjectiveLayers + U
         drop(image);
         scene.render().expect("released");
         assert_eq!(engine.stats().projective_realized, 0);
-        drawn - resident(engine)
+        // Repaint caches may initialize while resources are released. Compare
+        // signed net changes; the affine twin subtracts that shared cost.
+        i128::from(drawn) - i128::from(resident(engine))
     };
     let local: u64 = cherenkov::lowering::projective::mip_levels((32, 32))
         .iter()
@@ -390,7 +392,7 @@ pub fn released_resources_leave_no_local_image<B: Backend + ProjectiveLayers + U
     let projective_engine = Engine::<B>::new(config()).expect("backend required");
     let affine_engine = Engine::<B>::new(config()).expect("backend required");
     assert!(
-        freed(&projective_engine, true) - freed(&affine_engine, false) >= local,
+        freed(&projective_engine, true) - freed(&affine_engine, false) >= i128::from(local),
         "the local image that read the released image is freed with it"
     );
 }

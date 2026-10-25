@@ -699,6 +699,8 @@ pub enum Op {
         local: Affine,
         /// The run, minus its COLR glyphs.
         run: GlyphSource,
+        /// Conservative local outline bounds, independent of device placement.
+        bounds: Rect,
         /// The resolved paint (identity local space).
         paint: ResolvedPaint,
     },
@@ -1206,6 +1208,7 @@ impl Lowerer<'_> {
             if !run.glyphs.is_empty() {
                 ops.push(Op::Glyphs {
                     local: ambient,
+                    bounds: super::glyph::run_bounds(font, run)?,
                     run: source.map_or_else(
                         || GlyphSource::Run(run.clone()),
                         |index| GlyphSource::Command {
@@ -1261,21 +1264,25 @@ impl Lowerer<'_> {
         run: &GlyphRun,
         pending: &mut Vec<cherenkov::Glyph>,
         paint: ResolvedPaint,
-    ) {
+        font: &FontData,
+    ) -> Result<(), RenderError> {
         if pending.is_empty() {
-            return;
+            return Ok(());
         }
+        let run = GlyphRun {
+            font: run.font,
+            size: run.size,
+            coords: run.coords.clone(),
+            glyphs: std::mem::take(pending).into(),
+            style: run.style.clone(),
+        };
         ops.push(Op::Glyphs {
             local: ambient,
-            run: GlyphSource::Run(GlyphRun {
-                font: run.font,
-                size: run.size,
-                coords: run.coords.clone(),
-                glyphs: std::mem::take(pending).into(),
-                style: run.style.clone(),
-            }),
+            bounds: super::glyph::run_bounds(font, &run)?,
+            run: GlyphSource::Run(run),
             paint,
         });
+        Ok(())
     }
 
     #[inline(never)]
@@ -1311,7 +1318,7 @@ impl Lowerer<'_> {
             if let Some(color_glyphs) = color_glyphs.as_ref()
                 && color_glyphs.get(skrifa::GlyphId::new(glyph.id)).is_some()
             {
-                Self::push_pending(ops, ambient, run, &mut pending, resolved.clone());
+                Self::push_pending(ops, ambient, run, &mut pending, resolved.clone(), font)?;
                 let picture = crate::render::colr::glyph_picture(
                     font,
                     run.font.raw(),
@@ -1372,7 +1379,7 @@ impl Lowerer<'_> {
             if path.elements().is_empty() {
                 continue;
             }
-            Self::push_pending(ops, ambient, run, &mut pending, resolved.clone());
+            Self::push_pending(ops, ambient, run, &mut pending, resolved.clone(), font)?;
             self.fill(
                 ambient,
                 &ShapeData::Path {
@@ -1384,7 +1391,7 @@ impl Lowerer<'_> {
                 None,
             )?;
         }
-        Self::push_pending(ops, ambient, run, &mut pending, resolved);
+        Self::push_pending(ops, ambient, run, &mut pending, resolved, font)?;
         Ok(())
     }
 }

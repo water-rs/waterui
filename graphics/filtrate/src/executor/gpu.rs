@@ -55,6 +55,11 @@ impl PlanOptions {
             self.input_filterable,
             self.intermediate_filterable,
             self.fold,
+            if ctx.device.features().contains(wgpu::Features::SHADER_F16) {
+                cherenkov_shader::Precision::F16
+            } else {
+                cherenkov_shader::Precision::F32
+            },
         )?;
         for (index, pass) in plan.passes.iter().enumerate() {
             let (format, filterable) = if index == 0 {

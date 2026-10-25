@@ -7,13 +7,17 @@ use crate::renderer::MenuShortcutRegistry;
 use crate::renderer::accessibility::{
     AccessibilityActivationPointError, AccessibilityContentTypes, WINDOW_ID_STRIDE,
 };
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub(super) struct HeadlessPlatformWindow {
     inner: OffscreenWindow,
     pending_events: VecDeque<InputEvent>,
-    redraw_requested: Cell<bool>,
+    redraw_requested: Arc<AtomicBool>,
     #[cfg(test)]
     pub(super) frame_wake_count: Rc<Cell<u32>>,
     #[cfg(test)]
@@ -57,7 +61,7 @@ impl HeadlessPlatformWindow {
         Self {
             inner: OffscreenWindow::on_context(gpu, width, height, format),
             pending_events: VecDeque::new(),
-            redraw_requested: Cell::new(false),
+            redraw_requested: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             frame_wake_count: Rc::new(Cell::new(0)),
             #[cfg(test)]
@@ -91,8 +95,8 @@ impl HeadlessPlatformWindow {
         !self.pending_events.is_empty()
     }
 
-    pub(super) const fn take_redraw_request(&self) -> bool {
-        self.redraw_requested.replace(false)
+    pub(super) fn take_redraw_request(&self) -> bool {
+        self.redraw_requested.swap(false, Ordering::AcqRel)
     }
 }
 
@@ -131,7 +135,7 @@ impl PlatformWindow for HeadlessPlatformWindow {
     }
 
     fn request_redraw(&self) {
-        self.redraw_requested.set(true);
+        self.redraw_requested.store(true, Ordering::Release);
     }
 
     /// The headless pump is driven explicitly by the harness — a request
@@ -176,6 +180,13 @@ impl crate::platform::GpuSurfaceWindow for HeadlessPlatformWindow {
     type Presentation = crate::platform::OffscreenSurface;
     fn surface(&mut self) -> &mut crate::platform::OffscreenSurface {
         crate::platform::GpuSurfaceWindow::surface(&mut self.inner)
+    }
+
+    fn gpu_surface_redraw_handle(&self) -> Option<waterui_graphics::RedrawHandle> {
+        let pending = Arc::clone(&self.redraw_requested);
+        Some(waterui_graphics::RedrawHandle::new(move || {
+            pending.store(true, Ordering::Release);
+        }))
     }
 
     fn set_blur_behind(&mut self, blur: bool) {

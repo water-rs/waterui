@@ -121,22 +121,30 @@ pub struct DrawBox {
     pub y1: u16,
 }
 
-/// A rasterized clip: an integer rect fast path or a full-surface
-/// coverage mask.
-#[derive(Debug, PartialEq)]
+/// Retained clip geometry, rasterized only for the rows a consumer needs.
+#[derive(Debug)]
 pub enum ClipMask {
     /// Axis-aligned rect with integer edges: coverage is 1 inside, 0
     /// outside.
     Rect(IRect),
-    /// Canonical filled boundaries of the clip stack and their exact-area
-    /// coverage, `w * h` cells. Draws intersect the boundaries before AA;
-    /// sampling consumers use the coverage.
+    /// Canonical filled boundaries. Draws intersect the operands before AA;
+    /// sampling consumers rasterize the resolved boundary by band.
     Geometry {
         /// Complete filled boundaries, with compatible winding directions.
         operands: Vec<Arc<[intersect::Segment]>>,
-        /// Exact intersection coverage for sampling consumers.
-        coverage: Vec<f32>,
+        /// Indexed intersection boundary for sampling consumers.
+        boundary: EdgeTiles,
     },
+}
+
+impl PartialEq for ClipMask {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Rect(a), Self::Rect(b)) => a == b,
+            (Self::Geometry { operands: a, .. }, Self::Geometry { operands: b, .. }) => a == b,
+            _ => false,
+        }
+    }
 }
 
 /// A clip shared by items; cheap to clone.
@@ -451,15 +459,14 @@ impl<T> DeviceData<T> {
     }
 }
 
-/// Heap bytes of a rasterized clip: the coverage mask or nothing for the
-/// rect fast path.
+/// Heap bytes of retained clip operands and their sampling boundary.
 pub fn clip_bytes(clip: &ClipMask) -> u64 {
     match clip {
         ClipMask::Rect(_) => 0,
-        ClipMask::Geometry { operands, coverage } => {
+        ClipMask::Geometry { operands, boundary } => {
             (operands.capacity() * size_of::<Arc<[intersect::Segment]>>()
-                + operands.iter().map(|o| size_of_val(&**o)).sum::<usize>()
-                + coverage.capacity() * size_of::<f32>()) as u64
+                + operands.iter().map(|o| size_of_val(&**o)).sum::<usize>()) as u64
+                + boundary.heap_bytes()
         }
     }
 }
@@ -701,6 +708,9 @@ struct Member {
 
 /// The lowering walk state for one surface frame.
 pub struct Lowering<'a, 'b> {
+    pub damage_layers: Vec<super::damage::Layer>,
+    pub damage_rows: Vec<(usize, usize)>,
+    content_damage: Option<std::ops::Range<usize>>,
     items: &'a mut Vec<Item>,
     filters: Option<&'a mut Registry>,
     frame: FrameId,
@@ -963,17 +973,17 @@ fn draw_boundary(
     Some((flatten_edges(frame.map(path), FLATTEN_TOL), rule))
 }
 
-/// Exact stack coverage for sampling consumers. Filled draw boundaries
+/// Exact stack boundary for sampling consumers. Filled draw boundaries
 /// join this intersection before their own antialiasing instead.
-fn clip_coverage(operands: &[Arc<[intersect::Segment]>], w: usize, h: usize) -> Vec<f32> {
+fn clip_boundary(operands: &[Arc<[intersect::Segment]>]) -> EdgeTiles {
     let Some((first, rest)) = operands.split_first() else {
-        return Vec::new();
+        return intersection_tiles(&[]);
     };
     let mut segments = first.to_vec();
     for operand in rest {
         segments = intersect::intersect_edges(&segments, FillRule::NonZero, operand);
     }
-    super::raster::boundary_mask(&intersection_boundaries(&segments), w, h)
+    intersection_tiles(&segments)
 }
 
 /// Beyond this band the draw's and clip's partial coverages cannot meet.
@@ -1314,6 +1324,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
         anchor_scratch.clear();
         Self {
             items,
+            damage_layers: Vec::new(),
+            damage_rows: Vec::new(),
+            content_damage: Some(0..0),
             filters,
             frame,
             used_filters: FxHashSet::default(),
@@ -1950,8 +1963,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             return integer_edges(new_rect).map(|r| Arc::new(ClipMask::Rect(r)));
         }
         // Mixed and general stacks retain their filled operands. Their
-        // intersection is rasterized once, never multiplied after AA.
-        let (w, h) = (self.width, self.height);
+        // intersection is indexed once and rasterized on demand by band.
         let sm = sigma_max(self.transform).max(1e-12);
         let tol_u = FLATTEN_TOL / sm;
         let (path, rule) = shape_outline(shape, tol_u)?;
@@ -1972,8 +1984,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
             }
         };
         operands.push(edges.into());
-        let coverage = self.pool.install(|| clip_coverage(&operands, w, h));
-        Some(Arc::new(ClipMask::Geometry { operands, coverage }))
+        let boundary = clip_boundary(&operands);
+        Some(Arc::new(ClipMask::Geometry { operands, boundary }))
     }
 
     /// Applies `clip` around `body`: `None` passes through.
@@ -2113,6 +2125,35 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// space; content and children draw in `content_transform` space,
     /// which is where `scroll_offset` bites.
     fn layer(
+        &mut self,
+        id: LayerId,
+        tree: &SurfaceTree,
+        caches: &mut FxHashMap<LayerId, ContentData>,
+    ) -> Result<(), RenderError> {
+        let start = self.items.len();
+        let start_row = self.damage_rows.len();
+        let parent_damage = self.content_damage.replace(start_row..start_row);
+        let result = self.layer_inner(id, tree, caches);
+        let changed_rows = std::mem::replace(&mut self.content_damage, parent_damage);
+        if self.local.is_none() {
+            self.damage_layers.push(super::damage::Layer {
+                id,
+                properties: if self.projects(id, tree) {
+                    tree.layer(id).revision().max(tree.content_stamp(id))
+                } else {
+                    tree.layer(id).property_revision()
+                },
+                commands: caches
+                    .get(&id)
+                    .map(|content| content.current().expect("content was prepared").0.len()),
+                changed_rows,
+                items: start..self.items.len(),
+            });
+        }
+        result
+    }
+
+    fn layer_inner(
         &mut self,
         id: LayerId,
         tree: &SurfaceTree,
@@ -2424,6 +2465,11 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 Op::BeginClip { local, shape, end } => {
                     let saved = self.transform;
                     self.transform = saved * *local;
+                    if !emissions[i].valid
+                        || !matches!(&emissions[i].data, Some(Emission::Clip(data)) if self.placement_matches(data))
+                    {
+                        self.content_damage = None;
+                    }
                     let clip = self.cached_clip(shape, &mut emissions[i]);
                     self.transform = saved;
                     if let Some(clip) = clip {
@@ -2441,6 +2487,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
                     space,
                     end,
                 } => {
+                    if !emissions[i].valid {
+                        self.content_damage = None;
+                    }
+                    emissions[i].valid = true;
                     let clip = self.clip.clone();
                     if let Some(filter) = filter {
                         self.filter_isolate(
@@ -2512,6 +2562,16 @@ impl<'a, 'b> Lowering<'a, 'b> {
             self.items.extend_from_slice(&data.output);
             return Ok(false);
         }
+        if let Some(Emission::Draw(data)) = &cache.data {
+            super::damage::record_rows(
+                &mut self.damage_rows,
+                &mut self.content_damage,
+                &data.output,
+                self.height,
+            );
+        } else {
+            self.content_damage = None;
+        }
         let (mut items, carried) = match cache.data.take() {
             Some(Emission::Draw(data)) => {
                 let carried = match data.output.as_slice() {
@@ -2557,6 +2617,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
         self.glyphs.append(&mut compose.glyphs);
         self.glyphs_rasterized += compose.glyphs_rasterized;
         self.items.extend_from_slice(&items);
+        super::damage::record_rows(
+            &mut self.damage_rows,
+            &mut self.content_damage,
+            &items,
+            self.height,
+        );
         cache.data = Some(Emission::Draw(self.device_data(items)));
         cache.valid = true;
         Ok(true)
