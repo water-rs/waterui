@@ -133,7 +133,10 @@ pub fn encode(
     let output = &surf.composition.images[epoch.output.0];
     let (view, texture) = match output.target {
         Target::Part(part) => surf.part(part),
-        Target::Scratch(depth) => (&surf.scratch[&depth].view, &surf.scratch[&depth].texture),
+        Target::Scratch(_) => {
+            let slot = output.backing.expect("tile output has backing");
+            (&surf.scratch[&slot].view, &surf.scratch[&slot].texture)
+        }
         _ => unreachable!("planner restricts persistent tile outputs"),
     };
     let size = (texture.width(), texture.height());

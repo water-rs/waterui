@@ -240,6 +240,7 @@ pub struct AndroidSurface {
     /// engine's `select_output` result, reported headroom included
     /// (#2445).
     selection: Option<cherenkov_gpu::interop::OutputSelection>,
+    content_range: cherenkov_gpu::interop::ColorRange,
     /// The Kotlin `SurfaceHolder`'s reported geometry, independent of the
     /// wgpu configuration — valid while between surface generations too.
     width: u32,
@@ -302,6 +303,7 @@ impl AndroidSurface {
             native_window: None,
             config: None,
             selection: None,
+            content_range: cherenkov_gpu::interop::ColorRange::WideGamut,
             width: 0,
             height: 0,
             refresh_demand: RefreshDemand::default(),
@@ -380,6 +382,7 @@ impl AndroidSurface {
             &surface,
             &self.handles.gpu_context().shared_device.adapter,
             false,
+            self.content_range,
         )
         .map_err(|error| GpuError::new(format!("hydrolysis android: {error}")))?;
         let config = wgpu::SurfaceConfiguration {
@@ -464,8 +467,9 @@ impl AndroidSurface {
             // old device's pick is not assumed on the new one; a surface
             // the new adapter cannot drive fails as explicitly as it
             // does at attach.
-            let selection = negotiate_host_output(surface, &shared.adapter, false)
-                .unwrap_or_else(|error| panic!("hydrolysis android: {error}"));
+            let selection =
+                negotiate_host_output(surface, &shared.adapter, false, self.content_range)
+                    .unwrap_or_else(|error| panic!("hydrolysis android: {error}"));
             config.format = selection.format;
             config.color_space = selection.color_space;
             config.present_mode = selection.present_mode;
@@ -596,6 +600,36 @@ impl SurfaceProvider for AndroidSurface {
         self.config
             .as_ref()
             .map_or(wgpu::TextureFormat::Rgba8Unorm, |config| config.format)
+    }
+
+    fn set_content_range(&mut self, range: cherenkov_gpu::interop::ColorRange) {
+        if range <= self.content_range {
+            return;
+        }
+        let shared = &self.handles.gpu_context().shared_device;
+        let surface = self
+            .surface
+            .as_ref()
+            .expect("rendered Android surface is attached");
+        let selection = negotiate_host_output(surface, &shared.adapter, false, range)
+            .unwrap_or_else(|error| panic!("hydrolysis android: {error}"));
+        let config = self
+            .config
+            .as_mut()
+            .expect("attached Android surface is configured");
+        if config.format != selection.format
+            || config.color_space != selection.color_space
+            || config.alpha_mode != selection.alpha_mode
+            || config.present_mode != selection.present_mode
+        {
+            config.format = selection.format;
+            config.color_space = selection.color_space;
+            config.alpha_mode = selection.alpha_mode;
+            config.present_mode = selection.present_mode;
+            surface.configure(&shared.device, config);
+        }
+        self.selection = Some(selection);
+        self.content_range = range;
     }
 
     fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
