@@ -1136,5 +1136,9 @@ mod navigation {
             bar_shown,
             "the pushed column unhides the compact stack's bar for the back button"
         );
+        assert!(
+            sidebar_nav.navigationBar().prefersLargeTitles(),
+            "the compact stack's visible bar keeps the large-title gate open"
+        );
     }
 }

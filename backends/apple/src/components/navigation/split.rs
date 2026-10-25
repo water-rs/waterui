@@ -170,6 +170,7 @@ mod platform {
             UINavigationController::alloc(mtm),
             &sidebar_vc,
         );
+        sidebar_nav.navigationBar().setPrefersLargeTitles(true);
         nav.set_column(UISplitViewControllerColumn::Primary, &sidebar_nav);
 
         let columns = Columns {
