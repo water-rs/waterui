@@ -189,24 +189,23 @@ fn join_gpu_instance(vi: u32, ii: u32) -> GpuJoin {
     let a = (vi >> 3u) - 1u;
     var inst = instances[a];
     let shift = inst.shape.half;
-    let base = ii * 8u + 4u;
+    let base = ii * 6u + 4u;
     let bounds = bitcast<vec4<f32>>(vec4<u32>(
         coverage_arena[base], coverage_arena[base + 1u],
         coverage_arena[base + 2u], coverage_arena[base + 3u]));
-    let data = vec4<u32>(
-        coverage_arena[base + 4u], coverage_arena[base + 5u],
-        coverage_arena[base + 6u], coverage_arena[base + 7u]);
+    let offset = coverage_arena[base + 4u];
+    let interior = coverage_arena[base + 5u];
     inst.bounds = bounds + shift.xyxy;
-    var kind = data.w;
+    var kind = select(KIND_GLYPH, KIND_SPAN, offset == 0xffffffffu);
     var texel = 0u;
     if kind == KIND_GLYPH {
-        inst.shape.half = vec2<f32>(f32(data.z & 0xffffu), f32(data.z >> 16u));
-        texel = bitcast<u32>(inst.uv.x) + data.x;
-        inst.uv.y = f32(data.y);
+        inst.shape.half = vec2<f32>(f32(interior & 0xffffu), f32(interior >> 16u));
+        texel = bitcast<u32>(inst.uv.x) + offset;
+        inst.uv.y = bounds.z - bounds.x;
         inst.meta_.w = inst.meta_.w | (FLAG_CELL_BUFFER << 24u);
-        if data.z != 0u && inst.meta_.y == PAINT_SOLID {
+        if interior != 0u && inst.meta_.y == PAINT_SOLID {
             kind = KIND_REGION;
-            inst.meta_.z = data.z;
+            inst.meta_.z = interior;
         }
     }
     inst.meta_.x = kind;

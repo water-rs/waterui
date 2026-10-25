@@ -8,7 +8,7 @@
 //! allocates one block in the coverage arena per path and accumulates
 //! the per-path dispatch records and the decision-R2 bound they size
 //! from. The kernels write only geometry: each block carries a count
-//! word, the emitted 32-byte geometry records and the packed R8 texels.
+//! word, the emitted 24-byte geometry records and the packed R8 texels.
 //! The cell-buffer vertex stage joins each record to the draw's anchor
 //! instance (water-rs/waterui#3081); the draw loops read each draw's
 //! indirect arguments from `draws`, whose count words arrive through
@@ -76,8 +76,8 @@ const GPU_COV_MAX_BYTES: u64 = 256 << 20;
 const FRAME_FIXED_BYTES: u64 = 18 * 1024 + 128 + 48;
 
 /// u32 words of one geometry record in the arena: the device bounds
-/// vec4 plus `(texel offset, width, interior, kind)`.
-const GEOMETRY_WORDS: u32 = 8;
+/// vec4 plus `(texel offset, interior)`; an all-ones offset denotes a span.
+const GEOMETRY_WORDS: u32 = 6;
 /// u32 words of one block's header: the emitted instance count and pad.
 const BLOCK_HEADER_WORDS: u32 = 4;
 
@@ -869,7 +869,7 @@ impl GpuCoverage {
         anchor.uv[0] = f32::from_bits(entry.texel_base);
         anchor.uv[1] = 0.0;
         let first_vertex = (anchor_global + 1) * 8;
-        let first_instance = entry.base / 8;
+        let first_instance = entry.base / GEOMETRY_WORDS;
         let base = usize::try_from(index).expect("draw index") * ARGS_WORDS as usize;
         if self.draw_args.len() < base + ARGS_WORDS as usize {
             self.draw_args.resize(base + ARGS_WORDS as usize, 0);
