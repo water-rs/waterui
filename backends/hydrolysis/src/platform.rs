@@ -140,8 +140,10 @@ pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Featur
         );
     }
 
-    let mut required =
-        adapter_features & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS);
+    let mut required = adapter_features
+        & (wgpu::Features::PIPELINE_CACHE
+            | wgpu::Features::PASSTHROUGH_SHADERS
+            | wgpu::Features::SHADER_F16);
     if adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
         required |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
     }

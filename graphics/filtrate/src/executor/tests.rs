@@ -46,6 +46,7 @@ impl Filter for Masked {
         const STAGE: SpatialStage = SpatialStage {
             name: "masked",
             source: include_str!("test_snippets/masked.wgsl"),
+            source_f16: None,
             params: &[],
             space: OperatingSpace::Working,
             shape: Some(ShapeInput::Mask),
@@ -76,6 +77,7 @@ impl Filter for UndeclaredShape {
         const STAGE: SpatialStage = SpatialStage {
             name: "median",
             source: include_str!("../shaders/image/convolution/median3x3.wgsl"),
+            source_f16: None,
             params: &[],
             space: OperatingSpace::Working,
             shape: Some(ShapeInput::Sdf),
@@ -122,6 +124,7 @@ struct SampleHalf;
 const SAMPLE_HALF: SpatialStage = SpatialStage {
     name: "sample_half",
     source: include_str!("test_snippets/sample_half.wgsl"),
+    source_f16: None,
     params: &[],
     space: OperatingSpace::Working,
     shape: None,
@@ -151,6 +154,7 @@ impl SpatialFilter for SampleHalf {
 const READ_AUX: SpatialStage = SpatialStage {
     name: "read_aux",
     source: include_str!("test_snippets/read_aux.wgsl"),
+    source_f16: None,
     params: &[],
     space: OperatingSpace::Working,
     shape: None,
@@ -228,20 +232,24 @@ impl SpatialFilter for ReadAuxTexture {
 /// Composes `filter` and wraps and validates every pass's entry point —
 /// for the hardware-filtered plan and for the manual-bilinear one.
 fn assert_composes<F: Filter>(name: &str, filter: &F) -> Plan {
-    for filterable in [true, false] {
-        let plan = Plan::new(filter, filterable, filterable, false).unwrap_or_else(|error| {
-            panic!("{name} does not compose (filterable={filterable}): {error}")
-        });
-        for (index, pass) in plan.passes.iter().enumerate() {
-            for resized in [false, true] {
-                entry::pass_module(&plan.module, plan.capabilities, index, pass, resized)
-                    .unwrap_or_else(|error| {
-                        panic!("{name} (filterable={filterable}, resized={resized}): {error}")
-                    });
+    for half in [
+        cherenkov_shader::Precision::F32,
+        cherenkov_shader::Precision::F16,
+    ] {
+        for filterable in [true, false] {
+            let plan =
+                Plan::new(filter, filterable, filterable, false, half).unwrap_or_else(|error| {
+                    panic!("{name} (filterable={filterable}, half={half:?}): {error}")
+                });
+            for (index, pass) in plan.passes.iter().enumerate() {
+                for resized in [false, true] {
+                    entry::pass_module(&plan.module, plan.capabilities, index, pass, resized)
+                        .unwrap_or_else(|error| panic!("{name} (filterable={filterable}, half={half:?}, resized={resized}): {error}"));
+                }
             }
         }
     }
-    Plan::new(filter, true, true, false)
+    Plan::new(filter, true, true, false, cherenkov_shader::Precision::F32)
         .unwrap_or_else(|error| panic!("{name} does not compose: {error}"))
 }
 
@@ -542,7 +550,13 @@ fn a_stage_declares_the_shape_input_its_snippet_takes() {
     let plan = assert_composes("masked", &Masked);
     assert_eq!(plan.passes[0].shape, Some(ShapeInput::Mask));
     assert!(matches!(
-        Plan::new(&UndeclaredShape, true, true, false),
+        Plan::new(
+            &UndeclaredShape,
+            true,
+            true,
+            false,
+            cherenkov_shader::Precision::F32
+        ),
         Err(EffectSetupError::StageMismatch {
             stage: "median",
             ..
@@ -1035,9 +1049,11 @@ fn create_test_device() -> TestGpu {
         apply_limit_buckets: false,
     }))
     .expect("filter GPU tests require a high-performance adapter");
-    let (device, queue) =
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-            .expect("filter GPU tests require a working device");
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_features: adapter.features() & wgpu::Features::SHADER_F16,
+        ..Default::default()
+    }))
+    .expect("filter GPU tests require a working device");
     TestGpu {
         device,
         queue,
