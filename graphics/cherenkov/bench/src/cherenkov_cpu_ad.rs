@@ -1644,6 +1644,7 @@ impl Engine for Cherenkov {
                 ("shade", phases.shade_seconds),
             ]),
             composition: None,
+            gpu_wait_seconds: 0.0,
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
