@@ -1442,7 +1442,6 @@ mod tests {
     use super::*;
     use core::cell::Cell;
     use core::time::Duration;
-    use nami::Signal as _;
 
     fn vertical_handle() -> ScrollHandle {
         ScrollHandle::new(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, None)
@@ -2610,13 +2609,13 @@ mod position_tests {
 
     fn position_report(
         binding: Binding<Option<ScrollPosition>>,
-        viewport: f64,
-        content: f64,
+        viewport: f32,
+        content: f32,
     ) -> ScrollPositionReport {
         ScrollPositionReport::new(
             binding,
-            Size::new(viewport as f32, viewport as f32),
-            Size::new(viewport as f32, content as f32),
+            Size::new(viewport, viewport),
+            Size::new(viewport, content),
         )
     }
 
@@ -2670,7 +2669,7 @@ mod position_tests {
     fn scroll_position_tracks_user_wheel_and_animated_moves() {
         let mut handle = ScrollHandle::new(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, None);
         let (sink, _) = counting_position_sink();
-        let mut handle = handle.rebind(
+        let handle = handle.rebind(
             Axis::Vertical,
             100.0,
             100.0,
@@ -2776,7 +2775,7 @@ mod position_tests {
             100.0,
             250.0,
             (0.0, 0.0),
-            Some(position_report(sink.clone(), 100.0, 250.0)),
+            Some(position_report(sink, 100.0, 250.0)),
         );
         let reports = seen.borrow();
         assert_eq!(
@@ -2807,7 +2806,7 @@ mod position_tests {
                 if !fired.replace(true) && point.y > 0.0 {
                     // The watcher scrolls: the position report that follows
                     // must describe *this* offset, not the one that woke it.
-                    handle.scroll_to(0.0, 90.0);
+                    let _ = handle.scroll_to(0.0, 90.0);
                 }
                 true
             }
@@ -2886,7 +2885,7 @@ mod position_tests {
                 // held borrow.
                 let _ = handle.metrics();
                 if !fired.replace(true) {
-                    handle.scroll_to(0.0, 10.0);
+                    let _ = handle.scroll_to(0.0, 10.0);
                 }
                 reentered.set(true);
             }

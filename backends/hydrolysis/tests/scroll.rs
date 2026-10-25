@@ -871,7 +871,6 @@ fn scroll_position_reports_actual_geometry_not_pending_requests() {
     let mut app = mount_rendered(
         Environment::new(),
         {
-            let offset = offset.clone();
             let controller = controller.clone();
             move || offset_rail(offset.clone(), Some(controller.clone()))
         },
