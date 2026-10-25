@@ -509,9 +509,12 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
             Spec {
                 name: format!("engine{variant}"),
                 source: format!(
-                    "const VARIANT: u32 = {variant}u;\n{cap}{shared}\n{shader}\n{union}{}",
+                    "enable f16;\nconst VARIANT: u32 = {variant}u;\n{cap}{shared}\n{shader}\n{union}{}",
                     m.blend
-                ),
+                )
+                .replace("alias Color = vec4<f32>;", "alias Color = vec4<f16>;")
+                .replace("alias ColorRgb = vec3<f32>;", "alias ColorRgb = vec3<f16>;")
+                .replace("alias ColorScalar = f32;", "alias ColorScalar = f16;"),
                 groups: bindings::ENGINE_GROUPS,
                 programs: programs::ENGINE,
                 metal: true,
@@ -577,6 +580,23 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
             attachment: true,
         });
     }
+    let precise = (0..9)
+        .map(|index| Spec {
+            name: format!("engine{index}_f32"),
+            source: specs[index]
+                .source
+                .replace("enable f16;\n", "")
+                .replace("alias Color = vec4<f16>;", "alias Color = vec4<f32>;")
+                .replace("alias ColorRgb = vec3<f16>;", "alias ColorRgb = vec3<f32>;")
+                .replace("alias ColorScalar = f16;", "alias ColorScalar = f32;"),
+            groups: bindings::ENGINE_GROUPS,
+            programs: programs::ENGINE,
+            metal: true,
+            merge_pair: None,
+            attachment: false,
+        })
+        .collect::<Vec<_>>();
+    specs.extend(precise);
     specs
 }
 

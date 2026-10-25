@@ -2128,7 +2128,7 @@ mod tests {
             _ => wgpu::Features::empty(),
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features,
+            required_features: required_features | wgpu::Features::SHADER_F16,
             ..wgpu::DeviceDescriptor::default()
         }))
         .ok()?;

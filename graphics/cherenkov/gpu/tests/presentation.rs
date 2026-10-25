@@ -30,7 +30,7 @@ fn shared_device()
         _ => wgpu::Features::empty(),
     };
     let (device, queue) = block!(adapter.request_device(&wgpu::DeviceDescriptor {
-        required_features,
+        required_features: required_features | wgpu::Features::SHADER_F16,
         ..wgpu::DeviceDescriptor::default()
     }))?;
     Ok((instance, adapter, device, queue))

@@ -162,7 +162,11 @@ const ENGINE_WGSL8: &str = include_str!(concat!(env!("OUT_DIR"), "/engine8.wgsl"
 #[must_use]
 pub fn backdrop_effect_text(user: &str, union: bool) -> Cow<'static, str> {
     const MARK: &str = "// backdrop-effect-stub";
-    let module = if union { ENGINE_WGSL3 } else { ENGINE_WGSL5 };
+    let module = if union {
+        ENGINE_F32[3].wgsl
+    } else {
+        ENGINE_F32[5].wgsl
+    };
     let (head, rest) = module
         .split_once(MARK)
         .expect("the backdrop-effect stub marker is part of shader.wgsl");
@@ -358,6 +362,36 @@ const COVERAGE_METALLIB: &[u8] = &[];
 const HEADROOM_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/headroom.metallib"));
 #[cfg(target_os = "android")]
 const HEADROOM_METALLIB: &[u8] = &[];
+
+macro_rules! precise_engine {
+    ($name:literal, $entry:ident) => {
+        Fixed {
+            wgsl: include_str!(concat!(env!("OUT_DIR"), "/", $name, ".wgsl")),
+            #[cfg(cherenkov_spirv)]
+            spirv: include_bytes!(concat!(env!("OUT_DIR"), "/", $name, ".spv")),
+            #[cfg(target_vendor = "apple")]
+            metallib: include_bytes!(concat!(env!("OUT_DIR"), "/", $name, ".metallib")),
+            #[cfg(not(target_vendor = "apple"))]
+            metallib: &[],
+            #[cfg(cherenkov_dxil)]
+            dxil: dxil::$entry,
+            programs: programs::ENGINE,
+            entries: entries::$entry,
+        }
+    };
+}
+
+const ENGINE_F32: [Fixed; 9] = [
+    precise_engine!("engine0_f32", ENGINE0_F32),
+    precise_engine!("engine1_f32", ENGINE1_F32),
+    precise_engine!("engine2_f32", ENGINE2_F32),
+    precise_engine!("engine3_f32", ENGINE3_F32),
+    precise_engine!("engine4_f32", ENGINE4_F32),
+    precise_engine!("engine5_f32", ENGINE5_F32),
+    precise_engine!("engine6_f32", ENGINE6_F32),
+    precise_engine!("engine7_f32", ENGINE7_F32),
+    precise_engine!("engine8_f32", ENGINE8_F32),
+];
 
 /// The nine `VARIANT` specializations of `shader.wgsl`, indexed by
 /// `variant_index`.
@@ -648,8 +682,18 @@ impl ShaderDelivery {
     /// The engine `VARIANT` module's programs, the variant indexed by
     /// `variant_index`.
     #[must_use]
-    pub fn engine_programs(self, device: &wgpu::Device, variant: usize) -> EnginePrograms {
-        self.render_programs(device, "cherenkov", &ENGINE[variant])
+    pub fn engine_programs(
+        self,
+        device: &wgpu::Device,
+        variant: usize,
+        format: wgpu::TextureFormat,
+    ) -> EnginePrograms {
+        let modules = if format == wgpu::TextureFormat::Rgba32Float {
+            &ENGINE_F32
+        } else {
+            &ENGINE
+        };
+        self.render_programs(device, "cherenkov", &modules[variant])
             .try_into()
             .unwrap_or_else(|_| unreachable!("programs::ENGINE has three programs"))
     }
