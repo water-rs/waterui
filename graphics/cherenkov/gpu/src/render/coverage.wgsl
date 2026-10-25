@@ -429,11 +429,13 @@ fn line_key(s: vec4<f32>) -> vec2<f32> {
 // line, ordered by segment; and two lines whose order differs at the top
 // and the bottom swap at one height, computed for the pair in segment order
 // so both fragments read the same bits.
+// Integer predicates avoid mixed boolean/float aggregate casts, which crash
+// Mali pipeline compilation even in a standalone validated shader (#3372).
 struct Order {
     // `other` lies left of the edge above `swap`.
-    above: bool,
+    above: u32,
     // `other` lies left of the edge below `swap`.
-    below: bool,
+    below: u32,
     // The height where the order swaps, F_INF when it does not.
     swap: f32,
 }
@@ -460,7 +462,7 @@ fn order(node: u32, key: vec2<f32>, other: u32, other_key: vec2<f32>) -> Order {
         let g1 = second.y - first.y;
         swap = g0 / (g0 - g1);
     }
-    return Order(top, bottom, swap);
+    return Order(select(0u, 1u, top), select(0u, 1u, bottom), swap);
 }
 
 // Each fragment integrates its own boundary contribution. The next dispatch
@@ -503,7 +505,7 @@ fn edge_area(node: u32, head: u32, seed: i32, rule: u32) -> f32 {
                 let s = fragment(other);
                 if midpoint.y >= min(s.y, s.w) && midpoint.y < max(s.y, s.w) {
                     let o = order(node, key, other, line_key(s));
-                    if select(o.below, o.above, midpoint.y < o.swap) {
+                    if select(o.below, o.above, midpoint.y < o.swap) != 0u {
                         winding += select(-1i, 1i, s.w > s.y);
                     }
                 }
