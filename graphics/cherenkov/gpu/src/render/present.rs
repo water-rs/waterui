@@ -621,7 +621,11 @@ pub fn select_output(
 }
 
 /// Resolve content-driven output without changing explicit host requests.
-fn select_content_output(
+/// SDR content prefers compact storage while retaining the advertised gamut.
+///
+/// # Errors
+/// Returns an unsupported-target error if the surface offers no admissible pair.
+pub fn select_content_output(
     caps: &wgpu::SurfaceCapabilities,
     backend: wgpu::Backend,
     request: OutputRequest,

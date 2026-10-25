@@ -20,7 +20,7 @@ pub const fn hydrolysis_output_request(transparent: bool) -> cherenkov_gpu::inte
 }
 
 /// Negotiates the output of a host-configured window surface — the
-/// engine's `select_output` over the surface's advertised capabilities
+/// engine's `select_content_output` over the surface's advertised capabilities
 /// with [`hydrolysis_output_request`], the display's reported headroom
 /// sampled alongside (#2445). The winit (Linux, Windows) and Android
 /// hosts configure their swapchains from the result; the macOS host
@@ -35,12 +35,14 @@ pub fn negotiate_host_output(
     surface: &wgpu::Surface<'_>,
     adapter: &wgpu::Adapter,
     transparent: bool,
+    content_range: cherenkov_gpu::interop::ColorRange,
 ) -> Result<cherenkov_gpu::interop::OutputSelection, cherenkov::SurfaceError> {
     let caps = surface.get_capabilities(adapter);
-    let mut selection = cherenkov_gpu::interop::select_output(
+    let mut selection = cherenkov_gpu::interop::select_content_output(
         &caps,
         adapter.get_info().backend,
         hydrolysis_output_request(transparent),
+        content_range,
     )?;
     selection.reported_headroom = surface.display_hdr_info(adapter).tone_map_headroom();
     tracing::debug!(
@@ -1421,6 +1423,8 @@ pub trait SurfaceProvider: PresentationSurface {
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError>;
     /// Presents an acquired frame to the surface.
     fn present(&mut self, frame: SurfaceFrame);
+    /// Updates content before acquiring a frame. Fixed-format targets keep their format.
+    fn set_content_range(&mut self, _range: cherenkov_gpu::interop::ColorRange) {}
     /// The surface's texture format.
     fn format(&self) -> wgpu::TextureFormat;
     /// The alpha convention the pixels written into this surface's textures
@@ -3304,6 +3308,8 @@ mod winit_impl {
         /// sampled at negotiation (#2445).
         #[cfg(not(target_os = "macos"))]
         selection: cherenkov_gpu::interop::OutputSelection,
+        #[cfg(not(target_os = "macos"))]
+        content_range: cherenkov_gpu::interop::ColorRange,
         /// The window this surface presents into. A host-presented surface
         /// asks it for the platform's next-frame pacing
         /// (`pre_present_notify`), which on Wayland requests the frame
@@ -3459,14 +3465,16 @@ mod winit_impl {
             surface: &wgpu::Surface<'static>,
             adapter: &wgpu::Adapter,
             transparent: bool,
+            content_range: cherenkov_gpu::interop::ColorRange,
         ) -> cherenkov_gpu::interop::OutputSelection {
-            super::negotiate_host_output(surface, adapter, transparent).unwrap_or_else(|error| {
-                let info = adapter.get_info();
-                panic!(
-                    "hydrolysis winit surface: {error} (adapter {:?}, {:?})",
-                    info.name, info.backend
-                )
-            })
+            super::negotiate_host_output(surface, adapter, transparent, content_range)
+                .unwrap_or_else(|error| {
+                    let info = adapter.get_info();
+                    panic!(
+                        "hydrolysis winit surface: {error} (adapter {:?}, {:?})",
+                        info.name, info.backend
+                    )
+                })
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -3491,6 +3499,7 @@ mod winit_impl {
                 &surface,
                 &handles.gpu_context().shared_device.adapter,
                 requires_transparency,
+                cherenkov_gpu::interop::ColorRange::WideGamut,
             );
             let config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -3511,6 +3520,7 @@ mod winit_impl {
                 transparent: requires_transparency,
                 config,
                 selection,
+                content_range: cherenkov_gpu::interop::ColorRange::WideGamut,
                 window,
             }
         }
@@ -3627,8 +3637,12 @@ mod winit_impl {
             }
             self.handles = generation;
             let shared = &self.handles.gpu_context().shared_device;
-            let selection =
-                Self::negotiate_surface_output(&self.surface, &shared.adapter, self.transparent);
+            let selection = Self::negotiate_surface_output(
+                &self.surface,
+                &shared.adapter,
+                self.transparent,
+                self.content_range,
+            );
             self.config.alpha_mode = selection.alpha_mode;
             self.config.format = selection.format;
             self.config.color_space = selection.color_space;
@@ -3663,6 +3677,7 @@ mod winit_impl {
                 &self.surface,
                 &self.handles.gpu_context().shared_device.adapter,
                 transparent,
+                self.content_range,
             );
             if selection.alpha_mode != self.selection.alpha_mode
                 || selection.format != self.selection.format
@@ -3804,6 +3819,13 @@ mod winit_impl {
         /// The surface's texture format.
         fn format(&self) -> wgpu::TextureFormat {
             self.config.format
+        }
+
+        fn set_content_range(&mut self, range: cherenkov_gpu::interop::ColorRange) {
+            if range > self.content_range {
+                self.content_range = range;
+                self.set_transparent(self.transparent);
+            }
         }
 
         fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {

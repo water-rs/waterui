@@ -435,6 +435,7 @@ struct SurfaceState {
     part_ranges: Vec<present::ColorRange>,
     /// Texture-target hand-off: each rendered texture goes to the host.
     textures: Option<std::sync::mpsc::Sender<wgpu::Texture>>,
+    ranges: Option<std::sync::mpsc::Sender<present::ColorRange>>,
     refresh: cherenkov::RefreshRange,
     present_pending: bool,
     #[cfg(target_os = "android")]
@@ -607,6 +608,7 @@ impl SurfaceState {
         layers: &mut FxHashMap<LayerId, ContentData>,
         images: &FxHashMap<u64, GpuImage>,
     ) {
+        let previous = self.part_ranges.first().copied();
         content_range::parts(
             frame.tree,
             layers,
@@ -616,6 +618,12 @@ impl SurfaceState {
             frame.clear,
             &mut self.part_ranges,
         );
+        if let Some(sender) = &self.ranges {
+            let range = self.part_ranges[0];
+            if previous != Some(range) {
+                let _ = sender.send(range);
+            }
+        }
     }
 
     /// Engine part `n`'s texture: `target` for part 0.
@@ -3529,13 +3537,14 @@ impl Renderer for GpuRenderer {
     fn create_surface(
         &mut self,
         id: SurfaceId,
-        target: GpuTarget,
+        mut target: GpuTarget,
         waker: cherenkov::CompletionWaker,
     ) -> Result<SurfaceInfo, SurfaceError> {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         diag::set_surface(Some(id.raw()));
         let size = self.target_size(&target)?;
         let format = surface_format(&self.device, &target)?;
+        let ranges = target.take_content_ranges();
         let (window, textures, refresh, presents) = match target {
             GpuTarget::Offscreen(offscreen) => (None, None, offscreen.refresh, false),
             GpuTarget::Texture(texture) => (None, Some(texture.textures), texture.refresh, false),
@@ -3562,9 +3571,7 @@ impl Renderer for GpuRenderer {
         let promotes = self.planes.contains_key(&id);
         let (target, view) =
             create_target(&self.device, "surface target", size, TARGET_USAGES, format);
-        if let Some(sender) = &textures {
-            let _ = sender.send(target.clone());
-        }
+        notify_texture(textures.as_ref(), &target);
         diag::create(
             &self.device,
             "surface target",
@@ -3586,6 +3593,7 @@ impl Renderer for GpuRenderer {
                 parts: Vec::new(),
                 part_ranges: Vec::new(),
                 textures,
+                ranges,
                 refresh,
                 present_pending: false,
                 #[cfg(target_os = "android")]
@@ -3665,9 +3673,7 @@ impl Renderer for GpuRenderer {
         if let Some(window) = &mut state.window {
             window.resize(&self.device, size);
         }
-        if let Some(sender) = &state.textures {
-            let _ = sender.send(target.clone());
-        }
+        notify_texture(state.textures.as_ref(), &target);
         let dropped = state.binds1.len() as u64;
         if dropped > 0 {
             diag::bind_groups_dropped(&self.device, dropped, "resize");
@@ -7005,7 +7011,7 @@ impl GpuRenderer {
             lowered.path_arena = std::mem::take(&mut lowering.path_arena);
             result
         };
-        if result.is_ok() && surf.promotes {
+        if result.is_ok() && (surf.promotes || surf.window.is_some() || surf.ranges.is_some()) {
             surf.classify_parts(frame, &mut layers, resources.images);
         }
         surf.layers = layers;
@@ -11300,6 +11306,15 @@ impl Drop for GpuRenderer {
             // the releases queued — the device drop reclaims the objects.
             drop(self.wait(&submission, "external frame teardown"));
         }
+    }
+}
+
+fn notify_texture(
+    sender: Option<&std::sync::mpsc::Sender<wgpu::Texture>>,
+    texture: &wgpu::Texture,
+) {
+    if let Some(sender) = sender {
+        let _ = sender.send(texture.clone());
     }
 }
 
