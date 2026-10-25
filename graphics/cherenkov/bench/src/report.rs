@@ -207,8 +207,8 @@ pub struct RailEnergy {
     pub subsystem: Option<String>,
     /// Joules over the window.
     pub joules: f64,
-    /// Joules per measured frame.
-    pub joules_per_frame: f64,
+    /// Joules per measured frame; absent for a zero-submission stopped interval.
+    pub joules_per_frame: Option<f64>,
     /// Average watts over the window.
     pub watts: f64,
 }
@@ -233,8 +233,8 @@ pub struct EnergyReport {
     pub rails: BTreeMap<String, RailEnergy>,
     /// Sum of all rails, in joules.
     pub total_joules: f64,
-    /// `total_joules` per measured frame.
-    pub joules_per_frame: f64,
+    /// `total_joules` per measured frame; absent for a zero-submission stopped interval.
+    pub joules_per_frame: Option<f64>,
     /// `total_joules` per second (average power).
     pub watts: f64,
 }
@@ -291,6 +291,18 @@ pub struct ClockResidency {
     pub milliseconds: u64,
 }
 
+/// A headless engine retained without submitting frames after a scroll sweep.
+/// This excludes application scheduling and system display-compositor work.
+#[derive(Debug, Serialize)]
+pub struct StoppedInterval {
+    /// Wall time after the final GPU completion.
+    pub seconds: f64,
+    /// Rendering submissions made during the interval.
+    pub submissions: u32,
+    /// Energy over this interval, without a per-frame normalization.
+    pub energy: Option<EnergyReport>,
+}
+
 /// `measure` output.
 #[derive(Debug, Serialize)]
 pub struct MeasureReport {
@@ -312,6 +324,12 @@ pub struct MeasureReport {
     /// The `--native` retarget of this run; `null` when the run rendered
     /// at the scene's own size.
     pub native: Option<NativeResolution>,
+    /// Root-content scroll endpoint in logical scene coordinates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scroll_extent: Option<[f64; 2]>,
+    /// The no-submission interval following a scroll sweep.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<StoppedInterval>,
     /// One-time scene preparation in seconds — resource creation and
     /// scene conversion done once outside the timed loop (fonts,
     /// images, GPU uploads, immutable shaders). Not a per-frame cost.
