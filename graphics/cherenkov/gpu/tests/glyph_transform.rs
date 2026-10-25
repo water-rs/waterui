@@ -160,3 +160,32 @@ fn invalid_transform_is_an_error() {
     }
 }
 }
+
+split_test! {
+fn offscreen_runs_skip_rasterization_and_reappear_after_scroll_or_edit() {
+    let (engine, font) = wait!(engine_and_font());
+    let (surface, value) = wait!(surface_with(
+        &engine,
+        run(font.id(), vec![glyph(12.25, 452.5, None)], GlyphStyle::Fill),
+    ));
+    wait!(engine.render(FrameTime::now())).expect("offscreen frame");
+    assert_eq!(engine.stats().glyphs_rasterized, 0);
+
+    surface.update(|tx| {
+        tx[surface.root()].scroll_offset(cherenkov::kurbo::Vec2::new(0.0, 400.25));
+    });
+    wait!(engine.render(FrameTime::now())).expect("scroll into view");
+    assert!(engine.stats().glyphs_rasterized > 0);
+    let scrolled = wait!(pixels(&surface));
+
+    surface.update(|tx| {
+        tx[surface.root()].scroll_offset(cherenkov::kurbo::Vec2::ZERO);
+    });
+    wait!(engine.render(FrameTime::now())).expect("scroll out of view");
+    assert_eq!(engine.stats().glyphs_rasterized, 0);
+
+    value.set(run(font.id(), vec![glyph(12.25, 52.25, None)], GlyphStyle::Fill));
+    wait!(engine.render(FrameTime::now())).expect("edited run enters view");
+    assert_images_match(&scrolled, &wait!(pixels(&surface)));
+}
+}

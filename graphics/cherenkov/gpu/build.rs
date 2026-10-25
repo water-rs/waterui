@@ -230,6 +230,7 @@ fn main() {
         mip,
         resolve,
         reduce,
+        headroom,
         shadow,
         coverage,
         stroke,
@@ -247,6 +248,7 @@ fn main() {
         "mip",
         "resolve",
         "reduce",
+        "headroom",
         "shadow",
         "coverage",
         "stroke",
@@ -308,6 +310,7 @@ fn main() {
         mip: &mip,
         resolve: &resolve,
         reduce: &reduce,
+        headroom: &headroom,
         shadow: &shadow,
         space_convert: &space_convert,
         coverage: &coverage,
@@ -446,6 +449,7 @@ struct Modules<'a> {
     mip: &'a str,
     resolve: &'a str,
     reduce: &'a str,
+    headroom: &'a str,
     shadow: &'a str,
     /// `space_convert.wgsl` behind the space fragment.
     space_convert: &'a str,
@@ -577,6 +581,12 @@ fn helper_specs(m: &Modules<'_>, specs: &mut Vec<Spec>) {
         ),
         ("reduce", m.reduce, bindings::REDUCE_GROUPS, programs::MAIN),
         (
+            "headroom",
+            m.headroom,
+            bindings::HEADROOM_GROUPS,
+            programs::MAIN,
+        ),
+        (
             "shadow",
             m.shadow,
             bindings::SHADOW_GROUPS,
@@ -595,6 +605,12 @@ fn helper_specs(m: &Modules<'_>, specs: &mut Vec<Spec>) {
             programs::COVERAGE,
         ),
     ] {
+        if name == "headroom"
+            && metal::apple_target().is_none()
+            && std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("android")
+        {
+            continue;
+        }
         specs.push(Spec {
             name: name.into(),
             source: source.into(),

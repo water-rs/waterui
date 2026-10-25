@@ -81,7 +81,7 @@ impl DomTarget {
             parent,
             size,
             transparent: false,
-            color_space: ColorSpaceRequest::Best,
+            color_space: ColorSpaceRequest::Content,
             refresh: cherenkov::DEFAULT_REFRESH,
         }
     }
@@ -97,8 +97,8 @@ impl DomTarget {
     /// Sets every part canvas's colour-space request, as
     /// [`WindowTarget::color_space`](crate::WindowTarget::color_space)
     /// does for a window's swapchain. The default,
-    /// [`ColorSpaceRequest::Best`], negotiates the browser's best
-    /// advertised pair, an extended-range one where offered. A canvas that
+    /// [`ColorSpaceRequest::Content`], starts with compact SDR storage and
+    /// upgrades when HDR content requires it. A canvas that
     /// advertises nothing the request admits fails the surface with
     /// [`SurfaceError::UnsupportedTarget`].
     #[must_use]
@@ -720,7 +720,11 @@ impl SystemPlanes for DomPlanes {
                 }),
         )?;
         let mut presented = true;
-        for (part, canvas) in composition.parts.iter().zip(&self.parts) {
+        for (part, canvas) in composition.parts.iter().zip(&mut self.parts) {
+            canvas
+                .surface
+                .content(composition.device, part.range)
+                .map_err(|error| RenderError::Render(error.to_string()))?;
             presented &= composition.presenter.present(
                 composition.device,
                 composition.queue,

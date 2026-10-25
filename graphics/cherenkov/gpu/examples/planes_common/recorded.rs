@@ -21,12 +21,26 @@ pub struct Spec {
     pub lifetime: u64,
     /// Animate the candidate instead of unrelated engine content.
     pub animated: bool,
+    /// Include highlights at four times SDR white.
+    pub hdr: bool,
     /// Force identical pixels through in-engine composition.
     pub engine: bool,
 }
 
 impl Spec {
-    /// `static:side:count:lifetime:plane|engine` or `animated:...`.
+    /// Name recorded in both platform harness reports.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        if self.hdr {
+            "static-hdr"
+        } else if self.animated {
+            "animated"
+        } else {
+            "static"
+        }
+    }
+
+    /// `static:side:count:lifetime:plane|engine`, `static-hdr:...` or `animated:...`.
     /// Invalid matrix points fail before the device starts drawing.
     ///
     /// # Panics
@@ -34,9 +48,10 @@ impl Spec {
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
         let mut fields = name.split(':');
-        let animated = match fields.next()? {
-            "static" => false,
-            "animated" => true,
+        let (animated, hdr) = match fields.next()? {
+            "static" => (false, false),
+            "static-hdr" => (false, true),
+            "animated" => (true, false),
             _ => return None,
         };
         let side = fields.next().expect("side").parse().expect("numeric side");
@@ -64,6 +79,7 @@ impl Spec {
             count,
             lifetime,
             animated,
+            hdr,
             engine,
         })
     }
@@ -154,7 +170,14 @@ impl Scene {
                                     ((f64::from(x) + 0.5) * cell, (f64::from(y) + 0.5) * cell),
                                     cell * 0.4,
                                 ),
-                                WorkingColor::new([0.15 + phase, 0.5, 0.3, 1.]),
+                                if self.spec.hdr {
+                                    // Exceed the Android harness display target (2x) so
+                                    // source range and requested display range differ.
+                                    let white = if x < 8 { 1.0 } else { 4.0 };
+                                    WorkingColor::new([white, white, white, 1.0])
+                                } else {
+                                    WorkingColor::new([0.15 + phase, 0.5, 0.3, 1.])
+                                },
                             );
                         }
                     }

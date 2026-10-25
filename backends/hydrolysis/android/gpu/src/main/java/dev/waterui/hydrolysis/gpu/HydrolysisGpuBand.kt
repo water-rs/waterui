@@ -2,6 +2,8 @@ package dev.waterui.hydrolysis.gpu
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.os.Build
+import android.view.Display
 import android.util.AttributeSet
 import android.view.Choreographer
 import android.view.SurfaceHolder
@@ -73,6 +75,24 @@ constructor(
         val surface = holder.surface
         if (surface == null || !surface.isValid) return
         val peakRefreshHz = peakRefreshHz()
+        val attachedDisplay = checkNotNull(display)
+        val (normalRefreshHz, highRefreshHz) =
+            if (Build.VERSION.SDK_INT >= 36 && attachedDisplay.hasArrSupport()) {
+                val rates = attachedDisplay.supportedRefreshRates
+                val suggestions =
+                    listOf(Display.FRAME_RATE_CATEGORY_NORMAL, Display.FRAME_RATE_CATEGORY_HIGH).map {
+                        category ->
+                        val suggested =
+                            attachedDisplay.getSuggestedFrameRate(category).coerceAtMost(peakRefreshHz)
+                        // Category suggestions need not be supported rates: a 90 Hz
+                        // vote on Pixel can resolve to 80 Hz. Round upward so the
+                        // chosen display cadence does not undershoot the suggestion.
+                        rates.filter { it >= suggested }.min()
+                    }
+                suggestions[0] to suggestions[1]
+            } else {
+                peakRefreshHz to peakRefreshHz
+            }
         // The accessor sits outside the retry: a destroyed session is a
         // named error, not an attach failure to retry.
         val attached =
@@ -82,6 +102,8 @@ constructor(
                         ptr,
                         surface,
                         peakRefreshHz,
+                        normalRefreshHz,
+                        highRefreshHz,
                         width,
                         height,
                         generation,

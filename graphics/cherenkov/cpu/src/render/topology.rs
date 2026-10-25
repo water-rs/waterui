@@ -76,10 +76,20 @@ impl Line {
     }
 }
 
+/// A normalized boundary waiting for its top endpoint. Treap state exists
+/// only while the boundary intersects the current sweep ordinate.
+#[derive(Clone, Copy)]
+struct Pending {
+    source: usize,
+    top: i64,
+    bottom: i64,
+    weight: i32,
+    active: usize,
+}
+
 struct Node {
     line: Line,
     source: usize,
-    top: i64,
     bottom: i64,
     weight: i32,
     left: usize,
@@ -109,11 +119,10 @@ struct Events {
 }
 
 impl Events {
-    fn reset(&mut self, n: usize) {
+    fn reset(&mut self) {
         self.heap.clear();
         self.slots.clear();
-        self.slots.resize(n, NONE);
-        self.keys.resize(n, 0);
+        self.keys.clear();
     }
 
     fn less(&self, a: usize, b: usize) -> bool {
@@ -180,6 +189,8 @@ impl Events {
 #[derive(Default)]
 pub struct Sweep {
     nodes: Vec<Node>,
+    free: usize,
+    pending: Vec<Pending>,
     lines: Vec<((i64, i64, i128), usize)>,
     coincident: Vec<(i64, i32, usize)>,
     live: BinaryHeap<Reverse<(i64, usize)>>,
@@ -208,6 +219,7 @@ impl Sweep {
     }
     pub fn heap_bytes(&self) -> usize {
         self.nodes.capacity() * size_of::<Node>()
+            + self.pending.capacity() * size_of::<Pending>()
             + self.lines.capacity() * size_of::<((i64, i64, i128), usize)>()
             + self.coincident.capacity() * size_of::<(i64, i32, usize)>()
             + self.live.capacity() * size_of::<Reverse<(i64, usize)>>()
@@ -217,17 +229,28 @@ impl Sweep {
             + self.output.capacity() * size_of::<Visible>()
     }
 
-    fn add(&mut self, source: usize, edge: IntegerEdge, top: i64, bottom: i64, weight: i32) {
-        let mut priority = self.nodes.len() as u64 + 1;
-        priority = (priority ^ (priority >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        priority = (priority ^ (priority >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        priority ^= priority >> 31;
-        self.nodes.push(Node {
-            line: Line::of(edge).0,
+    fn add(&mut self, source: usize, top: i64, bottom: i64, weight: i32) {
+        self.pending.push(Pending {
             source,
             top,
             bottom,
             weight,
+            active: NONE,
+        });
+    }
+
+    fn activate(&mut self, pending: usize, edges: &[IntegerEdge]) {
+        let boundary = self.pending[pending];
+        // Keep priorities tied to normalized boundary order, not recycled slots.
+        let mut priority = pending as u64 + 1;
+        priority = (priority ^ (priority >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        priority = (priority ^ (priority >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        priority ^= priority >> 31;
+        let node = Node {
+            line: Line::of(edges[boundary.source]).0,
+            source: boundary.source,
+            bottom: boundary.bottom,
+            weight: boundary.weight,
             left: NONE,
             right: NONE,
             parent: NONE,
@@ -235,20 +258,34 @@ impl Sweep {
             next: NONE,
             priority,
             count: 1,
-            sum: weight,
-            min: weight.min(0),
-            max: weight.max(0),
+            sum: boundary.weight,
+            min: boundary.weight.min(0),
+            max: boundary.weight.max(0),
             visible: 0,
             incoming: 0,
             dirty: true,
             sign: 0,
-            opened: top,
-        });
+            opened: boundary.top,
+        };
+        let slot = if self.free == NONE {
+            let slot = self.nodes.len();
+            self.nodes.push(node);
+            self.events.slots.push(NONE);
+            self.events.keys.push(0);
+            slot
+        } else {
+            let slot = self.free;
+            self.free = self.nodes[slot].left;
+            self.nodes[slot] = node;
+            slot
+        };
+        self.pending[pending].active = slot;
+        self.insert(slot, boundary.top);
     }
 
     /// Canonical supporting lines merge coincident winding before the sweep.
     fn normalize(&mut self, edges: &[IntegerEdge]) {
-        self.nodes.clear();
+        self.pending.clear();
         self.lines.clear();
         for (i, &edge) in edges.iter().enumerate() {
             if edge.y0 != edge.y1 {
@@ -267,7 +304,6 @@ impl Sweep {
                 let edge = edges[source];
                 self.add(
                     source,
-                    edge,
                     edge.y0.min(edge.y1),
                     edge.y0.max(edge.y1),
                     Line::of(edge).1,
@@ -304,7 +340,7 @@ impl Sweep {
                             .expect("nonzero winding has an active line")
                             .0
                             .1;
-                        self.add(source, edges[source], y, self.coincident[at].0, weight);
+                        self.add(source, y, self.coincident[at].0, weight);
                     }
                 }
             }
@@ -316,12 +352,14 @@ impl Sweep {
         self.output.clear();
         self.normalize(edges);
         self.endpoints.clear();
-        for (i, node) in self.nodes.iter().enumerate() {
+        for (i, node) in self.pending.iter().enumerate() {
             self.endpoints.push((node.top, true, i));
             self.endpoints.push((node.bottom, false, i));
         }
         self.endpoints.sort_unstable();
-        self.events.reset(self.nodes.len());
+        self.nodes.clear();
+        self.free = NONE;
+        self.events.reset();
         self.root = NONE;
         let mut endpoint = 0;
         while endpoint < self.endpoints.len() || self.events.first().is_some() {
@@ -331,7 +369,11 @@ impl Sweep {
                 && self.endpoints[endpoint].0 == y
                 && !self.endpoints[endpoint].1
             {
-                self.remove(self.endpoints[endpoint].2, y);
+                let slot = self.pending[self.endpoints[endpoint].2].active;
+                self.remove(slot, y);
+                // Removal cancels the slot's event and unlinks every neighbor.
+                self.nodes[slot].left = self.free;
+                self.free = slot;
                 endpoint += 1;
             }
             while let Some((event_y, a)) = self.events.first() {
@@ -343,7 +385,7 @@ impl Sweep {
                 self.exchange(a, b, y);
             }
             while endpoint < self.endpoints.len() && self.endpoints[endpoint].0 == y {
-                self.insert(self.endpoints[endpoint].2, y);
+                self.activate(self.endpoints[endpoint].2, edges);
                 endpoint += 1;
             }
             self.refresh(self.root, 0, y, rule);

@@ -90,12 +90,20 @@ mod macos {
         };
         vec![
             case(
+                "window_storage_promotes_for_hdr_and_stays_stable",
+                window_storage_promotes_for_hdr_and_stays_stable,
+            ),
+            case(
                 "periodic_replacements_preserve_static_readmission_history",
                 periodic_replacements_preserve_static_readmission_history,
             ),
             case(
                 "static_pixels_are_captured_once_and_match_engine_composition",
                 static_pixels_are_captured_once_and_match_engine_composition,
+            ),
+            case(
+                "static_content_range_changes_replace_native_storage",
+                static_content_range_changes_replace_native_storage,
             ),
             case(
                 "critical_trim_then_present_only_demotes_static_planes",
@@ -1193,6 +1201,41 @@ mod macos {
                 .any(|inner| is::<CAMetalLayer>(inner))
     }
 
+    fn window_storage_promotes_for_hdr_and_stays_stable() {
+        let fixture = Fixture::new();
+        for (red, compact) in [(0.6, true), (2.0, false), (0.4, false)] {
+            fixture
+                .window
+                .clear_color(WorkingColor::new([red, 0.2, 0.1, 1.0]));
+            fixture.render();
+            let parts: Vec<_> = stack(&fixture)
+                .into_iter()
+                .flat_map(|layer| std::iter::once(layer.clone()).chain(sublayers(&layer)))
+                .filter_map(|layer| layer.downcast::<CAMetalLayer>().ok())
+                .collect();
+            assert_eq!(parts.len(), 1, "clear-only window has one engine part");
+            let format = parts[0].pixelFormat();
+            if compact {
+                assert!(
+                    matches!(
+                        format,
+                        MTLPixelFormat::BGRA8Unorm
+                            | MTLPixelFormat::BGRA8Unorm_sRGB
+                            | MTLPixelFormat::RGBA8Unorm
+                            | MTLPixelFormat::RGBA8Unorm_sRGB
+                    ),
+                    "SDR window should use four-byte storage, got {format:?}"
+                );
+            } else {
+                assert_eq!(
+                    format,
+                    MTLPixelFormat::RGBA16Float,
+                    "HDR promotion persists"
+                );
+            }
+        }
+    }
+
     /// Every part's metal layer is configured with the present mode the
     /// window's `DisplaySync` resolves to on this Mac — the first part and
     /// the parts a promoted plane splits off above it. wgpu's Metal
@@ -1299,26 +1342,58 @@ mod macos {
             .is_some_and(|v| v.downcast_ref::<CFString>().is_some_and(|s| s == expected))
     }
 
-    /// Admitted BGRA/sRGB retains the source `IOSurface` and colour tags.
+    /// SDR and HDR video retain their source `IOSurface` and colour metadata.
     fn a_promoted_frame_shows_its_own_surface_and_declared_colour() {
+        for color in [
+            FrameColor::SRGB,
+            FrameColor::BT2020_PQ,
+            FrameColor::bt2020_hlg(1000.0),
+        ] {
+            promoted_frame_source(color);
+        }
+        for color in [
+            FrameColor {
+                reference_white: 100.0,
+                ..FrameColor::BT2020_PQ
+            },
+            FrameColor::bt2020_hlg(2000.0),
+        ] {
+            let fixture = Fixture::new();
+            let buffer = p010_buffer();
+            stays_in_the_engine(&fixture, p010(&fixture.metal, &buffer, color));
+        }
+    }
+
+    fn promoted_frame_source(color: FrameColor) {
+        use cherenkov_gpu::interop::Transfer;
         let fixture = Fixture::new();
-        let buffer = bgra_buffer();
+        let hdr = matches!(color.transfer, Transfer::Pq | Transfer::Hlg);
+        let buffer = if hdr { p010_buffer() } else { bgra_buffer() };
+        // A 314-lux D65 mastering environment, in the standard SEI units.
+        let environment = objc2_core_foundation::CFData::from_bytes(&[
+            0x00, 0x2f, 0xe9, 0x60, 0x3d, 0x13, 0x40, 0x42,
+        ]);
+        // SAFETY: the key is an immutable framework constant and the value is CFData.
+        unsafe {
+            buffer.set_attachment(
+                objc2_core_video::kCVImageBufferAmbientViewingEnvironmentKey,
+                &environment,
+                objc2_core_video::CVAttachmentMode::ShouldPropagate,
+            );
+        }
+        let frame = || {
+            if hdr {
+                p010(&fixture.metal, &buffer, color)
+            } else {
+                bgra(&fixture.metal, &buffer, color)
+            }
+        };
         let offscreen = fixture
             .engine
             .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16), || {})
             .expect("offscreen");
-        let _engine_scene = scene_bar(
-            &fixture.engine,
-            &offscreen,
-            bgra(&fixture.metal, &buffer, FrameColor::SRGB),
-            1.0,
-        );
-        let _window_scene = scene_bar(
-            &fixture.engine,
-            &fixture.window,
-            bgra(&fixture.metal, &buffer, FrameColor::SRGB),
-            1.0,
-        );
+        let _engine_scene = scene_bar(&fixture.engine, &offscreen, frame(), 1.0);
+        let _window_scene = scene_bar(&fixture.engine, &fixture.window, frame(), 1.0);
         assert!(
             fixture.promote(),
             "the platform never reported the probe ready"
@@ -1338,6 +1413,18 @@ mod macos {
             shown = unsafe { display.sampleBufferRenderer().copyDisplayedPixelBuffer() };
         }
         let shown = shown.expect("displayed buffer");
+        // SAFETY: the attachment is borrowed while the displayed pixel buffer lives.
+        let shown_environment = unsafe {
+            shown.attachment(
+                objc2_core_video::kCVImageBufferAmbientViewingEnvironmentKey,
+                std::ptr::null_mut(),
+            )
+        }
+        .expect("source viewing environment is preserved");
+        assert_eq!(
+            shown_environment.downcast_ref::<objc2_core_foundation::CFData>(),
+            Some(&*environment)
+        );
         assert_eq!(
             CVPixelBufferGetIOSurface(Some(&buffer))
                 .expect("source")
@@ -1352,14 +1439,72 @@ mod macos {
             assert!(same(
                 &shown,
                 kCVImageBufferColorPrimariesKey,
-                kCVImageBufferColorPrimaries_ITU_R_709_2
+                if hdr {
+                    objc2_core_video::kCVImageBufferColorPrimaries_ITU_R_2020
+                } else {
+                    kCVImageBufferColorPrimaries_ITU_R_709_2
+                }
             ));
             assert!(same(
                 &shown,
                 kCVImageBufferTransferFunctionKey,
-                kCVImageBufferTransferFunction_sRGB
+                match color.transfer {
+                    Transfer::Pq =>
+                        objc2_core_video::kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
+                    Transfer::Hlg =>
+                        objc2_core_video::kCVImageBufferTransferFunction_ITU_R_2100_HLG,
+                    _ => kCVImageBufferTransferFunction_sRGB,
+                }
             ));
         }
+    }
+
+    fn p010_buffer() -> CFRetained<CVPixelBuffer> {
+        let buffer = surface_buffer(
+            VIDEO.0,
+            VIDEO.1,
+            objc2_core_video::kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+        );
+        fill(&buffer, 2, |plane, row| {
+            for (x, bytes) in row[..VIDEO.0 * 2]
+                .as_chunks_mut::<2>()
+                .0
+                .iter_mut()
+                .enumerate()
+            {
+                let code = if plane == 0 {
+                    64 + x * 820 / VIDEO.0
+                } else {
+                    512
+                };
+                *bytes = (u16::try_from(code).expect("ten-bit code") << 6).to_ne_bytes();
+            }
+        });
+        buffer
+    }
+
+    fn p010(metal: &Metal, buffer: &CVPixelBuffer, color: FrameColor) -> ExternalFrame {
+        let mut frame = ExternalFrame::yuv(
+            plane_texture(
+                metal,
+                buffer,
+                0,
+                (MTLPixelFormat::R16Uint, wgpu::TextureFormat::R16Uint),
+            ),
+            plane_texture(
+                metal,
+                buffer,
+                1,
+                (MTLPixelFormat::RG16Uint, wgpu::TextureFormat::Rg16Uint),
+            ),
+            color,
+        )
+        .expect("valid P010");
+        frame.attachments = Some(
+            cherenkov_gpu::interop::metal::VideoAttachments::from_pixel_buffer(buffer)
+                .expect("source HDR attachments"),
+        );
+        frame
     }
 
     fn bgra_buffer() -> CFRetained<CVPixelBuffer> {
@@ -1373,7 +1518,7 @@ mod macos {
     }
 
     fn bgra(metal: &Metal, buffer: &CVPixelBuffer, color: FrameColor) -> ExternalFrame {
-        ExternalFrame::rgb(
+        let mut frame = ExternalFrame::rgb(
             plane_texture(
                 metal,
                 buffer,
@@ -1383,7 +1528,12 @@ mod macos {
             RgbAlpha::Opaque,
             color,
         )
-        .expect("valid BGRA")
+        .expect("valid BGRA");
+        frame.attachments = Some(
+            cherenkov_gpu::interop::metal::VideoAttachments::from_pixel_buffer(buffer)
+                .expect("source video attachments"),
+        );
+        frame
     }
 
     /// Renders `frame` in the scene and asserts the engine composed it
@@ -1528,27 +1678,116 @@ mod macos {
         static_pixels(false);
     }
 
-    fn static_headroom_completion(fixture: &Fixture) {
-        fixture.woke.store(false, Ordering::Release);
+    fn raster_formats(layer: &CALayer, found: &mut Vec<(u32, bool, f64, u32)>) {
+        // SAFETY: this fixture contains only engine-owned layers; their
+        // contents are Core Foundation images or IOSurfaces, inspected on main.
+        if let Some(contents) = unsafe { layer.contents() } {
+            // SAFETY: the retained contents above is a live CF-backed object.
+            let cf = unsafe { &*Retained::as_ptr(&contents).cast::<CFType>() };
+            if let Some(surface) = cf.downcast_ref::<objc2_io_surface::IOSurfaceRef>() {
+                // SAFETY: the dynamic-range name is an immutable framework static.
+                let high = &*layer.preferredDynamicRange()
+                    == unsafe { objc2_quartz_core::CADynamicRangeHigh };
+                found.push((
+                    surface.pixel_format(),
+                    high,
+                    layer.contentsHeadroom(),
+                    surface.id(),
+                ));
+            }
+        }
+        for child in sublayers(layer) {
+            raster_formats(&child, found);
+        }
+    }
+
+    fn static_content_range_changes_replace_native_storage() {
+        let fixture = Fixture::new();
         fixture
             .window
             .display(Display {
                 scale: SCALE,
                 headroom: 2.0,
             })
+            .expect("HDR display range");
+        let layer = fixture.window.layer();
+        fixture.window.update(|tx| {
+            tx[fixture.window.root()].push(&layer);
+        });
+        for (red, format, high) in [
+            (0.8, kCVPixelFormatType_32BGRA, false),
+            (2.0, objc2_core_video::kCVPixelFormatType_64RGBAHalf, true),
+            (0.6, kCVPixelFormatType_32BGRA, false),
+        ] {
+            let content = fixture.window.record(|draw| {
+                draw.fill(
+                    Rect::new(8., 6., 80., 54.),
+                    WorkingColor::new([red, 0.2, 0.1, 1.0]),
+                );
+            });
+            fixture.window.update(|tx| {
+                tx[&layer].content(content);
+            });
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut x = 0.0;
+            let mut capturing = false;
+            loop {
+                // Exercise consecutive observations of stable content while
+                // its placement changes; replacement must not reuse old pixels.
+                if !capturing {
+                    x = 1.0 - x;
+                    fixture.window.update(|tx| {
+                        tx[&layer].transform(Affine::translate((x, 0.)));
+                    });
+                }
+                fixture.woke.store(false, Ordering::Release);
+                fixture.render();
+                capturing |= fixture.engine.stats().passes > 1;
+                let mut formats = Vec::new();
+                raster_formats(&fixture.host(), &mut formats);
+                if matches!(formats.as_slice(), [(actual, extended, headroom, _)]
+                    if *actual == format && *extended == high && headroom.to_bits() == if high { 2.0_f64 } else { 1.0_f64 }.to_bits())
+                {
+                    break;
+                }
+                if capturing {
+                    // Once capture work was submitted, only its completion may
+                    // drive another frame: no scene changes or GPU polling here.
+                    drive(deadline, &|| fixture.woke.load(Ordering::Acquire), &|| {
+                        format!(
+                            "capture metadata did not wake the idle engine: HDR={high}, native={formats:?}"
+                        )
+                    });
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "expected format {format} HDR={high}, got {formats:?}"
+                );
+            }
+            if high {
+                static_headroom_completion(&fixture, 3.0);
+            }
+        }
+    }
+
+    fn static_headroom_completion(fixture: &Fixture, headroom: f32) {
+        let mut before = Vec::new();
+        raster_formats(&fixture.host(), &mut before);
+        fixture
+            .window
+            .display(Display {
+                scale: SCALE,
+                headroom,
+            })
             .expect("new output headroom");
-        assert_eq!(
-            fixture.engine.render(FrameTime::now()).expect("recapture"),
-            cherenkov::Next::Idle
-        );
-        // No render, readback, queue submission or device poll while waiting:
-        // the conversion itself must wake an otherwise idle engine.
-        drive(
-            Instant::now() + Duration::from_secs(10),
-            &|| fixture.woke.load(Ordering::Acquire),
-            &|| "capture conversion failed to wake the idle engine".into(),
-        );
         fixture.render();
+        let mut after = Vec::new();
+        raster_formats(&fixture.host(), &mut after);
+        assert!(!before.is_empty(), "the capture is present");
+        assert_eq!(
+            before, after,
+            "display headroom changes retain scene-referred IOSurfaces"
+        );
         assert_eq!(stack(fixture).len(), 2);
     }
 
@@ -1621,7 +1860,7 @@ mod macos {
             assert_eq!(stack(&fixture).len(), 1);
             return;
         }
-        static_headroom_completion(&fixture);
+        static_headroom_completion(&fixture, 2.0);
         fixture
             .window
             .update_animated(cherenkov::Curve::linear(Duration::from_secs(2)), |tx| {

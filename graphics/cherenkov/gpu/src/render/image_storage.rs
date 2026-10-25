@@ -20,6 +20,20 @@ const SRGB_PRIMARIES: u32 = 1 << 15;
 /// texel's 8-bit code.
 const TRANSFER_TABLE: u32 = 1 << 16;
 
+/// Range guaranteed by source encoding, without scanning texture contents.
+/// A premultiplied source can carry extended straight values after division
+/// by alpha, even when its stored components are UNORM.
+pub(super) const fn output_range(flags: u32) -> super::present::ColorRange {
+    use super::present::ColorRange;
+    if flags & SOURCE == 0 || flags & PREMULTIPLIED != 0 {
+        ColorRange::HighDynamicRange
+    } else if flags & SRGB_PRIMARIES != 0 {
+        ColorRange::Standard
+    } else {
+        ColorRange::WideGamut
+    }
+}
+
 /// The sRGB transfer decode of every 8-bit code, as the shader's
 /// `image_decode` binding holds it.
 ///

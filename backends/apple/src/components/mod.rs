@@ -74,7 +74,7 @@ pub mod map;
 pub mod material_background;
 #[cfg(feature = "menu")]
 pub mod menu;
-#[cfg(any(feature = "menu", feature = "context_menu"))]
+#[cfg(any(feature = "menu", feature = "context_menu", feature = "text_field"))]
 mod menu_items;
 #[cfg(feature = "multi_date_picker")]
 pub mod multi_date_picker;

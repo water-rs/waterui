@@ -8,6 +8,7 @@ use crate::render::lower::{DrawRange, Pass, ShaderVariant};
 
 fn pass(target: Target, clear: bool, source: Option<Source>, instance: u32) -> Pass {
     Pass {
+        color_range: crate::render::present::ColorRange::Standard,
         target,
         clear: clear.then_some([0.0; 4]),
         ranges: vec![DrawRange {
@@ -41,6 +42,7 @@ fn limits(slots: u8) -> Limits {
 /// A working-format surface with isolation scratches in `scratch`.
 const fn formats(scratch: wgpu::TextureFormat) -> Formats {
     Formats {
+        content: false,
         surface: wgpu::TextureFormat::Rgba16Float,
         scratch,
     }
@@ -72,7 +74,11 @@ fn scratch_generations_do_not_alias_lifetimes() {
         pass(Target::Scratch(0), true, None, 3),
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 4),
     ]);
-    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(2));
+    let plan = ExecutionPlan::build(
+        &frame,
+        formats(wgpu::TextureFormat::Rgba16Float),
+        Ok(limits(2)),
+    );
     let first = plan.targets[1];
     let second = plan.targets[3];
     assert_ne!(first, second);
@@ -110,7 +116,11 @@ fn a_cleared_output_separates_two_native_passes() {
         pass(Target::Scratch(0), true, None, 4),
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 5),
     ]);
-    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(4));
+    let plan = ExecutionPlan::build(
+        &frame,
+        formats(wgpu::TextureFormat::Rgba16Float),
+        Ok(limits(4)),
+    );
     assert_ne!(plan.targets[2], plan.targets[5]);
     assert_eq!(plan.epoch_at(1).expect("first epoch").passes, 1..3);
     assert_eq!(plan.epoch_at(4).expect("second epoch").passes, 4..6);
@@ -140,7 +150,11 @@ fn a_reused_slot_clears_every_region_its_image_covers() {
     let mut frame = frame(passes);
     // The read corresponds to the image's own region, as `epoch` demands.
     frame.instances[5].bounds = [0.0, 0.0, 4.0, 4.0];
-    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(4));
+    let plan = ExecutionPlan::build(
+        &frame,
+        formats(wgpu::TextureFormat::Rgba16Float),
+        Ok(limits(4)),
+    );
     let epoch = plan.epoch_at(1).expect("one epoch covers both generations");
     assert_eq!(epoch.passes, 1..6);
     let op = |pass: usize| {
@@ -167,11 +181,19 @@ fn attachment_budget_materializes_outer_image_without_recomputing() {
         pass(Target::Scratch(0), false, Some(Source::Scratch(1)), 3),
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 4),
     ]);
-    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(2));
+    let plan = ExecutionPlan::build(
+        &frame,
+        formats(wgpu::TextureFormat::Rgba16Float),
+        Ok(limits(2)),
+    );
     assert_eq!(plan.materialization(1), Some(Materialization::SlotLimit));
     assert_eq!(plan.materialization(2), None);
     assert_eq!(plan.epoch_at(2).unwrap().passes, 2..4);
-    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(4));
+    let plan = ExecutionPlan::build(
+        &frame,
+        formats(wgpu::TextureFormat::Rgba16Float),
+        Ok(limits(4)),
+    );
     assert_eq!(plan.materialization(1), None);
     assert_eq!(plan.materialization(2), None);
     assert_eq!(plan.epoch_at(1).unwrap().passes, 1..5);
@@ -191,7 +213,11 @@ fn sibling_groups_reuse_one_slot() {
         pass(Target::Scratch(0), false, Some(Source::Scratch(1)), 5),
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 6),
     ]);
-    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(4));
+    let plan = ExecutionPlan::build(
+        &frame,
+        formats(wgpu::TextureFormat::Rgba16Float),
+        Ok(limits(4)),
+    );
     let epoch = plan.epoch_at(1).expect("one epoch covers the whole tree");
     assert_eq!(epoch.passes, 1..7);
     // Slot zero stores the part; the parent group and the two siblings
@@ -238,6 +264,29 @@ fn an_unplanned_frame_names_the_missing_executor() {
     assert_eq!(plan.epochs().count(), 0);
 }
 
+#[test]
+fn materialized_images_keep_generations_without_a_tile_executor() {
+    let frame = frame(vec![
+        pass(Target::Part(0), true, None, 0),
+        pass(Target::Scratch(0), true, None, 1),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 2),
+        pass(Target::Scratch(0), true, None, 3),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 4),
+    ]);
+    let mut cache = crate::render::composite::cache::Cache::default();
+    let mut plan = ExecutionPlan::default();
+    let format = formats(wgpu::TextureFormat::Rgba16Float);
+    assert!(cache.update(&mut plan, &frame, format, Err(Materialization::NoExecutor)));
+    assert_ne!(plan.targets[1], plan.targets[3]);
+    assert_eq!(plan.reads[2][0].as_ref().unwrap().image, plan.targets[1]);
+    assert_eq!(plan.reads[4][0].as_ref().unwrap().image, plan.targets[3]);
+    assert_eq!(plan.materialization(1), Some(Materialization::NoExecutor));
+    assert_eq!(plan.epochs().count(), 0);
+    assert!(!cache.update(&mut plan, &frame, format, Err(Materialization::NoExecutor)));
+    assert!(cache.update(&mut plan, &frame, format, Ok(limits(2))));
+    assert_eq!(plan.materialization(1), None);
+}
+
 /// An executor that orders slot accesses only between passes cannot hold
 /// an epoch at all: every draw of one would read what an earlier draw of
 /// the same pass wrote.
@@ -251,10 +300,10 @@ fn per_pass_ordering_admits_no_epoch() {
     let plan = ExecutionPlan::build(
         &frame,
         formats(wgpu::TextureFormat::Rgba16Float),
-        Limits {
+        Ok(Limits {
             ordering: Ordering::PerPass,
             ..limits(4)
-        },
+        }),
     );
     assert!(plan.is_planned());
     assert_eq!(plan.epochs().count(), 0);
@@ -269,7 +318,11 @@ fn neighborhood_reads_and_overlapping_snapshots_materialize() {
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 2),
     ]);
     frame.instances[2].meta[1] = crate::render::instance::PAINT_BACKDROP;
-    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(4));
+    let plan = ExecutionPlan::build(
+        &frame,
+        formats(wgpu::TextureFormat::Rgba16Float),
+        Ok(limits(4)),
+    );
     assert!(plan.epoch_at(1).is_none());
     assert_eq!(
         plan.materialization(1),
@@ -277,11 +330,19 @@ fn neighborhood_reads_and_overlapping_snapshots_materialize() {
     );
     frame.instances[2].meta[1] = PAINT_TEXTURE;
     frame.passes[2].backdrop_copy = Some([0, 0, 16, 16]);
-    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(4));
+    let plan = ExecutionPlan::build(
+        &frame,
+        formats(wgpu::TextureFormat::Rgba16Float),
+        Ok(limits(4)),
+    );
     assert!(plan.epoch_at(1).is_some());
     frame.instances.push(frame.instances[2]);
     frame.passes[2].ranges[0].instances.end = 4;
-    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(4));
+    let plan = ExecutionPlan::build(
+        &frame,
+        formats(wgpu::TextureFormat::Rgba16Float),
+        Ok(limits(4)),
+    );
     assert!(plan.epoch_at(1).is_none());
     assert_eq!(
         plan.materialization(1),
@@ -299,17 +360,17 @@ fn cached_paint_updates_preserve_lifetimes_and_motion_rechecks_locality() {
     let mut cache = crate::render::composite::cache::Cache::default();
     let mut plan = ExecutionPlan::default();
     let format = formats(wgpu::TextureFormat::Rgba16Float);
-    assert!(cache.update(&mut plan, &frame, format, limits(2)));
+    assert!(cache.update(&mut plan, &frame, format, Ok(limits(2))));
     let image = plan.targets[1];
     frame.instances[1].color = [1.5, 0.3, 0.0, 0.8];
     frame.instances[2].params[1] = 0.5;
-    assert!(!cache.update(&mut plan, &frame, format, limits(2)));
+    assert!(!cache.update(&mut plan, &frame, format, Ok(limits(2))));
     assert_eq!(plan.targets[1], image);
     assert!(plan.epoch_at(1).is_some());
     // The read no longer corresponds to this framebuffer pixel. Reusing
     // the old epoch would fetch a different pixel than the canonical path.
     frame.instances[2].grad[0] = 1.0;
-    assert!(!cache.update(&mut plan, &frame, format, limits(2)));
+    assert!(!cache.update(&mut plan, &frame, format, Ok(limits(2))));
     assert_eq!(plan.targets[1], image);
     assert!(plan.epoch_at(1).is_none());
     assert_eq!(
@@ -334,7 +395,7 @@ fn every_materialization_reason_is_attributed() {
     ];
 
     // A surface part is the frame's output: never an epoch's intermediate.
-    let plan = ExecutionPlan::build(&frame(fuses.clone()), formats(format), limits(4));
+    let plan = ExecutionPlan::build(&frame(fuses.clone()), formats(format), Ok(limits(4)));
     assert_eq!(plan.materialization(0), Some(Materialization::Persistent));
     assert_eq!(plan.materialization(1), None);
 
@@ -345,7 +406,7 @@ fn every_materialization_reason_is_attributed() {
             pass(Target::Scratch(0), true, None, 1),
         ]),
         formats(format),
-        limits(4),
+        Ok(limits(4)),
     );
     assert_eq!(plan.materialization(1), Some(Materialization::NoInterval));
 
@@ -358,7 +419,7 @@ fn every_materialization_reason_is_attributed() {
             pass(Target::Scratch(0), false, Some(Source::Scratch(0)), 2),
         ]),
         formats(format),
-        limits(4),
+        Ok(limits(4)),
     );
     assert_eq!(
         plan.materialization(1),
@@ -377,7 +438,7 @@ fn every_materialization_reason_is_attributed() {
             pass(Target::Part(0), false, Some(Source::Scratch(1)), 5),
         ]),
         formats(format),
-        limits(4),
+        Ok(limits(4)),
     );
     assert_eq!(plan.materialization(1), Some(Materialization::External));
 
@@ -385,7 +446,7 @@ fn every_materialization_reason_is_attributed() {
     let plan = ExecutionPlan::build(
         &frame(fuses.clone()),
         formats(wgpu::TextureFormat::Rgba8Unorm),
-        limits(4),
+        Ok(limits(4)),
     );
     assert_eq!(plan.materialization(1), Some(Materialization::Format));
 
@@ -398,20 +459,20 @@ fn every_materialization_reason_is_attributed() {
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 3),
     ]);
     shifted.passes[2].space = cherenkov::BlendSpace::SrgbEncoded;
-    let plan = ExecutionPlan::build(&shifted, formats(format), limits(4));
+    let plan = ExecutionPlan::build(&shifted, formats(format), Ok(limits(4)));
     assert_eq!(plan.materialization(1), Some(Materialization::BlendSpace));
 
     // The intermediate covers pixels the epoch's attachment region, which
     // is its output's, does not.
     let mut wider = frame(fuses.clone());
     wider.passes[1].region = [0, 0, 32, 32];
-    let plan = ExecutionPlan::build(&wider, formats(format), limits(4));
+    let plan = ExecutionPlan::build(&wider, formats(format), Ok(limits(4)));
     assert_eq!(plan.materialization(1), Some(Materialization::Region));
 
     // A blend the on-chip executor does not implement.
     let mut projective = frame(fuses);
     projective.passes[2].ranges[0].pipeline = PipelineKind::Projective { replace: false };
-    let plan = ExecutionPlan::build(&projective, formats(format), limits(4));
+    let plan = ExecutionPlan::build(&projective, formats(format), Ok(limits(4)));
     assert_eq!(
         plan.materialization(1),
         Some(Materialization::UnsupportedOp)
@@ -431,7 +492,7 @@ fn frame_report_attributes_the_epoch_and_the_traffic_around_it() {
         pass(Target::Scratch(0), true, None, 1),
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 2),
     ]);
-    let plan = ExecutionPlan::build(&fused, formats(format), limits(4));
+    let plan = ExecutionPlan::build(&fused, formats(format), Ok(limits(4)));
     let report = composition::frame_report(
         7,
         3,
@@ -475,7 +536,7 @@ fn frame_report_attributes_the_epoch_and_the_traffic_around_it() {
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 2),
     ]);
     blurred.instances[2].meta[1] = crate::render::instance::PAINT_BACKDROP;
-    let plan = ExecutionPlan::build(&blurred, formats(format), limits(4));
+    let plan = ExecutionPlan::build(&blurred, formats(format), Ok(limits(4)));
     let report = composition::frame_report(
         8,
         3,
@@ -505,4 +566,124 @@ fn frame_report_attributes_the_epoch_and_the_traffic_around_it() {
     assert_eq!(drained.len(), 2);
     assert_eq!(drained[0].frame, 8);
     assert!(sink.take().is_empty());
+}
+
+#[test]
+fn cached_content_range_changes_propagate_through_nested_images() {
+    use crate::render::present::ColorRange;
+    let mut frame = frame(vec![
+        pass(Target::Part(0), true, None, 0),
+        pass(Target::Scratch(0), true, None, 1),
+        pass(Target::Scratch(1), true, None, 2),
+        pass(Target::Scratch(0), false, Some(Source::Scratch(1)), 3),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 4),
+    ]);
+    let mut cache = crate::render::composite::cache::Cache::default();
+    let mut plan = ExecutionPlan::default();
+    let format = formats(wgpu::TextureFormat::Rgba16Float);
+    let executor = Err(Materialization::NoExecutor);
+    assert!(cache.update(&mut plan, &frame, format, executor));
+    assert_eq!(
+        plan.images[plan.targets[3].0].color_range,
+        ColorRange::Standard
+    );
+    frame.passes[2].color_range = ColorRange::HighDynamicRange;
+    assert!(!cache.update(&mut plan, &frame, format, executor));
+    assert_eq!(
+        plan.images[plan.targets[3].0].color_range,
+        ColorRange::HighDynamicRange
+    );
+    assert_eq!(
+        plan.images[plan.targets[4].0].color_range,
+        ColorRange::HighDynamicRange
+    );
+    frame.passes[2].color_range = ColorRange::WideGamut;
+    assert!(!cache.update(&mut plan, &frame, format, executor));
+    assert_eq!(
+        plan.images[plan.targets[3].0].color_range,
+        ColorRange::WideGamut
+    );
+    frame.passes[2].ranges[0].gpu = Some(0);
+    assert!(cache.update(&mut plan, &frame, format, executor));
+    assert_eq!(
+        plan.images[plan.targets[3].0].color_range,
+        ColorRange::WideGamut
+    );
+    frame.passes[2].ranges[0].pipeline = PipelineKind::Effect {
+        id: 0,
+        replace: false,
+    };
+    assert!(cache.update(&mut plan, &frame, format, executor));
+    assert_eq!(
+        plan.images[plan.targets[3].0].color_range,
+        ColorRange::HighDynamicRange
+    );
+    frame.passes[2].ranges[0].pipeline = PipelineKind::SrcOver;
+    assert!(cache.update(&mut plan, &frame, format, executor));
+    // Replace and SrcOver share the lifetime key, but not the range policy.
+    frame.passes[2].ranges[0].pipeline = PipelineKind::Replace;
+    assert!(!cache.update(&mut plan, &frame, format, executor));
+    assert_eq!(
+        plan.images[plan.targets[3].0].color_range,
+        ColorRange::HighDynamicRange
+    );
+    frame.passes[2].ranges[0].pipeline = PipelineKind::SrcOver;
+    assert!(!cache.update(&mut plan, &frame, format, executor));
+    assert_eq!(
+        plan.images[plan.targets[3].0].color_range,
+        ColorRange::WideGamut
+    );
+}
+
+#[test]
+fn content_storage_reuses_only_dead_images_of_the_same_format() {
+    use crate::render::present::ColorRange;
+    let mut frame = frame(vec![
+        pass(Target::Part(0), true, None, 0),
+        pass(Target::Scratch(0), true, None, 1),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 2),
+        pass(Target::Scratch(0), true, None, 3),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 4),
+        pass(Target::Scratch(0), true, None, 5),
+        pass(Target::Scratch(1), true, None, 6),
+        pass(Target::Scratch(0), false, Some(Source::Scratch(1)), 7),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 8),
+    ]);
+    frame.passes[3].color_range = ColorRange::HighDynamicRange;
+    let formats = Formats {
+        content: true,
+        ..formats(wgpu::TextureFormat::Rgba16Float)
+    };
+    let mut plan = ExecutionPlan::build(&frame, formats, Err(Materialization::NoExecutor));
+    let slot =
+        |plan: &ExecutionPlan, index: usize| plan.images[plan.targets[index].0].backing.unwrap();
+    assert_eq!(slot(&plan, 1), slot(&plan, 5));
+    assert_ne!(slot(&plan, 1), slot(&plan, 3));
+    assert_ne!(slot(&plan, 5), slot(&plan, 6));
+    assert_eq!(plan.scratch.len(), 3);
+    assert_eq!(
+        plan.scratch[slot(&plan, 1)].format,
+        wgpu::TextureFormat::Rgba8UnormSrgb
+    );
+    assert_eq!(
+        plan.scratch[slot(&plan, 3)].format,
+        wgpu::TextureFormat::Rgba16Float
+    );
+    assert_eq!(plan.scratch_slot(4, Target::Scratch(0)), slot(&plan, 3));
+    frame.passes[1].color_range = ColorRange::HighDynamicRange;
+    plan.update_placement(&frame, formats, Err(Materialization::NoExecutor));
+    assert_eq!(slot(&plan, 1), slot(&plan, 3));
+    assert_eq!(
+        plan.scratch[slot(&plan, 1)].format,
+        wgpu::TextureFormat::Rgba16Float
+    );
+
+    let plan = ExecutionPlan::build(&frame, formats, Ok(limits(4)));
+    assert!(plan.scratch.is_empty());
+    assert!(
+        plan.images
+            .iter()
+            .filter(|image| matches!(image.target, Target::Scratch(_)))
+            .all(|image| image.storage == Storage::OnChip && image.backing.is_none())
+    );
 }

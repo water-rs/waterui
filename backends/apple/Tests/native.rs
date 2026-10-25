@@ -23,6 +23,19 @@ use libtest_mimic::{Arguments, Trial};
 
 mod migration;
 
+// On Mac Catalyst the binary is spawned without a bundle: its embedded
+// `Info.plist` declares `LSUIElement`, so the process arrives at the
+// `Prohibited` activation policy and `UIKit`'s Mac backgrounding
+// controller leaves the trials' scene-less windows alone — the same
+// contract `preview_info_plist!` gives the preview binary. The iOS
+// targets spawn with no `Info.plist` and keep it that way, so the
+// section is emitted on Catalyst only.
+#[cfg(catalyst)]
+#[used]
+#[unsafe(link_section = "__TEXT,__info_plist")]
+static NATIVE_SPAWN_INFO_PLIST: [u8; include_bytes!("native.plist").len()] =
+    *include_bytes!("native.plist");
+
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{HostView, Label};
 #[cfg(target_os = "ios")]
@@ -52,7 +65,46 @@ fn main() {
         }));
         unreachable!("the native trial runner exits the process");
     }
+    // A Catalyst spawn has no `UIApplication`, no scene and no
+    // `NSApplication`. A scene-less `UIWindow`'s unassociated scene reads
+    // the `AppKit` delegate the moment the window is created, and its
+    // `UINSApplicationDelegate` raises when no `NSApplication` exists —
+    // so the process's `AppKit` side comes up at the `Prohibited` policy
+    // before any trial mounts a window, the same bring-up the preview
+    // entry performs. `--list` mounts nothing and skips it.
+    #[cfg(catalyst)]
+    let _background_application =
+        (!args.list).then(|| cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(mtm()));
     libtest_mimic::run(&args, trials()).exit();
+}
+
+/// The `embedding::` mount-ownership trials — kept beside `trials` so the
+/// registrars stay one-per-line.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+fn embedding_trials() -> Vec<Trial> {
+    vec![
+        Trial::test(
+            "embedding::an_embedded_mount_leaves_the_hosts_window_and_menu_bar_alone",
+            || {
+                embedding::an_embedded_mount_leaves_the_hosts_window_and_menu_bar_alone();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "embedding::each_host_views_appearance_drives_its_own_mounted_scheme",
+            || {
+                embedding::each_host_views_appearance_drives_its_own_mounted_scheme();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "embedding::the_embedded_root_follows_the_host_bounds_and_detaches_on_drop",
+            || {
+                embedding::the_embedded_root_follows_the_host_bounds_and_detaches_on_drop();
+                Ok(())
+            },
+        ),
+    ]
 }
 
 fn trials() -> Vec<Trial> {
@@ -64,10 +116,13 @@ fn trials() -> Vec<Trial> {
                 window::manager_installs_into_the_environment(mtm());
                 Ok(())
             }),
-            Trial::test("window::bind_root_window_wires_a_live_window", || {
-                window::bind_root_window_wires_a_live_window(mtm());
+            Trial::test("window::a_declared_window_realizes_its_declaration", || {
+                window::a_declared_window_realizes_its_declaration(mtm());
                 Ok(())
             }),
+        ]);
+        tests.extend(embedding_trials());
+        tests.extend([
             Trial::test(
                 "menus::the_window_menu_opens_with_the_standard_close_item",
                 || {
@@ -79,6 +134,14 @@ fn trials() -> Vec<Trial> {
                 "menus::a_pull_down_validates_its_callback_rows_from_their_command",
                 || {
                     menus::a_pull_down_validates_its_callback_rows_from_their_command();
+                    Ok(())
+                },
+            ),
+            #[cfg(feature = "text_field")]
+            Trial::test(
+                "text_selection::a_selection_menu_command_edits_the_live_selection",
+                || {
+                    text_selection::a_selection_menu_command_edits_the_live_selection();
                     Ok(())
                 },
             ),
@@ -115,6 +178,7 @@ fn trials() -> Vec<Trial> {
         tests.extend(list_ax::trials());
         tests.extend(gesture_ax::trials());
         tests.extend(a11y_extent::trials());
+        tests.extend(gesture_events::trials());
         #[cfg(feature = "gpu_surface")]
         {
             tests.extend(gpu_surface::trials());
@@ -1972,7 +2036,7 @@ mod tabs {
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod window {
     pub use waterui_apple::native_test_support::{
-        bind_root_window_wires_a_live_window, manager_installs_into_the_environment,
+        a_declared_window_realizes_its_declaration, manager_installs_into_the_environment,
     };
 }
 
@@ -8728,5 +8792,1016 @@ mod a11y_extent {
                 Box::new(a_host_view_reports_content_extent_only_when_marked),
             ),
         ])
+    }
+}
+
+/// `embedding::mount` leaves everything the embedder owns alone: the host
+/// window's title, frame, style and resizability, the close gate the host
+/// armed, and the process's main menu. The embedded root follows the host
+/// view's bounds and detaches when the mount drops.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+mod embedding {
+    use std::cell::RefCell;
+    use std::ffi::c_void;
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::MainThreadOnly;
+    use cocoa_ui::objc2_app_kit::{
+        NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
+        NSApplication, NSMenu, NSView, NSWindowStyleMask,
+    };
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+    use cocoa_ui::{MainThreadMarker, Retained, view};
+    use waterui::app::App;
+    use waterui::component::menu::{Command, Menu, MenuItem};
+    use waterui::component::text::Text;
+    use waterui::graphics::color::ColorScheme;
+    use waterui::reactive::{Computed, binding};
+    use waterui::window::WindowState;
+    use waterui::{Environment, Signal};
+
+    use crate::mtm;
+
+    /// A live mount plus the test runtime it borrows — `mount` requires the
+    /// runtime to outlive it.
+    struct Embed {
+        mount: *mut c_void,
+        _runtime: Box<waterui_apple::embedding::Runtime>,
+    }
+
+    impl Embed {
+        fn new(host: &NSView, app: impl FnOnce(Environment) -> App) -> Self {
+            let runtime = Box::new(waterui_apple::embedding::Runtime::for_test());
+            // SAFETY: `_runtime` keeps the runtime box alive past the mount's
+            // drop; `host` is a live view and the paths are NUL-terminated.
+            let mount = unsafe {
+                waterui_apple::embedding::mount(
+                    (&raw const *runtime).cast::<c_void>(),
+                    std::ptr::from_ref(host).cast_mut().cast(),
+                    c"/tmp/waterui-embed-test-assets".as_ptr(),
+                    c"/tmp/waterui-embed-test-fonts".as_ptr(),
+                    app,
+                )
+            };
+            Self {
+                mount,
+                _runtime: runtime,
+            }
+        }
+    }
+
+    impl Drop for Embed {
+        fn drop(&mut self) {
+            // SAFETY: `mount` was returned by `embedding::mount` and dropped
+            // once on the main thread.
+            unsafe { waterui_apple::embedding::waterui_apple_mount_drop(self.mount) };
+        }
+    }
+
+    /// The named appearance — the constants are `AppKit` strings exported
+    /// for the process's lifetime.
+    fn appearance(name: &'static NSString) -> Retained<NSAppearance> {
+        NSAppearance::appearanceNamed(name).expect("the named appearance exists")
+    }
+
+    /// `(dark, aqua)` — the pair the trials flip between.
+    fn appearances() -> (&'static NSString, &'static NSString) {
+        // SAFETY: reads string constants `AppKit` owns for the process's
+        // lifetime.
+        unsafe { (NSAppearanceNameDarkAqua, NSAppearanceNameAqua) }
+    }
+
+    /// A plain `NSView`, never touched by our kit — the embedder's own.
+    fn plain_view(mtm: MainThreadMarker) -> Retained<NSView> {
+        // SAFETY: `initWithFrame:` is `NSView`'s documented initializer.
+        NSView::initWithFrame(
+            NSView::alloc(mtm),
+            NSRect::new(NSPoint::ZERO, NSSize::new(120.0, 80.0)),
+        )
+    }
+
+    /// The mount must not reach across the boundary: a declared window
+    /// title/style/state and a declared menu bar change nothing on the
+    /// host's window or the application's menu.
+    pub fn an_embedded_mount_leaves_the_hosts_window_and_menu_bar_alone() {
+        let mtm = mtm();
+        let window = cocoa_ui::appkit::Window::new(
+            mtm,
+            cocoa_ui::Rect::new(200.0, 200.0, 640.0, 480.0),
+            cocoa_ui::appkit::WindowStyle::TITLED,
+        );
+        let native = window.native();
+        native.setTitle(&NSString::from_str("Host Title"));
+        native.setStyleMask(
+            native.styleMask() | NSWindowStyleMask::Resizable | NSWindowStyleMask::Closable,
+        );
+        let host_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("HostMenu"));
+        let application = NSApplication::sharedApplication(mtm);
+        let saved_menu = application.mainMenu();
+        application.setMainMenu(Some(&host_menu));
+        let close_called = Rc::new(RefCell::new(false));
+        window.on_should_close({
+            let close_called = Rc::clone(&close_called);
+            move || {
+                *close_called.borrow_mut() = true;
+                false
+            }
+        });
+        let content_view = native
+            .contentView()
+            .expect("a titled window has a content view");
+        let host = plain_view(mtm);
+        content_view.addSubview(&host);
+        let host_frame = native.frame();
+        let host_mask = native.styleMask();
+
+        let embed = Embed::new(&host, |env| {
+            App::new_with_windows(
+                vec![waterui::window::Window::new(
+                    "Declared Title",
+                    binding(WindowState::Normal),
+                    || Text::new("embedded"),
+                )],
+                env,
+            )
+            .menu_bar(Menu::new(
+                "Embed",
+                vec![MenuItem::Command(
+                    Command::builder("DeclaredItem").action(|| {}),
+                )],
+            ))
+        });
+
+        assert_eq!(native.title().to_string(), "Host Title");
+        assert_eq!(native.styleMask(), host_mask);
+        assert!(native.isResizable());
+        assert_eq!(native.frame(), host_frame);
+        assert_eq!(
+            application
+                .mainMenu()
+                .expect("the host menu stays")
+                .title()
+                .to_string(),
+            "HostMenu"
+        );
+        // The host's close gate still answers — the mount armed no veto of
+        // its own.
+        native.performClose(None);
+        assert!(*close_called.borrow());
+
+        // Detach and remount on the same host.
+        drop(embed);
+        assert_eq!(view::subviews(&host).len(), 0, "drop detaches the root");
+        let _remounted = Embed::new(&host, |env| App::new(|| Text::new("again"), env));
+        assert_eq!(view::subviews(&host).len(), 1);
+        application.setMainMenu(saved_menu.as_deref());
+    }
+
+    /// Each host view's `effectiveAppearance` drives its own mounted tree's
+    /// color scheme; a change on one never reaches the other, and a mount
+    /// dropped stops hearing its host entirely.
+    pub fn each_host_views_appearance_drives_its_own_mounted_scheme() {
+        let mtm = mtm();
+        let host_a = plain_view(mtm);
+        let host_b = plain_view(mtm);
+        let (dark, aqua) = appearances();
+        host_a.setAppearance(Some(&appearance(dark)));
+        host_b.setAppearance(Some(&appearance(aqua)));
+
+        let scheme_a = Rc::new(RefCell::new(None::<Computed<ColorScheme>>));
+        let scheme_b = Rc::new(RefCell::new(None::<Computed<ColorScheme>>));
+        let capture = |slot: &Rc<RefCell<Option<Computed<ColorScheme>>>>| {
+            let slot = Rc::clone(slot);
+            move |env: Environment| {
+                *slot.borrow_mut() = Some(
+                    env.query::<ColorScheme, Computed<ColorScheme>>()
+                        .cloned()
+                        .expect("the mount installs a color scheme"),
+                );
+                App::new(|| Text::new("x"), env)
+            }
+        };
+        let embed_a = Embed::new(&host_a, capture(&scheme_a));
+        let _embed_b = Embed::new(&host_b, capture(&scheme_b));
+
+        let scheme_a = scheme_a
+            .borrow()
+            .clone()
+            .expect("mount A installed a scheme");
+        let scheme_b = scheme_b
+            .borrow()
+            .clone()
+            .expect("mount B installed a scheme");
+        assert_eq!(scheme_a.snapshot(), ColorScheme::Dark);
+        assert_eq!(scheme_b.snapshot(), ColorScheme::Light);
+
+        // Changing one host's appearance reaches only its own mount.
+        host_a.setAppearance(Some(&appearance(aqua)));
+        assert_eq!(scheme_a.snapshot(), ColorScheme::Light);
+        assert_eq!(scheme_b.snapshot(), ColorScheme::Light);
+
+        host_b.setAppearance(Some(&appearance(dark)));
+        assert_eq!(scheme_a.snapshot(), ColorScheme::Light);
+        assert_eq!(scheme_b.snapshot(), ColorScheme::Dark);
+
+        // A dropped mount stops hearing its host: mutating it changes
+        // nothing and fires nothing (a leaked observer would fire into the
+        // freed signal graph).
+        drop(embed_a);
+        host_a.setAppearance(Some(&appearance(dark)));
+        assert_eq!(scheme_a.snapshot(), ColorScheme::Light);
+        assert_eq!(scheme_b.snapshot(), ColorScheme::Dark);
+    }
+
+    /// The embedded root tracks the host view's bounds through autoresizing
+    /// and `drop` removes it without touching the host.
+    pub fn the_embedded_root_follows_the_host_bounds_and_detaches_on_drop() {
+        let mtm = mtm();
+        let host = plain_view(mtm);
+        let embed = Embed::new(&host, |env| App::new(|| Text::new("x"), env));
+
+        let root = view::subviews(&host)
+            .into_iter()
+            .next()
+            .expect("the mount attaches a root");
+        assert_eq!(root.frame().size, host.bounds().size);
+
+        host.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(300.0, 200.0)));
+        assert_eq!(
+            root.frame().size,
+            NSSize::new(300.0, 200.0),
+            "the root autoresizes with the host"
+        );
+
+        drop(embed);
+        assert_eq!(view::subviews(&host).len(), 0);
+        assert_eq!(host.frame().size, NSSize::new(300.0, 200.0));
+    }
+}
+
+/// The shared gesture contract end to end on `AppKit`: a completed
+/// gesture inserts the observed `Gesture` and its typed event —
+/// `TapEvent`, `RotationEvent`, `MagnificationEvent` — into the action's
+/// environment, so a `Use<T>` handler extracts the same value Hydrolysis
+/// reports for the same input. These cases cover the observer's
+/// state/getter mapping, not the OS's gesture recognition: they drive
+/// the installed `CocoaUiGestureTarget` with seeded recognizer subclasses
+/// (and one `accessibilityPerformPress` entry point) — each dispatch
+/// lands on the same `on_recognized` path a real completion does. The
+/// `UIKit` cases live in `native_app`'s `gesture_events`, inside the
+/// real `UIApplication` scene.
+#[cfg(target_os = "macos")]
+mod gesture_events {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::msg_send;
+    use cocoa_ui::objc2_app_kit::{
+        NSClickGestureRecognizer, NSGestureRecognizerState, NSMagnificationGestureRecognizer,
+        NSRotationGestureRecognizer,
+    };
+    use cocoa_ui::objc2_foundation::NSPoint;
+    use waterui::ViewExt as _;
+    use waterui::extract::Use;
+    use waterui::gesture::{Gesture, GesturePhase};
+    use waterui::gesture::{
+        MagnificationEvent, MagnificationGesture, PointerButton, RotationEvent, RotationGesture,
+        TapEvent, TapGesture,
+    };
+    use waterui::prelude::text;
+
+    use super::{resolve, trial_each};
+
+    /// `AppKit`: an assistive client's `AXPress` activates the tap the way
+    /// a click's recognizer completion would — through the shared
+    /// `on_recognized` dispatch; the action's environment carries the
+    /// observed `Gesture` and a `TapEvent` naming the activation point in
+    /// the host's local space, the tap count and the button.
+    #[cfg(target_os = "macos")]
+    fn a_tap_gesture_delivers_its_event() {
+        let taps = Rc::new(RefCell::new(Vec::new()));
+        let gestures = Rc::new(RefCell::new(Vec::new()));
+        let leaf = resolve::render({
+            let taps = Rc::clone(&taps);
+            let gestures = Rc::clone(&gestures);
+            text("tap").gesture(
+                TapGesture::new(),
+                move |Use(event): Use<TapEvent>, Use(gesture): Use<Gesture>| {
+                    taps.borrow_mut().push(event);
+                    gestures.borrow_mut().push(gesture);
+                },
+            )
+        });
+        let host = leaf.view();
+        let _window = super::mount_and_order_front(host);
+        cocoa_ui::view::set_frame(host, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        for (origin, expected) in [
+            (NSPoint::new(0.0, 0.0), (100.0, 50.0)),
+            (NSPoint::new(20.0, 30.0), (120.0, 80.0)),
+        ] {
+            host.setBoundsOrigin(origin);
+            let before = taps.borrow().len();
+            // SAFETY: `accessibilityPerformPress` answers a `BOOL`.
+            let handled: bool = unsafe { msg_send![host, accessibilityPerformPress] };
+            assert!(handled, "the tap host's AXPress runs the gesture's action");
+            {
+                let taps = taps.borrow();
+                assert_eq!(
+                    taps.len(),
+                    before + 1,
+                    "each press appends exactly one tap event"
+                );
+                let tap = &taps[before];
+                assert_eq!(tap.count, 1, "an assistive press is a count-1 tap");
+                assert_eq!(tap.button, PointerButton::Primary);
+                assert_eq!(
+                    tap.location,
+                    waterui::gesture::GesturePoint::new(expected.0, expected.1),
+                    "the event names the activation point — the bounds-space center"
+                );
+            }
+            let gestures = gestures.borrow();
+            assert_eq!(gestures.len(), before + 1);
+            assert!(
+                matches!(gestures[before], Gesture::Tap(_)),
+                "the environment carries the observed gesture"
+            );
+        }
+    }
+
+    /// Seeded recognizers for the `AppKit` frontdoor: a headless process
+    /// cannot feed a real recognizer an event stream, so these subclasses
+    /// answer `state` and the measured value from cells while the
+    /// observer's installed `CocoaUiGestureTarget` — read off the real
+    /// attached recognizer — does the dispatch.
+    #[cfg(target_os = "macos")]
+    mod seeded {
+        use std::cell::Cell;
+
+        use cocoa_ui::objc2::rc::Retained;
+        use cocoa_ui::objc2::runtime::{AnyObject, NSObjectProtocol};
+        use cocoa_ui::objc2::{
+            DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
+        };
+        use cocoa_ui::objc2_app_kit::{
+            NSGestureRecognizerState, NSMagnificationGestureRecognizer,
+            NSRotationGestureRecognizer, NSView,
+        };
+        use cocoa_ui::objc2_foundation::NSPoint;
+
+        /// What the seeded recognizer's getters answer.
+        #[derive(Debug)]
+        pub struct SeededIvars {
+            state: Cell<NSGestureRecognizerState>,
+            value: Cell<f64>,
+            location: Cell<NSPoint>,
+        }
+
+        macro_rules! seeded {
+            ($name:ident, $super:ident, $getter:ident, $class:literal) => {
+                define_class!(
+                    // SAFETY: subclassing for seeded input only; every
+                    // override answers an ivar and touches no `AppKit`
+                    // internals.
+                    #[unsafe(super($super))]
+                    #[name = $class]
+                    #[thread_kind = MainThreadOnly]
+                    #[ivars = SeededIvars]
+                    pub struct $name;
+
+                    unsafe impl NSObjectProtocol for $name {}
+
+                    impl $name {
+                        // SAFETY: `state`'s signature; answers the seed.
+                        #[unsafe(method(state))]
+                        fn state(&self) -> NSGestureRecognizerState {
+                            self.ivars().state.get()
+                        }
+
+                        // SAFETY: the superclass getter's signature;
+                        // answers the seed.
+                        #[unsafe(method($getter))]
+                        fn value(&self) -> f64 {
+                            self.ivars().value.get()
+                        }
+
+                        // SAFETY: `locationInView:`'s signature; answers
+                        // the seed.
+                        #[unsafe(method(locationInView:))]
+                        fn location_in_view(&self, _view: Option<&NSView>) -> NSPoint {
+                            self.ivars().location.get()
+                        }
+                    }
+                );
+
+                impl $name {
+                    /// A seeded recognizer at `Possible`, zero value, the
+                    /// host's center.
+                    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+                        let ivars = SeededIvars {
+                            state: Cell::new(NSGestureRecognizerState::Possible),
+                            value: Cell::new(0.0),
+                            location: Cell::new(NSPoint::new(0.0, 0.0)),
+                        };
+                        let this = Self::alloc(mtm).set_ivars(ivars);
+                        // SAFETY: `initWithTarget:action:` accepts a null
+                        // pair; the driver messages the installed target
+                        // itself.
+                        unsafe {
+                            msg_send![
+                                super(this),
+                                initWithTarget: std::ptr::null::<AnyObject>(),
+                                action: Option::<cocoa_ui::objc2::runtime::Sel>::None
+                            ]
+                        }
+                    }
+
+                    /// Re-seeds the getter answers.
+                    pub fn seed(
+                        &self,
+                        state: NSGestureRecognizerState,
+                        value: f64,
+                        location: NSPoint,
+                    ) {
+                        self.ivars().state.set(state);
+                        self.ivars().value.set(value);
+                        self.ivars().location.set(location);
+                    }
+                }
+            };
+        }
+
+        seeded!(
+            SeededRotation,
+            NSRotationGestureRecognizer,
+            rotation,
+            "WaterUiNativeTestSeededRotation"
+        );
+        seeded!(
+            SeededMagnification,
+            NSMagnificationGestureRecognizer,
+            magnification,
+            "WaterUiNativeTestSeededMagnification"
+        );
+
+        // A seeded click recognizer: `state`, `locationInView:` and a
+        // `buttonMask` of the primary button.
+        define_class!(
+            // SAFETY: subclassing for seeded input only; every override
+            // answers an ivar or a constant.
+            #[unsafe(super(cocoa_ui::objc2_app_kit::NSClickGestureRecognizer))]
+            #[name = "WaterUiNativeTestSeededClick"]
+            #[thread_kind = MainThreadOnly]
+            #[ivars = SeededIvars]
+            pub struct SeededClick;
+
+            unsafe impl NSObjectProtocol for SeededClick {}
+
+            impl SeededClick {
+                // SAFETY: `state`'s signature; answers the seed.
+                #[unsafe(method(state))]
+                fn state(&self) -> NSGestureRecognizerState {
+                    self.ivars().state.get()
+                }
+
+                // SAFETY: `buttonMask`'s signature; answers the primary
+                // button bit a real primary click carries.
+                #[unsafe(method(buttonMask))]
+                fn button_mask(&self) -> usize {
+                    1
+                }
+
+                // SAFETY: `locationInView:`'s signature; answers the seed.
+                #[unsafe(method(locationInView:))]
+                fn location_in_view(&self, _view: Option<&NSView>) -> NSPoint {
+                    self.ivars().location.get()
+                }
+            }
+        );
+
+        impl SeededClick {
+            /// A seeded click at `Possible` at `location`.
+            pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+                let ivars = SeededIvars {
+                    state: Cell::new(NSGestureRecognizerState::Possible),
+                    value: Cell::new(0.0),
+                    location: Cell::new(NSPoint::new(0.0, 0.0)),
+                };
+                let this = Self::alloc(mtm).set_ivars(ivars);
+                // SAFETY: `initWithTarget:action:` accepts a null pair.
+                unsafe {
+                    msg_send![
+                        super(this),
+                        initWithTarget: std::ptr::null::<AnyObject>(),
+                        action: Option::<cocoa_ui::objc2::runtime::Sel>::None
+                    ]
+                }
+            }
+
+            /// Re-seeds `state` and `locationInView:`.
+            pub fn seed(&self, state: NSGestureRecognizerState, location: NSPoint) {
+                self.ivars().state.set(state);
+                self.ivars().location.set(location);
+            }
+        }
+    }
+
+    /// Sends `sender` to the target the observer installed on the real
+    /// `R` recognizer attached to `host` — the production `invoke:`
+    /// dispatch reads the sender's state and getters.
+    #[cfg(target_os = "macos")]
+    fn drive<R>(
+        host: &cocoa_ui::PlatformView,
+        sender: &cocoa_ui::objc2_app_kit::NSGestureRecognizer,
+    ) where
+        R: cocoa_ui::objc2::DowncastTarget
+            + std::ops::Deref<Target = cocoa_ui::objc2_app_kit::NSGestureRecognizer>,
+    {
+        let installed = host
+            .gestureRecognizers()
+            .iter()
+            .find_map(|r| r.downcast::<R>().ok())
+            .expect("the observer attaches a recognizer of this kind");
+        let target = installed
+            .target()
+            .expect("the recognizer's target stays installed");
+        // SAFETY: `invoke:` takes one `NSGestureRecognizer`; the target
+        // the observer installed answers it.
+        let _: () = unsafe { msg_send![&*target, invoke: sender] };
+    }
+
+    /// `AppKit`: `NSRotationGestureRecognizer.rotation` reports radians
+    /// natively — the event's angle is the raw getter value, and each
+    /// `Updated`'s velocity is the wall-clock delta rate, never a
+    /// second conversion (#2757).
+    #[cfg(target_os = "macos")]
+    fn a_rotation_gesture_reports_native_radians() {
+        let rotations = Rc::new(RefCell::new(Vec::new()));
+        let leaf = resolve::render({
+            let rotations = Rc::clone(&rotations);
+            text("rotate").gesture(
+                RotationGesture::new(0.0),
+                move |Use(e): Use<RotationEvent>| {
+                    rotations.borrow_mut().push(e);
+                },
+            )
+        });
+        let host = leaf.view();
+        let _window = super::mount_and_order_front(host);
+        let sender = seeded::SeededRotation::new(super::mtm());
+        let here = NSPoint::new(100.0, 50.0);
+        let fire = |state, value| {
+            sender.seed(state, value, here);
+            let before = rotations.borrow().len();
+            drive::<NSRotationGestureRecognizer>(host, &sender);
+            let events = rotations.borrow();
+            assert_eq!(events.len(), before + 1, "one callback appends one event");
+            events[before].clone()
+        };
+
+        let e = fire(NSGestureRecognizerState::Began, 0.0);
+        assert_eq!(
+            (e.phase, e.angle, e.velocity),
+            (GesturePhase::Started, 0.0, 0.0)
+        );
+        let e = fire(NSGestureRecognizerState::Changed, 0.75);
+        assert_eq!(e.phase, GesturePhase::Updated);
+        assert!(
+            (e.angle - 0.75).abs() < 1e-6,
+            "angle must be the raw radians getter, saw {}",
+            e.angle
+        );
+        assert!(
+            e.velocity.is_finite() && e.velocity > 0.0,
+            "rotation progressed: {}",
+            e.velocity
+        );
+        let e = fire(NSGestureRecognizerState::Changed, 1.25);
+        assert!((e.angle - 1.25).abs() < 1e-6);
+        let e = fire(NSGestureRecognizerState::Ended, 1.25);
+        assert_eq!((e.phase, e.velocity), (GesturePhase::Ended, 0.0));
+        assert!((e.angle - 1.25).abs() < 1e-6);
+
+        // A second gesture reseeds at zero; a negative update and a
+        // cancel keep the last angle with zero velocity.
+        let e = fire(NSGestureRecognizerState::Began, 0.0);
+        assert_eq!(e.phase, GesturePhase::Started);
+        let e = fire(NSGestureRecognizerState::Changed, -0.5);
+        assert!((e.angle + 0.5).abs() < 1e-6);
+        let e = fire(NSGestureRecognizerState::Cancelled, -0.5);
+        assert_eq!((e.phase, e.velocity), (GesturePhase::Cancelled, 0.0));
+        assert!((e.angle + 0.5).abs() < 1e-6);
+    }
+
+    /// `AppKit`: `NSMagnificationGestureRecognizer.magnification` is the
+    /// gesture's current fractional magnification — `1 + m` is the factor
+    /// since it began — so composing the reported factor's relative delta
+    /// never multiplies a cumulative value in twice (#2757).
+    #[cfg(target_os = "macos")]
+    fn a_magnification_gesture_composes_the_native_factor() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let leaf = resolve::render({
+            let events = Rc::clone(&events);
+            text("pinch").gesture(
+                MagnificationGesture::new(2.0),
+                move |Use(e): Use<MagnificationEvent>| {
+                    events.borrow_mut().push(e);
+                },
+            )
+        });
+        let host = leaf.view();
+        let _window = super::mount_and_order_front(host);
+        let sender = seeded::SeededMagnification::new(super::mtm());
+        let here = NSPoint::new(100.0, 50.0);
+        let fire = |state, value| {
+            sender.seed(state, value, here);
+            let before = events.borrow().len();
+            drive::<NSMagnificationGestureRecognizer>(host, &sender);
+            let events = events.borrow();
+            assert_eq!(events.len(), before + 1, "one callback appends one event");
+            events[before].clone()
+        };
+
+        let e = fire(NSGestureRecognizerState::Began, 0.0);
+        assert_eq!(
+            (e.phase, e.scale, e.velocity),
+            (GesturePhase::Started, 2.0, 0.0)
+        );
+        let e = fire(NSGestureRecognizerState::Changed, 0.25);
+        assert!(
+            (e.scale - 2.5).abs() < 1e-5,
+            "m .25 -> factor 1.25: {}",
+            e.scale
+        );
+        assert!(e.velocity.is_finite() && e.velocity > 0.0);
+        let e = fire(NSGestureRecognizerState::Changed, 0.5);
+        assert!(
+            (e.scale - 3.0).abs() < 1e-5,
+            "m .5 -> factor 1.5: {}",
+            e.scale
+        );
+        assert!(e.velocity.is_finite() && e.velocity > 0.0);
+        let e = fire(NSGestureRecognizerState::Changed, 0.5);
+        assert!(
+            (e.scale - 3.0).abs() < 1e-5 && e.velocity == 0.0,
+            "an unchanged sample adds nothing"
+        );
+        let e = fire(NSGestureRecognizerState::Ended, 0.5);
+        assert_eq!(
+            (e.phase, e.scale, e.velocity),
+            (GesturePhase::Ended, 3.0, 0.0)
+        );
+
+        // The next gesture reseeds the baseline; a smaller factor zooms
+        // out with a negative velocity and the cancel keeps the scale.
+        let e = fire(NSGestureRecognizerState::Began, 0.0);
+        assert_eq!((e.phase, e.scale), (GesturePhase::Started, 2.0));
+        let e = fire(NSGestureRecognizerState::Changed, -0.25);
+        assert!(
+            (e.scale - 1.5).abs() < 1e-5,
+            "m -.25 -> factor .75: {}",
+            e.scale
+        );
+        assert!(e.velocity.is_finite() && e.velocity < 0.0);
+        let e = fire(NSGestureRecognizerState::Cancelled, -0.25);
+        assert_eq!((e.phase, e.velocity), (GesturePhase::Cancelled, 0.0));
+        assert!((e.scale - 1.5).abs() < 1e-5);
+    }
+
+    /// `AppKit`: `Then(tap, rotation)` forwards the second gesture only
+    /// after the first completes, end to end through the installed
+    /// recognizer targets (#2757).
+    #[cfg(target_os = "macos")]
+    fn a_then_gesture_forwards_after_the_first_completes() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let gestures = Rc::new(RefCell::new(Vec::new()));
+        let leaf = resolve::render({
+            let events = Rc::clone(&events);
+            let gestures = Rc::clone(&gestures);
+            text("then").gesture(
+                Gesture::Tap(TapGesture::new()).then(RotationGesture::new(0.0)),
+                move |Use(event): Use<RotationEvent>, Use(gesture): Use<Gesture>| {
+                    events.borrow_mut().push(event);
+                    gestures.borrow_mut().push(gesture);
+                },
+            )
+        });
+        let host = leaf.view();
+        let _window = super::mount_and_order_front(host);
+        let sender = seeded::SeededRotation::new(super::mtm());
+        let here = NSPoint::new(100.0, 50.0);
+
+        // A rotation before any tap reaches the second recognizer but the
+        // `Then` gate stays shut: no event.
+        sender.seed(NSGestureRecognizerState::Began, 0.5, here);
+        drive::<NSRotationGestureRecognizer>(host, &sender);
+        assert!(events.borrow().is_empty(), "an unarmed Then emitted");
+
+        // The installed click target completes the tap and arms the
+        // rotation — still through the recognizer path, not AX.
+        let click = seeded::SeededClick::new(super::mtm());
+        click.seed(NSGestureRecognizerState::Ended, here);
+        drive::<NSClickGestureRecognizer>(host, &click);
+        assert!(events.borrow().is_empty(), "arming the Then emitted");
+
+        // Now the armed rotation forwards.
+        sender.seed(NSGestureRecognizerState::Began, 0.5, here);
+        drive::<NSRotationGestureRecognizer>(host, &sender);
+        {
+            let events = events.borrow();
+            let [event] = events.as_slice() else {
+                panic!(
+                    "the armed rotation emits exactly once, saw {}",
+                    events.len()
+                );
+            };
+            assert_eq!(event.phase, GesturePhase::Started);
+            assert!((event.angle - 0.5).abs() < 1e-6);
+        }
+        assert!(
+            matches!(gestures.borrow().as_slice(), [Gesture::Then(_)]),
+            "the observed gesture is the Then composition"
+        );
+
+        // The armed slot was consumed: another callback without a new
+        // first-gesture completion emits nothing.
+        sender.seed(NSGestureRecognizerState::Changed, 1.0, here);
+        drive::<NSRotationGestureRecognizer>(host, &sender);
+        assert_eq!(events.borrow().len(), 1, "an unarmed update must not emit");
+    }
+
+    /// The `gesture_events::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        trial_each(vec![
+            (
+                "gesture_events::a_tap_gesture_delivers_its_event".to_owned(),
+                Box::new(a_tap_gesture_delivers_its_event) as Box<dyn FnOnce() + Send>,
+            ),
+            #[cfg(target_os = "macos")]
+            (
+                "gesture_events::a_rotation_gesture_reports_native_radians".to_owned(),
+                Box::new(a_rotation_gesture_reports_native_radians),
+            ),
+            #[cfg(target_os = "macos")]
+            (
+                "gesture_events::a_magnification_gesture_composes_the_native_factor".to_owned(),
+                Box::new(a_magnification_gesture_composes_the_native_factor),
+            ),
+            #[cfg(target_os = "macos")]
+            (
+                "gesture_events::a_then_gesture_forwards_after_the_first_completes".to_owned(),
+                Box::new(a_then_gesture_forwards_after_the_first_completes),
+            ),
+        ])
+    }
+}
+/// `selection_menu` rows on the field editor's real context menu —
+/// `textView:menu:forEvent:atIndex:` — resolved each request on an
+/// environment carrying the live `TextSelection` (water-rs/waterui#3037).
+#[cfg(all(target_os = "macos", feature = "native-test", feature = "text_field"))]
+mod text_selection {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use cocoa_ui::PlatformView;
+    use cocoa_ui::appkit::TextField as KitTextField;
+    use cocoa_ui::objc2::DowncastTarget;
+    use cocoa_ui::objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSMenu, NSTextView};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRange, NSString};
+    use cocoa_ui::{Retained, view};
+    use waterui::Str;
+    use waterui::component::menu::{Command, MenuItem};
+    use waterui::component::text_field::TextField;
+    use waterui::component::text_selection::TextSelection;
+    use waterui::reactive::{Signal, binding};
+    use waterui::text::StyledStr;
+
+    use crate::{leaf, mtm, resolve};
+
+    /// The first view of type `T` in a depth-first walk — the macOS
+    /// counterpart of the iOS suite's `find_view`.
+    fn find<T: DowncastTarget>(view: &PlatformView) -> Option<Retained<PlatformView>> {
+        for sub in view::subviews(view) {
+            if sub.downcast_ref::<T>().is_some() {
+                return Some(sub);
+            }
+            if let Some(found) = find::<T>(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The menu the field editor answers a right-click with — the path
+    /// `textView:menu:forEvent:atIndex:` rides.
+    fn edit_menu(window: &cocoa_ui::appkit::Window, editor: &NSTextView) -> Retained<NSMenu> {
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                NSEventType::RightMouseDown,
+                NSPoint::new(5.0, 5.0),
+                NSEventModifierFlags::empty(),
+                0.0,
+                window.native().windowNumber(),
+                None,
+                1,
+                1,
+                0.0,
+            )
+            .expect("a right-mouse-down event constructs");
+        editor
+            .menuForEvent(&event)
+            .expect("the field editor produced a menu")
+    }
+
+    /// Fires the menu row titled `title` the way the platform does —
+    /// `performActionForItemAtIndex:` sends the item's action at its target.
+    fn perform(menu: &NSMenu, title: &str) {
+        let item = menu
+            .itemWithTitle(&NSString::from_str(title))
+            .unwrap_or_else(|| panic!("no menu row titled {title}"));
+        menu.performActionForItemAtIndex(menu.indexOfItem(&item));
+    }
+
+    /// A `selection_menu` command reads the selection the moment it fires —
+    /// not the one the menu was built over — edits it through the native
+    /// path, sees its write in the value binding, and lets the editor's
+    /// undo restore both. `Option<TextSelection>` extracts `Some`, a
+    /// disabled command renders disabled, and `styled_value` is the
+    /// field's value binding.
+    /// Undo restores the pre-command text exactly and the editor's
+    /// `DidUndo` session observer reports it to the value binding; redo
+    /// writes the replacement back through both legs. A synchronous
+    /// external normalization inside the same write-back window still
+    /// reaches the field: echo suppression skips only the exact echo.
+    fn undo_and_normalization_roundtrip(
+        field: &cocoa_ui::appkit::TextField,
+        value: &waterui::reactive::Binding<Str>,
+        editor: &NSTextView,
+    ) {
+        let undo = editor
+            .undoManager()
+            .expect("the field editor carries an undo manager");
+        undo.undo();
+        assert_eq!(field.string(), "hé😀b");
+        assert_eq!(
+            value.snapshot(),
+            Str::from("hé😀b"),
+            "undo reports the restored text to the value binding"
+        );
+        undo.redo();
+        assert_eq!(field.string(), "hé《b");
+        assert_eq!(
+            value.snapshot(),
+            Str::from("hé《b"),
+            "redo reports the replayed text to the value binding"
+        );
+        undo.undo();
+        assert_eq!(field.string(), "hé😀b");
+
+        let _normalizer = value.watch({
+            let value = value.clone();
+            move |ctx| {
+                if ctx.value() == &Str::from("x") {
+                    value.set(Str::from("X"));
+                }
+            }
+        });
+        field.replace_range(NSRange::new(0, 5), &NSString::from_str("x"));
+        assert_eq!(
+            value.snapshot(),
+            Str::from("X"),
+            "the watcher rewrote the value synchronously"
+        );
+        assert_eq!(
+            field.string(),
+            "X",
+            "the normalized value pushed back onto the field"
+        );
+    }
+
+    pub fn a_selection_menu_command_edits_the_live_selection() {
+        let mtm = mtm();
+        let value = binding(Str::from("hé😀b"));
+        let observed = Rc::new(RefCell::new((String::new(), 0usize, 0usize)));
+        let optional_seen = Rc::new(RefCell::new(false));
+
+        let observe = Command::builder("Observe").action({
+            let observed = Rc::clone(&observed);
+            move |selection: TextSelection| {
+                let range = selection.range();
+                *observed.borrow_mut() = (selection.text().to_string(), range.start, range.end);
+            }
+        });
+        let optional = Command::builder("Optional").action({
+            let optional_seen = Rc::clone(&optional_seen);
+            move |selection: Option<TextSelection>| {
+                *optional_seen.borrow_mut() = selection.is_some();
+            }
+        });
+        // Selects a byte range of the live text — `Observe` proves it lands.
+        let mark =
+            Command::builder("Mark").action(|selection: TextSelection| selection.select(3..7));
+        // Replaces whatever the selection covers when the command fires.
+        let wrap_fired = Rc::new(RefCell::new(None));
+        let wrap = Command::builder("Wrap").action({
+            let wrap_fired = Rc::clone(&wrap_fired);
+            move |selection: TextSelection| {
+                let range = selection.range();
+                *wrap_fired.borrow_mut() = Some(range);
+                selection.replace("《");
+            }
+        });
+        let styled = Command::builder("Styled").action(|selection: TextSelection| {
+            selection
+                .styled_value()
+                .expect("a plain field answers styled_value")
+                .set(StyledStr::plain("ZZ"));
+        });
+        let off = Command::builder("Off").action(|| {}).disabled(true);
+
+        let mount = resolve::render(TextField::new("Name", &value).selection_menu(vec![
+            MenuItem::Command(observe),
+            MenuItem::Command(optional),
+            MenuItem::Command(mark),
+            MenuItem::Command(wrap),
+            MenuItem::Command(styled),
+            MenuItem::Command(off),
+        ]));
+        let window = leaf::attach(mtm, mount.view());
+        let field_view =
+            find::<KitTextField>(mount.view()).expect("the leaf mounts a kit TextField");
+        let field = field_view
+            .downcast::<KitTextField>()
+            .expect("the found view is the kit TextField");
+        assert!(field.begin_editing(), "the field never began editing");
+        let editor = field.field_editor().expect("the field editor is live");
+
+        // UTF-16 units: h=1 é=1 😀=2 b=1 — 😀 spans units 2..4, bytes 3..7.
+        field.set_selected_range(NSRange::new(2, 2));
+        let menu = edit_menu(&window, &editor);
+
+        // The platform's own rows survive the custom append.
+        assert!(
+            menu.numberOfItems() > 6,
+            "the standard edit rows were replaced rather than kept"
+        );
+        for title in ["Observe", "Optional", "Mark", "Wrap", "Styled", "Off"] {
+            assert!(
+                menu.itemWithTitle(&NSString::from_str(title)).is_some(),
+                "the {title} row is missing from the editor's menu"
+            );
+        }
+
+        // The selection moved after the menu was built: a command reads
+        // the live range when it fires, not the built-over range.
+        field.set_selected_range(NSRange::new(0, 2));
+        perform(&menu, "Observe");
+        let (text, start, end) = observed.borrow().clone();
+        assert_eq!((text.as_str(), start, end), ("hé😀b", 0, 3));
+
+        perform(&menu, "Optional");
+        assert!(
+            *optional_seen.borrow(),
+            "Option<TextSelection> did not extract the live selection"
+        );
+
+        // A disabled command renders a disabled row.
+        let off_item = menu
+            .itemWithTitle(&NSString::from_str("Off"))
+            .expect("the Off row");
+        assert!(!off_item.isEnabled(), "a disabled command is not disabled");
+
+        // `Mark` selects  😀 (bytes 3..7 → UTF-16 2..4).
+
+        perform(&menu, "Mark");
+        assert_eq!(
+            field.selected_range(),
+            Some(NSRange::new(2, 2)),
+            "Mark selected 😀 through the command"
+        );
+
+        // `replace` edits through the native path: the field, the value
+        // binding and the caret all reflect it.
+        perform(&menu, "Wrap");
+        assert_eq!(field.string(), "hé《b");
+        assert_eq!(
+            value.snapshot(),
+            Str::from("hé《b"),
+            "the native edit wrote through to the value binding"
+        );
+        assert_eq!(
+            field.selected_range(),
+            Some(NSRange::new(3, 0)),
+            "the caret lands after the inserted text"
+        );
+
+        undo_and_normalization_roundtrip(&field, &value, &editor);
+
+        // `styled_value` is the field's value binding: writing it lands on
+        // `value` and the field shows the pushed text.
+        perform(&menu, "Styled");
+        assert_eq!(value.snapshot(), Str::from("ZZ"));
+        assert_eq!(field.string(), "ZZ");
+
+        window.close();
     }
 }

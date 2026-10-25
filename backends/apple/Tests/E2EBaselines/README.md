@@ -1,60 +1,80 @@
 # E2E screenshot baselines
 
-Each e2e run (`apple-e2e.yml`, invoked by the repository's Nightly) builds
-and launches every runnable example on an iOS simulator and on macOS,
-captures the first settled screen, and verifies it: non-blank always, and —
-where a baseline exists — compared against the recorded reference capture
-with the shared comparator's per-channel tolerance and diff budget. No
-baseline image is committed to this repository: generated binary captures do
-not belong in source history. A reviewed capture becomes the comparison
-input through the pinned-generator flow (a record run pins the generator's
-source commit, runtime and inputs, and the reference is regenerated at
-comparison time); until that lands, the `<platform>/<example>.png` baselines
-simply do not exist and the pixel step reports "no baseline yet" rather than
-pretending coverage.
+The Apple E2E suites capture WaterUI examples on iOS and macOS. Registered
+SwiftUI twins are captured on the same runner. Original captures, comparison
+JSON and FLIP heatmaps remain available as run artifacts for whole-image
+visual review. A passing score does not establish that the UI is correct.
 
-- `ios/` and `macos/` — marker files only, never captures:
-- `<example>.skip` — an empty marker declaring a first screen that cannot
-  be made deterministic (continuous animation, live media). The capture
-  takes exactly one supervised frame after the first-paint marker rather
-  than spending the settle budget asking for stability the example cannot
-  produce; the launch and non-blank checks still apply, and pixel
-  comparison is skipped.
-- `<example>.visual` — the semantic class for output that is not
-  pixel-stable by construction (GPU-rendered, e.g. `filter`). Never
-  pixel-compared: the WaterUI capture — and the SwiftUI twin capture where a
-  twin is registered — ship as artifacts for human review, and the report
-  prints `VISUAL REVIEW REQUIRED`. Launch and non-blank checks still gate.
-- `<example>.parity-skip` — an empty marker that skips the SwiftUI parity
-  comparison for an example with a registered twin while a known divergence
-  is worked down.
+The comparer is the `compare-screenshots` binary in `cherenkov-oracle`, enabled
+by `apple-screenshots` on ARM64 macOS. Image I/O and CoreGraphics decode PNGs
+into premultiplied extended linear Display P3. Wide gamut, HDR and 16-bit
+precision are preserved. Invalid PNG metadata, unsupported ICC profiles,
+incomplete images and mismatched dimensions are errors, not visual differences.
 
-## SwiftUI parity
+## Comparison limits
 
-Examples with a twin registered in `backends/apple/Tests/E2EReference` are
-additionally compared against the twin rendered live by the reference host
-on the same runner — the backend must stay pixel-faithful to what SwiftUI
-produces for the same layout. Parity compares a bounded *fraction* of
-differing pixels, never an exact-pixel requirement, so GPU-rendered examples
-stay on the visual path. `parity-budgets.json`
-holds the allowed diff fraction per platform per twin; twins absent from the
-file are held to the strict default (2%). Recorded budgets are the measured
-divergence plus headroom — raise them only alongside a filed issue for the
-divergence they bless.
+Comparisons use the oracle's FLIP implementation: LDR-FLIP for SDR inputs and
+HDR-FLIP when either input requires it. FLIP compares transparent inputs over
+black and white and retains the larger per-pixel error. The separate maximum
+local error uses the oracle's 3x3 box-filtered premultiplied RGBA comparison.
+
+All three limits must pass. The shared defaults are `flip_mean: 0.006`,
+`flip_max: 0.15` and `max_local_error: 0.09`, from the oracle's constants.
+Frame settling and stored-baseline comparisons always use these defaults.
+Only SwiftUI parity reads reviewed overrides from `parity-budgets.json`, or
+from the file selected by `FLIP_TOLERANCES`.
+
+An override is an object containing all three fields, grouped by platform and
+example. An `ios@27` entry takes precedence over `ios`; missing entries use
+the shared defaults. The file currently contains no exceptions. Every entry
+is validated, including unused entries. Old changed-pixel fractions are
+rejected rather than reinterpreted as FLIP limits. There are no bottom-band
+masks or automatic platform-flake exemptions.
+
+## Capture paths
+
+No baseline image is committed here. A stored-baseline comparison runs only
+when `<platform>/<example>.png` has been supplied; otherwise the report says
+that no baseline is available and requests visual review.
+
+- `<example>.skip` declares a continuously changing first screen. It takes
+  one supervised capture after first paint instead of waiting for settling.
+  Launch and PNG decoding still gate; comparison is skipped.
+- `<example>.visual` keeps the WaterUI capture and registered SwiftUI twin
+  for visual review without a numerical parity gate.
+- `<example>.parity-skip` skips the twin comparison while a known divergence
+  is being resolved.
+
+These markers do not establish visual correctness. Inspect the whole capture,
+not only the heatmap or a selected region.
 
 ## Recording
 
-Baselines are recorded on CI, not locally: window metrics, scale factors, and
-OS rendering all differ across machines, so a locally recorded baseline fails
-on the runner. Dispatch the `Apple E2E Suite` workflow with
-`record_baselines: true`; the run uploads its captures as `e2e-baselines-*`
-artifacts for review and the `publish-baselines` job merges the text
-manifests (parity budgets, the package-size measurement) into a PR against
-`dev`. How a reviewed capture becomes a committed reference input without
-committing the image itself is the pending generator design.
+Dispatch the Apple E2E suite with `record_baselines: true` to retain captures
+and comparison reports. Record mode reports the actual metrics, limits and
+`within_tolerance` result even when it exits successfully. Decode and other
+operational failures still fail the run. Recording never raises acceptance
+limits. The publish job updates release measurements; images and FLIP reports
+remain review artifacts, not automatically accepted references.
 
-## Tuning
+## Manual comparison
 
-`run-e2e-shard.sh` accepts `DIFF_TOLERANCE` (per-channel delta, default 16/255)
-and `DIFF_BUDGET` (fraction of pixels allowed to differ, default 0.02), both
-read by `compare-screenshots.swift`.
+Use the existing captures as inputs:
+
+```sh
+cargo run --locked -p cherenkov-oracle --features apple-screenshots \
+  --bin compare-screenshots -- compare \
+  ios-reminders-ref.png ios-reminders.png ios-reminders-heatmap.png \
+  --platform ios --example reminders
+```
+
+Shared-default comparisons may omit an unknown OS version; JSON records
+`os_major: null`. Supplying `--tolerances` requires an explicit `--os-major`
+so versioned overrides cannot be selected from guessed metadata. CI derives
+that version from the running platform.
+
+Gate mode exits 0 within limits, 1 outside them, and 2 for operational errors.
+`--record` changes a completed comparison's exit status, not its limits or
+reported acceptance. `check IMAGE` validates PNG decoding only; a legal
+uniform image is not rejected as blank. Every result still requires visual
+review.

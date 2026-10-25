@@ -461,13 +461,24 @@ fn lower_draw<B>(
     Ok(())
 }
 
+/// Apply a frame's root scroll to an already-lowered transform.
+#[must_use]
+pub fn scrolled(transform: Affine, scroll: Option<Affine>) -> Affine {
+    scroll.map_or(transform, |scroll| scroll * transform)
+}
+
 /// Replays a [`Lowered`] op list into a `VelloLikeCtx` — the timed
 /// `encode` of `vello-cpu` and `vello-hybrid` is exactly this loop: the
 /// engine's recording calls, nothing else.
-pub fn replay<C: VelloLikeCtx>(ctx: &mut C, lowered: &Lowered<PaintType>, counters: &mut Counters) {
+pub fn replay<C: VelloLikeCtx>(
+    ctx: &mut C,
+    lowered: &Lowered<PaintType>,
+    counters: &mut Counters,
+    scroll: Option<Affine>,
+) {
     counters.layers = lowered.layers;
     for op in &lowered.ops {
-        replay_op(ctx, op, counters);
+        replay_op(ctx, op, counters, scroll);
     }
 }
 
@@ -475,7 +486,12 @@ pub fn replay<C: VelloLikeCtx>(ctx: &mut C, lowered: &Lowered<PaintType>, counte
     clippy::cast_possible_truncation,
     reason = "vello blurred-rrect radii are f32 at the engine boundary; scene geometry is f64"
 )]
-fn replay_op<C: VelloLikeCtx>(ctx: &mut C, op: &Op<PaintType>, counters: &mut Counters) {
+fn replay_op<C: VelloLikeCtx>(
+    ctx: &mut C,
+    op: &Op<PaintType>,
+    counters: &mut Counters,
+    scroll: Option<Affine>,
+) {
     match op {
         Op::PushLayer {
             transform,
@@ -483,7 +499,7 @@ fn replay_op<C: VelloLikeCtx>(ctx: &mut C, op: &Op<PaintType>, counters: &mut Co
             blend,
             opacity,
         } => {
-            ctx.set_transform(*transform);
+            ctx.set_transform(scrolled(*transform, scroll));
             ctx.push_layer(clip.as_ref(), Some(*blend), Some(*opacity));
         }
         Op::PopLayer => ctx.pop_layer(),
@@ -495,7 +511,7 @@ fn replay_op<C: VelloLikeCtx>(ctx: &mut C, op: &Op<PaintType>, counters: &mut Co
             path,
         } => {
             counters.draw_commands += 1;
-            ctx.set_transform(*transform);
+            ctx.set_transform(scrolled(*transform, scroll));
             ctx.set_fill_rule(*rule);
             apply_paint(ctx, paint, *paint_transform);
             ctx.fill_path(path);
@@ -508,7 +524,7 @@ fn replay_op<C: VelloLikeCtx>(ctx: &mut C, op: &Op<PaintType>, counters: &mut Co
             path,
         } => {
             counters.draw_commands += 1;
-            ctx.set_transform(*transform);
+            ctx.set_transform(scrolled(*transform, scroll));
             ctx.set_fill_rule(Fill::NonZero);
             ctx.set_stroke(stroke.clone());
             apply_paint(ctx, paint, *paint_transform);
@@ -522,7 +538,7 @@ fn replay_op<C: VelloLikeCtx>(ctx: &mut C, op: &Op<PaintType>, counters: &mut Co
             ..
         } => {
             counters.draw_commands += 1;
-            ctx.set_transform(*transform);
+            ctx.set_transform(scrolled(*transform, scroll));
             ctx.set_fill_rule(Fill::NonZero);
             ctx.set_paint(paint.clone());
             ctx.set_paint_transform(*paint_transform);
@@ -539,7 +555,7 @@ fn replay_op<C: VelloLikeCtx>(ctx: &mut C, op: &Op<PaintType>, counters: &mut Co
             glyphs,
         } => {
             counters.draw_commands += 1;
-            ctx.set_transform(*transform);
+            ctx.set_transform(scrolled(*transform, scroll));
             apply_paint(ctx, paint, *paint_transform);
             ctx.draw_glyphs_fill(font, *size, coords, glyphs.clone());
         }
@@ -551,7 +567,7 @@ fn replay_op<C: VelloLikeCtx>(ctx: &mut C, op: &Op<PaintType>, counters: &mut Co
             color,
         } => {
             counters.draw_commands += 1;
-            ctx.set_transform(*transform);
+            ctx.set_transform(scrolled(*transform, scroll));
             ctx.set_paint(PaintType::Solid(*color));
             ctx.fill_blurred_rrect(rect, *radius as f32, *std_dev as f32);
         }
