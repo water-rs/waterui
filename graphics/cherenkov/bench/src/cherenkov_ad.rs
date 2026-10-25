@@ -8,7 +8,7 @@
 //! submissions inside [`cherenkov::Engine::render`] with `GpuConfig::timestamps` set.
 //!
 //! `CHERENKOV_SCRATCH_FORMAT=rgba8` selects `Rgba8Unorm` isolation targets
-//! (default `Rgba16Float`) to compare intermediate precision/bandwidth.
+//! or `rgba16` forces `Rgba16Float`. By default storage follows content.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -1727,7 +1727,13 @@ impl Cherenkov {
             timestamps: true,
             scratch_format: match std::env::var("CHERENKOV_SCRATCH_FORMAT").as_deref() {
                 Ok("rgba8") => ScratchFormat::Rgba8Unorm,
-                _ => ScratchFormat::LinearF16,
+                Ok("rgba16") => ScratchFormat::LinearF16,
+                Err(std::env::VarError::NotPresent) | Ok("content") => ScratchFormat::Content,
+                value => {
+                    return Err(BenchError::Gpu(format!(
+                        "invalid CHERENKOV_SCRATCH_FORMAT: {value:?}"
+                    )));
+                }
             },
             alloc_diag: alloc_diag.clone(),
             composition_diag: composition_diag.clone(),

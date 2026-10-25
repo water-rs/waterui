@@ -2806,7 +2806,10 @@ impl SystemPlanes for LayerPlanes {
             return Ok((super::Presentation::Pending, None));
         }
         let mut frames = Vec::with_capacity(c.parts.len());
-        for (part, target) in c.parts.iter().zip(&self.parts) {
+        for (part, target) in c.parts.iter().zip(&mut self.parts) {
+            target
+                .content(c.device, part.range)
+                .map_err(|error| RenderError::Render(error.to_string()))?;
             let Some(frame) =
                 c.presenter
                     .prepare(c.device, c.queue, target, part.view, c.display.headroom)?

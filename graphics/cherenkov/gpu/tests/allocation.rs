@@ -499,3 +499,59 @@ fn small_big_small_with_work_in_flight() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 }
+
+split_test! {
+fn isolation_storage_follows_content_changes_and_releases_old_bindings() -> Result<(), Box<dyn std::error::Error>> {
+    let sink = Sink::default();
+    let engine = wait!(diag_engine(&sink))?;
+    // This supported high-precision output cannot use the f16 native epoch.
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {}))?;
+    let reference_sink = Sink::default();
+    let reference = wait!(Engine::<Gpu>::new(GpuConfig {
+        scratch_format: cherenkov_gpu::ScratchFormat::LinearF16,
+        alloc_diag: Some(reference_sink.clone()),
+        ..GpuConfig::default()
+    }))?;
+    let reference_surface = wait!(reference.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {}))?;
+    let layer = surface.layer();
+    let reference_layer = reference_surface.layer();
+    for (target, child) in [(&surface, &layer), (&reference_surface, &reference_layer)] {
+        target.update(|tx| {
+            tx[child].opacity(0.5f32);
+            tx[target.root()].push(child);
+        });
+    }
+    let mut float_bytes = None;
+    for (step, (red, ratio)) in [(0.3, 2), (2.0, 1), (0.3, 2)].into_iter().enumerate() {
+        for (target, child) in [(&surface, &layer), (&reference_surface, &reference_layer)] {
+            target.update(|tx| {
+                tx[child].content(target.record(|canvas| {
+                    canvas.fill(Rect::new(8., 8., 40., 40.), WorkingColor::new([red, 0.1, 0.05, 1.0]));
+                    canvas.fill(Rect::new(24., 24., 56., 56.), WorkingColor::new([0.05, 0.1, 0.3, 1.0]));
+                }));
+            });
+        }
+        let _ = sink.take();
+        wait!(engine.render(FrameTime::now()))?;
+        let events = sink.take();
+        let allocated = grows(&events, "isolation scratch");
+        assert_eq!(allocated.len(), 1);
+        if step > 0 {
+            assert!(bind_drops(&events).iter().any(|(count, reason)| *count > 0 && *reason == "scratch regen"));
+        }
+        wait!(reference.render(FrameTime::now()))?;
+        let reference_growth = grows(&reference_sink.take(), "isolation scratch");
+        if step == 0 {
+            assert_eq!(reference_growth.len(), 1);
+            float_bytes = Some(reference_growth[0]);
+        } else {
+            assert_eq!(reference_growth, [] as [u64; 0]);
+        }
+        assert_eq!(allocated[0] * ratio, float_bytes.expect("initial f16 allocation"));
+        let actual = wait!(surface.readback())?;
+        let expected = wait!(reference_surface.readback())?;
+        assert_images_match(&crop(&expected, 0..64, 0..64), &crop(&actual, 0..64, 0..64));
+    }
+    Ok(())
+}
+}

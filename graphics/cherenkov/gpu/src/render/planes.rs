@@ -1048,7 +1048,6 @@ pub struct Plane<'a> {
 )]
 pub struct Part<'a> {
     /// Prepared content range, excluding promoted content.
-    #[cfg(target_os = "android")]
     pub range: super::present::ColorRange,
     /// The engine texture holding the part.
     pub view: &'a wgpu::TextureView,

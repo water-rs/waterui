@@ -51,7 +51,8 @@ fn exported_texture_preserves_hdr_and_updates_after_resize()
         }),
         ..GpuConfig::default()
     }))?;
-    let (target, textures) = TextureTarget::new((16, 16));
+    let (mut target, textures) = TextureTarget::new((16, 16));
+    let ranges = target.content_ranges();
     let source = wait!(engine.surface(target, || {}))?;
     source.clear_color(WorkingColor::new([4.0, 0.5, 0.0, 0.5]));
     let texture = textures.try_recv()?;
@@ -59,6 +60,7 @@ fn exported_texture_preserves_hdr_and_updates_after_resize()
     let destination = wait!(engine.surface(target, || {}))?;
     let output = destinations.try_recv()?;
     wait!(engine.render(FrameTime::now()))?;
+    assert_eq!(ranges.try_recv()?, cherenkov_gpu::interop::ColorRange::HighDynamicRange);
     let delivery = shader_delivery(backend, &device)?;
     let mut presenter = Presenter::new(&device, delivery);
     presenter.texture(
@@ -91,6 +93,7 @@ fn exported_texture_preserves_hdr_and_updates_after_resize()
     assert!(pixel[0] > 1.0, "extended output keeps HDR range: {pixel:?}");
     source.clear_color(WorkingColor::new([1.0, 1.0, 1.0, 0.5]));
     wait!(engine.render(FrameTime::now()))?;
+    assert_eq!(ranges.try_recv()?, cherenkov_gpu::interop::ColorRange::WideGamut);
     presenter.texture(
         &device,
         &queue,
@@ -111,6 +114,9 @@ fn exported_texture_preserves_hdr_and_updates_after_resize()
     }
     source.resize((8, 4))?;
     wait!(engine.render(FrameTime::now()))?;
+    assert!(ranges.try_recv().is_err(), "unchanged range does not notify on resize");
+    wait!(engine.render(FrameTime::now()))?;
+    assert!(ranges.try_recv().is_err(), "stable frame does not notify");
     let resized = textures.try_recv()?;
     assert_eq!((resized.width(), resized.height()), (8, 4));
     assert_eq!(
