@@ -135,7 +135,7 @@ impl Cache {
             self.samples.clear();
             self.samples.extend(samples());
             if !changed {
-                plan.update_placement(frame, limits);
+                plan.update_placement(frame, formats, limits);
             }
         }
         changed

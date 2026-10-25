@@ -173,8 +173,11 @@ pub enum TimestampSupport {
 /// frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ScratchFormat {
-    /// `Rgba16Float`: linear, no banding, 8 bytes per texel.
+    /// Choose compact encoded SDR storage per image; retain float storage for
+    /// extended-range content, filters and native tile outputs.
     #[default]
+    Content,
+    /// `Rgba16Float`: linear, no banding, 8 bytes per texel.
     LinearF16,
     /// `Rgba8Unorm`: half the bandwidth, 8-bit precision; intermediate
     /// results are clamped to `0..=1`.
@@ -213,7 +216,7 @@ pub struct GpuConfig {
     /// pipeline set is persisted at this path, best effort.
     pub pipeline_cache: Option<PathBuf>,
     /// The isolation (scratch) texture format. Defaults to
-    /// [`ScratchFormat::LinearF16`].
+    /// [`ScratchFormat::Content`].
     pub scratch_format: ScratchFormat,
     /// When set, the renderer records an allocation-event trace into
     /// this sink. Diagnostics only; the per-event allocator snapshot is

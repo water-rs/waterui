@@ -42,6 +42,7 @@ fn limits(slots: u8) -> Limits {
 /// A working-format surface with isolation scratches in `scratch`.
 const fn formats(scratch: wgpu::TextureFormat) -> Formats {
     Formats {
+        content: false,
         surface: wgpu::TextureFormat::Rgba16Float,
         scratch,
     }
@@ -631,5 +632,58 @@ fn cached_content_range_changes_propagate_through_nested_images() {
     assert_eq!(
         plan.images[plan.targets[3].0].color_range,
         ColorRange::WideGamut
+    );
+}
+
+#[test]
+fn content_storage_reuses_only_dead_images_of_the_same_format() {
+    use crate::render::present::ColorRange;
+    let mut frame = frame(vec![
+        pass(Target::Part(0), true, None, 0),
+        pass(Target::Scratch(0), true, None, 1),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 2),
+        pass(Target::Scratch(0), true, None, 3),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 4),
+        pass(Target::Scratch(0), true, None, 5),
+        pass(Target::Scratch(1), true, None, 6),
+        pass(Target::Scratch(0), false, Some(Source::Scratch(1)), 7),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 8),
+    ]);
+    frame.passes[3].color_range = ColorRange::HighDynamicRange;
+    let formats = Formats {
+        content: true,
+        ..formats(wgpu::TextureFormat::Rgba16Float)
+    };
+    let mut plan = ExecutionPlan::build(&frame, formats, Err(Materialization::NoExecutor));
+    let slot =
+        |plan: &ExecutionPlan, index: usize| plan.images[plan.targets[index].0].backing.unwrap();
+    assert_eq!(slot(&plan, 1), slot(&plan, 5));
+    assert_ne!(slot(&plan, 1), slot(&plan, 3));
+    assert_ne!(slot(&plan, 5), slot(&plan, 6));
+    assert_eq!(plan.scratch.len(), 3);
+    assert_eq!(
+        plan.scratch[slot(&plan, 1)].format,
+        wgpu::TextureFormat::Rgba8UnormSrgb
+    );
+    assert_eq!(
+        plan.scratch[slot(&plan, 3)].format,
+        wgpu::TextureFormat::Rgba16Float
+    );
+    assert_eq!(plan.scratch_slot(4, Target::Scratch(0)), slot(&plan, 3));
+    frame.passes[1].color_range = ColorRange::HighDynamicRange;
+    plan.update_placement(&frame, formats, Err(Materialization::NoExecutor));
+    assert_eq!(slot(&plan, 1), slot(&plan, 3));
+    assert_eq!(
+        plan.scratch[slot(&plan, 1)].format,
+        wgpu::TextureFormat::Rgba16Float
+    );
+
+    let plan = ExecutionPlan::build(&frame, formats, Ok(limits(4)));
+    assert!(plan.scratch.is_empty());
+    assert!(
+        plan.images
+            .iter()
+            .filter(|image| matches!(image.target, Target::Scratch(_)))
+            .all(|image| image.storage == Storage::OnChip && image.backing.is_none())
     );
 }
