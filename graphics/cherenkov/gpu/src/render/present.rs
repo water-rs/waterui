@@ -923,8 +923,7 @@ impl WindowSurface {
         range: ColorRange,
     ) -> Result<(), SurfaceError> {
         if self.request.color_space == ColorSpaceRequest::Content && range > self.content_range {
-            self.content_range = range;
-            self.reselect(&self.adapter.clone(), device)?;
+            self.reselect_content(&self.adapter.clone(), device, range)?;
         }
         Ok(())
     }
@@ -949,9 +948,18 @@ impl WindowSurface {
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
     ) -> Result<(), SurfaceError> {
+        self.reselect_content(adapter, device, self.content_range)
+    }
+
+    fn reselect_content(
+        &mut self,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        range: ColorRange,
+    ) -> Result<(), SurfaceError> {
         let caps = self.surface.get_capabilities(adapter);
-        let mut selection =
-            select_content_output(&caps, self.backend, self.request, self.content_range)?;
+        let mut selection = select_content_output(&caps, self.backend, self.request, range)?;
+        self.content_range = range;
         if self.backend != wgpu::Backend::Metal {
             selection.reported_headroom =
                 self.surface.display_hdr_info(adapter).tone_map_headroom();
