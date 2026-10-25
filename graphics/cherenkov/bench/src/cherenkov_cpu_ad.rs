@@ -1398,6 +1398,9 @@ impl Engine for Cherenkov {
     }
 
     fn prepare(&mut self, input: &EncodeInput<'_>) -> Result<(), BenchError> {
+        // The retained scene's command counts do not change with its frame.
+        self.counters = Counters::default();
+        convert::count_layer(&input.scene.root, &mut self.counters);
         convert::check_features(Self::NAME, input.scene, &cherenkov_features(), |f| {
             convert::missing_api(&FRONT, f)
         })?;
@@ -1488,8 +1491,6 @@ impl Engine for Cherenkov {
     }
 
     fn encode(&mut self, input: &EncodeInput<'_>) -> Result<(), BenchError> {
-        self.counters = Counters::default();
-        convert::count_layer(&input.scene.root, &mut self.counters);
         let surface = self
             .surface
             .as_ref()
