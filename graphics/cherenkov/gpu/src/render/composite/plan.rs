@@ -819,7 +819,6 @@ impl ExecutionPlan {
         self.native.get(pass).copied().flatten()
     }
 
-    #[cfg(any(unix, test))]
     pub fn epoch_at(&self, pass: usize) -> Option<&TileEpoch> {
         self.native_segment(pass)
             .and_then(|index| match &self.segments[index] {
