@@ -480,19 +480,12 @@ pub trait Engine {
     fn finish_gpu(&mut self) -> Result<Vec<GpuSample>, BenchError> {
         Ok(Vec::new())
     }
-    /// Blocks until the GPU has finished every submission so far, so a
-    /// GPU-wide reading taken next covers whole frames
-    /// (`measure --gpu-counters`).
+    /// Wait for submitted rendering to complete without collecting GPU timestamps.
+    /// CPU adapters whose submit completes rendering return immediately.
     ///
     /// # Errors
-    /// [`BenchError::Engine`] for an adapter that cannot wait on its GPU,
-    /// or a GPU failure while waiting.
-    fn wait_idle(&mut self) -> Result<(), BenchError> {
-        Err(BenchError::Engine(format!(
-            "{} cannot wait for its GPU to go idle",
-            self.info().name
-        )))
-    }
+    /// [`BenchError`] when rendering completion fails.
+    fn wait_idle(&mut self) -> Result<(), BenchError>;
     /// Explicitly retires what the backend can release outside a frame
     /// (scratch targets, backdrops, caches) and returns once the
     /// retirement is processed. The report's post-retirement snapshot
