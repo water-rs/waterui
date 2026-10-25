@@ -39,6 +39,14 @@ pub struct FontData {
     /// the placement. Interior mutability, not shared: parallel lowering
     /// works on a per-thread snapshot.
     pub colr: std::cell::RefCell<FxHashMap<(u32, u64, u64), cherenkov::Picture>>,
+    /// Font-space bounds for glyphs used at non-default variation locations.
+    bounds: std::cell::RefCell<Vec<InstanceBounds>>,
+}
+
+#[derive(Clone)]
+struct InstanceBounds {
+    coords: Arc<[i16]>,
+    glyphs: Vec<(u32, Option<kurbo::Rect>)>,
 }
 
 /// A font validated on the caller thread by `Renderer::prepare_font`:
@@ -60,6 +68,7 @@ impl From<PreparedFont> for FontData {
             has_bitmap: font.bitmap.is_some(),
             bitmap: font.bitmap,
             colr: std::cell::RefCell::new(FxHashMap::default()),
+            bounds: std::cell::RefCell::default(),
         }
     }
 }
@@ -76,6 +85,39 @@ impl FontData {
             has_bitmap: self.has_bitmap,
             bitmap: self.bitmap.clone(),
             colr: std::cell::RefCell::new(self.colr.borrow().clone()),
+            bounds: std::cell::RefCell::new(self.bounds.borrow().clone()),
+        }
+    }
+
+    pub fn bounds_bytes(&self) -> u64 {
+        let instances = self.bounds.borrow();
+        (instances.capacity() * size_of::<InstanceBounds>()
+            + instances
+                .iter()
+                .map(|instance| {
+                    size_of_val(instance.coords.as_ref())
+                        + instance.glyphs.capacity() * size_of::<(u32, Option<kurbo::Rect>)>()
+                })
+                .sum::<usize>()) as u64
+    }
+
+    pub fn clear_bounds(&self) {
+        *self.bounds.borrow_mut() = Vec::new();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn merge_bounds(&self, other: Self) {
+        let mut instances = self.bounds.borrow_mut();
+        for incoming in other.bounds.into_inner() {
+            if let Some(existing) = instances.iter_mut().find(|i| i.coords == incoming.coords) {
+                for (id, bounds) in incoming.glyphs {
+                    if let Err(index) = existing.glyphs.binary_search_by_key(&id, |entry| entry.0) {
+                        existing.glyphs.insert(index, (id, bounds));
+                    }
+                }
+            } else {
+                instances.push(incoming);
+            }
         }
     }
 }
@@ -3079,21 +3121,48 @@ pub fn run_bounds(font: &FontData, run: &cherenkov::GlyphRun) -> Result<kurbo::R
         skrifa::instance::Size::unscaled(),
         skrifa::instance::LocationRef::new(&coords),
     );
+    let mut instances = font.bounds.borrow_mut();
+    let index = instances
+        .iter()
+        .position(|instance| instance.coords == run.coords)
+        .unwrap_or_else(|| {
+            instances.push(InstanceBounds {
+                coords: run.coords.clone(),
+                glyphs: Vec::new(),
+            });
+            instances.len() - 1
+        });
+    let cached = &mut instances[index].glyphs;
     let mut bounds = None::<kurbo::Rect>;
     for glyph in run.glyphs.iter() {
-        let Some(b) = metrics.bounds(skrifa::GlyphId::new(glyph.id)) else {
+        let b = match cached.binary_search_by_key(&glyph.id, |entry| entry.0) {
+            Ok(index) => cached[index].1,
+            Err(index) => {
+                let bounds = metrics.bounds(skrifa::GlyphId::new(glyph.id)).map(|b| {
+                    kurbo::Rect::new(
+                        f64::from(b.x_min),
+                        f64::from(b.y_min),
+                        f64::from(b.x_max),
+                        f64::from(b.y_max),
+                    )
+                });
+                cached.insert(index, (glyph.id, bounds));
+                bounds
+            }
+        };
+        let Some(b) = b else {
             continue;
         };
-        if b.x_min >= b.x_max || b.y_min >= b.y_max {
+        if b.is_zero_area() {
             continue;
         }
         let x = f64::from(glyph.x);
         let y = f64::from(glyph.y);
         let b = kurbo::Rect::new(
-            f64::from(b.x_min).mul_add(scale, x),
-            f64::from(b.y_max).mul_add(-scale, y),
-            f64::from(b.x_max).mul_add(scale, x),
-            f64::from(b.y_min).mul_add(-scale, y),
+            b.x0.mul_add(scale, x),
+            b.y1.mul_add(-scale, y),
+            b.x1.mul_add(scale, x),
+            b.y0.mul_add(-scale, y),
         );
         bounds = Some(bounds.map_or(b, |bounds| bounds.union(b)));
     }
@@ -3255,6 +3324,7 @@ mod tests {
             has_bitmap: false,
             bitmap: None,
             colr: std::cell::RefCell::new(FxHashMap::default()),
+            bounds: std::cell::RefCell::default(),
         };
         let key = |glyph: u32| GlyphKey {
             font: 7,
