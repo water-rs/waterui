@@ -267,7 +267,7 @@ mod macos {
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
                 .expect("a Metal adapter");
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: wgpu::Features::PASSTHROUGH_SHADERS,
+            required_features: wgpu::Features::PASSTHROUGH_SHADERS | wgpu::Features::SHADER_F16,
             ..wgpu::DeviceDescriptor::default()
         }))
         .expect("a Metal device");

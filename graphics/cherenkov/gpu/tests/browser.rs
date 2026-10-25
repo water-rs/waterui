@@ -83,7 +83,10 @@ async fn local_producers_share_device_and_preserve_wakes_during_await() {
         .await
         .expect("WebGPU adapter required");
     let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor::default())
+        .request_device(&wgpu::DeviceDescriptor {
+            required_features: wgpu::Features::SHADER_F16,
+            ..wgpu::DeviceDescriptor::default()
+        })
         .await
         .expect("WebGPU device");
     let engine = Engine::<Gpu>::new(GpuConfig {
@@ -486,7 +489,10 @@ async fn shared_engine() -> (wgpu::Device, wgpu::Queue, Engine<Gpu>) {
         .await
         .expect("WebGPU adapter required");
     let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor::default())
+        .request_device(&wgpu::DeviceDescriptor {
+            required_features: wgpu::Features::SHADER_F16,
+            ..wgpu::DeviceDescriptor::default()
+        })
         .await
         .expect("WebGPU device");
     let engine = Engine::<Gpu>::new(GpuConfig {

@@ -437,7 +437,7 @@ fn paint_mesh(first: u32, count: u32, point: vec2<f32>, smooth_color: bool) -> v
     return vec4<f32>(0.0);
 }
 
-fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: vec2<f32>) -> vec4<f32> {
+fn paint(i: u32, meta_: vec4<u32>, color: Color, local: vec2<f32>, device: vec2<f32>) -> vec4<f32> {
     let kind = meta_.y & 0xffffu;
     var point = local;
     if (meta_.y & 0x10000u) != 0u {
@@ -455,7 +455,7 @@ fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: v
     // long-gradient-stub
     switch kind {
         case PAINT_SOLID: {
-            return vec4<f32>(color.rgb * color.a, color.a);
+            return vec4<f32>(color);
         }
         case PAINT_TEXTURE: {
             // `grad.xy` carries the source region's device-space origin.
@@ -770,7 +770,7 @@ fn fs_simple(in: VsOut, classified: bool) -> vec4<f32> {
         }
     }
     cov = clamp(cov, 0.0, 1.0) * in.params.y;
-    return move_space(vec4<f32>(in.color.rgb * in.color.a, in.color.a) * cov, SPACE_LINEAR, globals.space);
+    return move_space(vec4<f32>(in.color * ColorScalar(cov)), SPACE_LINEAR, globals.space);
 }
 
 // Retained path spans already describe full coverage. Their opacity is
@@ -782,7 +782,7 @@ fn opaque_span(inst: Instance) -> bool {
 
 struct OpaqueOut {
     @builtin(position) position: vec4<f32>,
-    @location(0) @interpolate(flat) color: vec3<f32>,
+    @location(0) @interpolate(flat) color: ColorRgb,
 }
 
 // Coverage replay needs only the original local/atlas coordinate, the
@@ -943,7 +943,7 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
 
 @fragment
 fn fs_opaque(in: OpaqueOut) -> @location(0) vec4<f32> {
-    return move_space(vec4<f32>(in.color, 1.0), SPACE_LINEAR, globals.space);
+    return move_space(vec4<f32>(vec3<f32>(in.color), 1.0), SPACE_LINEAR, globals.space);
 }
 
 @fragment
@@ -963,7 +963,7 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
     kind = in.cell_meta.x;
     // cell-buffer
     data.meta_.x = select(kind, KIND_GLYPH, kind == KIND_REGION);
-    data.color = inst.color;
+    data.color = premultiplied_color(inst.color);
     data.params.y = inst.params.y;
     if data.meta_.x != KIND_GLYPH && data.meta_.x != KIND_SPAN {
         data.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
@@ -986,7 +986,7 @@ fn fs_shadow(in: VsOut) -> vec4<f32> {
         cov = shadow(s, in.local, sigma);
     }
     cov = clamp(cov, 0.0, 1.0) * in.params.y;
-    return move_space(vec4<f32>(in.color.rgb * in.color.a, in.color.a) * cov, SPACE_LINEAR, globals.space);
+    return move_space(vec4<f32>(in.color * ColorScalar(cov)), SPACE_LINEAR, globals.space);
 }
 
 fn glyph_coverage(in: VsOut) -> f32 {
@@ -1128,7 +1128,7 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
     // LongGradient is selected only for linear, radial and sweep paints;
     // texture composites and backdrop effects cannot reach this module.
     if VARIANT == VARIANT_LONG_GRADIENT {
-        return move_space(paint(i, in.meta_, in.color, in.local, in.device) * cov, SPACE_LINEAR, globals.space);
+        return move_space(color_coverage(paint(i, in.meta_, in.color, in.local, in.device), cov), SPACE_LINEAR, globals.space);
     }
     // long-gradient-stub
     // A PAINT_TEXTURE instance samples a target texture: a plain member
@@ -1177,7 +1177,7 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
         }
         return move_space(paint_backdrop(i, in.device) * cov, tspace, globals.space);
     }
-    return move_space(paint(i, in.meta_, in.color, in.local, in.device) * cov, SPACE_LINEAR, globals.space);
+    return move_space(color_coverage(paint(i, in.meta_, in.color, in.local, in.device), cov), SPACE_LINEAR, globals.space);
 }
 
 // full-fragment

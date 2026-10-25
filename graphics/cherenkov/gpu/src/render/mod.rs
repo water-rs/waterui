@@ -1289,7 +1289,7 @@ pub struct GpuRenderer {
     /// encode loop, so the module materializes in
     /// `prepare_lazy_pipelines`).
     #[cfg(target_arch = "wasm32")]
-    lazy_modules: FxHashMap<usize, shaders::EnginePrograms>,
+    lazy_modules: FxHashMap<(usize, usize), shaders::EnginePrograms>,
     /// The configured isolation texture format.
     scratch_format: wgpu::TextureFormat,
     layout0: wgpu::BindGroupLayout,
@@ -1622,6 +1622,15 @@ fn create_device(
     config: &GpuConfig,
 ) -> Result<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue), EngineError> {
     if let Some(shared) = &config.device {
+        if !shared
+            .device
+            .features()
+            .contains(wgpu::Features::SHADER_F16)
+        {
+            return Err(EngineError::Backend(
+                "the shared device lacks SHADER_F16".into(),
+            ));
+        }
         return Ok((
             shared.instance.clone(),
             shared.adapter.clone(),
@@ -1661,11 +1670,11 @@ fn create_device(
     tracing::debug!(limits = ?adapter.limits(), "adapter limits");
     // The float32 features are what an `Rgba32Float` offscreen surface
     // needs; a device without them rejects that surface by name.
-    let mut required = supported
-        & (image_storage::COMPRESSION_FEATURES
-            | wgpu::Features::INDIRECT_FIRST_INSTANCE
-            | wgpu::Features::SHADER_F16
-            | float32_target_features());
+    let mut required = wgpu::Features::SHADER_F16
+        | supported
+            & (image_storage::COMPRESSION_FEATURES
+                | wgpu::Features::INDIRECT_FIRST_INSTANCE
+                | float32_target_features());
     // The fixed engine shaders are precompiled (#57, #2726): Vulkan loads
     // SPIR-V, Metal a metallib and DX12 DXIL through the passthrough API;
     // wgpu-hal advertises the feature unconditionally on all three.
@@ -1883,6 +1892,15 @@ async fn create_device(
     config: &GpuConfig,
 ) -> Result<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue), EngineError> {
     if let Some(shared) = &config.device {
+        if !shared
+            .device
+            .features()
+            .contains(wgpu::Features::SHADER_F16)
+        {
+            return Err(EngineError::Backend(
+                "the shared device lacks SHADER_F16".into(),
+            ));
+        }
         return Ok((
             shared.instance.clone(),
             shared.adapter.clone(),
@@ -1931,11 +1949,11 @@ async fn create_device(
     tracing::debug!(limits = ?adapter.limits(), "adapter limits");
     // The float32 features are what an `Rgba32Float` offscreen surface
     // needs; a device without them rejects that surface by name.
-    let mut required = supported
-        & (image_storage::COMPRESSION_FEATURES
-            | wgpu::Features::INDIRECT_FIRST_INSTANCE
-            | wgpu::Features::SHADER_F16
-            | float32_target_features());
+    let mut required = wgpu::Features::SHADER_F16
+        | supported
+            & (image_storage::COMPRESSION_FEATURES
+                | wgpu::Features::INDIRECT_FIRST_INSTANCE
+                | float32_target_features());
     // Pass-boundary timestamps are all Metal is asked for: Apple GPUs
     // advertise `TIMESTAMP_QUERY_INSIDE_ENCODERS` but sample only at
     // stage boundaries, so an encoder-level `write_timestamp` goes through
@@ -2480,7 +2498,7 @@ impl PipelineFactory<'_> {
     ) -> Result<wgpu::RenderPipeline, RenderError> {
         let module = self
             .delivery
-            .engine_programs(self.device, variant_index(variant));
+            .engine_programs(self.device, variant_index(variant), format);
         create_pipeline(
             self.device,
             self.config,
@@ -2718,8 +2736,9 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                 "vulkan on-chip composition"
             );
         }
-        let modules = core_pipelines_eager()
-            .then(|| EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_programs(&device, v)));
+        let modules = core_pipelines_eager().then(|| {
+            EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_programs(&device, v, WORKING_FORMAT))
+        });
         fire_probe(
             &config,
             CreationPhase::ShaderModules,
@@ -3100,7 +3119,8 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     // union module is not in this eager set. WebGPU keeps WGSL (#57).
     let shader_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let shader_delivery = shaders::delivery(info.backend, &device)?;
-    let modules = EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_programs(&device, v));
+    let modules =
+        EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_programs(&device, v, WORKING_FORMAT));
     if let Some(error) = shader_scope.pop().await {
         return Err(EngineError::Backend(error.to_string()));
     }
@@ -11582,8 +11602,14 @@ impl GpuRenderer {
         }
         let module = self
             .lazy_modules
-            .entry(variant)
-            .or_insert_with(|| self.shader_delivery.engine_programs(&self.device, variant));
+            .entry((variant, format_i))
+            .or_insert_with(|| {
+                self.shader_delivery.engine_programs(
+                    &self.device,
+                    variant,
+                    RENDER_FORMATS[format_i],
+                )
+            });
         *cell = Some(
             create_pipeline(
                 &self.device,
@@ -11616,10 +11642,13 @@ impl GpuRenderer {
         }
         let module = self
             .lazy_modules
-            .entry(variant_index(ShaderVariant::Simple))
+            .entry((variant_index(ShaderVariant::Simple), format_i))
             .or_insert_with(|| {
-                self.shader_delivery
-                    .engine_programs(&self.device, variant_index(ShaderVariant::Simple))
+                self.shader_delivery.engine_programs(
+                    &self.device,
+                    variant_index(ShaderVariant::Simple),
+                    RENDER_FORMATS[format_i],
+                )
             });
         for phase in [CoveragePhase::Opaque, CoveragePhase::Partial] {
             self.coverage_pipelines[format_i][0][phase as usize] = Some(

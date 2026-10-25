@@ -1,3 +1,18 @@
+// The build selects colour precision independently of geometry and coverage.
+alias Color = vec4<f32>;
+alias ColorRgb = vec3<f32>;
+alias ColorScalar = f32;
+
+// Premultiply before narrowing: a bright straight colour with a small alpha
+// can have a representable premultiplied value even when its RGB does not.
+fn premultiplied_color(color: vec4<f32>) -> Color {
+    return Color(vec4<f32>(color.rgb * color.a, color.a));
+}
+
+fn color_coverage(color: vec4<f32>, coverage: f32) -> vec4<f32> {
+    return vec4<f32>(Color(color) * ColorScalar(coverage));
+}
+
 // Shared engine module prelude: the instanced-quad machinery every fixed
 // pipeline builds on — instance layout, vertex stage, SDF coverage and the
 // clip/mask coverage helper. `build.rs` concatenates this file ahead of the
@@ -128,7 +143,7 @@ struct VsOut {
     @location(1) device: vec2<f32>,
     @location(2) @interpolate(flat) instance: u32,
     @location(3) @interpolate(flat) meta_: vec4<u32>,
-    @location(4) @interpolate(flat) color: vec4<f32>,
+    @location(4) @interpolate(flat) color: Color,
     @location(5) @interpolate(flat) params: vec4<f32>,
     // half.xy, aspect, exponent.
     @location(6) @interpolate(flat) shape_a: vec4<f32>,
@@ -292,7 +307,7 @@ fn instance_vertex(vi: u32, ii: u32, inst: Instance) -> VsOut {
     // Region metadata belongs to the opaque vertex stage. Sampled coverage
     // uses the original atlas-cell fragment path for both cell kinds.
     out.meta_.x = select(inst.meta_.x, KIND_GLYPH, inst.meta_.x == KIND_REGION);
-    out.color = inst.color;
+    out.color = premultiplied_color(inst.color);
     out.params = inst.params;
     out.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
     out.shape_radii = inst.shape.radii;
