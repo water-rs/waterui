@@ -1178,7 +1178,6 @@ fn same_linear(a: Affine, b: Affine) -> bool {
 
 /// Per-operation device output under its sampled placement.
 pub struct Emission {
-    color_range: super::present::ColorRange,
     /// The leaf's `(instance, pending raster, cell)` patches in the
     /// producing frame's `Lowering::emission_patches` (#119).
     pub(crate) pending_cells: PendingCells,
@@ -2552,9 +2551,16 @@ impl<'a> Lowering<'a> {
         self.finish_pass();
         let space = self.target_space(target);
         self.frame.open = Some(OpenPass {
-            color_range: clear.map_or(super::present::ColorRange::Standard, |color| {
-                super::content_range::working(color, 1.0)
-            }),
+            // Only scratch images choose storage from their drawn colors.
+            // Output parts are classified separately and projected images
+            // keep their explicit format. Their reads retain float precision.
+            color_range: if matches!(target, Target::Scratch(_)) {
+                clear.map_or(super::present::ColorRange::Standard, |color| {
+                    super::content_range::working(color, 1.0)
+                })
+            } else {
+                super::present::ColorRange::HighDynamicRange
+            },
             target,
             clear,
             space,
@@ -3145,6 +3151,11 @@ impl<'a> Lowering<'a> {
         let capture = self.capture_isolation;
         let draws = self.projective_draws;
         let part = self.part;
+        // This batch can become a scratch image even while drawing into
+        // an output part. Classify the batch independently of its parent.
+        if let Some(open) = &mut self.frame.open {
+            open.color_range = super::present::ColorRange::Standard;
+        }
         let result = body(self, glyphs);
         // The speculated level is translucent, and eligibility keeps every
         // ancestor of a promoted layer opaque: its body never crosses a
@@ -3158,6 +3169,9 @@ impl<'a> Lowering<'a> {
         let folds = result.is_ok() && self.projective_draws == draws;
         let new = &self.frame.instances[snap.instances..];
         if folds && self.frame.passes.len() == snap.passes && bboxes_disjoint(new) {
+            if let (Some(open), Some(parent)) = (&mut self.frame.open, &snap.open) {
+                open.color_range = open.color_range.max(parent.color_range);
+            }
             for inst in &mut self.frame.instances[snap.instances..] {
                 inst.params[1] *= opacity;
             }
@@ -4432,6 +4446,12 @@ impl<'a> Lowering<'a> {
         source: &cherenkov::DisplayList,
     ) -> Result<bool, RenderError> {
         let (_, op) = indexed;
+        if let Some(open) = &mut self.frame.open
+            && open.color_range != super::present::ColorRange::HighDynamicRange
+        {
+            let range = super::content_range::of_ops(std::slice::from_ref(op), glyphs.images);
+            open.color_range = open.color_range.max(range);
+        }
         let cover = self.shadow_cover(op, next);
         let hit = cache.valid
             && cache.data.as_mut().is_some_and(|e| {
@@ -4458,25 +4478,17 @@ impl<'a> Lowering<'a> {
                 cache.data.as_ref().expect("a retained leaf has data"),
                 storage,
             );
+            return Ok(replaced);
+        }
+        // GPU leaves retain like CPU leaves (water-rs/waterui#3081): the
+        // anchor instance and its coverage draw record live on the
+        // emission; the coverage entry itself survives by placement key.
+        if self.clip.is_some() {
+            self.realize_clipped_leaf(indexed, cover, cache, storage, glyphs, source)?;
         } else {
-            // GPU leaves retain like CPU leaves (water-rs/waterui#3081): the
-            // anchor instance and its coverage draw record live on the
-            // emission; the coverage entry itself survives by placement key.
-            if self.clip.is_some() {
-                self.realize_clipped_leaf(indexed, cover, cache, storage, glyphs, source)?;
-            } else {
-                self.realize_leaf(indexed, cover, cache, storage, glyphs, source)?;
-            }
+            self.realize_leaf(indexed, cover, cache, storage, glyphs, source)?;
         }
-        let range = cache
-            .data
-            .as_ref()
-            .expect("a realized leaf has data")
-            .color_range;
-        if let Some(open) = &mut self.frame.open {
-            open.color_range = open.color_range.max(range);
-        }
-        Ok(!hit)
+        Ok(true)
     }
 
     /// The automatic route's predicate (decisions R1 and R2): a path
@@ -4716,7 +4728,6 @@ impl<'a> Lowering<'a> {
         // its coverage entry on every recompose (#3081).
         let gpu = Self::leaf_gpu_draw(&self.pending[first_pending..]).map(Arc::clone);
         cache.data = Some(Emission {
-            color_range: super::content_range::of_ops(std::slice::from_ref(op), glyphs.images),
             gpu,
             gpu_route: None,
             pending_cells: PendingCells::new(
