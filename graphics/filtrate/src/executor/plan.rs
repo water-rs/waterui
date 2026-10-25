@@ -17,8 +17,8 @@ use alloc::{
 use std::collections::HashMap;
 
 use cherenkov_shader::{
-    ComposeOptions, LibrarySource, ParamType, ParamValue, Piece, SamplerFilter, Segment, Snippet,
-    SnippetKind, SnippetSource, Stage, compose,
+    ComposeOptions, LibrarySource, ParamType, ParamValue, Piece, Precision, SamplerFilter, Segment,
+    Snippet, SnippetKind, SnippetSource, Stage, Variant, compose,
     naga::{Module, valid::Capabilities},
 };
 use filtrate_core::{
@@ -50,9 +50,12 @@ const FROM_SRGB: ColorStage = ColorStage {
 /// a source of plain functions, not a stage; the composer imports each
 /// referenced function once into the composed module.
 const LIBRARIES: &[LibrarySource<'static>] = &[
-    LibrarySource::new("hsl", include_str!("../shaders/lib/hsl.wgsl")),
-    LibrarySource::new("sampling", include_str!("../shaders/lib/sampling.wgsl")),
-    LibrarySource::new("rotate", include_str!("../shaders/lib/rotate.wgsl")),
+    LibrarySource::new("hsl", include_str!("../shaders/lib/hsl.wgsl"))
+        .f16(include_str!("../shaders/lib/hsl.wgsl")),
+    LibrarySource::new("sampling", include_str!("../shaders/lib/sampling.wgsl"))
+        .f16(include_str!("../shaders/lib/sampling.wgsl")),
+    LibrarySource::new("rotate", include_str!("../shaders/lib/rotate.wgsl"))
+        .f16(include_str!("../shaders/lib/rotate.wgsl")),
 ];
 
 /// A stage as the filter reported it.
@@ -100,6 +103,7 @@ struct Expanded {
     kind: SnippetKind,
     name: &'static str,
     source: &'static str,
+    source_f16: Option<&'static str>,
     params: &'static [ParamSource],
     param_base: usize,
     shape: Option<ShapeInput>,
@@ -112,6 +116,7 @@ impl Expanded {
             kind: SnippetKind::Color,
             name: placed.stage.name,
             source: placed.stage.source,
+            source_f16: None,
             params: placed.stage.params,
             param_base: placed.param_base,
             shape: None,
@@ -188,6 +193,7 @@ impl Plan {
         input_filterable: bool,
         intermediate_filterable: bool,
         fold: bool,
+        precision: Precision,
     ) -> Result<Self, EffectSetupError> {
         let mut collector = Collector(Vec::new());
         filter.collect_stages(&mut collector);
@@ -211,6 +217,9 @@ impl Plan {
             .iter()
             .map(|stage| {
                 let mut source = SnippetSource::new(stage.name, stage.kind, stage.source);
+                if let Some(half) = stage.source_f16 {
+                    source = source.variant(Variant::new(Precision::F16, false), half);
+                }
                 for library in LIBRARIES {
                     source = source.library(library.clone());
                 }
@@ -235,7 +244,12 @@ impl Plan {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let composition = compose(&stages, ComposeOptions::default())
+        let precision = if expanded.iter().any(|stage| stage.source_f16.is_some()) {
+            precision
+        } else {
+            Precision::F32
+        };
+        let composition = compose(&stages, ComposeOptions::new(precision, false))
             .map_err(|error| EffectSetupError::Compose(error.to_string()))?;
         let (module, capabilities, pieces) = composition.into_parts();
         Ok(Self {
@@ -442,6 +456,7 @@ fn expand<F: Filter>(declared: &[Declared]) -> Result<Vec<Expanded>, EffectSetup
                     kind: SnippetKind::Spatial,
                     name: placed.stage.name,
                     source: placed.stage.source,
+                    source_f16: placed.stage.source_f16,
                     params: placed.stage.params,
                     param_base: placed.param_base,
                     shape: placed.stage.shape,

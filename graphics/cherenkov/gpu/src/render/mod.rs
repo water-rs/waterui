@@ -1559,6 +1559,7 @@ fn create_device(
     let mut required = supported
         & (image_storage::COMPRESSION_FEATURES
             | wgpu::Features::INDIRECT_FIRST_INSTANCE
+            | wgpu::Features::SHADER_F16
             | float32_target_features());
     // The fixed engine shaders are precompiled (#57, #2726): Vulkan loads
     // SPIR-V, Metal a metallib and DX12 DXIL through the passthrough API;
@@ -1828,6 +1829,7 @@ async fn create_device(
     let mut required = supported
         & (image_storage::COMPRESSION_FEATURES
             | wgpu::Features::INDIRECT_FIRST_INSTANCE
+            | wgpu::Features::SHADER_F16
             | float32_target_features());
     // Pass-boundary timestamps are all Metal is asked for: Apple GPUs
     // advertise `TIMESTAMP_QUERY_INSIDE_ENCODERS` but sample only at
