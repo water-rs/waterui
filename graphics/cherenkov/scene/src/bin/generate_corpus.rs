@@ -58,6 +58,8 @@ fn rotate_about(th: f64, center: impl Into<Point>) -> Affine {
 const TEXT_PAD: f32 = 12.0;
 /// Maximum line advance for shaped text.
 const TEXT_WRAP: f32 = 280.0;
+/// Width of the phone-sized performance viewport.
+const PERF_WIDTH: u16 = 1024;
 
 const FILTER_COLOR_MATRIX: [f64; 12] =
     [0.2, 0.7, 0.1, 0.0, 0.6, 0.3, 0.1, 0.05, 0.1, 0.1, 0.8, 0.0];
@@ -201,6 +203,12 @@ fn stops8() -> Vec<GradientStop> {
         .collect()
 }
 
+/// A shaped paragraph and the vertical extent allocated by its line layout.
+struct ShapedParagraph {
+    runs: Vec<GlyphRun>,
+    height: f32,
+}
+
 /// Fonts loaded from `scenes/fonts/`, plus a parley context to shape with.
 struct TextContext {
     fcx: FontContext,
@@ -293,6 +301,20 @@ impl TextContext {
         weight: FontWeight,
         paint: &Paint,
     ) -> Vec<GlyphRun> {
+        self.paragraph(file, text, size, weight, paint, TEXT_WRAP)
+            .runs
+    }
+
+    /// Shape a paragraph for its actual content width, retaining line height.
+    fn paragraph(
+        &mut self,
+        file: &str,
+        text: &str,
+        size: f32,
+        weight: FontWeight,
+        paint: &Paint,
+        width: f32,
+    ) -> ShapedParagraph {
         let family = self.families[file].clone();
         let mut builder = self.lcx.ranged_builder(&mut self.fcx, text, 1.0, false);
         builder.push_default(StyleProperty::FontFamily(FontFamily::named(
@@ -301,7 +323,7 @@ impl TextContext {
         builder.push_default(StyleProperty::FontSize(size));
         builder.push_default(StyleProperty::FontWeight(weight));
         let mut layout = builder.build(text);
-        layout.break_all_lines(Some(TEXT_WRAP));
+        layout.break_all_lines(Some(width));
 
         let mut runs = Vec::new();
         for line in layout.lines() {
@@ -344,7 +366,10 @@ impl TextContext {
                 });
             }
         }
-        runs
+        ShapedParagraph {
+            runs,
+            height: layout.height(),
+        }
     }
 }
 
@@ -2054,15 +2079,22 @@ fn main() -> ExitCode {
     }
 }
 
-/// The text-page body: 38 lines cycling through the shaped scripts.
-fn text_page_body(l: &mut LayerBuilder, shaped: &[Vec<GlyphRun>]) {
-    let pitch = 54.0;
-    for (i, runs) in (0u8..38).map(|i| (i, &shaped[usize::from(i) % shaped.len()])) {
-        // Exact either way: i < 38 and pitch = 54 are small integers.
-        let y = f64::from(i).mul_add(pitch, 56.0);
-        for run in runs {
-            l.glyphs(offset_run(run, 24.0 - f64::from(TEXT_PAD), y));
+/// Fill the page with whole paragraphs, using their shaped line extents.
+fn text_page_body(l: &mut LayerBuilder, shaped: &[ShapedParagraph], height: u32) {
+    let margin = 24.0;
+    let mut y = margin;
+    for paragraph in shaped.iter().cycle() {
+        if y + f64::from(paragraph.height) > f64::from(height) - margin {
+            break;
         }
+        for run in &paragraph.runs {
+            l.glyphs(offset_run(
+                run,
+                margin - f64::from(TEXT_PAD),
+                y - f64::from(TEXT_PAD),
+            ));
+        }
+        y += f64::from(paragraph.height + TEXT_PAD);
     }
 }
 
@@ -5944,7 +5976,7 @@ fn run(root: &Path) -> Result<(), SceneError> {
     // per-primitive correctness sweeps above. Deterministic throughout; the
     // only pseudo-randomness is the seeded xorshift in the map scene.
 
-    let (pw, ph) = (1024u32, 2216u32);
+    let (pw, ph) = (u32::from(PERF_WIDTH), 2216u32);
     let mut perf = Corpus::new();
     gradient_search::add_perf(&mut perf);
 
@@ -6015,8 +6047,7 @@ fn run(root: &Path) -> Result<(), SceneError> {
         );
     }
 
-    // Dense multi-script text page: Latin, CJK, Arabic, Devanagari and emoji
-    // lines cycling down the full page height.
+    // The static page and its panning counterpart share the same paragraphs.
     {
         let scripts = [
             ("NotoSans.ttf", corpus::LATIN, 34.0_f32),
@@ -6025,44 +6056,32 @@ fn run(root: &Path) -> Result<(), SceneError> {
             ("NotoSansDevanagari.ttf", corpus::DEVANAGARI, 34.0),
             ("NotoEmoji.ttf", corpus::EMOJI, 34.0),
         ];
-        let shaped: Vec<Vec<GlyphRun>> = scripts
+        let shaped: Vec<ShapedParagraph> = scripts
             .iter()
             .map(|(file, text, size)| {
-                ctx.shape(file, text, *size, FontWeight::NORMAL, &solid(dark))
+                ctx.paragraph(
+                    file,
+                    text,
+                    *size,
+                    FontWeight::NORMAL,
+                    &solid(dark),
+                    f32::from(PERF_WIDTH) - 48.0,
+                )
             })
             .collect();
-        let blobs = font_blobs(&ctx, &shaped.iter().map(Vec::as_slice).collect::<Vec<_>>());
+        let blobs = font_blobs(
+            &ctx,
+            &shaped.iter().map(|p| p.runs.as_slice()).collect::<Vec<_>>(),
+        );
         perf.scene_with_blobs(
             "text-page",
             pw,
             ph,
             white,
-            |l| {
-                text_page_body(l, &shaped);
-            },
-            blobs,
+            |l| text_page_body(l, &shaped, ph),
+            blobs.clone(),
         );
-    }
-
-    // The text page under a smooth pan: a fractional offset per frame for
-    // 4 s, then at rest at identity (= the text-page scene itself).
-    // Exercises the glyph cache's behaviour when the translation's
-    // fraction changes every frame.
-    {
-        let scripts = [
-            ("NotoSans.ttf", corpus::LATIN, 34.0_f32),
-            ("NotoSansSC.ttf", corpus::CJK, 34.0),
-            ("NotoSansArabic.ttf", corpus::ARABIC, 36.0),
-            ("NotoSansDevanagari.ttf", corpus::DEVANAGARI, 34.0),
-            ("NotoEmoji.ttf", corpus::EMOJI, 34.0),
-        ];
-        let shaped: Vec<Vec<GlyphRun>> = scripts
-            .iter()
-            .map(|(file, text, size)| {
-                ctx.shape(file, text, *size, FontWeight::NORMAL, &solid(dark))
-            })
-            .collect();
-        let blobs = font_blobs(&ctx, &shaped.iter().map(Vec::as_slice).collect::<Vec<_>>());
+        // Fractional motion for four seconds, then the same page at rest.
         perf.scene_with_blobs(
             "text-pan",
             pw,
@@ -6081,7 +6100,7 @@ fn run(root: &Path) -> Result<(), SceneError> {
                             y2: 0.75,
                         },
                     });
-                    text_page_body(pan, &shaped);
+                    text_page_body(pan, &shaped, ph);
                 });
             },
             blobs,
