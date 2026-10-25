@@ -16,11 +16,13 @@ use runtime::RuntimeClosure;
 
 use crate::{
     apple::platform,
+    artifact_symbols::ArtifactSymbols,
     assets,
     build::{BuildOptions, NativeLink},
     platform::TargetPlatform,
     project::Project,
     toolchain::Host,
+    workflows::build::BuiltTarget,
 };
 
 /// Stable local Swift package location consumed by a native host.
@@ -79,6 +81,7 @@ struct Slice {
     platform: TargetPlatform,
     name: &'static str,
     triple: &'static str,
+    module_triple: &'static str,
 }
 
 fn slices(architecture: Option<Architecture>) -> Result<Vec<Slice>> {
@@ -86,19 +89,31 @@ fn slices(architecture: Option<Architecture>) -> Result<Vec<Slice>> {
         super::platform::validate_architecture(architecture)?;
     }
     let mut result = Vec::new();
-    for (platform, name, triple) in [
-        (TargetPlatform::MacOS, "macos", "aarch64-apple-darwin"),
-        (TargetPlatform::IOS, "ios", "aarch64-apple-ios"),
+    for (platform, name, triple, module_triple) in [
+        (
+            TargetPlatform::MacOS,
+            "macos",
+            "aarch64-apple-darwin",
+            "arm64-apple-macos",
+        ),
+        (
+            TargetPlatform::IOS,
+            "ios",
+            "aarch64-apple-ios",
+            "arm64-apple-ios",
+        ),
         (
             TargetPlatform::IOSSimulator,
             "ios-simulator",
             "aarch64-apple-ios-sim",
+            "arm64-apple-ios-simulator",
         ),
     ] {
         result.push(Slice {
             platform,
             name,
             triple,
+            module_triple,
         });
     }
     Ok(result)
@@ -135,11 +150,10 @@ pub async fn build_xcframework(
     .await?;
     let package = temporary.path().join("package");
     let source = package.join("Sources/WaterUI");
-    let backend = platform::apple_backend_source_root(project).await?;
     fs::create_dir_all(source.join("Resources/Notices")).await?;
-    fs::copy(
-        backend.join("Sources/WaterUI/Embedding.swift"),
-        source.join("Embedding.swift"),
+    fs::write(
+        source.join("Exports.swift"),
+        include_str!("../templates/apple_embedded/Exports.swift"),
     )
     .await?;
     let (links, manifests) = assemble_slices(project, options, &selected, temporary.path()).await?;
@@ -202,6 +216,7 @@ async fn assemble_slices(
         // Stage each target's actual symbol set: platform-gated asset
         // declarations must not disappear when a later slice is built.
         let symbols = built.app_symbols().await?;
+        let module = module_artifact(&built).await?;
         let archive = built.artifact;
         manifests.push(assets::plan_library_resources(project, &symbols, false).await?);
         let swift_platform = if slice.platform == TargetPlatform::MacOS {
@@ -223,9 +238,9 @@ async fn assemble_slices(
             )
             .await?;
         collect_platform_links(&mut links, swift_platform, triple, closure.remaining)?;
-        let library = directory.join("libWaterUINative.a");
-        fs::copy(&archive, &library).await?;
-        arguments.extend([OsString::from("-library"), library.into_os_string()]);
+        let framework = directory.join("WaterUIBridge.framework");
+        stage_swift_framework(&archive, &module, &framework, slice).await?;
+        arguments.extend([OsString::from("-framework"), framework.into_os_string()]);
     }
     arguments.extend([
         OsString::from("-output"),
@@ -235,6 +250,100 @@ async fn assemble_slices(
     ]);
     host.run("xcodebuild", arguments).await?;
     Ok((links, manifests))
+}
+
+/// Reads the `waterui_meta_apple_swift_module` record the backend's
+/// `build.rs` emits — the `swiftc -emit-module-path` artifact, located by
+/// the canonical `__wmeta` record in the built static library rather than
+/// an `OUT_DIR` search.
+async fn module_artifact(built: &BuiltTarget) -> Result<PathBuf> {
+    let artifact = built.artifact.clone();
+    let symbols = smol::unblock(move || ArtifactSymbols::read(&artifact)).await?;
+    let payload = symbols
+        .meta_record("waterui_meta_apple_swift_module")
+        .map_err(|err| {
+            eyre::eyre!("the built archive carries no WaterUIBridge module record: {err}")
+        })?;
+    let path = String::from_utf8(payload)
+        .map_err(|err| eyre::eyre!("the WaterUIBridge module record is not UTF-8: {err}"))?;
+    Ok(PathBuf::from(path))
+}
+
+/// Stages one slice's static `WaterUIBridge.framework`: the composed
+/// archive as the binary (it already carries the Swift objects through
+/// Cargo's static linkage), the emitted module metadata under
+/// `Modules/WaterUIBridge.swiftmodule`, and the platform `Info.plist`.
+async fn stage_swift_framework(
+    archive: &Path,
+    module: &Path,
+    framework: &Path,
+    slice: &Slice,
+) -> Result<()> {
+    fs::create_dir_all(framework.join("Modules/WaterUIBridge.swiftmodule")).await?;
+    fs::copy(archive, framework.join("WaterUIBridge")).await?;
+    let triple = slice.module_triple;
+    fs::copy(
+        module,
+        framework.join(format!(
+            "Modules/WaterUIBridge.swiftmodule/{triple}.swiftmodule"
+        )),
+    )
+    .await?;
+    fs::copy(
+        module.with_extension("swiftdoc"),
+        framework.join(format!(
+            "Modules/WaterUIBridge.swiftmodule/{triple}.swiftdoc"
+        )),
+    )
+    .await?;
+    fs::copy(
+        module.with_extension("swiftinterface"),
+        framework.join(format!(
+            "Modules/WaterUIBridge.swiftmodule/{triple}.swiftinterface"
+        )),
+    )
+    .await?;
+    fs::write(framework.join("Info.plist"), swift_framework_plist(slice)?).await?;
+    Ok(())
+}
+
+/// The typed `Info.plist` shape for one slice's framework — the module is
+/// the same `WaterUIBridge` on every platform; only the platform name and
+/// deployment floor differ.
+#[derive(serde::Serialize)]
+struct SwiftFrameworkPlist<'a> {
+    #[serde(rename = "CFBundleExecutable")]
+    executable: &'a str,
+    #[serde(rename = "CFBundleName")]
+    name: &'a str,
+    #[serde(rename = "CFBundleIdentifier")]
+    identifier: &'a str,
+    #[serde(rename = "CFBundlePackageType")]
+    package_type: &'a str,
+    #[serde(rename = "CFBundleInfoDictionaryVersion")]
+    info_dictionary_version: &'a str,
+    #[serde(rename = "CFBundleSupportedPlatforms")]
+    supported_platforms: Vec<&'a str>,
+}
+
+fn swift_framework_plist(slice: &Slice) -> Result<Vec<u8>> {
+    let platforms = match slice.platform {
+        TargetPlatform::MacOS => vec!["MacOSX"],
+        TargetPlatform::IOS => vec!["iPhoneOS"],
+        TargetPlatform::IOSSimulator => vec!["iPhoneSimulator"],
+        other => return Err(eyre::eyre!("unsupported framework platform {other:?}")),
+    };
+    let plist = SwiftFrameworkPlist {
+        executable: "WaterUIBridge",
+        name: "WaterUIBridge",
+        identifier: "dev.waterui.WaterUIBridge",
+        package_type: "FMWK",
+        info_dictionary_version: "6.0",
+        supported_platforms: platforms,
+    };
+    let mut bytes = Vec::new();
+    plist::to_writer_xml(&mut bytes, &plist)?;
+    Ok(bytes)
 }
 
 async fn write_package(project: &Project, package: &Path, links: &[PlatformLinks]) -> Result<()> {
@@ -332,6 +441,85 @@ mod tests {
     use super::*;
     use target_lexicon::Aarch64Architecture;
 
+    /// A staged framework copies the archive and the module triple's
+    /// metadata verbatim and decodes the typed `Info.plist`; a missing
+    /// module artifact fails rather than staging a fallback.
+    #[test]
+    fn stage_swift_framework_stages_binary_modules_and_info() {
+        let staging = tempfile::tempdir().expect("staging dir");
+        let archive = staging.path().join("archive.a");
+        let module = staging.path().join("WaterUIBridge.swiftmodule");
+        std::fs::write(&archive, b"archive-bytes").unwrap();
+        std::fs::write(&module, b"module-bytes").unwrap();
+        std::fs::write(module.with_extension("swiftdoc"), b"doc-bytes").unwrap();
+        std::fs::write(module.with_extension("swiftinterface"), b"interface-bytes").unwrap();
+        let want_platform = [
+            (TargetPlatform::MacOS, "MacOSX"),
+            (TargetPlatform::IOS, "iPhoneOS"),
+            (TargetPlatform::IOSSimulator, "iPhoneSimulator"),
+        ];
+        for slice in slices(None).expect("three default slices") {
+            let framework = staging.path().join(slice.name);
+            smol::block_on(stage_swift_framework(&archive, &module, &framework, &slice))
+                .expect("framework stages");
+            assert_eq!(
+                std::fs::read(framework.join("WaterUIBridge")).unwrap(),
+                b"archive-bytes",
+                "{} archives the composed binary verbatim",
+                slice.name
+            );
+            let base = format!("Modules/WaterUIBridge.swiftmodule/{}", slice.module_triple);
+            for (ext, bytes) in [
+                ("swiftmodule", b"module-bytes".as_slice()),
+                ("swiftdoc", b"doc-bytes".as_slice()),
+                ("swiftinterface", b"interface-bytes".as_slice()),
+            ] {
+                assert_eq!(
+                    std::fs::read(framework.join(format!("{base}.{ext}"))).unwrap(),
+                    bytes,
+                    "{} stages {ext}",
+                    slice.name
+                );
+            }
+            let info: plist::Value =
+                plist::from_file(framework.join("Info.plist")).expect("typed plist decodes");
+            let dict = info.as_dictionary().unwrap();
+            assert_eq!(
+                dict["CFBundleExecutable"].as_string().unwrap(),
+                "WaterUIBridge"
+            );
+            assert_eq!(
+                dict["CFBundleIdentifier"].as_string().unwrap(),
+                "dev.waterui.WaterUIBridge"
+            );
+            assert_eq!(dict["CFBundlePackageType"].as_string().unwrap(), "FMWK");
+            let want = want_platform
+                .iter()
+                .find(|(platform, _)| *platform == slice.platform)
+                .unwrap()
+                .1;
+            assert_eq!(
+                dict["CFBundleSupportedPlatforms"].as_array().unwrap()[0]
+                    .as_string()
+                    .unwrap(),
+                want
+            );
+        }
+        std::fs::remove_file(module.with_extension("swiftinterface")).unwrap();
+        let failed = smol::block_on(stage_swift_framework(
+            &archive,
+            &module,
+            &staging.path().join("Broken"),
+            &slices(None).unwrap()[0],
+        ));
+        assert!(
+            failed.is_err(),
+            "a missing swiftinterface fails rather than staging a fallback"
+        );
+    }
+
+    use target_lexicon::Aarch64Architecture;
+
     #[test]
     fn default_artifact_has_only_arm64_desktop_device_and_simulator() {
         let selected = slices(None).unwrap();
@@ -392,7 +580,7 @@ mod tests {
         }
         .render()
         .unwrap();
-        assert!(rendered.contains(".binaryTarget(name: \"WaterUINative\""));
+        assert!(rendered.contains(".binaryTarget(name: \"WaterUIBridge\""));
         assert!(rendered.contains(".copy(\"Resources/waterui_assets\")"));
         assert!(rendered.contains(".enableExperimentalFeature(\"Extern\")"));
         assert!(!rendered.contains("CWaterUI"));
