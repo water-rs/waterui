@@ -16,7 +16,9 @@ use std::ptr;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
-use objc2_app_kit::{NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication};
+use objc2_app_kit::{
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSView,
+};
 use objc2_foundation::{
     NSArray, NSDictionary, NSKeyValueObservingOptions, NSObject,
     NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSString, ns_string,
@@ -38,7 +40,7 @@ impl Application {
     /// application overrides it.
     #[must_use]
     pub fn color_scheme(&self) -> ColorScheme {
-        color_scheme_of(self.native())
+        color_scheme_of(&self.native().effectiveAppearance())
     }
 
     /// Calls `handler` with the new scheme every time the application's
@@ -50,22 +52,56 @@ impl Application {
         &self,
         handler: impl Fn(ColorScheme) + 'static,
     ) -> ColorSchemeObservation {
-        let application = self.native().retain();
-        let observer = Observer::new(application.mtm(), Box::new(handler));
-        let target: &NSObject = &application;
-        // SAFETY: see the module safety note.
-        unsafe {
-            target.addObserver_forKeyPath_options_context(
-                &observer,
-                key_path(),
-                NSKeyValueObservingOptions::New,
-                ptr::null_mut(),
-            );
-        }
-        ColorSchemeObservation {
-            application,
-            observer,
-        }
+        observe_target(self.native(), handler)
+    }
+}
+
+/// Whether `view`'s effective appearance draws light or dark.
+#[must_use]
+pub fn effective_color_scheme(view: &NSView) -> ColorScheme {
+    color_scheme_of(&view.effectiveAppearance())
+}
+
+/// Calls `handler` with the new scheme every time `view`'s
+/// `effectiveAppearance` changes.
+///
+/// That is when its own or an ancestor's appearance changes, or when it
+/// moves to a window drawing differently — until the returned guard is
+/// dropped. The guard keeps the view retained so a live view always
+/// unregisters.
+///
+/// A panic in `handler` aborts the process (see the
+/// [crate documentation](crate)).
+pub fn observe_effective_appearance(
+    view: &NSView,
+    handler: impl Fn(ColorScheme) + 'static,
+) -> ColorSchemeObservation {
+    observe_target(view, handler)
+}
+
+/// `effectiveAppearance` KVO on any `NSObject` answering it — the
+/// application, or a view through [`observe_effective_appearance`].
+fn observe_target(
+    target: &NSObject,
+    handler: impl Fn(ColorScheme) + 'static,
+) -> ColorSchemeObservation {
+    let retained = target.retain();
+    let observer = Observer::new(
+        MainThreadMarker::new().expect("appearance observation runs on the main thread"),
+        Box::new(handler),
+    );
+    // SAFETY: see the module safety note.
+    unsafe {
+        retained.addObserver_forKeyPath_options_context(
+            &observer,
+            key_path(),
+            NSKeyValueObservingOptions::New,
+            ptr::null_mut(),
+        );
+    }
+    ColorSchemeObservation {
+        observed: retained,
+        observer,
     }
 }
 
@@ -73,7 +109,7 @@ impl Application {
 /// observer.
 #[must_use = "the observer is removed as soon as this guard is dropped"]
 pub struct ColorSchemeObservation {
-    application: Retained<NSApplication>,
+    observed: Retained<NSObject>,
     observer: Retained<Observer>,
 }
 
@@ -86,19 +122,19 @@ impl fmt::Debug for ColorSchemeObservation {
 
 impl Drop for ColorSchemeObservation {
     fn drop(&mut self) {
-        let target: &NSObject = &self.application;
         // SAFETY: see the module safety note.
-        unsafe { target.removeObserver_forKeyPath(&self.observer, key_path()) };
+        unsafe {
+            self.observed
+                .removeObserver_forKeyPath(&self.observer, key_path());
+        };
     }
 }
 
-fn color_scheme_of(application: &NSApplication) -> ColorScheme {
+fn color_scheme_of(appearance: &NSAppearance) -> ColorScheme {
     // SAFETY: reads string constants `AppKit` owns for the process's
     // lifetime.
     let (dark, light) = unsafe { (NSAppearanceNameDarkAqua, NSAppearanceNameAqua) };
-    let best = application
-        .effectiveAppearance()
-        .bestMatchFromAppearancesWithNames(&NSArray::from_slice(&[dark, light]));
+    let best = appearance.bestMatchFromAppearancesWithNames(&NSArray::from_slice(&[dark, light]));
     scheme_for_best_match(best.as_deref(), dark)
 }
 
@@ -140,10 +176,14 @@ define_class!(
             _context: *mut c_void,
         ) {
             guarded("effectiveAppearance observer", || {
-                let mtm = MainThreadMarker::new()
-                    .expect("AppKit must change the application's appearance on the main thread");
-                let scheme = color_scheme_of(&NSApplication::sharedApplication(mtm));
-                (self.ivars().handler)(scheme);
+                let target = _object
+                    .expect("appearance KVO must name the observed object");
+                // SAFETY: the only registered key path is
+                // `effectiveAppearance`, answered by `NSApplication` and
+                // `NSView` — the two callers — with an `NSAppearance`.
+                let appearance: Retained<NSAppearance> =
+                    unsafe { msg_send![target, effectiveAppearance] };
+                (self.ivars().handler)(color_scheme_of(&appearance));
             });
         }
     }

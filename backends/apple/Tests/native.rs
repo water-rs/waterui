@@ -78,6 +78,35 @@ fn main() {
     libtest_mimic::run(&args, trials()).exit();
 }
 
+/// The `embedding::` mount-ownership trials — kept beside `trials` so the
+/// registrars stay one-per-line.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+fn embedding_trials() -> Vec<Trial> {
+    vec![
+        Trial::test(
+            "embedding::an_embedded_mount_leaves_the_hosts_window_and_menu_bar_alone",
+            || {
+                embedding::an_embedded_mount_leaves_the_hosts_window_and_menu_bar_alone();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "embedding::each_host_views_appearance_drives_its_own_mounted_scheme",
+            || {
+                embedding::each_host_views_appearance_drives_its_own_mounted_scheme();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "embedding::the_embedded_root_follows_the_host_bounds_and_detaches_on_drop",
+            || {
+                embedding::the_embedded_root_follows_the_host_bounds_and_detaches_on_drop();
+                Ok(())
+            },
+        ),
+    ]
+}
+
 fn trials() -> Vec<Trial> {
     let mut tests = base_trials();
     #[cfg(all(target_os = "macos", feature = "native-test"))]
@@ -87,10 +116,13 @@ fn trials() -> Vec<Trial> {
                 window::manager_installs_into_the_environment(mtm());
                 Ok(())
             }),
-            Trial::test("window::bind_root_window_wires_a_live_window", || {
-                window::bind_root_window_wires_a_live_window(mtm());
+            Trial::test("window::a_declared_window_realizes_its_declaration", || {
+                window::a_declared_window_realizes_its_declaration(mtm());
                 Ok(())
             }),
+        ]);
+        tests.extend(embedding_trials());
+        tests.extend([
             Trial::test(
                 "menus::the_window_menu_opens_with_the_standard_close_item",
                 || {
@@ -1996,7 +2028,7 @@ mod tabs {
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod window {
     pub use waterui_apple::native_test_support::{
-        bind_root_window_wires_a_live_window, manager_installs_into_the_environment,
+        a_declared_window_realizes_its_declaration, manager_installs_into_the_environment,
     };
 }
 
@@ -8752,6 +8784,250 @@ mod a11y_extent {
                 Box::new(a_host_view_reports_content_extent_only_when_marked),
             ),
         ])
+    }
+}
+
+/// `embedding::mount` leaves everything the embedder owns alone: the host
+/// window's title, frame, style and resizability, the close gate the host
+/// armed, and the process's main menu. The embedded root follows the host
+/// view's bounds and detaches when the mount drops.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+mod embedding {
+    use std::cell::RefCell;
+    use std::ffi::c_void;
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::MainThreadOnly;
+    use cocoa_ui::objc2_app_kit::{
+        NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
+        NSApplication, NSMenu, NSView, NSWindowStyleMask,
+    };
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+    use cocoa_ui::{MainThreadMarker, Retained, view};
+    use waterui::app::App;
+    use waterui::component::menu::{Command, Menu, MenuItem};
+    use waterui::component::text::Text;
+    use waterui::graphics::color::ColorScheme;
+    use waterui::reactive::{Computed, binding};
+    use waterui::window::WindowState;
+    use waterui::{Environment, Signal};
+
+    use crate::mtm;
+
+    /// A live mount plus the test runtime it borrows — `mount` requires the
+    /// runtime to outlive it.
+    struct Embed {
+        mount: *mut c_void,
+        _runtime: Box<waterui_apple::embedding::Runtime>,
+    }
+
+    impl Embed {
+        fn new(host: &NSView, app: impl FnOnce(Environment) -> App) -> Self {
+            let runtime = Box::new(waterui_apple::embedding::Runtime::for_test());
+            // SAFETY: `_runtime` keeps the runtime box alive past the mount's
+            // drop; `host` is a live view and the paths are NUL-terminated.
+            let mount = unsafe {
+                waterui_apple::embedding::mount(
+                    (&raw const *runtime).cast::<c_void>(),
+                    std::ptr::from_ref(host).cast_mut().cast(),
+                    c"/tmp/waterui-embed-test-assets".as_ptr(),
+                    c"/tmp/waterui-embed-test-fonts".as_ptr(),
+                    app,
+                )
+            };
+            Self {
+                mount,
+                _runtime: runtime,
+            }
+        }
+    }
+
+    impl Drop for Embed {
+        fn drop(&mut self) {
+            // SAFETY: `mount` was returned by `embedding::mount` and dropped
+            // once on the main thread.
+            unsafe { waterui_apple::embedding::waterui_apple_mount_drop(self.mount) };
+        }
+    }
+
+    /// The named appearance — the constants are `AppKit` strings exported
+    /// for the process's lifetime.
+    fn appearance(name: &'static NSString) -> Retained<NSAppearance> {
+        NSAppearance::appearanceNamed(name).expect("the named appearance exists")
+    }
+
+    /// `(dark, aqua)` — the pair the trials flip between.
+    fn appearances() -> (&'static NSString, &'static NSString) {
+        // SAFETY: reads string constants `AppKit` owns for the process's
+        // lifetime.
+        unsafe { (NSAppearanceNameDarkAqua, NSAppearanceNameAqua) }
+    }
+
+    /// A plain `NSView`, never touched by our kit — the embedder's own.
+    fn plain_view(mtm: MainThreadMarker) -> Retained<NSView> {
+        // SAFETY: `initWithFrame:` is `NSView`'s documented initializer.
+        NSView::initWithFrame(
+            NSView::alloc(mtm),
+            NSRect::new(NSPoint::ZERO, NSSize::new(120.0, 80.0)),
+        )
+    }
+
+    /// The mount must not reach across the boundary: a declared window
+    /// title/style/state and a declared menu bar change nothing on the
+    /// host's window or the application's menu.
+    pub fn an_embedded_mount_leaves_the_hosts_window_and_menu_bar_alone() {
+        let mtm = mtm();
+        let window = cocoa_ui::appkit::Window::new(
+            mtm,
+            cocoa_ui::Rect::new(200.0, 200.0, 640.0, 480.0),
+            cocoa_ui::appkit::WindowStyle::TITLED,
+        );
+        let native = window.native();
+        native.setTitle(&NSString::from_str("Host Title"));
+        native.setStyleMask(
+            native.styleMask() | NSWindowStyleMask::Resizable | NSWindowStyleMask::Closable,
+        );
+        let host_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("HostMenu"));
+        let application = NSApplication::sharedApplication(mtm);
+        let saved_menu = application.mainMenu();
+        application.setMainMenu(Some(&host_menu));
+        let close_called = Rc::new(RefCell::new(false));
+        window.on_should_close({
+            let close_called = Rc::clone(&close_called);
+            move || {
+                *close_called.borrow_mut() = true;
+                false
+            }
+        });
+        let content_view = native
+            .contentView()
+            .expect("a titled window has a content view");
+        let host = plain_view(mtm);
+        content_view.addSubview(&host);
+        let host_frame = native.frame();
+        let host_mask = native.styleMask();
+
+        let embed = Embed::new(&host, |env| {
+            App::new_with_windows(
+                vec![waterui::window::Window::new(
+                    "Declared Title",
+                    binding(WindowState::Normal),
+                    || Text::new("embedded"),
+                )],
+                env,
+            )
+            .menu_bar(Menu::new(
+                "Embed",
+                vec![MenuItem::Command(
+                    Command::builder("DeclaredItem").action(|| {}),
+                )],
+            ))
+        });
+
+        assert_eq!(native.title().to_string(), "Host Title");
+        assert_eq!(native.styleMask(), host_mask);
+        assert!(native.isResizable());
+        assert_eq!(native.frame(), host_frame);
+        assert_eq!(
+            application
+                .mainMenu()
+                .expect("the host menu stays")
+                .title()
+                .to_string(),
+            "HostMenu"
+        );
+        // The host's close gate still answers — the mount armed no veto of
+        // its own.
+        native.performClose(None);
+        assert!(*close_called.borrow());
+
+        // Detach and remount on the same host.
+        drop(embed);
+        assert_eq!(view::subviews(&host).len(), 0, "drop detaches the root");
+        let _remounted = Embed::new(&host, |env| App::new(|| Text::new("again"), env));
+        assert_eq!(view::subviews(&host).len(), 1);
+        application.setMainMenu(saved_menu.as_deref());
+    }
+
+    /// Each host view's `effectiveAppearance` drives its own mounted tree's
+    /// color scheme; a change on one never reaches the other, and a mount
+    /// dropped stops hearing its host entirely.
+    pub fn each_host_views_appearance_drives_its_own_mounted_scheme() {
+        let mtm = mtm();
+        let host_a = plain_view(mtm);
+        let host_b = plain_view(mtm);
+        let (dark, aqua) = appearances();
+        host_a.setAppearance(Some(&appearance(dark)));
+        host_b.setAppearance(Some(&appearance(aqua)));
+
+        let scheme_a = Rc::new(RefCell::new(None::<Computed<ColorScheme>>));
+        let scheme_b = Rc::new(RefCell::new(None::<Computed<ColorScheme>>));
+        let capture = |slot: &Rc<RefCell<Option<Computed<ColorScheme>>>>| {
+            let slot = Rc::clone(slot);
+            move |env: Environment| {
+                *slot.borrow_mut() = Some(
+                    env.query::<ColorScheme, Computed<ColorScheme>>()
+                        .cloned()
+                        .expect("the mount installs a color scheme"),
+                );
+                App::new(|| Text::new("x"), env)
+            }
+        };
+        let embed_a = Embed::new(&host_a, capture(&scheme_a));
+        let _embed_b = Embed::new(&host_b, capture(&scheme_b));
+
+        let scheme_a = scheme_a
+            .borrow()
+            .clone()
+            .expect("mount A installed a scheme");
+        let scheme_b = scheme_b
+            .borrow()
+            .clone()
+            .expect("mount B installed a scheme");
+        assert_eq!(scheme_a.snapshot(), ColorScheme::Dark);
+        assert_eq!(scheme_b.snapshot(), ColorScheme::Light);
+
+        // Changing one host's appearance reaches only its own mount.
+        host_a.setAppearance(Some(&appearance(aqua)));
+        assert_eq!(scheme_a.snapshot(), ColorScheme::Light);
+        assert_eq!(scheme_b.snapshot(), ColorScheme::Light);
+
+        host_b.setAppearance(Some(&appearance(dark)));
+        assert_eq!(scheme_a.snapshot(), ColorScheme::Light);
+        assert_eq!(scheme_b.snapshot(), ColorScheme::Dark);
+
+        // A dropped mount stops hearing its host: mutating it changes
+        // nothing and fires nothing (a leaked observer would fire into the
+        // freed signal graph).
+        drop(embed_a);
+        host_a.setAppearance(Some(&appearance(dark)));
+        assert_eq!(scheme_a.snapshot(), ColorScheme::Light);
+        assert_eq!(scheme_b.snapshot(), ColorScheme::Dark);
+    }
+
+    /// The embedded root tracks the host view's bounds through autoresizing
+    /// and `drop` removes it without touching the host.
+    pub fn the_embedded_root_follows_the_host_bounds_and_detaches_on_drop() {
+        let mtm = mtm();
+        let host = plain_view(mtm);
+        let embed = Embed::new(&host, |env| App::new(|| Text::new("x"), env));
+
+        let root = view::subviews(&host)
+            .into_iter()
+            .next()
+            .expect("the mount attaches a root");
+        assert_eq!(root.frame().size, host.bounds().size);
+
+        host.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(300.0, 200.0)));
+        assert_eq!(
+            root.frame().size,
+            NSSize::new(300.0, 200.0),
+            "the root autoresizes with the host"
+        );
+
+        drop(embed);
+        assert_eq!(view::subviews(&host).len(), 0);
+        assert_eq!(host.frame().size, NSSize::new(300.0, 200.0));
     }
 }
 
