@@ -3836,11 +3836,23 @@ impl Renderer for GpuRenderer {
         if parsed.data_for_tag(skrifa::Tag::new(b"SVG ")).is_some() {
             return Err(ResourceError::Unsupported(names::COLOR_FONT));
         }
+        let head = parsed
+            .head()
+            .map_err(|e| ResourceError::Font(format!("head: {e}")))?;
+        let units_per_em = head.units_per_em();
+        let default_bounds = kurbo::Rect::new(
+            f64::from(head.x_min()),
+            f64::from(head.y_min()),
+            f64::from(head.x_max()),
+            f64::from(head.y_max()),
+        );
         let has_colr = parsed.colr().is_ok();
         let bitmap = bitmap::BitmapFont::detect(&font.data, font.index)?.map(Arc::new);
         Ok(PreparedFont {
             data: font.data,
             index: font.index,
+            units_per_em,
+            default_bounds,
             has_colr,
             bitmap,
         })

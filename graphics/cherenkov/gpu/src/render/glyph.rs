@@ -28,6 +28,8 @@ const PAD: u32 = 1;
 pub struct FontData {
     pub data: Arc<[u8]>,
     pub index: u32,
+    pub units_per_em: u16,
+    pub default_bounds: kurbo::Rect,
     /// Validated once at registration; plain runs do not reparse font tables.
     pub has_colr: bool,
     /// Resolved once at registration like `has_colr`: `bitmap` is `Some`.
@@ -55,6 +57,8 @@ struct InstanceBounds {
 pub struct PreparedFont {
     pub data: Arc<[u8]>,
     pub index: u32,
+    pub units_per_em: u16,
+    pub default_bounds: kurbo::Rect,
     pub has_colr: bool,
     pub bitmap: Option<Arc<super::bitmap::BitmapFont>>,
 }
@@ -64,6 +68,8 @@ impl From<PreparedFont> for FontData {
         Self {
             data: font.data,
             index: font.index,
+            units_per_em: font.units_per_em,
+            default_bounds: font.default_bounds,
             has_colr: font.has_colr,
             has_bitmap: font.bitmap.is_some(),
             bitmap: font.bitmap,
@@ -81,6 +87,8 @@ impl FontData {
         Self {
             data: self.data.clone(),
             index: self.index,
+            units_per_em: self.units_per_em,
+            default_bounds: self.default_bounds,
             has_colr: self.has_colr,
             has_bitmap: self.has_bitmap,
             bitmap: self.bitmap.clone(),
@@ -91,7 +99,9 @@ impl FontData {
 
     pub fn bounds_bytes(&self) -> u64 {
         let instances = self.bounds.borrow();
-        (instances.capacity() * size_of::<InstanceBounds>()
+        (size_of_val(&self.units_per_em)
+            + size_of_val(&self.default_bounds)
+            + instances.capacity() * size_of::<InstanceBounds>()
             + instances
                 .iter()
                 .map(|instance| {
@@ -3087,12 +3097,7 @@ pub fn stroke_outlines(
 
 /// Conservative outline bounds in the run's local coordinates, before rasterization.
 pub fn run_bounds(font: &FontData, run: &cherenkov::GlyphRun) -> Result<kurbo::Rect, RenderError> {
-    let font_ref = skrifa::FontRef::from_index(&font.data, font.index)
-        .map_err(|e| RenderError::Font(format!("{e}")))?;
-    let head = font_ref
-        .head()
-        .map_err(|e| RenderError::Font(format!("head: {e}")))?;
-    let scale = f64::from(run.size) / f64::from(head.units_per_em());
+    let scale = f64::from(run.size) / f64::from(font.units_per_em);
     if run.coords.iter().all(|coord| *coord == 0) {
         // The head table encloses every glyph at the default location.
         // Culling needs only a conservative box, not individual outlines.
@@ -3109,13 +3114,14 @@ pub fn run_bounds(font: &FontData, run: &cherenkov::GlyphRun) -> Result<kurbo::R
             origins = origins.union_pt((f64::from(glyph.x), f64::from(glyph.y)));
         }
         return Ok(kurbo::Rect::new(
-            f64::from(head.x_min()).mul_add(scale, origins.x0),
-            f64::from(head.y_max()).mul_add(-scale, origins.y0),
-            f64::from(head.x_max()).mul_add(scale, origins.x1),
-            f64::from(head.y_min()).mul_add(-scale, origins.y1),
+            font.default_bounds.x0.mul_add(scale, origins.x0),
+            font.default_bounds.y1.mul_add(-scale, origins.y0),
+            font.default_bounds.x1.mul_add(scale, origins.x1),
+            font.default_bounds.y0.mul_add(-scale, origins.y1),
         ));
     }
     // A non-default variable-font location can extend outside the head box.
+    let font_ref = std::cell::OnceCell::new();
     let coords = std::cell::OnceCell::new();
     let metrics = std::cell::OnceCell::new();
     let mut instances = font.bounds.borrow_mut();
@@ -3135,11 +3141,15 @@ pub fn run_bounds(font: &FontData, run: &cherenkov::GlyphRun) -> Result<kurbo::R
         let b = match cached.binary_search_by_key(&glyph.id, |entry| entry.0) {
             Ok(index) => cached[index].1,
             Err(index) => {
+                let parsed = font_ref
+                    .get_or_init(|| skrifa::FontRef::from_index(&font.data, font.index))
+                    .as_ref()
+                    .map_err(|e| RenderError::Font(format!("{e}")))?;
                 let metrics = metrics.get_or_init(|| {
                     let coords: &Vec<F2Dot14> = coords.get_or_init(|| {
                         run.coords.iter().map(|c| F2Dot14::from_bits(*c)).collect()
                     });
-                    font_ref.glyph_metrics(
+                    parsed.glyph_metrics(
                         skrifa::instance::Size::unscaled(),
                         skrifa::instance::LocationRef::new(coords),
                     )
@@ -3321,11 +3331,22 @@ mod tests {
         let Some((device, queue)) = device_and_queue() else {
             return;
         };
+        let parsed =
+            skrifa::FontRef::from_index(include_bytes!("../../../scenes/fonts/NotoSans.ttf"), 0)
+                .expect("test font");
+        let head = parsed.head().expect("test font head");
         let font = FontData {
             data: include_bytes!("../../../scenes/fonts/NotoSans.ttf")
                 .as_slice()
                 .into(),
             index: 0,
+            units_per_em: head.units_per_em(),
+            default_bounds: kurbo::Rect::new(
+                f64::from(head.x_min()),
+                f64::from(head.y_min()),
+                f64::from(head.x_max()),
+                f64::from(head.y_max()),
+            ),
             has_colr: false,
             has_bitmap: false,
             bitmap: None,
