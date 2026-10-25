@@ -65,7 +65,7 @@ pub const ARGS_PARTIAL: u32 = 16;
 pub const ARGS_NORMAL: u32 = 36;
 /// The kernel workgroup size `coverage.wgsl` declares.
 const WORKGROUP: u32 = 64;
-const CLASSIFY_WIDTH: u32 = 128;
+const CLASSIFY_WIDTH: u32 = super::path::GPU_CLASSIFY_WIDTH;
 /// Decision R2's hard per-batch cap on the coverage buffers' total
 /// size. A path whose own bound passes it is routed to the CPU sweep
 /// ([`CoverageLimit::admits`]); a frame whose paths together pass it is
