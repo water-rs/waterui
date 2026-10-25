@@ -318,6 +318,11 @@ impl Engine for VelloCpu {
         })
     }
 
+    fn wait_idle(&mut self) -> Result<(), BenchError> {
+        // submit completes the CPU raster work before returning.
+        Ok(())
+    }
+
     fn counters(&self) -> Counters {
         self.counters.clone()
     }
