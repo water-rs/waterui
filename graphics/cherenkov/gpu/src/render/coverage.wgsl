@@ -120,7 +120,7 @@ struct Params {
 @group(0) @binding(3) var<storage, read_write> segments: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read_write> coverage: array<u32>;
 // The coverage arena: one block per entry — a count header, the emitted
-// 32-byte geometry records, then the packed R8 texels (water-rs/waterui#3081).
+// 24-byte geometry records, then the packed R8 texels (water-rs/waterui#3081).
 @group(0) @binding(5) var<storage, read_write> arena: array<u32>;
 @group(0) @binding(8) var<storage, read_write> args: array<u32, 15>;
 struct Work {
@@ -1006,26 +1006,23 @@ fn classify(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
-// One emitted span or cell's 32-byte geometry record in the path's
-// arena block: the device bounds vec4, then the block-relative texel
-// offset, pixel width, packed interior run and kind before the draw's
-// REGION promotion — the vertex stage joins these to the draw's anchor.
-fn emit_geometry(pi: u32, slot: u32, bounds: vec4<f32>, uv: vec2<u32>, kind: u32, interior: u32) {
-    let dst = paths[pi].inst_base + slot * 8u;
+// Each 24-byte geometry record carries device bounds, a block-relative
+// texel offset and the packed interior run. An all-ones offset denotes a
+// full-coverage span; cell offsets fit the coverage buffer's 256 MiB cap.
+fn emit_geometry(pi: u32, slot: u32, bounds: vec4<f32>, texel: u32, interior: u32) {
+    let dst = paths[pi].inst_base + slot * 6u;
     arena[dst] = bitcast<u32>(bounds.x);
     arena[dst + 1u] = bitcast<u32>(bounds.y);
     arena[dst + 2u] = bitcast<u32>(bounds.z);
     arena[dst + 3u] = bitcast<u32>(bounds.w);
-    arena[dst + 4u] = uv.x;
-    arena[dst + 5u] = uv.y;
-    arena[dst + 6u] = interior;
-    arena[dst + 7u] = kind;
+    arena[dst + 4u] = texel;
+    arena[dst + 5u] = interior;
 }
 
 fn emit_span(pi: u32, path_i: u32, rect: vec4<f32>, x0: u32, x1: u32, sy: u32, sh: u32) {
     let slot = atomicAdd(&paths[path_i].atom[4], 1u);
     let b = vec4<f32>(rect.x + f32(x0), rect.y + f32(sy), rect.x + f32(x1), rect.y + f32(sy + sh));
-    emit_geometry(pi, slot, b, vec2<u32>(0u), KIND_SPAN, 0u);
+    emit_geometry(pi, slot, b, 0xffffffffu, 0u);
 }
 
 // Classification only reserves a cell's geometry slot and texel words;
@@ -1038,7 +1035,7 @@ fn emit_cell(pi: u32, path_i: u32, rect: vec4<f32>, x0: u32, x1: u32, y0: u32, y
     let words = (stored_width * (y1 - y0) + 3u) / 4u;
     let tex_off = atomicAdd(&paths[path_i].atom[6], words);
     let b = vec4<f32>(rect.x + f32(x0), rect.y + f32(y0), rect.x + f32(x1), rect.y + f32(y1));
-    emit_geometry(pi, slot, b, vec2<u32>(tex_off, cw), KIND_GLYPH, interior);
+    emit_geometry(pi, slot, b, tex_off, interior);
 }
 
 // Compact the per-path instance counts into a dispatch domain. Geometry
@@ -1070,8 +1067,8 @@ fn fill_cells(@builtin(workgroup_id) gid: vec3<u32>, @builtin(local_invocation_i
     let pi = lo;
     let local = i - atomicLoad(&paths[pi].atom[7]);
     if local >= atomicLoad(&paths[pi].atom[4]) { return; }
-    let dst = paths[pi].inst_base + local * 8u;
-    if arena[dst + 7u] == KIND_SPAN { return; }
+    let dst = paths[pi].inst_base + local * 6u;
+    if arena[dst + 4u] == 0xffffffffu { return; }
     let rect = grid_rect(pi);
     let bounds = vec4<f32>(
         bitcast<f32>(arena[dst]), bitcast<f32>(arena[dst + 1u]),
@@ -1079,10 +1076,10 @@ fn fill_cells(@builtin(workgroup_id) gid: vec3<u32>, @builtin(local_invocation_i
     let x0 = u32(bounds.x - rect.x);
     let y0 = u32(bounds.y - rect.y);
     let ch = u32(bounds.w - rect.y) - y0;
-    let interior = vec2<u32>(arena[dst + 6u] & 0xffffu, arena[dst + 6u] >> 16u);
+    let interior = vec2<u32>(arena[dst + 5u] & 0xffffu, arena[dst + 5u] >> 16u);
     let interior_start = interior.x;
     let interior_end = interior.y;
-    let stored_width = arena[dst + 5u] - (interior_end - interior_start);
+    let stored_width = u32(bounds.z - bounds.x) - (interior_end - interior_start);
     let tex = paths[pi].texel_base + arena[dst + 4u];
     let words = (stored_width * ch + 3u) / 4u;
     // Each lane walks a contiguous range so adjacent writes reuse the sparse

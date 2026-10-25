@@ -21,6 +21,9 @@ use stroke::{DashTable, GpuStrokeRecord, StrokeParams};
 /// Coverage strip height in device rows.
 pub const STRIP_H: usize = 4;
 
+/// Columns owned by one GPU coverage classification invocation.
+pub const GPU_CLASSIFY_WIDTH: u32 = 128;
+
 /// A path whose raster bbox fits inside this edge length is emitted as one
 /// whole-bbox cell, skipping strips.
 const SMALL_BBOX: f64 = 32.0;
@@ -756,16 +759,21 @@ impl GpuPath {
             (bound.fragments * 64).min(w * h)
         };
         bound.empty = w == 0 || h == 0;
-        // Cells are column-disjoint inside their strip, so the strip count
-        // times the grid width is the grid-side cap; spans obey the same
-        // bound. The element bound may be tighter.
-        let strip_cap = h.div_ceil(STRIP_H) * w;
+        // classify demotes full runs shorter than 8 columns and bridges
+        // empty gaps up to 8. Within a chunk, separate cells therefore have
+        // at least 8 intervening columns; chunk edges can split a run.
+        // Spans occupy at least 8 columns and all outputs are disjoint.
+        let strips = h.div_ceil(STRIP_H);
+        let chunks = w.div_ceil(GPU_CLASSIFY_WIDTH as usize);
+        let cells_per_strip = w.div_ceil(8) + chunks;
+        let strip_cap = strips * w;
+        let cell_cap = (strips * cells_per_strip).min(strip_cap);
+        let instance_cap = (strips * (cells_per_strip + w / 8)).min(strip_cap);
         bound.cell_cap = bound
             .fragments
-            .min(strip_cap)
+            .min(cell_cap)
             .max(usize::from(w <= 32 && h <= 32));
-        // Spans and cells share the same output range and never overlap.
-        bound.instance_cap = (bound.cell_cap * 2 + h.div_ceil(STRIP_H)).min(strip_cap);
+        bound.instance_cap = (bound.cell_cap * 2 + strips).min(instance_cap);
         bound
     }
 }
