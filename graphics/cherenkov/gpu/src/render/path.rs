@@ -315,15 +315,26 @@ pub fn emit_resolved(
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_sign_loss)]
 pub fn grid(bbox: Rect, surface: (f64, f64)) -> Option<(f64, f64, usize, usize, bool)> {
-    let clip = Rect::new(0.0, 0.0, surface.0, surface.1);
+    let (r, clipped) = clipped_grid(bbox, surface);
+    let w = r.width() as usize;
+    let h = r.height() as usize;
+    (w > 0 && h > 0).then_some((r.x0, r.y0, w, h, clipped))
+}
+
+/// Intersect before rounding: a fractional zero-area intersection must not
+/// grow into a one-pixel strip outside the surface.
+fn clipped_grid(bbox: Rect, surface: (f64, f64)) -> (Rect, bool) {
     let inflated = bbox.inflate(1.0, 1.0);
-    let r = inflated.intersect(clip);
+    let r = inflated.intersect(Rect::new(0.0, 0.0, surface.0, surface.1));
     let clipped = r != inflated;
-    let x0 = r.x0.floor();
-    let y0 = r.y0.floor();
-    let w = (r.x1.ceil() - x0).max(0.0) as usize;
-    let h = (r.y1.ceil() - y0).max(0.0) as usize;
-    (w > 0 && h > 0).then_some((x0, y0, w, h, clipped))
+    (
+        if r.is_zero_area() {
+            Rect::ZERO
+        } else {
+            r.expand()
+        },
+        clipped,
+    )
 }
 
 /// The segments `resolve_winding` settles on, borrowed when it leaves the
@@ -720,20 +731,10 @@ impl GpuPath {
     /// grid the placement covers, positioned on it.
     #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn bound_at(&self, translation: Vec2, surface: (f64, f64)) -> GpuBound {
-        // The bound raster grid: the hull inflated by a pixel and clipped to
-        // the surface, floored and ceiled like the sweep's rect.
-        let inflated = (self.hull + (translation - self.origin)).inflate(1.0, 1.0);
-        let r = inflated.intersect(Rect::new(0.0, 0.0, surface.0, surface.1));
-        let w = (r.x1.ceil() - r.x0.floor()).max(0.0) as usize;
-        let h = (r.y1.ceil() - r.y0.floor()).max(0.0) as usize;
-        let mut bound = self.grid_bound(w, h);
-        bound.rect = [
-            r.x0.floor() as f32,
-            r.y0.floor() as f32,
-            r.x1.ceil() as f32,
-            r.y1.ceil() as f32,
-        ];
-        bound.clipped = r != inflated;
+        let (r, clipped) = clipped_grid(self.hull + (translation - self.origin), surface);
+        let mut bound = self.grid_bound(r.width() as usize, r.height() as usize);
+        bound.rect = [r.x0 as f32, r.y0 as f32, r.x1 as f32, r.y1 as f32];
+        bound.clipped = clipped;
         bound
     }
 
@@ -1801,6 +1802,29 @@ fn classes<R: Runs + ?Sized>(runs: &R) -> Vec<(u32, Class)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipped_fractional_empty_bounds_stay_empty() {
+        let surface = (100.0, 100.0);
+        for bbox in [
+            Rect::new(101.25, 10.25, 110.25, 20.25),
+            Rect::new(10.25, 101.25, 20.25, 110.25),
+            Rect::new(101.25, 101.25, 110.25, 110.25),
+        ] {
+            assert!(grid(bbox, surface).is_none(), "{bbox:?}");
+            let path = prepare_gpu(bbox.to_path(0.1).elements(), Affine::IDENTITY, surface);
+            assert!(path.bound.empty, "{bbox:?}");
+        }
+        // A visible subpixel edge and a path surrounding the viewport still draw.
+        for bbox in [
+            Rect::new(99.75, 10.25, 110.25, 20.25),
+            Rect::new(-10.25, -10.25, 110.25, 110.25),
+        ] {
+            assert!(grid(bbox, surface).is_some(), "{bbox:?}");
+            let path = prepare_gpu(bbox.to_path(0.1).elements(), Affine::IDENTITY, surface);
+            assert!(!path.bound.empty, "{bbox:?}");
+        }
+    }
 
     /// The translation's fraction is rasterized exactly and hashed as f32
     /// bits, not snapped to the 1/4 px grid.
