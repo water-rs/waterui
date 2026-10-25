@@ -1,9 +1,8 @@
 //! Retained layer pixels and measured admission inputs.
 
-use cherenkov::{Command, DisplayList, GlyphStyle, RenderError};
+use cherenkov::{Command, DisplayList, RenderError};
 use kurbo::{Affine, Rect, Shape};
 use rustc_hash::FxHashMap;
-use skrifa::MetadataProvider;
 
 use crate::render::{
     bitmap, glyph,
@@ -125,60 +124,6 @@ fn union(bounds: &mut Option<Rect>, rect: Rect) {
     }
 }
 
-fn glyph_bounds(
-    run: &cherenkov::GlyphRun,
-    fonts: &FxHashMap<u64, glyph::FontData>,
-) -> Result<Rect, RenderError> {
-    let data = fonts
-        .get(&run.font.raw())
-        .ok_or_else(|| RenderError::Font(format!("unregistered font {}", run.font.raw())))?;
-    let font = skrifa::FontRef::from_index(&data.data, data.index)
-        .map_err(|error| RenderError::Font(error.to_string()))?;
-    let units = f64::from(
-        font.metrics(
-            skrifa::instance::Size::unscaled(),
-            skrifa::instance::LocationRef::default(),
-        )
-        .units_per_em,
-    );
-    let scale = f64::from(run.size) / units;
-    let coords: Vec<_> = run
-        .coords
-        .iter()
-        .map(|value| skrifa::raw::types::F2Dot14::from_bits(*value))
-        .collect();
-    let outlines = font.outline_glyphs();
-    let mut bounds = None;
-    for item in run.glyphs.iter() {
-        let transform = Affine::translate((f64::from(item.x), f64::from(item.y)))
-            * glyph::checked_transform(item)?;
-        if let Some(bitmap_font) = &data.bitmap {
-            if let Some(decoded) = bitmap::decode(
-                &data.data,
-                data.index,
-                bitmap_font,
-                bitmap_font.select(run.size),
-                item.id,
-            )? {
-                union(
-                    &mut bounds,
-                    transform.transform_rect_bbox(
-                        Affine::scale(f64::from(run.size)).transform_rect_bbox(decoded.em),
-                    ),
-                );
-            }
-        } else if let Some(outline) = glyph::outline(&outlines, &coords, item.id)? {
-            let mut rect = Affine::scale_non_uniform(scale, -scale)
-                .transform_rect_bbox(outline.bounding_box());
-            if let GlyphStyle::Stroke(stroke) = &run.style {
-                rect = rect.inflate(stroke_margin(stroke), stroke_margin(stroke));
-            }
-            union(&mut bounds, transform.transform_rect_bbox(rect));
-        }
-    }
-    Ok(bounds.unwrap_or(Rect::ZERO))
-}
-
 /// Conservative finite bounds from the actual retained display list. A
 /// filter or shader can change without a source edit and is not static.
 fn path_bounds(outline: &Outline, list: &DisplayList) -> Rect {
@@ -240,11 +185,16 @@ fn bounds(
                 }
                 (*local, path_bounds(outline, list))
             }
-            Op::Glyphs { local, run, paint } => {
+            Op::Glyphs {
+                local,
+                bounds,
+                paint,
+                ..
+            } => {
                 if matches!(paint, ResolvedPaint::Shader(_)) {
                     return Ok(None);
                 }
-                (*local, glyph_bounds(run.get(list), fonts)?)
+                (*local, *bounds)
             }
             Op::BitmapGlyph {
                 local,

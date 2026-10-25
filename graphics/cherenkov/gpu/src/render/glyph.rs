@@ -3043,6 +3043,41 @@ pub fn stroke_outlines(
     Ok(paths)
 }
 
+/// Conservative outline bounds in the run's local coordinates, before rasterization.
+pub fn run_bounds(font: &FontData, run: &cherenkov::GlyphRun) -> Result<kurbo::Rect, RenderError> {
+    let font_ref = skrifa::FontRef::from_index(&font.data, font.index)
+        .map_err(|e| RenderError::Font(format!("{e}")))?;
+    let upem = font_ref
+        .head()
+        .map_err(|e| RenderError::Font(format!("head: {e}")))?
+        .units_per_em();
+    let scale = f64::from(run.size) / f64::from(upem);
+    let coords: Vec<F2Dot14> = run.coords.iter().map(|c| F2Dot14::from_bits(*c)).collect();
+    let metrics = font_ref.glyph_metrics(
+        skrifa::instance::Size::unscaled(),
+        skrifa::instance::LocationRef::new(&coords),
+    );
+    let mut bounds = None::<kurbo::Rect>;
+    for glyph in run.glyphs.iter() {
+        let Some(b) = metrics.bounds(skrifa::GlyphId::new(glyph.id)) else {
+            continue;
+        };
+        if b.x_min >= b.x_max || b.y_min >= b.y_max {
+            continue;
+        }
+        let x = f64::from(glyph.x);
+        let y = f64::from(glyph.y);
+        let b = kurbo::Rect::new(
+            f64::from(b.x_min).mul_add(scale, x),
+            f64::from(b.y_max).mul_add(-scale, y),
+            f64::from(b.x_max).mul_add(scale, x),
+            f64::from(b.y_min).mul_add(-scale, y),
+        );
+        bounds = Some(bounds.map_or(b, |bounds| bounds.union(b)));
+    }
+    Ok(bounds.unwrap_or(kurbo::Rect::ZERO))
+}
+
 /// The cache key for a glyph at a quantized device position.
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_sign_loss)]
