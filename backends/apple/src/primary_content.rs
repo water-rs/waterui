@@ -43,3 +43,34 @@ pub fn forward_current(
 ) {
     host.set_primary_content_handler(current);
 }
+
+#[cfg(target_os = "ios")]
+/// The pane's declared scrolling surface: the view itself when it is
+/// a `UIScrollView`, else the host's declared scroll-surface
+/// candidates in stacking order, else a transparent wrapper's
+/// primary content, else — at a view whose owning controller is a
+/// `UINavigationController` — the pushed page controller's root view,
+/// where the declared chain resumes. Undeclared subviews —
+/// decorations, internal `UIKit` chrome — are never considered.
+pub fn declared_scroll_view(
+    view: &cocoa_ui::PlatformView,
+) -> Option<cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIScrollView>> {
+    use cocoa_ui::objc2_ui_kit::{UINavigationController, UIScrollView};
+    use cocoa_ui::uikit::view_controller;
+    if let Some(scroll) = view.downcast_ref::<UIScrollView>() {
+        return Some(scroll.into());
+    }
+    for candidate in view::scroll_surface_candidates(view) {
+        if let Some(found) = declared_scroll_view(&candidate) {
+            return Some(found);
+        }
+    }
+    if let Some(primary) = view::primary_content(view)
+        && let Some(found) = declared_scroll_view(&primary)
+    {
+        return Some(found);
+    }
+    let controller = view_controller::owning_controller(view)
+        .and_then(|controller| controller.downcast::<UINavigationController>().ok())?;
+    declared_scroll_view(controller.topViewController()?.view()?.as_ref())
+}

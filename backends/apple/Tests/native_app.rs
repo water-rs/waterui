@@ -77,6 +77,7 @@ fn trials() -> Vec<libtest_mimic::Trial> {
     trials.extend(key_commands::trials());
     trials.extend(embedded_menus::trials());
     trials.extend(gesture_events::trials());
+    trials.extend(list_spacing::trials());
     trials.extend(text_selection_ios::trials());
     trials
 }
@@ -1757,5 +1758,93 @@ mod text_selection_ios {
                 },
             ),
         ]
+    }
+}
+
+/// Independent lists retain their own header spacing within a navigation page.
+#[cfg(target_os = "ios")]
+mod list_spacing {
+    use super::mtm;
+    use cocoa_ui::Retained;
+    use cocoa_ui::objc2_ui_kit::{NSIndexPathUIKitAdditions, UITableView};
+    use waterui::component::list::{List, ListItem};
+    use waterui::id::SelfId;
+    use waterui::prelude::*;
+    use waterui::reactive::binding;
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, drain_main_queue, mount_uikit_window, pump_main_until,
+        render_environment, spawned_window,
+    };
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "list_spacing::navigation_lists_keep_distinct_header_spacing_with_search",
+                || {
+                    check_spacing(true);
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "list_spacing::navigation_lists_keep_distinct_header_spacing_without_search",
+                || {
+                    check_spacing(false);
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn tables(view: &cocoa_ui::PlatformView, out: &mut Vec<Retained<UITableView>>) {
+        if let Some(table) = view.downcast_ref::<UITableView>() {
+            out.push(Retained::from(table));
+            return;
+        }
+        for child in cocoa_ui::view::subviews(view) {
+            tables(&child, out);
+        }
+    }
+
+    fn check_spacing(searchable: bool) {
+        let list = || List::for_each(vec![SelfId::new(0_u32)], |_| ListItem::new(text("Row")));
+        let query = binding(Str::default());
+        let page = NavigationView::new("Lists", vstack((list(), list())));
+        let page = if searchable {
+            page.searchable(&query, "Search")
+        } else {
+            page
+        };
+        let mount = mount_uikit_window(
+            mtm(),
+            AnyView::new(NavigationStack::new(page)),
+            &render_environment(),
+            spawned_window(mtm()),
+        );
+        let row = cocoa_ui::objc2_foundation::NSIndexPath::indexPathForRow_inSection(0, 0);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                mount.window.layoutIfNeeded();
+                let mut found = Vec::new();
+                tables(&mount.host, &mut found);
+                found.len() == 2
+                    && found.iter().all(|t| {
+                        t.bounds().size.height > 0.0
+                            && t.rectForRowAtIndexPath(&row).size.height > 0.0
+                    })
+            }),
+            "both lists must finish their native row layout"
+        );
+        assert!(drain_main_queue(mtm()), "pending row updates must finish");
+        mount.window.layoutIfNeeded();
+        let mut found = Vec::new();
+        tables(&mount.host, &mut found);
+        let expected = [0.0, 35.0];
+        for (index, (table, expected)) in found.iter().zip(expected).enumerate() {
+            let actual = table.rectForRowAtIndexPath(&row).origin.y;
+            assert!(
+                (actual - expected).abs() < 0.5,
+                "list {index} with searchable={searchable}: first row begins at {actual}, expected {expected}"
+            );
+        }
     }
 }

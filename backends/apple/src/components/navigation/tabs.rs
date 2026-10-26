@@ -149,12 +149,8 @@ mod platform {
 
     use crate::contract::{NativeLeaf, RenderContext};
     use cocoa_ui::geometry::Rect;
-    use cocoa_ui::objc2_ui_kit::{
-        UINavigationController, UIScrollView, UITabAccessory, UITabBarMinimizeBehavior,
-    };
-    use cocoa_ui::uikit::{
-        HostView, TabContentController, TabSpec, TabsController, view_controller,
-    };
+    use cocoa_ui::objc2_ui_kit::{UITabAccessory, UITabBarMinimizeBehavior};
+    use cocoa_ui::uikit::{HostView, TabContentController, TabSpec, TabsController};
     use cocoa_ui::{Retained, view};
     use waterui::Environment;
     use waterui::navigation::{TabsLayout, tab::TabBarMinimizeBehavior};
@@ -189,32 +185,6 @@ mod platform {
         }
     }
 
-    /// The pane's declared scrolling surface: the view itself when it is
-    /// a `UIScrollView`, else the host's declared scroll-surface
-    /// candidates in stacking order, else a transparent wrapper's
-    /// primary content, else — at a view whose owning controller is a
-    /// `UINavigationController` — the pushed page controller's root view,
-    /// where the declared chain resumes. Undeclared subviews —
-    /// decorations, internal `UIKit` chrome — are never considered.
-    fn declared_scroll_view(view: &cocoa_ui::PlatformView) -> Option<Retained<UIScrollView>> {
-        if let Some(scroll) = view.downcast_ref::<UIScrollView>() {
-            return Some(scroll.into());
-        }
-        for candidate in view::scroll_surface_candidates(view) {
-            if let Some(found) = declared_scroll_view(&candidate) {
-                return Some(found);
-            }
-        }
-        if let Some(primary) = view::primary_content(view)
-            && let Some(found) = declared_scroll_view(&primary)
-        {
-            return Some(found);
-        }
-        let controller = view_controller::owning_controller(view)
-            .and_then(|controller| controller.downcast::<UINavigationController>().ok())?;
-        declared_scroll_view(controller.topViewController()?.view()?.as_ref())
-    }
-
     /// Installs one tab's `TabContentController`: the spec's chrome, the
     /// declared-scroll-surface association — `UIKit` asks the selected
     /// controller for its `contentScrollViewForEdge:` whenever it tracks a
@@ -229,7 +199,7 @@ mod platform {
         let controller = TabContentController::new(mtm, tab.pane.view());
         controller.apply_spec(&spec(tab));
         controller.set_bottom_scroll_surface(|controller| {
-            declared_scroll_view(controller.view()?.as_ref())
+            crate::primary_content::declared_scroll_view(controller.view()?.as_ref())
         });
 
         // A declared icon view draws inside the tab item as a template image
