@@ -12,6 +12,16 @@ mod engine;
 // Bare wasm reaches none of the env-driven window/console paths that call
 // these helpers.
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
+// A painter-less Android build compiles no runner — the env knobs' only
+// readers — so the helpers are dead there while every painter'd build still
+// reaches them.
+#[cfg_attr(
+    not(any(hydrolysis_gpu_painter, hydrolysis_hwui)),
+    expect(
+        dead_code,
+        reason = "a painter-less Android build compiles no runner — the env overrides' only readers"
+    )
+)]
 mod env;
 #[cfg(hydrolysis_gpu)]
 mod gpu_view;
@@ -21,18 +31,67 @@ mod hosted;
 // runtime under its feature.
 #[cfg(any(test, hydrolysis_hwui))]
 pub mod hwui;
+#[cfg_attr(
+    not(any(hydrolysis_gpu_painter, hydrolysis_hwui)),
+    expect(
+        dead_code,
+        reason = "a painter-less Android build compiles no runner to install the localization catalog"
+    )
+)]
 mod localization;
+#[cfg_attr(
+    not(any(hydrolysis_gpu_painter, hydrolysis_hwui)),
+    expect(
+        dead_code,
+        reason = "a painter-less Android build compiles no runner or JNI bridge — the casts' main callers"
+    )
+)]
 mod num_cast;
 #[cfg(all(hydrolysis_pipeline_cache, hydrolysis_gpu_painter))]
 mod pipeline_cache;
+#[cfg_attr(
+    not(any(hydrolysis_gpu_painter, hydrolysis_hwui)),
+    expect(
+        dead_code,
+        reason = "a painter-less Android build compiles no window pump — the platform helpers' only drivers"
+    )
+)]
 mod platform;
+#[cfg_attr(
+    not(any(hydrolysis_gpu_painter, hydrolysis_hwui)),
+    expect(
+        dead_code,
+        reason = "a painter-less Android build ships no session — PlatformViewFocus's only owner"
+    )
+)]
 mod platform_view;
 #[cfg(hydrolysis_gpu_painter)]
 mod readback;
+#[cfg_attr(
+    not(any(hydrolysis_gpu_painter, hydrolysis_hwui)),
+    expect(
+        dead_code,
+        reason = "a painter-less Android build ships no session to drive the retained-tree renderer"
+    )
+)]
 mod renderer;
+#[cfg_attr(
+    not(any(hydrolysis_gpu_painter, hydrolysis_hwui)),
+    expect(
+        dead_code,
+        reason = "a painter-less Android build compiles no runner — the frame pump and host machinery it alone drives go unreferenced"
+    )
+)]
 mod runner;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+#[cfg_attr(
+    not(any(hydrolysis_gpu_painter, hydrolysis_hwui)),
+    expect(
+        dead_code,
+        reason = "a painter-less Android build compiles no text engine, so the seam's service internals are unreferenced"
+    )
+)]
 mod text;
 pub mod theme;
 #[cfg(hydrolysis_gpu_painter)]
