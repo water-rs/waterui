@@ -599,6 +599,7 @@ impl AndroidHostWindow {
     /// transaction gate: inside a transaction the latch already joins that
     /// frame, and while occluded the request stays armed for the restore
     /// frame. Wakes raised before the queued post runs coalesce into it.
+    #[cfg(hydrolysis_hwui)]
     pub(crate) fn content_redraw_handle(&self) -> crate::renderer::HostRedraw {
         crate::renderer::HostRedraw::new(self.content_redraw_wake())
     }
