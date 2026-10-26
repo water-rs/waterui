@@ -1288,8 +1288,8 @@ mod navigation {
     use cocoa_ui::uikit::native_test;
     use cocoa_ui::uikit::view_controller::enclosing_controller;
     use cocoa_ui::{PlatformView, Rect, Retained, view};
-    use waterui::Str;
-    use waterui::component::{ButtonStyle, button};
+    use waterui::background::Material;
+    use waterui::component::{ButtonStyle, button, label};
     use waterui::icon::SystemIcon;
     use waterui::navigation::{
         NavigationSplitView, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
@@ -1297,6 +1297,7 @@ mod navigation {
     };
     use waterui::prelude::text;
     use waterui::reactive::binding;
+    use waterui::{Str, ViewExt as _};
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until, render};
 
     use super::mtm;
@@ -1327,6 +1328,89 @@ mod navigation {
         None
     }
 
+    /// The compact split fixture includes both a platform symbol and a hosted SVG label.
+    fn navigation_fixture() -> waterui_apple::contract::NativeLeaf {
+        let selection = binding(Some(0_i32));
+        let query = binding(Str::default());
+        render(NavigationSplitView::new(
+            &selection,
+            || text("sidebar"),
+            move |_id: i32| {
+                let mut item = NavigationToolbarItem::new(
+                    NavigationToolbarPlacement::PrimaryAction,
+                    button("").style(ButtonStyle::Plain),
+                );
+                item.icon = Some(ToolbarItemIcon::System(SystemIcon::new("plus")));
+                NavigationView::new("Today", text("detail").background(Material::Regular))
+                    .searchable(&query, "Search reminders")
+                    .navigation_toolbar(NavigationToolbar::new(vec![
+                        item,
+                        NavigationToolbarItem::new(
+                            NavigationToolbarPlacement::PrimaryAction,
+                            button(label("").icon(waterui::svg::Svg::from_path(
+                                "M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z",
+                                24.0,
+                                24.0,
+                            )))
+                            .style(ButtonStyle::Borderless),
+                        ),
+                    ]))
+            },
+        ))
+    }
+
+    /// Native chrome must keep hosted icon and page content visible after collapse.
+    fn assert_content_shown(
+        window: &cocoa_ui::objc2_ui_kit::UIWindow,
+        item: &cocoa_ui::objc2_ui_kit::UINavigationItem,
+        page: &UIViewController,
+    ) {
+        let hosted = item
+            .rightBarButtonItems()
+            .expect("the page retains its actions")
+            .iter()
+            .find_map(|item| item.customView())
+            .expect("arbitrary button content remains hosted");
+        let icon = super::find::<cocoa_ui::uikit::ImageView>(&hosted)
+            .expect("the hosted button retains its label icon");
+        assert!(
+            icon.downcast_ref::<cocoa_ui::uikit::ImageView>()
+                .expect("picture image view")
+                .image()
+                .is_some(),
+            "the hosted SVG produces a UIKit image"
+        );
+        let icon_shown = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            window.layoutIfNeeded();
+            let bounds = view::bounds(&icon);
+            icon.window().is_some()
+                && view::has_visible_ancestry(&icon)
+                && bounds.size.width > 0.0
+                && bounds.size.height > 0.0
+        });
+        assert!(
+            icon_shown,
+            "the hosted toolbar icon remains visible with a nonempty frame: {:?}; wrapper: {:?}",
+            view::bounds(&icon),
+            view::bounds(&hosted),
+        );
+        let detail = super::find::<cocoa_ui::uikit::Label>(&page.view().expect("page view"))
+            .expect("the detail page retains its rendered label");
+        let content_shown = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            window.layoutIfNeeded();
+            let bounds = view::bounds(&detail);
+            detail.window().is_some()
+                && view::has_visible_ancestry(&detail)
+                && bounds.size.width > 0.0
+                && bounds.size.height > 0.0
+        });
+        assert!(
+            content_shown,
+            "the collapsed detail content remains visible with a nonempty frame: {:?}",
+            view::bounds(&detail)
+        );
+    }
+
     /// A `NavigationSplitView` detail column is a stack-driven
     /// `UINavigationController`: the page's chrome lands on
     /// `navigationItem` — the `searchable` controller attaches, the
@@ -1338,22 +1422,7 @@ mod navigation {
     /// an inline title and a hosted action drawn as an empty capsule
     /// (water-rs/waterui#2717).
     fn a_split_detail_column_carries_navigation_item_chrome() {
-        let selection = binding(Some(0_i32));
-        let query = binding(Str::default());
-        let leaf = render(NavigationSplitView::new(
-            &selection,
-            || text("sidebar"),
-            move |_id: i32| {
-                let mut item = NavigationToolbarItem::new(
-                    NavigationToolbarPlacement::PrimaryAction,
-                    button("").style(ButtonStyle::Plain),
-                );
-                item.icon = Some(ToolbarItemIcon::System(SystemIcon::new("plus")));
-                NavigationView::new("Today", text("detail"))
-                    .searchable(&query, "Search reminders")
-                    .navigation_toolbar(NavigationToolbar::new(vec![item]))
-            },
-        ));
+        let leaf = navigation_fixture();
         let mtm = mtm();
         let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
         let controller = UIViewController::new(mtm);
@@ -1444,6 +1513,7 @@ mod navigation {
             sidebar_nav.navigationBar().prefersLargeTitles(),
             "the compact stack's visible bar keeps the large-title gate open"
         );
+        assert_content_shown(&window, &item, &page);
     }
 }
 
