@@ -184,6 +184,11 @@ pub mod ts;
 pub use waterui_video as video;
 #[cfg(feature = "webview")]
 pub use waterui_webview as webview;
+/// The `WidgetKit` widget authoring surface: the closed snapshot schema a
+/// `#[waterui::widget]` function produces, dated per timeline entry, and the
+/// restricted constructors that build it.
+#[cfg(feature = "widgets")]
+pub use waterui_widgets as widgets;
 
 // Asset types re-exported for convenience
 #[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]

@@ -255,6 +255,7 @@ waterui-math = "0.2.0"
 waterui-layout = { version = "0.5.1", path = "components/foundation/layout" }
 waterui-navigation = { version = "0.5.1", path = "components/foundation/navigation" }
 waterui-webview = { version = "0.5.1", path = "components/platform/webview" }
+waterui-widgets = { version = "0.5.1", path = "components/platform/widgets" }
 waterui-chromium = { version = "0.5.1", path = "components/platform/chromium" }
 waterui-browser-cef = { version = "0.5.1", path = "components/platform/browser-cef", default-features = false }
 waterui-browser-wpe = { version = "0.5.1", path = "components/platform/browser-wpe", default-features = false }
@@ -469,6 +470,8 @@ remote = ["waterui-internal/remote", "waterui-dylib?/remote"]
 # link it. The backend without one selects this.
 video-gpu = ["waterui-internal/video-gpu", "waterui-dylib?/video-gpu"]
 webview = ["waterui-internal/webview", "waterui-dylib?/webview"]
+# The `WidgetKit` authoring surface (`waterui::widgets`, `#[waterui::widget]`).
+widgets = ["waterui-internal/widgets", "waterui-dylib?/widgets"]
 # TypeScript views: the embedded JavaScript engine, the signal bridge, the
 # `tsx!` mount, and the props contract schema (`waterui::ts::schema`) whose
 # encoded contract the `water` CLI reads back out of a debug artifact.

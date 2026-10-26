@@ -13065,6 +13065,7 @@ dependencies = [
  "waterui-mcp-protocol",
  "waterui-meta",
  "waterui-preview-protocol",
+ "waterui-widgets",
  "which 8.0.6",
  "whoami",
  "windows-sys 0.61.2",
@@ -13358,6 +13359,7 @@ dependencies = [
  "waterui-video",
  "waterui-video-gpu",
  "waterui-webview",
+ "waterui-widgets",
  "web-time",
 ]
 
@@ -13828,6 +13830,18 @@ dependencies = [
  "waterui-testing",
  "waterui-url",
  "waterui-watcher-set",
+]
+
+[[package]]
+name = "waterui-widgets"
+version = "0.5.1"
+dependencies = [
+ "pastey 0.2.3",
+ "serde",
+ "serde_json",
+ "suiteki",
+ "waterui-meta",
+ "waterui-text",
 ]
 
 [[package]]

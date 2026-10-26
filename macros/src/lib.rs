@@ -993,6 +993,335 @@ impl Parse for PreviewArg {
     }
 }
 
+/// The `WidgetKit` families a `#[widget]` may declare — the serialized
+/// `WidgetFamily` spellings the extension renders.
+const WIDGET_FAMILIES: &[&str] = &[
+    "systemSmall",
+    "systemMedium",
+    "systemLarge",
+    "systemExtraLarge",
+    "accessoryCircular",
+    "accessoryRectangular",
+    "accessoryInline",
+];
+
+/// A single `#[widget]` argument: `name = "…"`, `description = "…"`,
+/// `kind = "…"`, or `families = [systemSmall, …]`.
+struct WidgetArg {
+    name: syn::Ident,
+    value: Expr,
+}
+
+impl Parse for WidgetArg {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let name: syn::Ident = input.parse()?;
+        input.parse::<Token![=]>()?;
+        let value: Expr = input.parse()?;
+        Ok(Self { name, value })
+    }
+}
+
+fn widget_arg_string(arg: &WidgetArg) -> syn::Result<String> {
+    if let Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Str(lit),
+        ..
+    }) = &arg.value
+    {
+        Ok(lit.value())
+    } else {
+        Err(syn::Error::new_spanned(
+            &arg.value,
+            format!("`#[widget]`'s `{}` must be a string literal", arg.name),
+        ))
+    }
+}
+
+/// Escapes `s` for embedding inside a JSON string literal — the declaration
+/// record's payload is assembled at expansion time.
+fn json_escape(s: &str) -> String {
+    use std::fmt::Write as _;
+    let mut escaped = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            c if (c as u32) < 0x20 => {
+                write!(escaped, "\\u{:04x}", c as u32).expect("writing to a String cannot fail");
+            }
+            c => escaped.push(c),
+        }
+    }
+    escaped
+}
+
+/// Declares a `WidgetKit` widget: `#[waterui::widget(name = "…", description = "…")]`.
+///
+/// The attributed function produces the widget's timeline — either a
+/// `Timeline`/`TimelineEntry` directly or any `WidgetContent`, which becomes
+/// a single dated entry. It may take one `WidgetContext` parameter (the
+/// family and display size `WidgetKit` hands the provider). Only the
+/// `waterui::widgets` schema nodes are widget content; a `WaterUI` view in
+/// that position is a compile-time error — `WidgetKit` renders the extension
+/// from the serialized snapshot, and representable embedding cannot cross
+/// its process boundary.
+///
+/// ```rust,ignore
+/// use waterui::widgets::*;
+///
+/// #[waterui::widget(name = "Steps", description = "Today's step count")]
+/// fn steps(context: WidgetContext) -> impl WidgetContent {
+///     vstack((text("Steps"), text("6,241")))
+/// }
+/// ```
+///
+/// `kind` (the `WidgetConfiguration` kind) defaults to the function name;
+/// `families` defaults to `[systemSmall, systemMedium, systemLarge]`.
+///
+/// The attribute emits the function's `waterui_widget_<crate>_<fn>` C
+/// export and the `waterui_meta_widget_<crate>_<fn>` declaration record the
+/// `water` CLI reads while it generates and packages the extension.
+#[proc_macro_attribute]
+pub fn widget(args: TokenStream, input: TokenStream) -> TokenStream {
+    let input_fn = parse_macro_input!(input as ItemFn);
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.into_compile_error().into(),
+    };
+    let args = parse_macro_input!(args with Punctuated::<WidgetArg, Token![,]>::parse_terminated);
+
+    let fn_name = &input_fn.sig.ident;
+    let fn_vis = &input_fn.vis;
+    let fn_attrs = &input_fn.attrs;
+    let fn_sig = &input_fn.sig;
+    let fn_block = &input_fn.block;
+    let fn_name_str = fn_name.to_string();
+
+    let params = match widget_params(&args) {
+        Ok(params) => params,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let context_mode = match widget_context_mode(&input_fn.sig) {
+        Ok(mode) => mode,
+        Err(error) => return error.to_compile_error().into(),
+    };
+
+    let call_expr = match context_mode {
+        WidgetContextMode::None => quote! { #fn_name() },
+        WidgetContextMode::ByValue => quote! { #fn_name(__wui_context) },
+        WidgetContextMode::ByRef => quote! { #fn_name(&__wui_context) },
+    };
+    // A context-free function still decodes — the extension always sends a
+    // context, and validating the wire form keeps the contract exercised —
+    // but the binding stays unnamed so nothing warns on it.
+    let context_binding = if matches!(context_mode, WidgetContextMode::None) {
+        quote! {
+            let _ = #waterui::widgets::ffi::decode_context(
+                __wui_context_ptr,
+                __wui_context_len,
+            );
+        }
+    } else {
+        quote! {
+            let __wui_context: #waterui::widgets::WidgetContext =
+                #waterui::widgets::ffi::decode_context(
+                    __wui_context_ptr,
+                    __wui_context_len,
+                );
+        }
+    };
+
+    let payload = widget_payload(&fn_name_str, &params);
+    let payload_lit = syn::LitStr::new(&payload, Span::call_site());
+
+    let expanded = quote! {
+        #(#fn_attrs)*
+        #fn_vis #fn_sig #fn_block
+
+        #waterui::widgets::__export_widget!(
+            #fn_name_str,
+            #payload_lit,
+            [__wui_context_ptr, __wui_context_len, __wui_out] => {
+                #context_binding
+                let __wui_timeline = #waterui::widgets::IntoTimeline::into_timeline(#call_expr);
+                #waterui::widgets::ffi::Buffer::from_timeline(&__wui_timeline)
+            }
+        );
+    };
+
+    TokenStream::from(expanded)
+}
+
+/// The parsed `#[widget]` arguments after defaults.
+struct WidgetParams {
+    display_name: String,
+    description: String,
+    kind: String,
+    families: Vec<String>,
+}
+
+/// A `#[widget]` function's `WidgetContext` parameter shape.
+enum WidgetContextMode {
+    None,
+    ByValue,
+    ByRef,
+}
+
+/// Validates the `#[widget]` attribute's arguments.
+fn widget_params(args: &Punctuated<WidgetArg, Token![,]>) -> syn::Result<WidgetParams> {
+    let mut display_name: Option<String> = None;
+    let mut description: Option<String> = None;
+    let mut kind: Option<String> = None;
+    let mut families: Option<Vec<String>> = None;
+    for arg in args {
+        match arg.name.to_string().as_str() {
+            "name" | "description" | "kind" => {
+                let value = widget_arg_string(arg)?;
+                let slot = match arg.name.to_string().as_str() {
+                    "name" => &mut display_name,
+                    "description" => &mut description,
+                    _ => &mut kind,
+                };
+                if slot.replace(value).is_some() {
+                    return Err(syn::Error::new_spanned(
+                        &arg.name,
+                        format!("duplicate `#[widget]` argument `{}`", arg.name),
+                    ));
+                }
+            }
+            "families" => {
+                let Expr::Array(array) = &arg.value else {
+                    return Err(syn::Error::new_spanned(
+                        &arg.value,
+                        "`#[widget]`'s `families` must be a list like [systemSmall, systemMedium]",
+                    ));
+                };
+                let mut parsed = Vec::with_capacity(array.elems.len());
+                for element in &array.elems {
+                    let Some(name) = widget_family_name(element) else {
+                        return Err(syn::Error::new_spanned(
+                            element,
+                            "`#[widget]` families are `WidgetFamily` case names like `systemSmall`",
+                        ));
+                    };
+                    parsed.push(name);
+                }
+                if families.replace(parsed).is_some() {
+                    return Err(syn::Error::new_spanned(
+                        &arg.name,
+                        "duplicate `#[widget]`'s `families`",
+                    ));
+                }
+            }
+            other => {
+                return Err(syn::Error::new_spanned(
+                    &arg.name,
+                    format!(
+                        "unknown `#[widget]` argument `{other}`; expected `name`, `description`, `kind` or `families`"
+                    ),
+                ));
+            }
+        }
+    }
+
+    let Some(display_name) = display_name else {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "`#[widget]` requires `name = \"…\"` — the title the widget gallery shows",
+        ));
+    };
+    let Some(description) = description else {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "`#[widget]` requires `description = \"…\"` — the subtitle the widget gallery shows",
+        ));
+    };
+    Ok(WidgetParams {
+        display_name,
+        description,
+        kind: kind.unwrap_or_default(),
+        families: families.unwrap_or_else(|| {
+            ["systemSmall", "systemMedium", "systemLarge"]
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        }),
+    })
+}
+
+/// One `families` element: an ident naming a known `WidgetFamily` case.
+fn widget_family_name(element: &Expr) -> Option<String> {
+    let Expr::Path(path) = element else {
+        return None;
+    };
+    let name = path.path.get_ident().map(ToString::to_string)?;
+    WIDGET_FAMILIES.contains(&name.as_str()).then_some(name)
+}
+
+/// The function may take no parameter or one `WidgetContext` parameter (by
+/// value or by reference).
+fn widget_context_mode(sig: &syn::Signature) -> syn::Result<WidgetContextMode> {
+    let is_widget_context = |ty: &Type| {
+        if let Type::Path(path) = ty
+            && let Some(segment) = path.path.segments.last()
+        {
+            return segment.ident == "WidgetContext";
+        }
+        false
+    };
+    match sig.inputs.len() {
+        0 => Ok(WidgetContextMode::None),
+        1 => {
+            let Some(arg) = sig.inputs.iter().next() else {
+                unreachable!("the signature's input count was checked above");
+            };
+            let syn::FnArg::Typed(pat_type) = arg else {
+                return Err(syn::Error::new_spanned(
+                    arg,
+                    "`#[widget]` can only be applied to free functions",
+                ));
+            };
+            match &*pat_type.ty {
+                ty if is_widget_context(ty) => Ok(WidgetContextMode::ByValue),
+                Type::Reference(reference) if is_widget_context(&reference.elem) => {
+                    Ok(WidgetContextMode::ByRef)
+                }
+                _ => Err(syn::Error::new_spanned(
+                    &pat_type.ty,
+                    "a `#[widget]` function takes at most one `WidgetContext` parameter",
+                )),
+            }
+        }
+        _ => Err(syn::Error::new_spanned(
+            &sig.inputs,
+            "a `#[widget]` function takes at most one `WidgetContext` parameter",
+        )),
+    }
+}
+
+/// The `waterui_meta_widget_*` record's JSON payload, assembled at
+/// expansion time — a literal the declaration macro parks in `.wmeta`.
+fn widget_payload(fn_name: &str, params: &WidgetParams) -> String {
+    let families_json = params
+        .families
+        .iter()
+        .map(|family| format!("\"{}\"", json_escape(family)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let kind = if params.kind.is_empty() {
+        fn_name
+    } else {
+        params.kind.as_str()
+    };
+    format!(
+        "{{\"fn\":\"{}\",\"kind\":\"{}\",\"displayName\":\"{}\",\"description\":\"{}\",\"families\":[{}]}}",
+        json_escape(fn_name),
+        json_escape(kind),
+        json_escape(&params.display_name),
+        json_escape(&params.description),
+        families_json,
+    )
+}
+
 fn testing_crate_path() -> syn::Result<proc_macro2::TokenStream> {
     match crate_name("waterui-testing") {
         Ok(FoundCrate::Itself) => Ok(quote!(crate)),
