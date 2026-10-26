@@ -37,11 +37,11 @@ use super::engine::{
 };
 use super::input::{ResolvedTextLayoutInput, ResolvedTextStyleSpec};
 
-/// The [`TextEngine`] built on the parley stack.
+/// The `TextEngine` built on the parley stack.
 ///
 /// `fonts` is the collection the engine was born with — the session's
-/// installed fonts via [`Self::from_collection`], or the enumerated system
-/// collection via [`Self::system`]. An engine's fonts never change after
+/// installed fonts via `Self::from_collection`, or the enumerated system
+/// collection via `Self::system`. An engine's fonts never change after
 /// construction, so no shape cache keyed on its inputs can go stale.
 pub struct ParleyEngine {
     /// Fonts registered at construction; the clone source for shaping scratch.
