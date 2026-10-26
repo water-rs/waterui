@@ -460,9 +460,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::LazyStack(node) => {
                 node.item_cache.borrow_mut().prepare_for_measure(renderer);
             }
-            Self::Color(_)
-            | Self::Text(_)
-            | Self::SceneView(_) => {}
+            Self::Color(_) | Self::Text(_) | Self::SceneView(_) => {}
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => {}
         }
@@ -754,9 +752,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 store_safe_area(&mut node.safe_area, safe_area);
             }
             // Text, color and GPU leaves render at flush from `ctx.bounds`.
-            Self::Color(_)
-            | Self::Text(_)
-            | Self::SceneView(_) => {}
+            Self::Color(_) | Self::Text(_) | Self::SceneView(_) => {}
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => {}
         }
@@ -881,10 +877,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         core::mem::discriminant(self).hash(hasher);
         hash_frame(hasher, frame);
         match self {
-            Self::Color(_)
-            | Self::Text(_)
-            | Self::SceneView(_)
-            | Self::Widget(_) => {}
+            Self::Color(_) | Self::Text(_) | Self::SceneView(_) | Self::Widget(_) => {}
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => {}
             Self::Opacity(node) => node.child.signature_into(frame, hasher),

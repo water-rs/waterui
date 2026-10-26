@@ -189,7 +189,7 @@ pub struct FilterHandle {
 impl FilterHandle {
     /// The handle on `registration`; the mount keeps it until its layer
     /// dies, unregistering the filter.
-#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub fn new<F: FilterRegistration>(registration: F) -> Self {
         Self {
             id: registration.filter_id(),
@@ -210,11 +210,11 @@ impl std::fmt::Debug for FilterHandle {
             .finish_non_exhaustive()
     }
 }
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 #[path = "gpu_target.rs"]
 mod gpu;
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub use gpu::CherenkovHost;
-#[cfg(all(test, not(hydrolysis_hwui)))]
+#[cfg(all(test, hydrolysis_gpu_painter))]
 pub use gpu::{attach_material_shaders, chrome_sample, chrome_spec};

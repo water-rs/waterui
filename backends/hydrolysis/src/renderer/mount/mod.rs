@@ -39,9 +39,9 @@ pub use registry::{
     RetainedRegistry, SetRegistrationOwner,
 };
 pub use scopes::RetainedScopes;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub use target::CherenkovHost;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub use target::MaterialTerms;
 
 /// Identity of a producer owner: a counter the renderer hands out through

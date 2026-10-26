@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use nami::Signal;
 use waterui::cursor::CursorStyle;
 use waterui::window::Window as WuiWindow;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use waterui::window::WindowState;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use waterui_graphics::gpu::RedrawHandle;
 
 /// The output request every Hydrolysis host surface is negotiated by:
@@ -15,7 +15,7 @@ use waterui_graphics::gpu::RedrawHandle;
 /// where the display chain carries it, paced FIFO, with a transparency-capable composite
 /// alpha mode iff the window is transparent (#2445).
 #[cfg(hydrolysis_winit)]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub const fn hydrolysis_output_request(transparent: bool) -> cherenkov_gpu::interop::OutputRequest {
     cherenkov_gpu::interop::OutputRequest {
         transparent,
@@ -36,7 +36,7 @@ pub const fn hydrolysis_output_request(transparent: bool) -> cherenkov_gpu::inte
 /// advertises nothing the request admits; the error names the request
 /// and the offer.
 #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub fn negotiate_host_output(
     surface: &wgpu::Surface<'_>,
     adapter: &wgpu::Adapter,
@@ -74,7 +74,7 @@ pub fn negotiate_host_output(
 ///
 /// Non-blocking: `PollType::Poll` processes what has already completed and
 /// returns.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub fn reclaim_device(device: &wgpu::Device) {
     if let Err(error) = poll_device(device, wgpu::PollType::Poll) {
         tracing::warn!("GPU device did not reclaim deferred resources: {error}");
@@ -86,7 +86,7 @@ pub fn reclaim_device(device: &wgpu::Device) {
 ///
 /// Every type that owns a device to the end of its life calls this from
 /// `Drop`. A device with nothing outstanding returns immediately.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub fn drain_device_before_teardown(device: &wgpu::Device) {
     if let Err(error) = poll_device(
         device,
@@ -109,7 +109,7 @@ pub fn drain_device_before_teardown(device: &wgpu::Device) {
 /// erroring. The device is dead either way, so the poll reports failure and
 /// lets the owner move on instead of taking the process down over bookkeeping
 /// for a device that no longer exists.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 fn poll_device(
     device: &wgpu::Device,
     poll_type: wgpu::PollType,
@@ -139,7 +139,7 @@ fn poll_device(
 /// textures feed HDR media paths wherever the adapter provides them.
 /// Indirect first instances enable the engine's optional GPU path coverage.
 #[must_use]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Features {
     if cfg!(target_vendor = "apple") {
         assert!(
@@ -166,7 +166,7 @@ pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Featur
 /// The GPU context a [`DeviceLoss`] handle was taken on: the device-creation
 /// chain and its engine-pool identity.
 #[derive(Clone, Debug)]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct GpuContextHandle {
     /// Identity of this device creation chain for the engine pool.
     pub(crate) context_id: u64,
@@ -191,13 +191,13 @@ pub struct GpuContextHandle {
 /// only sees surface handles — adapter, device, queue and this handle —
 /// still reaches the device's full creation chain.
 #[derive(Clone, Debug, Default)]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct DeviceLoss {
     reason: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     gpu_context: Option<GpuContextHandle>,
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl DeviceLoss {
     /// Starts observing a device: installs its device-lost callback so the
     /// returned handle reports the loss the moment the driver announces it.
@@ -312,13 +312,13 @@ impl DeviceLoss {
 /// declared unrecoverable — the bound that turns a permanently failing
 /// device into an explicit error instead of an infinite retry
 /// (water-rs/waterui#2742).
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub const MAX_UNPRODUCTIVE_LOSSES: usize = 3;
 
 /// Ends a recovery streak: panics naming every recorded loss once the
 /// consecutive-unproductive budget ran out. `losses` counts generations
 /// that died before ever presenting and rebuild attempts that failed.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub fn assert_within_recovery_budget(losses: &[String]) {
     assert!(
         losses.len() <= MAX_UNPRODUCTIVE_LOSSES,
@@ -339,13 +339,13 @@ pub fn assert_within_recovery_budget(losses: &[String]) {
 /// lock; the driver-side loss callback only writes the generation's own
 /// reason cell, which needs no lock.
 #[derive(Debug)]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct RecoverableGpu {
     inner: std::sync::Mutex<RecoverableGpuInner>,
 }
 
 #[derive(Debug)]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 struct RecoverableGpuInner {
     /// The live generation; [`RecoverableGpu::ensure_live`] replaces it
     /// wholesale when the driver reported its device lost.
@@ -355,7 +355,7 @@ struct RecoverableGpuInner {
     unproductive_losses: Vec<String>,
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl RecoverableGpu {
     /// A recoverable context holding `generation` — taken right after the
     /// first device is opened.
@@ -1321,14 +1321,14 @@ impl core::fmt::Display for SurfaceError {
     }
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl std::error::Error for SurfaceError {}
 
 /// A frame acquired from a host-presented surface, such as
 /// [`OffscreenSurface::acquire`].
 #[derive(Debug)]
 #[non_exhaustive]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub enum SurfaceFrame {
     /// An offscreen render target: the frame already lives in a texture.
     Offscreen {
@@ -1349,7 +1349,7 @@ pub enum SurfaceFrame {
     },
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl SurfaceFrame {
     #[must_use]
     /// The frame's texture, whichever presentation form it took.
@@ -1373,7 +1373,7 @@ impl SurfaceFrame {
 }
 
 #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,
 ) -> Result<wgpu::SurfaceTexture, SurfaceError> {
@@ -1394,7 +1394,7 @@ pub fn acquire_surface_texture(
 /// [`SurfaceProvider`] or the macOS winit engine target — the pump, the
 /// resize path and the engine pool consume only this; acquire, copy and
 /// present exist only on the host-acquired kind.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub trait PresentationSurface {
     /// The wgpu adapter this surface renders through.
     fn adapter(&self) -> &wgpu::Adapter;
@@ -1427,7 +1427,7 @@ pub trait PresentationSurface {
 /// Rendering surface abstraction consumed by hydrolysis runner/renderer:
 /// the host-acquired kind, whose frame the pump acquires, renders into and
 /// presents.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub trait SurfaceProvider: PresentationSurface {
     /// Acquires the next frame, or reports why none could be presented into.
     ///
@@ -1470,7 +1470,7 @@ pub trait SurfaceProvider: PresentationSurface {
 /// on, and the window's engine-surface slot, created on the first frame and
 /// replaced when its device chain or transparency no longer matches.
 #[cfg(all(hydrolysis_winit, target_os = "macos"))]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct EngineWindowTarget<'a> {
     /// The window the engine presents on.
     pub(crate) window: &'a std::sync::Arc<winit::window::Window>,
@@ -1489,7 +1489,7 @@ pub struct EngineWindowTarget<'a> {
 
 /// Android's engine-presented window, owned by its `SurfaceView` attachment.
 #[cfg(target_os = "android")]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct EngineAndroidTarget<'a> {
     pub state: &'a std::rc::Rc<crate::engine::SharedEngineState>,
     pub window: &'a ndk::native_window::NativeWindow,
@@ -1720,7 +1720,7 @@ pub trait PlatformWindow: 'static {
 /// macOS winit window, whose `cherenkov_gpu::WindowTarget` presents inside
 /// `Engine::render`. The acquire and present calls that kind lacks are
 /// missing from its type, not asserted away at run time.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub trait GpuSurfaceWindow: PlatformWindow {
     /// How this window's GPU surface presents — host-acquired, or
     /// engine-presented on the macOS winit window.
@@ -1773,7 +1773,7 @@ pub trait GpuSurfaceWindow: PlatformWindow {
 /// the way out — see `drain_device_before_teardown`. Every headless test builds
 /// one of these, and on a runner without a GPU they were the ones dying on drop.
 #[derive(Clone, Debug)]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct OffscreenGpuContext {
     /// Shared so the device is drained once, when the last surface using it
     /// goes away. `drain_device_before_teardown` blocks until the device is
@@ -1783,7 +1783,7 @@ pub struct OffscreenGpuContext {
 }
 
 #[derive(Debug)]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 struct OffscreenGpuContextInner {
     /// The live device generation and its recovery budget; surfaces adopt
     /// a clone of its `DeviceLoss` and this swaps it after a loss.
@@ -1803,15 +1803,15 @@ struct OffscreenGpuContextInner {
 
 /// One id per device creation chain — instances, adapters, devices and
 /// queues are only shared inside one, so it is also the Cherenkov engine key.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 static NEXT_GPU_CONTEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub fn next_gpu_context_id() -> u64 {
     NEXT_GPU_CONTEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl Drop for OffscreenGpuContextInner {
     fn drop(&mut self) {
         let generation = self.gpu.generation();
@@ -1821,7 +1821,7 @@ impl Drop for OffscreenGpuContextInner {
     }
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl OffscreenGpuContext {
     /// Lets the device release everything dropped since the last call.
     ///
@@ -1983,7 +1983,7 @@ impl OffscreenGpuContext {
 /// allocations outstanding until the last one goes away — on a software
 /// rasterizer that runs the machine out of memory — but neither should each
 /// drop wait out the queued work of the other surfaces sharing the device.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct OffscreenSurface {
     gpu: OffscreenGpuContext,
     /// The device generation this surface renders on — a clone of the
@@ -1997,13 +1997,13 @@ pub struct OffscreenSurface {
     last_presented: Option<wgpu::Texture>,
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 fn should_force_fallback_adapter() -> bool {
     std::env::var_os("WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER").is_some()
 }
 
 #[derive(Clone, Copy, Debug)]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 struct AdapterSelection {
     #[cfg_attr(
         target_arch = "wasm32",
@@ -2015,7 +2015,7 @@ struct AdapterSelection {
     allow_software_adapter: bool,
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl AdapterSelection {
     const PRODUCTION: Self = Self {
         allow_software_adapter: false,
@@ -2038,14 +2038,14 @@ impl AdapterSelection {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 struct AdapterPreference {
     backend_rank: u8,
     device_type_rank: u8,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl AdapterPreference {
     /// `prefer_software` is the diagnostics escape hatch: the flag is named
     /// `FORCE_FALLBACK_ADAPTER`, so with it set a software adapter must win
@@ -2064,7 +2064,7 @@ impl AdapterPreference {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 const fn backend_rank(backend: wgpu::Backend) -> u8 {
     if cfg!(target_os = "windows") {
         match backend {
@@ -2097,7 +2097,7 @@ const fn backend_rank(backend: wgpu::Backend) -> u8 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 const fn device_type_rank(device_type: wgpu::DeviceType) -> u8 {
     match device_type {
         wgpu::DeviceType::DiscreteGpu => 0,
@@ -2118,7 +2118,7 @@ const fn device_type_rank(device_type: wgpu::DeviceType) -> u8 {
 /// that), so recommending it as the remedy sends the user somewhere worse
 /// than the refusal.
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 const GPU_REQUIRED_GUIDANCE: &str = "Hydrolysis renders through GPU pipelines and has no CPU path: \
 run on a machine with a GPU, or on a virtual machine enable hardware 3D acceleration and install the vendor driver. \
 For targets without a GPU, waterui-dew is the CPU renderer. \
@@ -2126,7 +2126,7 @@ WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER=1 widens adapter selection to software a
 a software adapter that cannot run the renderer's pipelines fails or aborts the process instead of drawing.";
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 mod adapter_selection_tests {
     use super::{AdapterPreference, GPU_REQUIRED_GUIDANCE};
 
@@ -2232,7 +2232,7 @@ mod adapter_selection_tests {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 const fn software_first_device_type_rank(device_type: wgpu::DeviceType) -> u8 {
     match device_type {
         wgpu::DeviceType::Cpu => 0,
@@ -2256,7 +2256,7 @@ const fn software_first_device_type_rank(device_type: wgpu::DeviceType) -> u8 {
     clippy::option_if_let_else,
     reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
 )]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 fn hydrolysis_backend_tiers() -> Vec<wgpu::Backends> {
     match wgpu::Backends::from_env() {
         Some(backends) => vec![backends],
@@ -2264,7 +2264,7 @@ fn hydrolysis_backend_tiers() -> Vec<wgpu::Backends> {
     }
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 fn hydrolysis_instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDescriptor {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     descriptor.backends = backends;
@@ -2283,7 +2283,7 @@ fn hydrolysis_instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDes
 /// allows it. `None` means this tier satisfied nothing; the
 /// inspected list comes back either way for the no-adapter panic.
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 async fn probe_adapters(
     instance: &wgpu::Instance,
     compatible_surface: Option<&wgpu::Surface<'_>>,
@@ -2357,7 +2357,7 @@ async fn probe_adapters(
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
 )]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 fn fail_no_adapter(context: &str, inspected_adapters: Vec<String>, tiers: &[wgpu::Backends]) -> ! {
     assert!(
         !inspected_adapters.is_empty(),
@@ -2390,7 +2390,7 @@ Surface-compatible adapters inspected: {}. \
         reason = "wasm32 is single-threaded; adapter handles are !Send by design"
     )
 )]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 async fn request_instance_and_adapter(
     context: &str,
     selection: AdapterSelection,
@@ -2443,7 +2443,7 @@ async fn request_instance_and_adapter(
 /// own surface before probing and the winning tier returns both.
 #[cfg(hydrolysis_winit)]
 #[cfg(not(target_os = "macos"))]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 async fn request_instance_surface_adapter(
     context: &str,
     selection: AdapterSelection,
@@ -2470,7 +2470,7 @@ async fn request_instance_surface_adapter(
     fail_no_adapter(context, inspected_adapters, &tiers);
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 fn log_selected_adapter(context: &str, adapter: &wgpu::Adapter) {
     let info = adapter.get_info();
     tracing::info!(
@@ -2482,7 +2482,7 @@ fn log_selected_adapter(context: &str, adapter: &wgpu::Adapter) {
     );
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl Drop for OffscreenSurface {
     fn drop(&mut self) {
         self.last_presented = None;
@@ -2490,7 +2490,7 @@ impl Drop for OffscreenSurface {
     }
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl core::fmt::Debug for OffscreenSurface {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("OffscreenSurface")
@@ -2501,7 +2501,7 @@ impl core::fmt::Debug for OffscreenSurface {
     }
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl OffscreenSurface {
     /// The surface's current pixel size `(width, height)`.
     #[must_use]
@@ -2690,7 +2690,7 @@ impl OffscreenSurface {
 /// strategies that can use it), so the compute fields ask for
 /// `min(default, adapter)` — the defaults' nonzero values would fail the
 /// request on an adapter that reports zero compute the pipeline never uses.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 fn device_limits_for(adapter_limits: &wgpu::Limits) -> wgpu::Limits {
     let defaults = wgpu::Limits::default();
     wgpu::Limits {
@@ -2719,7 +2719,7 @@ fn device_limits_for(adapter_limits: &wgpu::Limits) -> wgpu::Limits {
 }
 
 /// The limits a host-provided adapter is asked for.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     device_limits_for(&adapter.limits())
 }
@@ -2740,7 +2740,7 @@ pub fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
 /// # Errors
 /// [`OpenDeviceError`] when the backend or the engine's Vulkan path
 /// cannot open the device.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub async fn open_engine_device(
     adapter: &wgpu::Adapter,
     descriptor: &wgpu::DeviceDescriptor<'_>,
@@ -2756,7 +2756,7 @@ pub async fn open_engine_device(
 
 /// Why [`open_engine_device`] could not open the shared device.
 #[derive(Debug, thiserror::Error)]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub enum OpenDeviceError {
     /// The backend refused the request.
     #[error("{0}")]
@@ -2766,7 +2766,7 @@ pub enum OpenDeviceError {
     Engine(#[from] cherenkov::EngineError),
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl PresentationSurface for OffscreenSurface {
     fn adapter(&self) -> &wgpu::Adapter {
         Self::adapter(self)
@@ -2827,7 +2827,7 @@ impl PresentationSurface for OffscreenSurface {
     }
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl SurfaceProvider for OffscreenSurface {
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
         if self.handles.is_lost() {
@@ -2857,14 +2857,14 @@ impl SurfaceProvider for OffscreenSurface {
 /// [`Self::surface`], and an offscreen presentation target for
 /// [`Self::readback_rgba8`]. Frames are rendered explicitly through
 /// [`Self::engine`]'s `Engine::render`; nothing pumps or pumps-on-wake here.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct OffscreenSceneSurface {
     target: OffscreenSurface,
     cherenkov: crate::engine::TextureCherenkovSurface,
     state: std::rc::Rc<crate::engine::SharedEngineState>,
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl core::fmt::Debug for OffscreenSceneSurface {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("OffscreenSceneSurface")
@@ -2873,7 +2873,7 @@ impl core::fmt::Debug for OffscreenSceneSurface {
     }
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl OffscreenSceneSurface {
     crate::engine::cfg_async_fn! {
         /// Creates the host on the adapter `WaterUI` would render an
@@ -3002,7 +3002,7 @@ impl OffscreenSceneSurface {
 
 /// Headless platform window backed by an offscreen texture.
 #[derive(Debug)]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct OffscreenWindow {
     surface: OffscreenSurface,
     scale_factor: f64,
@@ -3015,7 +3015,7 @@ pub struct OffscreenWindow {
     )>,
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl OffscreenWindow {
     #[must_use]
     /// Creates an offscreen surface synchronously.
@@ -3125,7 +3125,7 @@ impl OffscreenWindow {
     }
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl PlatformWindow for OffscreenWindow {
     fn content_size(&self) -> (u32, u32) {
         // An offscreen window is exactly its render target.
@@ -3193,7 +3193,7 @@ impl PlatformWindow for OffscreenWindow {
     fn set_cursor_style(&mut self, _style: CursorStyle) {}
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl GpuSurfaceWindow for OffscreenWindow {
     /// The GPU surface this window presents into.
     type Presentation = OffscreenSurface;

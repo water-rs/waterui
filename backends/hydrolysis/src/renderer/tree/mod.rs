@@ -259,10 +259,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     fn for_each_child(&self, f: &mut impl FnMut(&NodeCore<E>, &Self)) {
         let own = self.core();
         match self {
-            Self::Color(_)
-            | Self::Text(_)
-            | Self::Widget(_)
-            | Self::SceneView(_) => {}
+            Self::Color(_) | Self::Text(_) | Self::Widget(_) | Self::SceneView(_) => {}
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => {}
             Self::Container(node) => {
@@ -326,7 +323,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// reaches widget-attached `RetainedSubview` roots too — navigation
     /// pages, lazy items and overlay content — so nothing keeps a stale
     /// mount.
-#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn unmount(&self) {
         self.core().cell.unmount_subtree();
     }

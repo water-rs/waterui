@@ -11,14 +11,14 @@
 use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeUpdate as AccessibilityTreeUpdate,
 };
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use executor_core::try_init_local_executor;
 use nami::Signal as _;
 #[cfg(not(target_arch = "wasm32"))]
 use std::cell::Cell;
-use std::time::Duration;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use std::collections::VecDeque;
+use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
 #[cfg(hydrolysis_run)]
 use waterui::app::App;
@@ -31,19 +31,21 @@ use waterui::app::AppParts;
 use waterui::component::table::TableConfig;
 use waterui::window::Window;
 use waterui::window::WindowManager;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::Retain;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::key::KeyPress;
 use waterui_core::view::Hook;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use waterui_text::FontCollection;
 
-#[cfg(target_os = "android")]
+// The JNI host exists only where a painter does: a painter-less Android
+// build ships none of the session bridge the Kotlin side calls into.
+#[cfg(all(target_os = "android", any(hydrolysis_gpu_painter, hydrolysis_hwui)))]
 pub mod android;
 /// The Android accessibility publish protocol — consecutive-tree event
 /// diffing and explore-by-touch hit testing — compiled on Android for the
@@ -81,16 +83,16 @@ mod diagnostics;
 /// JNI bridge and on host for its tests; dead elsewhere.
 #[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
 pub mod editing;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 mod executor;
-#[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 mod headless;
 pub mod ime;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 pub mod menu_bar;
 #[cfg(hydrolysis_winit)]
 pub mod placement;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 mod semantic;
 /// The windowed runner's SIGINT/SIGTERM/SIGHUP contract on Unix — compiled
 /// where the winit runner needs it, and in test builds for its child-process
@@ -115,18 +117,21 @@ mod winit_runner;
 mod x11_state_watch;
 
 use diagnostics::{RenderDiagnostics, RenderDiagnosticsConfig};
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use diagnostics::{RenderPhaseSample, elapsed_or_zero};
-#[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
-#[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 pub use headless::{HeadlessPumpResult, HeadlessRuntime};
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub use semantic::{SemanticPumpResult, SemanticRuntime};
 // Bare wasm has no window model until `web` compiles the browser runner.
-#[cfg(all(any(not(target_arch = "wasm32"), feature = "web"), not(hydrolysis_hwui)))]
+#[cfg(all(
+    any(not(target_arch = "wasm32"), feature = "web"),
+    hydrolysis_gpu_painter
+))]
 use window::RuntimeWindow;
-#[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use window::{advance_runtime, handle_input_events};
 // One frame's entry is shared by the winit pump, the headless `run`, the
 // `#[cfg(test)]` suite, and the browser runner; the Android host reaches it
@@ -139,7 +144,7 @@ use window::{advance_runtime, handle_input_events};
 ))]
 use window::render_window;
 // Only the native headless/capture paths read frames back; the browser surface presents directly.
-#[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use window::{FrameReader, render_window_with_capture};
 // `runtime_window_origin` is reached by the winit runner and by headless's
 // accessibility-action path.
@@ -164,10 +169,10 @@ use window::{
 // Frame and tree profiles are published to the inspector endpoint, which exists
 // only where `waterui::inspector` does.
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 mod inspector;
 
-#[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 pub use window::HeadlessSnapshot;
 #[cfg(hydrolysis_winit)]
 pub use window::window_requires_transparency;
@@ -175,19 +180,19 @@ pub use window::{FrameCounters, FramePhases, FrameProfile};
 
 use crate::env::{parse_bool_env, parse_optional_positive_u64_env, parse_positive_u64_env};
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
-#[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use crate::platform::{OffscreenGpuContext, OffscreenWindow};
-#[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use crate::readback::readback_surface_texture_rgba8;
+#[cfg(hydrolysis_gpu_painter)]
+use crate::renderer::FontFamilyResolution;
+#[cfg(hydrolysis_gpu_painter)]
+use crate::renderer::HydrolysisTextContextMenuMode;
 use crate::renderer::{
     HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome, SemanticCore,
 };
-#[cfg(not(hydrolysis_hwui))]
-use crate::renderer::FontFamilyResolution;
-#[cfg(not(hydrolysis_hwui))]
-use crate::renderer::HydrolysisTextContextMenuMode;
 use crate::renderer::{MenuShortcutRegistry, PopupWindowManager};
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use crate::text::ParleyEngine;
 use crate::time::Instant;
 

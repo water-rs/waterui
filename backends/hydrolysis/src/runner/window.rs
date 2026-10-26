@@ -3,9 +3,9 @@
 
 use super::*;
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use crate::animation::PerpetualAnimation;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use crate::platform::GpuSurfaceWindow;
 // Concrete `PresentationSurface` method calls — `WinitSurface::device_loss`
 // and `BrowserSurface::device_loss` in the `GpuSurfaceFrame` impls below —
@@ -15,7 +15,7 @@ use crate::platform::GpuSurfaceWindow;
     all(target_os = "macos", hydrolysis_winit),
     all(target_arch = "wasm32", feature = "web")
 ))]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use crate::platform::PresentationSurface as _;
 use crate::renderer::material::{Blending, WithinWindowLevel};
 #[cfg(any(target_os = "android", test))]
@@ -56,7 +56,7 @@ impl FrameMode {
     /// animation tick, and every animation other than a perpetual one is
     /// counted separately by the renderer's own scheduled-work query, so when
     /// perpetual animation is ignored only `Refresh` remains pending.
-    #[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
+    #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
     pub(super) const fn is_pending_with(self, perpetual: PerpetualAnimation) -> bool {
         match perpetual {
             PerpetualAnimation::Counts => self.is_pending(),
@@ -67,7 +67,7 @@ impl FrameMode {
     /// Whether the scheduled frame exists to apply an unapplied semantic
     /// change. `Animate` is scheduled continuation work, not staleness.
     #[cfg(not(target_arch = "wasm32"))]
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(super) const fn is_unapplied_change(self) -> bool {
         matches!(self, Self::Refresh)
     }
@@ -155,7 +155,7 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
     }
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl<P: GpuSurfaceWindow> RuntimeWindow<P, crate::text::ParleyEngine> {
     /// The GPU painter's window: the shared construction plus the surface
     /// redraw handle, installed before the window's first frame.
@@ -543,7 +543,7 @@ pub(super) const fn schedule_animation_update<P: PlatformWindow, E: crate::text:
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// A captured headless frame: raw pixels, the alpha convention the
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 /// producing surface reports, plus dimensions.
 #[non_exhaustive]
 pub struct HeadlessSnapshot {
@@ -560,7 +560,7 @@ pub struct HeadlessSnapshot {
 }
 
 #[derive(Debug)]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub(super) struct RenderWindowResult {
     pub(super) rebuilt: bool,
     pub(super) snapshot: Option<HeadlessSnapshot>,
@@ -652,7 +652,7 @@ pub struct FrameProfile {
 }
 
 impl FrameProfile {
-#[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(super) const fn with_total(mut self, total: Duration) -> Self {
         self.total = total;
         self
@@ -702,7 +702,7 @@ impl SurfaceBackground {
     /// Whether the window must be transparent: a colour with alpha, or a
     /// behind-window material, whatever its tint — the level's blending
     /// alone decides, so no colour scheme is consulted.
-#[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(super) fn transparent(self) -> bool {
         match self.0 {
             ResolvedWindowBackground::Color(color) => color.components[3] < 1.0,
@@ -771,7 +771,7 @@ impl SurfaceBackground {
 /// renderer the within-window material the root mounts over, and returns the
 /// clear colour. This is the one place the background reaches the
 /// presentation path.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub(super) fn apply_window_background<P: GpuSurfaceWindow, E: crate::text::TextEngine>(
     runtime: &mut RuntimeWindow<P, E>,
     env: &Environment,
@@ -788,7 +788,7 @@ pub fn window_requires_transparency(window: &Window, env: &Environment) -> bool 
     SurfaceBackground::of(window, env).transparent()
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 crate::engine::cfg_async_fn! {
     /// Runs one frame and reports whether it was presented to the surface — an
     /// idle frame, or one whose surface had to be reconfigured, is not. The
@@ -835,7 +835,7 @@ crate::engine::cfg_async_fn! {
     }
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub(super) const fn surface_error_requires_reconfigure(
     error: crate::platform::SurfaceError,
 ) -> bool {
@@ -845,7 +845,7 @@ pub(super) const fn surface_error_requires_reconfigure(
     )
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub(super) fn acquire_surface_frame(
     surface: &mut dyn crate::platform::SurfaceProvider,
 ) -> Result<crate::platform::SurfaceFrame, crate::platform::SurfaceError> {
@@ -1029,7 +1029,7 @@ pub(super) fn pump_window_scene<P: PlatformWindow, E: crate::text::TextEngine>(
 /// What one scene pump did: whether the retained tree was built for the first
 /// time. An idle pump leaves it false.
 pub(super) struct ScenePumpOutcome {
-#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(super) built: bool,
     #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(super) phases: FramePhases,
@@ -1092,7 +1092,7 @@ pub(super) fn pump_window_semantics<P: PlatformWindow, E: crate::text::TextEngin
     rebuilt
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct SurfaceRenderResult {
     acquire: Duration,
     render: Duration,
@@ -1100,7 +1100,7 @@ pub struct SurfaceRenderResult {
     snapshot: Option<HeadlessSnapshot>,
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl SurfaceRenderResult {
     #[cfg(target_os = "android")]
     pub(crate) const fn engine_presented(render: Duration) -> Self {
@@ -1120,7 +1120,7 @@ impl SurfaceRenderResult {
 /// acquire, copy or present to call.
 ///
 /// [`SurfaceProvider`]: crate::platform::SurfaceProvider
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub trait GpuSurfaceFrame {
     /// Renders and presents one frame into the surface, reporting the
     /// stage durations.
@@ -1145,7 +1145,7 @@ pub trait GpuSurfaceFrame {
 
 /// Every host-acquired surface renders through [`render_host_acquired_frame`];
 /// a live window reads no snapshot.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl<S: crate::platform::SurfaceProvider> GpuSurfaceFrame for S {
     #[cfg(not(target_arch = "wasm32"))]
     fn render_frame(
@@ -1172,7 +1172,7 @@ impl<S: crate::platform::SurfaceProvider> GpuSurfaceFrame for S {
     }
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 crate::engine::cfg_async_fn! {
     /// The host-acquired frame: the engine renders the scene into its
     /// retained texture, then the frame is acquired, the engine output
@@ -1386,7 +1386,7 @@ impl GpuSurfaceFrame for crate::platform::BrowserSurface {
         reason = "the browser has no headless runtime, so only `Display` frames exist there"
     )
 )]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub(super) enum FrameReader {
     /// A live window: the display reads the presented surface.
     Display,
@@ -1399,7 +1399,7 @@ pub(super) enum FrameReader {
     Nobody,
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl FrameReader {
     /// The reader of a headless frame: the snapshot when the pump captures
     /// one, nobody otherwise.
@@ -1423,7 +1423,7 @@ impl FrameReader {
 /// acquired frame can be read back — an engine-presented window has none,
 /// so a snapshot of one does not compile.
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
     runtime: &mut RuntimeWindow<P, crate::text::ParleyEngine>,
     env: &Environment,
@@ -1450,7 +1450,7 @@ where
     )
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 crate::engine::cfg_async_fn! {
     /// The frame pump [`render_window`] and [`render_window_with_capture`]
     /// share: `render_frame` renders the frame through the window's surface,

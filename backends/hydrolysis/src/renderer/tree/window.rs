@@ -241,10 +241,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Scroll(node) => node.child.collect_dynamic_identities_into(out),
             Self::Filtered(node) => node.child.collect_dynamic_identities_into(out),
             Self::Fill(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Color(_)
-            | Self::Text(_)
-            | Self::SceneView(_)
-            | Self::Widget(_) => {}
+            Self::Color(_) | Self::Text(_) | Self::SceneView(_) | Self::Widget(_) => {}
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => {}
             Self::LazyStack(node) => node
@@ -324,7 +321,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// state — so each walk re-registers exactly what is live. The rendered
     /// pump runs this after the structural patch, so state the patch orphaned
     /// drops in the renderer's teardown order rather than ahead of it.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     fn reset_semantic_scene(&mut self) {
         self.gesture_engine.clear_targets();
         self.text_editing.text_input_targets.clear();
@@ -338,7 +335,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// plus the input, lazy and navigation registries' begins. The scene
     /// clears stay in `reset_semantic_scene`, which the pump runs after the
     /// patch like the rendered path.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     fn begin_semantic_emit_frame(&mut self) {
         self.hit_test.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
@@ -350,7 +347,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// opens, including the animation and accessibility registries the pump
     /// path leaves to `reset_semantic_scene`.
     /// `signals.begin_rebuild` stays with the caller — only a build enters one.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     fn begin_semantic_rebuild_frame(&mut self) {
         self.state.measurement.begin_frame();
         self.hit_test.begin_rebuild_frame();
@@ -369,7 +366,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// focus validation, and the accessibility tree's publication.
     /// `signals.finish_rebuild` stays with the caller — only a build entered
     /// one.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     fn finish_semantic_rebuild_frame(&mut self, live_dynamics: &FxHashSet<usize>) {
         self.prune_dynamic_measurements(live_dynamics);
         self.validate_focused_text_input_after_flush();
@@ -390,7 +387,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// focus validation/relocation and the accessibility tree's publication.
     /// Releasing in the renderer's order is what exposes same-manager watcher
     /// re-entrancy (water-rs/waterui#1213) to `#[waterui::test]`.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     fn finish_semantic_emit_frame(&mut self, tree: &RenderNode<E>, structural_change: bool) {
         self.registries();
         self.hit_test
@@ -417,7 +414,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ///
     /// Like the rendered path, a call made with a tree already built applies
     /// the pending patch and re-emits instead of re-dispatching.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn capture_window_semantics(&mut self, content: AnyView, env: &Environment) {
         if self.render_tree.is_some() {
             assert!(
@@ -467,7 +464,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     // `_env` is consumed only by the accessibility emit path; the signature must
     // match `capture_window_semantics` regardless of feature selection.
     #[allow(clippy::used_underscore_binding)]
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn flush_window_semantics(&mut self, _env: &Environment) -> bool {
         let Some(mut tree) = self.render_tree.take() else {
             return false;

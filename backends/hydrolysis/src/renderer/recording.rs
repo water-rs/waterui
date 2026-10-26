@@ -113,7 +113,7 @@ enum Op {
         paint: Paint,
         shape: ShapeData,
     },
-#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     Glyphs {
         font: FontData,
         font_size: f32,
@@ -390,7 +390,7 @@ impl fmt::Debug for SceneResources {
 
 impl SceneResources {
     /// Creates caches served by `engine`.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn new(engine: &Rc<crate::engine::GpuEngine>) -> Self {
         Self::over(waterui_graphics::SceneResources::with_shaders(
             engine.clone(),
@@ -652,7 +652,7 @@ impl Recording {
     }
 
     /// Draws a run of shaped glyphs.
-#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn glyphs(&mut self, run: &GlyphRun<'_>) {
         if run.glyphs.is_empty() {
             return;

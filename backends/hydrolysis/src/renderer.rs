@@ -62,9 +62,9 @@ use mount::{HitClasses, HitGate, ScopeDelta};
 pub use native_measure::*;
 #[cfg(test)]
 pub use recording::assert_well_formed_image;
-pub use recording::{Recording, working_color};
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub use recording::{Glyph, GlyphRun};
+pub use recording::{Recording, working_color};
 pub use tree::safe_area::{
     ChromeBar, Edge, EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect,
 };
@@ -87,9 +87,9 @@ pub use interaction_layers::*;
 pub use lifecycle::lazy;
 pub use lifecycle::*;
 pub use navigation::*;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub use render::FrameRenderTarget;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub use render::HydrolysisRenderTarget;
 pub use render::WidgetRenderContext;
 pub use render::*;
@@ -105,7 +105,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 use std::sync::Arc;
 
 #[cfg(feature = "accessibility")]
@@ -307,11 +307,7 @@ pub struct AnimationOwner<E: crate::text::TextEngine> {
 /// crate.
 #[derive(Clone)]
 pub struct HostRedraw(
-    #[cfg_attr(
-        hydrolysis_hwui,
-        expect(dead_code)
-    )]
-    std::sync::Arc<dyn Fn() + Send + Sync>,
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))] std::sync::Arc<dyn Fn() + Send + Sync>,
 );
 
 impl std::fmt::Debug for HostRedraw {
@@ -327,10 +323,7 @@ impl HostRedraw {
     }
 
     /// Asks the host for another frame.
-    #[cfg_attr(
-        hydrolysis_hwui,
-        expect(dead_code)
-    )]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub fn request_redraw(&self) {
         (self.0)();
     }
@@ -352,10 +345,7 @@ pub enum Next {
     /// No animation is running; the display link may sleep.
     Idle,
     /// The next frame is wanted at `time`, at a refresh rate inside `rate`.
-    #[cfg_attr(
-        hydrolysis_hwui,
-        expect(dead_code)
-    )]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     At {
         /// When the frame is wanted.
         #[cfg_attr(not(target_os = "android"), expect(dead_code))]
@@ -367,7 +357,7 @@ pub enum Next {
 }
 
 /// The GPU painter's scheduling answer is the same shape.
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl From<cherenkov::Next> for Next {
     fn from(next: cherenkov::Next) -> Self {
         match next {
@@ -380,10 +370,7 @@ impl From<cherenkov::Next> for Next {
 /// A cross-thread wake handle for a GPU or external-frame producer: posts
 /// its `ProducerKey` through the renderer's wake channel and wakes the
 /// host, so the next frame update marks exactly the owning cell `PRODUCER`.
-#[cfg_attr(
-    hydrolysis_hwui,
-    expect(dead_code)
-)]
+#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
 #[derive(Clone)]
 pub struct ProducerWake {
     /// Identity of the owning cell (from the renderer's key counter).
@@ -403,10 +390,7 @@ impl std::fmt::Debug for ProducerWake {
 
 impl ProducerWake {
     /// Posts the producer key and wakes the host for a frame.
-    #[cfg_attr(
-        hydrolysis_hwui,
-        expect(dead_code)
-    )]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn request_redraw(&self) {
         // A producer thread can outlive the renderer at window close: a
         // closed channel means the owner is gone, so the post is a no-op.
@@ -442,10 +426,7 @@ impl<E: crate::text::TextEngine> PresentationHosts<E> {
     /// `NodeLayers` with the outgoing engine window, each cell marked
     /// `PAINT|COMMIT` like [`RenderNode::unmount`] leaves the window's own
     /// tree.
-    #[cfg_attr(
-        hydrolysis_hwui,
-        expect(dead_code)
-    )]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn unmount(&self) {
         for host in [
             &self.text_overlay,
@@ -710,7 +691,7 @@ pub struct HydrolysisRenderer<E: crate::text::TextEngine> {
     /// the stable mounts under it and the resource registrations its content
     /// names. Entries whose device was reported lost are pruned at the next
     /// presented frame.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     cherenkov_window:
         Option<crate::renderer::render::CherenkovWindow<crate::engine::TextureCherenkovSurface, E>>,
     /// The engine work the last commit did, with the live mounted counts.
@@ -723,17 +704,17 @@ pub struct HydrolysisRenderer<E: crate::text::TextEngine> {
     /// The engine's frame scheduling answer from the last presented frame.
     /// The pump follows it: `Next::Idle` means no animation is running and
     /// the display link may sleep.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     engine_next: Option<Next>,
     live_caret: Option<Rc<chrome::LiveCaret>>,
     /// Per-frame applied-filter telemetry the render thread's `EngineEffect`
     /// calls accumulate into; reset before each `Engine::render` and read back
     /// into the `frame_applied_filter_*` fields after it.
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     applied_filter_metrics: Arc<crate::renderer::effects::AppliedFilterMetrics>,
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     frame_applied_filter_count: u32,
-    #[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     frame_applied_filter_effect: Duration,
     /// CPU stage times accumulated by `flush_window_tree`, plus the GPU spans
     /// the render pass resolves; drained per pump by `take_frame_stage_times`.
@@ -1898,7 +1879,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 }
 
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 impl HydrolysisRenderer<crate::text::ParleyEngine> {
     /// A renderer drawing with `theme`, shaping text against the system font
     /// collection under `family_resolution`.
@@ -2043,20 +2024,20 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             window_display_transform: kurbo::Affine::IDENTITY,
             host_redraw_handle: None,
 
-            #[cfg(not(hydrolysis_hwui))]
+            #[cfg(hydrolysis_gpu_painter)]
             cherenkov_window: None,
             last_mount_stats: mount::MountStats::default(),
             #[cfg(test)]
             mirror: None,
             program: Vec::new(),
-            #[cfg(not(hydrolysis_hwui))]
+            #[cfg(hydrolysis_gpu_painter)]
             engine_next: None,
             live_caret: None,
-            #[cfg(not(hydrolysis_hwui))]
+            #[cfg(hydrolysis_gpu_painter)]
             applied_filter_metrics: Arc::default(),
-            #[cfg(not(hydrolysis_hwui))]
+            #[cfg(hydrolysis_gpu_painter)]
             frame_applied_filter_count: 0,
-            #[cfg(not(hydrolysis_hwui))]
+            #[cfg(hydrolysis_gpu_painter)]
             frame_applied_filter_effect: Duration::ZERO,
             #[cfg(feature = "frame-profile")]
             frame_stage_times: FrameStageTimes::default(),

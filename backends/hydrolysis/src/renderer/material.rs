@@ -30,9 +30,9 @@
 use waterui::background::Material;
 use waterui::theme::ColorScheme;
 use waterui_core::Environment;
-use waterui_graphics::filtrate::filters::{GaussianBlur, LumaCurve};
 use waterui_graphics::filtrate::Chain;
-#[cfg(not(hydrolysis_hwui))]
+use waterui_graphics::filtrate::filters::{GaussianBlur, LumaCurve};
+#[cfg(hydrolysis_gpu_painter)]
 use waterui_graphics::filtrate::{FilterExt as _, OperatingSpace};
 
 /// The fraction of device resolution a material's backdrop is captured at.
@@ -104,7 +104,7 @@ impl WithinWindowLevel {
     }
 
     /// The level's measured treatment.
-#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     const fn treatment(self) -> Treatment {
         match self {
             Self::Regular => REGULAR,
@@ -132,7 +132,7 @@ struct Tone {
 
 impl Tone {
     /// The chroma gain `k`.
-#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     fn chroma(self) -> f32 {
         self.saturation * (1.0 - self.amount)
     }
@@ -150,7 +150,7 @@ struct Treatment {
 }
 
 impl Treatment {
-#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     const fn tone(self, scheme: ColorScheme) -> Tone {
         match scheme {
             ColorScheme::Light => self.light,
@@ -304,16 +304,16 @@ pub type MaterialChain = Chain<LumaCurve<f32>, GaussianBlur<f32>>;
 /// the new appearance — it does not animate.
 #[derive(Clone, Copy, Debug)]
 pub struct MaterialRuntime {
-#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     tone: LumaCurve<f32>,
     /// The Gaussian σ, in points.
-#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     sigma: f32,
 }
 
 impl MaterialRuntime {
     /// The treatment of `level` under `scheme`, resolved once.
-#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn new(level: WithinWindowLevel, scheme: ColorScheme) -> Self {
         let treatment = level.treatment();
         let tone = treatment.tone(scheme);
@@ -338,7 +338,7 @@ impl MaterialRuntime {
     /// The backdrop chain for a surface at `display_scale` device pixels per
     /// point: the colour stage, then the blur in encoded sRGB with σ
     /// converted from points to capture texels.
-#[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn chain(&self, display_scale: f64) -> MaterialChain {
         #[expect(
             clippy::cast_possible_truncation,

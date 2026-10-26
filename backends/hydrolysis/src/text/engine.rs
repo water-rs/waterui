@@ -16,7 +16,7 @@ use core::num::NonZeroUsize;
 use crate::renderer::{FrameWorkCounters, Recording};
 
 use super::input::ResolvedTextLayoutInput;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub use super::types::{Affinity, CARET_WIDTH};
 pub use super::types::{LineMetrics, TextPosition, TextSelection};
 

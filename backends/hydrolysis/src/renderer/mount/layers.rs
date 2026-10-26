@@ -283,7 +283,7 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
         clippy::unnecessary_wraps,
         reason = "a join resolver answers `Option` because a member may be absent; a material member is always its node's frame layer"
     )]
-#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) const fn frame_layer(layers: &Self, _: LayerId) -> Option<&Layer> {
         Some(layers.frame())
     }
@@ -359,7 +359,7 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
 
     /// The member layer `id` names — a `ChromeMaterial` member anywhere
     /// in this node's lists — the layer a rebuilt chrome group re-points.
-#[cfg(not(hydrolysis_hwui))]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn member_layer(&self, id: LayerId) -> Option<&Layer> {
         self.members
             .iter()
@@ -452,7 +452,7 @@ pub struct CommitCx<'m, 'tx, 's, T: LayerTarget<E>, E: crate::text::TextEngine> 
     scope_anchors: &'m mut ScopeAnchors<E>,
     graveyard: &'m mut Vec<Box<dyn Any>>,
     stats: &'m mut MountStats,
-#[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
+    #[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
     wakes: &'m mut dyn FnMut(&Rc<NodeCell<E>>) -> ProducerWake,
 }
 

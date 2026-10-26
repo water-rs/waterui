@@ -147,7 +147,7 @@ use crate::renderer::HydrolysisRenderer;
 use crate::renderer::mount::Mount;
 
 #[cfg_attr(
-    not(hydrolysis_hwui),
+    hydrolysis_gpu_painter,
     expect(
         dead_code,
         reason = "the Android HWUI runner is the only caller; test builds keep the methods alongside the mount's contract surface"
