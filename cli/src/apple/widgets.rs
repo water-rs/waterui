@@ -16,20 +16,31 @@
 use std::path::{Path, PathBuf};
 
 use eyre::{Context as _, bail, eyre};
+#[cfg(target_os = "macos")]
 use smol::fs;
-use smol::stream::StreamExt as _;
 use target_lexicon::Triple;
+#[cfg(target_os = "macos")]
 use tracing::info;
 use waterui_widgets::WidgetDeclaration;
 
-use crate::apple::app_bundle::{self, AppleAppLayout};
+#[cfg(target_os = "macos")]
+use crate::apple::app_bundle;
+use crate::apple::app_bundle::AppleAppLayout;
+#[cfg(target_os = "macos")]
 use crate::apple::toolchain::development_team_id;
 use crate::artifact_symbols::ArtifactSymbols;
-use crate::build::{BuildOptions, BuildProfile, BuiltTarget, NativeLink};
-use crate::platform::{DeviceSigning, PackageAudience, PackageOptions, TargetPlatform};
+use crate::build::BuiltTarget;
+#[cfg(target_os = "macos")]
+use crate::build::{BuildOptions, BuildProfile, NativeLink};
+#[cfg(target_os = "macos")]
+use crate::platform::{DeviceSigning, PackageAudience};
+use crate::platform::{PackageOptions, TargetPlatform};
 use crate::project::Project;
 use crate::project_model::project_types::AppleBundleIdentifier;
+#[cfg(target_os = "macos")]
 use crate::utils::copy_file;
+#[cfg(target_os = "macos")]
+use smol::stream::StreamExt as _;
 
 /// One `#[widget]` declaration paired with its export symbol.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +123,7 @@ fn validate_families(widgets: &[DeclaredWidget], platform: TargetPlatform) -> ey
 }
 
 /// The swift target triple the extension compiles for.
+#[cfg(target_os = "macos")]
 fn widget_swift_target(platform: TargetPlatform, deployment_target: &str) -> eyre::Result<String> {
     let target = match platform {
         TargetPlatform::MacOS => format!("arm64-apple-macosx{deployment_target}"),
@@ -123,6 +135,7 @@ fn widget_swift_target(platform: TargetPlatform, deployment_target: &str) -> eyr
 }
 
 /// The `PlugIns` directory of the app bundle at `app_path`.
+#[cfg(target_os = "macos")]
 fn plugins_dir(app_path: &Path, sdk_name: &str) -> PathBuf {
     if sdk_name == "macosx" {
         app_path.join("Contents").join("PlugIns")

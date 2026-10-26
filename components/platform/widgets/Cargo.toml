@@ -26,3 +26,8 @@ waterui-meta = { workspace = true }
 [dev-dependencies]
 waterui-text.workspace = true
 serde_json.workspace = true
+
+# `waterui-text` is referenced only inside `WidgetContent`'s `compile_fail`
+# doctests — cargo-machete does not scan doc code.
+[package.metadata.cargo-machete]
+ignored = ["waterui-text"]
