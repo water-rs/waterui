@@ -684,6 +684,7 @@ pub struct ContentData {
     pub(crate) retained: cherenkov::lowering::Content<Op, Emission>,
     pub(crate) storage: EmissionStorage,
     pub(crate) range: Option<super::present::ColorRange>,
+    pictures: Option<bool>,
 }
 
 impl ContentData {
@@ -692,12 +693,14 @@ impl ContentData {
             retained: cherenkov::lowering::Content::new(list),
             storage: EmissionStorage::default(),
             range: None,
+            pictures: None,
         }
     }
 
     pub fn replace(&mut self, list: cherenkov::Picture) -> cherenkov::Picture {
         let previous = self.retained.replace(list);
         self.range = None;
+        self.pictures = None;
         self.storage.instances.clear();
         self.storage.stops.clear();
         self.storage.templates.clear();
@@ -743,6 +746,7 @@ impl ContentData {
             retained: cherenkov::lowering::Content::picture(list),
             storage: EmissionStorage::default(),
             range: None,
+            pictures: None,
         }
     }
 
@@ -754,12 +758,30 @@ impl ContentData {
         }
         self.retained.update(updates);
         self.range = None;
+        self.pictures = None;
     }
 
     pub fn invalidate(&mut self) {
         self.retained.invalidate();
         self.range = None;
+        self.pictures = None;
         self.storage = EmissionStorage::default();
+    }
+
+    pub(super) fn prepare(
+        &mut self,
+        compiler: &mut super::prepared::Lowerer<'_>,
+    ) -> Result<u32, RenderError> {
+        let changed = self.retained.prepare(compiler)?;
+        self.pictures.get_or_insert_with(|| {
+            self.retained
+                .current()
+                .expect("content was prepared")
+                .0
+                .iter()
+                .any(|op| matches!(op, Op::BeginPicture { .. }))
+        });
+        Ok(changed)
     }
 
     /// Rebuild emissions after picture admission changes their raster target.
@@ -784,6 +806,7 @@ impl ContentData {
     pub fn invalidate_image(&mut self, id: cherenkov::ImageId) {
         if self.retained.invalidate_image(id) {
             self.range = None;
+            self.pictures = None;
             self.storage = EmissionStorage::default();
         }
     }
@@ -791,6 +814,7 @@ impl ContentData {
     pub fn trim(&mut self) {
         self.retained.trim();
         self.range = None;
+        self.pictures = None;
         self.storage = EmissionStorage::default();
     }
 }
@@ -2308,16 +2332,18 @@ impl<'a> Lowering<'a> {
         &mut self,
         caches: &mut FxHashMap<LayerId, ContentData>,
         glyphs: &GlyphContext<'_>,
-    ) -> Result<(), RenderError> {
+    ) -> Result<bool, RenderError> {
+        let mut pictures = false;
         for content in caches.values_mut() {
-            let changed = content.retained.prepare(&mut super::prepared::Lowerer {
+            let changed = content.prepare(&mut super::prepared::Lowerer {
                 fonts: glyphs.fonts,
                 images: glyphs.images,
                 pending: &mut self.pending,
             })?;
             self.commands_lowered += changed;
+            pictures |= content.pictures.expect("content was prepared");
         }
-        Ok(())
+        Ok(pictures)
     }
 
     /// Lowers a surface's sampled tree and its clear colour into the

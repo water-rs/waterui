@@ -6870,7 +6870,7 @@ impl GpuRenderer {
             }
             let mut lowered = Lowered::default();
             for content in surf.layers.values_mut() {
-                lowered.commands += content.retained.prepare(&mut prepared::Lowerer {
+                lowered.commands += content.prepare(&mut prepared::Lowerer {
                     fonts: &self.fonts,
                     images: &self.images,
                     pending: &mut lowered.pending,
@@ -7227,7 +7227,7 @@ impl GpuRenderer {
             );
             lowering.coverage_route = coverage_options.1;
             lowering.pending = std::mem::take(&mut lowered.pending);
-            let result = lowering.prepare(&mut layers, &glyphs).and_then(|()| {
+            let result = lowering.prepare(&mut layers, &glyphs).and_then(|pictures| {
                 for placement in &surf.plan.planes {
                     if let Some(entry) = surf.static_layers.get(&placement.layer)
                         && entry.capture.as_ref().is_none_or(|capture| capture.dirty)
@@ -7250,24 +7250,26 @@ impl GpuRenderer {
                     (&surf.projective, inputs, surf.size),
                     lowered,
                 )?;
-                let projective_bytes: u64 = lowered
-                    .composed
-                    .iter()
-                    .map(|key| {
-                        lowered.realize.iter().find(|r| r.key == *key).map_or_else(
-                            || projective_entry(&surf.projective, *key).bytes(),
-                            projective::Realize::bytes,
-                        )
-                    })
-                    .sum();
-                lowering.pictures = Some(lower::PictureInputs::new(
-                    &surf.projective,
-                    inputs,
-                    inputs
-                        .picture_bytes
-                        .min(inputs.limits.max_bytes.saturating_sub(projective_bytes)),
-                    &layers,
-                ));
+                if pictures {
+                    let projective_bytes: u64 = lowered
+                        .composed
+                        .iter()
+                        .map(|key| {
+                            lowered.realize.iter().find(|r| r.key == *key).map_or_else(
+                                || projective_entry(&surf.projective, *key).bytes(),
+                                projective::Realize::bytes,
+                            )
+                        })
+                        .sum();
+                    lowering.pictures = Some(lower::PictureInputs::new(
+                        &surf.projective,
+                        inputs,
+                        inputs
+                            .picture_bytes
+                            .min(inputs.limits.max_bytes.saturating_sub(projective_bytes)),
+                        &layers,
+                    ));
+                }
                 lowering.run(
                     frame.tree,
                     &mut layers,
