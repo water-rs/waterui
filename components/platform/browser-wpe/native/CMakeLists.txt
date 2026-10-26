@@ -42,3 +42,9 @@ set_target_properties(waterui_wpe_extension PROPERTIES
     INSTALL_RPATH "$ORIGIN/../..")
 install(TARGETS waterui_wpe_extension
     LIBRARY DESTINATION lib/waterui-wpe/extensions)
+if(DEFINED WATER_WPE_EXPECTED_ABI_VERSION)
+    target_compile_definitions(waterui_wpe PRIVATE
+        WATER_WPE_EXPECTED_ABI_VERSION=${WATER_WPE_EXPECTED_ABI_VERSION})
+    target_compile_definitions(waterui_wpe_extension PRIVATE
+        WATER_WPE_EXPECTED_ABI_VERSION=${WATER_WPE_EXPECTED_ABI_VERSION})
+endif()
