@@ -967,14 +967,11 @@ impl GpuCoverage {
 
     /// All surfaces have encoded their draws. Picture-only coverage can leave
     /// now: submitted commands own the old arena until its readers complete.
-    pub fn finish_pictures(
-        &mut self,
-        device: &wgpu::Device,
-    ) -> Result<Option<wgpu::CommandBuffer>, RenderError> {
+    pub fn finish_pictures(&mut self) {
         let before = self.entries.len();
         self.entries.retain(|_, entry| entry.retained);
         if self.entries.len() == before {
-            return Ok(None);
+            return;
         }
         self.live_words = self
             .entries
@@ -990,30 +987,10 @@ impl GpuCoverage {
         if self.entries.is_empty() {
             self.compaction = None;
             self.arena.trim();
-            return Ok(None);
         }
-        self.compact(0)?;
-        self.materialize_arena(device);
-        let compaction = self
-            .compaction
-            .take()
-            .expect("submitted coverage has a copy source");
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("retire picture coverage"),
-        });
-        for (source, destination, bytes) in compaction.copies {
-            encoder.copy_buffer_to_buffer(
-                &compaction.source,
-                source,
-                self.arena.buffer().expect("materialized arena"),
-                destination,
-                bytes,
-            );
-        }
-        for entry in self.entries.values_mut() {
-            entry.src = None;
-        }
-        Ok(Some(encoder.finish()))
+        // Mixed arenas reuse their existing storage. The next commit's
+        // ordinary 2x compaction rule reclaims these holes without allocating
+        // and copying a fresh arena after every picture generation frame.
     }
 
     pub fn trim(&mut self) {
@@ -2267,37 +2244,37 @@ mod tests {
             frame.buffers.is_none(),
             "replay releases generation scratch"
         );
-        let arena_bytes = frame.arena().expect("mixed coverage").size();
-        let copies = frame
-            .finish_pictures(&device)
-            .expect("retire picture coverage")
-            .expect("ordinary coverage moves to a smaller arena");
-        queue.submit([copies]);
+        frame.finish_pictures();
         assert!(!frame.entries.contains_key(&first.key));
+        frame.begin_frame();
+        frame
+            .draw(second, false)
+            .expect("ordinary entry shared with a picture");
+        assert!(!frame.has_misses());
+        frame.settle(true);
+        frame.ensure(&device).expect("ordinary coverage fits");
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        frame.record_prologue(&device, &queue, &mut encoder, delivery, None);
         let survivor = &frame.entries[&second.key];
-        let arena = frame.arena().expect("ordinary coverage remains");
-        assert!(arena.size() < arena_bytes);
-        let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let surviving = read_back(
             &device,
             &queue,
-            &[(arena, u64::from(survivor.base) * 4, 4)],
+            &[(
+                frame.arena().expect("ordinary arena"),
+                u64::from(survivor.base) * 4,
+                4,
+            )],
             encoder,
         );
         assert_eq!(
             surviving[0], words[1],
             "ordinary coverage survives retirement"
         );
-        frame.begin_frame();
-        frame
-            .draw(second, false)
-            .expect("ordinary entry shared with a picture");
-        assert!(!frame.has_misses());
+        frame.submitted();
+        frame.finish_pictures();
         assert!(
-            frame
-                .finish_pictures(&device)
-                .expect("shared coverage remains")
-                .is_none()
+            frame.entries.contains_key(&second.key),
+            "ordinary sharing remains retained"
         );
         frame.trim();
         assert_eq!(frame.generation_reservation(), 0);

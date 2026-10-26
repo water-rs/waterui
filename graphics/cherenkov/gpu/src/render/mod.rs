@@ -5033,7 +5033,7 @@ impl GpuRenderer {
                     || self.exports.contains_key(&sf.id);
             }
             if result.is_ok() {
-                self.finish_picture_coverage()?;
+                self.finish_picture_coverage();
             }
             self.evict_projective(0);
             // Set once the encode has consumed the filters' redraw
@@ -5203,7 +5203,7 @@ impl GpuRenderer {
                     || self.exports.contains_key(&sf.id);
             }
             if result.is_ok() {
-                self.finish_picture_coverage()?;
+                self.finish_picture_coverage();
             }
             self.evict_projective(0);
             // Set once the encode has consumed the filters' redraw
@@ -8689,16 +8689,9 @@ impl GpuRenderer {
         Ok(())
     }
 
-    fn finish_picture_coverage(&mut self) -> Result<(), RenderError> {
-        if let Some(copies) = self.gpu_cov.finish_pictures(&self.device)? {
-            #[cfg(all(unix, not(target_vendor = "apple")))]
-            let _submit = self.submit_lock.lock().expect("submit guard");
-            self.queue.submit([copies]);
-            track_submission(&self.queue, &self.tracker);
-            diag::submit(&self.device, &self.queue, "retire picture coverage");
-        }
+    fn finish_picture_coverage(&mut self) {
+        self.gpu_cov.finish_pictures();
         self.rebind_coverage_arena();
-        Ok(())
     }
 
     fn rebind_coverage_arena(&mut self) {
