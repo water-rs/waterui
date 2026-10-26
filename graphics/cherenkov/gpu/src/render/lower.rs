@@ -717,6 +717,8 @@ impl ContentData {
             + self.storage.stops.capacity() * size_of::<Stop>()
             + self.storage.refs.capacity() * size_of::<(u32, u64)>()
             + self.storage.gpu_paths.capacity() * std::mem::size_of::<(usize, PreparedGpu)>()
+            + self.storage.picture_domains.capacity()
+                * std::mem::size_of::<(usize, picture::PreparedDomain)>()
             + self
                 .storage
                 .gpu_paths
@@ -724,6 +726,12 @@ impl ContentData {
                 .map(|entry| entry.path.elements.len() * std::mem::size_of::<path::GpuElement>())
                 .sum::<usize>()) as u64
             + self.storage.geometry.heap_bytes()
+            + self
+                .storage
+                .picture_domains
+                .values()
+                .map(picture::PreparedDomain::source_bytes)
+                .sum::<u64>()
     }
 
     pub fn into_picture(self) -> cherenkov::Picture {
@@ -760,6 +768,7 @@ impl ContentData {
         self.retained.trim();
         self.storage = EmissionStorage {
             gpu_paths: std::mem::take(&mut self.storage.gpu_paths),
+            picture_domains: std::mem::take(&mut self.storage.picture_domains),
             geometry: std::mem::take(&mut self.storage.geometry),
             ..EmissionStorage::default()
         };
@@ -790,6 +799,7 @@ impl ContentData {
 #[derive(Default)]
 pub struct EmissionStorage {
     gpu_paths: FxHashMap<usize, PreparedGpu>,
+    picture_domains: FxHashMap<usize, picture::PreparedDomain>,
     /// CPU-route path geometry retained across content replacements by
     /// semantic key; bounded to the latest walk's marks.
     pub(crate) geometry: GeometryCache,
@@ -1059,6 +1069,9 @@ impl GeometryCache {
 
 impl EmissionStorage {
     fn retain_gpu_paths(&mut self, ops: &[Op]) {
+        self.picture_domains.retain(|index, entry| {
+            matches!(ops.get(*index), Some(Op::BeginPicture { picture, .. }) if entry.matches_source(picture))
+        });
         self.gpu_paths.retain(|index, _| {
             matches!(
                 ops.get(*index),
@@ -1097,6 +1110,7 @@ impl EmissionStorage {
         }
         let mut storage = Self {
             gpu_paths: std::mem::take(&mut self.gpu_paths),
+            picture_domains: std::mem::take(&mut self.picture_domains),
             geometry: std::mem::take(&mut self.geometry),
             templates: Vec::with_capacity(templates),
             covers: Vec::with_capacity(covers),

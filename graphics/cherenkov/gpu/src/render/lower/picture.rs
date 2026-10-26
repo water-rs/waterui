@@ -6,6 +6,26 @@ use super::{
 use crate::render::projective::{Key, PictureImage, Realize};
 use cherenkov::lowering::projective::{Homography, LocalImage, mip_levels};
 
+/// Picture bounds survive texture eviction and admission retries. Keeping the
+/// immutable source alive makes allocation identity safe across replacements.
+pub(super) struct PreparedDomain {
+    source: cherenkov::Picture,
+    bucket: i32,
+    domain: Option<crate::render::planes::static_layer::Domain>,
+}
+
+impl PreparedDomain {
+    pub(super) fn matches_source(&self, source: &cherenkov::Picture) -> bool {
+        std::ptr::eq(self.source.display_list(), source.display_list())
+    }
+
+    pub(super) fn source_bytes(&self) -> u64 {
+        self.source
+            .display_list()
+            .heap_bytes(cherenkov::lowering::memory::command_bytes)
+    }
+}
+
 struct PicturePlan {
     image: LocalImage,
     key: LocalKey,
@@ -34,7 +54,7 @@ impl Lowering<'_> {
         local: Affine,
         source: &cherenkov::DisplayList,
         ops: &[Op],
-        layer: LayerId,
+        (layer, domains, index): (LayerId, &mut super::FxHashMap<usize, PreparedDomain>, usize),
         glyphs: &GlyphContext<'_>,
     ) -> Result<Option<PicturePlan>, RenderError> {
         let Some(context) = self.pictures.as_ref() else {
@@ -93,15 +113,31 @@ impl Lowering<'_> {
             }) {
                 return Ok(None);
             }
-            let Some(domain) = crate::render::planes::static_layer::domain_in(
-                local.inverse(),
-                ops,
-                source,
-                glyphs.fonts,
-                density,
-                context.inputs.limits.max_dimension,
-            )?
-            else {
+            let cached = domains
+                .get(&index)
+                .filter(|entry| entry.bucket == key.bucket && entry.matches_source(picture));
+            let domain = if let Some(cached) = cached {
+                cached.domain
+            } else {
+                let domain = crate::render::planes::static_layer::domain_in(
+                    local.inverse(),
+                    ops,
+                    source,
+                    glyphs.fonts,
+                    density,
+                    context.inputs.limits.max_dimension,
+                )?;
+                domains.insert(
+                    index,
+                    PreparedDomain {
+                        source: picture.clone(),
+                        bucket: key.bucket,
+                        domain,
+                    },
+                );
+                domain
+            };
+            let Some(domain) = domain else {
                 return Ok(None);
             };
             domain
@@ -201,7 +237,14 @@ impl Lowering<'_> {
             current,
             interop,
             domain,
-        }) = self.plan_picture(picture, local, source, &ops[range.clone()], layer, glyphs)?
+        }) = self.plan_picture(
+            picture,
+            local,
+            source,
+            &ops[range.clone()],
+            (layer, &mut storage.picture_domains, range.start - 1),
+            glyphs,
+        )?
         else {
             return Ok(None);
         };
