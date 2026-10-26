@@ -44,7 +44,7 @@ pub fn forward_current(
     host.set_primary_content_handler(current);
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(all(target_os = "ios", any(feature = "list", feature = "navigation")))]
 /// The pane's declared scrolling surface: the view itself when it is
 /// a `UIScrollView`, else the host's declared scroll-surface
 /// candidates in stacking order, else a transparent wrapper's
