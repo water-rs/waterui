@@ -15,15 +15,16 @@
 //! animations (`UIKit`); the ghost's `TransitionState` clock — a
 //! `FrameClock` on its window — decides when the slot and view release.
 //!
-//! Pixel (`captures_content`) transitions panic for now: the window
-//! overlay machinery exists (`cocoa_ui::capture::ViewCapture` for the
-//! frozen `MTLTexture`, `TransitionContext::new`/`TransitionFrame::new`
-//! for the effect's inputs), but the filtered pipeline has no public
-//! surface that accepts a frozen texture as effect input —
-//! `imported_input`/`imported_texture` only ever receive the live
-//! frame's own capture lease. The panic names that gap instead of
-//! silently degrading to a property animation, per the contract's
-//! "a failed capture is an error, never a property fallback".
+//! Pixel (`captures_content`) transitions run the removal through the
+//! filtered pipeline: the outgoing view is frozen once into an
+//! `MTLTexture` by `cocoa_ui::capture::ViewCapture` — no CPU readback —
+//! and the effect body `TransitionState::body` builds mounts inside a
+//! non-interactive `HostView` overlay at window level, where
+//! [`filtered::install_frozen_input`] makes the frozen texture the
+//! effect's input. The ghost's `FrameClock` advances `progress`, pushes
+//! a redraw into the filtered leaf and republishes `TransitionFrame`
+//! every tick, so `source` follows the slot through scroll and resize.
+//! A capture that fails is an error — never a property fallback.
 
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
@@ -31,7 +32,15 @@ use std::time::Instant;
 
 use cocoa_ui::display_link::FrameClock;
 use cocoa_ui::{PlatformView, Retained, focus, view};
+#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+use waterui::reactive::{Binding, SignalExt};
+#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+use waterui_backend_core::AnyView;
 use waterui_core::layout::{LayoutDirection, Size};
+#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+use waterui_core::layout::{Point, Rect as LayoutRect};
+#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+use waterui_core::transition::TransitionFrame;
 use waterui_core::transition::{
     GhostSlot, TransitionGeometry, TransitionPhase, TransitionProperties, TransitionSpec,
     TransitionState,
@@ -55,21 +64,26 @@ impl core::fmt::Debug for TransitionClaim {
     }
 }
 
-/// Rejects a transition that still needs pixel capture: the filtered
-/// pipeline has no public frozen-texture input surface yet (see the
-/// module docs). Reduce Motion already resolved in `spec.start`, so a
-/// capture transition whose declared `reduced()` is a property effect
-/// never reaches here — the reduced path still works.
-fn assert_property_transition(state: &TransitionState) {
-    assert!(
-        !state.captures_content(),
-        "waterui-apple: pixel-capture transitions (a `Transition` whose `captures_content` is \
-         true, such as disintegrate) are not realized yet — the window overlay they draw through \
-         needs a `Computed<TransitionFrame>` and waterui-core does not expose a way to construct \
-         one. Use a property transition (opacity, scale, move, rotation) or declare a property \
-         `reduced()` form and enable Reduce Motion"
-    );
+/// Marks a value as crossing the capture-completion boundary; the
+/// wrapped object is only dereferenced once the completion lands on the
+/// main thread, where every receiver was created — the same contract
+/// `filtered.rs` spells for its GPU-completion hops.
+#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+struct Sendable<T>(T);
+
+#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+impl<T> Sendable<T> {
+    /// Reads the wrapped value on the main thread.
+    const fn get(&self) -> &T {
+        &self.0
+    }
 }
+
+// SAFETY: the payload is only touched on the main thread — capture
+// completions run on the main queue by `ViewCapture`'s contract.
+#[allow(clippy::non_send_fields_in_send_ty)]
+#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+unsafe impl<T> Send for Sendable<T> {}
 
 /// Rejects a sampled endpoint with a nonzero blur radius: no Apple layer
 /// can take an arbitrary-radius blur without the GPU capture path (`UIKit`
@@ -295,7 +309,16 @@ pub fn play_insertion(view: &PlatformView, claim: &TransitionClaim) {
     let state = claim
         .spec
         .start(TransitionPhase::Insertion, claim.reduce_motion);
-    assert_property_transition(&state);
+    // Insertion `captures_content` keeps its declared contract — live
+    // capture through the ordinary view-effect path the body's own
+    // `FilteredView` realizes — while the property endpoints the ghost
+    // mirrors stay guarded below.
+    assert!(
+        !state.captures_content(),
+        "waterui-apple: pixel capture on insertion is not realized yet — the live-capture \
+         effect body needs the mounted content's own window overlay; use a property insertion \
+         (opacity, scale, move, rotation) or an asymmetric transition"
+    );
     let view = view::retain_base(view);
     cocoa_ui::core_animation::on_commit(move || {
         let (size, direction) = geometry_of(&view);
@@ -307,7 +330,10 @@ pub fn play_insertion(view: &PlatformView, claim: &TransitionClaim) {
 /// retains, and the clock ending both. The site owns one per ghosted
 /// member; dropping it releases the platform objects.
 pub struct RemovalGhost {
-    /// The retained outgoing view — visual resources only.
+    /// The retained outgoing view — visual resources only. For a pixel
+    /// transition it stays attached and hidden as the slot's placement
+    /// anchor: containers keep framing it, and the overlay reads its
+    /// window-space bounds for `TransitionFrame.source` every tick.
     pub view: Retained<PlatformView>,
     /// The frozen layout membership, for sites that hold a slot;
     /// conditional replacement holds none.
@@ -322,11 +348,339 @@ pub struct RemovalGhost {
     /// ticking.
     #[allow(dead_code)]
     clock: FrameClock,
+    /// The pixel path's retained objects — window overlay, rendered
+    /// effect leaf and the one-shot capture. `None` for a property
+    /// transition, and absent entirely in a build without the filtered
+    /// pipeline.
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    pixel: Option<Rc<PixelGhost>>,
 }
 
 impl core::fmt::Debug for RemovalGhost {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("RemovalGhost").finish_non_exhaustive()
+    }
+}
+
+impl Drop for RemovalGhost {
+    /// Releasing the ghost ends the overlay's screen membership — the
+    /// `Mounted` inside detaches the filtered view, and the overlay
+    /// itself leaves its window here. The outgoing view is the site's
+    /// to detach; its completion does that before this record drops.
+    fn drop(&mut self) {
+        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+        if let Some(pixel) = self.pixel.take() {
+            pixel.capture.shutdown();
+            view::remove_from_superview(&pixel.overlay);
+        }
+    }
+}
+
+/// One pixel removal's retained machinery — everything the window
+/// overlay needs until the transition clock ends. Owned by
+/// [`RemovalGhost`]; the capture completion and the frame clock reach it
+/// through a `Weak`.
+#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+struct PixelGhost {
+    /// The non-interactive window-level container the effect leaf mounts
+    /// into — a `HostView` so its hit test falls through on `AppKit` and
+    /// one flag covers the subtree on `UIKit`.
+    overlay: Retained<PlatformView>,
+    /// The rendered transition body — `FilteredView` inside — parked
+    /// until the frozen texture lands and `filtered::install_frozen_input`
+    /// accepts it.
+    leaf: RefCell<Option<crate::contract::NativeLeaf>>,
+    /// The mounted effect leaf, once its input is installed.
+    mounted: RefCell<Option<crate::contract::Mounted>>,
+    /// The one-shot capture over the outgoing view.
+    capture: Rc<cocoa_ui::capture::ViewCapture>,
+    /// The current capture attempt's target — becomes the installed
+    /// input when it lands.
+    target: RefCell<Option<Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLTexture>>>>,
+    /// The filtered state the frozen input was installed into — the
+    /// tick's redraw target.
+    filtered: RefCell<Option<Rc<crate::components::filtered::FilteredState>>>,
+    /// The frame signal feeding the effect body — republished every tick.
+    frame: Binding<TransitionFrame>,
+    /// A capture attempt is outstanding — the next tick does not re-issue.
+    in_flight: Cell<bool>,
+    /// The texture landed and the leaf mounted.
+    landed: Cell<bool>,
+}
+
+#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+impl core::fmt::Debug for PixelGhost {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PixelGhost").finish_non_exhaustive()
+    }
+}
+
+/// The slot's current rect in top-left window logical coordinates — the
+/// anchor view's window-space bounds. `AppKit` answers bottom-left, so
+/// the origin mirrors against the window's content height.
+#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "window-space coordinates and scale fit f32"
+)]
+fn source_in_window(anchor: &PlatformView) -> LayoutRect {
+    let rect = view::bounds_in_window(anchor);
+    #[cfg(target_os = "macos")]
+    let y = {
+        let height = view::window(anchor)
+            .and_then(|window| window.contentView())
+            .map_or(0.0, |content| view::bounds(&content).size.height);
+        height - rect.origin.y - rect.size.height
+    };
+    #[cfg(target_os = "ios")]
+    let y = rect.origin.y;
+    LayoutRect::new(
+        Point::new(rect.origin.x as f32, y as f32),
+        Size::new(rect.size.width as f32, rect.size.height as f32),
+    )
+}
+
+/// Republishes the ghost's `TransitionFrame` — the slot in window
+/// coordinates, the overlay size, the backing scale and the layout
+/// direction — so the effect follows scrolling and resizing between
+/// frames (§4.5).
+#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "window-space coordinates and scale fit f32"
+)]
+fn publish_frame(pixel: &PixelGhost, anchor: &PlatformView) {
+    let window_size = view::bounds(&pixel.overlay).size;
+    pixel.frame.set(TransitionFrame::new(
+        source_in_window(anchor),
+        Size::new(window_size.width as f32, window_size.height as f32),
+        view::backing_scale_factor(anchor) as f32,
+        if view::is_right_to_left(anchor) {
+            LayoutDirection::RightToLeft
+        } else {
+            LayoutDirection::LeftToRight
+        },
+    ));
+}
+
+/// The view the window-level overlay mounts into — `contentView` on
+/// `AppKit`, the `UIWindow` itself on `UIKit`.
+#[cfg(all(
+    target_os = "macos",
+    any(feature = "applied_filter", feature = "view_effect")
+))]
+fn overlay_parent(view: &PlatformView) -> Option<Retained<PlatformView>> {
+    view::window(view)
+        .and_then(|window| window.contentView())
+        .map(|content| view::retain_base(&content))
+}
+
+/// The view the window-level overlay mounts into — the `UIWindow`
+/// itself, which is a `UIView`.
+#[cfg(all(
+    target_os = "ios",
+    any(feature = "applied_filter", feature = "view_effect")
+))]
+fn overlay_parent(view: &PlatformView) -> Option<Retained<PlatformView>> {
+    view::window(view).map(|window| view::retain_base(&window))
+}
+
+/// Starts a `captures_content` removal: freeze the outgoing view once
+/// into a private `MTLTexture` (no CPU readback), render the effect body
+/// the `TransitionState` builds, install the frozen texture as its
+/// input and mount it in a window-level overlay above content. A
+/// `Deferred` capture retries on the next clock tick under the current
+/// context generation; a `Failed` capture is the contract's error —
+/// never a property fallback.
+#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+#[expect(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    reason = "the pixel ghost is one wiring pass; window-space coordinates fit f32"
+)]
+fn start_pixel_removal(
+    mtm: cocoa_ui::MainThreadMarker,
+    view: &Retained<PlatformView>,
+    renderer: &crate::contract::Renderer,
+    state: TransitionState,
+    slot: Option<GhostSlot>,
+    completion: impl FnOnce() + 'static,
+) -> RemovalGhost {
+    let Some(parent) = overlay_parent(view) else {
+        panic!(
+            "waterui-apple: a pixel removal needs its outgoing view in a window — the overlay it draws through has nowhere to mount"
+        );
+    };
+    let overlay = {
+        #[cfg(target_os = "macos")]
+        let overlay = cocoa_ui::appkit::HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        #[cfg(target_os = "ios")]
+        let overlay = cocoa_ui::uikit::HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        #[cfg(target_os = "macos")]
+        overlay.set_hit_test_handler(|_host, _point| cocoa_ui::appkit::HitTest::Pass);
+        let overlay = view::retain_base(&overlay);
+        #[cfg(target_os = "ios")]
+        view::set_user_interaction_enabled(&overlay, false);
+        view::hide_from_accessibility(&overlay);
+        view::set_frame(&overlay, view::bounds(&parent));
+        view::set_autoresizing_flexible_size(&overlay);
+        view::add_subview(&parent, &overlay);
+        overlay
+    };
+
+    // The frame signal the effect body reads — the first tick republishes
+    // it against the live anchor, so the start value only seeds the type.
+    let frame = Binding::container(TransitionFrame::new(
+        source_in_window(view),
+        Size::new(
+            view::bounds(&parent).size.width as f32,
+            view::bounds(&parent).size.height as f32,
+        ),
+        view::backing_scale_factor(view) as f32,
+        if view::is_right_to_left(view) {
+            LayoutDirection::RightToLeft
+        } else {
+            LayoutDirection::LeftToRight
+        },
+    ));
+    // The backend owns the captured realization, so the body takes empty
+    // content and receives the frozen texture as its effect input.
+    let leaf = renderer.render(state.body(AnyView::new(()), frame.computed()));
+
+    let capture = Rc::new(cocoa_ui::capture::ViewCapture::new(mtm, view.clone()));
+    // The contract only asks the redraw hook to exist; a frozen source
+    // never re-captures, so surface redraws during the one-shot scope
+    // change nothing it would sample twice.
+    capture.set_on_redraw(|| {});
+    let pixel = Rc::new(PixelGhost {
+        overlay,
+        leaf: RefCell::new(Some(leaf)),
+        mounted: RefCell::new(None),
+        capture,
+        target: RefCell::new(None),
+        filtered: RefCell::new(None),
+        frame,
+        in_flight: Cell::new(false),
+        landed: Cell::new(false),
+    });
+
+    // One capture attempt: allocate the target on the context generation
+    // live right now, then hand it to `ViewCapture`. The runtime is
+    // resolved once here — it survives context generations, which the
+    // retry re-binds by re-allocating the target.
+    let runtime = crate::gpu_runtime::runtime(renderer.context().env());
+    let attempt = {
+        let pixel = Rc::downgrade(&pixel);
+        let view = view.clone();
+        move || {
+            let Some(pixel) = pixel.upgrade() else {
+                return;
+            };
+            let context = runtime.context();
+            let scale = view::backing_scale_factor(&view);
+            let (width, height) = crate::components::filtered::pixel_size(&view, scale);
+            assert!(
+                width > 0 && height > 0,
+                "waterui-apple: a pixel removal captured a zero-size slot — the outgoing view \
+                 must still carry its removal frame when `start_removal` runs"
+            );
+            let target = crate::components::filtered::new_capture_input(&context, width, height);
+            let generation = context.generation();
+            *pixel.target.borrow_mut() = Some(target);
+            pixel.in_flight.set(true);
+            let weak = Sendable(Rc::downgrade(&pixel));
+            let anchor = Sendable(view.clone());
+            pixel.capture.capture(
+                pixel.target.borrow().as_ref().expect("target just stored"),
+                generation,
+                move |outcome| {
+                    let Some(pixel) = weak.get().upgrade() else {
+                        return;
+                    };
+                    pixel.in_flight.set(false);
+                    match outcome {
+                        Ok(()) => {
+                            let anchor = anchor.get();
+                            // The frozen frame exists: the original stops
+                            // drawing and the filtered overlay takes over.
+                            view::set_hidden(anchor, true);
+                            let texture =
+                                pixel.target.borrow_mut().take().expect("the landed target");
+                            let leaf = pixel.leaf.borrow_mut().take().expect("one landing");
+                            let Some(filtered) = crate::components::filtered::install_frozen_input(
+                                leaf.view(),
+                                texture,
+                            ) else {
+                                panic!(
+                                    "waterui-apple: a `captures_content` removal's body produced \
+                                     no filtered surface to take the frozen input"
+                                );
+                            };
+                            *pixel.filtered.borrow_mut() = Some(filtered);
+                            view::set_frame(leaf.view(), cocoa_ui::view::bounds(&pixel.overlay));
+                            view::set_autoresizing_flexible_size(leaf.view());
+                            *pixel.mounted.borrow_mut() = Some(leaf.mount(&pixel.overlay));
+                            crate::components::filtered::request_render(
+                                &pixel.filtered.borrow().clone().expect("installed"),
+                            );
+                            pixel.landed.set(true);
+                            pixel.capture.shutdown();
+                        }
+                        Err(cocoa_ui::capture::CaptureError::Deferred) => {
+                            // Retryable — the next clock tick re-issues on
+                            // the then-current context generation.
+                            pixel.target.borrow_mut().take();
+                        }
+                        Err(cocoa_ui::capture::CaptureError::Failed(error)) => {
+                            panic!(
+                                "waterui-apple: pixel removal capture failed: {error} — a failed \
+                                 capture is an error, never a property fallback"
+                            );
+                        }
+                    }
+                },
+            );
+        }
+    };
+    attempt();
+    let attempt = Sendable(attempt);
+
+    let completion = Rc::new(RefCell::new(Some(completion)));
+    let driver = Rc::new(RefCell::new(state));
+    let last = Cell::new(Instant::now());
+    let clock = FrameClock::new(mtm, {
+        let driver = Rc::clone(&driver);
+        let completion = Rc::clone(&completion);
+        let pixel = Rc::downgrade(&pixel);
+        let anchor = view.clone();
+        move || {
+            let Some(pixel) = pixel.upgrade() else {
+                return;
+            };
+            publish_frame(&pixel, &anchor);
+            if pixel.landed.get() {
+                if let Some(filtered) = pixel.filtered.borrow().as_ref() {
+                    crate::components::filtered::request_render(filtered);
+                }
+            } else if !pixel.in_flight.get() {
+                (attempt.get())();
+            }
+            let now = Instant::now();
+            let delta = now.duration_since(last.replace(now));
+            let done = !driver.borrow_mut().advance(delta);
+            if done && let Some(complete) = completion.borrow_mut().take() {
+                complete();
+            }
+        }
+    });
+    clock.start(view);
+    RemovalGhost {
+        view: view.clone(),
+        slot,
+        state: driver,
+        clock,
+        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+        pixel: Some(pixel),
     }
 }
 
@@ -340,12 +694,24 @@ pub fn start_removal(
     view: &Retained<PlatformView>,
     claim: &TransitionClaim,
     slot: Option<GhostSlot>,
+    renderer: &crate::contract::Renderer,
     completion: impl FnOnce() + 'static,
 ) -> RemovalGhost {
     let state = claim
         .spec
         .start(TransitionPhase::Removal, claim.reduce_motion);
-    assert_property_transition(&state);
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    if state.captures_content() {
+        return start_pixel_removal(mtm, view, renderer, state, slot, completion);
+    }
+    #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
+    let _ = renderer;
+    #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
+    assert!(
+        !state.captures_content(),
+        "waterui-apple: pixel-capture transitions need the filtered pipeline — build with \
+         `applied_filter` or `view_effect`; a failed capture is an error, never a property fallback"
+    );
     let (size, direction) = geometry_of(view);
     play_property_transition(view, &state, TransitionPhase::Removal, size, direction);
 
@@ -370,5 +736,7 @@ pub fn start_removal(
         slot,
         state: driver,
         clock,
+        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+        pixel: None,
     }
 }

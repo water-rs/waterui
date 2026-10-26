@@ -185,6 +185,13 @@ pub struct FilteredState {
     frame_sink: Rc<dyn Fn(DrawableFrame)>,
     /// `captureTexture`.
     capture_texture: RefCell<Option<Retained<MetalTexture>>>,
+    /// An already-realized input — the removal ghost's one-shot frozen
+    /// capture (layout-spec §4.5). When set, `render_frame` and
+    /// `render_prepared_external_texture` feed it to the first effect
+    /// instead of running `ViewCapture` over the hidden content, and
+    /// `attach` buys no live capture texture. It survives detach: a
+    /// re-attach keeps reading the same frozen frame.
+    frozen_input: RefCell<Option<Retained<MetalTexture>>>,
     /// `framePresentationInFlight`.
     frame_presentation_in_flight: Cell<bool>,
     /// `renderInFlight`.
@@ -273,7 +280,7 @@ impl fmt::Debug for FilteredState {
 /// The host bounds in physical pixels, rounded up: a positive extent in
 /// points always covers at least one device pixel, so "positive in points"
 /// and "non-zero in pixels" are one predicate.
-fn pixel_size(view: &PlatformView, scale: f64) -> (u32, u32) {
+pub fn pixel_size(view: &PlatformView, scale: f64) -> (u32, u32) {
     let bounds = cocoa_ui::view::bounds(view);
     #[expect(
         clippy::cast_possible_truncation,
@@ -512,6 +519,33 @@ fn detach_if_needed(state: &FilteredState) {
     state.output_revealed.set(false);
 }
 
+/// A private-storage effect input in the presentation format — the
+/// allocation `ensureCaptureTexture` performs, minus the state write.
+/// The transition ghost's one-shot capture targets this; `ViewCapture`
+/// rasterizes into it and the filtered leaf renders it as `frozen_input`.
+pub fn new_capture_input(
+    context: &SharedGpuContext,
+    width: u32,
+    height: u32,
+) -> Retained<MetalTexture> {
+    // SAFETY: creates a valid descriptor; Metal validates the arguments.
+    let descriptor = unsafe {
+        objc2_metal::MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+            output_pixel_format(),
+            width as usize,
+            height as usize,
+            false,
+        )
+    };
+    descriptor.setUsage(
+        objc2_metal::MTLTextureUsage::ShaderRead | objc2_metal::MTLTextureUsage::RenderTarget,
+    );
+    descriptor.setStorageMode(objc2_metal::MTLStorageMode::Private);
+    crate::gpu_runtime::raw_metal_device(context)
+        .newTextureWithDescriptor(&descriptor)
+        .expect("Failed to create the filtered-content capture texture")
+}
+
 /// `ensureCaptureTexture` — a private-storage render target in the
 /// presentation format, reallocated on size change, allocated on the
 /// explicit live `context` the caller bound this generation to.
@@ -529,22 +563,7 @@ fn ensure_capture_texture(
     {
         return texture.clone();
     }
-    // SAFETY: creates a valid descriptor; Metal validates the arguments.
-    let descriptor = unsafe {
-        objc2_metal::MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-            pixel_format,
-            width as usize,
-            height as usize,
-            false,
-        )
-    };
-    descriptor.setUsage(
-        objc2_metal::MTLTextureUsage::ShaderRead | objc2_metal::MTLTextureUsage::RenderTarget,
-    );
-    descriptor.setStorageMode(objc2_metal::MTLStorageMode::Private);
-    let texture = crate::gpu_runtime::raw_metal_device(context)
-        .newTextureWithDescriptor(&descriptor)
-        .expect("Failed to create the filtered-content capture texture");
+    let texture = new_capture_input(context, width, height);
     *state.capture_texture.borrow_mut() = Some(texture.clone());
     texture
 }
@@ -606,7 +625,9 @@ fn attach(state: &Rc<FilteredState>) {
     ensure_filtered_generation(state, &context);
     let (width, height) = pixel_size(&state.view, state.current_scale.get());
     attach_if_needed(state, &context, width, height);
-    let _ = ensure_capture_texture(state, &context, width, height);
+    if state.frozen_input.borrow().is_none() {
+        let _ = ensure_capture_texture(state, &context, width, height);
+    }
 }
 
 /// `updateOutputLayerFrame` — the hidden content view, the output view,
@@ -678,7 +699,7 @@ fn update_link_demand(state: &Rc<FilteredState>) {
 /// answered by the next drawable delivery, at most one display interval
 /// later. While an external capture owns this output, the request goes to
 /// the capture's redraw hook instead and the link stays suspended.
-fn request_render(state: &Rc<FilteredState>) {
+pub fn request_render(state: &Rc<FilteredState>) {
     state.needs_render.set(true);
     if state.external_count.get() > 0 {
         if let Some(on_redraw) = state.external_redraw.borrow().as_ref() {
@@ -746,6 +767,19 @@ fn render_frame(state: &Rc<FilteredState>, frame: DrawableFrame) {
     // A frame in flight pauses the link: `deliver_update` returns early
     // while the lease is held, so nothing else stops the next vsync.
     update_link_demand(state);
+    if let Some(frozen) = state.frozen_input.borrow().clone() {
+        // A frozen input is the frame already: no capture pass runs —
+        // the lease, encode and presentation contract are unchanged.
+        let work = PresentWork {
+            frame,
+            context,
+            input: frozen,
+            width,
+            height,
+        };
+        finish_prepared_frame(state, work);
+        return;
+    }
     let input = ensure_capture_texture(state, &context, width, height);
     let generation = context.generation();
     let work = PresentWork {
@@ -975,18 +1009,20 @@ fn render_transparent(
 }
 
 /// The per-frame effect encode shared by the screen drawable and the
-/// external-capture destination: `input` feeds effect 0, intermediates
-/// chain the rest, the last pass lands in `output`. All textures are
-/// `width`×`height` `PRESENTATION_FORMAT`.
+/// external-capture destination: `input` feeds effect 0 at its own
+/// `input_size` — a frozen transition input is smaller than the output —
+/// intermediates chain the rest at `output` size, the last pass lands in
+/// `output`. All textures are `PRESENTATION_FORMAT`.
 fn encode_effects(
     state: &FilteredState,
     context: &SharedGpuContext,
     input_texture: &wgpu::Texture,
+    input_size: (u32, u32),
     output_texture: &wgpu::Texture,
-    width: u32,
-    height: u32,
+    output_size: (u32, u32),
     timing: EffectFrameTiming,
 ) -> (bool, wgpu::CommandEncoder) {
+    let (output_width, output_height) = output_size;
     let device = context.device();
     let queue = context.queue();
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1004,8 +1040,8 @@ fn encode_effects(
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("FilteredView Intermediate"),
                 size: wgpu::Extent3d {
-                    width,
-                    height,
+                    width: output_width,
+                    height: output_height,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -1031,6 +1067,10 @@ fn encode_effects(
         } else {
             &intermediates[index]
         };
+        // Effect 0 sees the input texture's real dimensions — a frozen
+        // transition input is the captured slot, not the output frame —
+        // and every later pass sees the output size it renders into.
+        let (input_width, input_height) = if index == 0 { input_size } else { output_size };
         let input = EffectInput {
             device,
             queue,
@@ -1040,8 +1080,8 @@ fn encode_effects(
                 ..Default::default()
             }),
             format: PRESENTATION_FORMAT,
-            width,
-            height,
+            width: input_width,
+            height: input_height,
             timing,
             shape: ShapeTextures::default(),
         };
@@ -1055,8 +1095,8 @@ fn encode_effects(
                 ..Default::default()
             }),
             format: PRESENTATION_FORMAT,
-            width,
-            height,
+            width: output_width,
+            height: output_height,
         };
         needs_redraw |= effect
             .encode_render(&input, &output, &mut encoder)
@@ -1135,9 +1175,20 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
         return;
     }
     let (_output_width, _output_height) = (work.width, work.height);
-    let input_texture =
-        imported_input(state, &context, work.input.clone(), work.width, work.height);
-    state.input_size.set((work.width, work.height));
+    // The input's real pixel dims — a frozen transition input is the
+    // captured slot, smaller than the drawable the effects render into.
+    let input_size = (
+        u32::try_from(work.input.width()).unwrap_or(u32::MAX),
+        u32::try_from(work.input.height()).unwrap_or(u32::MAX),
+    );
+    let input_texture = imported_input(
+        state,
+        &context,
+        work.input.clone(),
+        input_size.0,
+        input_size.1,
+    );
+    state.input_size.set(input_size);
 
     // The drawable's own texture is the output — imported
     // `RENDER_ATTACHMENT` only: the framebuffer-only drawable is rendered
@@ -1171,9 +1222,9 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
         state,
         &context,
         &input_texture,
+        input_size,
         &output_wgpu_texture,
-        work.width,
-        work.height,
+        (work.width, work.height),
         timing,
     );
     drop(input_texture);
@@ -1800,6 +1851,39 @@ impl CapturableSurface for FilteredCapturable {
             completion(Err(CaptureError::Deferred));
             return;
         }
+        if let Some(frozen) = state.frozen_input.borrow().clone() {
+            // A frozen input answers the external render without a
+            // capture pass: the parent's target is the output, the
+            // frozen texture feeds effect 0 at its own dimensions.
+            let input_size = (
+                u32::try_from(frozen.width()).unwrap_or(u32::MAX),
+                u32::try_from(frozen.height()).unwrap_or(u32::MAX),
+            );
+            let input = imported_input(&state, &context, frozen, input_size.0, input_size.1);
+            let timing = {
+                let mut frame_clock = state.frame_clock.borrow_mut();
+                if state.timeline_parked.replace(false) {
+                    let _ = frame_clock.tick();
+                }
+                frame_clock.tick()
+            };
+            let (needs_redraw, encoder) = encode_effects(
+                &state,
+                &context,
+                &input,
+                input_size,
+                &output,
+                (width, height),
+                timing,
+            );
+            drop(input);
+            drop(output);
+            if needs_redraw {
+                request_render(&state);
+            }
+            submit_external(&state, &context, encoder, completion);
+            return;
+        }
         let input_native = ensure_capture_texture(&state, &context, width, height);
         let input = imported_input(&state, &context, input_native.clone(), width, height);
         let completion = std::sync::Mutex::new(Some(completion));
@@ -1879,8 +1963,15 @@ impl CapturableSurface for FilteredCapturable {
                     }
                     frame_clock.tick()
                 };
-                let (needs_redraw, encoder) =
-                    encode_effects(&state, &context, &input, &output, width, height, timing);
+                let (needs_redraw, encoder) = encode_effects(
+                    &state,
+                    &context,
+                    &input,
+                    (width, height),
+                    &output,
+                    (width, height),
+                    timing,
+                );
                 drop(input);
                 drop(output);
                 if needs_redraw {
@@ -1925,6 +2016,51 @@ impl CapturableSurface for FilteredCapturable {
             .upgrade()
             .is_none_or(|state| state.park.is_failed())
     }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+}
+
+/// Installs `texture` — a one-shot frozen capture — as the effect input
+/// of the innermost filtered surface in `view`'s subtree, and returns
+/// its state so the caller can drive redraws. A transition ghost calls
+/// this on the rendered effect leaf before mounting it into the window
+/// overlay: the first presented frame then reads the frozen texture
+/// instead of live-capturing the hidden content (layout-spec §4.5).
+///
+/// The innermost surface is the content-adjacent effect: outer filtered
+/// bodies around it still capture this output through the ordinary
+/// external-render path, so only the deepest leaf takes the texture.
+/// Returns `None` when the subtree holds no filtered surface — the body
+/// of a `captures_content` transition must produce one.
+pub fn install_frozen_input(
+    view: &PlatformView,
+    texture: Retained<MetalTexture>,
+) -> Option<Rc<FilteredState>> {
+    fn innermost(view: &PlatformView, depth: usize, best: &mut Option<(usize, Rc<FilteredState>)>) {
+        if let Some(surface) = cocoa_ui::capture::resolve_capturable(view)
+            && let Some(filtered) = surface.as_any().downcast_ref::<FilteredCapturable>()
+            && let Some(state) = filtered.state.upgrade()
+            && best
+                .as_ref()
+                .is_none_or(|(best_depth, _)| depth > *best_depth)
+        {
+            *best = Some((depth, state));
+        }
+        for subview in cocoa_ui::view::subviews(view) {
+            innermost(&subview, depth + 1, best);
+        }
+    }
+    let mut best = None;
+    innermost(view, 0, &mut best);
+    let (_, state) = best?;
+    let previous = state.frozen_input.borrow_mut().replace(texture);
+    assert!(
+        previous.is_none(),
+        "a frozen transition input is installed once — the contract captures once"
+    );
+    Some(state)
 }
 
 /// Dropping clears the filter's registrations and shuts the capture and
@@ -2165,6 +2301,7 @@ fn build_filtered_parts(
             presenter: RefCell::new(None),
             frame_sink,
             capture_texture: RefCell::new(None),
+            frozen_input: RefCell::new(None),
             frame_presentation_in_flight: Cell::new(false),
             render_in_flight: Cell::new(false),
             detach_after_capture: Cell::new(false),

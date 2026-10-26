@@ -148,6 +148,7 @@ fn update_child(state: &Rc<RefCell<DynamicState>>, view: AnyView) {
                     &outgoing,
                     &claim,
                     None,
+                    &state.renderer,
                     move || {
                         let Some(state) = weak.upgrade() else { return };
                         let mut state = state.borrow_mut();

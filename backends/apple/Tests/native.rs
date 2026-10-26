@@ -190,6 +190,13 @@ fn trials() -> Vec<Trial> {
         {
             tests.extend(gpu_surface::trials());
             tests.extend(filtered::trials());
+            tests.push(Trial::test(
+                "transition::a_pixel_removal_freezes_into_the_window_overlay",
+                || {
+                    transition::a_pixel_removal_freezes_into_the_window_overlay();
+                    Ok(())
+                },
+            ));
         }
     }
     #[cfg(target_os = "ios")]
@@ -10266,6 +10273,124 @@ mod transition {
             (count, first),
             (1, live_ptr.get()),
             "only the live child remains"
+        );
+    }
+
+    /// Exercises a `captures_content` removal end to end: the outgoing
+    /// view freezes once into a GPU texture, the declared effect body —
+    /// a real `ShaderEffect` passthrough, so the coverage is genuine —
+    /// mounts into the window-level overlay through the frozen-input
+    /// path, the anchor hides once the texture lands, and completion
+    /// releases the overlay, the leaf and the outgoing view.
+    #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+    pub fn a_pixel_removal_freezes_into_the_window_overlay() {
+        use waterui::graphics::gpu::GpuRuntime;
+        use waterui_apple::dispatch;
+        use waterui_apple::native_test_support::install_gpu;
+        use waterui_backend_core::AnyView;
+        use waterui_core::View;
+        use waterui_core::transition::{Transition, TransitionContext, TransitionPhase};
+
+        struct CaptureProbe;
+
+        impl Transition for CaptureProbe {
+            fn captures_content(&self, phase: TransitionPhase) -> bool {
+                phase == TransitionPhase::Removal
+            }
+
+            fn body(&self, content: AnyView, _ctx: TransitionContext) -> impl View {
+                let shader = waterui::graphics::filtrate::ShaderEffect::new(
+                    "@fragment
+                    fn main(in: VertexOutput) -> @location(0) vec4<f32> {
+                        return textureSample(input_texture, input_sampler, in.uv);
+                    }",
+                )
+                .expect("the probe shader is valid WGSL");
+                waterui::graphics::WithEffect::new(content, shader)
+            }
+        }
+
+        let _mtm = mtm();
+        // The pixel path resolves the GPU runtime from the environment
+        // the leaf rendered under — the fixture env installs it, exactly
+        // as the surface trials do.
+        let mut env = super::resolve::env();
+        install_gpu(
+            &mut env,
+            pollster::block_on(GpuRuntime::new()).expect("the fixture GPU runtime"),
+        );
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = dispatch::render(AnyView::new(dynamic), &env);
+        let window = super::mount_and_order_front(leaf.view());
+
+        let died = Rc::new(Cell::new(false));
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(
+                Metadata::new(label("gone"), Retain::new(Died(Rc::clone(&died)))),
+                TransitionSpec::new(waterui_core::transition::AnyTransition::asymmetric(
+                    PropertyTransition::opacity(),
+                    CaptureProbe,
+                ))
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+            ));
+        });
+        // Let the child lay out so the capture reads a nonzero slot.
+        assert!(
+            pump_main_until(2.0, || autoreleasepool(|_| {
+                view::subviews(leaf.view())
+                    .first()
+                    .is_some_and(|child| view::bounds(child).size.width > 0.0)
+            })),
+            "the outgoing child laid out"
+        );
+        let ghost_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
+        let weak = autoreleasepool(|_| {
+            let subviews = view::subviews(leaf.view());
+            assert_eq!(subviews.len(), 1, "the child mounts inside the host");
+            ghost_ptr.set(std::ptr::from_ref(&*subviews[0]));
+            Weak::new(&*subviews[0])
+        });
+
+        autoreleasepool(|_| handler.set(label("here")));
+        assert!(died.get(), "the removed leaf's keepalive ended at removal");
+        assert!(weak.load().is_some(), "the ghost retains the outgoing view");
+
+        // The capture lands and the filtered effect mounts in the window
+        // overlay above the content — the anchor hides once it does. The
+        // harness's `contentView` is the dynamic host itself, so the
+        // overlay arrives as a sibling above the ghost and the new child.
+        #[cfg(target_os = "macos")]
+        let overlay_mounted = || autoreleasepool(|_| view::subviews(leaf.view()).len() == 3);
+        #[cfg(target_os = "ios")]
+        let overlay_mounted = || autoreleasepool(|_| view::subviews(&window).len() == 2);
+        let _ = &window;
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| {
+                    overlay_mounted()
+                        && view::subviews(leaf.view()).first().is_some_and(|first| {
+                            std::ptr::from_ref(&**first) == ghost_ptr.get()
+                                && view::is_hidden(first)
+                        })
+                })
+            }),
+            "the frozen texture installed and the overlay mounted above content"
+        );
+
+        // Completion: the overlay leaves the window and the ghost
+        // releases the outgoing view.
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| {
+                    let under = view::subviews(leaf.view());
+                    under.len() == 1 && std::ptr::from_ref(&*under[0]) != ghost_ptr.get()
+                })
+            }),
+            "the ghost and its overlay release when the transition completes"
+        );
+        assert!(
+            pump_main_until(1.0, || weak.load().is_none()),
+            "the ghost releases the outgoing view"
         );
     }
 }

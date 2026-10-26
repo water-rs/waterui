@@ -430,6 +430,11 @@ pub trait CapturableSurface {
     /// than hanging. Not a substitute for [`Self::has_presented_frame`]:
     /// the wait covers `presented || failed`, nothing else.
     fn presentation_failed(&self) -> bool;
+    /// The concrete surface as `Any` — the backend-local downcast a
+    /// transition ghost uses to install a frozen input on the filtered
+    /// surface its effect body produced. Required so a new surface kind
+    /// cannot forget it.
+    fn as_any(&self) -> &dyn core::any::Any;
 }
 
 impl fmt::Debug for dyn CapturableSurface {

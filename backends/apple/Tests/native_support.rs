@@ -643,6 +643,26 @@ pub fn render_environment() -> Environment {
     env
 }
 
+/// Installs the GPU owners onto an existing environment.
+///
+/// Runtime, scene engine, filter-pipeline cache and the
+/// `PresentationTime` anchor — the set a `captures_content` transition
+/// and the filtered handler resolve. `gpu_runtime::prepare` installs
+/// the same beside the runtime in production; trials that render
+/// `FilteredView` through the dispatcher need it on the env they hand
+/// `dispatch::render`.
+#[cfg(feature = "gpu_surface")]
+pub fn install_gpu(
+    env: &mut waterui_backend_core::Environment,
+    runtime: waterui_graphics::gpu::GpuRuntime,
+) {
+    use std::rc::Rc;
+    env.insert(runtime);
+    env.insert(Rc::new(crate::gpu_runtime::SceneEngine::new()));
+    env.insert(Rc::new(crate::gpu_runtime::FilterPipelines::new()));
+    crate::presentation_time::PresentationTime::install(env);
+}
+
 /// Renders `view` against [`render_environment`] through the typed
 /// dispatch entry point.
 #[must_use]

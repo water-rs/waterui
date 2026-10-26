@@ -99,19 +99,74 @@ impl TransitionGeometry {
 /// so progress alone cannot describe it: the host updates this frame after
 /// every placement and before drawing through the window-level overlay.
 #[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
 pub struct TransitionFrame {
     /// The retained slot in window logical coordinates.
-    pub source: Rect,
+    source: Rect,
     /// The window's full overlay size in logical pixels.
-    pub window: Size,
+    window: Size,
     /// Device pixels per logical pixel.
-    pub scale_factor: f32,
+    scale_factor: f32,
     /// Resolves leading and trailing edges.
-    pub direction: LayoutDirection,
+    direction: LayoutDirection,
 }
 
 crate::impl_constant!(TransitionFrame);
+
+impl TransitionFrame {
+    /// Window space a host reports to a pixel transition.
+    #[must_use]
+    pub const fn new(
+        source: Rect,
+        window: Size,
+        scale_factor: f32,
+        direction: LayoutDirection,
+    ) -> Self {
+        Self {
+            source,
+            window,
+            scale_factor,
+            direction,
+        }
+    }
+
+    /// The retained slot in window logical coordinates.
+    #[must_use]
+    pub const fn source(&self) -> Rect {
+        self.source
+    }
+    /// The window's full overlay size in logical pixels.
+    #[must_use]
+    pub const fn window(&self) -> Size {
+        self.window
+    }
+    /// Device pixels per logical pixel.
+    #[must_use]
+    pub const fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
+    /// Resolves leading and trailing edges.
+    #[must_use]
+    pub const fn direction(&self) -> LayoutDirection {
+        self.direction
+    }
+
+    /// Updates the retained slot.
+    pub const fn set_source(&mut self, source: Rect) {
+        self.source = source;
+    }
+    /// Updates the overlay size.
+    pub const fn set_window(&mut self, window: Size) {
+        self.window = window;
+    }
+    /// Updates the backing scale.
+    pub const fn set_scale_factor(&mut self, scale_factor: f32) {
+        self.scale_factor = scale_factor;
+    }
+    /// Updates the layout direction.
+    pub const fn set_direction(&mut self, direction: LayoutDirection) {
+        self.direction = direction;
+    }
+}
 
 /// A sampled set of visual properties, independent of layout.
 ///
@@ -169,14 +224,45 @@ impl Default for TransitionProperties {
 
 /// Reactive input to a pixel transition's one-time view construction.
 #[derive(Clone, Debug)]
-#[non_exhaustive]
 pub struct TransitionContext {
     /// Event selecting the insertion or removal effect.
-    pub phase: TransitionPhase,
+    phase: TransitionPhase,
     /// Absence in `[0, 1]`; subscribe instead of rebuilding the effect each frame.
-    pub progress: Computed<f32>,
+    progress: Computed<f32>,
     /// Window-relative geometry, host-updated per placement including scroll/resize.
-    pub frame: Computed<TransitionFrame>,
+    frame: Computed<TransitionFrame>,
+}
+
+impl TransitionContext {
+    /// The inputs a backend feeds a pixel transition's `body`.
+    #[must_use]
+    pub const fn new(
+        phase: TransitionPhase,
+        progress: Computed<f32>,
+        frame: Computed<TransitionFrame>,
+    ) -> Self {
+        Self {
+            phase,
+            progress,
+            frame,
+        }
+    }
+
+    /// Event selecting the insertion or removal effect.
+    #[must_use]
+    pub const fn phase(&self) -> TransitionPhase {
+        self.phase
+    }
+    /// Absence in `[0, 1]`; subscribe instead of rebuilding the effect each frame.
+    #[must_use]
+    pub const fn progress(&self) -> &Computed<f32> {
+        &self.progress
+    }
+    /// Window-relative geometry, host-updated per placement including scroll/resize.
+    #[must_use]
+    pub const fn frame(&self) -> &Computed<TransitionFrame> {
+        &self.frame
+    }
 }
 
 /// A structural view effect.
@@ -453,7 +539,7 @@ impl<I: Transition, R: Transition> Transition for Asymmetric<I, R> {
         }
     }
     fn body(&self, content: AnyView, transition_context: TransitionContext) -> impl View {
-        match transition_context.phase {
+        match transition_context.phase() {
             TransitionPhase::Insertion => {
                 AnyView::new(self.insertion.body(content, transition_context))
             }
@@ -601,11 +687,7 @@ impl TransitionState {
     pub fn body(&self, content: AnyView, frame: Computed<TransitionFrame>) -> AnyView {
         self.transition.0.body_erased(
             content,
-            TransitionContext {
-                phase: self.phase,
-                progress: self.progress.clone().computed(),
-                frame,
-            },
+            TransitionContext::new(self.phase, self.progress.clone().computed(), frame),
         )
     }
 

@@ -2064,6 +2064,10 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
             },
         );
     }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
 }
 
 const fn state_format(state: &SurfaceState) -> MTLPixelFormat {

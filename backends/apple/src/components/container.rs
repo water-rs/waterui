@@ -358,8 +358,13 @@ fn retire_member(
     let weak = Rc::downgrade(state_rc);
     let ghost_view = view.clone();
     let is_lazy = state.lazy.is_some();
-    let ghost =
-        crate::transition::start_removal(state.mtm, &view, &claim, Some(slot), move || {
+    let ghost = crate::transition::start_removal(
+        state.mtm,
+        &view,
+        &claim,
+        Some(slot),
+        &state.renderer,
+        move || {
             let Some(state_rc) = weak.upgrade() else {
                 return;
             };
@@ -376,7 +381,8 @@ fn retire_member(
                 state.host.set_needs_layout();
                 crate::measure_memo::invalidate();
             }
-        });
+        },
+    );
     state.ghosts.push(ContainerGhost {
         position,
         ghost,
