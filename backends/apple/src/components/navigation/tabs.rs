@@ -443,8 +443,12 @@ mod platform {
             let selection = layout.selection.clone();
             let mounted = mounted.clone();
             move |index| {
-                if let Some(tab) = mounted.borrow().get(index) {
-                    selection.set(tab.id);
+                // Copy the id under a short borrow — `selection.set` runs user
+                // watchers that may mutate the collection and re-enter the
+                // membership watch, which takes `mounted` mutably.
+                let id = mounted.borrow().get(index).map(|tab| tab.id);
+                if let Some(id) = id {
+                    selection.set(id);
                 }
             }
         });
@@ -452,7 +456,8 @@ mod platform {
             let tabs = tabs.clone();
             let mounted = mounted.clone();
             move |id| {
-                if let Some(index) = mounted.borrow().iter().position(|tab| tab.id == id) {
+                let index = mounted.borrow().iter().position(|tab| tab.id == id);
+                if let Some(index) = index {
                     tabs.select(index);
                 }
             }
@@ -582,8 +587,12 @@ mod platform {
                 let selection = layout.selection.clone();
                 let mounted = mounted.clone();
                 move |index| {
-                    if let Some(tab) = mounted.borrow().get(index) {
-                        selection.set(tab.id);
+                    // Short borrow — `selection.set` runs watchers that may
+                    // mutate the collection, re-entering the membership
+                    // watch's `mounted` borrow_mut.
+                    let id = mounted.borrow().get(index).map(|tab| tab.id);
+                    if let Some(id) = id {
+                        selection.set(id);
                     }
                 }
             });
@@ -597,8 +606,12 @@ mod platform {
                 let selection = layout.selection.clone();
                 let mounted = mounted.clone();
                 move |index| {
-                    if let Some(tab) = mounted.borrow().get(index) {
-                        selection.set(tab.id);
+                    // Short borrow — `selection.set` runs watchers that may
+                    // mutate the collection, re-entering the membership
+                    // watch's `mounted` borrow_mut.
+                    let id = mounted.borrow().get(index).map(|tab| tab.id);
+                    if let Some(id) = id {
+                        selection.set(id);
                     }
                 }
             });
@@ -627,13 +640,15 @@ mod platform {
             }
         };
         let selected = layout.selection.snapshot();
-        show(mounted.borrow().iter().position(|tab| tab.id == selected));
+        let index = mounted.borrow().iter().position(|tab| tab.id == selected);
+        show(index);
 
         keep.bind(&layout.selection, {
             let show = show.clone();
             let mounted = mounted.clone();
             move |id| {
-                show(mounted.borrow().iter().position(|tab| tab.id == id));
+                let index = mounted.borrow().iter().position(|tab| tab.id == id);
+                show(index);
             }
         });
 
@@ -679,7 +694,8 @@ mod platform {
                     }
                 }
                 let id = selection.snapshot();
-                show(mounted.borrow().iter().position(|tab| tab.id == id));
+                let index = mounted.borrow().iter().position(|tab| tab.id == id);
+                show(index);
                 if let Some(id) = relocation {
                     selection.set(id);
                 }

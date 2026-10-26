@@ -71,6 +71,12 @@ pub struct TabsRenderState {
     /// The collection snapshot the last applied change reported — every
     /// reconcile works this membership, never the live collection.
     snapshot: Rc<RefCell<AnyViewsSnapshot<Tab>>>,
+    /// A relocation [`reconcile`] decided but has not published: callers run
+    /// it under a `borrow_mut` of the whole state, and writing `selection`
+    /// there would let a user watcher re-enter the borrowed state. The id
+    /// resolves reads immediately; the binding write is flushed after the
+    /// borrow drops.
+    pending_selection: Cell<Option<Id>>,
     tabs_dirty: Rc<Cell<bool>>,
     _watch: BoxWatcherGuard,
 }
@@ -105,10 +111,12 @@ impl TabsRenderState {
             style,
             tabs: Vec::new(),
             snapshot,
+            pending_selection: Cell::new(None),
             tabs_dirty,
             _watch: watch,
         };
         state.reconcile();
+        state.flush_pending_selection();
         state
     }
 
@@ -122,7 +130,12 @@ impl TabsRenderState {
             return;
         }
         let snapshot = self.snapshot.borrow().clone();
-        let selected = self.selection.snapshot();
+        // A relocation a previous reconcile queued counts as selected until
+        // the binding write is flushed — reads must not see the stale value.
+        let selected = self
+            .pending_selection
+            .get()
+            .unwrap_or_else(|| self.selection.snapshot());
         let old_index = self.tabs.iter().position(|tab| tab.tag == selected);
         let mut old: std::collections::BTreeMap<Id, TabRenderState> =
             self.tabs.drain(..).map(|tab| (tab.tag, tab)).collect();
@@ -142,16 +155,26 @@ impl TabsRenderState {
             tabs.push(tab);
         }
         self.tabs = tabs;
-        // The selected tab left the set: point the binding at the tab now at
-        // its index — the new last tab when it was trailing. An empty set
-        // leaves the binding untouched; a selection that never named a tab
-        // keeps its existing read-time failure.
+        // The selected tab left the set: queue the tab now at its index —
+        // the new last tab when it was trailing — for the post-borrow flush
+        // to publish. An empty set leaves the binding untouched; a selection
+        // that never named a tab keeps its existing read-time failure.
         if let Some(old_index) = old_index
             && !self.tabs.is_empty()
             && !self.tabs.iter().any(|tab| tab.tag == selected)
         {
             let index = old_index.min(self.tabs.len() - 1);
-            self.selection.set(self.tabs[index].tag);
+            self.pending_selection.set(Some(self.tabs[index].tag));
+        }
+    }
+
+    /// Publishes a queued relocation to the selection binding. Call only
+    /// while no `RefCell<TabsRenderState>` borrow is held — the write runs
+    /// watchers synchronously, and a watcher mutating the collection must
+    /// be free to re-enter the membership watch.
+    pub(crate) fn flush_pending_selection(&self) {
+        if let Some(id) = self.pending_selection.take() {
+            self.selection.set(id);
         }
     }
 
@@ -193,6 +216,7 @@ impl TabsRenderState {
         if self.tabs.is_empty() {
             return None;
         }
+        let selected_id = self.pending_selection.get().unwrap_or(selected_id);
         Some(
             self.tabs
                 .iter()
@@ -205,7 +229,9 @@ impl TabsRenderState {
     /// measured sizes feed the bar's, so an enclosing retained sub-view
     /// must see them (water-rs/waterui#1957).
     pub(crate) fn take_layout_dirty(&mut self) -> bool {
-        self.reconcile();
+        // No reconcile here: membership changes materialize sub-views, which
+        // only `prepare_tabs` can build — this hook has no renderer. The
+        // prepare pass applies the change before measure ever reads it.
         self.tabs.iter_mut().fold(false, |dirty, tab| {
             dirty
                 | tab.label.take_layout_dirty_if_built()
@@ -430,9 +456,10 @@ pub fn render_tabs_node(
             .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
         if !hidden {
             let selected_id = ctx.renderer_mut().read_signal(&state.borrow().selection);
-            let (selection, labels) = {
+            let (selection, labels, relocation) = {
                 let mut st = state.borrow_mut();
                 st.reconcile();
+                st.prebuild_labels(ctx.renderer_mut(), env);
                 let selected_index = st.selected_index(selected_id);
                 let labels: Vec<(Id, crate::renderer::InteractionKey, Option<String>, bool)> = st
                     .tabs
@@ -450,8 +477,13 @@ pub fn render_tabs_node(
                         )
                     })
                     .collect();
-                (st.selection.clone(), labels)
+                (st.selection.clone(), labels, st.pending_selection.take())
             };
+            // The relocation publishes after the borrow drops — a watcher
+            // mutating the collection re-enters the membership watch freely.
+            if let Some(id) = relocation {
+                selection.set(id);
+            }
             tabs_accessibility(
                 ctx.renderer_mut(),
                 Some(bar.band),
@@ -477,11 +509,22 @@ fn render_tabs_parts(
     layout: TabItemLayout,
     theme_metrics: crate::theme::TabsMetrics,
 ) {
-    let (selection, style, tab_count) = {
+    let (selection, style, tab_count, relocation) = {
         let mut st = state.borrow_mut();
         st.reconcile();
-        (st.selection.clone(), st.style, st.tabs.len())
+        st.prebuild_labels(ctx.renderer_mut(), env);
+        (
+            st.selection.clone(),
+            st.style,
+            st.tabs.len(),
+            st.pending_selection.take(),
+        )
     };
+    // Publish the relocation outside the borrow — a selection watcher may
+    // mutate the collection synchronously.
+    if let Some(id) = relocation {
+        selection.set(id);
+    }
     let selected_id = ctx.renderer_mut().read_signal(&selection);
     let selected_index = state.borrow().selected_index(selected_id);
 
@@ -924,8 +967,19 @@ pub fn emit_tabs_accessibility(
     env: &Environment,
 ) {
     let owner = state;
+    let relocation = {
+        let mut st = state.borrow_mut();
+        st.reconcile();
+        st.prebuild_labels(renderer, env);
+        st.pending_selection.take()
+    };
+    // Publish outside the borrow so a watcher mutating the collection can
+    // re-enter the membership watch.
+    if let Some(id) = relocation {
+        let selection = state.borrow().selection.clone();
+        selection.set(id);
+    }
     let mut state = state.borrow_mut();
-    state.reconcile();
     let selected_id = renderer.read_signal(&state.selection);
     let (selection, style, labels) = {
         let selected_index = state.selected_index(selected_id);

@@ -2361,7 +2361,7 @@ mod navigation {
         // Selecting the split's tab brings its chrome back: the sidebar
         // expands and the toolbar aligns to it with the tracking
         // separator.
-        tab.set(1i32);
+        tab.set(1usize);
         assert!(
             pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 !sidebar.isCollapsed() && has_tracking_separator(&window)
@@ -2380,12 +2380,12 @@ mod navigation {
             pump_main_until(MAIN_QUEUE_DEADLINE, || sidebar.isCollapsed()),
             "the user's collapse lands on the sidebar item"
         );
-        tab.set(0i32);
+        tab.set(0usize);
         assert!(
             pump_main_until(MAIN_QUEUE_DEADLINE, || !has_tracking_separator(&window)),
             "hiding the pane withdraws the sidebar chrome again"
         );
-        tab.set(1i32);
+        tab.set(1usize);
         assert!(
             pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 sidebar.isCollapsed() && has_tracking_separator(&window)
@@ -2401,7 +2401,7 @@ mod navigation {
     /// The window stays unordered; the metrics were read that way.
     pub fn a_toolbar_tab_picker_uses_the_extra_large_metrics() {
         let mtm = mtm();
-        let pane = binding(0usize);
+        let pane: waterui::Binding<usize> = binding(0usize);
         let labels = ["Inbox", "Library", "Gallery", "Settings"];
         let leaf = resolve::render(Tabs::new(
             &pane,
@@ -2414,7 +2414,7 @@ mod navigation {
                         NavigationView::new(title.clone(), text(title.clone()))
                     })
                 })
-                .collect(),
+                .collect::<Vec<_>>(),
         ));
         let window = leaf::attach(mtm, leaf.view());
         window.set_content_rect(cocoa_ui::Rect::new(0.0, 0.0, 700.0, 520.0), false);
