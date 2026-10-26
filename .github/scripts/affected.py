@@ -169,14 +169,18 @@ def manifest_tables(source):
     return relevant
 
 
+# A change to the check must run the check.
+MSRV_CHECK = ".github/actions/msrv/"
+
+
 def msrv_relevant(base, head, entries):
-    """Whether the diff can move the toolchain floor: Cargo.lock, or a
-    Cargo.toml whose `rust-version` or dependency tables changed. A parse
-    failure or an added/deleted manifest counts as relevant — the gate
-    widens rather than guesses."""
+    """Whether the diff can move the toolchain floor: Cargo.lock, a
+    Cargo.toml whose `rust-version` or dependency tables changed, or the
+    MSRV check itself. A parse failure or an added/deleted manifest counts
+    as relevant — the gate widens rather than guesses."""
     for entry in entries:
         path = entry[-1]
-        if path == "Cargo.lock":
+        if path == "Cargo.lock" or path.startswith(MSRV_CHECK):
             return True
         if not path.endswith("Cargo.toml"):
             continue
