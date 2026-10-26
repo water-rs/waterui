@@ -310,11 +310,11 @@ jobs:
       # linted. Production paths are unchanged — the feature only makes
       # the suite's support module exist.
       - name: Clippy (macOS)
-        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test,swiftui --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       - name: Clippy (iOS)
-        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test --target aarch64-apple-ios --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test,swiftui --target aarch64-apple-ios --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       - name: Clippy (iOS simulator)
-        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test --target aarch64-apple-ios-sim --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test,swiftui --target aarch64-apple-ios-sim --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # `cocoa-ui` compiles inside the backend's graph, but a dependency is
       # never linted — its own `-D warnings` legs kept their standalone
       # coverage shape: `--all-targets` on the same three ARM64 targets.
@@ -336,7 +336,7 @@ jobs:
       # The `.cargo/config.toml` `[env]` table supplies the 26.0 deployment
       # floor cherenkov-gpu's build script asserts.
       - name: Clippy (Mac Catalyst)
-        run: cargo clippy -p waterui-apple -p cocoa-ui --all-targets --locked --target aarch64-apple-ios-macabi --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+        run: cargo clippy -p waterui-apple -p cocoa-ui --all-targets --locked --features swiftui --target aarch64-apple-ios-macabi --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # The component shapes the Swift `WATERUI_MAP`/`WATERUI_NO_GPU` legs
       # used to cover are Cargo features now (waterui#343 reasoned the same
       # way), so they lint under -D warnings like the production legs —

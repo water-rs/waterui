@@ -781,35 +781,6 @@ pub(crate) fn apple_deployment_target_env<'a>(
 // Validation
 // ============================================================================
 
-/// The checkout the project's `waterui-apple` dependency compiles from —
-/// the source directory `cargo metadata` resolved for the companion crate's
-/// dependency, whether it names the canonical `waterui_path/backends/apple`
-/// checkout or the framework repository's member at the selected revision.
-///
-/// # Errors
-/// Returns an error when the backend source cannot be located.
-pub(crate) async fn apple_backend_source_root(project: &Project) -> eyre::Result<PathBuf> {
-    let mut command = cargo_metadata::MetadataCommand::new();
-    command.manifest_path(project.apple_crate_path().join("Cargo.toml"));
-    let metadata = project
-        .facts()
-        .cargo_metadata(&command)
-        .await
-        .wrap_err("cargo metadata failed to resolve the Apple backend source")?;
-    let package = metadata
-        .packages
-        .iter()
-        .find(|package| package.name.as_str() == "waterui-apple")
-        .ok_or_else(|| {
-            eyre::eyre!("the companion crate does not depend on a `waterui-apple` package")
-        })?;
-    package
-        .manifest_path
-        .parent()
-        .map(|directory| directory.as_std_path().to_path_buf())
-        .ok_or_else(|| eyre::eyre!("`waterui-apple` manifest path has no parent"))
-}
-
 // ============================================================================
 // Clean
 // ============================================================================

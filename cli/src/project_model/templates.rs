@@ -567,6 +567,11 @@ pub struct TemplateContext {
     /// `hydrolysis_android_embedded` templates render. Its `app` entry
     /// carries the same painter/host values the app scaffold's entry does.
     pub hydrolysis_android_embedded: Option<HydrolysisAndroidEmbeddedTemplateEntry>,
+
+    /// `package.embedded` in `Water.toml` — the host links the backend's
+    /// published artifact rather than the companion's sources, so the
+    /// Apple companion's Cargo manifest enables `swiftui` only then.
+    pub embedded: bool,
 }
 
 /// The `hydrolysis_android_embedded` scaffold's parameters: the app entry the
@@ -633,6 +638,7 @@ impl TemplateContext {
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
             hydrolysis_android_embedded: None,
+            embedded: false,
         }
     }
 
@@ -671,6 +677,7 @@ impl TemplateContext {
             accessory: manifest.package.accessory,
             project_packages: None,
             web_frontend_arg: manifest.web.as_ref().map(|_| "web".to_string()),
+            embedded: manifest.package.embedded,
             android_signing: manifest
                 .signing
                 .android
@@ -733,6 +740,7 @@ impl TemplateContext {
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
             hydrolysis_android_embedded: None,
+            embedded: false,
         }
     }
 
@@ -1580,6 +1588,7 @@ mod tests {
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
             hydrolysis_android_embedded: None,
+            embedded: false,
             launch: LaunchTemplateEntry::default(),
         }
     }
@@ -3189,6 +3198,58 @@ mod tests {
         assert!(
             !features.contains_key("inspector"),
             "a waterui-apple without `inspector` gets no `inspector` forward"
+        );
+        let apple_edge =
+            manifest["target"]["cfg(target_vendor = \"apple\")"]["dependencies"]["waterui-apple"]
+                .as_table()
+                .expect("the apple target's waterui-apple edge");
+        assert!(
+            !apple_edge
+                .get("features")
+                .and_then(toml::Value::as_array)
+                .is_some_and(|features| {
+                    features
+                        .iter()
+                        .any(|feature| feature.as_str() == Some("swiftui"))
+                }),
+            "a non-embedded companion pays no SwiftUI module cost"
+        );
+    }
+
+    #[test]
+    fn embedded_apple_companion_enables_the_swiftui_feature() {
+        let tempdir = tempdir().expect("temporary scaffold dir");
+        let waterui = tempdir.path().join("waterui");
+        write_fake_framework_checkout(&waterui, &["media", "swiftui"]);
+        let companion_dir = tempdir.path().join("managed_backends/apple-companion");
+        let mut ctx = ctx(
+            Some(waterui),
+            Some(companion_dir.clone()),
+            Some(tempdir.path().join("app")),
+        );
+        ctx.embedded = true;
+
+        smol::block_on(crate::templates::apple_companion::scaffold(
+            &crate::toolchain::Host::current(),
+            &companion_dir,
+            &ctx,
+            "app-apple",
+        ))
+        .expect("Apple companion scaffold should succeed");
+
+        let manifest: toml::Table = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
+            .parse()
+            .expect("companion Cargo.toml should parse");
+        let features = manifest["target"]["cfg(target_vendor = \"apple\")"]["dependencies"]
+            ["waterui-apple"]["features"]
+            .as_array()
+            .expect("the edge's feature list");
+        assert!(
+            features
+                .iter()
+                .any(|feature| feature.as_str() == Some("swiftui")),
+            "an embedded companion's waterui-apple edge selects `swiftui`: {features:?}"
         );
     }
 
@@ -7511,7 +7572,14 @@ pub mod apple_companion {
             });
         }
 
-        super::configure_apple_target_tables(host, &mut manifest, ctx, base_dir, &[]).await?;
+        super::configure_apple_target_tables(
+            host,
+            &mut manifest,
+            ctx,
+            base_dir,
+            if ctx.embedded { &["swiftui"] } else { &[] },
+        )
+        .await?;
 
         // The companion and the generated preview binary beside it must come
         // out of one Cargo resolution: Cargo derives `-C metadata` — which it

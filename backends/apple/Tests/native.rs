@@ -104,6 +104,13 @@ fn embedding_trials() -> Vec<Trial> {
                 Ok(())
             },
         ),
+        Trial::test(
+            "embedding::a_swiftui_host_measures_and_updates_its_environment_without_remounting",
+            || {
+                embedding::a_swiftui_host_measures_and_updates_its_environment_without_remounting();
+                Ok(())
+            },
+        ),
     ]
 }
 
@@ -8801,9 +8808,17 @@ mod a11y_extent {
 /// view's bounds and detaches when the mount drops.
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod embedding {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::ffi::c_void;
     use std::rc::Rc;
+
+    use waterui_apple::embedding::{
+        HostEnvironment, waterui_apple_measure, waterui_apple_update_environment,
+    };
+    use waterui_core::layout::{
+        Layout, LayoutDirection, Point, ProposalSize, Rect, Size, SubView, SubviewPlacement,
+    };
+    use waterui_locale::locale_binding;
 
     use cocoa_ui::objc2::MainThreadOnly;
     use cocoa_ui::objc2_app_kit::{
@@ -8816,7 +8831,10 @@ mod embedding {
     use waterui::component::menu::{Command, Menu, MenuItem};
     use waterui::component::text::Text;
     use waterui::graphics::color::ColorScheme;
+    use waterui::layout::container::FixedContainer;
     use waterui::reactive::{Computed, binding};
+    use waterui::regional;
+    use waterui::text::font::ResolvedFont;
     use waterui::window::WindowState;
     use waterui::{Environment, Signal};
 
@@ -8831,6 +8849,16 @@ mod embedding {
 
     impl Embed {
         fn new(host: &NSView, app: impl FnOnce(Environment) -> App) -> Self {
+            Self::new_with_environment(host, None, app)
+        }
+
+        /// `environment` is the scoped host snapshot a `SwiftUI` host would
+        /// declare; `None` mounts under the ambient platform.
+        fn new_with_environment(
+            host: &NSView,
+            environment: Option<waterui_apple::embedding::HostEnvironment>,
+            app: impl FnOnce(Environment) -> App,
+        ) -> Self {
             let runtime = Box::new(waterui_apple::embedding::Runtime::for_test());
             // SAFETY: `_runtime` keeps the runtime box alive past the mount's
             // drop; `host` is a live view and the paths are NUL-terminated.
@@ -8840,6 +8868,7 @@ mod embedding {
                     std::ptr::from_ref(host).cast_mut().cast(),
                     c"/tmp/waterui-embed-test-assets".as_ptr(),
                     c"/tmp/waterui-embed-test-fonts".as_ptr(),
+                    environment,
                     app,
                 )
             };
@@ -9036,6 +9065,326 @@ mod embedding {
         drop(embed);
         assert_eq!(view::subviews(&host).len(), 0);
         assert_eq!(host.frame().size, NSSize::new(300.0, 200.0));
+    }
+
+    /// TEST ONLY: synthetic host metrics — every style differs, so a
+    /// style-order mixup in the ABI shows up as a wrong slot, not a
+    /// coincidentally equal one.
+    fn host_metrics(base: f64) -> [cocoa_ui::system_font::FontMetrics; 6] {
+        std::array::from_fn(|index| {
+            let index = f64::from(u32::try_from(index).expect("six host font styles"));
+            cocoa_ui::system_font::FontMetrics {
+                size: base + index,
+                weight: 0.01 * (index + 1.0),
+                line_height: base + 3.0 + index,
+            }
+        })
+    }
+    fn flat_metrics(metrics: &[cocoa_ui::system_font::FontMetrics; 6]) -> Vec<f64> {
+        metrics
+            .iter()
+            .flat_map(|font| [font.size, font.weight, font.line_height])
+            .collect()
+    }
+    fn test_locale(tag: &str) -> waterui::locale::Locale {
+        tag.parse().expect("the test tags are valid BCP-47")
+    }
+
+    /// Records each proposal the measure ABI hands the mounted tree.
+    #[derive(Debug)]
+    struct ProbeLayout {
+        seen: Rc<RefCell<Vec<ProposalSize>>>,
+    }
+    impl Layout for ProbeLayout {
+        fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
+            self.seen.borrow_mut().push(proposal);
+            Size::new(17.0, 23.0)
+        }
+        fn place(
+            &self,
+            _bounds: Rect,
+            proposal: ProposalSize,
+            children: &[&dyn SubView],
+        ) -> Vec<SubviewPlacement> {
+            children
+                .iter()
+                .map(|_| {
+                    SubviewPlacement::new(
+                        Rect::new(Point::new(0.0, 0.0), Size::new(17.0, 23.0)),
+                        proposal,
+                    )
+                })
+                .collect()
+        }
+    }
+
+    /// What the app body captures from the scoped environment: the scheme
+    /// and direction `Computed`s, the three font slots the assertions use
+    /// (Body 0, Headline 2, Footnote 5 — distinct metrics catch an ABI
+    /// style-order mixup), the locale binding, and the body call count.
+    struct SwiftUiCapture {
+        bodies: Rc<Cell<usize>>,
+        scheme: Rc<RefCell<Option<Computed<ColorScheme>>>>,
+        fonts: Rc<RefCell<Vec<Computed<ResolvedFont>>>>,
+        direction: Rc<RefCell<Option<Computed<LayoutDirection>>>>,
+        locale: Rc<RefCell<Option<waterui::reactive::Binding<waterui::locale::Locale>>>>,
+    }
+    impl SwiftUiCapture {
+        fn new() -> Self {
+            Self {
+                bodies: Rc::new(Cell::new(0)),
+                scheme: Rc::new(RefCell::new(None)),
+                fonts: Rc::new(RefCell::new(Vec::new())),
+                direction: Rc::new(RefCell::new(None)),
+                locale: Rc::new(RefCell::new(None)),
+            }
+        }
+        /// The app closure: records the env's captured signals, then mounts
+        /// the probe container.
+        fn app(
+            &self,
+            seen: Rc<RefCell<Vec<ProposalSize>>>,
+        ) -> impl FnOnce(Environment) -> App + use<> {
+            let (bodies, scheme, fonts, direction, locale) = (
+                Rc::clone(&self.bodies),
+                Rc::clone(&self.scheme),
+                Rc::clone(&self.fonts),
+                Rc::clone(&self.direction),
+                Rc::clone(&self.locale),
+            );
+            move |env: Environment| {
+                bodies.set(bodies.get() + 1);
+                *scheme.borrow_mut() = env.query::<ColorScheme, Computed<ColorScheme>>().cloned();
+                fonts.borrow_mut().extend([
+                    env.query::<waterui::text::font::Body, Computed<ResolvedFont>>()
+                        .cloned()
+                        .expect("a scoped mount installs the Body font slot"),
+                    env.query::<waterui::text::font::Headline, Computed<ResolvedFont>>()
+                        .cloned()
+                        .expect("a scoped mount installs the Headline font slot"),
+                    env.query::<waterui::text::font::Footnote, Computed<ResolvedFont>>()
+                        .cloned()
+                        .expect("a scoped mount installs the Footnote font slot"),
+                ]);
+                *direction.borrow_mut() = Some(waterui::layout::layout_direction(&env));
+                let binding = locale_binding(&env);
+                assert_eq!(
+                    env.get::<waterui::locale::Locale>()
+                        .expect("a scoped mount inserts the host's static Locale"),
+                    &binding.snapshot()
+                );
+                *locale.borrow_mut() = Some(binding);
+                App::new(
+                    move || {
+                        FixedContainer::new(
+                            ProbeLayout {
+                                seen: Rc::clone(&seen),
+                            },
+                            (Text::new("probe"),),
+                        )
+                    },
+                    env,
+                )
+            }
+        }
+        fn scheme_now(&self) -> ColorScheme {
+            self.scheme.borrow().as_ref().unwrap().snapshot()
+        }
+        fn direction_now(&self) -> LayoutDirection {
+            self.direction.borrow().as_ref().unwrap().snapshot()
+        }
+        fn locale_now(&self) -> String {
+            self.locale
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .snapshot()
+                .canonical_tag()
+        }
+        fn font_now(&self, slot: usize) -> ResolvedFont {
+            self.fonts.borrow()[slot].snapshot()
+        }
+    }
+
+    /// The initial assertions: the mount captured the declared scheme,
+    /// direction, locale and per-style metrics; the body ran once.
+    fn assert_scoped_snapshot(
+        cap: &SwiftUiCapture,
+        scheme: ColorScheme,
+        direction: LayoutDirection,
+        locale_tag: &str,
+        base: f64,
+    ) {
+        assert_eq!(cap.bodies.get(), 1, "the mount built its body once");
+        assert_eq!(cap.scheme_now(), scheme);
+        assert_eq!(cap.direction_now(), direction);
+        assert_eq!(cap.locale_now(), locale_tag);
+        assert_eq!(f64::from(cap.font_now(0).size), base, "Body size");
+        assert_eq!(f64::from(cap.font_now(1).size), base + 2.0, "Headline size");
+        assert_eq!(f64::from(cap.font_now(2).size), base + 5.0, "Footnote size");
+        assert_eq!(
+            cap.font_now(0).line_height.map(f64::from),
+            Some(base + 3.0),
+            "Body line height"
+        );
+        assert_eq!(
+            cap.font_now(0).weight,
+            waterui::text::font::FontWeight::Normal,
+            "Body weight"
+        );
+    }
+
+    /// The measure ABI delivers the host's proposal verbatim: `nil` axes
+    /// are unbounded, `0`, finite and `.infinity` arrive as themselves,
+    /// and the layout's own size comes back. The contract's own re-measure
+    /// at the resolved size may append a second record — the first is the
+    /// ABI's delivery.
+    fn assert_measure_proposals(mount: *mut c_void, seen: &Rc<RefCell<Vec<ProposalSize>>>) {
+        for (width, height, hw, hh, want) in [
+            (0.0, 0.0, false, false, ProposalSize::new(None, None)),
+            (0.0, 0.0, true, false, ProposalSize::new(Some(0.0), None)),
+            (
+                50.0,
+                40.0,
+                true,
+                true,
+                ProposalSize::new(Some(50.0), Some(40.0)),
+            ),
+            (
+                f64::INFINITY,
+                f64::INFINITY,
+                true,
+                true,
+                ProposalSize::new(Some(f32::INFINITY), Some(f32::INFINITY)),
+            ),
+        ] {
+            seen.borrow_mut().clear();
+            let mut out = [0.0f64; 2];
+            // SAFETY: `mount` is a live mount; `out` is a two-element f64.
+            unsafe { waterui_apple_measure(mount, width, height, hw, hh, out.as_mut_ptr()) };
+            assert_eq!(out, [17.0, 23.0], "the layout's own size comes back");
+            assert_eq!(
+                seen.borrow().first(),
+                Some(&want),
+                "the ABI delivers the proposal axes verbatim"
+            );
+        }
+    }
+
+    /// A `SwiftUI`-scoped mount reads its declared environment — scheme,
+    /// direction, locale and the six resolved font metrics — updates in
+    /// place through `waterui_apple_update_environment`, and measures under
+    /// the host's proposal through `waterui_apple_measure`, never
+    /// remounting.
+    pub fn a_swiftui_host_measures_and_updates_its_environment_without_remounting() {
+        let mtm = mtm();
+        let host_a = plain_view(mtm);
+        let host_b = plain_view(mtm);
+        let seen_a = Rc::new(RefCell::new(Vec::new()));
+        let seen_b = Rc::new(RefCell::new(Vec::new()));
+        let cap_a = SwiftUiCapture::new();
+        let cap_b = SwiftUiCapture::new();
+        let global_tag_before = regional::current_settings().locale_tag().to_string();
+
+        let embed_a = Embed::new_with_environment(
+            &host_a,
+            Some(HostEnvironment {
+                scheme: cocoa_ui::ColorScheme::Light,
+                direction: LayoutDirection::LeftToRight,
+                locale: test_locale("en-US"),
+                fonts: host_metrics(13.0),
+            }),
+            cap_a.app(Rc::clone(&seen_a)),
+        );
+        let _embed_b = Embed::new_with_environment(
+            &host_b,
+            Some(HostEnvironment {
+                scheme: cocoa_ui::ColorScheme::Dark,
+                direction: LayoutDirection::RightToLeft,
+                locale: test_locale("ar-EG"),
+                fonts: host_metrics(20.0),
+            }),
+            cap_b.app(Rc::clone(&seen_b)),
+        );
+        assert_scoped_snapshot(
+            &cap_a,
+            ColorScheme::Light,
+            LayoutDirection::LeftToRight,
+            "en-US",
+            13.0,
+        );
+        assert_scoped_snapshot(
+            &cap_b,
+            ColorScheme::Dark,
+            LayoutDirection::RightToLeft,
+            "ar-EG",
+            20.0,
+        );
+        assert_measure_proposals(embed_a.mount, &seen_a);
+
+        // The same mount updates in place — the root view's identity is
+        // the whole point of no-remount.
+        let root_before = view::subviews(&host_a)
+            .into_iter()
+            .next()
+            .expect("mount A has a root view");
+        let updated = host_metrics(26.0);
+        let updated_flat = flat_metrics(&updated);
+        let ja = c"ja-JP";
+        // SAFETY: `embed_a` is a live scoped mount; `ja` is NUL-terminated
+        // and `updated_flat` holds eighteen doubles.
+        unsafe {
+            waterui_apple_update_environment(
+                embed_a.mount,
+                true,
+                true,
+                ja.as_ptr(),
+                updated_flat.as_ptr(),
+            );
+        }
+        assert!(
+            waterui_apple::native_test_support::pump_main_until(
+                waterui_apple::native_test_support::MAIN_QUEUE_DEADLINE,
+                || (cap_a.font_now(0).size - 26.0).abs() < f32::EPSILON
+            ),
+            "the Body font slot lands the update within the pump deadline"
+        );
+        assert_eq!(cap_a.font_now(0).size, 26.0);
+        assert_eq!(cap_a.font_now(2).size, 31.0, "A Footnote size");
+        assert_eq!(
+            cap_a.font_now(0).line_height,
+            Some(29.0),
+            "A Body line height"
+        );
+        assert_eq!(cap_a.scheme_now(), ColorScheme::Dark);
+        // ja-JP is left-to-right in isolation — the direction binding is the
+        // host's explicit declaration, not the locale's derived default.
+        assert_eq!(cap_a.direction_now(), LayoutDirection::RightToLeft);
+        assert_eq!(cap_a.locale_now(), "ja-JP");
+        assert_eq!(
+            cap_a.bodies.get(),
+            1,
+            "an environment update never remounts"
+        );
+        assert_eq!(
+            view::subviews(&host_a)
+                .into_iter()
+                .next()
+                .map(|view| &raw const *view),
+            Some(&raw const *root_before),
+            "the root view is the same object before and after the update"
+        );
+
+        // Nothing reaches the sibling mount or the process's own regional
+        // settings.
+        assert_eq!(cap_b.bodies.get(), 1);
+        assert_eq!(cap_b.font_now(0).size, 20.0);
+        assert_eq!(cap_b.locale_now(), "ar-EG");
+        assert_eq!(
+            regional::current_settings().locale_tag(),
+            global_tag_before.as_str(),
+            "the process locale is untouched by two scoped mounts and an update"
+        );
     }
 }
 
