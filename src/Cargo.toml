@@ -159,7 +159,7 @@ webview = ["dep:waterui-webview"]
 # schema (`waterui::widgets`). Off by default: an application that declares
 # no widgets pays for none of the schema or its FFI glue — and the `water`
 # CLI only generates an extension when the declaration records exist.
-widgets = ["dep:waterui-widgets"]
+widgets = ["dep:waterui-widgets", "waterui-macros/widgets"]
 # The TypeScript runtime behind `waterui::ts`: the embedded JavaScript engine,
 # the signal bridge, the component vocabulary a JSX tag resolves against, the
 # `tsx!` mount, and the props contract schema (`waterui::ts::schema`) whose

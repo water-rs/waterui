@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 use eyre::{Context as _, bail, eyre};
 #[cfg(target_os = "macos")]
 use smol::fs;
+#[cfg(target_os = "macos")]
+use target_lexicon::Architecture;
 use target_lexicon::Triple;
 #[cfg(target_os = "macos")]
 use tracing::info;
@@ -96,6 +98,16 @@ pub fn declared_widgets(symbols: &ArtifactSymbols) -> eyre::Result<Vec<DeclaredW
         }
     }
     widgets.sort_by(|a, b| a.kind.cmp(&b.kind));
+    for pair in widgets.windows(2) {
+        if pair[0].kind == pair[1].kind {
+            bail!(
+                "widgets `{}` and `{}` declare the same `Widget` kind `{}`",
+                pair[0].symbol,
+                pair[1].symbol,
+                pair[0].kind
+            );
+        }
+    }
     Ok(widgets)
 }
 
@@ -122,13 +134,25 @@ fn validate_families(widgets: &[DeclaredWidget], platform: TargetPlatform) -> ey
     Ok(())
 }
 
-/// The swift target triple the extension compiles for.
+/// The swift target triple the extension compiles for — the
+/// architecture the Rust slice carries, not a hard-coded arm64.
 #[cfg(target_os = "macos")]
-fn widget_swift_target(platform: TargetPlatform, deployment_target: &str) -> eyre::Result<String> {
+fn widget_swift_target(
+    platform: TargetPlatform,
+    triple: &Triple,
+    deployment_target: &str,
+) -> eyre::Result<String> {
+    let arch = match triple.architecture {
+        Architecture::Aarch64(_) => "arm64",
+        Architecture::X86_64 => "x86_64",
+        other => bail!("WidgetKit extensions do not support the {other:?} architecture"),
+    };
     let target = match platform {
-        TargetPlatform::MacOS => format!("arm64-apple-macosx{deployment_target}"),
-        TargetPlatform::IOS => format!("arm64-apple-ios{deployment_target}"),
-        TargetPlatform::IOSSimulator => format!("arm64-apple-ios{deployment_target}-simulator"),
+        TargetPlatform::MacOS => format!("{arch}-apple-macosx{deployment_target}"),
+        TargetPlatform::IOS => format!("{arch}-apple-ios{deployment_target}"),
+        TargetPlatform::IOSSimulator => {
+            format!("{arch}-apple-ios{deployment_target}-simulator")
+        }
         other => bail!("WidgetKit extensions are not supported on {other:?}"),
     };
     Ok(target)
@@ -230,6 +254,7 @@ pub async fn assemble_widget_extensions(
         .await?;
 
         write_extension_info_plist(
+            layout,
             &appex_layout,
             &appex_name,
             bundle_id,
@@ -285,19 +310,18 @@ async fn render_widgets_swift(path: &Path, widgets: &[DeclaredWidget]) -> eyre::
         families: String,
     }
 
-    // String fields are pre-rendered as JSON string literals so the
-    // template emits already-escaped `Swift` literals.
+    // String fields are pre-rendered as `Swift` string literals — `JSON`
+    // escaping is not `Swift` escaping: a control character encodes
+    // `\u0001`, which is not valid `Swift` source (`\u{1}` is).
     let widgets: Vec<DeclaredWidgetTemplate> = widgets
         .iter()
         .enumerate()
         .map(|(index, widget)| DeclaredWidgetTemplate {
             index,
             symbol: widget.symbol.clone(),
-            kind: serde_json::to_string(&widget.kind).expect("a string always encodes"),
-            display_name: serde_json::to_string(&widget.display_name)
-                .expect("a string always encodes"),
-            description: serde_json::to_string(&widget.description)
-                .expect("a string always encodes"),
+            kind: swift_string_literal(&widget.kind),
+            display_name: swift_string_literal(&widget.display_name),
+            description: swift_string_literal(&widget.description),
             families: widget
                 .families
                 .iter()
@@ -343,7 +367,7 @@ async fn compile_extension(
         .run("xcrun", ["--sdk", sdk_name, "--show-sdk-path"])
         .await
         .wrap_err_with(|| format!("xcrun reports no {sdk_name} SDK path"))?;
-    let swift_target = widget_swift_target(platform, deployment_target)?;
+    let swift_target = widget_swift_target(platform, triple, deployment_target)?;
 
     let mut source_files = Vec::new();
     let mut entries = fs::read_dir(sources).await?;
@@ -422,6 +446,7 @@ async fn compile_extension(
         .await?;
         let links = rust_build
             .with_crate_type_override("staticlib")
+            .with_final_rustc_arg("--print=native-static-libs")
             .native_static_libraries(!options.is_debug())
             .await?;
         for NativeLink { name, framework } in links {
@@ -444,12 +469,33 @@ async fn compile_extension(
 /// extension point is `com.apple.widgetkit-extension`.
 #[cfg(target_os = "macos")]
 async fn write_extension_info_plist(
+    app_layout: &AppleAppLayout,
     appex_layout: &AppleAppLayout,
     appex_name: &str,
     bundle_id: &AppleBundleIdentifier,
     deployment_target: &str,
     sdk_name: &str,
 ) -> eyre::Result<()> {
+    let host_plist: plist::Value = plist::from_bytes(
+        &fs::read(&app_layout.info_plist_path)
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "the host app's Info.plist at {} does not read",
+                    app_layout.info_plist_path.display()
+                )
+            })?,
+    )
+    .wrap_err("the host app's Info.plist does not decode")?;
+    let host_dict = host_plist
+        .as_dictionary()
+        .ok_or_else(|| eyre::eyre!("the host app's Info.plist is not a dictionary"))?;
+    let host_version = |key: &str| -> eyre::Result<plist::Value> {
+        host_dict
+            .get(key)
+            .cloned()
+            .ok_or_else(|| eyre::eyre!("the host app's Info.plist has no {key}"))
+    };
     let mut dict = plist::Dictionary::new();
     let insert = |dict: &mut plist::Dictionary, key: &str, value: &str| {
         dict.insert(key.to_string(), plist::Value::String(value.to_string()));
@@ -464,8 +510,16 @@ async fn write_extension_info_plist(
     insert(&mut dict, "CFBundleInfoDictionaryVersion", "6.0");
     insert(&mut dict, "CFBundleName", appex_name);
     insert(&mut dict, "CFBundlePackageType", "XPC!");
-    insert(&mut dict, "CFBundleShortVersionString", "1.0");
-    insert(&mut dict, "CFBundleVersion", "1");
+    // The extension reports the host app's versions verbatim — a
+    // `1.0/1` stub would misrepresent the bundle to the App Store.
+    dict.insert(
+        "CFBundleShortVersionString".to_string(),
+        host_version("CFBundleShortVersionString")?,
+    );
+    dict.insert(
+        "CFBundleVersion".to_string(),
+        host_version("CFBundleVersion")?,
+    );
     // `MinimumOSVersion` is the iOS-family key; the macOS appex plist
     // carries `LSMinimumSystemVersion`.
     if sdk_name == "macosx" {
@@ -605,4 +659,131 @@ async fn sign_widget_appex(
     )
     .await?;
     Ok(())
+}
+
+/// Renders `s` as a `Swift` string literal — control characters escape as
+/// `\u{…}` (not the `JSON` `\uXXXX`), quotes and backslashes escape, and
+/// everything else — Unicode, `\(` included — stays verbatim so a widget
+/// declaration's strings round-trip through generated source.
+#[cfg(target_os = "macos")]
+fn swift_string_literal(s: &str) -> String {
+    use std::fmt::Write as _;
+    let mut literal = String::with_capacity(s.len() + 2);
+    literal.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => literal.push_str("\\\""),
+            '\\' => literal.push_str("\\\\"),
+            c if c.is_control() => {
+                write!(literal, "\\u{{{:x}}}", c as u32).expect("writing to a String cannot fail");
+            }
+            c => literal.push(c),
+        }
+    }
+    literal.push('"');
+    literal
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+    use target_lexicon::Triple;
+
+    #[test]
+    fn widget_swift_target_uses_the_rust_slices_architecture() {
+        let triple = |value: &str| value.parse::<Triple>().expect("a triple parses");
+        assert_eq!(
+            widget_swift_target(
+                TargetPlatform::MacOS,
+                &triple("aarch64-apple-darwin"),
+                "26.0"
+            )
+            .unwrap(),
+            "arm64-apple-macosx26.0"
+        );
+        assert_eq!(
+            widget_swift_target(
+                TargetPlatform::MacOS,
+                &triple("x86_64-apple-darwin"),
+                "26.0"
+            )
+            .unwrap(),
+            "x86_64-apple-macosx26.0"
+        );
+        assert_eq!(
+            widget_swift_target(
+                TargetPlatform::IOSSimulator,
+                &triple("x86_64-apple-ios"),
+                "26.0"
+            )
+            .unwrap(),
+            "x86_64-apple-ios26.0-simulator"
+        );
+        let error = widget_swift_target(
+            TargetPlatform::MacOS,
+            &triple("wasm32-unknown-unknown"),
+            "26.0",
+        )
+        .expect_err("a non-Apple architecture is rejected");
+        assert!(error.to_string().contains("architecture"));
+    }
+
+    #[test]
+    fn swift_string_literal_escapes_for_swift_not_json() {
+        assert_eq!(swift_string_literal("plain"), "\"plain\"");
+        assert_eq!(swift_string_literal("say \"hi\""), "\"say \\\"hi\\\"\"");
+        assert_eq!(swift_string_literal("back\\slash"), "\"back\\\\slash\"");
+        // A raw control character escapes as `\u{…}`, not `JSON`'s `\uXXXX`.
+        assert_eq!(swift_string_literal("a\u{1}"), "\"a\\u{1}\"");
+        // Unicode and interpolation-looking text stay verbatim.
+        assert_eq!(swift_string_literal("日本語 \\(x)"), "\"日本語 \\\\(x)\"");
+    }
+
+    #[test]
+    fn extension_plist_copies_the_host_versions() {
+        let staging = tempfile::tempdir().expect("staging dir");
+        let host_path = staging.path().join("Host.app");
+        let host_layout = AppleAppLayout::for_app(&host_path, "macosx");
+        std::fs::create_dir_all(host_layout.info_plist_path.parent().unwrap()).unwrap();
+        let mut host = plist::Dictionary::new();
+        host.insert(
+            "CFBundleShortVersionString".to_string(),
+            plist::Value::String("3.2.1".to_string()),
+        );
+        host.insert(
+            "CFBundleVersion".to_string(),
+            plist::Value::String("42".to_string()),
+        );
+        plist::Value::Dictionary(host)
+            .to_file_xml(&host_layout.info_plist_path)
+            .unwrap();
+        let appex_layout = AppleAppLayout::for_app(
+            &host_path.join("Contents/PlugIns/HostWidgets.appex"),
+            "macosx",
+        );
+        std::fs::create_dir_all(appex_layout.info_plist_path.parent().unwrap()).unwrap();
+        let bundle_id = AppleBundleIdentifier::try_from("dev.test.app".to_string())
+            .expect("a valid bundle identifier");
+        smol::block_on(write_extension_info_plist(
+            &host_layout,
+            &appex_layout,
+            "HostWidgets",
+            &bundle_id,
+            "26.0",
+            "macosx",
+        ))
+        .expect("the extension plist writes");
+        let appex: plist::Value = plist::from_file(&appex_layout.info_plist_path).unwrap();
+        let dict = appex.as_dictionary().unwrap();
+        assert_eq!(
+            dict["CFBundleShortVersionString"].as_string().unwrap(),
+            "3.2.1",
+            "the extension carries the host's marketing version"
+        );
+        assert_eq!(
+            dict["CFBundleVersion"].as_string().unwrap(),
+            "42",
+            "the extension carries the host's build number"
+        );
+    }
 }

@@ -6,6 +6,14 @@ import Foundation
 public struct WUITimeline: Decodable {
     public let entries: [WUIEntry]
     public let policy: WUIReloadPolicy
+
+    /// The single timeline-decoding seam — the provider and any probe
+    /// share the `.secondsSince1970` strategy Rust `Date` serializes.
+    public static func decode(from data: Data) throws -> WUITimeline {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        return try decoder.decode(WUITimeline.self, from: data)
+    }
 }
 
 public struct WUIEntry: Decodable {

@@ -995,6 +995,7 @@ impl Parse for PreviewArg {
 
 /// The `WidgetKit` families a `#[widget]` may declare — the serialized
 /// `WidgetFamily` spellings the extension renders.
+#[cfg(feature = "widgets")]
 const WIDGET_FAMILIES: &[&str] = &[
     "systemSmall",
     "systemMedium",
@@ -1007,11 +1008,13 @@ const WIDGET_FAMILIES: &[&str] = &[
 
 /// A single `#[widget]` argument: `name = "…"`, `description = "…"`,
 /// `kind = "…"`, or `families = [systemSmall, …]`.
+#[cfg(feature = "widgets")]
 struct WidgetArg {
     name: syn::Ident,
     value: Expr,
 }
 
+#[cfg(feature = "widgets")]
 impl Parse for WidgetArg {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let name: syn::Ident = input.parse()?;
@@ -1021,6 +1024,7 @@ impl Parse for WidgetArg {
     }
 }
 
+#[cfg(feature = "widgets")]
 fn widget_arg_string(arg: &WidgetArg) -> syn::Result<String> {
     if let Expr::Lit(syn::ExprLit {
         lit: syn::Lit::Str(lit),
@@ -1034,24 +1038,6 @@ fn widget_arg_string(arg: &WidgetArg) -> syn::Result<String> {
             format!("`#[widget]`'s `{}` must be a string literal", arg.name),
         ))
     }
-}
-
-/// Escapes `s` for embedding inside a JSON string literal — the declaration
-/// record's payload is assembled at expansion time.
-fn json_escape(s: &str) -> String {
-    use std::fmt::Write as _;
-    let mut escaped = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            c if (c as u32) < 0x20 => {
-                write!(escaped, "\\u{:04x}", c as u32).expect("writing to a String cannot fail");
-            }
-            c => escaped.push(c),
-        }
-    }
-    escaped
 }
 
 /// Declares a `WidgetKit` widget: `#[waterui::widget(name = "…", description = "…")]`.
@@ -1080,6 +1066,7 @@ fn json_escape(s: &str) -> String {
 /// The attribute emits the function's `waterui_widget_<crate>_<fn>` C
 /// export and the `waterui_meta_widget_<crate>_<fn>` declaration record the
 /// `water` CLI reads while it generates and packages the extension.
+#[cfg(feature = "widgets")]
 #[proc_macro_attribute]
 pub fn widget(args: TokenStream, input: TokenStream) -> TokenStream {
     let input_fn = parse_macro_input!(input as ItemFn);
@@ -1152,6 +1139,7 @@ pub fn widget(args: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 /// The parsed `#[widget]` arguments after defaults.
+#[cfg(feature = "widgets")]
 struct WidgetParams {
     display_name: String,
     description: String,
@@ -1160,6 +1148,7 @@ struct WidgetParams {
 }
 
 /// A `#[widget]` function's `WidgetContext` parameter shape.
+#[cfg(feature = "widgets")]
 enum WidgetContextMode {
     None,
     ByValue,
@@ -1167,6 +1156,7 @@ enum WidgetContextMode {
 }
 
 /// Validates the `#[widget]` attribute's arguments.
+#[cfg(feature = "widgets")]
 fn widget_params(args: &Punctuated<WidgetArg, Token![,]>) -> syn::Result<WidgetParams> {
     let mut display_name: Option<String> = None;
     let mut description: Option<String> = None;
@@ -1195,6 +1185,12 @@ fn widget_params(args: &Punctuated<WidgetArg, Token![,]>) -> syn::Result<WidgetP
                         "`#[widget]`'s `families` must be a list like [systemSmall, systemMedium]",
                     ));
                 };
+                if array.elems.is_empty() {
+                    return Err(syn::Error::new_spanned(
+                        array,
+                        "`#[widget]` requires at least one supported family",
+                    ));
+                }
                 let mut parsed = Vec::with_capacity(array.elems.len());
                 for element in &array.elems {
                     let Some(name) = widget_family_name(element) else {
@@ -1249,6 +1245,7 @@ fn widget_params(args: &Punctuated<WidgetArg, Token![,]>) -> syn::Result<WidgetP
 }
 
 /// One `families` element: an ident naming a known `WidgetFamily` case.
+#[cfg(feature = "widgets")]
 fn widget_family_name(element: &Expr) -> Option<String> {
     let Expr::Path(path) = element else {
         return None;
@@ -1259,6 +1256,7 @@ fn widget_family_name(element: &Expr) -> Option<String> {
 
 /// The function may take no parameter or one `WidgetContext` parameter (by
 /// value or by reference).
+#[cfg(feature = "widgets")]
 fn widget_context_mode(sig: &syn::Signature) -> syn::Result<WidgetContextMode> {
     let is_widget_context = |ty: &Type| {
         if let Type::Path(path) = ty
@@ -1300,26 +1298,57 @@ fn widget_context_mode(sig: &syn::Signature) -> syn::Result<WidgetContextMode> {
 
 /// The `waterui_meta_widget_*` record's JSON payload, assembled at
 /// expansion time — a literal the declaration macro parks in `.wmeta`.
+#[cfg(feature = "widgets")]
 fn widget_payload(fn_name: &str, params: &WidgetParams) -> String {
-    let families_json = params
-        .families
-        .iter()
-        .map(|family| format!("\"{}\"", json_escape(family)))
-        .collect::<Vec<_>>()
-        .join(",");
     let kind = if params.kind.is_empty() {
         fn_name
     } else {
         params.kind.as_str()
     };
-    format!(
-        "{{\"fn\":\"{}\",\"kind\":\"{}\",\"displayName\":\"{}\",\"description\":\"{}\",\"families\":[{}]}}",
-        json_escape(fn_name),
-        json_escape(kind),
-        json_escape(&params.display_name),
-        json_escape(&params.description),
-        families_json,
-    )
+    serde_json::json!({
+        "fn": fn_name,
+        "kind": kind,
+        "displayName": params.display_name,
+        "description": params.description,
+        "families": params.families,
+    })
+    .to_string()
+}
+
+#[cfg(all(test, feature = "widgets"))]
+mod widget_tests {
+    use super::*;
+    use syn::parse::Parser as _;
+
+    #[test]
+    fn widget_payload_preserves_declaration_strings() {
+        let title = "quote\"\\\n\u{1}日本語";
+        let params = WidgetParams {
+            display_name: title.to_owned(),
+            description: "line\nnext".to_owned(),
+            kind: "fixture".to_owned(),
+            families: vec!["systemSmall".to_owned()],
+        };
+        let payload: serde_json::Value =
+            serde_json::from_str(&widget_payload("snapshot", &params)).unwrap();
+        assert_eq!(payload["fn"], "snapshot");
+        assert_eq!(payload["displayName"], title);
+        assert_eq!(payload["description"], params.description);
+        assert_eq!(payload["families"][0], "systemSmall");
+    }
+
+    #[test]
+    fn widget_declaration_requires_a_family() {
+        let args = Punctuated::<WidgetArg, Token![,]>::parse_terminated
+            .parse2(quote!(
+                name = "Example",
+                description = "A widget",
+                families = []
+            ))
+            .unwrap();
+        let error = widget_params(&args).err().expect("empty families fail");
+        assert!(error.to_string().contains("at least one supported family"));
+    }
 }
 
 fn testing_crate_path() -> syn::Result<proc_macro2::TokenStream> {

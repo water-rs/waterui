@@ -13,11 +13,15 @@ categories = ["development-tools::procedural-macro-helpers"]
 [lib]
 proc-macro = true
 
+[features]
+widgets = ["dep:serde_json"]
+
 [dependencies]
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "3.0.9", default-features = false, features = ["parsing", "printing", "proc-macro", "full", "visit-mut"] }
 icu_locale_core = { version = "2.3", features = ["alloc"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"], optional = true }
 toml = "1.1.8"
 proc-macro-crate = "3"
 # A TypeScript property name is an ECMAScript IdentifierName, whose character

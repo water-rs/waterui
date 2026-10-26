@@ -1,60 +1,35 @@
 import SwiftUI
 import WidgetKit
 
-/// What the extension hands a `#[widget]` function for each timeline
-/// request — serialized to the JSON `WidgetContext` Rust decodes.
-public struct WUIWidgetContext {
-    public let family: String
-    public let displaySize: CGSize
+/// A `#[widget]` declaration's static contract — the generated
+/// `WidgetBundle` emits one conformer per `waterui_meta_widget_*` record,
+/// so every `WaterUIWidget<D>` carries real metadata rather than a
+/// default-initializer stub.
+public protocol WUIWidgetDeclaration {
+    static var kind: String { get }
+    static var displayName: String { get }
+    static var widgetDescription: String { get }
+    static var families: [WidgetFamily] { get }
+    static var snapshotProvider: WUISnapshotProvider { get }
 }
 
-/// One `#[widget]` declaration, realized as a `WidgetKit` `Widget`.
-///
-/// The generated `WidgetBundle` instantiates one per
-/// `waterui_meta_widget_*` record; `snapshot` is the
-/// `waterui_widget_<crate>_<fn>` export the record pairs with.
-public struct WaterUIWidget: Widget {
-    public let kind: String
-    public let displayName: String
-    public let widgetDescription: String
-    public let families: [WidgetFamily]
-    public let snapshot: WUISnapshotProvider
-
-    public init(
-        kind: String,
-        displayName: String,
-        description: String,
-        families: [WidgetFamily],
-        snapshot: @escaping WUISnapshotProvider
-    ) {
-        self.kind = kind
-        self.displayName = displayName
-        self.widgetDescription = description
-        self.families = families
-        self.snapshot = snapshot
-    }
+/// One `#[widget]` declaration, realized as a `WidgetKit` `Widget` —
+/// `Widget`'s default-initializer requirement is real here because the
+/// declaration is the type parameter, not an instance payload.
+public struct WaterUIWidget<Declaration: WUIWidgetDeclaration>: Widget {
+    public init() {}
 
     public var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: WUITimelineProvider(snapshot: snapshot)) { entry in
+        StaticConfiguration(
+            kind: Declaration.kind,
+            provider: WUITimelineProvider(snapshot: Declaration.snapshotProvider)
+        ) { entry in
             WUINodeView(entry.node)
+                .containerBackground(for: .widget) { Color.clear }
         }
-        .configurationDisplayName(displayName)
-        .description(widgetDescription)
-        .supportedFamilies(families)
-    }
-
-    /// `Widget`'s default-initializer requirement — the generated
-    /// `WidgetBundle` always instantiates the parameterized form above.
-    public init() {
-        self.init(
-            kind: "",
-            displayName: "",
-            description: "",
-            families: [],
-            snapshot: { _, _, out in
-                out.assumingMemoryBound(to: WUISnapshotBuffer.self).pointee = WUISnapshotBuffer()
-            }
-        )
+        .configurationDisplayName(Declaration.displayName)
+        .description(Declaration.widgetDescription)
+        .supportedFamilies(Declaration.families)
     }
 }
 
@@ -107,10 +82,7 @@ public struct WUITimelineProvider: TimelineProvider {
             displaySize: context.displaySize
         )
         let data = runSnapshot(snapshot, context: widgetContext)
-        let decoder = JSONDecoder()
-        // Rust `Date` is seconds since the Unix epoch.
-        decoder.dateDecodingStrategy = .secondsSince1970
-        guard let timeline = try? decoder.decode(WUITimeline.self, from: data) else {
+        guard let timeline = try? WUITimeline.decode(from: data) else {
             fatalError("widget timeline JSON does not decode — the producer emitted a schema violation")
         }
         return timeline

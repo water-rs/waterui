@@ -1,4 +1,13 @@
+import CoreGraphics
 import Foundation
+
+/// What the extension hands a `#[widget]` function for each timeline
+/// request — serialized to the JSON `WidgetContext` Rust decodes. The
+/// type lives with the FFI so it compiles without `WidgetKit`.
+public struct WUIWidgetContext {
+    public let family: String
+    public let displaySize: CGSize
+}
 
 /// Mirrors `waterui_widgets::ffi::Buffer` — the serialized timeline bytes a
 /// `waterui_widget_*` export hands the extension. The struct only ever
@@ -38,11 +47,6 @@ public typealias WUISnapshotProvider = (
 /// returns the produced `Timeline` JSON — owned copy, the `Rust`
 /// allocation freed.
 public func runSnapshot(_ snapshot: WUISnapshotProvider, context: WUIWidgetContext) -> Data {
-    struct ContextJSON: Encodable {
-        let family: String
-        let width: Double
-        let height: Double
-    }
     let contextJSON = contextJSON(context: context)
     var out = WUISnapshotBuffer()
     contextJSON.withUnsafeBytes { raw in
@@ -62,16 +66,21 @@ public func runSnapshot(_ snapshot: WUISnapshotProvider, context: WUIWidgetConte
 }
 
 private func contextJSON(context: WUIWidgetContext) -> Data {
-    struct ContextJSON: Encodable {
-        let family: String
+    struct SizeJSON: Encodable {
         let width: Double
         let height: Double
+    }
+    struct ContextJSON: Encodable {
+        let family: String
+        let displaySize: SizeJSON
     }
     do {
         return try JSONEncoder().encode(ContextJSON(
             family: context.family,
-            width: context.displaySize.width,
-            height: context.displaySize.height
+            displaySize: SizeJSON(
+                width: context.displaySize.width,
+                height: context.displaySize.height
+            )
         ))
     } catch {
         fatalError("widget context does not encode: \(error)")
