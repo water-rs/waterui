@@ -113,7 +113,7 @@ pub fn navigation_block_01() -> impl View {
     let panes = [Pane::Inbox, Pane::Library, Pane::Settings, Pane::Search].map(SelfId::new);
     Tabs::new(
         &pane,
-        ForEach::new(List::from(panes), move |pane: SelfId<Pane>| {
+        ForEach::new(List::from(panes.to_vec()), move |pane: SelfId<Pane>| {
             tabs.get(&pane.into_inner())
                 .expect("a keyed tab collection reports a tab for every id")
                 .clone()
