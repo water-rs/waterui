@@ -5003,11 +5003,11 @@ impl<'a> Lowering<'a> {
         debug_assert!(
             !earlier
                 .iter()
-                .any(|pending| matches!(pending, PendingRaster::GpuPath(_))),
+                .any(|pending| matches!(pending, PendingRaster::GpuPath { .. })),
             "a leaf's GPU draw is the last pending raster it pushes"
         );
         match last {
-            PendingRaster::GpuPath(draw) => Some(draw),
+            PendingRaster::GpuPath { draw, .. } => Some(draw),
             _ => None,
         }
     }
@@ -5984,7 +5984,10 @@ impl<'a> Lowering<'a> {
             open.seg_start = index + 1;
         }
         let pending = u32::try_from(self.pending.len()).expect("pending count fits u32");
-        self.pending.push(PendingRaster::GpuPath(draw));
+        self.pending.push(PendingRaster::GpuPath {
+            draw,
+            retain: !matches!(self.root_target, Target::Projected(key) if key.picture.is_some()),
+        });
         self.push_gpu_range(pending);
     }
 
@@ -7274,7 +7277,7 @@ mod tests {
                 let tasks = lowering
                     .pending
                     .iter()
-                    .filter(|task| matches!(task, PendingRaster::GpuPath(_)))
+                    .filter(|task| matches!(task, PendingRaster::GpuPath { .. }))
                     .count();
                 assert_eq!(
                     tasks,

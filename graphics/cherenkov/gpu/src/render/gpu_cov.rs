@@ -111,6 +111,8 @@ struct Entry {
     /// it into a submission die at the next `begin_frame`, so no frame
     /// can replay a block whose kernels never ran.
     generated: bool,
+    /// At least one ordinary draw needs this coverage beyond picture generation.
+    retained: bool,
     /// While a compaction's copies are unrecorded, the block base in
     /// `compaction`'s source buffer where this entry's valid content
     /// lives.
@@ -575,7 +577,7 @@ impl GpuCoverage {
         clippy::too_many_lines,
         reason = "hit arm plus the miss's bound and record"
     )]
-    pub fn draw(&mut self, draw: &GpuDraw) -> Result<u32, RenderError> {
+    pub fn draw(&mut self, draw: &GpuDraw, retain: bool) -> Result<u32, RenderError> {
         let &GpuDraw {
             key,
             shift,
@@ -585,6 +587,7 @@ impl GpuCoverage {
             path: ref prepared,
         } = draw;
         if let Some(entry) = self.entries.get_mut(&key) {
+            entry.retained |= retain;
             if entry.last_used != self.epoch {
                 self.undrawn_bytes -= u64::from(entry.words) * 4;
                 entry.last_used = self.epoch;
@@ -714,6 +717,7 @@ impl GpuCoverage {
                 geometry_slots,
                 record,
                 generated: false,
+                retained: retain,
                 src: None,
                 last_used: self.epoch,
             },
@@ -919,18 +923,7 @@ impl GpuCoverage {
     /// images are admitted. Multiple commit-time repacks allocate only once.
     /// Its generation tells the renderer whether `bind0` is stale.
     pub fn ensure(&mut self, device: &wgpu::Device) -> Result<(), RenderError> {
-        if self.arena.pending {
-            self.arena.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("coverage arena"),
-                size: u64::from(self.arena.words) * 4,
-                usage: wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_SRC
-                    | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            self.arena.pending = false;
-            self.arena.generation += 1;
-        }
+        self.materialize_arena(device);
         self.draws_buffer = Some(sized_buffer(
             device,
             self.draws_buffer.as_ref(),
@@ -955,6 +948,72 @@ impl GpuCoverage {
             self.size_buffers(device, sizes)?;
         }
         Ok(())
+    }
+
+    fn materialize_arena(&mut self, device: &wgpu::Device) {
+        if self.arena.pending {
+            self.arena.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("coverage arena"),
+                size: u64::from(self.arena.words) * 4,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.arena.pending = false;
+            self.arena.generation += 1;
+        }
+    }
+
+    /// All surfaces have encoded their draws. Picture-only coverage can leave
+    /// now: submitted commands own the old arena until its readers complete.
+    pub fn finish_pictures(
+        &mut self,
+        device: &wgpu::Device,
+    ) -> Result<Option<wgpu::CommandBuffer>, RenderError> {
+        let before = self.entries.len();
+        self.entries.retain(|_, entry| entry.retained);
+        if self.entries.len() == before {
+            return Ok(None);
+        }
+        self.live_words = self
+            .entries
+            .values()
+            .map(|entry| u64::from(entry.words))
+            .sum();
+        self.undrawn_bytes = self
+            .entries
+            .values()
+            .filter(|entry| entry.last_used < self.epoch)
+            .map(|entry| u64::from(entry.words) * 4)
+            .sum();
+        if self.entries.is_empty() {
+            self.compaction = None;
+            self.arena.trim();
+            return Ok(None);
+        }
+        self.compact(0)?;
+        self.materialize_arena(device);
+        let compaction = self
+            .compaction
+            .take()
+            .expect("submitted coverage has a copy source");
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("retire picture coverage"),
+        });
+        for (source, destination, bytes) in compaction.copies {
+            encoder.copy_buffer_to_buffer(
+                &compaction.source,
+                source,
+                self.arena.buffer().expect("materialized arena"),
+                destination,
+                bytes,
+            );
+        }
+        for entry in self.entries.values_mut() {
+            entry.src = None;
+        }
+        Ok(Some(encoder.finish()))
     }
 
     pub fn trim(&mut self) {
@@ -1942,7 +2001,7 @@ mod tests {
         let mut frame = GpuCoverage::new(&device, u64::MAX);
         frame.begin_frame();
         frame
-            .draw(&GpuDraw::new(1, 0, Affine::IDENTITY, path, (64, 64)))
+            .draw(&GpuDraw::new(1, 0, Affine::IDENTITY, path, (64, 64)), true)
             .expect("dense path fits");
         let plan = BatchPlan::new(frame.batch);
         assert!(
@@ -1981,26 +2040,20 @@ mod tests {
         let mut frame = GpuCoverage::new(&device, u64::MAX);
         frame.begin_frame();
         frame
-            .draw(&GpuDraw::new(
-                1,
-                0,
-                Affine::IDENTITY,
-                large_path,
-                (4096, 4096),
-            ))
+            .draw(
+                &GpuDraw::new(1, 0, Affine::IDENTITY, large_path, (4096, 4096)),
+                true,
+            )
             .expect("sparse 4096-square capacity");
         assert!(frame.batch.bound.total() < GPU_COV_MAX_BYTES);
         let huge_path = rectangle(1_000_000);
         let before = frame.paths.len();
         assert!(
             frame
-                .draw(&GpuDraw::new(
-                    2,
-                    0,
-                    Affine::IDENTITY,
-                    huge_path,
-                    (1_000_000, 1_000_000),
-                ))
+                .draw(
+                    &GpuDraw::new(2, 0, Affine::IDENTITY, huge_path, (1_000_000, 1_000_000),),
+                    true
+                )
                 .is_err()
         );
         assert_eq!(frame.paths.len(), before, "reject before appending a path");
@@ -2028,13 +2081,10 @@ mod tests {
         let mut probe = GpuCoverage::new(&device, u64::MAX);
         probe.begin_frame();
         probe
-            .draw(&GpuDraw::new(
-                1,
-                0,
-                Affine::IDENTITY,
-                rectangle(4096),
-                (4096, 4096),
-            ))
+            .draw(
+                &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096)),
+                true,
+            )
             .expect("fits the device's own limits");
         // A device whose binding limit sits below the largest single
         // buffer's bound of this draw, far under the 256 MiB cap.
@@ -2046,13 +2096,10 @@ mod tests {
         frame.begin_frame();
         assert!(
             frame
-                .draw(&GpuDraw::new(
-                    1,
-                    0,
-                    Affine::IDENTITY,
-                    rectangle(4096),
-                    (4096, 4096),
-                ))
+                .draw(
+                    &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096),),
+                    true
+                )
                 .is_err(),
             "draw must refuse what record_prologue would reject"
         );
@@ -2067,13 +2114,10 @@ mod tests {
         let mut frame = GpuCoverage::with_limits(&between, u64::MAX);
         frame.begin_frame();
         frame
-            .draw(&GpuDraw::new(
-                1,
-                0,
-                Affine::IDENTITY,
-                rectangle(4096),
-                (4096, 4096),
-            ))
+            .draw(
+                &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096)),
+                true,
+            )
             .expect("every buffer fits the binding limit");
     }
 
@@ -2141,17 +2185,17 @@ mod tests {
             "both retained outputs fit"
         );
         frame.begin_frame();
-        frame.draw(first).expect("first road fits");
+        frame.draw(first, false).expect("first road fits");
         frame
-            .draw(second)
+            .draw(second, true)
             .expect("individually admitted roads share bounded scratch");
         assert_eq!(frame.batches.len(), 1, "two dispatch batches");
         frame.begin_frame();
         frame
-            .draw(first)
+            .draw(first, false)
             .expect("first road after abandoned commit");
         frame
-            .draw(second)
+            .draw(second, true)
             .expect("second road after abandoned commit");
         assert_eq!(frame.generated(), 2, "unsubmitted results are regenerated");
         assert!(
@@ -2199,8 +2243,8 @@ mod tests {
         );
         assert_eq!(frame.uploads.len(), 0);
         frame.begin_frame();
-        frame.draw(first).expect("first cache hit");
-        frame.draw(second).expect("second cache hit");
+        frame.draw(first, false).expect("first cache hit");
+        frame.draw(second, true).expect("second cache hit");
         assert!(!frame.has_misses(), "both batches remain cached");
         let arena_generation = frame.arena_generation();
         let resident = frame.bytes();
@@ -2222,6 +2266,38 @@ mod tests {
         assert!(
             frame.buffers.is_none(),
             "replay releases generation scratch"
+        );
+        let arena_bytes = frame.arena().expect("mixed coverage").size();
+        let copies = frame
+            .finish_pictures(&device)
+            .expect("retire picture coverage")
+            .expect("ordinary coverage moves to a smaller arena");
+        queue.submit([copies]);
+        assert!(!frame.entries.contains_key(&first.key));
+        let survivor = &frame.entries[&second.key];
+        let arena = frame.arena().expect("ordinary coverage remains");
+        assert!(arena.size() < arena_bytes);
+        let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let surviving = read_back(
+            &device,
+            &queue,
+            &[(arena, u64::from(survivor.base) * 4, 4)],
+            encoder,
+        );
+        assert_eq!(
+            surviving[0], words[1],
+            "ordinary coverage survives retirement"
+        );
+        frame.begin_frame();
+        frame
+            .draw(second, false)
+            .expect("ordinary entry shared with a picture");
+        assert!(!frame.has_misses());
+        assert!(
+            frame
+                .finish_pictures(&device)
+                .expect("shared coverage remains")
+                .is_none()
         );
         frame.trim();
         assert_eq!(frame.generation_reservation(), 0);
@@ -2587,7 +2663,7 @@ mod tests {
                 // the kernels' bbox lies in.
                 let draw = GpuDraw::new(content, 0, raster, gpu, (1024, 1024));
                 frame
-                    .draw(&draw)
+                    .draw(&draw, true)
                     .unwrap_or_else(|error| panic!("case {index} draws: {error:?}"));
                 kept.push((index, draw.path));
             }

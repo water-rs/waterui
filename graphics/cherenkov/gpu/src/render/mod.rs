@@ -5032,6 +5032,9 @@ impl GpuRenderer {
                     || surface.promotes
                     || self.exports.contains_key(&sf.id);
             }
+            if result.is_ok() {
+                self.finish_picture_coverage()?;
+            }
             self.evict_projective(0);
             // Set once the encode has consumed the filters' redraw
             // requests (`SurfaceWakes::set`).
@@ -5198,6 +5201,9 @@ impl GpuRenderer {
                 surface.present_pending = surface.window.is_some()
                     || surface.promotes
                     || self.exports.contains_key(&sf.id);
+            }
+            if result.is_ok() {
+                self.finish_picture_coverage()?;
             }
             self.evict_projective(0);
             // Set once the encode has consumed the filters' redraw
@@ -7414,7 +7420,7 @@ impl GpuRenderer {
         // frame draws (water-rs/waterui#3081).
         let mut draws_coverage = false;
         for raster in &rasters {
-            if let glyph::PendingRaster::GpuPath(draw) = raster {
+            if let glyph::PendingRaster::GpuPath { draw, .. } = raster {
                 self.gpu_cov.touch(draw.key);
                 draws_coverage = true;
             }
@@ -7967,8 +7973,8 @@ impl GpuRenderer {
                 }
                 Ok(PendingOrigin::None)
             }
-            PendingRaster::GpuPath(draw) => {
-                let index = self.gpu_cov.draw(&draw)?;
+            PendingRaster::GpuPath { draw, retain } => {
+                let index = self.gpu_cov.draw(&draw, retain)?;
                 Ok(PendingOrigin::Gpu(index))
             }
         }
@@ -8683,6 +8689,40 @@ impl GpuRenderer {
         Ok(())
     }
 
+    fn finish_picture_coverage(&mut self) -> Result<(), RenderError> {
+        if let Some(copies) = self.gpu_cov.finish_pictures(&self.device)? {
+            #[cfg(all(unix, not(target_vendor = "apple")))]
+            let _submit = self.submit_lock.lock().expect("submit guard");
+            self.queue.submit([copies]);
+            track_submission(&self.queue, &self.tracker);
+            diag::submit(&self.device, &self.queue, "retire picture coverage");
+        }
+        self.rebind_coverage_arena();
+        Ok(())
+    }
+
+    fn rebind_coverage_arena(&mut self) {
+        if self.gpu_cov.arena_generation() != self.bound_arena_gen {
+            let atlas = &self.atlas;
+            diag::bind_groups_dropped(&self.device, 1, "coverage arena");
+            self.bind0 = make_bind0(
+                &self.device,
+                &self.layout0,
+                &EngineBuffers {
+                    globals: &self.globals,
+                    instances: &self.instances,
+                    stops: &self.stops,
+                    arena: self.gpu_cov.arena().unwrap_or(&self.arena_placeholder),
+                    image_decode: &self.image_decode,
+                },
+                atlas,
+            );
+            self.bound_atlas = atlas.generation();
+            self.bound_arena_gen = self.gpu_cov.arena_generation();
+            self.invalidate_painter_replays();
+        }
+    }
+
     fn invalidate_painter_replays(&mut self) {
         for surface in self.surfaces.values_mut() {
             surface.painter_replays.clear();
@@ -8993,26 +9033,8 @@ impl GpuRenderer {
         if gpu_active {
             self.gpu_cov.validate_output_sizes(&self.device.limits())?;
             self.gpu_cov.ensure(&self.device)?;
-            if self.gpu_cov.arena_generation() != self.bound_arena_gen {
-                let atlas = &self.atlas;
-                diag::bind_groups_dropped(&self.device, 1, "coverage arena");
-                self.bind0 = make_bind0(
-                    &self.device,
-                    &self.layout0,
-                    &EngineBuffers {
-                        globals: &self.globals,
-                        instances: &self.instances,
-                        stops: &self.stops,
-                        arena: self.gpu_cov.arena().expect("coverage arena sized"),
-                        image_decode: &self.image_decode,
-                    },
-                    atlas,
-                );
-                self.bound_atlas = atlas.generation();
-                self.bound_arena_gen = self.gpu_cov.arena_generation();
-                self.invalidate_painter_replays();
-            }
         }
+        self.rebind_coverage_arena();
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
         };
