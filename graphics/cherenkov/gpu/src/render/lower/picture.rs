@@ -62,7 +62,10 @@ impl Lowering<'_> {
             b.mul_add(d, a * c),
         );
         let scale = ((xx + yy + (xx - yy).hypot(2.0 * xy)) * 0.5).sqrt();
-        let density = f64::from(scale as f32).log2().ceil().exp2();
+        // Half-octave buckets bound excess texel area to 2x while preserving
+        // pixels across small scale changes. Whole octaves can charge 4x.
+        let density = (f64::from(scale as f32).log2() * 2.0).ceil();
+        let density = (density * 0.5).exp2();
         let key = LocalKey {
             layer,
             picture: Some(std::ptr::from_ref(picture.display_list()) as usize),

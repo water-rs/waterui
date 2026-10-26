@@ -16,25 +16,25 @@ use super::instance::Stop;
 use super::lower::ImageSource;
 
 /// A retained local image: the projective layer and its density bucket,
-/// `log2` of the texels per layer unit.
+/// Half-octave exponent of the texels per layer unit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LocalKey {
     /// The projective layer.
     pub layer: LayerId,
     /// Retained picture allocation, or the entire projective layer.
     pub picture: Option<usize>,
-    /// `log2(density)`.
+    /// `2 * log2(density)`.
     pub bucket: i32,
 }
 
-/// The signed exponent of the power-of-two raster density.
+/// The signed half-octave exponent of the raster density.
 #[must_use]
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "a finite positive f64 power of two has an exponent within i32"
+    reason = "a finite positive raster density has an exponent within i32"
 )]
 pub fn bucket(density: f64) -> i32 {
-    density.log2() as i32
+    (density.log2() * 2.0).round() as i32
 }
 
 /// How a planned layer composes into its parent raster this frame.
