@@ -1545,13 +1545,6 @@ mod tabs {
         ]
     }
 
-    /// Tab identity for the fixtures.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-    enum Pane {
-        One,
-        Two,
-    }
-
     /// The rendered leaf's first subview is the controller's root view; a
     /// `UIViewController` sits on the responder chain right after its own
     /// view — the same reach `adopt_controllers` relies on.
@@ -1597,14 +1590,14 @@ mod tabs {
     /// Two plain tabs with `accessory` in the bottom slot.
     fn tabs(
         accessory: impl waterui_backend_core::View,
-    ) -> (waterui::reactive::Binding<Pane>, NativeLeaf) {
-        let pane = binding(Pane::One);
+    ) -> (waterui::reactive::Binding<usize>, NativeLeaf) {
+        let pane = binding(0usize);
         let leaf = resolve::render(
             Tabs::new(
                 &pane,
                 vec![
-                    Tab::container(Pane::One, label("One"), || text("pane one")),
-                    Tab::container(Pane::Two, label("Two"), || text("pane two")),
+                    Tab::container(label("One"), || text("pane one")),
+                    Tab::container(label("Two"), || text("pane two")),
                 ],
             )
             .bottom_accessory(accessory),
@@ -1647,7 +1640,7 @@ mod tabs {
         let (pane, leaf) = tabs(text("Now Playing"));
         let controller = tab_bar_controller(&leaf);
         let accessory = controller.bottomAccessory().expect("installed");
-        pane.set(Pane::Two);
+        pane.set(1usize);
         assert_eq!(controller.selectedIndex(), 1);
         let after = controller.bottomAccessory().expect("still installed");
         assert_eq!(Retained::as_ptr(&after), Retained::as_ptr(&accessory));
@@ -1704,13 +1697,10 @@ mod tabs {
                 UITabBarMinimizeBehavior::OnScrollUp,
             ),
         ] {
-            let pane = binding(Pane::One);
+            let pane = binding(0usize);
             let leaf = resolve::render(
-                Tabs::new(
-                    &pane,
-                    vec![Tab::container(Pane::One, label("One"), || text("one"))],
-                )
-                .minimize_behavior(shared),
+                Tabs::new(&pane, vec![Tab::container(label("One"), || text("one"))])
+                    .minimize_behavior(shared),
             );
             assert_eq!(tab_bar_controller(&leaf).tabBarMinimizeBehavior(), native);
         }
@@ -1735,14 +1725,14 @@ mod tabs {
     /// scroll surface for the bottom edge: a scroll mounted as the root,
     /// or one the pane's container declares as a candidate.
     pub fn pane_scroll_view_associates_for_collapse() {
-        let pane = binding(Pane::One);
+        let pane = binding(0usize);
         let leaf = resolve::render(Tabs::new(
             &pane,
             vec![
-                Tab::container(Pane::One, label("One"), || {
+                Tab::container(label("One"), || {
                     scroll(vstack((text("one"), text("two"), text("three"))))
                 }),
-                Tab::container(Pane::Two, label("Two"), || {
+                Tab::container(label("Two"), || {
                     vstack((text("aside"), scroll(text("nested"))))
                 }),
             ],
@@ -1769,12 +1759,12 @@ mod tabs {
     /// associates nothing for any edge but the bottom one — the tab bar
     /// only tracks a surface it actually gets.
     pub fn panes_without_surfaces_answer_none() {
-        let pane = binding(Pane::One);
+        let pane = binding(0usize);
         let leaf = resolve::render(Tabs::new(
             &pane,
             vec![
-                Tab::container(Pane::One, label("One"), || scroll(text("scrollable"))),
-                Tab::container(Pane::Two, label("Two"), || text("static")),
+                Tab::container(label("One"), || scroll(text("scrollable"))),
+                Tab::container(label("Two"), || text("static")),
             ],
         ));
         let controllers = tab_bar_controller(&leaf)
@@ -1818,7 +1808,7 @@ mod tabs {
 
         let scrolled = binding(true);
         let content = scrolled.clone();
-        let pane = binding(Pane::One);
+        let pane = binding(0usize);
         // Render inside a bounded pool: the leaf's own `Retained`/`Rc`
         // ownership survives, while every autoreleased temporary the
         // mount produced drains now — the weak read later must not meet
@@ -1826,7 +1816,7 @@ mod tabs {
         let leaf = autoreleasepool(|_| {
             resolve::render(Tabs::new(
                 &pane,
-                vec![Tab::container(Pane::One, label("One"), move || {
+                vec![Tab::container(label("One"), move || {
                     Dynamic::watch(content.clone(), |scrolled| {
                         if scrolled {
                             AnyView::new(scroll(text("surface")))
@@ -1921,10 +1911,10 @@ mod tabs {
         }
 
         let mtm = super::mtm();
-        let pane = binding(Pane::One);
+        let pane = binding(0usize);
         let leaf = resolve::render(Tabs::new(
             &pane,
-            vec![Tab::container(Pane::One, label("One"), || {
+            vec![Tab::container(label("One"), || {
                 NavigationStack::new(NavigationView::new("Root", scroll(text("root"))))
             })],
         ));
@@ -2299,12 +2289,12 @@ mod navigation {
     /// restores the user's own collapse state instead of forcing the
     /// sidebar open.
     pub fn a_hidden_tab_split_releases_the_toolbar_sidebar_space() {
-        let tab = binding(0i32);
+        let tab = binding(0usize);
         let detail = binding(Some(1_i32));
         let leaf = resolve::render(Tabs::new(
             &tab,
             vec![
-                Tab::new(0i32, "Inbox", move || {
+                Tab::new("Inbox", move || {
                     NavigationView::new("Inbox", text("inbox")).navigation_toolbar(
                         NavigationToolbar::new(vec![NavigationToolbarItem::action(
                             NavigationToolbarPlacement::TopBarLeading,
@@ -2313,7 +2303,7 @@ mod navigation {
                         )]),
                     )
                 }),
-                Tab::container(1i32, "Split", move || {
+                Tab::container("Split", move || {
                     NavigationSplitView::new(&detail, text("Sidebar"), |id: i32| {
                         NavigationView::new(format!("Detail {id}"), text("detail"))
                     })
@@ -2411,17 +2401,16 @@ mod navigation {
     /// The window stays unordered; the metrics were read that way.
     pub fn a_toolbar_tab_picker_uses_the_extra_large_metrics() {
         let mtm = mtm();
-        let pane = binding(0i32);
+        let pane = binding(0usize);
         let labels = ["Inbox", "Library", "Gallery", "Settings"];
         let leaf = resolve::render(Tabs::new(
             &pane,
             labels
                 .iter()
                 .enumerate()
-                .map(|(index, label)| {
+                .map(|(_index, label)| {
                     let title = (*label).to_string();
-                    let id = i32::try_from(index).expect("the four tabs fit in i32");
-                    Tab::new(id, *label, move || {
+                    Tab::new(*label, move || {
                         NavigationView::new(title.clone(), text(title.clone()))
                     })
                 })
@@ -5674,10 +5663,10 @@ mod safe_area {
     /// keyboard covers it instead of lifting it — while the hosted
     /// content's bottom edge binds to the deeper of the two boundaries.
     fn a_tab_bar_stays_docked_under_the_keyboard() {
-        let selection = binding(0i32);
+        let selection = binding(0usize);
         let mount = mount(Tabs::new(
             &selection,
-            vec![Tab::new(0i32, "Messages", move || {
+            vec![Tab::new("Messages", move || {
                 NavigationView::new(
                     "Messages",
                     vstack((
@@ -5894,10 +5883,10 @@ mod safe_area {
     /// boundary, and the content binds the deeper boundary under the
     /// keyboard.
     fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar() {
-        let selection = binding(0i32);
+        let selection = binding(0usize);
         let mount = mount(Tabs::new(
             &selection,
-            vec![Tab::container(0i32, "Home", move || {
+            vec![Tab::container("Home", move || {
                 NavigationStack::new(
                     NavigationView::new(
                         "Home",
@@ -5953,22 +5942,22 @@ mod safe_area {
     /// frame — a bar docks at the boundary of the edge it touches, which
     /// for a mid-window bar is the frame its host gave it.
     fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar() {
-        let selection = binding(0i32);
-        let inner_selection = binding(0i32);
+        let selection = binding(0usize);
+        let inner_selection = binding(0usize);
         let mount = mount(Tabs::new(
             &selection,
             vec![
-                Tab::new(0i32, "Outer", move || {
+                Tab::new("Outer", move || {
                     NavigationView::new(
                         "Outer",
                         vstack((
                             Tabs::new(
                                 &inner_selection,
                                 vec![
-                                    Tab::new(1i32, "Inner A", move || {
+                                    Tab::new("Inner A", move || {
                                         NavigationView::new("A", text("a"))
                                     }),
-                                    Tab::new(2i32, "Inner B", move || {
+                                    Tab::new("Inner B", move || {
                                         NavigationView::new("B", text("b"))
                                     }),
                                 ],
@@ -5979,9 +5968,7 @@ mod safe_area {
                         )),
                     )
                 }),
-                Tab::new(3i32, "Other", move || {
-                    NavigationView::new("Other", text("other"))
-                }),
+                Tab::new("Other", move || NavigationView::new("Other", text("other"))),
             ],
         ));
         // Two bars: the inner controller's inside its 200pt host and the

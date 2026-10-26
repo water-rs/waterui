@@ -58,6 +58,7 @@ impl_widget_behavior!(
     crate::widgets::nav::tabs::TabsRenderState,
     crate::widgets::nav::tabs::render_tabs_node,
     crate::widgets::nav::tabs::measure_tabs_node
+    ; prepare: prepare_tabs
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::nav::tabs::emit_tabs_accessibility
 );
@@ -218,7 +219,7 @@ impl RenderNode {
     ) -> Self {
         use crate::widgets::nav::tabs::TabsRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&tabs);
-        let mut state = TabsRenderState::from_tabs(tabs);
+        let mut state = TabsRenderState::from_tabs(tabs, renderer);
         // See build_controls: the prebuild runs under this widget's
         // cell as the record reader, so its subviews attach to it.
         let core = renderer.new_core();

@@ -2221,28 +2221,21 @@ fn a11y_value_overrides_a_controls_own_value() {
 #[cfg(feature = "accessibility")]
 #[test]
 fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
-    use core::convert::TryFrom as _;
     use jiff::civil::Date;
-    use waterui_core::id::Id;
 
     let env = test_environment();
     let mut renderer = test_renderer();
     let picker_selection = Binding::container("Alpha");
     let date = Binding::container(Date::new(2025, 1, 10).expect("valid test date"));
     let color = Binding::container(Color::srgb(0, 0, 0));
-    let first = Id::try_from(1).expect("non-zero tab id");
-    let second = Id::try_from(2).expect("non-zero tab id");
-    let tabs = TabsLayout::new(
-        Binding::container(first),
-        vec![
-            Tab::new(first, "First tab", || {
-                NavigationView::new("First", text("One"))
-            }),
-            Tab::new(second, "Second tab", || {
-                NavigationView::new("Second", text("Two"))
-            }),
-        ],
-    );
+    let tab_items = waterui_core::views::SharedAnyViews::new(vec![
+        Tab::new("First tab", || NavigationView::new("First", text("One"))),
+        Tab::new("Second tab", || NavigationView::new("Second", text("Two"))),
+    ]);
+    let snapshot = waterui_core::views::Views::snapshot(&tab_items);
+    let first = waterui_core::views::ViewSnapshot::get_id(&snapshot, 0)
+        .expect("a non-empty tab set reports an id");
+    let tabs = TabsLayout::new(Binding::container(first), tab_items);
     let view = vstack((
         Picker::new(
             "Letter",

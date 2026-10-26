@@ -11,12 +11,15 @@
 use waterui::app::App;
 use waterui::background::Glass;
 use waterui::icon::SystemIcon;
+use waterui::id::SelfId;
 use waterui::navigation::{TabBarMinimizeBehavior, TabRole};
 use waterui::prelude::theme_color::Accent;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
+use waterui::reactive::collection::List;
 use waterui::shape::{Circle, RoundedRectangle, ShapeExt};
+use waterui::views::ForEach;
 
 /// Tab identity. `Tabs` is generic over it, so no `Id` reaches app code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -31,33 +34,47 @@ enum Pane {
 pub fn main() -> impl View {
     let pane = binding(Pane::Surfaces);
 
-    Tabs::new(
-        &pane,
-        vec![
+    let tabs = std::collections::BTreeMap::from([
+        (
+            Pane::Surfaces,
             Tab::container(
-                Pane::Surfaces,
                 label("Surfaces").icon(SystemIcon::new("square.on.square")),
                 surfaces_page,
             ),
+        ),
+        (
+            Pane::Controls,
             Tab::container(
-                Pane::Controls,
                 label("Controls").icon(SystemIcon::new("button.horizontal")),
                 controls_page,
             ),
+        ),
+        (
+            Pane::About,
             Tab::container(
-                Pane::About,
                 label("About").icon(SystemIcon::new("info.circle")),
                 about_page,
             ),
-            // The role, not a different kind of tab: iOS places it trailing as
-            // the system search tab with its own glass and presentation.
+        ),
+        // The role, not a different kind of tab: iOS places it trailing as
+        // the system search tab with its own glass and presentation.
+        (
+            Pane::Search,
             Tab::container(
-                Pane::Search,
                 label("Search").icon(SystemIcon::new("magnifyingglass")),
                 search_page,
             )
             .role(TabRole::Search),
-        ],
+        ),
+    ]);
+    let panes = [Pane::Surfaces, Pane::Controls, Pane::About, Pane::Search].map(SelfId::new);
+    Tabs::new(
+        &pane,
+        ForEach::new(List::from(panes), move |pane: SelfId<Pane>| {
+            tabs.get(&pane.into_inner())
+                .expect("a keyed tab collection reports a tab for every id")
+                .clone()
+        }),
     )
     .style(tab_style::automatic())
     // iOS collapses the bar into a glass pill as the surfaces scroll, and

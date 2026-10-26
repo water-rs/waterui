@@ -67,7 +67,10 @@ fn now_playing_bar() -> impl View {
 // navigation.md writes `mdi::` qualified so the icon set stays visible.
 #[allow(unknown_lints, qualified_waterui_path)]
 pub fn navigation_block_01() -> impl View {
+    use waterui::id::SelfId;
     use waterui::navigation::tab_style;
+    use waterui::reactive::collection::List;
+    use waterui::views::ForEach;
 
     fn inbox_stack() -> impl View {
         text("inbox stack")
@@ -84,28 +87,37 @@ pub fn navigation_block_01() -> impl View {
 
     let pane = binding(Pane::Inbox);
 
+    // Tabs takes any `Views` collection keyed by the selection's type:
+    // `ForEach` over a `List` of `SelfId`s makes each pane variant the tab's
+    // identity; a fixed set can also be `vec![Tab::new(..), ..]` with a
+    // `Binding<usize>` selecting by position.
+    let tabs = std::collections::BTreeMap::from([
+        (
+            Pane::Inbox,
+            Tab::container(label("Inbox").icon(mdi::inbox()), inbox_stack).badge(unread_count),
+        ),
+        (
+            Pane::Library,
+            Tab::container(label("Library").icon(mdi::image_album()), library_split),
+        ),
+        (
+            Pane::Settings,
+            Tab::container(label("Settings").icon(mdi::cog()), settings_stack),
+        ),
+        (
+            Pane::Search,
+            Tab::container(label("Search").icon(mdi::magnify()), search_stack)
+                .role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
+        ),
+    ]);
+    let panes = [Pane::Inbox, Pane::Library, Pane::Settings, Pane::Search].map(SelfId::new);
     Tabs::new(
         &pane,
-        vec![
-            Tab::container(Pane::Inbox, label("Inbox").icon(mdi::inbox()), inbox_stack)
-                .badge(unread_count),
-            Tab::container(
-                Pane::Library,
-                label("Library").icon(mdi::image_album()),
-                library_split,
-            ),
-            Tab::container(
-                Pane::Settings,
-                label("Settings").icon(mdi::cog()),
-                settings_stack,
-            ),
-            Tab::container(
-                Pane::Search,
-                label("Search").icon(mdi::magnify()),
-                search_stack,
-            )
-            .role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
-        ],
+        ForEach::new(List::from(panes), move |pane: SelfId<Pane>| {
+            tabs.get(&pane.into_inner())
+                .expect("a keyed tab collection reports a tab for every id")
+                .clone()
+        }),
     )
     .style(tab_style::automatic())
     .minimize_behavior(TabBarMinimizeBehavior::OnScrollDown) // iOS 26 collapses the bar while scrolling; ignored elsewhere

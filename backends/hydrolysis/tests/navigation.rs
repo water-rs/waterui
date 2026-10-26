@@ -14,7 +14,7 @@
 mod support;
 
 use accesskit::Rect;
-use support::{mount_rendered, node_bounds_with_role};
+use support::{mount_rendered, node_bounds_with_role, node_label_exists};
 use waterui::component::list::{List, ListItem};
 use waterui::component::{hstack, text, vstack};
 use waterui::id::SelfId;
@@ -181,7 +181,7 @@ fn navigation_split_detail_fits_pane_when_selected_before_mount() {
 /// window.
 #[test]
 fn tabs_content_fits_pane() {
-    let selection = Binding::container(0i32);
+    let selection = Binding::container(0usize);
     let mut app = mount_rendered(
         Environment::new(),
         move || {
@@ -190,13 +190,13 @@ fn tabs_content_fits_pane() {
                 Tabs::new(
                     &selection,
                     vec![
-                        Tab::new(0i32, "Messages", move || {
+                        Tab::new("Messages", move || {
                             NavigationView::new(
                                 "Messages",
                                 rows(60, "message").a11y_label("messages"),
                             )
                         }),
-                        Tab::new(1i32, "Settings", move || {
+                        Tab::new("Settings", move || {
                             NavigationView::new("Settings", text("settings"))
                         }),
                     ],
@@ -283,4 +283,163 @@ fn navigation_content_relayouts_when_a_measure_read_text_grows() {
         1.0,
         "the sibling must start at the grown text's trailing edge",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Reactive-collection `Tabs` — water-rs/waterui#1194
+//
+// `Tabs` over `nami::collection::List<SelfId<i32>>`: a tab's `SelfId` is its
+// identity, a surviving id keeps its retained subviews — content, navigation
+// state — and only inserted ids materialize.
+// ---------------------------------------------------------------------------
+
+use std::cell::Cell;
+use std::rc::Rc;
+use waterui::reactive::Signal as _;
+use waterui::reactive::collection::List as SignalList;
+use waterui::views::ForEach;
+
+/// The tabs fixture's collection handle, kept mutable outside the app.
+type TabIds = SignalList<SelfId<i32>>;
+
+fn keyed_tabs(ids: Vec<i32>) -> (TabIds, Vec<SelfId<i32>>) {
+    let panes: Vec<SelfId<i32>> = ids.into_iter().map(SelfId::new).collect();
+    (SignalList::from(panes.clone()), panes)
+}
+
+/// Mounts a `Tabs` whose tabs are keyed by `list`'s `SelfId`s; each tab's
+/// content builder counts its invocations into `builds[i]` so a rebuild of a
+/// surviving tab shows up as an extra count.
+fn mount_keyed(
+    list: &TabIds,
+    labels: &'static [&'static str],
+    builds: &[Rc<Cell<usize>>],
+    selection: Binding<i32>,
+) -> support::RenderedApp {
+    let list = list.clone();
+    let labels = labels.to_vec();
+    let builds = builds.to_vec();
+    mount_rendered(
+        Environment::new(),
+        move || {
+            let selection = selection.clone();
+            Tabs::new(
+                &selection,
+                ForEach::new(list, move |pane: SelfId<i32>| {
+                    let index = usize::try_from(*pane).expect("fixture ids index the fixtures");
+                    let builds = builds[index].clone();
+                    let label = labels[index];
+                    Tab::new(label, move || {
+                        builds.set(builds.get() + 1);
+                        NavigationView::new(label, text(label))
+                    })
+                }),
+            )
+        },
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
+    )
+}
+
+#[test]
+fn an_empty_tab_set_mounts() {
+    let (list, _panes) = keyed_tabs(vec![]);
+    let selection = Binding::container(0i32);
+    let mut app = mount_keyed(&list, &[], &[], selection);
+    app.settle();
+    // The container mounts — the pump did not assert — and no tab chrome or
+    // selected content reaches the accessibility tree.
+    assert!(!node_label_exists(app.tree(), "tab"));
+}
+
+#[test]
+fn inserting_a_tab_keeps_existing_tabs_retained() {
+    let builds = vec![
+        Rc::new(Cell::new(0usize)),
+        Rc::new(Cell::new(0usize)),
+        Rc::new(Cell::new(0usize)),
+    ];
+    let (mut list, _panes) = keyed_tabs(vec![0, 1]);
+    let selection = Binding::container(0i32);
+    let mut app = mount_keyed(&list, &["Tab A", "Tab B", "Tab C"], &builds, selection);
+    app.settle();
+    assert_eq!(builds[0].get(), 1);
+    assert_eq!(builds[1].get(), 1);
+
+    list.push(SelfId::new(2));
+    app.pump();
+
+    // The inserted tab materialized once; the surviving tabs were not
+    // rebuilt.
+    assert_eq!(builds[2].get(), 1);
+    assert_eq!(builds[0].get(), 1);
+    assert_eq!(builds[1].get(), 1);
+    assert!(node_label_exists(app.tree(), "Tab C"));
+}
+
+#[test]
+fn removing_the_selected_tab_relocates_selection() {
+    let builds: Vec<_> = (0..3).map(|_| Rc::new(Cell::new(0usize))).collect();
+    let (mut list, _panes) = keyed_tabs(vec![0, 1, 2]);
+    let selection = Binding::container(2i32); // trailing tab selected
+    let mut app = mount_keyed(
+        &list,
+        &["Tab A", "Tab B", "Tab C"],
+        &builds,
+        selection.clone(),
+    );
+    app.settle();
+
+    // Removing the trailing selected tab relocates the binding to the new
+    // last tab — the tab now at the removed tab's index, clamped.
+    let removed = list.remove(2);
+    assert_eq!(*removed, 2);
+    app.pump();
+    assert_eq!(
+        selection.snapshot(),
+        1,
+        "the selection relocates to the new last tab"
+    );
+}
+
+#[test]
+fn reordering_tabs_keeps_their_state() {
+    let builds: Vec<_> = (0..3).map(|_| Rc::new(Cell::new(0usize))).collect();
+    let (mut list, _panes) = keyed_tabs(vec![0, 1, 2]);
+    let selection = Binding::container(2i32);
+    let mut app = mount_keyed(
+        &list,
+        &["Tab A", "Tab B", "Tab C"],
+        &builds,
+        selection.clone(),
+    );
+    app.settle();
+
+    // Move the trailing tab to the front: a remove + insert where every id
+    // survives — no content rebuilds and the selection still names tab 2.
+    let moved = list.remove(2);
+    list.insert(0, moved);
+    app.pump();
+
+    assert!(builds.iter().all(|builds| builds.get() == 1));
+    assert_eq!(selection.snapshot(), 2);
+    assert!(node_label_exists(app.tree(), "Tab C"));
+}
+
+#[test]
+fn removing_every_tab_leaves_the_selection_untouched() {
+    let builds: Vec<_> = (0..2).map(|_| Rc::new(Cell::new(0usize))).collect();
+    let (mut list, _panes) = keyed_tabs(vec![0, 1]);
+    let selection = Binding::container(1i32);
+    let mut app = mount_keyed(&list, &["Tab A", "Tab B"], &builds, selection.clone());
+    app.settle();
+
+    list.clear();
+    app.pump();
+
+    // Empty set: nothing selected, the binding is left untouched and the
+    // container still mounts — the pump did not assert.
+    assert_eq!(selection.snapshot(), 1);
+    assert!(!node_label_exists(app.tree(), "Tab A"));
+    assert!(!node_label_exists(app.tree(), "Tab B"));
 }
