@@ -4297,50 +4297,6 @@ impl Renderer for GpuRenderer {
     }
 
     fn memory(&self) -> MemoryUsage {
-        let gpu = self.instances.size()
-            // The GPU coverage route's arena, draws and scratch buffers.
-            + self.gpu_cov.bytes()
-            + self
-                .planes
-                .values()
-                .map(planes::SystemPlanes::native_bytes)
-                .sum::<u64>()
-            + self.uploads.gpu_bytes()
-            + self.stops.size()
-            + self.image_decode.size()
-            + self.globals.size()
-            + self.atlas.gpu_bytes()
-            + self.atlas.mask_texture_bytes()
-            + self
-                .surfaces
-                .values()
-                .map(SurfaceState::gpu_bytes)
-                .sum::<u64>()
-            + self
-                .producers
-                .values()
-                .map(gpu_content::Producer::gpu_bytes)
-                .sum::<u64>()
-            + self.images.values().map(GpuImage::bytes).sum::<u64>()
-            + self
-                .bitmaps
-                .values()
-                .map(|bitmap| bitmap.image.bytes())
-                .sum::<u64>();
-        let captures = self
-            .surfaces
-            .values()
-            .map(SurfaceState::backdrop_bytes)
-            .sum();
-        let filter_targets = self.filters.target_bytes();
-        let filter_images = self.filters.image_bytes();
-        let capture_format = self
-            .surfaces
-            .values()
-            .flat_map(|surf| surf.backdrop_groups.values())
-            .flat_map(|g| &g.captures)
-            .map(|c| format_name(c.target.texture.format()))
-            .next();
         let cpu = self.atlas.cpu_bytes()
             + self
                 .planes
@@ -4366,41 +4322,9 @@ impl Renderer for GpuRenderer {
                         as u64
                 })
                 .sum::<u64>();
-        // The tile executor's attachments, reported apart from the rest
-        // because they are the one allocation the engine makes that it
-        // expects device memory *not* to back (#2191). Apple's are
-        // memoryless and have no commitment to read; Vulkan's are
-        // lazily allocated, and the driver says how much of them it had
-        // to commit. Only the committed part is real device memory, so
-        // only it joins `gpu`.
-        #[cfg(target_vendor = "apple")]
-        let (tile_reserved, tile_committed) = (
-            self.surfaces
-                .values()
-                .map(|surf| surf.tile_targets.reserved_bytes())
-                .sum(),
-            None,
-        );
-        #[cfg(all(unix, not(target_vendor = "apple")))]
-        let (tile_reserved, tile_committed) = self.tile_mirror.as_ref().map_or((0, None), |m| {
-            (m.reserved_bytes(), Some(m.committed_total_bytes()))
-        });
-        #[cfg(not(unix))]
-        let (tile_reserved, tile_committed) = (0, None);
         MemoryUsage {
-            gpu: cherenkov::Bytes(
-                gpu + filter_targets
-                    + filter_images
-                    + self.shadow_blur.as_ref().map_or(0, shadow::Blur::gpu_bytes)
-                    + tile_committed.unwrap_or(0),
-            ),
             cpu: cherenkov::Bytes(cpu),
-            tile_reserved: cherenkov::Bytes(tile_reserved),
-            tile_committed: tile_committed.map(cherenkov::Bytes),
-            backdrop_captures: cherenkov::Bytes(captures),
-            backdrop_capture_format: capture_format,
-            filter_targets: cherenkov::Bytes(filter_targets),
-            filter_images: cherenkov::Bytes(filter_images),
+            ..self.gpu_memory()
         }
     }
 
@@ -6096,6 +6020,89 @@ impl GpuRenderer {
         Ok(())
     }
 
+    fn gpu_memory(&self) -> MemoryUsage {
+        let gpu = self.instances.size()
+            // The GPU coverage route's arena, draws and scratch buffers.
+            + self.gpu_cov.bytes()
+            + self
+                .planes
+                .values()
+                .map(planes::SystemPlanes::native_bytes)
+                .sum::<u64>()
+            + self.uploads.gpu_bytes()
+            + self.stops.size()
+            + self.image_decode.size()
+            + self.globals.size()
+            + self.atlas.gpu_bytes()
+            + self.atlas.mask_texture_bytes()
+            + self
+                .surfaces
+                .values()
+                .map(SurfaceState::gpu_bytes)
+                .sum::<u64>()
+            + self
+                .producers
+                .values()
+                .map(gpu_content::Producer::gpu_bytes)
+                .sum::<u64>()
+            + self.images.values().map(GpuImage::bytes).sum::<u64>()
+            + self
+                .bitmaps
+                .values()
+                .map(|bitmap| bitmap.image.bytes())
+                .sum::<u64>();
+        let captures = self
+            .surfaces
+            .values()
+            .map(SurfaceState::backdrop_bytes)
+            .sum();
+        let filter_targets = self.filters.target_bytes();
+        let filter_images = self.filters.image_bytes();
+        let capture_format = self
+            .surfaces
+            .values()
+            .flat_map(|surf| surf.backdrop_groups.values())
+            .flat_map(|g| &g.captures)
+            .map(|c| format_name(c.target.texture.format()))
+            .next();
+        // The tile executor's attachments, reported apart from the rest
+        // because they are the one allocation the engine makes that it
+        // expects device memory *not* to back (#2191). Apple's are
+        // memoryless and have no commitment to read; Vulkan's are
+        // lazily allocated, and the driver says how much of them it had
+        // to commit. Only the committed part is real device memory, so
+        // only it joins `gpu`.
+        #[cfg(target_vendor = "apple")]
+        let (tile_reserved, tile_committed) = (
+            self.surfaces
+                .values()
+                .map(|surf| surf.tile_targets.reserved_bytes())
+                .sum(),
+            None,
+        );
+        #[cfg(all(unix, not(target_vendor = "apple")))]
+        let (tile_reserved, tile_committed) = self.tile_mirror.as_ref().map_or((0, None), |m| {
+            (m.reserved_bytes(), Some(m.committed_total_bytes()))
+        });
+        #[cfg(not(unix))]
+        let (tile_reserved, tile_committed) = (0, None);
+        MemoryUsage {
+            gpu: cherenkov::Bytes(
+                gpu + filter_targets
+                    + filter_images
+                    + self.shadow_blur.as_ref().map_or(0, shadow::Blur::gpu_bytes)
+                    + tile_committed.unwrap_or(0),
+            ),
+            cpu: cherenkov::Bytes(0),
+            tile_reserved: cherenkov::Bytes(tile_reserved),
+            tile_committed: tile_committed.map(cherenkov::Bytes),
+            backdrop_captures: cherenkov::Bytes(captures),
+            backdrop_capture_format: capture_format,
+            filter_targets: cherenkov::Bytes(filter_targets),
+            filter_images: cherenkov::Bytes(filter_images),
+        }
+    }
+
     /// Bytes of every retained local image.
     fn projective_bytes(&self) -> u64 {
         self.surfaces
@@ -6107,7 +6114,7 @@ impl GpuRenderer {
     /// Every resident GPU byte except the local images, which are
     /// evictable and give way to everything else.
     fn resident_bytes(&self) -> u64 {
-        self.memory().gpu.0 - self.projective_bytes()
+        self.gpu_memory().gpu.0 - self.projective_bytes()
     }
 
     /// The bytes local images may hold: the GPU budget less every other
