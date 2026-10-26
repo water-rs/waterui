@@ -30,6 +30,7 @@ use ndk::looper::{FdEvent, ForeignLooper, ThreadLooper};
 use waterui::Environment;
 use waterui::cursor::CursorStyle;
 use waterui::window::WindowState;
+#[cfg(not(hydrolysis_hwui))]
 use waterui_graphics::gpu::RedrawHandle;
 
 use super::accessibility::AccessibilitySnapshot;
@@ -42,7 +43,9 @@ use crate::platform::GpuSurfaceWindow;
 use crate::platform::{InputEvent, PlatformWindow, TextInputState, validated_window_frame};
 #[cfg(not(hydrolysis_hwui))]
 use crate::renderer::HydrolysisRenderer;
-use crate::renderer::{FontFamilyResolution, HydrolysisTextContextMenuMode, MenuShortcutRegistry};
+use crate::renderer::{HydrolysisTextContextMenuMode, MenuShortcutRegistry};
+#[cfg(not(hydrolysis_hwui))]
+use crate::renderer::FontFamilyResolution;
 use crate::runner::android_executor::{AndroidMainThreadExecutor, UiThreadPoster};
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::android_metrics::InsetsMetrics;
@@ -56,6 +59,7 @@ use crate::runner::{
     RenderDiagnosticsConfig, init_main_thread_executors, install_headless_window_managers,
     install_native_component_hooks, menu_bar,
 };
+#[cfg(not(hydrolysis_hwui))]
 #[cfg(not(hydrolysis_hwui))]
 use crate::text::ParleyEngine;
 use crate::theme::WidgetTheme;
@@ -595,7 +599,7 @@ impl AndroidHostWindow {
     /// transaction gate: inside a transaction the latch already joins that
     /// frame, and while occluded the request stays armed for the restore
     /// frame. Wakes raised before the queued post runs coalesce into it.
-    pub(crate) fn content_redraw_handle(&self) -> RedrawHandle {
+    pub(crate) fn content_redraw_handle(&self) -> crate::renderer::HostRedraw {
         let poster = self.ui_poster.clone();
         let latch = Arc::clone(&self.redraw_pending);
         let bridge = Arc::clone(&self.bridge);
@@ -607,7 +611,7 @@ impl AndroidHostWindow {
             bridge.request_frame();
         }));
         let queued = Arc::new(AtomicBool::new(false));
-        RedrawHandle::new(move || {
+        crate::renderer::HostRedraw::new(move || {
             latch.store(true, Ordering::Release);
             if queued.swap(true, Ordering::AcqRel) {
                 return;
@@ -849,6 +853,7 @@ impl UiThreadServices {
 /// `env` — the theme tokens, hooks and font collection a window's subtree
 /// resolves — so it must be installed once the session environment is
 /// otherwise complete (water-rs/waterui#2703).
+#[cfg(not(hydrolysis_hwui))]
 fn install_view_renderer(env: &mut Environment, theme: &Rc<dyn WidgetTheme>) {
     let renderer = crate::view_renderer::HydrolysisViewRenderer::new(
         Rc::clone(theme),
@@ -921,7 +926,9 @@ fn session_mounts(
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     crate::theme::install_theme_tokens(&mut env, Some(&*style));
     let theme: Rc<dyn WidgetTheme> = style;
+    #[cfg(not(hydrolysis_hwui))]
     let fonts = crate::text::fonts::native_collection(&env);
+    #[cfg(not(hydrolysis_hwui))]
     fonts.clone().install(&mut env);
     let shortcuts = env
         .get::<MenuShortcutRegistry<super::AndroidTextEngine>>()
@@ -954,6 +961,7 @@ fn session_mounts(
         Arc::clone(&bridge.host_view),
     )?;
 
+    #[cfg(not(hydrolysis_hwui))]
     install_view_renderer(&mut env, &theme);
 
     let mut windows = VecDeque::from(windows);
@@ -1285,7 +1293,7 @@ impl AndroidSession {
         self.platform_view_focus_sync();
         let should_close = handle_input_events(&mut self.runtime, &self.env) || self.should_close();
         let mut deadline = advance_runtime(&mut self.runtime, &self.env, now);
-        if matches!(self.runtime.engine_next, cherenkov::Next::At { time, .. } if time <= now)
+        if matches!(self.runtime.engine_next, crate::renderer::Next::At { time, .. } if time <= now)
             && !self.runtime.is_hidden()
         {
             self.runtime.platform.request_redraw();
@@ -1363,7 +1371,7 @@ impl AndroidSession {
         );
         if reports_ui_idle(
             self.presented_once.get(),
-            wants_next_frame || matches!(self.runtime.engine_next, cherenkov::Next::At { .. }),
+            wants_next_frame || matches!(self.runtime.engine_next, crate::renderer::Next::At { .. }),
             self.runtime.is_hidden(),
         ) && !self.ready_logged.get()
         {
@@ -1377,7 +1385,7 @@ impl AndroidSession {
         // runs at or after the deadline, which is when the recognizer that
         // armed it clears itself.
         if !self.runtime.is_hidden()
-            && let cherenkov::Next::At { time, .. } = self.runtime.engine_next
+            && let crate::renderer::Next::At { time, .. } = self.runtime.engine_next
         {
             deadline = Some(deadline.map_or(time, |other| other.min(time)));
         }
@@ -1487,7 +1495,7 @@ impl AndroidSession {
     ) -> Result<(), String> {
         let visible = !self.runtime.is_hidden();
         let engine = match &self.runtime.engine_next {
-            cherenkov::Next::At { rate, .. } if visible => Some(rate.clone()),
+            crate::renderer::Next::At { rate, .. } if visible => Some(rate.clone()),
             _ => None,
         };
         let framework = visible

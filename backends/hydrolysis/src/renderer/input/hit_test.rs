@@ -239,7 +239,7 @@ pub struct ScrollTarget<E: crate::text::TextEngine> {
 pub struct NativeViewOcclusion {
     /// The hosted content's interaction key and runtime: focus requests
     /// for the key move platform focus into it.
-    #[cfg(hydrolysis_hosted)]
+    #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
     pub(crate) hosted: (InteractionKey, Rc<crate::hosted::HostedRuntime>),
     /// The subview's rect in window hit-test space.
     pub bounds: kurbo::Rect,
@@ -247,7 +247,7 @@ pub struct NativeViewOcclusion {
     /// paints above it.
     pub(crate) order: usize,
     /// Shared with the platform's view host. Rects are in window hit-test space.
-    #[cfg(hydrolysis_hosted)]
+    #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
     pub(crate) sink: crate::hosted::HostedOcclusion,
 }
 
@@ -1156,7 +1156,7 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
     /// Publishes, for each registered native subview, the rects where
     /// `WaterUI`-drawn interactive content sits above it.
     #[cfg_attr(
-        not(hydrolysis_hosted),
+        not(all(hydrolysis_hosted, hydrolysis_gpu)),
         expect(
             clippy::unused_self,
             clippy::missing_const_for_fn,
@@ -1164,9 +1164,9 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
         )
     )]
     fn publish_native_view_occlusion(&self, text_inputs: &[TextInputTarget<E>]) {
-        #[cfg(not(hydrolysis_hosted))]
+        #[cfg(not(all(hydrolysis_hosted, hydrolysis_gpu)))]
         let _ = text_inputs;
-        #[cfg(hydrolysis_hosted)]
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         for occlusion in &self.native_view_occlusions {
             let above = |order: usize, bounds: kurbo::Rect| {
                 (order > occlusion.order)
@@ -2788,7 +2788,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         #[cfg(feature = "accessibility")] node: Option<AccessibilityNodeId>,
         visible: bool,
     ) -> bool {
-        #[cfg(hydrolysis_hosted)]
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         if let Some(focus) = &focus {
             for (key, runtime) in self
                 .hit_test

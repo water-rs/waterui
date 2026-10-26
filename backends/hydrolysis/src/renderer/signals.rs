@@ -634,8 +634,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
     /// Content demand for the host's animation cadence. Input-release and
     /// navigation motion keep the fast range regardless of scalar fades.
-    #[cfg(any(target_os = "android", test))]
-    pub(crate) fn animation_refresh_range(&self) -> Option<cherenkov::RefreshRange> {
+    #[cfg(any(test, all(target_os = "android", not(hydrolysis_hwui))))]
+    pub(crate) fn animation_refresh_range(&self) -> Option<cherenkov_record::RefreshRange> {
         let now = self.frame_instant;
         if self.has_pending_interaction_releases(now)
             || self.navigation_animating(now)

@@ -1,13 +1,27 @@
 //! Hydrolysis backend.
 
+// An Android build needs one painter: `hwui` selects the platform `RenderNode`
+// target, `gpu` the Cherenkov GPU attachment (the two may combine). Neither
+// means no painter and no GPU deps for one to draw through.
+#[cfg(all(
+    android_platform,
+    not(hydrolysis_hwui),
+    not(feature = "gpu")
+))]
+compile_error!(
+    "hydrolysis on Android needs a painter: enable the `gpu` or `hwui` feature"
+);
+
 mod animation;
+#[cfg(not(hydrolysis_hwui))]
 mod engine;
 // Bare wasm reaches none of the env-driven window/console paths that call
 // these helpers.
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod env;
+#[cfg(hydrolysis_gpu)]
 mod gpu_view;
-#[cfg(hydrolysis_hosted)]
+#[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
 mod hosted;
 // The HWUI render target compiles for tests everywhere and for the Android
 // runtime under its feature.
@@ -15,10 +29,11 @@ mod hosted;
 pub mod hwui;
 mod localization;
 mod num_cast;
-#[cfg(hydrolysis_pipeline_cache)]
+#[cfg(all(hydrolysis_pipeline_cache, not(hydrolysis_hwui)))]
 mod pipeline_cache;
 mod platform;
 mod platform_view;
+#[cfg(not(hydrolysis_hwui))]
 mod readback;
 mod renderer;
 mod runner;
@@ -26,13 +41,14 @@ mod runner;
 pub mod testing;
 mod text;
 pub mod theme;
+#[cfg(not(hydrolysis_hwui))]
 mod view_renderer;
 mod widgets;
 
 // Interaction/runtime layer shared with other self-drawn backends.
 pub(crate) use waterui_backend_core::{gesture, scroll, time};
 
-#[cfg(hydrolysis_hosted)]
+#[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
 pub use hosted::{HostedContent, HostedObject, HostedOcclusion, HostedView};
 use std::time::Duration;
 use waterui_core::Environment;
@@ -69,7 +85,7 @@ pub trait Style: theme::WidgetTheme + 'static {
 }
 /// The alpha convention a [`HeadlessSnapshot`]'s pixels read — what the
 /// producing surface presented with.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
 pub use cherenkov_gpu::interop::OutputAlpha;
 /// The W3C UI Events key vocabulary this backend speaks, re-exported so hosts
 /// that synthesize key events use the same version of it.
@@ -78,37 +94,49 @@ pub use keyboard_types;
 pub use platform::BrowserWindow;
 #[cfg(hydrolysis_winit)]
 pub use platform::WinitWindow;
+#[cfg(not(hydrolysis_hwui))]
 pub use platform::{
-    BackEdge, BackNavigation, DeviceLoss, EdgeBounce, EdgeStretch, ExponentialDecay,
-    FlingDeceleration, InputEvent, KeyCode, KeyState, Modifiers, OffscreenGpuContext,
-    OffscreenSceneSurface, OffscreenSurface, OffscreenWindow, Overscroll, PlatformWindow,
-    PointerButton, PointerKind, ReleaseReturn, RubberBand, ScrollPhysics, ScrollPlatform,
-    SplineDeceleration, SpringBack, SurfaceError, SurfaceFrame, TextInputPurpose, TextInputState,
-    TouchPhase, TouchScrollConfig, WindowKeyboardArea, WindowSafeArea,
+    DeviceLoss, OffscreenGpuContext, OffscreenSceneSurface, OffscreenSurface, OffscreenWindow,
+    SurfaceFrame,
+};
+pub use platform::{
+    BackEdge, BackNavigation, EdgeBounce, EdgeStretch, ExponentialDecay, FlingDeceleration,
+    InputEvent, KeyCode, KeyState, Modifiers, Overscroll, PlatformWindow, PointerButton,
+    PointerKind, ReleaseReturn, RubberBand, ScrollPhysics, ScrollPlatform, SplineDeceleration,
+    SpringBack, SurfaceError, TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig,
+    WindowKeyboardArea, WindowSafeArea,
 };
 pub use platform_view::{
     PlatformView, PlatformViewPlacement, PlatformViewSink, PlatformViewSource,
 };
+#[cfg(not(hydrolysis_hwui))]
 pub use readback::{ReadbackError, readback_texture_rgba8};
 #[cfg(feature = "accessibility")]
 pub use renderer::accessibility::{AccessibilityActivationPointError, AccessibilityContentTypes};
-#[cfg(feature = "frame-profile")]
+#[cfg(all(feature = "frame-profile", not(hydrolysis_hwui)))]
 pub use renderer::{FrameStageTimes, GpuIdentity};
-pub use renderer::{HydroState, HydrolysisRenderTarget, HydrolysisRenderer, RenderContext};
+#[cfg(not(hydrolysis_hwui))]
+pub use renderer::HydrolysisRenderTarget;
+pub use renderer::{HydroState, HydrolysisRenderer, RenderContext};
 #[cfg(target_os = "android")]
 pub use runner::android;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub use runner::init_tracing;
 #[cfg(hydrolysis_run)]
 pub use runner::run;
-pub use runner::{FrameCounters, FramePhases, FrameProfile, SemanticPumpResult, SemanticRuntime};
-#[cfg(not(target_arch = "wasm32"))]
+pub use runner::{FrameCounters, FramePhases, FrameProfile};
+#[cfg(not(hydrolysis_hwui))]
+pub use runner::{SemanticPumpResult, SemanticRuntime};
+#[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
 pub use runner::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
 #[cfg(any(test, hydrolysis_hwui))]
 pub use text::HwuiTextEngine;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
 pub use text::fonts::native_collection;
-pub use text::{DeclaredFonts, FontFamilyResolution, ParleyEngine};
+pub use text::{DeclaredFonts, FontFamilyResolution};
+#[cfg(not(hydrolysis_hwui))]
+pub use text::ParleyEngine;
+#[cfg(not(hydrolysis_hwui))]
 pub use view_renderer::HydrolysisViewRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;

@@ -10,6 +10,7 @@
 mod declared;
 mod engine;
 mod input;
+#[cfg(not(hydrolysis_hwui))]
 mod parley_engine;
 mod service;
 #[cfg(test)]
@@ -30,5 +31,7 @@ mod hwui_engine;
 
 #[cfg(any(test, hydrolysis_hwui))]
 pub use hwui_engine::HwuiTextEngine;
+#[cfg(not(hydrolysis_hwui))]
 pub use parley_engine::ParleyEngine;
+#[cfg(not(hydrolysis_hwui))]
 pub use parley_engine::fonts;
