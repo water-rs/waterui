@@ -6630,7 +6630,11 @@ impl GpuRenderer {
         // a cached image that a later surface is about to reuse.
         for (surf, result) in pending.iter_mut().zip(&results) {
             if let Ok(lowered) = result {
-                surf.composed.clone_from(&lowered.composed);
+                if lowered.composed.is_empty() {
+                    surf.composed.clear();
+                } else {
+                    surf.composed.clone_from(&lowered.composed);
+                }
             }
         }
         results
