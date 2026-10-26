@@ -66,7 +66,7 @@ impl Formats {
         match target {
             Target::Part(_) | Target::Plane(_) => self.surface,
             Target::Scratch(_) => self.scratch,
-            Target::Projected(_) => super::super::WORKING_FORMAT,
+            Target::Projected(key) => key.format,
             Target::Backdrop { .. } => {
                 let copy_from = frame
                     .passes

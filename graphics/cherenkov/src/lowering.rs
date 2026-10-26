@@ -11,6 +11,7 @@ use smallvec::SmallVec;
 use crate::{BlendMode, Command, Dirty, DisplayList, FillRule, Group, RenderError, ShapeData};
 
 mod disjoint;
+pub mod memory;
 pub mod projective;
 pub mod rounded_box;
 pub mod scanline;
@@ -114,6 +115,19 @@ pub trait Compiler {
     /// # Errors
     /// Returns a backend error for unsupported or invalid content.
     fn group(&mut self, group: &Group, isolate: bool) -> Result<Option<Self::Op>, Self::Error>;
+    /// Preserve a nested picture boundary when the backend retains its raster.
+    /// Returning `None` keeps the ordinary inline command traversal.
+    ///
+    /// # Errors
+    /// Propagates the backend compiler's error.
+    fn picture(
+        &mut self,
+        _picture: &crate::Picture,
+        _ambient: Affine,
+    ) -> Result<Option<Self::Op>, Self::Error> {
+        Ok(None)
+    }
+
     /// Close a retained scope.
     fn end(&mut self) -> Self::Op;
 }
@@ -297,7 +311,18 @@ fn walk<C: Compiler>(
                 Some((*end as usize, ambient, compiler.group(group, isolate)?))
             }
             Command::Picture { picture, transform } => {
-                append(picture.display_list(), ambient * *transform, compiler, ops)?;
+                let inner = ambient * *transform;
+                let opener = compiler.picture(picture, inner)?;
+                let emitted = opener.is_some();
+                ops.extend(opener);
+                append(picture.display_list(), inner, compiler, ops)?;
+                if emitted {
+                    let close = u32::try_from(ops.len()).expect("op index fits u32");
+                    *ops[start as usize]
+                        .end_mut()
+                        .expect("picture opener has an end") = close;
+                    ops.push(compiler.end());
+                }
                 None
             }
             Command::Text { layout, .. } => panic!(

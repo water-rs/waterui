@@ -1049,3 +1049,68 @@ fn a_cell_paints_the_same_however_its_path_is_cut() -> Result<(), Box<dyn std::e
     Ok(())
 }
 }
+
+split_test! {
+/// Picture pixels survive fractional placement and viewport clipping; a
+/// density change rerasterizes, and a new immutable source replaces pixels.
+fn retained_picture_reuses_pixels_across_fractional_translation() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::kurbo::Affine;
+    use cherenkov::Picture;
+    use nami::Binding;
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    surface.clear_color(CLEAR);
+    let placement = Binding::container(Affine::IDENTITY);
+    let picture = Picture::record(|c| c.fill(overhang(), RED));
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.picture(&picture, placement.clone());
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(engine.stats().paths_rasterized, 1);
+    placement.set(Affine::rotate(0.4));
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(engine.stats().paths_rasterized, 0, "rotation must not increase raster density");
+    for x in [0.25, -10.5, 8.125] {
+        placement.set(Affine::translate((x, 0.375)));
+        wait!(engine.render(cherenkov::FrameTime::now()))?;
+        assert_eq!(engine.stats().paths_rasterized, 0, "picture pixels should move without new coverage");
+        let pixels = wait!(surface.readback())?;
+        assert!(px(&pixels, 20, 20)[0] > 0.99);
+        assert!(px(&pixels, 60, 60)[0] < 0.01);
+    }
+    // A changing parent recording must not hide the stable child's cache.
+    for x in [1.25, -3.5] {
+        let wrapper = Picture::record(|c| c.picture(&picture, Affine::translate((x, 0.0))));
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|c| c.picture(&wrapper, Affine::IDENTITY)));
+        });
+        wait!(engine.render(cherenkov::FrameTime::now()))?;
+        assert_eq!(engine.stats().paths_rasterized, 0, "a new parent must reuse its stable child");
+    }
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| c.picture(&picture, placement.clone())));
+    });
+    for scale in [0.25, 2.0] {
+        placement.set(Affine::scale(scale));
+        wait!(engine.render(cherenkov::FrameTime::now()))?;
+        assert_eq!(engine.stats().paths_rasterized, 1, "new density needs new pixels");
+    }
+    let green = Picture::record(|c| c.fill(overhang(), WorkingColor::new([0.0, 1.0, 0.0, 1.0])));
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| c.picture(&green, Affine::IDENTITY)));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let pixels = wait!(surface.readback())?;
+    assert!(px(&pixels, 20, 20)[1] > 0.99, "new source must replace retained red pixels");
+    let hdr = Picture::record(|c| c.fill(overhang(), WorkingColor::new([2.0, 0.1, 0.1, 1.0])));
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| c.picture(&hdr, Affine::IDENTITY)));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let pixels = wait!(surface.readback())?;
+    assert!(px(&pixels, 20, 20)[0] > 1.99, "HDR picture storage must retain superwhite values");
+    Ok(())
+}
+}

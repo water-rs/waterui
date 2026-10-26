@@ -200,6 +200,7 @@ fn path_bounds(outline: &Outline, list: &DisplayList) -> Rect {
 }
 
 fn bounds(
+    space: Affine,
     ops: &[Op],
     list: &DisplayList,
     fonts: &FxHashMap<u64, glyph::FontData>,
@@ -269,7 +270,7 @@ fn bounds(
                 margins.push(kurbo::Vec2::new(a.hypot(c) * margin, b.hypot(d) * margin));
                 continue;
             }
-            Op::BeginClip { .. } => {
+            Op::BeginPicture { .. } | Op::BeginClip { .. } => {
                 margins.push(kurbo::Vec2::ZERO);
                 continue;
             }
@@ -289,20 +290,37 @@ fn bounds(
             continue;
         }
         let margin: kurbo::Vec2 = margins.iter().copied().sum();
+        // Compose transforms before taking an axis-aligned bound: bounding
+        // a rotation and then its inverse inflates even an unchanged shape.
+        let [a, b, c, d, _, _] = space.as_coeffs();
         union(
             &mut result,
-            local.transform_rect_bbox(rect).inflate(margin.x, margin.y),
+            (space * local).transform_rect_bbox(rect).inflate(
+                c.abs().mul_add(margin.y, a.abs() * margin.x),
+                d.abs().mul_add(margin.y, b.abs() * margin.x),
+            ),
         );
     }
     Ok(result)
 }
 
+pub fn domain(
+    ops: &[Op],
+    list: &DisplayList,
+    fonts: &FxHashMap<u64, glyph::FontData>,
+    density: f64,
+    max: u32,
+) -> Result<Option<Domain>, RenderError> {
+    domain_in(Affine::IDENTITY, ops, list, fonts, density, max)
+}
+
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "finite positive extents bounded by the device limit"
+    reason = "finite extents bounded by the device limit"
 )]
-pub fn domain(
+pub fn domain_in(
+    space: Affine,
     ops: &[Op],
     list: &DisplayList,
     fonts: &FxHashMap<u64, glyph::FontData>,
@@ -312,7 +330,7 @@ pub fn domain(
     if !density.is_finite() || density <= 0.0 {
         return Ok(None);
     }
-    let Some(bounds) = bounds(ops, list, fonts)? else {
+    let Some(bounds) = bounds(space, ops, list, fonts)? else {
         return Ok(None);
     };
     if bounds.is_zero_area() {

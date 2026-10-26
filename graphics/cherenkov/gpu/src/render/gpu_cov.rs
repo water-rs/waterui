@@ -111,6 +111,8 @@ struct Entry {
     /// it into a submission die at the next `begin_frame`, so no frame
     /// can replay a block whose kernels never ran.
     generated: bool,
+    /// At least one ordinary draw needs this coverage beyond picture generation.
+    retained: bool,
     /// While a compaction's copies are unrecorded, the block base in
     /// `compaction`'s source buffer where this entry's valid content
     /// lives.
@@ -138,6 +140,8 @@ struct CoverageArena {
     words: u32,
     /// Bump frontier, always 8-word aligned.
     tail: u32,
+    /// Layout changed; allocate its final capacity at `ensure`.
+    pending: bool,
     /// Bumped on every buffer replacement; `bind0` is stale whenever it
     /// differs from the generation `bind0` was built against.
     generation: u64,
@@ -149,6 +153,7 @@ impl CoverageArena {
             buffer: None,
             words: 0,
             tail: 0,
+            pending: false,
             generation: 0,
         }
     }
@@ -167,6 +172,7 @@ impl CoverageArena {
         self.buffer = None;
         self.words = 0;
         self.tail = 0;
+        self.pending = false;
         self.generation += 1;
     }
 }
@@ -282,6 +288,8 @@ pub struct GpuCoverage {
     args_layout: Option<wgpu::BindGroupLayout>,
     pipes: Option<Pipes>,
     buffers: Option<Buffers>,
+    /// Last generation working set, reserved before optional picture admission.
+    generation_bytes: u64,
 }
 
 /// A contiguous range of misses sharing one temporary buffer allocation.
@@ -396,6 +404,7 @@ impl GpuCoverage {
             args_layout: None,
             pipes: None,
             buffers: None,
+            generation_bytes: 0,
         }
     }
 
@@ -446,22 +455,81 @@ impl GpuCoverage {
     /// is still held next to the new one until the submit lands.
     pub fn bytes(&self) -> u64 {
         self.uploads.iter().map(wgpu::Buffer::size).sum::<u64>()
-            + self.buffers.as_ref().map_or(0, |b| {
-                b.params.size()
-                    + b.elements.size()
-                    + b.paths.size()
-                    + b.segments.size()
-                    + b.coverage.size()
-                    + b.strokes.size()
-                    + b.args.size()
-                    + b.work.size()
-            })
+            + self.generation_resident_bytes()
             + self.arena.buffer.as_ref().map_or(0, wgpu::Buffer::size)
             + self
                 .compaction
                 .as_ref()
+                .filter(|compaction| self.arena.buffer.as_ref() != Some(&compaction.source))
                 .map_or(0, |compaction| compaction.source.size())
             + self.draws_buffer.as_ref().map_or(0, wgpu::Buffer::size)
+    }
+
+    /// Resident storage plus the allocations the accepted frame will need.
+    /// Admission uses the same layout as ensure, before creating buffers.
+    pub fn planned_bytes(&self) -> u64 {
+        let mut bytes = self.bytes();
+        if !self.has_draws() {
+            return bytes;
+        }
+        if self.arena.pending {
+            bytes += u64::from(self.arena.words) * 4;
+        }
+        let draws = (self.draws.len() as u64).max(1) * u64::from(ARGS_WORDS) * 4;
+        bytes += draws.saturating_sub(self.draws_buffer.as_ref().map_or(0, wgpu::Buffer::size));
+        if self.has_misses() {
+            let sizes = allocation_sizes(self.generation_sizes());
+            let resident = self.buffers.as_ref().map_or([0; 8], |b| {
+                [
+                    b.coverage.size(),
+                    b.elements.size(),
+                    b.strokes.size(),
+                    b.paths.size(),
+                    b.segments.size(),
+                    b.args.size(),
+                    b.work.size(),
+                    b.params.size(),
+                ]
+            });
+            let required = sizes
+                .into_iter()
+                .chain([PARAMS_BLOCKS * u64::from(PARAMS_STRIDE)]);
+            bytes += required
+                .zip(resident)
+                .map(|(need, have)| need.saturating_sub(have))
+                .sum::<u64>();
+        }
+        bytes
+    }
+
+    fn generation_sizes(&self) -> [u64; 7] {
+        let mut sizes = [0; 7];
+        for &batch in self.batches.iter().chain(std::iter::once(&self.batch)) {
+            for (peak, size) in sizes.iter_mut().zip(BatchPlan::new(batch).sizes) {
+                *peak = (*peak).max(size);
+            }
+        }
+        sizes
+    }
+
+    fn generation_resident_bytes(&self) -> u64 {
+        self.buffers.as_ref().map_or(0, |b| {
+            b.params.size()
+                + b.elements.size()
+                + b.paths.size()
+                + b.segments.size()
+                + b.coverage.size()
+                + b.strokes.size()
+                + b.args.size()
+                + b.work.size()
+        })
+    }
+
+    /// Released generation buffers will be needed again when picture misses
+    /// rasterize. Do not offer their working set to optional image retention.
+    pub fn generation_reservation(&self) -> u64 {
+        self.generation_bytes
+            .saturating_sub(self.generation_resident_bytes())
     }
 
     /// Retained host input/draw-list allocation capacities.
@@ -556,7 +624,7 @@ impl GpuCoverage {
         clippy::too_many_lines,
         reason = "hit arm plus the miss's bound and record"
     )]
-    pub fn draw(&mut self, device: &wgpu::Device, draw: &GpuDraw) -> Result<u32, RenderError> {
+    pub fn draw(&mut self, draw: &GpuDraw, retain: bool) -> Result<u32, RenderError> {
         let &GpuDraw {
             key,
             shift,
@@ -566,6 +634,7 @@ impl GpuCoverage {
             path: ref prepared,
         } = draw;
         if let Some(entry) = self.entries.get_mut(&key) {
+            entry.retained |= retain;
             if entry.last_used != self.epoch {
                 self.undrawn_bytes -= u64::from(entry.words) * 4;
                 entry.last_used = self.epoch;
@@ -619,7 +688,7 @@ impl GpuCoverage {
         let geometry_slots = u32::try_from(bound.instance_cap).expect("instance cap fits u32");
         let texels =
             u32::try_from(bound.texels.div_ceil(4) + bound.cell_cap).expect("texel words fit u32");
-        let (base, texel_base, block_words) = self.alloc_block(device, geometry_slots, texels)?;
+        let (base, texel_base, block_words) = self.alloc_block(geometry_slots, texels)?;
         let grid_base = self.batch.totals.columns;
         let [xx, yx, xy, yy, tx, ty] = raster.as_coeffs();
         let mut words = [0u32; PATH_WORDS];
@@ -695,6 +764,7 @@ impl GpuCoverage {
                 geometry_slots,
                 record,
                 generated: false,
+                retained: retain,
                 src: None,
                 last_used: self.epoch,
             },
@@ -719,10 +789,10 @@ impl GpuCoverage {
     /// buffer, whether or not any draw misses. A frame without GPU
     /// draws records no encoder work to carry the copies, so its
     /// compaction waits for the next frame that has some.
-    pub fn settle(&mut self, device: &wgpu::Device, draws_coverage: bool) {
+    pub fn settle(&mut self, draws_coverage: bool) {
         self.evict_undrawn();
         if draws_coverage && u64::from(self.arena.tail) > 2 * self.live_words {
-            self.compact(device, 0)
+            self.compact(0)
                 .expect("the live blocks fit the arena they came from");
         }
     }
@@ -753,7 +823,6 @@ impl GpuCoverage {
     /// bump frontier cannot serve it.
     fn alloc_block(
         &mut self,
-        device: &wgpu::Device,
         geometry_slots: u32,
         texels: u32,
     ) -> Result<(u32, u32, u32), RenderError> {
@@ -762,7 +831,7 @@ impl GpuCoverage {
         // A block that does not fit at the tail rebuilds the live blocks
         // into a fresh buffer with room for it (§3.3).
         if self.arena.tail + block_words > self.arena.words {
-            self.compact(device, block_words)?;
+            self.compact(block_words)?;
         }
         let base = self.arena.tail;
         self.arena.tail += block_words;
@@ -774,12 +843,12 @@ impl GpuCoverage {
         ))
     }
 
-    /// Repack every live entry into a fresh arena buffer sized to the
+    /// Plan every live entry in a fresh arena buffer sized to the
     /// live words plus this frame's immediate need, with a quarter of
     /// that as headroom (§3.3). Generated entries
     /// schedule one copy each into the coverage prologue; ungenerated
     /// ones redirect their dispatch record to the new block.
-    fn compact(&mut self, device: &wgpu::Device, extra: u32) -> Result<(), RenderError> {
+    fn compact(&mut self, extra: u32) -> Result<(), RenderError> {
         let mut order: Vec<CoverageKey> = self.entries.keys().copied().collect();
         order.sort_by_key(|key| self.entries[key].base);
         let mut tail = 0u32;
@@ -806,14 +875,6 @@ impl GpuCoverage {
             .min(self.limit.words())
             .max(16)
             * 4;
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("coverage arena"),
-            size,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         // Generated content's source: an unrecorded compaction's buffer
         // still holds it, otherwise the live arena does.
         let source = self
@@ -844,10 +905,9 @@ impl GpuCoverage {
         self.compaction = source
             .filter(|_| !copies.is_empty())
             .map(|source| Compaction { source, copies });
-        self.arena.buffer = Some(buffer);
         self.arena.words = u32::try_from(size / 4).expect("arena words fit u32");
         self.arena.tail = tail;
-        self.arena.generation += 1;
+        self.arena.pending = true;
         Ok(())
     }
 
@@ -906,10 +966,11 @@ impl GpuCoverage {
         Ok(())
     }
 
-    /// Size the draws buffer to the frame's draws. The arena itself is
-    /// already sized — commit-time allocations create or compact it —
-    /// and its generation tells the renderer whether `bind0` is stale.
-    pub fn ensure(&mut self, device: &wgpu::Device) {
+    /// Allocate the planned arena and size draw/compute buffers before optional
+    /// images are admitted. Multiple commit-time repacks allocate only once.
+    /// Its generation tells the renderer whether `bind0` is stale.
+    pub fn ensure(&mut self, device: &wgpu::Device) -> Result<(), RenderError> {
+        self.materialize_arena(device);
         self.draws_buffer = Some(sized_buffer(
             device,
             self.draws_buffer.as_ref(),
@@ -923,9 +984,57 @@ impl GpuCoverage {
                     wgpu::BufferUsages::empty()
                 },
         ));
+        if self.has_misses() {
+            self.size_buffers(device, self.generation_sizes())?;
+        }
+        Ok(())
+    }
+
+    fn materialize_arena(&mut self, device: &wgpu::Device) {
+        if self.arena.pending {
+            self.arena.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("coverage arena"),
+                size: u64::from(self.arena.words) * 4,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.arena.pending = false;
+            self.arena.generation += 1;
+        }
+    }
+
+    /// All surfaces have encoded their draws. Picture-only coverage can leave
+    /// now: submitted commands own the old arena until its readers complete.
+    pub fn finish_pictures(&mut self) {
+        let before = self.entries.len();
+        self.entries.retain(|_, entry| entry.retained);
+        if self.entries.len() == before {
+            return;
+        }
+        self.live_words = self
+            .entries
+            .values()
+            .map(|entry| u64::from(entry.words))
+            .sum();
+        self.undrawn_bytes = self
+            .entries
+            .values()
+            .filter(|entry| entry.last_used < self.epoch)
+            .map(|entry| u64::from(entry.words) * 4)
+            .sum();
+        if self.entries.is_empty() {
+            self.compaction = None;
+            self.arena.trim();
+        }
+        // Mixed arenas reuse their existing storage. The next commit's
+        // ordinary 2x compaction rule reclaims these holes without allocating
+        // and copying a fresh arena after every picture generation frame.
     }
 
     pub fn trim(&mut self) {
+        self.generation_bytes = 0;
         self.entries.clear();
         self.compaction = None;
         self.live_words = 0;
@@ -948,9 +1057,9 @@ impl GpuCoverage {
         encoder: &mut wgpu::CommandEncoder,
         delivery: crate::render::shaders::ShaderDelivery,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
-    ) -> Result<(), RenderError> {
+    ) {
         if self.encoded || !self.has_draws() {
-            return Ok(());
+            return;
         }
         self.encoded = true;
         let arena = self.arena.buffer().expect("coverage arena sized").clone();
@@ -967,14 +1076,6 @@ impl GpuCoverage {
                     writes.end_of_pass_write_index,
                 )
             });
-            let mut sizes = [0; 7];
-            for &batch in self.batches.iter().chain(std::iter::once(&self.batch)) {
-                let plan = BatchPlan::new(batch);
-                for (peak, size) in sizes.iter_mut().zip(plan.sizes) {
-                    *peak = (*peak).max(size);
-                }
-            }
-            self.size_buffers(device, sizes)?;
             for index in 0..=self.batches.len() {
                 let batch = self.batches.get(index).copied().unwrap_or(self.batch);
                 let timestamps = timestamp_writes.map(|(query_set, beginning, end)| {
@@ -1008,7 +1109,6 @@ impl GpuCoverage {
                 );
             }
         }
-        Ok(())
     }
 
     fn size_buffers(&mut self, device: &wgpu::Device, sizes: [u64; 7]) -> Result<(), RenderError> {
@@ -1017,6 +1117,7 @@ impl GpuCoverage {
                 "GPU coverage input exceeds device buffer limit",
             ));
         }
+        let sizes = allocation_sizes(sizes);
         let previous = self.buffers.as_ref();
         // Tests read the buffers back; the runtime never does.
         let storage = wgpu::BufferUsages::STORAGE
@@ -1038,7 +1139,7 @@ impl GpuCoverage {
                 device,
                 previous.map(|b| &b.elements),
                 "cov elements",
-                sizes[1].max(48),
+                sizes[1],
                 storage,
             ),
             paths: sized_buffer(
@@ -1052,7 +1153,7 @@ impl GpuCoverage {
                 device,
                 previous.map(|b| &b.segments),
                 "cov segments",
-                sizes[4].max(16),
+                sizes[4],
                 storage,
             ),
             coverage: sized_buffer(
@@ -1066,7 +1167,7 @@ impl GpuCoverage {
                 device,
                 previous.map(|b| &b.strokes),
                 "cov strokes",
-                sizes[2].next_multiple_of(16).max(16),
+                sizes[2],
                 storage,
             ),
             args: sized_buffer(
@@ -1084,6 +1185,7 @@ impl GpuCoverage {
                 storage,
             ),
         });
+        self.generation_bytes = self.generation_resident_bytes();
 
         Ok(())
     }
@@ -1838,6 +1940,13 @@ const fn radix_passes(key_end: u32) -> u32 {
     key_end.bit_width().div_ceil(4)
 }
 
+fn allocation_sizes(mut sizes: [u64; 7]) -> [u64; 7] {
+    sizes[1] = sizes[1].max(48);
+    sizes[2] = sizes[2].next_multiple_of(16).max(16);
+    sizes[4] = sizes[4].max(16);
+    sizes
+}
+
 fn sized_buffer(
     device: &wgpu::Device,
     previous: Option<&wgpu::Buffer>,
@@ -1917,10 +2026,7 @@ mod tests {
         let mut frame = GpuCoverage::new(&device, u64::MAX);
         frame.begin_frame();
         frame
-            .draw(
-                &device,
-                &GpuDraw::new(1, 0, Affine::IDENTITY, path, (64, 64)),
-            )
+            .draw(&GpuDraw::new(1, 0, Affine::IDENTITY, path, (64, 64)), true)
             .expect("dense path fits");
         let plan = BatchPlan::new(frame.batch);
         assert!(
@@ -1960,8 +2066,8 @@ mod tests {
         frame.begin_frame();
         frame
             .draw(
-                &device,
                 &GpuDraw::new(1, 0, Affine::IDENTITY, large_path, (4096, 4096)),
+                true,
             )
             .expect("sparse 4096-square capacity");
         assert!(frame.batch.bound.total() < GPU_COV_MAX_BYTES);
@@ -1970,8 +2076,8 @@ mod tests {
         assert!(
             frame
                 .draw(
-                    &device,
-                    &GpuDraw::new(2, 0, Affine::IDENTITY, huge_path, (1_000_000, 1_000_000)),
+                    &GpuDraw::new(2, 0, Affine::IDENTITY, huge_path, (1_000_000, 1_000_000),),
+                    true
                 )
                 .is_err()
         );
@@ -2001,8 +2107,8 @@ mod tests {
         probe.begin_frame();
         probe
             .draw(
-                &device,
                 &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096)),
+                true,
             )
             .expect("fits the device's own limits");
         // A device whose binding limit sits below the largest single
@@ -2016,8 +2122,8 @@ mod tests {
         assert!(
             frame
                 .draw(
-                    &device,
-                    &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096)),
+                    &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096),),
+                    true
                 )
                 .is_err(),
             "draw must refuse what record_prologue would reject"
@@ -2034,8 +2140,8 @@ mod tests {
         frame.begin_frame();
         frame
             .draw(
-                &device,
                 &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096)),
+                true,
             )
             .expect("every buffer fits the binding limit");
     }
@@ -2104,24 +2210,32 @@ mod tests {
             "both retained outputs fit"
         );
         frame.begin_frame();
-        frame.draw(&device, first).expect("first road fits");
+        frame.draw(first, false).expect("first road fits");
         frame
-            .draw(&device, second)
+            .draw(second, true)
             .expect("individually admitted roads share bounded scratch");
         assert_eq!(frame.batches.len(), 1, "two dispatch batches");
         frame.begin_frame();
         frame
-            .draw(&device, first)
+            .draw(first, false)
             .expect("first road after abandoned commit");
         frame
-            .draw(&device, second)
+            .draw(second, true)
             .expect("second road after abandoned commit");
         assert_eq!(frame.generated(), 2, "unsubmitted results are regenerated");
-        frame.ensure(&device);
+        assert!(
+            frame.arena().is_none(),
+            "planning allocates no intermediate arenas"
+        );
+        let planned_bytes = frame.planned_bytes();
+        frame.ensure(&device).expect("coverage buffers fit");
+        assert_eq!(
+            frame.bytes(),
+            planned_bytes,
+            "admission budgets actual buffer allocations"
+        );
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        frame
-            .record_prologue(&device, &queue, &mut encoder, delivery, None)
-            .expect("batched prologue");
+        frame.record_prologue(&device, &queue, &mut encoder, delivery, None);
         let arena = frame.arena().expect("retained arena");
         let first_entry = &frame.entries[&first.key];
         let second_entry = &frame.entries[&second.key];
@@ -2145,21 +2259,33 @@ mod tests {
                 assert_eq!(words[2][index * ARGS_WORDS as usize + offset], count);
             }
         }
+        let generation_bytes = frame.generation_resident_bytes();
+        assert!(generation_bytes > 0);
+        assert_eq!(
+            frame.generation_reservation(),
+            0,
+            "resident scratch is already counted"
+        );
         frame.submitted();
+        assert_eq!(frame.generation_reservation(), generation_bytes);
         assert!(
             frame.buffers.is_none(),
             "idle frames release generation scratch"
         );
         assert_eq!(frame.uploads.len(), 0);
         frame.begin_frame();
-        frame.draw(&device, first).expect("first cache hit");
-        frame.draw(&device, second).expect("second cache hit");
+        frame.draw(first, false).expect("first cache hit");
+        frame.draw(second, true).expect("second cache hit");
         assert!(!frame.has_misses(), "both batches remain cached");
-        frame.ensure(&device);
+        let arena_generation = frame.arena_generation();
+        let resident = frame.bytes();
+        frame.compact(0).expect("first planned repack");
+        frame.compact(0).expect("second planned repack");
+        assert_eq!(frame.arena_generation(), arena_generation);
+        assert_eq!(frame.bytes(), resident, "copy source is counted once");
+        frame.ensure(&device).expect("coverage buffers fit");
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        frame
-            .record_prologue(&device, &queue, &mut encoder, delivery, None)
-            .expect("cached prologue");
+        frame.record_prologue(&device, &queue, &mut encoder, delivery, None);
         let replay = read_back(
             &device,
             &queue,
@@ -2172,6 +2298,40 @@ mod tests {
             frame.buffers.is_none(),
             "replay releases generation scratch"
         );
+        frame.finish_pictures();
+        assert!(!frame.entries.contains_key(&first.key));
+        frame.begin_frame();
+        frame
+            .draw(second, false)
+            .expect("ordinary entry shared with a picture");
+        assert!(!frame.has_misses());
+        frame.settle(true);
+        frame.ensure(&device).expect("ordinary coverage fits");
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        frame.record_prologue(&device, &queue, &mut encoder, delivery, None);
+        let survivor = &frame.entries[&second.key];
+        let surviving = read_back(
+            &device,
+            &queue,
+            &[(
+                frame.arena().expect("ordinary arena"),
+                u64::from(survivor.base) * 4,
+                4,
+            )],
+            encoder,
+        );
+        assert_eq!(
+            surviving[0], words[1],
+            "ordinary coverage survives retirement"
+        );
+        frame.submitted();
+        frame.finish_pictures();
+        assert!(
+            frame.entries.contains_key(&second.key),
+            "ordinary sharing remains retained"
+        );
+        frame.trim();
+        assert_eq!(frame.generation_reservation(), 0);
     }
 
     fn device() -> Option<wgpu::Device> {
@@ -2534,11 +2694,10 @@ mod tests {
                 // the kernels' bbox lies in.
                 let draw = GpuDraw::new(content, 0, raster, gpu, (1024, 1024));
                 frame
-                    .draw(&device, &draw)
+                    .draw(&draw, true)
                     .unwrap_or_else(|error| panic!("case {index} draws: {error:?}"));
                 kept.push((index, draw.path));
             }
-            frame.ensure(&device);
             // A NaN tail past `seg_total` catches a chord written beyond
             // the last path's segments: `dispatch` reuses a large enough
             // buffer as is, so the tail sits inside the bound buffer.
@@ -2573,11 +2732,10 @@ mod tests {
                 args: stub("cov args"),
                 work: stub("cov work"),
             });
+            frame.ensure(&device).expect("coverage buffers fit");
             let mut encoder =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-            frame
-                .record_prologue(&device, &queue, &mut encoder, delivery, None)
-                .expect("the prologue records");
+            frame.record_prologue(&device, &queue, &mut encoder, delivery, None);
             let buffers = frame.buffers.as_ref().expect("buffers sized");
             // Every slot starts as NaN, so an unwritten chord cannot pass as
             // geometry.

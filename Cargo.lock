@@ -6785,7 +6785,7 @@ dependencies = [
 [[package]]
 name = "naga"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#7f2d58488ff7fca11b5b06a1b8f6541e4c0049c1"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#59bd2fd583ed077030d3ed48db92ecf6e7b9b1e6"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -6810,7 +6810,7 @@ dependencies = [
 [[package]]
 name = "naga-types"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#7f2d58488ff7fca11b5b06a1b8f6541e4c0049c1"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#59bd2fd583ed077030d3ed48db92ecf6e7b9b1e6"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap 2.14.2",
@@ -14035,7 +14035,7 @@ dependencies = [
 [[package]]
 name = "wgpu"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#7f2d58488ff7fca11b5b06a1b8f6541e4c0049c1"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#59bd2fd583ed077030d3ed48db92ecf6e7b9b1e6"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.2",
@@ -14064,7 +14064,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#7f2d58488ff7fca11b5b06a1b8f6541e4c0049c1"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#59bd2fd583ed077030d3ed48db92ecf6e7b9b1e6"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -14098,7 +14098,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-apple"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#7f2d58488ff7fca11b5b06a1b8f6541e4c0049c1"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#59bd2fd583ed077030d3ed48db92ecf6e7b9b1e6"
 dependencies = [
  "wgpu-hal",
 ]
@@ -14106,7 +14106,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-emscripten"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#7f2d58488ff7fca11b5b06a1b8f6541e4c0049c1"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#59bd2fd583ed077030d3ed48db92ecf6e7b9b1e6"
 dependencies = [
  "wgpu-hal",
 ]
@@ -14114,7 +14114,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-wasm"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#7f2d58488ff7fca11b5b06a1b8f6541e4c0049c1"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#59bd2fd583ed077030d3ed48db92ecf6e7b9b1e6"
 dependencies = [
  "wgpu-hal",
 ]
@@ -14122,7 +14122,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-windows-linux-android"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#7f2d58488ff7fca11b5b06a1b8f6541e4c0049c1"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#59bd2fd583ed077030d3ed48db92ecf6e7b9b1e6"
 dependencies = [
  "wgpu-hal",
 ]
@@ -14150,7 +14150,7 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#7f2d58488ff7fca11b5b06a1b8f6541e4c0049c1"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#59bd2fd583ed077030d3ed48db92ecf6e7b9b1e6"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -14205,7 +14205,7 @@ dependencies = [
 [[package]]
 name = "wgpu-naga-bridge"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#7f2d58488ff7fca11b5b06a1b8f6541e4c0049c1"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#59bd2fd583ed077030d3ed48db92ecf6e7b9b1e6"
 dependencies = [
  "naga",
  "wgpu-types",
@@ -14225,7 +14225,7 @@ dependencies = [
 [[package]]
 name = "wgpu-types"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#7f2d58488ff7fca11b5b06a1b8f6541e4c0049c1"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#59bd2fd583ed077030d3ed48db92ecf6e7b9b1e6"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
