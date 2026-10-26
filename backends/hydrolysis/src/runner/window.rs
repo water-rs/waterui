@@ -4,7 +4,9 @@
 use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::animation::PerpetualAnimation;
-use crate::platform::{GpuSurfaceWindow, PresentationSurface as _};
+use crate::platform::GpuSurfaceWindow;
+#[cfg(not(target_os = "android"))]
+use crate::platform::PresentationSurface as _;
 use crate::renderer::material::{Blending, WithinWindowLevel};
 #[cfg(any(target_os = "android", test))]
 use std::sync::{
@@ -60,10 +62,10 @@ impl FrameMode {
     }
 }
 
-pub(super) struct RuntimeWindow<P: PlatformWindow> {
+pub(super) struct RuntimeWindow<P: PlatformWindow, E: crate::text::TextEngine> {
     pub(super) window: Window,
     pub(super) platform: P,
-    pub(super) renderer: HydrolysisRenderer,
+    pub(super) renderer: HydrolysisRenderer<E>,
     pub(super) mode: FrameMode,
     /// The pump is parked: the host reports the window cannot be seen
     /// (minimized, occluded, backgrounded or surface-less). While parked no
@@ -103,15 +105,16 @@ pub(super) struct RuntimeWindow<P: PlatformWindow> {
     _declaration_watches: Vec<Retain>,
 }
 
-// `RuntimeWindow` is generic over the host-services contract; the GPU
-// painter's presentation attachment is the `GpuSurfaceWindow` refinement
-// below, so the construction site of a GPU-pumped window is a
-// compile-time painter boundary.
-impl<P: GpuSurfaceWindow> RuntimeWindow<P> {
+// `RuntimeWindow` is generic over the host-services contract, so this
+// shared constructor sees only `PlatformWindow`; a GPU painter refines it
+// with `new_gpu`, which installs the surface redraw handle before the
+// window's first frame — the construction site of a GPU-pumped window is
+// a compile-time painter boundary.
+impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
     pub(super) fn new(
         window: Window,
         platform: P,
-        mut renderer: HydrolysisRenderer,
+        renderer: HydrolysisRenderer<E>,
         render_diagnostics_config: RenderDiagnosticsConfig,
     ) -> Self {
         // The window's host wake, installed before any subscription can
@@ -120,9 +123,6 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P> {
         // action — fires it on the none→some edge and schedules the frame
         // the request needs, by construction.
         renderer.install_host_wake(platform.frame_wake());
-        if let Some(handle) = platform.gpu_surface_redraw_handle() {
-            renderer.set_host_redraw_handle(handle);
-        }
         let declaration_watches = subscribe_window_declaration_signals(&window, &renderer);
         Self {
             window,
@@ -140,7 +140,24 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P> {
     }
 }
 
-impl<P: PlatformWindow> RuntimeWindow<P> {
+impl<P: GpuSurfaceWindow> RuntimeWindow<P, crate::text::ParleyEngine> {
+    /// The GPU painter's window: the shared construction plus the surface
+    /// redraw handle, installed before the window's first frame.
+    pub(super) fn new_gpu(
+        window: Window,
+        platform: P,
+        renderer: HydrolysisRenderer<crate::text::ParleyEngine>,
+        config: RenderDiagnosticsConfig,
+    ) -> Self {
+        let mut runtime = Self::new(window, platform, renderer, config);
+        if let Some(handle) = runtime.platform.gpu_surface_redraw_handle() {
+            runtime.renderer.set_host_redraw_handle(handle);
+        }
+        runtime
+    }
+}
+
+impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
     /// Schedules a refresh of the retained window tree on the next pump (the first
     /// pump builds the tree).
     pub(super) const fn request_refresh(&mut self) {
@@ -292,8 +309,8 @@ impl FrameTransaction {
     /// already did toward its continuation (water-rs/waterui#2325). A window
     /// that cannot present consumes nothing — its requests stay armed for
     /// the restore frame.
-    pub(super) fn take_render_request<P: PlatformWindow>(
-        runtime: &mut RuntimeWindow<P>,
+    pub(super) fn take_render_request<P: PlatformWindow, E: crate::text::TextEngine>(
+        runtime: &mut RuntimeWindow<P, E>,
         surface_attached: bool,
         take_redraw_pending: impl FnOnce(&P) -> bool,
     ) -> bool {
@@ -358,8 +375,8 @@ pub(super) const fn reports_ui_idle(
 /// The content probe costs a whole-tree measure pass, so it is only taken
 /// when the answer will be used: never for a window that does not act on
 /// limits at all, and never when the app pins the minimum itself.
-pub(super) fn apply_window_size_limits<P: PlatformWindow>(
-    runtime: &mut RuntimeWindow<P>,
+pub(super) fn apply_window_size_limits<P: PlatformWindow, E: crate::text::TextEngine>(
+    runtime: &mut RuntimeWindow<P, E>,
     env: &Environment,
 ) {
     if !runtime.platform.applies_size_limits() {
@@ -491,8 +508,8 @@ fn clamp_axis(value: f32, min: Option<f32>, max: Option<f32>) -> f32 {
     value.clamp(lo, max.unwrap_or(f32::INFINITY).max(lo))
 }
 
-pub(super) const fn schedule_animation_update<P: PlatformWindow>(
-    runtime: &mut RuntimeWindow<P>,
+pub(super) const fn schedule_animation_update<P: PlatformWindow, E: crate::text::TextEngine>(
+    runtime: &mut RuntimeWindow<P, E>,
     animations_active: bool,
 ) {
     if !animations_active {
@@ -626,8 +643,8 @@ impl FrameProfile {
 /// Wakes the platform window after an input event: any content change —
 /// structural rebuild, reactive patch, scroll offset, scrollbar drag — runs a
 /// full refresh frame; only a no-op event falls through to a bare re-present.
-pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow>(
-    runtime: &mut RuntimeWindow<P>,
+pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow, E: crate::text::TextEngine>(
+    runtime: &mut RuntimeWindow<P, E>,
     changed: bool,
 ) {
     if !changed {
@@ -734,8 +751,8 @@ impl SurfaceBackground {
 /// renderer the within-window material the root mounts over, and returns the
 /// clear colour. This is the one place the background reaches the
 /// presentation path.
-pub(super) fn apply_window_background<P: GpuSurfaceWindow>(
-    runtime: &mut RuntimeWindow<P>,
+pub(super) fn apply_window_background<P: GpuSurfaceWindow, E: crate::text::TextEngine>(
+    runtime: &mut RuntimeWindow<P, E>,
     env: &Environment,
 ) -> peniko::Color {
     let background = SurfaceBackground::of(&runtime.window, env);
@@ -758,7 +775,7 @@ crate::engine::cfg_async_fn! {
     ///
     /// Async on wasm32, where the engine render inside awaits the browser device.
     pub(super) fn render_window<P: GpuSurfaceWindow>(
-        runtime: &mut RuntimeWindow<P>,
+        runtime: &mut RuntimeWindow<P, crate::text::ParleyEngine>,
         env: &Environment,
         drain_local_tasks: &mut dyn FnMut() -> bool,
     ) -> bool {
@@ -824,8 +841,8 @@ pub(super) fn acquire_surface_frame(
 /// Refreshes the retained window tree in place: apply pending `Dynamic` patches,
 /// re-read every reactive input, run full layout, and re-encode the scene. A
 /// geometry-static frame (animation, scroll, re-present) pays only re-encode.
-fn refresh_window_scene<P: PlatformWindow>(
-    runtime: &mut RuntimeWindow<P>,
+fn refresh_window_scene<P: PlatformWindow, E: crate::text::TextEngine>(
+    runtime: &mut RuntimeWindow<P, E>,
     env: &Environment,
     phases: &mut FramePhases,
 ) {
@@ -856,8 +873,8 @@ fn refresh_window_scene<P: PlatformWindow>(
 
 /// Builds the retained window tree from the app's `body()`. Runs exactly once per
 /// renderer lifetime — every later frame updates the retained tree instead.
-fn build_window_scene<P: PlatformWindow>(
-    runtime: &mut RuntimeWindow<P>,
+fn build_window_scene<P: PlatformWindow, E: crate::text::TextEngine>(
+    runtime: &mut RuntimeWindow<P, E>,
     env: &Environment,
     bounds: kurbo::Rect,
     root_transform: kurbo::Affine,
@@ -896,14 +913,13 @@ fn build_window_scene<P: PlatformWindow>(
 ///
 /// Returns whether the tree was built this pump, the number of build passes (0 or 1,
 /// kept for frame diagnostics), and the phase timing breakdown.
-pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
-    runtime: &mut RuntimeWindow<P>,
+pub(super) fn pump_window_scene<P: PlatformWindow, E: crate::text::TextEngine>(
+    runtime: &mut RuntimeWindow<P, E>,
     env: &Environment,
     drain_local_tasks: &mut dyn FnMut() -> bool,
 ) -> ScenePumpOutcome {
     let scale_factor = runtime.platform.scale_factor();
-    let surface = runtime.platform.surface();
-    let (width, height) = surface.size();
+    let (width, height) = runtime.platform.content_size();
     let bounds = create_bounds(width, height, scale_factor);
     let root_transform = kurbo::Affine::scale(scale_factor);
 
@@ -990,8 +1006,8 @@ pub(super) struct ScenePumpOutcome {
 }
 
 #[cfg(any(test, all(not(target_arch = "wasm32"), hydrolysis_winit)))]
-pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
-    runtime: &mut RuntimeWindow<P>,
+pub(super) fn pump_window_semantics<P: PlatformWindow, E: crate::text::TextEngine>(
+    runtime: &mut RuntimeWindow<P, E>,
     env: &Environment,
 ) -> bool {
     // The declaration's reactive inputs — `title`, `frame`, `state`,
@@ -1066,7 +1082,7 @@ pub trait GpuSurfaceFrame {
     #[cfg(not(target_arch = "wasm32"))]
     fn render_frame(
         &mut self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         clear_color: peniko::Color,
         display_scale: f64,
     ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError>;
@@ -1076,7 +1092,7 @@ pub trait GpuSurfaceFrame {
     #[cfg(target_arch = "wasm32")]
     fn render_frame(
         &mut self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         clear_color: peniko::Color,
         display_scale: f64,
     ) -> impl Future<Output = Result<SurfaceRenderResult, crate::platform::SurfaceError>>;
@@ -1088,7 +1104,7 @@ impl<S: crate::platform::SurfaceProvider> GpuSurfaceFrame for S {
     #[cfg(not(target_arch = "wasm32"))]
     fn render_frame(
         &mut self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         clear_color: peniko::Color,
         display_scale: f64,
     ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
@@ -1102,7 +1118,7 @@ impl<S: crate::platform::SurfaceProvider> GpuSurfaceFrame for S {
     )]
     async fn render_frame(
         &mut self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         clear_color: peniko::Color,
         display_scale: f64,
     ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
@@ -1120,13 +1136,13 @@ crate::engine::cfg_async_fn! {
     /// Async on wasm32, where the engine render inside awaits the browser
     /// device.
     pub fn render_host_acquired_frame {
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         surface: &mut dyn crate::platform::SurfaceProvider,
         clear_color: peniko::Color,
         display_scale: f64,
         capture_snapshot: bool,
     } {
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         surface: &mut dyn crate::platform::SurfaceProvider,
         clear_color: peniko::Color,
         display_scale: f64,
@@ -1250,7 +1266,7 @@ crate::engine::cfg_async_fn! {
 impl GpuSurfaceFrame for crate::platform::WinitSurface {
     fn render_frame(
         &mut self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         clear_color: peniko::Color,
         display_scale: f64,
     ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
@@ -1286,7 +1302,7 @@ impl GpuSurfaceFrame for crate::platform::BrowserSurface {
     )]
     async fn render_frame(
         &mut self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         clear_color: peniko::Color,
         display_scale: f64,
     ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
@@ -1358,7 +1374,7 @@ impl FrameReader {
 /// so a snapshot of one does not compile.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
-    runtime: &mut RuntimeWindow<P>,
+    runtime: &mut RuntimeWindow<P, crate::text::ParleyEngine>,
     env: &Environment,
     reader: FrameReader,
     drain_local_tasks: &mut dyn FnMut() -> bool,
@@ -1393,24 +1409,24 @@ crate::engine::cfg_async_fn! {
     // the pump renders, encodes and delivers in one pass; the sequence is the feature
     #[allow(clippy::too_many_lines)]
     fn render_window_pumped<P: GpuSurfaceWindow> {
-        runtime: &mut RuntimeWindow<P>,
+        runtime: &mut RuntimeWindow<P, crate::text::ParleyEngine>,
         env: &Environment,
         reader: FrameReader,
         drain_local_tasks: &mut dyn FnMut() -> bool,
         render_frame: impl FnOnce(
             &mut P::Presentation,
-            &mut HydrolysisRenderer,
+            &mut HydrolysisRenderer<crate::text::ParleyEngine>,
             peniko::Color,
             f64,
         ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError>,
     } {
-        runtime: &mut RuntimeWindow<P>,
+        runtime: &mut RuntimeWindow<P, crate::text::ParleyEngine>,
         env: &Environment,
         reader: FrameReader,
         drain_local_tasks: &mut dyn FnMut() -> bool,
         render_frame: impl AsyncFnOnce(
             &mut P::Presentation,
-            &mut HydrolysisRenderer,
+            &mut HydrolysisRenderer<crate::text::ParleyEngine>,
             peniko::Color,
             f64,
         ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError>,
@@ -1629,8 +1645,8 @@ pub(super) fn physical_to_logical_dimension(value: u32, scale_factor: f64) -> f3
     crate::num_cast::f64_as_f32(f64::from(value) / scale_factor)
 }
 
-pub(super) fn handle_input_events<P: GpuSurfaceWindow>(
-    runtime: &mut RuntimeWindow<P>,
+pub(super) fn handle_input_events<P: PlatformWindow, E: crate::text::TextEngine>(
+    runtime: &mut RuntimeWindow<P, E>,
     env: &Environment,
 ) -> bool {
     handle_input_events_with(runtime, env, |runtime, env| {
@@ -1638,8 +1654,8 @@ pub(super) fn handle_input_events<P: GpuSurfaceWindow>(
     })
 }
 
-pub(super) fn runtime_window_origin<P: PlatformWindow>(
-    runtime: &RuntimeWindow<P>,
+pub(super) fn runtime_window_origin<P: PlatformWindow, E: crate::text::TextEngine>(
+    runtime: &RuntimeWindow<P, E>,
 ) -> HydrolysisWindowOrigin {
     let frame = crate::platform::validated_window_frame(runtime.window.frame.snapshot());
     HydrolysisWindowOrigin {
@@ -1661,8 +1677,8 @@ pub(super) fn runtime_window_origin<P: PlatformWindow>(
 /// The refreshed registrations describe a frame the user has not seen yet, so
 /// the caller only runs this for scroll input — pointer events must keep
 /// resolving against the presented frame's geometry.
-fn refresh_pending_input_geometry<P: GpuSurfaceWindow>(
-    runtime: &mut RuntimeWindow<P>,
+fn refresh_pending_input_geometry<P: PlatformWindow, E: crate::text::TextEngine>(
+    runtime: &mut RuntimeWindow<P, E>,
     env: &Environment,
 ) {
     // A scheduled frame (`mode == Refresh`) alone does not make hit-test
@@ -1677,7 +1693,7 @@ fn refresh_pending_input_geometry<P: GpuSurfaceWindow>(
 
     runtime.request_refresh();
     let scale_factor = runtime.platform.scale_factor();
-    let (width, height) = runtime.platform.surface().size();
+    let (width, height) = runtime.platform.content_size();
     let bounds = create_bounds(width, height, scale_factor);
     let transform = kurbo::Affine::scale(scale_factor);
     assert!(
@@ -1698,7 +1714,9 @@ fn refresh_pending_input_geometry<P: GpuSurfaceWindow>(
 /// on a stale point or is discarded outright (water-rs/hydrolysis#127).
 /// Asking the platform where the pointer actually is before dispatching a
 /// file event restores the position winit withheld.
-fn sync_os_pointer_position<P: GpuSurfaceWindow>(runtime: &mut RuntimeWindow<P>) {
+fn sync_os_pointer_position<P: PlatformWindow, E: crate::text::TextEngine>(
+    runtime: &mut RuntimeWindow<P, E>,
+) {
     let Some((x, y)) = runtime.platform.pointer_position() else {
         return;
     };
@@ -1710,14 +1728,14 @@ fn sync_os_pointer_position<P: GpuSurfaceWindow>(runtime: &mut RuntimeWindow<P>)
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub(super) fn handle_input_events_with<P, F>(
-    runtime: &mut RuntimeWindow<P>,
+pub(super) fn handle_input_events_with<P, F, E: crate::text::TextEngine>(
+    runtime: &mut RuntimeWindow<P, E>,
     env: &Environment,
     input_env: F,
 ) -> bool
 where
-    P: GpuSurfaceWindow,
-    F: Fn(&RuntimeWindow<P>, &Environment) -> Environment,
+    P: PlatformWindow,
+    F: Fn(&RuntimeWindow<P, E>, &Environment) -> Environment,
 {
     let mut should_close = runtime.window.state.snapshot() == waterui::window::WindowState::Closed;
     // The platform's touch-gesture parameters ride the event drain: a host
@@ -2203,7 +2221,9 @@ where
 
 /// Settles focus ownership between Hydrolysis and hosted content, then pushes
 /// the focused text input's state to the platform IME.
-fn sync_platform_focus<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>) {
+fn sync_platform_focus<P: PlatformWindow, E: crate::text::TextEngine>(
+    runtime: &mut RuntimeWindow<P, E>,
+) {
     runtime.renderer.sync_hosted_focus();
     runtime
         .platform
@@ -2212,7 +2232,9 @@ fn sync_platform_focus<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>) {
 
 /// [`sync_platform_focus`], then the cursor under the pointer — left to the
 /// hosted view wherever uncovered hosted content is under it.
-fn sync_platform_input<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>) {
+pub(super) fn sync_platform_input<P: PlatformWindow, E: crate::text::TextEngine>(
+    runtime: &mut RuntimeWindow<P, E>,
+) {
     sync_platform_focus(runtime);
     if let Some((x, y)) = runtime.pointer_position
         && !runtime.renderer.hosted_owns_cursor(x, y)
@@ -2223,8 +2245,8 @@ fn sync_platform_input<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>) {
     }
 }
 
-pub(super) fn advance_runtime<P: PlatformWindow>(
-    runtime: &mut RuntimeWindow<P>,
+pub(super) fn advance_runtime<P: PlatformWindow, E: crate::text::TextEngine>(
+    runtime: &mut RuntimeWindow<P, E>,
     env: &Environment,
     now: Instant,
 ) -> Option<Instant> {

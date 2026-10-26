@@ -28,7 +28,7 @@ fn selection(source: &Binding<[i32; 2]>, index: usize) -> Binding<i32> {
 }
 
 /// The leading edge of every interactive target, top to bottom.
-fn target_leading_edges(renderer: &HydrolysisRenderer) -> Vec<f64> {
+fn target_leading_edges<E: crate::text::TextEngine>(renderer: &HydrolysisRenderer<E>) -> Vec<f64> {
     let mut targets = renderer
         .hit_test
         .pointer_targets

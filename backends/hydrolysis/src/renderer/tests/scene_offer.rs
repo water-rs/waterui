@@ -128,8 +128,8 @@ struct MeasureEntry {
 /// probe so a test can see which leaf answered more than its offer.
 struct OfferProbe<'a> {
     label: &'static str,
-    node: &'a RenderNode,
-    state: &'a RefCell<&'a mut HydroState>,
+    node: &'a RenderNode<crate::text::ParleyEngine>,
+    state: &'a RefCell<&'a mut HydroState<crate::text::ParleyEngine>>,
     env: Environment,
     theme: Rc<dyn WidgetTheme>,
     stretch: StretchAxis,
@@ -194,7 +194,13 @@ fn issue_tree(kind: Pane) -> impl View {
     .spacing(0.0)
 }
 
-fn build_issue_tree(kind: Pane) -> (Environment, crate::renderer::HydrolysisRenderer, RenderNode) {
+fn build_issue_tree(
+    kind: Pane,
+) -> (
+    Environment,
+    crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    RenderNode<crate::text::ParleyEngine>,
+) {
     let env = test_environment().extending(SceneViewMergeToParent);
     let mut renderer = test_renderer();
     let node = RenderNode::build(AnyView::new(issue_tree(kind)), &env, &mut renderer);
@@ -208,8 +214,8 @@ fn probe_issue_stack(
     kind: Pane,
 ) -> (
     Environment,
-    crate::renderer::HydrolysisRenderer,
-    RenderNode,
+    crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    RenderNode<crate::text::ParleyEngine>,
     MeasureLog,
 ) {
     let (env, mut renderer, node) = build_issue_tree(kind);

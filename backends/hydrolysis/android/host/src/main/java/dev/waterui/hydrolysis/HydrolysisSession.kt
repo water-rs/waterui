@@ -21,6 +21,7 @@ import androidx.lifecycle.findViewTreeLifecycleOwner
 class HydrolysisSession internal constructor(
     context: Context,
     private val onCloseRequested: () -> Unit,
+    private val painter: SessionPainter? = null,
 ) {
     /**
      * The opaque native pointer, owned on the UI thread only. It is never
@@ -35,6 +36,7 @@ class HydrolysisSession internal constructor(
         NativeBridge.nativeCreateSession(
             this,
             context.applicationContext,
+            painter,
             NativeBridge.uiThreadServices,
         )
 
@@ -180,12 +182,29 @@ class HydrolysisSession internal constructor(
     /** The instance a placement resolves, or none. Registry-side. */
     internal fun platformViewInstance(id: Long): View? = platformViewInstances[id]
 
+    /**
+     * The retained tree's platform view under host pixel (`x`, `y`) — the
+     * HWUI painter's ordered hit test; `null` means content or nothing
+     * covers the point. GPU sessions never call this.
+     */
+    internal fun platformViewAt(x: Float, y: Float): Long? {
+        val id =
+            withNativePtr(NativeBridge::nativePlatformViewHitTest.name) { ptr ->
+                NativeBridge.nativePlatformViewHitTest(ptr, x, y)
+            }
+        return if (id == 0L) null else id
+    }
+
     internal fun bind(view: HydrolysisHostView) {
         check(!destroyRequested) { "hydrolysis: bind reached a closing HydrolysisSession" }
         check(hostView == null || hostView === view) {
             "a HydrolysisSession is bound to exactly one host view at a time"
         }
         hostView = view
+        painter?.attach(view)
+        withNativePtr(NativeBridge::nativeSetHostAttached.name) { ptr ->
+            NativeBridge.nativeSetHostAttached(ptr, true)
+        }
         // The new binding owns the Activity the instances draw on: each
         // `HostRebindAware` retargets its own context wrapper and re-observes
         // what the old binding's context owned (the WebView's Lifecycle).
@@ -208,11 +227,32 @@ class HydrolysisSession internal constructor(
         // retained session, so they must be free of the old slots before
         // the next binding mounts them.
         view.platformViewRegistry.detachInstances()
+        painter?.detach(view)
+        if (!destroyed) {
+            withNativePtr(NativeBridge::nativeSetHostAttached.name) { ptr ->
+                NativeBridge.nativeSetHostAttached(ptr, false)
+            }
+        }
         hostView = null
         // A detached view is invisible, so park the pump before a pending
         // teardown runs below.
         if (!destroyed) setVisible(false)
         if (destroyRequested) requestTearDown()
+    }
+
+    /**
+     * Routes the scheduler's refresh demand: a session-owned painter applies
+     * it on the bound host; the GPU path asks the native surface.
+     */
+    internal fun setHighRefresh(active: Boolean) {
+        check(!destroyed) { "hydrolysis: refresh demand reached a destroyed HydrolysisSession" }
+        if (painter != null) {
+            painter.setHighRefresh(active)
+        } else {
+            withNativePtr(NativeBridge::nativeSetHighRefresh.name) { ptr ->
+                NativeBridge.nativeSetHighRefresh(ptr, active)
+            }
+        }
     }
 
     /**
@@ -276,8 +316,12 @@ class HydrolysisSession internal constructor(
         try {
             NativeBridge.nativeDestroySession(livePtr)
         } finally {
-            mainHandler.removeCallbacksAndMessages(null)
-            frameScheduler.stop()
+            try {
+                painter?.destroy()
+            } finally {
+                mainHandler.removeCallbacksAndMessages(null)
+                frameScheduler.stop()
+            }
         }
     }
 

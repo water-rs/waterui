@@ -86,7 +86,7 @@ impl<'a> HydrolysisRenderTarget<'a> {
     }
 }
 
-impl HydrolysisRenderer {
+impl HydrolysisRenderer<crate::text::ParleyEngine> {
     crate::engine::cfg_async_fn! {
         /// Renders the frame into `target`'s texture.
         ///
@@ -325,7 +325,9 @@ impl HydrolysisRenderer {
         &mut self,
         target: &FrameRenderTarget<'_>,
         root: &web_sys::HtmlElement,
-        window_slot: &mut Option<CherenkovWindow<crate::engine::DomCherenkovSurface>>,
+        window_slot: &mut Option<
+            CherenkovWindow<crate::engine::DomCherenkovSurface, crate::text::ParleyEngine>,
+        >,
     ) -> Result<(), cherenkov::RenderError> {
         let _render_span = tracing::debug_span!("hydrolysis_render_scene").entered();
         let state = crate::engine::shared_engine_state(
@@ -401,7 +403,7 @@ impl HydrolysisRenderer {
     /// across the frame's render.
     fn commit_window_frame<S: crate::engine::EngineSurface>(
         &mut self,
-        window: &mut CherenkovWindow<S>,
+        window: &mut CherenkovWindow<S, crate::text::ParleyEngine>,
         target: &FrameRenderTarget<'_>,
         headroom: f32,
     ) -> cherenkov::FrameScope {
@@ -418,29 +420,7 @@ impl HydrolysisRenderer {
         });
         surface.clear_color(target.base_color);
 
-        let roots = self.mount_roots();
-        let host_wake = self.host_redraw_handle.clone();
-        let window_material = self.core.window_material;
-        let core = &mut self.core;
-        let mut wakes = |cell: &Rc<NodeCell>| core.producer_wake(cell, host_wake.clone());
-        window.mount.commit(
-            &window.host,
-            self.window_display_transform,
-            target.display_scale,
-            &roots,
-            &mut wakes,
-            window_material.as_ref(),
-        );
-        self.core.clear_commit_marks();
-        let taken = window.mount.take_stats();
-        self.last_mount_stats = mount::layers::census(&roots, taken);
-        self.state.counters.recorded_view_contents += taken.installs + taken.live_records;
-        self.state.counters.live_recordings += taken.live_records;
-        self.state.counters.layer_creations += taken.created;
-        self.state.counters.layer_removals += taken.removed;
-        let (fonts, images) = window.state.resources.take_registration_stats();
-        self.state.counters.font_registrations += fonts;
-        self.state.counters.image_registrations += images;
+        self.commit_mount(&mut window.mount, &window.host, target.display_scale);
 
         #[cfg(feature = "frame-profile")]
         self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 1);
@@ -465,19 +445,19 @@ pub struct EngineFrame {
 
 /// The renderer's engine window on one device-creation chain: the engine
 /// surface and the one retained [`mount::Mount`] its node layers live in.
-pub struct CherenkovWindow<S> {
+pub struct CherenkovWindow<S, E: crate::text::TextEngine> {
     pub surface: S,
-    pub(crate) mount: mount::Mount<cherenkov_gpu::Gpu>,
+    pub(crate) mount: mount::Mount<cherenkov_gpu::Gpu, E>,
     pub(crate) host: mount::CherenkovHost,
-    /// The shared engine state the surface renders through.
-    pub(crate) state: Rc<crate::engine::SharedEngineState>,
+    /// Keeps the engine pool's weak entry alive while this window uses it.
+    _state: Rc<crate::engine::SharedEngineState>,
     context_id: u64,
     device_loss: crate::platform::DeviceLoss,
     #[cfg(feature = "frame-profile")]
     pub(crate) gpu_profiler: Option<GpuFrameProfiler>,
 }
 
-impl<S> CherenkovWindow<S> {
+impl<S, E: crate::text::TextEngine> CherenkovWindow<S, E> {
     /// The device-creation chain this window renders on.
     #[cfg(feature = "frame-profile")]
     pub(crate) const fn context_id(&self) -> u64 {
@@ -491,7 +471,7 @@ impl<S> CherenkovWindow<S> {
     }
 }
 
-impl<S: crate::engine::EngineSurface> CherenkovWindow<S> {
+impl<S: crate::engine::EngineSurface, E: crate::text::TextEngine> CherenkovWindow<S, E> {
     /// Wraps `surface` with its window mount. `materials` is the theme's
     /// material registry: attaching this window's engine registers every
     /// shader it names, so a chrome member's group binds an engine handle
@@ -519,7 +499,7 @@ impl<S: crate::engine::EngineSurface> CherenkovWindow<S> {
             surface,
             mount,
             host,
-            state,
+            _state: state,
             context_id: target.gpu_context_id,
             device_loss: target.device_loss.clone(),
             #[cfg(feature = "frame-profile")]

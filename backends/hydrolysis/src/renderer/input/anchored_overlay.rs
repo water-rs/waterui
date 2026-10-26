@@ -40,7 +40,7 @@ use super::*;
 /// handles the post-flush render pass needs. The presentations live on the
 /// effect (`Rc`-shared) so a presented overlay's built node survives the
 /// anchor's own reconcile.
-pub struct RegisteredAnchoredOverlay {
+pub struct RegisteredAnchoredOverlay<E: crate::text::TextEngine> {
     /// The anchor's frame in hit space this frame.
     pub(crate) anchor: kurbo::Rect,
     /// The placement contract from the metadata.
@@ -62,7 +62,7 @@ pub struct RegisteredAnchoredOverlay {
     /// gets an independent view instance.
     pub(crate) builder: waterui_core::handler::AnyViewBuilder,
     /// The presentations the owning effect keeps across frames.
-    pub(crate) presentations: Rc<RefCell<AnchoredPresentations>>,
+    pub(crate) presentations: Rc<RefCell<AnchoredPresentations<E>>>,
     /// Identity shared between the effect and its registration, so the render
     /// pass can tell a re-registered anchor from a dropped one.
     pub(crate) marker: Rc<()>,
@@ -72,33 +72,32 @@ pub struct RegisteredAnchoredOverlay {
 /// dismissed ones still leaving. Each presentation is an independent
 /// instance — a re-present while an exit is in flight builds a new one and
 /// lets the old one finish its exit beside it.
-#[derive(Default)]
-pub struct AnchoredPresentations {
-    current: Option<AnchoredPresentation>,
-    exiting: Vec<AnchoredPresentation>,
+pub struct AnchoredPresentations<E: crate::text::TextEngine> {
+    current: Option<AnchoredPresentation<E>>,
+    exiting: Vec<AnchoredPresentation<E>>,
 }
 
 /// One presentation of an anchored overlay: its content instance and the
 /// transition the content's root declares (layout-spec.md §4.5).
-pub struct AnchoredPresentation {
-    content: RetainedSubview,
+pub struct AnchoredPresentation<E: crate::text::TextEngine> {
+    content: RetainedSubview<E>,
     /// The identity of this presentation's animation and paint scopes.
     marker: Rc<()>,
     /// The declaration claimed from the content's root when it was built.
     spec: Option<TransitionSpec>,
     /// The insertion (presented) or removal (exiting) running now.
-    run: Option<TransitionRun>,
+    run: Option<TransitionRun<E>>,
     /// The frame and proposal the presentation was last placed at — the
     /// slot an exiting presentation keeps.
     placed: Option<(kurbo::Rect, ProposalSize)>,
 }
 
-impl AnchoredPresentation {
+impl<E: crate::text::TextEngine> AnchoredPresentation<E> {
     /// A new presentation of `entry`: a fresh content instance, built inside
     /// its own animation scope, whose root declaration starts the insertion.
     fn present(
-        renderer: &mut HydrolysisRenderer,
-        entry: &RegisteredAnchoredOverlay,
+        renderer: &mut HydrolysisRenderer<E>,
+        entry: &RegisteredAnchoredOverlay<E>,
         reduce_motion: bool,
     ) -> Self {
         let marker = Rc::new(());
@@ -141,11 +140,11 @@ fn scope_of(marker: &Rc<()>) -> u64 {
 /// drawn presentation's frame, dismissal mode and binding. An anchor the
 /// next frame's flush does not re-register left the tree — its overlay
 /// closes.
-pub struct PresentedAnchoredOverlay {
+pub struct PresentedAnchoredOverlay<E: crate::text::TextEngine> {
     /// Identity matching [`RegisteredAnchoredOverlay::marker`].
     pub(crate) marker: Rc<()>,
     /// The overlay's presentations, cleared when its anchor leaves the tree.
-    pub(crate) presentations: Rc<RefCell<AnchoredPresentations>>,
+    pub(crate) presentations: Rc<RefCell<AnchoredPresentations<E>>>,
     /// The frame the presentation drew into, in hit space.
     pub(crate) frame: kurbo::Rect,
     /// How the overlay closes.
@@ -158,7 +157,7 @@ pub struct PresentedAnchoredOverlay {
     pub(crate) exiting: bool,
 }
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Outside-interaction dismissal for anchored overlays: a press outside a
     /// presented `OutsideInteraction` overlay writes `false` to its binding.
     /// The press itself continues to its target, exactly like the
@@ -191,7 +190,7 @@ impl SemanticCore {
     }
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Draw every anchored overlay whose binding reads `true` this frame,
     /// above all content, at the placement contract's frame, and every
     /// dismissed presentation still leaving. Called after the tree flush: the
@@ -305,8 +304,8 @@ impl HydrolysisRenderer {
     /// insertion while one runs — and returns the frame it drew into.
     fn render_presented(
         &mut self,
-        entry: &RegisteredAnchoredOverlay,
-        presentation: &mut AnchoredPresentation,
+        entry: &RegisteredAnchoredOverlay<E>,
+        presentation: &mut AnchoredPresentation<E>,
         ctx: RenderContext,
         safe_area: &crate::renderer::SafeAreaLayout,
     ) -> kurbo::Rect {
@@ -380,8 +379,8 @@ impl HydrolysisRenderer {
     /// runs, finished and it left.
     fn render_exiting_presentation(
         &mut self,
-        entry: &RegisteredAnchoredOverlay,
-        presentation: &mut AnchoredPresentation,
+        entry: &RegisteredAnchoredOverlay<E>,
+        presentation: &mut AnchoredPresentation<E>,
         ctx: RenderContext,
         safe_area: &crate::renderer::SafeAreaLayout,
     ) -> Option<kurbo::Rect> {
@@ -434,8 +433,8 @@ impl HydrolysisRenderer {
     /// transition is also out of the accessibility tree.
     fn record_presentation(
         &mut self,
-        entry: &RegisteredAnchoredOverlay,
-        presentation: &mut AnchoredPresentation,
+        entry: &RegisteredAnchoredOverlay<E>,
+        presentation: &mut AnchoredPresentation<E>,
         ctx: RenderContext,
         safe_area: &crate::renderer::SafeAreaLayout,
         hit: bool,
@@ -532,4 +531,13 @@ fn rect_to_kurbo(rect: waterui_core::layout::Rect) -> kurbo::Rect {
         kurbo::Point::new(f64::from(rect.x()), f64::from(rect.y())),
         kurbo::Size::new(f64::from(rect.width()), f64::from(rect.height())),
     )
+}
+
+impl<E: crate::text::TextEngine> Default for AnchoredPresentations<E> {
+    fn default() -> Self {
+        Self {
+            current: Option::default(),
+            exiting: Vec::default(),
+        }
+    }
 }

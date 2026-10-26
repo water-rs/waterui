@@ -12,7 +12,7 @@ use crate::animation::AnimationKey;
 use crate::renderer::signals::SubscribedSnapshot;
 use crate::renderer::{Retain, SemanticCore};
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Opens a structural rebuild of the animation slots: from here, a slot
     /// survives the matching [`Self::retire_unbound_animation_slots`] only if
     /// it is bound again.

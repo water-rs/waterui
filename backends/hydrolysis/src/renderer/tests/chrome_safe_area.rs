@@ -64,7 +64,7 @@ fn edge_insets() -> EdgeInsets {
 /// the first frame and later frames reuse it, so `view` matters only the
 /// first time.
 fn render_frame_in(
-    renderer: &mut HydrolysisRenderer,
+    renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
     view: AnyView,
     env: &Environment,
     window: Rect,
@@ -76,7 +76,11 @@ fn render_frame_in(
     renderer.commit_mirror();
 }
 
-fn render_frame(renderer: &mut HydrolysisRenderer, view: AnyView, env: &Environment) {
+fn render_frame(
+    renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+    view: AnyView,
+    env: &Environment,
+) {
     render_frame_in(renderer, view, env, WINDOW);
 }
 
@@ -84,7 +88,7 @@ fn capture(
     view: impl waterui_core::View,
     env: &Environment,
     theme: MinimalTestTheme,
-) -> HydrolysisRenderer {
+) -> HydrolysisRenderer<crate::text::ParleyEngine> {
     let mut renderer = test_renderer_with_theme(theme);
     render_frame(&mut renderer, AnyView::new(view), env);
     renderer
@@ -98,7 +102,7 @@ fn capture_in(
     env: &Environment,
     theme: MinimalTestTheme,
     window: Rect,
-) -> HydrolysisRenderer {
+) -> HydrolysisRenderer<crate::text::ParleyEngine> {
     let mut renderer = test_renderer_with_theme(theme);
     render_frame_in(&mut renderer, AnyView::new(view), env, window);
     renderer
@@ -108,7 +112,9 @@ fn capture_in(
 /// window-space bounds of every registered pointer and text-input target —
 /// the frames the bar's title, items, search field and tab items actually
 /// got.
-fn content_extents(renderer: &HydrolysisRenderer) -> (Vec<f64>, Vec<Rect>) {
+fn content_extents(
+    renderer: &HydrolysisRenderer<crate::text::ParleyEngine>,
+) -> (Vec<f64>, Vec<Rect>) {
     let mut ys = Vec::new();
     for recording in std::iter::once(&renderer.painted_scene()) {
         for (transform, glyphs) in recording.glyph_runs() {
@@ -136,7 +142,12 @@ fn content_extents(renderer: &HydrolysisRenderer) -> (Vec<f64>, Vec<Rect>) {
 
 /// Asserts every painted glyph and interactive target stays vertically inside
 /// `[top, bottom]` — the safe-area band the bar's content must not leave.
-fn assert_content_inside(renderer: &HydrolysisRenderer, top: f64, bottom: f64, context: &str) {
+fn assert_content_inside(
+    renderer: &HydrolysisRenderer<crate::text::ParleyEngine>,
+    top: f64,
+    bottom: f64,
+    context: &str,
+) {
     let (glyph_ys, targets) = content_extents(renderer);
     assert!(
         !glyph_ys.is_empty(),

@@ -1457,8 +1457,12 @@ pub struct EngineWindowTarget<'a> {
     /// The window the engine presents on.
     pub(crate) window: &'a std::sync::Arc<winit::window::Window>,
     /// The window's engine surface and mount, owned by the window's surface.
-    pub(crate) window_slot:
-        &'a mut Option<crate::renderer::CherenkovWindow<crate::engine::WindowCherenkovSurface>>,
+    pub(crate) window_slot: &'a mut Option<
+        crate::renderer::CherenkovWindow<
+            crate::engine::WindowCherenkovSurface,
+            crate::text::ParleyEngine,
+        >,
+    >,
     /// Whether the window composites with what lies behind it.
     pub(crate) transparent: bool,
     /// Whether the window crossed displays since the previous frame.
@@ -3327,8 +3331,12 @@ mod winit_impl {
         display_moved: std::rc::Rc<std::cell::Cell<bool>>,
         /// The typed Cherenkov engine target, created on the first render.
         #[cfg(target_os = "macos")]
-        engine_window:
-            Option<crate::renderer::CherenkovWindow<crate::engine::WindowCherenkovSurface>>,
+        engine_window: Option<
+            crate::renderer::CherenkovWindow<
+                crate::engine::WindowCherenkovSurface,
+                crate::text::ParleyEngine,
+            >,
+        >,
         /// The screen-change observer that sets `display_moved`;
         /// unregisters itself on drop.
         #[cfg(target_os = "macos")]

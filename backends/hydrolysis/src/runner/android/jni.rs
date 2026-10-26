@@ -60,8 +60,17 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// pushed native, which left with it; 16 = `onNativeFatalError` leaves the
 /// table — a lost GPU device is recreated instead of ending the session
 /// (water-rs/waterui#2742), and a recreation that exhausts its loss budget
-/// already reaches Kotlin as the frame call's `IllegalStateException`.
-pub const JNI_SCHEMA: jint = 16;
+/// already reaches Kotlin as the frame call's `IllegalStateException`. 17 =
+/// the unlanded HWUI render-target work (water-rs/waterui#1811); the reserved
+/// number keeps a stale native/Kotlin pair from pairing up mid-development.
+/// 18 = the HWUI text wire carries a default-style row: row zero of every
+/// packed shape request is the paragraph's base paint. 19 = `nativeCreateSession`
+/// takes the session-owned painter object, and `nativeSetHostAttached` reports
+/// the host view's bind state (water-rs/waterui#1811). 20 = the
+/// BindPlatformView op binds a platform view inside its owner's RenderNode.
+/// 20->21 = `nativePlatformViewHitTest` answers the retained tree's platform
+/// view under a host pixel — the HWUI painter's ordered-input query.
+pub const JNI_SCHEMA: jint = 21;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -73,6 +82,7 @@ impl From<jni::errors::Error> for JniError {
     }
 }
 
+#[cfg(not(hydrolysis_hwui))]
 impl From<super::gpu::GpuError> for JniError {
     fn from(error: super::gpu::GpuError) -> Self {
         Self(error.0)
@@ -407,6 +417,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
     _class: JClass<'local>,
     host_view: JObject<'local>,
     context: JObject<'local>,
+    painter: JObject<'local>,
     services_ptr: jlong,
 ) -> jlong {
     guard_val(&mut env, 0, |env| {
@@ -429,7 +440,14 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             max_fling_velocity_px: 0.0,
             scroll_friction: 0.0,
         };
-        let session = AndroidSession::create(env, vm, host_view, metrics, services(services_ptr))?;
+        let session = AndroidSession::create(
+            env,
+            vm,
+            host_view,
+            &painter,
+            metrics,
+            services(services_ptr),
+        )?;
         Ok(Box::into_raw(Box::new(SessionBox {
             entered: Cell::new(false),
             session: *session,
@@ -546,6 +564,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeFrameDeadl
     })
 }
 
+#[cfg(not(hydrolysis_hwui))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceAttached<'local>(
     mut env: EnvUnowned<'local>,
@@ -590,6 +609,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceAtt
     })
 }
 
+#[cfg(not(hydrolysis_hwui))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceChanged<'local>(
     mut env: EnvUnowned<'local>,
@@ -610,6 +630,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceCha
     });
 }
 
+#[cfg(not(hydrolysis_hwui))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceDestroyed<'local>(
     mut env: EnvUnowned<'local>,
@@ -638,11 +659,55 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetVisible
     });
 }
 
+/// The retained tree's platform view under host pixel (`x`, `y`) — the
+/// ordered hit test the Kotlin host's gesture dispatch asks before latching
+/// a native gesture. `0` means content or nothing covers the point. HWUI
+/// builds only: the GPU path's slots own their own hit order.
+#[cfg(hydrolysis_hwui)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformViewHitTest<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    x: jfloat,
+    y: jfloat,
+) -> jlong {
+    guard_val(&mut env, 0, |_env| {
+        let id = session(session_ptr)
+            .hwui
+            .surface
+            .encoder()
+            .platform_view_at(kurbo::Point::new(f64::from(x), f64::from(y)))
+            .map_err(|e| JniError(e.to_string()))?;
+        Ok(id.map_or(0, |id| i64::from_ne_bytes(id.to_ne_bytes())))
+    })
+}
+
+/// The Kotlin host bound (`true`) or unbound (`false`) its view: the
+/// session's attach gate — the HWUI painter's draw window and the common
+/// occlusion report's host half. GPU builds keep their own surface
+/// callbacks; this only records the host's binding state.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetHostAttached<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    attached: jboolean,
+) {
+    guard(&mut env, |_env| {
+        session(session_ptr).set_host_attached(attached);
+        Ok(())
+    });
+}
+
 /// The scheduler's high-refresh demand: `active` asks the surface for its
 /// display's peak rate — reported with the surface attach — for as long as
 /// the pump runs or a touch is held; a cleared flag releases the request.
 /// The session holds the demand across surface generations, so a
 /// re-attached band gets it back without a demand change.
+#[cfg(not(hydrolysis_hwui))]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetHighRefresh<'local>(
     mut env: EnvUnowned<'local>,

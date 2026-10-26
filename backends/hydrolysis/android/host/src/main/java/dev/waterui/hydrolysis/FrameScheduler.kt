@@ -84,9 +84,7 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
 
     /** Sends the combined demand; the native side ignores a repeat. */
     private fun publishHighRefresh() {
-        session.withNativePtr(NativeBridge::nativeSetHighRefresh.name) { ptr ->
-            NativeBridge.nativeSetHighRefresh(ptr, touching || pumping)
-        }
+        session.setHighRefresh(touching || pumping)
     }
 
     /**

@@ -239,9 +239,9 @@ pub struct HeadlessPumpResult {
 /// A headless hydrolysis runtime for tests and tooling.
 pub struct HeadlessRuntime {
     env: Environment,
-    runtime: RuntimeWindow<HeadlessPlatformWindow>,
+    runtime: RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine>,
     pending_window_queue: Rc<RefCell<Vec<Window>>>,
-    popup_windows: Vec<RuntimeWindow<HeadlessPlatformWindow>>,
+    popup_windows: Vec<RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine>>,
     /// The style the runtime was launched with, kept so popup windows'
     /// renderers measure and encode with the same widget theme.
     theme: Rc<dyn crate::theme::WidgetTheme>,
@@ -492,7 +492,10 @@ impl HeadlessRuntime {
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         install_native_component_hooks(&mut env);
-        install_headless_window_managers(&mut env, Rc::clone(&pending_window_queue));
+        install_headless_window_managers::<crate::text::ParleyEngine>(
+            &mut env,
+            Rc::clone(&pending_window_queue),
+        );
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         crate::theme::install_theme_tokens(&mut env, Some(&style));
         let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
@@ -550,10 +553,10 @@ impl HeadlessRuntime {
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
             Rc::clone(&theme),
-            SessionTextEngine::from_collection(&fonts, family_resolution),
+            ParleyEngine::from_collection(&fonts, family_resolution),
         );
         renderer.set_window_id(
-            env.get::<MenuShortcutRegistry>()
+            env.get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
                 .mint_window_id(),
         );
@@ -561,7 +564,7 @@ impl HeadlessRuntime {
 
         Self {
             env,
-            runtime: RuntimeWindow::new(
+            runtime: RuntimeWindow::new_gpu(
                 window,
                 platform,
                 renderer,
@@ -583,7 +586,10 @@ impl HeadlessRuntime {
         }
     }
 
-    fn create_popup_runtime(&self, window: Window) -> RuntimeWindow<HeadlessPlatformWindow> {
+    fn create_popup_runtime(
+        &self,
+        window: Window,
+    ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
         let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
         let height = crate::num_cast::f32_as_u32(frame.height().max(1.0));
@@ -602,17 +608,17 @@ impl HeadlessRuntime {
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
             Rc::clone(&self.theme),
-            SessionTextEngine::from_collection(&self.fonts, self.family_resolution),
+            ParleyEngine::from_collection(&self.fonts, self.family_resolution),
         );
         renderer.set_window_id(
             self.env
-                .get::<MenuShortcutRegistry>()
+                .get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
         window.arm_close_requests(&self.env);
-        RuntimeWindow::new(
+        RuntimeWindow::new_gpu(
             window,
             platform,
             renderer,
@@ -878,7 +884,7 @@ impl HeadlessRuntime {
     }
 
     fn is_quiescent(&self, perpetual: PerpetualAnimation) -> bool {
-        let scheduled = |renderer: &HydrolysisRenderer| match perpetual {
+        let scheduled = |renderer: &HydrolysisRenderer<crate::text::ParleyEngine>| match perpetual {
             PerpetualAnimation::Counts => renderer.has_scheduled_semantic_work(),
             PerpetualAnimation::Ignored => renderer.has_finite_semantic_work(),
         };
@@ -960,14 +966,16 @@ impl HeadlessRuntime {
 
     /// The main window's renderer, for tests that assert on frame internals.
     #[cfg(test)]
-    pub(crate) const fn renderer(&self) -> &HydrolysisRenderer {
+    pub(crate) const fn renderer(&self) -> &HydrolysisRenderer<crate::text::ParleyEngine> {
         &self.runtime.renderer
     }
 
     /// The main window's renderer mutably — editing-session tests write
     /// projections through it.
     #[cfg(test)]
-    pub(crate) const fn renderer_mut(&mut self) -> &mut HydrolysisRenderer {
+    pub(crate) const fn renderer_mut(
+        &mut self,
+    ) -> &mut HydrolysisRenderer<crate::text::ParleyEngine> {
         &mut self.runtime.renderer
     }
 

@@ -12,10 +12,10 @@ use waterui_layout::stack::Axis as StackAxis;
 // impl_widget_behavior dispatches every measure fn with a `&T` borrow,
 // including the Copy ones.
 #[allow(clippy::trivially_copy_pass_by_ref)]
-pub fn measure_divider_node(
+pub fn measure_divider_node<E: crate::text::TextEngine>(
     _divider: &Divider,
     _proposal: ProposalSize,
-    _state: &mut HydroState,
+    _state: &mut HydroState<E>,
     _env: &Environment,
     _theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -24,16 +24,16 @@ pub fn measure_divider_node(
 
 /// Renders a retained divider leaf every flush: draws the separator line from the
 /// theme metrics, oriented by the enclosing stack axis. No accessibility.
-pub fn render_divider_node(
-    ctx: &mut WidgetRenderContext<'_>,
+pub fn render_divider_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     divider: &Rc<RefCell<Divider>>,
     env: &Environment,
 ) {
     render_divider_parts(ctx, divider, env);
 }
 
-pub fn render_divider_parts(
-    ctx: &mut WidgetRenderContext<'_>,
+pub fn render_divider_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     _divider: &Rc<RefCell<Divider>>,
     env: &Environment,
 ) {

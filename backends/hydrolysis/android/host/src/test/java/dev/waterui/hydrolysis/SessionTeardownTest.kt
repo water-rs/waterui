@@ -433,6 +433,52 @@ class SessionTeardownTest {
         assertEquals(visibilityCalls, ShadowNativeBridge.visibilities.size)
     }
 
+    @Test
+    fun aSessionPainterOutlivesItsHostViewsAndDiesAtTeardown() {
+        val events = mutableListOf<String>()
+        val painter = object : SessionPainter {
+            override fun attach(host: HydrolysisHostView) { events += "attach:${System.identityHashCode(host)}" }
+            override fun detach(host: HydrolysisHostView) { events += "detach:${System.identityHashCode(host)}" }
+            override fun destroy() { events += "destroy(nativedestroyed=${ShadowNativeBridge.destroyed})" }
+            override fun setHighRefresh(active: Boolean) { events += "refresh:$active" }
+        }
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(activity, onCloseRequested = {}, painter = painter)
+
+        // The window lifecycle drives bind/unbind — no manual calls.
+        val first = HydrolysisHostView(activity, session)
+        activity.setContentView(first)
+        assertTrue(first.isAttachedToWindow)
+        (first.parent as ViewGroup).removeView(first)
+
+        val second = HydrolysisHostView(activity, session)
+        activity.setContentView(second)
+        assertTrue(second.isAttachedToWindow)
+
+        session.setHighRefresh(true)
+        assertEquals("refresh:true", events.last())
+
+        // A live attached host defers teardown until it detaches.
+        session.destroy()
+        assertFalse(ShadowNativeBridge.destroyed)
+        assertFalse(events.any { it.startsWith("destroy") })
+
+        (second.parent as ViewGroup).removeView(second)
+        assertTrue(ShadowNativeBridge.destroyed)
+        assertEquals(1, ShadowNativeBridge.sessions)
+        assertEquals(
+            listOf(
+                "attach:${System.identityHashCode(first)}",
+                "detach:${System.identityHashCode(first)}",
+                "attach:${System.identityHashCode(second)}",
+                "refresh:true",
+                "detach:${System.identityHashCode(second)}",
+                "destroy(nativedestroyed=true)",
+            ),
+            events,
+        )
+    }
+
     private companion object {
         /** Long enough for Robolectric's Choreographer to run a posted frame. */
         val FRAME_WINDOW: Duration = Duration.ofSeconds(1)
@@ -444,6 +490,8 @@ class SessionTeardownTest {
 }
 
 /** A host view that counts its frame requests and still schedules them. */
+
+
 class RecordingHostView(context: Context, session: HydrolysisSession) :
     HydrolysisHostView(context, session) {
     var frameRequests = 0
@@ -567,10 +615,20 @@ class ShadowNativeBridge {
         fun nativeCreateSession(
             @Suppress("UNUSED_PARAMETER") session: HydrolysisSession,
             @Suppress("UNUSED_PARAMETER") context: Context,
+            @Suppress("UNUSED_PARAMETER") painter: SessionPainter?,
             @Suppress("UNUSED_PARAMETER") uiThreadServices: Long,
         ): Long {
             sessions += 1
             return SESSION_PTR
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativeSetHostAttached(
+            sessionPtr: Long,
+            @Suppress("UNUSED_PARAMETER") attached: Boolean,
+        ) {
+            assertLive(sessionPtr)
         }
 
         @JvmStatic
@@ -636,4 +694,6 @@ class ShadowNativeBridge {
             return treeJson
         }
     }
+
+
 }

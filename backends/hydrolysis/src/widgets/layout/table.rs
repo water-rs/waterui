@@ -47,7 +47,7 @@ enum TableCellKey {
 /// [`TableCellKey`]. Only the cells in the current visible row/column window are
 /// built and retained (evicted once they scroll out), so the table stays
 /// virtualized — cost is bounded by visible cells.
-pub struct TableRenderState {
+pub struct TableRenderState<E: crate::text::TextEngine> {
     pub(crate) config: TableConfig,
     /// Column metrics belong to this semantic table node.
     slot: RefCell<LazyTableSlot>,
@@ -56,7 +56,7 @@ pub struct TableRenderState {
     /// Content sub-views for the cells currently in view, keyed by [`TableCellKey`]
     /// so a steady scroll reuses each visible cell's node (keeping its reactive
     /// content live) and only builds cells entering the window.
-    item_cache: RefCell<VisibleSubviewCache<TableCellKey>>,
+    item_cache: RefCell<VisibleSubviewCache<TableCellKey, E>>,
     /// §7.1's scroll-surface bookkeeping: the extension and clearance
     /// bounds layout computed once (the scroll handle is rebound with
     /// them inside [`Self::bind_scroll`]), plus the focused-field state
@@ -64,7 +64,7 @@ pub struct TableRenderState {
     pub(crate) surface: std::rc::Rc<crate::renderer::ScrollSurfaceArea>,
 }
 
-impl TableRenderState {
+impl<E: crate::text::TextEngine> TableRenderState<E> {
     pub(crate) fn from_config(config: TableConfig) -> Self {
         Self {
             config,
@@ -119,9 +119,9 @@ impl TableRenderState {
     }
 }
 
-impl HydroNativeView for Native<TableConfig> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<TableConfig> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -131,9 +131,9 @@ impl HydroNativeView for Native<TableConfig> {
 }
 
 /// Measures a table's intrinsic size from its (reactive) columns.
-fn measure_table_intrinsic(
+fn measure_table_intrinsic<E: crate::text::TextEngine>(
     table: &TableConfig,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
@@ -161,11 +161,11 @@ fn measure_table_intrinsic(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn table_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn table_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
     theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
-    state: &Rc<RefCell<TableRenderState>>,
+    state: &Rc<RefCell<TableRenderState<E>>>,
     env: &Environment,
 ) {
     let columns_signal = state.borrow().config.columns.clone();
@@ -283,11 +283,12 @@ pub fn table_accessibility(
                 column_span.end,
             );
         }
-        let mut table_node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut table_node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::Table,
-            ));
+            ),
+        );
         let table_label = renderer.resolve_accessibility_label(env, None);
         if let Some(label) = table_label {
             table_node.set_label(label);
@@ -320,11 +321,12 @@ pub fn table_accessibility(
                 table_header_cell_rect(origin_x, origin_y, x_offset, width, m)
             });
             let header_view = AnyView::new(column.label());
-            let mut header_node =
-                AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+            let mut header_node = AccessibilityNode::new(
+                crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                     env,
                     AccessibilityNodeRole::ColumnHeader,
-                ));
+                ),
+            );
             let default_label = renderer.accessibility_label_from_view(&header_view, env);
             let label = renderer.resolve_accessibility_label(env, default_label);
             if let Some(label) = label {
@@ -366,7 +368,7 @@ pub fn table_accessibility(
                 if let Some(cell) = rows.get_view(row_index) {
                     let cell_view = AnyView::new(cell);
                     let mut cell_node = AccessibilityNode::new(
-                        crate::renderer::SemanticCore::resolve_accessibility_role(
+                        crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                             env,
                             AccessibilityNodeRole::Cell,
                         ),
@@ -422,10 +424,10 @@ pub fn table_accessibility(
 }
 
 /// Measures a table leaf from its config (intrinsic-sized; proposal-independent).
-pub fn measure_table_node(
+pub fn measure_table_node<E: crate::text::TextEngine>(
     table: &TableConfig,
     _proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -433,9 +435,9 @@ pub fn measure_table_node(
 }
 
 /// Renders a retained table leaf every flush.
-pub fn render_table_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<TableRenderState>>,
+pub fn render_table_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<TableRenderState<E>>>,
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
@@ -468,9 +470,9 @@ pub fn render_table_node(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn render_table_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<TableRenderState>>,
+pub fn render_table_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<TableRenderState<E>>>,
     env: &Environment,
 ) {
     let columns_signal = state.borrow().config.columns.clone();
@@ -760,9 +762,9 @@ pub fn render_table_parts(
 /// across frames while virtualization is preserved. Cell a11y is emitted by
 /// `table_accessibility`, so the sub-view's own a11y is suppressed (matching the old
 /// `dispatch_in_rect_without_accessibility`).
-fn flush_cell_subview(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<TableRenderState>>,
+fn flush_cell_subview<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<TableRenderState<E>>>,
     env: &Environment,
     key: TableCellKey,
     view: AnyView,
@@ -797,9 +799,9 @@ fn flush_cell_subview(
 /// same nodes `table_accessibility` registers, with no bounds and every cell
 /// present.
 #[cfg(feature = "accessibility")]
-pub fn emit_table_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<TableRenderState>>,
+pub fn emit_table_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<TableRenderState<E>>>,
     env: &Environment,
 ) {
     table_accessibility(renderer, None, None, state, env);

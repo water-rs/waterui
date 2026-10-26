@@ -54,7 +54,12 @@ pub struct BrowserSurface {
     size: (u32, u32),
     /// The engine surface and mount, created on the first frame and
     /// replaced when the device chain no longer matches.
-    engine_window: Option<crate::renderer::CherenkovWindow<crate::engine::DomCherenkovSurface>>,
+    engine_window: Option<
+        crate::renderer::CherenkovWindow<
+            crate::engine::DomCherenkovSurface,
+            crate::text::ParleyEngine,
+        >,
+    >,
 }
 
 impl core::fmt::Debug for BrowserSurface {
@@ -226,7 +231,12 @@ impl BrowserSurface {
     ) -> (
         crate::renderer::FrameRenderTarget<'_>,
         &HtmlElement,
-        &mut Option<crate::renderer::CherenkovWindow<crate::engine::DomCherenkovSurface>>,
+        &mut Option<
+            crate::renderer::CherenkovWindow<
+                crate::engine::DomCherenkovSurface,
+                crate::text::ParleyEngine,
+            >,
+        >,
     ) {
         let context = self.handles.gpu_context();
         (

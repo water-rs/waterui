@@ -194,16 +194,15 @@ impl TextEngine for ParleyEngine {
         }))
     }
 
-    fn truncate_tail(
+    fn shape_limited(
         &self,
-        layout: Self::Layout,
         input: &ResolvedTextLayoutInput,
         max_width: Option<f32>,
         max_lines: NonZeroUsize,
         mut shape: impl FnMut(&ResolvedTextLayoutInput, Option<f32>) -> Self::Layout,
     ) -> Self::Layout {
         let limit = max_lines.get();
-        let mut layout = layout;
+        let mut layout = shape(input, max_width);
         if !needs_tail_truncation(&layout.0.layout, limit) {
             return layout;
         }
@@ -1116,3 +1115,20 @@ fn parley_alignment(alignment: HorizontalAlignment, right_to_left: bool) -> parl
 
 #[cfg(test)]
 mod tests;
+
+impl core::fmt::Debug for ParleyEngine {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ParleyEngine")
+            .field("family_resolution", &self.family_resolution)
+            .finish_non_exhaustive()
+    }
+}
+
+impl core::fmt::Debug for ParleyLayout {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ParleyLayout")
+            .field("lines", &self.line_count())
+            .field("height", &self.height())
+            .finish_non_exhaustive()
+    }
+}

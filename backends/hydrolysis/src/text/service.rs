@@ -148,14 +148,32 @@ impl<E: TextEngine> TextService<E> {
         max_width: Option<f32>,
         max_lines: Option<usize>,
     ) -> E::Layout {
-        let layout = self.shape(input, max_width);
+        if input.is_empty() {
+            return self.engine.empty_layout();
+        }
         let Some(limit) = max_lines.filter(|limit| *limit > 0) else {
-            return layout;
+            return self.shape(input, max_width);
         };
         let limit = core::num::NonZeroUsize::new(limit)
             .expect("a filtered non-zero line limit must be non-zero");
-        self.engine
-            .truncate_tail(layout, input, max_width, limit, |i, w| self.shape(i, w))
+        let mut cache_key = input.cache_key(max_width);
+        cache_key.max_lines = Some(limit);
+        if let Some(layout) = self
+            .layouts
+            .lock()
+            .expect("text layout cache mutex must not be poisoned")
+            .get(&cache_key)
+        {
+            return layout.clone();
+        }
+        let layout = self
+            .engine
+            .shape_limited(input, max_width, limit, |i, w| self.shape(i, w));
+        self.layouts
+            .lock()
+            .expect("text layout cache mutex must not be poisoned")
+            .put(cache_key, layout.clone());
+        layout
     }
 
     /// Horizontal ink extent of `layout` at the draw-time line limit — what

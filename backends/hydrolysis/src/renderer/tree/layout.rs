@@ -9,7 +9,7 @@ use super::ContainerNode;
 use super::*;
 use waterui_graphics::scene_stretch_axis;
 
-impl RenderNode {
+impl<E: crate::text::TextEngine> RenderNode<E> {
     /// The stretch axis this node exposes when it is a layout child.
     /// The layout priority this subtree carries, or `0` when nothing set one.
     ///
@@ -132,7 +132,7 @@ impl RenderNode {
     /// a proposal it already answered keeps memoizing.
     pub(crate) fn measure(
         &self,
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
@@ -173,7 +173,7 @@ impl RenderNode {
     )]
     pub(crate) fn measure_body(
         &self,
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
@@ -198,7 +198,7 @@ impl RenderNode {
             }
             Self::Container(container) => {
                 let cell = RefCell::new(state);
-                let subs: Vec<NodeSubView> = container
+                let subs: Vec<NodeSubView<E>> = container
                     .children
                     .iter()
                     .map(|child| NodeSubView::new(child, &cell, env, theme))
@@ -331,7 +331,7 @@ impl RenderNode {
     /// the `Env` an `hstack`'s `with(Axis)` installs, retains, effects — for
     /// tests that drive its `Layout` against recording children.
     #[cfg(test)]
-    pub(in crate::renderer) fn transparent_container(&self) -> Option<&ContainerNode> {
+    pub(in crate::renderer) fn transparent_container(&self) -> Option<&ContainerNode<E>> {
         let mut node = self;
         loop {
             match node {
@@ -365,7 +365,10 @@ impl RenderNode {
     /// place, place_in_ctx}` and the window's
     /// layout pump), before any node is measured. A semantic runtime never
     /// runs this pass, so no theme reaches it.
-    pub(in crate::renderer) fn prepare_for_measure(&mut self, renderer: &mut HydrolysisRenderer) {
+    pub(in crate::renderer) fn prepare_for_measure(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<E>,
+    ) {
         match self {
             // Prepare builds subviews and reads bindings at measure time:
             // run it under this widget's cell as the layout reader so its
@@ -417,7 +420,7 @@ impl RenderNode {
     /// sub-views.
     pub(crate) fn layout(
         &mut self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         env: &Environment,
         safe_area: Option<safe_area::SafeAreaLayout>,
         proposal: ProposalSize,
@@ -435,7 +438,7 @@ impl RenderNode {
     )]
     fn layout_inner(
         &mut self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         env: &Environment,
         safe_area: Option<safe_area::SafeAreaLayout>,
         proposal: ProposalSize,
@@ -449,7 +452,7 @@ impl RenderNode {
             Self::Container(container) => {
                 let placements = {
                     let cell = RefCell::new(&mut renderer.state);
-                    let subs: Vec<NodeSubView> = container
+                    let subs: Vec<NodeSubView<E>> = container
                         .children
                         .iter()
                         .map(|child| NodeSubView::new(child, &cell, env, &theme))
@@ -784,7 +787,7 @@ pub(super) fn hash_frame(hasher: &mut SignatureHasher, frame: Rect) {
 }
 
 #[cfg(feature = "frame-profile")]
-impl RenderNode {
+impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Digest of what the layout pass computed for this subtree under `frame`:
     /// every node's variant tag and its placed frame, depth-first, plus the
     /// geometry nodes cache for the flush pass (a scroll's content size and

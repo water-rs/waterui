@@ -268,7 +268,7 @@ struct RowReorder {
 /// cache of the visible rows' content sub-views, keyed by stable row id. Only the
 /// rows in the current visible window are built and retained (evicted once they
 /// scroll out), so the list stays virtualized — cost is bounded by visible rows.
-pub struct ListRenderState {
+pub struct ListRenderState<E: crate::text::TextEngine> {
     pub(crate) config: ListConfig,
     /// Estimated/measured row extents belong to this list, not to its render
     /// position in a backend-global slot array. Shared with each row's
@@ -280,7 +280,7 @@ pub struct ListRenderState {
     /// Content sub-views for the rows currently in view, keyed by stable row id so a
     /// steady scroll reuses each visible row's node (keeping its reactive content
     /// live) and only builds rows entering the window.
-    item_cache: RefCell<VisibleSubviewCache<ListItemId>>,
+    item_cache: RefCell<VisibleSubviewCache<ListItemId, E>>,
     /// One activation claim scope per row, keyed by the same stable id. The
     /// row's content sub-view flushes under the environment it was *built*
     /// under, so the scope each frame inserts into `subtree_env` must be the
@@ -289,7 +289,8 @@ pub struct ListRenderState {
     /// drains (water-rs/hydrolysis#27). Entries retire with the rows leaving
     /// the visible window.
     #[cfg(feature = "accessibility")]
-    semantics_scopes: RefCell<std::collections::HashMap<ListItemId, ScopedAccessibilitySemantics>>,
+    semantics_scopes:
+        RefCell<std::collections::HashMap<ListItemId, ScopedAccessibilitySemantics<E>>>,
     /// A membership change invalidates index-based extents, including reorder
     /// operations whose collection length stays unchanged.
     rows_dirty: Rc<Cell<bool>>,
@@ -349,9 +350,9 @@ pub struct ListRenderState {
     /// declaration is claimed when its content is built, an inserted row
     /// animates in, and a removed row on screen stays as a ghost holding its
     /// slot. The extent index runs over display positions — rows and ghosts.
-    transitions: crate::renderer::LazyTransitions<ListItem>,
+    transitions: crate::renderer::LazyTransitions<E, ListItem>,
     /// The list widget's cell: the owner a transition's blur host marks.
-    owner: std::rc::Weak<crate::renderer::NodeCell>,
+    owner: std::rc::Weak<crate::renderer::NodeCell<E>>,
     /// §7.1's scroll-surface bookkeeping: the extension and clearance
     /// bounds layout computed once (the scroll handle is rebound with
     /// them inside [`Self::bind_scroll`]), plus the focused-field state
@@ -411,11 +412,11 @@ impl RowSectionChrome {
     }
 }
 
-impl ListRenderState {
+impl<E: crate::text::TextEngine> ListRenderState<E> {
     pub(crate) fn from_config(
         config: ListConfig,
         env: &Environment,
-        renderer: &crate::renderer::SemanticCore,
+        renderer: &crate::renderer::SemanticCore<E>,
     ) -> Self {
         let rows_dirty = Rc::new(Cell::new(true));
         let rows_dirty_for_watch = Rc::clone(&rows_dirty);
@@ -624,7 +625,7 @@ impl ListRenderState {
     /// anything is in flight. Both the draw and the rendered accessibility
     /// emit call it before they prepare rows, whichever runs first in a
     /// frame: a second call at the same instant advances nothing.
-    fn advance_transitions(&self, renderer: &crate::renderer::SemanticCore) {
+    fn advance_transitions(&self, renderer: &crate::renderer::SemanticCore<E>) {
         let (_, animating) = self.transitions.advance(renderer.frame_instant());
         if animating {
             renderer.context_mark_layout();
@@ -750,7 +751,7 @@ impl ListRenderState {
     #[must_use]
     fn apply_scroll_request(
         &self,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         handle: &ScrollHandle,
         row_count: usize,
         animate: bool,
@@ -917,9 +918,9 @@ impl ListRenderState {
     }
 }
 
-impl HydroNativeView for Native<ListConfig> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ListConfig> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -963,8 +964,8 @@ fn row_a11y_key_base(row_id: ListItemId) -> i64 {
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
 )]
-fn register_section_chrome_node(
-    renderer: &mut crate::renderer::SemanticCore,
+fn register_section_chrome_node<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
     semantic_key: i64,
     label: Text,
@@ -979,7 +980,7 @@ fn register_section_chrome_node(
     };
     let styled = renderer.read_resolved_text_styled(&label, env);
     let mut node = AccessibilityNode::new(
-        crate::renderer::SemanticCore::resolve_accessibility_role(env, role),
+        crate::renderer::SemanticCore::<E>::resolve_accessibility_role(env, role),
     );
     node.set_label(styled.to_string());
     match ctx {
@@ -1005,10 +1006,10 @@ fn register_section_chrome_node(
 /// consults. A disabled row is inert the way a disabled `Button` cannot be
 /// pressed: the list registers no selection press for it and its `ListItem`
 /// node advertises no `Click` (water-rs/waterui#2244).
-fn list_row_disabled(
+fn list_row_disabled<E: crate::text::TextEngine>(
     content: &AnyView,
     env: &Environment,
-    renderer: &mut crate::renderer::SemanticCore,
+    renderer: &mut crate::renderer::SemanticCore<E>,
 ) -> bool {
     let (_, content_env) = crate::renderer::flatten_environment_metadata_ref(content, env);
     renderer.read_signal(&crate::widgets::util::widget_disabled(&content_env))
@@ -1027,9 +1028,9 @@ const fn kurbo_logical_size(rect: kurbo::Rect) -> LayoutSize {
 /// content under its removal transition. Paint only — a ghost left the
 /// semantic tree, takes no input and draws no row controls
 /// (layout-spec.md §4.5).
-fn draw_list_ghost(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<ListRenderState>>,
+fn draw_list_ghost<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<ListRenderState<E>>>,
     env: &Environment,
     index: usize,
     resting_y: f64,
@@ -1106,11 +1107,11 @@ fn draw_list_ghost(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn list_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn list_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
     theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
-    state: &Rc<RefCell<ListRenderState>>,
+    state: &Rc<RefCell<ListRenderState<E>>>,
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
@@ -1180,11 +1181,12 @@ pub fn list_accessibility(
         } else {
             (0..row_count, 0.0)
         };
-        let mut list_node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut list_node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::List,
-            ));
+            ),
+        );
         let list_label = renderer.resolve_accessibility_label(env, None);
         if let Some(label) = list_label {
             list_node.set_label(label);
@@ -1310,7 +1312,7 @@ pub fn list_accessibility(
             // under the container-child env that strips that naming, so the
             // row's name is announced once and children keep their own.
             let mut item = item;
-            let (content, row_a11y_env) = hoist_accessibility_metadata(item.content, &row_env);
+            let (content, row_a11y_env) = hoist_accessibility_metadata::<E>(item.content, &row_env);
             item.content = content;
             // The row's gate is the `Disabled` scope its content resolves
             // under — the same env the content's presses read — so a
@@ -1325,11 +1327,12 @@ pub fn list_accessibility(
                 || row_a11y_env
                     .get::<AccessibilityStateSignal>()
                     .is_some_and(|signal| renderer.read_signal(signal.state()).is_hidden());
-            let mut row_node =
-                AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+            let mut row_node = AccessibilityNode::new(
+                crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                     &row_a11y_env,
                     AccessibilityNodeRole::ListItem,
-                ));
+                ),
+            );
             let default_label =
                 renderer.accessibility_label_from_view(&item.content, &row_a11y_env);
             let label = renderer.resolve_accessibility_label(&row_a11y_env, default_label);
@@ -1478,7 +1481,7 @@ pub fn list_accessibility(
                         controls.as_ref().and_then(|controls| controls.delete),
                         &subtree_env,
                         Rc::new(RefCell::new(
-                            move |_renderer: &mut crate::renderer::SemanticCore,
+                            move |_renderer: &mut crate::renderer::SemanticCore<E>,
                                   _env: &Environment| {
                                 run_row_delete(&state, &action_env, index)
                             },
@@ -1524,7 +1527,7 @@ pub fn list_accessibility(
                             }),
                             &subtree_env,
                             Rc::new(RefCell::new(
-                                move |_renderer: &mut crate::renderer::SemanticCore,
+                                move |_renderer: &mut crate::renderer::SemanticCore<E>,
                                       _env: &Environment| {
                                     run_row_move(&state, &action_env, index, to)
                                 },
@@ -1599,20 +1602,21 @@ pub fn list_accessibility(
 /// without the rect the draw pass painted would silently desynchronize the
 /// two trees.
 #[cfg(feature = "accessibility")]
-fn register_edit_control_node(
-    renderer: &mut crate::renderer::SemanticCore,
+fn register_edit_control_node<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
     semantic_key: i64,
     label: String,
     bounds: Option<kurbo::Rect>,
     env: &Environment,
-    action: crate::renderer::AccessibilityActivation,
+    action: crate::renderer::AccessibilityActivation<E>,
 ) -> Option<AccessibilityNodeId> {
-    let mut node =
-        AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+    let mut node = AccessibilityNode::new(
+        crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
             env,
             AccessibilityNodeRole::Button,
-        ));
+        ),
+    );
     node.set_label(label);
     node.add_action(AccessibilityAction::Focus);
     node.add_action(AccessibilityAction::Click);
@@ -1637,10 +1641,10 @@ fn register_edit_control_node(
 }
 
 /// Measures the scrollable viewport, using content size only for ideal queries.
-pub fn measure_list_node(
+pub fn measure_list_node<E: crate::text::TextEngine>(
     list: &ListConfig,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -1652,9 +1656,9 @@ pub fn measure_list_node(
 }
 
 /// Renders a retained list leaf every flush.
-pub fn render_list_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<ListRenderState>>,
+pub fn render_list_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<ListRenderState<E>>>,
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
@@ -1687,9 +1691,9 @@ pub fn render_list_node(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn render_list_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<ListRenderState>>,
+pub fn render_list_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<ListRenderState<E>>>,
     env: &Environment,
 ) {
     // The retained snapshot supplies the row count and every materialization
@@ -1963,7 +1967,7 @@ pub fn render_list_parts(
         #[cfg(feature = "accessibility")]
         let (item, row_env) = {
             let mut item = item;
-            let (content, scoped) = hoist_accessibility_metadata(item.content, &row_env);
+            let (content, scoped) = hoist_accessibility_metadata::<E>(item.content, &row_env);
             item.content = content;
             (item, scoped)
         };
@@ -2181,7 +2185,7 @@ pub fn render_list_parts(
             ctx.renderer_mut().register_interactive_pointer_target(
                 hit_bounds,
                 press_slot,
-                move |renderer: &mut crate::renderer::SemanticCore, _point, _env| {
+                move |renderer: &mut crate::renderer::SemanticCore<E>, _point, _env| {
                     selection.write(index, row_id, renderer.modifiers());
                     true
                 },
@@ -2538,8 +2542,8 @@ pub fn render_list_parts(
 /// closures read the row's *current* index and size through this cell, so a
 /// drag still in flight after a reorder or a deletion acts on where the row is
 /// now rather than on the index captured when the recognizer was created.
-fn refresh_row_binding(
-    state: &Rc<RefCell<ListRenderState>>,
+fn refresh_row_binding<E: crate::text::TextEngine>(
+    state: &Rc<RefCell<ListRenderState<E>>>,
     row_id: ListItemId,
     binding: RowBinding,
 ) -> Rc<Cell<RowBinding>> {
@@ -2556,9 +2560,9 @@ fn refresh_row_binding(
 /// Building a fresh recognizer every frame would reset the state machine mid-
 /// drag, so a swipe would stall the moment the list re-rendered. `slot` names
 /// which of the row's two gestures this is.
-fn register_row_gesture(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<ListRenderState>>,
+fn register_row_gesture<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<ListRenderState<E>>>,
     group: usize,
     row_id: ListItemId,
     bounds: kurbo::Rect,
@@ -2665,7 +2669,11 @@ fn row_edit_controls(
 
 /// The delete control's one action — shared by its pointer target and its
 /// accessibility `Click` node so both delete the row identically.
-fn run_row_delete(state: &RefCell<ListRenderState>, env: &Environment, index: usize) -> bool {
+fn run_row_delete<E: crate::text::TextEngine>(
+    state: &RefCell<ListRenderState<E>>,
+    env: &Environment,
+    index: usize,
+) -> bool {
     if let Some(action) = state.borrow().config.on_delete.as_ref() {
         (action)(env, index);
     }
@@ -2676,8 +2684,8 @@ fn run_row_delete(state: &RefCell<ListRenderState>, env: &Environment, index: us
 /// their accessibility `Click` nodes. The preserve-anchor latch stays set only
 /// when the move dirtied the rows: it holds the viewport's index over the
 /// membership reconcile so the moved row visibly travels.
-fn run_row_move(
-    state: &RefCell<ListRenderState>,
+fn run_row_move<E: crate::text::TextEngine>(
+    state: &RefCell<ListRenderState<E>>,
     env: &Environment,
     from: usize,
     to: usize,
@@ -2694,9 +2702,9 @@ fn run_row_move(
 
 /// Swipe-to-dismiss across a whole row, committing `on_delete` once the row
 /// travels past Material's positional threshold.
-fn register_row_swipe_gesture(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<ListRenderState>>,
+fn register_row_swipe_gesture<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<ListRenderState<E>>>,
     group: usize,
     row_id: ListItemId,
     binding: Rc<Cell<RowBinding>>,
@@ -2762,9 +2770,9 @@ fn register_row_swipe_gesture(
 
 /// Vertical reorder drag on a row's move handle, committing `on_move` on
 /// release.
-fn register_row_reorder_gesture(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<ListRenderState>>,
+fn register_row_reorder_gesture<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<ListRenderState<E>>>,
     group: usize,
     row_id: ListItemId,
     binding: Rc<Cell<RowBinding>>,
@@ -2898,8 +2906,8 @@ impl RowGestures {
 /// The chrome reads the `MutedForeground` theme token rather than naming a
 /// colour, so a section title matches the platform's own secondary text on
 /// every theme.
-fn draw_section_label(
-    ctx: &mut WidgetRenderContext<'_>,
+fn draw_section_label<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     label: Text,
     bounds: kurbo::Rect,
     is_header: bool,
@@ -2976,9 +2984,9 @@ fn list_content_rect(
 /// Emits a retained list's accessibility tree for the semantic walk — the same
 /// nodes `list_accessibility` registers, with no bounds and every row present.
 #[cfg(feature = "accessibility")]
-pub fn emit_list_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<ListRenderState>>,
+pub fn emit_list_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<ListRenderState<E>>>,
     env: &Environment,
 ) {
     list_accessibility(renderer, None, None, state, env);

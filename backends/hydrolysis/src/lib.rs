@@ -9,6 +9,10 @@ mod env;
 mod gpu_view;
 #[cfg(hydrolysis_hosted)]
 mod hosted;
+// The HWUI render target compiles for tests everywhere and for the Android
+// runtime under its feature.
+#[cfg(any(test, hydrolysis_hwui))]
+pub mod hwui;
 mod localization;
 mod num_cast;
 #[cfg(hydrolysis_pipeline_cache)]
@@ -100,9 +104,11 @@ pub use runner::run;
 pub use runner::{FrameCounters, FramePhases, FrameProfile, SemanticPumpResult, SemanticRuntime};
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
+#[cfg(any(test, hydrolysis_hwui))]
+pub use text::HwuiTextEngine;
 #[cfg(not(target_arch = "wasm32"))]
 pub use text::fonts::native_collection;
-pub use text::{DeclaredFonts, FontFamilyResolution};
+pub use text::{DeclaredFonts, FontFamilyResolution, ParleyEngine};
 pub use view_renderer::HydrolysisViewRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;
