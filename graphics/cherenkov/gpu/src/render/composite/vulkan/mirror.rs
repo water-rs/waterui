@@ -211,6 +211,25 @@ struct FrameSets {
     idle: Arc<AtomicBool>,
 }
 
+/// Resources released by the renderer's submission-completion callback.
+pub struct Completion {
+    device: ash::Device,
+    idle: Arc<AtomicBool>,
+    retired: Vec<Slot>,
+}
+
+impl Completion {
+    /// Releases attachments and descriptor pools after their submission completes.
+    pub fn complete(self) {
+        for slot in self.retired {
+            // SAFETY: the queue invokes this only after the submission covering
+            // every use of these retired attachments has completed.
+            unsafe { slot.destroy(&self.device) };
+        }
+        self.idle.store(true, Ordering::Release);
+    }
+}
+
 /// What a descriptor set was written for. Every handle written into a
 /// set appears here, so a hit is a set that describes exactly the same
 /// resources.
@@ -242,11 +261,6 @@ pub struct PipeKey {
     pub replace: bool,
     /// Attachments the epoch binds.
     pub slots: u8,
-}
-
-/// Objects whose destruction waits for a submission to complete.
-enum Retired {
-    Slot(Slot),
 }
 
 /// Whether `vkCmdBeginRendering` is reached as core 1.3 or through
@@ -281,7 +295,7 @@ pub struct Mirror {
     frames: Vec<FrameSets>,
     active: Option<usize>,
     stamp: Option<Stamp>,
-    retired: Vec<Retired>,
+    retired: Vec<Slot>,
 }
 
 impl std::fmt::Debug for Mirror {
@@ -441,29 +455,21 @@ impl Mirror {
         };
         self.active = Some(index);
         self.stamp = Some(stamp);
-        // Everything retired before this frame opened was referenced
-        // only by submissions older than the one whose completion
-        // released this frame's pools.
-        let retired = std::mem::take(&mut self.retired);
-        for item in retired {
-            match item {
-                // SAFETY: the slot's objects were created on
-                // `self.device` by this mirror and are destroyed once.
-                Retired::Slot(slot) => unsafe { slot.destroy(&self.device) },
-            }
-        }
         Ok(())
     }
 
-    /// Closes the frame and hands back the flag whose release lets the
-    /// next frame recycle this one's descriptor pools. The renderer
-    /// sets it from the submission-completion callback.
+    /// Closes the frame and transfers retired attachments to its completion
+    /// callback, which also releases this frame's descriptor pools.
     ///
     /// Returns `None` when the frame recorded no tile epoch.
-    pub fn end_frame(&mut self) -> Option<Arc<AtomicBool>> {
+    pub fn end_frame(&mut self) -> Option<Completion> {
         self.stamp = None;
         let index = self.active.take()?;
-        Some(Arc::clone(&self.frames[index].idle))
+        Some(Completion {
+            device: self.device.clone(),
+            idle: Arc::clone(&self.frames[index].idle),
+            retired: std::mem::take(&mut self.retired),
+        })
     }
 
     /// Checks the frame's resource identities have not moved under the
@@ -563,8 +569,8 @@ impl Mirror {
 
     /// Retires attachment sizes this frame did not use, so animated
     /// bounds do not keep every historical size alive. The images are
-    /// destroyed at the start of a later frame, once the submissions
-    /// that referenced them have completed.
+    /// destroyed by this frame's submission-completion callback, which
+    /// covers every earlier submission that referenced them.
     pub fn finish_frame(&mut self) {
         let mut dropped = Vec::new();
         self.attachments.retain(|_, entry| {
@@ -575,7 +581,7 @@ impl Mirror {
                 false
             }
         });
-        self.retired.extend(dropped.into_iter().map(Retired::Slot));
+        self.retired.extend(dropped);
     }
 
     /// Creates one transient attachment at `size`: an image with the
@@ -1171,10 +1177,8 @@ impl Mirror {
                     slot.destroy(&self.device);
                 }
             }
-            for item in self.retired.drain(..) {
-                match item {
-                    Retired::Slot(slot) => slot.destroy(&self.device),
-                }
+            for slot in self.retired.drain(..) {
+                slot.destroy(&self.device);
             }
             for frame in self.frames.drain(..) {
                 for pool in frame.pools {
