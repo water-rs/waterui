@@ -1104,6 +1104,13 @@ fn retained_picture_reuses_pixels_across_fractional_translation() -> Result<(), 
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     let pixels = wait!(surface.readback())?;
     assert!(px(&pixels, 20, 20)[1] > 0.99, "new source must replace retained red pixels");
+    let hdr = Picture::record(|c| c.fill(overhang(), WorkingColor::new([2.0, 0.1, 0.1, 1.0])));
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| c.picture(&hdr, Affine::IDENTITY)));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let pixels = wait!(surface.readback())?;
+    assert!(px(&pixels, 20, 20)[0] > 1.99, "HDR picture storage must retain superwhite values");
     Ok(())
 }
 }

@@ -86,10 +86,18 @@ impl Lowering<'_> {
         // pixels across small scale changes. Whole octaves can charge 4x.
         let density = (f64::from(scale as f32).log2() * 2.0).ceil();
         let density = (density * 0.5).exp2();
+        let format = if crate::render::content_range::of_ops(ops, glyphs.images)
+            == crate::render::present::ColorRange::HighDynamicRange
+        {
+            wgpu::TextureFormat::Rgba16Float
+        } else {
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        };
         let key = LocalKey {
             layer,
             picture: Some(std::ptr::from_ref(picture.display_list()) as usize),
             bucket: crate::render::projective::bucket(density),
+            format,
         };
         let entry = context
             .retained
@@ -186,16 +194,13 @@ impl Lowering<'_> {
                 || {
                     pending
                         .expect("current image is retained or pending")
-                        .levels
-                        .iter()
-                        .map(|&(w, h)| 8 * u64::from(w) * u64::from(h))
-                        .sum()
+                        .bytes()
                 },
                 crate::render::projective::Entry::bytes,
             )
         } else {
             image.levels = mip_levels(image.size);
-            image.bytes()
+            crate::render::projective::mip_bytes(format, &image.levels)
         };
         if !already_composed && bytes > context.available {
             return Ok(None);

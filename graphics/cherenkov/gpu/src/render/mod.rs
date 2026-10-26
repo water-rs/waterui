@@ -936,7 +936,7 @@ fn stored_format(
 ) -> Result<wgpu::TextureFormat, RenderError> {
     match target {
         Target::Part(_) | Target::Plane(_) => Ok(surf.format),
-        Target::Projected(_) => Ok(WORKING_FORMAT),
+        Target::Projected(key) => Ok(projective_entry(&surf.projective, key).texture.format()),
         Target::Scratch(_) => Ok(surf.scratch[&surf.composition.scratch_slot(pass, target)]
             .texture
             .format()),
@@ -6169,6 +6169,9 @@ impl GpuRenderer {
                 .map_or(WORKING_FORMAT, |surf| surf.format);
             self.ensure_projective(&[surface, self.scratch_format, WORKING_FORMAT])?;
         }
+        for r in &realize {
+            self.ensure_projective(&[r.key.format])?;
+        }
         let available = self.projective_available();
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
@@ -6177,12 +6180,7 @@ impl GpuRenderer {
         for key in &composed {
             required += realize.iter().find(|r| r.key == *key).map_or_else(
                 || projective_entry(&surf.projective, *key).bytes(),
-                |r| {
-                    r.levels
-                        .iter()
-                        .map(|&(w, h)| 8 * u64::from(w) * u64::from(h))
-                        .sum()
-                },
+                projective::Realize::bytes,
             );
             if required > available {
                 return Err(RenderError::ProjectiveUnsupported {
@@ -6200,13 +6198,10 @@ impl GpuRenderer {
                     .projective
                     .get(&r.key.layer)
                     .and_then(|entries| entries.iter().find(|entry| entry.matches(r.key)));
-                if old.is_some_and(|entry| entry.fits(r.levels[0])) {
+                if old.is_some_and(|entry| entry.fits(r.levels[0], r.key.format)) {
                     0
                 } else {
-                    r.levels
-                        .iter()
-                        .map(|&(w, h)| 8 * u64::from(w) * u64::from(h))
-                        .sum::<u64>()
+                    r.bytes()
                         .saturating_sub(old.map_or(0, projective::Entry::bytes))
                 }
             })
@@ -6220,7 +6215,7 @@ impl GpuRenderer {
             let entries = surf.projective.entry(r.key.layer).or_default();
             let slot = entries.iter().position(|e| e.matches(r.key));
             if let Some(entry) = slot.map(|i| &mut entries[i])
-                && entry.fits(r.levels[0])
+                && entry.fits(r.levels[0], r.key.format)
             {
                 entry.key = None;
                 entry.picture.clone_from(&r.picture);
@@ -6228,8 +6223,13 @@ impl GpuRenderer {
             }
             let pipelines = self.projective.as_ref().expect("built above");
             surf.command_damage.forget();
-            let mut entry =
-                projective::Entry::new(&self.device, pipelines, r.key.bucket, &r.levels);
+            let mut entry = projective::Entry::new(
+                &self.device,
+                pipelines,
+                r.key.bucket,
+                &r.levels,
+                r.key.format,
+            );
             entry.picture.clone_from(&r.picture);
             let bytes = entry.bytes();
             if let Some(i) = slot {
@@ -6586,12 +6586,7 @@ impl GpuRenderer {
                 for key in &lowered.composed {
                     let bytes = lowered.realize.iter().find(|r| r.key == *key).map_or_else(
                         || projective_entry(&surf.projective, *key).bytes(),
-                        |r| {
-                            r.levels
-                                .iter()
-                                .map(|&(w, h)| 8 * u64::from(w) * u64::from(h))
-                                .sum()
-                        },
+                        projective::Realize::bytes,
                     );
                     required += bytes;
                     if key.picture.is_some() {
@@ -7234,12 +7229,7 @@ impl GpuRenderer {
                     .map(|key| {
                         lowered.realize.iter().find(|r| r.key == *key).map_or_else(
                             || projective_entry(&surf.projective, *key).bytes(),
-                            |r| {
-                                r.levels
-                                    .iter()
-                                    .map(|&(w, h)| 8 * u64::from(w) * u64::from(h))
-                                    .sum()
-                            },
+                            projective::Realize::bytes,
                         )
                     })
                     .sum();
@@ -7309,6 +7299,7 @@ impl GpuRenderer {
             let key = projective::LocalKey {
                 layer: plan.layer,
                 picture: None,
+                format: WORKING_FORMAT,
                 bucket: projective::bucket(image.density),
             };
             let cache =
@@ -11533,7 +11524,9 @@ impl GpuRenderer {
                         .texture
                         .format(),
                     Target::Part(_) | Target::Plane(_) => surface.format,
-                    Target::Projected(_) => WORKING_FORMAT,
+                    Target::Projected(key) => {
+                        projective_entry(&surface.projective, key).texture.format()
+                    }
                 };
                 (*id, format)
             })
@@ -11594,7 +11587,9 @@ impl GpuRenderer {
                     .texture
                     .format(),
                 Target::Part(_) | Target::Plane(_) => surface.format,
-                Target::Projected(_) => WORKING_FORMAT,
+                Target::Projected(key) => {
+                    projective_entry(&surface.projective, key).texture.format()
+                }
             };
             let format_i = format_slot(format);
             // Init builds every eager cell of the working and scratch
