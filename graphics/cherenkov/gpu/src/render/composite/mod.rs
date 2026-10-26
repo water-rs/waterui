@@ -6,8 +6,10 @@
 //! within. Logical lifetimes and materialized storage are planned on every
 //! backend. Without a native executor, images remain in device memory with
 //! [`crate::render::composition::Materialization::NoExecutor`].
+//! [`demand`] propagates repaint regions through these image dependencies.
 
 pub mod cache;
+pub mod demand;
 pub mod plan;
 
 #[cfg(target_vendor = "apple")]

@@ -154,6 +154,9 @@ impl fmt::Debug for dyn TableSource {
     }
 }
 
+/// A hook slot the [`TableView`] invokes on scroll or layout callbacks.
+type TableHandler = RefCell<Option<Rc<dyn Fn(&TableView)>>>;
+
 /// The per-instance state [`TableView`] stores.
 pub struct TableViewIvars {
     source: RefCell<Option<Rc<dyn TableSource>>>,
@@ -164,6 +167,12 @@ pub struct TableViewIvars {
     /// pass, read from the window's keyboard region; the focus observers
     /// scroll a focused field clear of the keyboard region.
     keyboard: Rc<KeyboardTracking>,
+    /// The hook `scrollViewDidScroll:` fires on every offset change —
+    /// user-, flight- or programmatic-driven alike.
+    scroll: TableHandler,
+    /// The hook `layoutSubviews` fires after the system layout: bounds,
+    /// content-size and inset changes all land here.
+    layout: TableHandler,
 }
 
 impl TableViewIvars {
@@ -174,6 +183,8 @@ impl TableViewIvars {
             source: RefCell::new(None),
             flight: ScrollFlight::new(mtm),
             keyboard: Rc::new(KeyboardTracking::new()),
+            scroll: RefCell::new(None),
+            layout: RefCell::new(None),
         }
     }
 
@@ -246,6 +257,20 @@ define_class!(
         fn scroll_view_will_begin_dragging(&self, _scroll_view: &UIScrollView) {
             guarded("TableView scrollViewWillBeginDragging", || {
                 self.ivars().flight.cancel();
+            });
+        }
+
+        /// Every offset change reaches the scroll hook — drags, the
+        /// flight's own `contentOffset` writes, animated jumps alike.
+        #[unsafe(method(scrollViewDidScroll:))]
+        fn scroll_view_did_scroll(&self, _scroll_view: &UIScrollView) {
+            guarded("TableView scrollViewDidScroll", || {
+                // Clone the handler out of the cell before invoking: the
+                // handler may replace or clear the slot itself.
+                let handler = self.ivars().scroll.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(self);
+                }
             });
         }
     }
@@ -500,6 +525,12 @@ define_class!(
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), layoutSubviews] };
                 self.ivars().keyboard.apply_layout(self);
+                // Clone the handler out of the cell before invoking: the
+                // handler may replace or clear the slot itself.
+                let handler = self.ivars().layout.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(self);
+                }
             });
         }
 
@@ -824,6 +855,20 @@ impl TableView {
         self.ivars().flight.in_flight()
     }
 
+    /// Runs `handler` whenever the scroll position changes, replacing the
+    /// previous handler — `scrollViewDidScroll:` covers drags, flights and
+    /// animated jumps alike.
+    pub fn on_scroll(&self, handler: impl Fn(&Self) + 'static) {
+        self.ivars().scroll.replace(Some(Rc::new(handler)));
+    }
+
+    /// Runs `handler` after every `UIKit` layout pass — where bounds,
+    /// content-size and inset changes land — replacing the previous
+    /// handler.
+    pub fn set_layout_handler(&self, handler: impl Fn(&Self) + 'static) {
+        self.ivars().layout.replace(Some(Rc::new(handler)));
+    }
+
     /// Lays out subviews immediately.
     pub fn layout_if_needed(&self) {
         self.layoutIfNeeded();
@@ -888,6 +933,27 @@ impl TableView {
         };
         let actions = NSArray::from_retained_slice(&[action]);
         UISwipeActionsConfiguration::configurationWithActions(&actions, mtm)
+    }
+}
+
+impl crate::teardown::HandlerSlots for TableView {
+    /// Drops every installed handler — the release boundary of the view's
+    /// owner, which reaches it through a [`crate::HandlerTeardown`] guard
+    /// the owner keeps.
+    ///
+    /// Each slot answers `None` afterwards, so a callback `UIKit` delivers
+    /// to this view does nothing by construction rather than reaching
+    /// state the owner released, and the handlers no longer keep that
+    /// state alive: source, scroll, layout — the flight is cancelled and
+    /// the keyboard observers cleared so the center no longer holds the
+    /// view's entries.
+    fn clear_handlers(&self) {
+        let ivars = self.ivars();
+        ivars.source.replace(None);
+        ivars.scroll.replace(None);
+        ivars.layout.replace(None);
+        ivars.flight.cancel();
+        ivars.keyboard.clear();
     }
 }
 

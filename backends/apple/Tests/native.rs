@@ -104,6 +104,13 @@ fn embedding_trials() -> Vec<Trial> {
                 Ok(())
             },
         ),
+        Trial::test(
+            "embedding::a_swiftui_host_measures_and_updates_its_environment_without_remounting",
+            || {
+                embedding::a_swiftui_host_measures_and_updates_its_environment_without_remounting();
+                Ok(())
+            },
+        ),
     ]
 }
 
@@ -134,6 +141,14 @@ fn trials() -> Vec<Trial> {
                 "menus::a_pull_down_validates_its_callback_rows_from_their_command",
                 || {
                     menus::a_pull_down_validates_its_callback_rows_from_their_command();
+                    Ok(())
+                },
+            ),
+            #[cfg(feature = "text_field")]
+            Trial::test(
+                "text_selection::a_selection_menu_command_edits_the_live_selection",
+                || {
+                    text_selection::a_selection_menu_command_edits_the_live_selection();
                     Ok(())
                 },
             ),
@@ -1537,13 +1552,6 @@ mod tabs {
         ]
     }
 
-    /// Tab identity for the fixtures.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-    enum Pane {
-        One,
-        Two,
-    }
-
     /// The rendered leaf's first subview is the controller's root view; a
     /// `UIViewController` sits on the responder chain right after its own
     /// view — the same reach `adopt_controllers` relies on.
@@ -1589,14 +1597,14 @@ mod tabs {
     /// Two plain tabs with `accessory` in the bottom slot.
     fn tabs(
         accessory: impl waterui_backend_core::View,
-    ) -> (waterui::reactive::Binding<Pane>, NativeLeaf) {
-        let pane = binding(Pane::One);
+    ) -> (waterui::reactive::Binding<usize>, NativeLeaf) {
+        let pane = binding(0usize);
         let leaf = resolve::render(
             Tabs::new(
                 &pane,
                 vec![
-                    Tab::container(Pane::One, label("One"), || text("pane one")),
-                    Tab::container(Pane::Two, label("Two"), || text("pane two")),
+                    Tab::container(label("One"), || text("pane one")),
+                    Tab::container(label("Two"), || text("pane two")),
                 ],
             )
             .bottom_accessory(accessory),
@@ -1639,7 +1647,7 @@ mod tabs {
         let (pane, leaf) = tabs(text("Now Playing"));
         let controller = tab_bar_controller(&leaf);
         let accessory = controller.bottomAccessory().expect("installed");
-        pane.set(Pane::Two);
+        pane.set(1usize);
         assert_eq!(controller.selectedIndex(), 1);
         let after = controller.bottomAccessory().expect("still installed");
         assert_eq!(Retained::as_ptr(&after), Retained::as_ptr(&accessory));
@@ -1696,13 +1704,10 @@ mod tabs {
                 UITabBarMinimizeBehavior::OnScrollUp,
             ),
         ] {
-            let pane = binding(Pane::One);
+            let pane = binding(0usize);
             let leaf = resolve::render(
-                Tabs::new(
-                    &pane,
-                    vec![Tab::container(Pane::One, label("One"), || text("one"))],
-                )
-                .minimize_behavior(shared),
+                Tabs::new(&pane, vec![Tab::container(label("One"), || text("one"))])
+                    .minimize_behavior(shared),
             );
             assert_eq!(tab_bar_controller(&leaf).tabBarMinimizeBehavior(), native);
         }
@@ -1727,14 +1732,14 @@ mod tabs {
     /// scroll surface for the bottom edge: a scroll mounted as the root,
     /// or one the pane's container declares as a candidate.
     pub fn pane_scroll_view_associates_for_collapse() {
-        let pane = binding(Pane::One);
+        let pane = binding(0usize);
         let leaf = resolve::render(Tabs::new(
             &pane,
             vec![
-                Tab::container(Pane::One, label("One"), || {
+                Tab::container(label("One"), || {
                     scroll(vstack((text("one"), text("two"), text("three"))))
                 }),
-                Tab::container(Pane::Two, label("Two"), || {
+                Tab::container(label("Two"), || {
                     vstack((text("aside"), scroll(text("nested"))))
                 }),
             ],
@@ -1761,12 +1766,12 @@ mod tabs {
     /// associates nothing for any edge but the bottom one — the tab bar
     /// only tracks a surface it actually gets.
     pub fn panes_without_surfaces_answer_none() {
-        let pane = binding(Pane::One);
+        let pane = binding(0usize);
         let leaf = resolve::render(Tabs::new(
             &pane,
             vec![
-                Tab::container(Pane::One, label("One"), || scroll(text("scrollable"))),
-                Tab::container(Pane::Two, label("Two"), || text("static")),
+                Tab::container(label("One"), || scroll(text("scrollable"))),
+                Tab::container(label("Two"), || text("static")),
             ],
         ));
         let controllers = tab_bar_controller(&leaf)
@@ -1810,7 +1815,7 @@ mod tabs {
 
         let scrolled = binding(true);
         let content = scrolled.clone();
-        let pane = binding(Pane::One);
+        let pane = binding(0usize);
         // Render inside a bounded pool: the leaf's own `Retained`/`Rc`
         // ownership survives, while every autoreleased temporary the
         // mount produced drains now — the weak read later must not meet
@@ -1818,7 +1823,7 @@ mod tabs {
         let leaf = autoreleasepool(|_| {
             resolve::render(Tabs::new(
                 &pane,
-                vec![Tab::container(Pane::One, label("One"), move || {
+                vec![Tab::container(label("One"), move || {
                     Dynamic::watch(content.clone(), |scrolled| {
                         if scrolled {
                             AnyView::new(scroll(text("surface")))
@@ -1913,10 +1918,10 @@ mod tabs {
         }
 
         let mtm = super::mtm();
-        let pane = binding(Pane::One);
+        let pane = binding(0usize);
         let leaf = resolve::render(Tabs::new(
             &pane,
-            vec![Tab::container(Pane::One, label("One"), || {
+            vec![Tab::container(label("One"), || {
                 NavigationStack::new(NavigationView::new("Root", scroll(text("root"))))
             })],
         ));
@@ -2291,12 +2296,12 @@ mod navigation {
     /// restores the user's own collapse state instead of forcing the
     /// sidebar open.
     pub fn a_hidden_tab_split_releases_the_toolbar_sidebar_space() {
-        let tab = binding(0i32);
+        let tab = binding(0usize);
         let detail = binding(Some(1_i32));
         let leaf = resolve::render(Tabs::new(
             &tab,
             vec![
-                Tab::new(0i32, "Inbox", move || {
+                Tab::new("Inbox", move || {
                     NavigationView::new("Inbox", text("inbox")).navigation_toolbar(
                         NavigationToolbar::new(vec![NavigationToolbarItem::action(
                             NavigationToolbarPlacement::TopBarLeading,
@@ -2305,7 +2310,7 @@ mod navigation {
                         )]),
                     )
                 }),
-                Tab::container(1i32, "Split", move || {
+                Tab::container("Split", move || {
                     NavigationSplitView::new(&detail, text("Sidebar"), |id: i32| {
                         NavigationView::new(format!("Detail {id}"), text("detail"))
                     })
@@ -2363,7 +2368,7 @@ mod navigation {
         // Selecting the split's tab brings its chrome back: the sidebar
         // expands and the toolbar aligns to it with the tracking
         // separator.
-        tab.set(1i32);
+        tab.set(1usize);
         assert!(
             pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 !sidebar.isCollapsed() && has_tracking_separator(&window)
@@ -2382,12 +2387,12 @@ mod navigation {
             pump_main_until(MAIN_QUEUE_DEADLINE, || sidebar.isCollapsed()),
             "the user's collapse lands on the sidebar item"
         );
-        tab.set(0i32);
+        tab.set(0usize);
         assert!(
             pump_main_until(MAIN_QUEUE_DEADLINE, || !has_tracking_separator(&window)),
             "hiding the pane withdraws the sidebar chrome again"
         );
-        tab.set(1i32);
+        tab.set(1usize);
         assert!(
             pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 sidebar.isCollapsed() && has_tracking_separator(&window)
@@ -2403,21 +2408,19 @@ mod navigation {
     /// The window stays unordered; the metrics were read that way.
     pub fn a_toolbar_tab_picker_uses_the_extra_large_metrics() {
         let mtm = mtm();
-        let pane = binding(0i32);
+        let pane: waterui::Binding<usize> = binding(0usize);
         let labels = ["Inbox", "Library", "Gallery", "Settings"];
         let leaf = resolve::render(Tabs::new(
             &pane,
             labels
                 .iter()
-                .enumerate()
-                .map(|(index, label)| {
+                .map(|label| {
                     let title = (*label).to_string();
-                    let id = i32::try_from(index).expect("the four tabs fit in i32");
-                    Tab::new(id, *label, move || {
+                    Tab::new(*label, move || {
                         NavigationView::new(title.clone(), text(title.clone()))
                     })
                 })
-                .collect(),
+                .collect::<Vec<_>>(),
         ));
         let window = leaf::attach(mtm, leaf.view());
         window.set_content_rect(cocoa_ui::Rect::new(0.0, 0.0, 700.0, 520.0), false);
@@ -5666,10 +5669,10 @@ mod safe_area {
     /// keyboard covers it instead of lifting it — while the hosted
     /// content's bottom edge binds to the deeper of the two boundaries.
     fn a_tab_bar_stays_docked_under_the_keyboard() {
-        let selection = binding(0i32);
+        let selection = binding(0usize);
         let mount = mount(Tabs::new(
             &selection,
-            vec![Tab::new(0i32, "Messages", move || {
+            vec![Tab::new("Messages", move || {
                 NavigationView::new(
                     "Messages",
                     vstack((
@@ -5886,10 +5889,10 @@ mod safe_area {
     /// boundary, and the content binds the deeper boundary under the
     /// keyboard.
     fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar() {
-        let selection = binding(0i32);
+        let selection = binding(0usize);
         let mount = mount(Tabs::new(
             &selection,
-            vec![Tab::container(0i32, "Home", move || {
+            vec![Tab::container("Home", move || {
                 NavigationStack::new(
                     NavigationView::new(
                         "Home",
@@ -5945,22 +5948,22 @@ mod safe_area {
     /// frame — a bar docks at the boundary of the edge it touches, which
     /// for a mid-window bar is the frame its host gave it.
     fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar() {
-        let selection = binding(0i32);
-        let inner_selection = binding(0i32);
+        let selection = binding(0usize);
+        let inner_selection = binding(0usize);
         let mount = mount(Tabs::new(
             &selection,
             vec![
-                Tab::new(0i32, "Outer", move || {
+                Tab::new("Outer", move || {
                     NavigationView::new(
                         "Outer",
                         vstack((
                             Tabs::new(
                                 &inner_selection,
                                 vec![
-                                    Tab::new(1i32, "Inner A", move || {
+                                    Tab::new("Inner A", move || {
                                         NavigationView::new("A", text("a"))
                                     }),
-                                    Tab::new(2i32, "Inner B", move || {
+                                    Tab::new("Inner B", move || {
                                         NavigationView::new("B", text("b"))
                                     }),
                                 ],
@@ -5971,9 +5974,7 @@ mod safe_area {
                         )),
                     )
                 }),
-                Tab::new(3i32, "Other", move || {
-                    NavigationView::new("Other", text("other"))
-                }),
+                Tab::new("Other", move || NavigationView::new("Other", text("other"))),
             ],
         ));
         // Two bars: the inner controller's inside its 200pt host and the
@@ -8793,9 +8794,17 @@ mod a11y_extent {
 /// view's bounds and detaches when the mount drops.
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod embedding {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::ffi::c_void;
     use std::rc::Rc;
+
+    use waterui_apple::embedding::{
+        HostEnvironment, waterui_apple_measure, waterui_apple_update_environment,
+    };
+    use waterui_core::layout::{
+        Layout, LayoutDirection, Point, ProposalSize, Rect, Size, SubView, SubviewPlacement,
+    };
+    use waterui_locale::locale_binding;
 
     use cocoa_ui::objc2::MainThreadOnly;
     use cocoa_ui::objc2_app_kit::{
@@ -8808,7 +8817,10 @@ mod embedding {
     use waterui::component::menu::{Command, Menu, MenuItem};
     use waterui::component::text::Text;
     use waterui::graphics::color::ColorScheme;
+    use waterui::layout::container::FixedContainer;
     use waterui::reactive::{Computed, binding};
+    use waterui::regional;
+    use waterui::text::font::ResolvedFont;
     use waterui::window::WindowState;
     use waterui::{Environment, Signal};
 
@@ -8823,6 +8835,16 @@ mod embedding {
 
     impl Embed {
         fn new(host: &NSView, app: impl FnOnce(Environment) -> App) -> Self {
+            Self::new_with_environment(host, None, app)
+        }
+
+        /// `environment` is the scoped host snapshot a `SwiftUI` host would
+        /// declare; `None` mounts under the ambient platform.
+        fn new_with_environment(
+            host: &NSView,
+            environment: Option<waterui_apple::embedding::HostEnvironment>,
+            app: impl FnOnce(Environment) -> App,
+        ) -> Self {
             let runtime = Box::new(waterui_apple::embedding::Runtime::for_test());
             // SAFETY: `_runtime` keeps the runtime box alive past the mount's
             // drop; `host` is a live view and the paths are NUL-terminated.
@@ -8832,6 +8854,7 @@ mod embedding {
                     std::ptr::from_ref(host).cast_mut().cast(),
                     c"/tmp/waterui-embed-test-assets".as_ptr(),
                     c"/tmp/waterui-embed-test-fonts".as_ptr(),
+                    environment,
                     app,
                 )
             };
@@ -9028,6 +9051,326 @@ mod embedding {
         drop(embed);
         assert_eq!(view::subviews(&host).len(), 0);
         assert_eq!(host.frame().size, NSSize::new(300.0, 200.0));
+    }
+
+    /// TEST ONLY: synthetic host metrics — every style differs, so a
+    /// style-order mixup in the ABI shows up as a wrong slot, not a
+    /// coincidentally equal one.
+    fn host_metrics(base: f64) -> [cocoa_ui::system_font::FontMetrics; 6] {
+        std::array::from_fn(|index| {
+            let index = f64::from(u32::try_from(index).expect("six host font styles"));
+            cocoa_ui::system_font::FontMetrics {
+                size: base + index,
+                weight: 0.01 * (index + 1.0),
+                line_height: base + 3.0 + index,
+            }
+        })
+    }
+    fn flat_metrics(metrics: &[cocoa_ui::system_font::FontMetrics; 6]) -> Vec<f64> {
+        metrics
+            .iter()
+            .flat_map(|font| [font.size, font.weight, font.line_height])
+            .collect()
+    }
+    fn test_locale(tag: &str) -> waterui::locale::Locale {
+        tag.parse().expect("the test tags are valid BCP-47")
+    }
+
+    /// Records each proposal the measure ABI hands the mounted tree.
+    #[derive(Debug)]
+    struct ProbeLayout {
+        seen: Rc<RefCell<Vec<ProposalSize>>>,
+    }
+    impl Layout for ProbeLayout {
+        fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
+            self.seen.borrow_mut().push(proposal);
+            Size::new(17.0, 23.0)
+        }
+        fn place(
+            &self,
+            _bounds: Rect,
+            proposal: ProposalSize,
+            children: &[&dyn SubView],
+        ) -> Vec<SubviewPlacement> {
+            children
+                .iter()
+                .map(|_| {
+                    SubviewPlacement::new(
+                        Rect::new(Point::new(0.0, 0.0), Size::new(17.0, 23.0)),
+                        proposal,
+                    )
+                })
+                .collect()
+        }
+    }
+
+    /// What the app body captures from the scoped environment: the scheme
+    /// and direction `Computed`s, the three font slots the assertions use
+    /// (Body 0, Headline 2, Footnote 5 — distinct metrics catch an ABI
+    /// style-order mixup), the locale binding, and the body call count.
+    struct SwiftUiCapture {
+        bodies: Rc<Cell<usize>>,
+        scheme: Rc<RefCell<Option<Computed<ColorScheme>>>>,
+        fonts: Rc<RefCell<Vec<Computed<ResolvedFont>>>>,
+        direction: Rc<RefCell<Option<Computed<LayoutDirection>>>>,
+        locale: Rc<RefCell<Option<waterui::reactive::Binding<waterui::locale::Locale>>>>,
+    }
+    impl SwiftUiCapture {
+        fn new() -> Self {
+            Self {
+                bodies: Rc::new(Cell::new(0)),
+                scheme: Rc::new(RefCell::new(None)),
+                fonts: Rc::new(RefCell::new(Vec::new())),
+                direction: Rc::new(RefCell::new(None)),
+                locale: Rc::new(RefCell::new(None)),
+            }
+        }
+        /// The app closure: records the env's captured signals, then mounts
+        /// the probe container.
+        fn app(
+            &self,
+            seen: Rc<RefCell<Vec<ProposalSize>>>,
+        ) -> impl FnOnce(Environment) -> App + use<> {
+            let (bodies, scheme, fonts, direction, locale) = (
+                Rc::clone(&self.bodies),
+                Rc::clone(&self.scheme),
+                Rc::clone(&self.fonts),
+                Rc::clone(&self.direction),
+                Rc::clone(&self.locale),
+            );
+            move |env: Environment| {
+                bodies.set(bodies.get() + 1);
+                *scheme.borrow_mut() = env.query::<ColorScheme, Computed<ColorScheme>>().cloned();
+                fonts.borrow_mut().extend([
+                    env.query::<waterui::text::font::Body, Computed<ResolvedFont>>()
+                        .cloned()
+                        .expect("a scoped mount installs the Body font slot"),
+                    env.query::<waterui::text::font::Headline, Computed<ResolvedFont>>()
+                        .cloned()
+                        .expect("a scoped mount installs the Headline font slot"),
+                    env.query::<waterui::text::font::Footnote, Computed<ResolvedFont>>()
+                        .cloned()
+                        .expect("a scoped mount installs the Footnote font slot"),
+                ]);
+                *direction.borrow_mut() = Some(waterui::layout::layout_direction(&env));
+                let binding = locale_binding(&env);
+                assert_eq!(
+                    env.get::<waterui::locale::Locale>()
+                        .expect("a scoped mount inserts the host's static Locale"),
+                    &binding.snapshot()
+                );
+                *locale.borrow_mut() = Some(binding);
+                App::new(
+                    move || {
+                        FixedContainer::new(
+                            ProbeLayout {
+                                seen: Rc::clone(&seen),
+                            },
+                            (Text::new("probe"),),
+                        )
+                    },
+                    env,
+                )
+            }
+        }
+        fn scheme_now(&self) -> ColorScheme {
+            self.scheme.borrow().as_ref().unwrap().snapshot()
+        }
+        fn direction_now(&self) -> LayoutDirection {
+            self.direction.borrow().as_ref().unwrap().snapshot()
+        }
+        fn locale_now(&self) -> String {
+            self.locale
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .snapshot()
+                .canonical_tag()
+        }
+        fn font_now(&self, slot: usize) -> ResolvedFont {
+            self.fonts.borrow()[slot].snapshot()
+        }
+    }
+
+    /// The initial assertions: the mount captured the declared scheme,
+    /// direction, locale and per-style metrics; the body ran once.
+    fn assert_scoped_snapshot(
+        cap: &SwiftUiCapture,
+        scheme: ColorScheme,
+        direction: LayoutDirection,
+        locale_tag: &str,
+        base: f64,
+    ) {
+        assert_eq!(cap.bodies.get(), 1, "the mount built its body once");
+        assert_eq!(cap.scheme_now(), scheme);
+        assert_eq!(cap.direction_now(), direction);
+        assert_eq!(cap.locale_now(), locale_tag);
+        assert_eq!(f64::from(cap.font_now(0).size), base, "Body size");
+        assert_eq!(f64::from(cap.font_now(1).size), base + 2.0, "Headline size");
+        assert_eq!(f64::from(cap.font_now(2).size), base + 5.0, "Footnote size");
+        assert_eq!(
+            cap.font_now(0).line_height.map(f64::from),
+            Some(base + 3.0),
+            "Body line height"
+        );
+        assert_eq!(
+            cap.font_now(0).weight,
+            waterui::text::font::FontWeight::Normal,
+            "Body weight"
+        );
+    }
+
+    /// The measure ABI delivers the host's proposal verbatim: `nil` axes
+    /// are unbounded, `0`, finite and `.infinity` arrive as themselves,
+    /// and the layout's own size comes back. The contract's own re-measure
+    /// at the resolved size may append a second record — the first is the
+    /// ABI's delivery.
+    fn assert_measure_proposals(mount: *mut c_void, seen: &Rc<RefCell<Vec<ProposalSize>>>) {
+        for (width, height, hw, hh, want) in [
+            (0.0, 0.0, false, false, ProposalSize::new(None, None)),
+            (0.0, 0.0, true, false, ProposalSize::new(Some(0.0), None)),
+            (
+                50.0,
+                40.0,
+                true,
+                true,
+                ProposalSize::new(Some(50.0), Some(40.0)),
+            ),
+            (
+                f64::INFINITY,
+                f64::INFINITY,
+                true,
+                true,
+                ProposalSize::new(Some(f32::INFINITY), Some(f32::INFINITY)),
+            ),
+        ] {
+            seen.borrow_mut().clear();
+            let mut out = [0.0f64; 2];
+            // SAFETY: `mount` is a live mount; `out` is a two-element f64.
+            unsafe { waterui_apple_measure(mount, width, height, hw, hh, out.as_mut_ptr()) };
+            assert_eq!(out, [17.0, 23.0], "the layout's own size comes back");
+            assert_eq!(
+                seen.borrow().first(),
+                Some(&want),
+                "the ABI delivers the proposal axes verbatim"
+            );
+        }
+    }
+
+    /// A `SwiftUI`-scoped mount reads its declared environment — scheme,
+    /// direction, locale and the six resolved font metrics — updates in
+    /// place through `waterui_apple_update_environment`, and measures under
+    /// the host's proposal through `waterui_apple_measure`, never
+    /// remounting.
+    pub fn a_swiftui_host_measures_and_updates_its_environment_without_remounting() {
+        let mtm = mtm();
+        let host_a = plain_view(mtm);
+        let host_b = plain_view(mtm);
+        let seen_a = Rc::new(RefCell::new(Vec::new()));
+        let seen_b = Rc::new(RefCell::new(Vec::new()));
+        let cap_a = SwiftUiCapture::new();
+        let cap_b = SwiftUiCapture::new();
+        let global_tag_before = regional::current_settings().locale_tag().to_string();
+
+        let embed_a = Embed::new_with_environment(
+            &host_a,
+            Some(HostEnvironment {
+                scheme: cocoa_ui::ColorScheme::Light,
+                direction: LayoutDirection::LeftToRight,
+                locale: test_locale("en-US"),
+                fonts: host_metrics(13.0),
+            }),
+            cap_a.app(Rc::clone(&seen_a)),
+        );
+        let _embed_b = Embed::new_with_environment(
+            &host_b,
+            Some(HostEnvironment {
+                scheme: cocoa_ui::ColorScheme::Dark,
+                direction: LayoutDirection::RightToLeft,
+                locale: test_locale("ar-EG"),
+                fonts: host_metrics(20.0),
+            }),
+            cap_b.app(Rc::clone(&seen_b)),
+        );
+        assert_scoped_snapshot(
+            &cap_a,
+            ColorScheme::Light,
+            LayoutDirection::LeftToRight,
+            "en-US",
+            13.0,
+        );
+        assert_scoped_snapshot(
+            &cap_b,
+            ColorScheme::Dark,
+            LayoutDirection::RightToLeft,
+            "ar-EG",
+            20.0,
+        );
+        assert_measure_proposals(embed_a.mount, &seen_a);
+
+        // The same mount updates in place — the root view's identity is
+        // the whole point of no-remount.
+        let root_before = view::subviews(&host_a)
+            .into_iter()
+            .next()
+            .expect("mount A has a root view");
+        let updated = host_metrics(26.0);
+        let updated_flat = flat_metrics(&updated);
+        let ja = c"ja-JP";
+        // SAFETY: `embed_a` is a live scoped mount; `ja` is NUL-terminated
+        // and `updated_flat` holds eighteen doubles.
+        unsafe {
+            waterui_apple_update_environment(
+                embed_a.mount,
+                true,
+                true,
+                ja.as_ptr(),
+                updated_flat.as_ptr(),
+            );
+        }
+        assert!(
+            waterui_apple::native_test_support::pump_main_until(
+                waterui_apple::native_test_support::MAIN_QUEUE_DEADLINE,
+                || (cap_a.font_now(0).size - 26.0).abs() < f32::EPSILON
+            ),
+            "the Body font slot lands the update within the pump deadline"
+        );
+        assert_eq!(cap_a.font_now(0).size, 26.0);
+        assert_eq!(cap_a.font_now(2).size, 31.0, "A Footnote size");
+        assert_eq!(
+            cap_a.font_now(0).line_height,
+            Some(29.0),
+            "A Body line height"
+        );
+        assert_eq!(cap_a.scheme_now(), ColorScheme::Dark);
+        // ja-JP is left-to-right in isolation — the direction binding is the
+        // host's explicit declaration, not the locale's derived default.
+        assert_eq!(cap_a.direction_now(), LayoutDirection::RightToLeft);
+        assert_eq!(cap_a.locale_now(), "ja-JP");
+        assert_eq!(
+            cap_a.bodies.get(),
+            1,
+            "an environment update never remounts"
+        );
+        assert_eq!(
+            view::subviews(&host_a)
+                .into_iter()
+                .next()
+                .map(|view| &raw const *view),
+            Some(&raw const *root_before),
+            "the root view is the same object before and after the update"
+        );
+
+        // Nothing reaches the sibling mount or the process's own regional
+        // settings.
+        assert_eq!(cap_b.bodies.get(), 1);
+        assert_eq!(cap_b.font_now(0).size, 20.0);
+        assert_eq!(cap_b.locale_now(), "ar-EG");
+        assert_eq!(
+            regional::current_settings().locale_tag(),
+            global_tag_before.as_str(),
+            "the process locale is untouched by two scoped mounts and an update"
+        );
     }
 }
 
@@ -9545,5 +9888,255 @@ mod gesture_events {
                 Box::new(a_then_gesture_forwards_after_the_first_completes),
             ),
         ])
+    }
+}
+/// `selection_menu` rows on the field editor's real context menu —
+/// `textView:menu:forEvent:atIndex:` — resolved each request on an
+/// environment carrying the live `TextSelection` (water-rs/waterui#3037).
+#[cfg(all(target_os = "macos", feature = "native-test", feature = "text_field"))]
+mod text_selection {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use cocoa_ui::PlatformView;
+    use cocoa_ui::appkit::TextField as KitTextField;
+    use cocoa_ui::objc2::DowncastTarget;
+    use cocoa_ui::objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSMenu, NSTextView};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRange, NSString};
+    use cocoa_ui::{Retained, view};
+    use waterui::Str;
+    use waterui::component::menu::{Command, MenuItem};
+    use waterui::component::text_field::TextField;
+    use waterui::component::text_selection::TextSelection;
+    use waterui::reactive::{Signal, binding};
+    use waterui::text::StyledStr;
+
+    use crate::{leaf, mtm, resolve};
+
+    /// The first view of type `T` in a depth-first walk — the macOS
+    /// counterpart of the iOS suite's `find_view`.
+    fn find<T: DowncastTarget>(view: &PlatformView) -> Option<Retained<PlatformView>> {
+        for sub in view::subviews(view) {
+            if sub.downcast_ref::<T>().is_some() {
+                return Some(sub);
+            }
+            if let Some(found) = find::<T>(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The menu the field editor answers a right-click with — the path
+    /// `textView:menu:forEvent:atIndex:` rides.
+    fn edit_menu(window: &cocoa_ui::appkit::Window, editor: &NSTextView) -> Retained<NSMenu> {
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                NSEventType::RightMouseDown,
+                NSPoint::new(5.0, 5.0),
+                NSEventModifierFlags::empty(),
+                0.0,
+                window.native().windowNumber(),
+                None,
+                1,
+                1,
+                0.0,
+            )
+            .expect("a right-mouse-down event constructs");
+        editor
+            .menuForEvent(&event)
+            .expect("the field editor produced a menu")
+    }
+
+    /// Fires the menu row titled `title` the way the platform does —
+    /// `performActionForItemAtIndex:` sends the item's action at its target.
+    fn perform(menu: &NSMenu, title: &str) {
+        let item = menu
+            .itemWithTitle(&NSString::from_str(title))
+            .unwrap_or_else(|| panic!("no menu row titled {title}"));
+        menu.performActionForItemAtIndex(menu.indexOfItem(&item));
+    }
+
+    /// A `selection_menu` command reads the selection the moment it fires —
+    /// not the one the menu was built over — edits it through the native
+    /// path, sees its write in the value binding, and lets the editor's
+    /// undo restore both. `Option<TextSelection>` extracts `Some`, a
+    /// disabled command renders disabled, and `styled_value` is the
+    /// field's value binding.
+    /// Undo restores the pre-command text exactly and the editor's
+    /// `DidUndo` session observer reports it to the value binding; redo
+    /// writes the replacement back through both legs. A synchronous
+    /// external normalization inside the same write-back window still
+    /// reaches the field: echo suppression skips only the exact echo.
+    fn undo_and_normalization_roundtrip(
+        field: &cocoa_ui::appkit::TextField,
+        value: &waterui::reactive::Binding<Str>,
+        editor: &NSTextView,
+    ) {
+        let undo = editor
+            .undoManager()
+            .expect("the field editor carries an undo manager");
+        undo.undo();
+        assert_eq!(field.string(), "hé😀b");
+        assert_eq!(
+            value.snapshot(),
+            Str::from("hé😀b"),
+            "undo reports the restored text to the value binding"
+        );
+        undo.redo();
+        assert_eq!(field.string(), "hé《b");
+        assert_eq!(
+            value.snapshot(),
+            Str::from("hé《b"),
+            "redo reports the replayed text to the value binding"
+        );
+        undo.undo();
+        assert_eq!(field.string(), "hé😀b");
+
+        let _normalizer = value.watch({
+            let value = value.clone();
+            move |ctx| {
+                if ctx.value() == &Str::from("x") {
+                    value.set(Str::from("X"));
+                }
+            }
+        });
+        field.replace_range(NSRange::new(0, 5), &NSString::from_str("x"));
+        assert_eq!(
+            value.snapshot(),
+            Str::from("X"),
+            "the watcher rewrote the value synchronously"
+        );
+        assert_eq!(
+            field.string(),
+            "X",
+            "the normalized value pushed back onto the field"
+        );
+    }
+
+    pub fn a_selection_menu_command_edits_the_live_selection() {
+        let mtm = mtm();
+        let value = binding(Str::from("hé😀b"));
+        let observed = Rc::new(RefCell::new((String::new(), 0usize, 0usize)));
+        let optional_seen = Rc::new(RefCell::new(false));
+
+        let observe = Command::builder("Observe").action({
+            let observed = Rc::clone(&observed);
+            move |selection: TextSelection| {
+                let range = selection.range();
+                *observed.borrow_mut() = (selection.text().to_string(), range.start, range.end);
+            }
+        });
+        let optional = Command::builder("Optional").action({
+            let optional_seen = Rc::clone(&optional_seen);
+            move |selection: Option<TextSelection>| {
+                *optional_seen.borrow_mut() = selection.is_some();
+            }
+        });
+        // Selects a byte range of the live text — `Observe` proves it lands.
+        let mark =
+            Command::builder("Mark").action(|selection: TextSelection| selection.select(3..7));
+        // Replaces whatever the selection covers when the command fires.
+        let wrap_fired = Rc::new(RefCell::new(None));
+        let wrap = Command::builder("Wrap").action({
+            let wrap_fired = Rc::clone(&wrap_fired);
+            move |selection: TextSelection| {
+                let range = selection.range();
+                *wrap_fired.borrow_mut() = Some(range);
+                selection.replace("《");
+            }
+        });
+        let styled = Command::builder("Styled").action(|selection: TextSelection| {
+            selection
+                .styled_value()
+                .expect("a plain field answers styled_value")
+                .set(StyledStr::plain("ZZ"));
+        });
+        let off = Command::builder("Off").action(|| {}).disabled(true);
+
+        let mount = resolve::render(TextField::new("Name", &value).selection_menu(vec![
+            MenuItem::Command(observe),
+            MenuItem::Command(optional),
+            MenuItem::Command(mark),
+            MenuItem::Command(wrap),
+            MenuItem::Command(styled),
+            MenuItem::Command(off),
+        ]));
+        let window = leaf::attach(mtm, mount.view());
+        let field_view =
+            find::<KitTextField>(mount.view()).expect("the leaf mounts a kit TextField");
+        let field = field_view
+            .downcast::<KitTextField>()
+            .expect("the found view is the kit TextField");
+        assert!(field.begin_editing(), "the field never began editing");
+        let editor = field.field_editor().expect("the field editor is live");
+
+        // UTF-16 units: h=1 é=1 😀=2 b=1 — 😀 spans units 2..4, bytes 3..7.
+        field.set_selected_range(NSRange::new(2, 2));
+        let menu = edit_menu(&window, &editor);
+
+        // The platform's own rows survive the custom append.
+        assert!(
+            menu.numberOfItems() > 6,
+            "the standard edit rows were replaced rather than kept"
+        );
+        for title in ["Observe", "Optional", "Mark", "Wrap", "Styled", "Off"] {
+            assert!(
+                menu.itemWithTitle(&NSString::from_str(title)).is_some(),
+                "the {title} row is missing from the editor's menu"
+            );
+        }
+
+        // The selection moved after the menu was built: a command reads
+        // the live range when it fires, not the built-over range.
+        field.set_selected_range(NSRange::new(0, 2));
+        perform(&menu, "Observe");
+        let (text, start, end) = observed.borrow().clone();
+        assert_eq!((text.as_str(), start, end), ("hé😀b", 0, 3));
+
+        perform(&menu, "Optional");
+        assert!(
+            *optional_seen.borrow(),
+            "Option<TextSelection> did not extract the live selection"
+        );
+
+        // A disabled command renders a disabled row.
+        let off_item = menu
+            .itemWithTitle(&NSString::from_str("Off"))
+            .expect("the Off row");
+        assert!(!off_item.isEnabled(), "a disabled command is not disabled");
+
+        // `Mark` selects  😀 (bytes 3..7 → UTF-16 2..4).
+
+        perform(&menu, "Mark");
+        assert_eq!(
+            field.selected_range(),
+            Some(NSRange::new(2, 2)),
+            "Mark selected 😀 through the command"
+        );
+
+        // `replace` edits through the native path: the field, the value
+        // binding and the caret all reflect it.
+        perform(&menu, "Wrap");
+        assert_eq!(field.string(), "hé《b");
+        assert_eq!(
+            value.snapshot(),
+            Str::from("hé《b"),
+            "the native edit wrote through to the value binding"
+        );
+        assert_eq!(
+            field.selected_range(),
+            Some(NSRange::new(3, 0)),
+            "the caret lands after the inserted text"
+        );
+
+        undo_and_normalization_roundtrip(&field, &value, &editor);
+
+        // `styled_value` is the field's value binding: writing it lands on
+        // `value` and the field shows the pushed text.
+        perform(&menu, "Styled");
+        assert_eq!(value.snapshot(), Str::from("ZZ"));
+        assert_eq!(field.string(), "ZZ");
+
+        window.close();
     }
 }

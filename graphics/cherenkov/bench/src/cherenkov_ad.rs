@@ -1815,6 +1815,9 @@ impl Engine for Cherenkov {
         reason = "Display::headroom is f32 at the engine boundary"
     )]
     fn prepare(&mut self, input: &EncodeInput<'_>) -> Result<(), BenchError> {
+        // The retained scene's command counts do not change with its frame.
+        self.counters = Counters::default();
+        convert::count_layer(&input.scene.root, &mut self.counters);
         convert::check_features(Self::NAME, input.scene, &cherenkov_features(), |f| {
             convert::missing_api(&FRONT, f)
         })?;
@@ -1911,12 +1914,15 @@ impl Engine for Cherenkov {
     }
 
     fn encode(&mut self, input: &EncodeInput<'_>) -> Result<(), BenchError> {
-        self.counters = Counters::default();
-        convert::count_layer(&input.scene.root, &mut self.counters);
         let surface = self
             .surface
             .as_ref()
             .ok_or_else(|| BenchError::Engine("cherenkov: encode before prepare".into()))?;
+        if let Some(offset) = input.scroll_offset {
+            surface.update(|tx| {
+                tx[surface.root()].scroll_offset(input.scene.root.scroll_offset + offset);
+            });
+        }
         let first_frame = self.frame == 0;
         if self.has_motion && first_frame {
             for cl in &self.content_layers {
@@ -1929,7 +1935,7 @@ impl Engine for Cherenkov {
         // Motion and live scenes record their content once: later encodes
         // only set live bindings and advance the clock. Static scenes keep
         // re-recording each frame so their numbers stay comparable.
-        if first_frame || !(self.has_motion || self.has_live) {
+        if first_frame || !(self.has_motion || self.has_live || input.scroll_offset.is_some()) {
             surface.update(|tx| {
                 if self.has_motion {
                     for cl in &self.content_layers {

@@ -1049,6 +1049,9 @@ pub struct Plane<'a> {
 pub struct Part<'a> {
     /// Prepared content range, excluding promoted content.
     pub range: super::present::ColorRange,
+    /// Pixels written by the latest engine encoding, stable across present retries.
+    #[cfg(target_os = "android")]
+    pub damage: &'a cherenkov::damage::Region,
     /// The engine texture holding the part.
     pub view: &'a wgpu::TextureView,
 }
@@ -1111,6 +1114,11 @@ pub trait SystemPlanes: Compositor {
     /// while its predecessor still waits to present. `Default` is the
     /// empty commit a frame that commits nothing off-thread produces.
     type Commit: cherenkov::RenderTransfer + Default + 'static;
+
+    /// Retained native presentation bookkeeping on the CPU.
+    fn cpu_bytes(&self) -> u64 {
+        0
+    }
 
     /// Engine-owned native presentation allocations, excluding render sources
     /// and externally owned producer images. Include buffers awaiting release.

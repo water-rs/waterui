@@ -44,7 +44,7 @@ impl FrameMeter {
     clippy::cast_possible_wrap,
     reason = "surface rows and mask coordinates are small integers, clamped before conversion"
 )]
-fn item_rows(item: &Item, h: usize) -> (usize, usize) {
+pub(super) fn item_rows(item: &Item, h: usize) -> (usize, usize) {
     let clamp = |v: i64| (v.clamp(0, h as i64)) as usize;
     let mask_rows = |slot: &crate::render::glyph::GlyphSlot, oy: i64| {
         slot.get().map_or((0, h), |mask| {

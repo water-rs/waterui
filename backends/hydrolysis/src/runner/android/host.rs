@@ -1214,12 +1214,7 @@ impl AndroidSession {
     }
 
     /// The band's size changed on the live surface generation.
-    pub(crate) fn surface_resized(
-        &mut self,
-        width: u32,
-        height: u32,
-        generation: u64,
-    ) -> Result<(), String> {
+    pub(crate) fn surface_resized(&mut self, width: u32, height: u32, generation: u64) {
         tracing::debug!(
             target: "waterui::hydrolysis::android",
             generation,
@@ -1227,18 +1222,15 @@ impl AndroidSession {
             height,
             "wake posted: surface resized"
         );
-        let resized = self
-            .runtime
+        self.runtime
             .platform
             .surface
             .resize_for(width, height, generation);
         self.runtime.platform.sync_frame_wake_gate();
-        resized.map_err(|error| error.to_string())?;
-        // A surface parked on a zero-size attach configures here — the
+        // A surface parked on a zero-size attach becomes drawable here — the
         // resize that gave the band a real extent can be its un-hide, and
         // the Choreographer post is the only wake the restore frame gets.
         self.runtime.sync_occlusion_and_post_restore();
-        Ok(())
     }
 
     /// The band's surface is going away; `generation` names which one, so a

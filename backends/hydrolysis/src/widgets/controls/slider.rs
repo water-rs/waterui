@@ -523,15 +523,8 @@ pub fn render_slider_parts(
             local: ctx.local,
             bounds: text_rect,
         };
-        let (hydro, scene) = ctx.renderer_mut().state_and_run_mut();
-        HydrolysisRenderer::render_styled_text(
-            hydro,
-            scene,
-            text_ctx,
-            label,
-            HorizontalAlignment::Center,
-            env,
-        );
+        ctx.renderer_mut()
+            .render_styled_text(text_ctx, label, HorizontalAlignment::Center, env);
     }
     let usable_track = track_right - track_left;
     assert!(

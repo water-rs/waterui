@@ -164,7 +164,10 @@ CPU_ADAPTER = f'cherenkov-cpu ({CPU_THREADS} threads)'
 CPU_SAMPLES = 3
 # The build every profiled binary comes from. The profile overrides apply to
 # any revision, so a baseline that predates the gate builds the same way.
-BUILD_ENV = {'CARGO_PROFILE_RELEASE_DEBUG': '1', 'CARGO_PROFILE_RELEASE_STRIP': 'false'}
+# Use the system GNU linker for both arms so the profiler sees a consistent
+# executable mapping layout alongside the unstripped function symbols.
+BUILD_ENV = {'CARGO_PROFILE_RELEASE_DEBUG': '1', 'CARGO_PROFILE_RELEASE_STRIP': 'false',
+             'RUSTFLAGS': '-C linker-features=-lld'}
 # Callgrind name patterns (`*` matches any run) of the functions a sample
 # subtracts, with the call count each one adds to; Callgrind separates these
 # by caller chain and the gate classifies them, from this one table. Names

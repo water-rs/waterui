@@ -1,6 +1,8 @@
 #[path = "engine/cherenkov_backend.rs"]
 pub mod cherenkov;
 
+#[cfg(target_os = "android")]
+pub use cherenkov::AndroidCherenkovSurface;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use cherenkov::DomCherenkovSurface;
 #[cfg(all(target_os = "macos", hydrolysis_winit))]

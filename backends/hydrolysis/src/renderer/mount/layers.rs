@@ -203,6 +203,8 @@ pub struct LiveLayer {
     transform: kurbo::Affine,
     /// The source the layer's content was recorded from.
     source: Option<Rc<dyn LiveSource>>,
+    held: Option<LoweredResources>,
+    solid: Box<[SolidRect]>,
 }
 
 /// A node's retained layers.
@@ -491,7 +493,7 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
 
     fn retire_live(&mut self, live: LiveLayer) {
         self.retire_layer(live.layer);
-        self.graveyard.push(Box::new(live.source));
+        self.graveyard.push(Box::new((live.source, live.held)));
     }
 
     fn retire_member(&mut self, member: MemberLayer) {
@@ -1722,6 +1724,8 @@ fn lower_live<T: LayerTarget>(
                 layer: cx.layer(),
                 transform: kurbo::Affine::IDENTITY,
                 source: None,
+                held: None,
+                solid: Box::default(),
             },
             |at| lives_old.remove(at),
         );
@@ -1734,7 +1738,16 @@ fn lower_live<T: LayerTarget>(
         .as_ref()
         .is_some_and(|source| Rc::ptr_eq(source, &item.source));
     if !recorded {
-        cx.tx[&live.layer].record(|recorder| item.source.record(recorder));
+        live.solid = item.source.recording().map_or_else(
+            Box::default,
+            crate::renderer::recording::Recording::solid_rects,
+        );
+        let resources = T::resources(cx.host);
+        let mut held = None;
+        cx.tx[&live.layer].record(|recorder| held = item.source.record(recorder, resources));
+        if let Some(old) = std::mem::replace(&mut live.held, held) {
+            cx.graveyard.push(Box::new(old));
+        }
         cx.stats.live_records += 1;
         if let Some(old) = live.source.replace(Rc::clone(&item.source)) {
             cx.graveyard.push(Box::new(old));
@@ -1981,6 +1994,7 @@ fn visit_node(
             visit_list(
                 layers,
                 &layers.runs,
+                &layers.lives,
                 &layers.committed,
                 world,
                 alphas,
@@ -2004,6 +2018,7 @@ fn visit_run(run: &RunLayer, world: kurbo::Affine, alphas: &[f32], visitor: &mut
 fn visit_list(
     layers: &NodeLayers,
     runs: &[RunLayer],
+    lives: &[LiveLayer],
     committed: &Committed,
     world: kurbo::Affine,
     alphas: &mut Vec<f32>,
@@ -2027,6 +2042,13 @@ fn visit_list(
             .find(|run| run.layer.as_ref().is_some_and(|layer| layer.id() == *id))
         {
             visit_run(run, world, alphas, visitor);
+        } else if let Some(live) = lives.iter().find(|live| live.layer.id() == *id) {
+            let world = world * live.transform;
+            #[cfg(test)]
+            if let Some(recording) = live.source.as_ref().and_then(|source| source.recording()) {
+                visitor.run(world, recording);
+            }
+            visitor.solid_rects(world, alphas, &live.solid);
         } else if let Some((layer, props)) = &layers.inner
             && layer.id() == *id
         {
@@ -2034,6 +2056,7 @@ fn visit_list(
                 visit_list(
                     layers,
                     &layers.inner_runs,
+                    &layers.inner_lives,
                     &layers.inner_committed,
                     inner,
                     alphas,
@@ -2050,6 +2073,7 @@ fn visit_list(
                     visit_list(
                         layers,
                         &scope.runs,
+                        &scope.lives,
                         &scope.committed,
                         inner,
                         alphas,

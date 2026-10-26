@@ -21,28 +21,15 @@ use stroke::{DashTable, GpuStrokeRecord, StrokeParams};
 /// Coverage strip height in device rows.
 pub const STRIP_H: usize = 4;
 
+/// Columns owned by one GPU coverage classification invocation.
+pub const GPU_CLASSIFY_WIDTH: u32 = 128;
+
 /// A path whose raster bbox fits inside this edge length is emitted as one
 /// whole-bbox cell, skipping strips.
 const SMALL_BBOX: f64 = 32.0;
 
 /// Flattening tolerance in device pixels.
 pub const FLATTEN: f64 = 0.02;
-
-/// The largest singular value of `t`'s linear part — the worst-case factor
-/// by which a local distance error grows under the transform. Mirrors
-/// `cherenkov_oracle::path::sigma_max`.
-#[must_use]
-#[expect(
-    clippy::many_single_char_names,
-    reason = "a/b/c/d are the conventional affine coefficient names"
-)]
-pub fn sigma_max(t: Affine) -> f64 {
-    let [a, b, c, d, _, _] = t.as_coeffs();
-    let p = a.mul_add(a, b * b) + c.mul_add(c, d * d);
-    let det = a.mul_add(d, -(b * c));
-    let disc = p.mul_add(p, (-4.0 * det) * det).sqrt();
-    p.midpoint(disc).sqrt()
-}
 
 /// A semantic shape as a local `BezPath`: its outline (shared with every
 /// other lowering through [`cherenkov::lowering::shape_outline`]), or the
@@ -110,10 +97,20 @@ pub enum CoverageRoute {
 /// Keep ordinary UI geometry out of the GPU preparation pass.
 pub const GPU_ROUTE_MIN_ELEMENTS: usize = 4096;
 
-/// Source elements from which a stroked path is a GPU candidate: half of
-/// [`GPU_ROUTE_MIN_ELEMENTS`], because the stroke expands on the GPU and the
-/// outline is two to five times its source (water-rs/waterui#2544).
-pub const GPU_STROKE_MIN_ELEMENTS: usize = GPU_ROUTE_MIN_ELEMENTS / 2;
+/// Rounded joins and caps expand into arcs, unlike a plain offset outline.
+/// Admit them earlier for actual segment/incidence/grid assessment; keep
+/// ordinary polylines on the existing two-sided-outline candidate threshold.
+pub const fn stroke_gpu_candidate(elements: usize, stroke: &kurbo::Stroke) -> bool {
+    let expansion = if matches!(stroke.join, kurbo::Join::Round)
+        || matches!(stroke.start_cap, kurbo::Cap::Round)
+        || matches!(stroke.end_cap, kurbo::Cap::Round)
+    {
+        5
+    } else {
+        2
+    };
+    elements >= GPU_ROUTE_MIN_ELEMENTS / expansion
+}
 
 /// A coverage grid over an integer device-space rect.
 pub struct Coverage {
@@ -331,15 +328,26 @@ pub fn emit_resolved(
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_sign_loss)]
 pub fn grid(bbox: Rect, surface: (f64, f64)) -> Option<(f64, f64, usize, usize, bool)> {
-    let clip = Rect::new(0.0, 0.0, surface.0, surface.1);
+    let (r, clipped) = clipped_grid(bbox, surface);
+    let w = r.width() as usize;
+    let h = r.height() as usize;
+    (w > 0 && h > 0).then_some((r.x0, r.y0, w, h, clipped))
+}
+
+/// Intersect before rounding: a fractional zero-area intersection must not
+/// grow into a one-pixel strip outside the surface.
+fn clipped_grid(bbox: Rect, surface: (f64, f64)) -> (Rect, bool) {
     let inflated = bbox.inflate(1.0, 1.0);
-    let r = inflated.intersect(clip);
+    let r = inflated.intersect(Rect::new(0.0, 0.0, surface.0, surface.1));
     let clipped = r != inflated;
-    let x0 = r.x0.floor();
-    let y0 = r.y0.floor();
-    let w = (r.x1.ceil() - x0).max(0.0) as usize;
-    let h = (r.y1.ceil() - y0).max(0.0) as usize;
-    (w > 0 && h > 0).then_some((x0, y0, w, h, clipped))
+    (
+        if r.is_zero_area() {
+            Rect::ZERO
+        } else {
+            r.expand()
+        },
+        clipped,
+    )
 }
 
 /// The segments `resolve_winding` settles on, borrowed when it leaves the
@@ -504,12 +512,10 @@ pub struct GpuBound {
 
 impl GpuBound {
     /// Large, crossing-dense paths amortize compute dispatch and classification.
+    /// A narrow visible clip does not reduce the CPU sweep over the full path.
     pub const fn prefers_gpu(&self) -> bool {
         let strips = self.grid_h.div_ceil(STRIP_H);
-        !self.empty
-            && self.segments >= GPU_ROUTE_MIN_ELEMENTS
-            && self.grid_w * self.grid_h >= 4096
-            && self.bins >= strips * 32
+        !self.empty && self.segments >= GPU_ROUTE_MIN_ELEMENTS && self.bins >= strips * 32
     }
 
     /// The same bound seen from a frame moved by the integer vector `by`:
@@ -736,20 +742,10 @@ impl GpuPath {
     /// grid the placement covers, positioned on it.
     #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn bound_at(&self, translation: Vec2, surface: (f64, f64)) -> GpuBound {
-        // The bound raster grid: the hull inflated by a pixel and clipped to
-        // the surface, floored and ceiled like the sweep's rect.
-        let inflated = (self.hull + (translation - self.origin)).inflate(1.0, 1.0);
-        let r = inflated.intersect(Rect::new(0.0, 0.0, surface.0, surface.1));
-        let w = (r.x1.ceil() - r.x0.floor()).max(0.0) as usize;
-        let h = (r.y1.ceil() - r.y0.floor()).max(0.0) as usize;
-        let mut bound = self.grid_bound(w, h);
-        bound.rect = [
-            r.x0.floor() as f32,
-            r.y0.floor() as f32,
-            r.x1.ceil() as f32,
-            r.y1.ceil() as f32,
-        ];
-        bound.clipped = r != inflated;
+        let (r, clipped) = clipped_grid(self.hull + (translation - self.origin), surface);
+        let mut bound = self.grid_bound(r.width() as usize, r.height() as usize);
+        bound.rect = [r.x0 as f32, r.y0 as f32, r.x1 as f32, r.y1 as f32];
+        bound.clipped = clipped;
         bound
     }
 
@@ -771,16 +767,21 @@ impl GpuPath {
             (bound.fragments * 64).min(w * h)
         };
         bound.empty = w == 0 || h == 0;
-        // Cells are column-disjoint inside their strip, so the strip count
-        // times the grid width is the grid-side cap; spans obey the same
-        // bound. The element bound may be tighter.
-        let strip_cap = h.div_ceil(STRIP_H) * w;
+        // classify demotes full runs shorter than 8 columns and bridges
+        // empty gaps up to 8. Within a chunk, separate cells therefore have
+        // at least 8 intervening columns; chunk edges can split a run.
+        // Spans occupy at least 8 columns and all outputs are disjoint.
+        let strips = h.div_ceil(STRIP_H);
+        let chunks = w.div_ceil(GPU_CLASSIFY_WIDTH as usize);
+        let cells_per_strip = w.div_ceil(8) + chunks;
+        let strip_cap = strips * w;
+        let cell_cap = (strips * cells_per_strip).min(strip_cap);
+        let instance_cap = (strips * (cells_per_strip + w / 8)).min(strip_cap);
         bound.cell_cap = bound
             .fragments
-            .min(strip_cap)
+            .min(cell_cap)
             .max(usize::from(w <= 32 && h <= 32));
-        // Spans and cells share the same output range and never overlap.
-        bound.instance_cap = (bound.cell_cap * 2 + h.div_ceil(STRIP_H)).min(strip_cap);
+        bound.instance_cap = (bound.cell_cap * 2 + strips).min(instance_cap);
         bound
     }
 }
@@ -1817,6 +1818,29 @@ fn classes<R: Runs + ?Sized>(runs: &R) -> Vec<(u32, Class)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipped_fractional_empty_bounds_stay_empty() {
+        let surface = (100.0, 100.0);
+        for bbox in [
+            Rect::new(101.25, 10.25, 110.25, 20.25),
+            Rect::new(10.25, 101.25, 20.25, 110.25),
+            Rect::new(101.25, 101.25, 110.25, 110.25),
+        ] {
+            assert!(grid(bbox, surface).is_none(), "{bbox:?}");
+            let path = prepare_gpu(bbox.to_path(0.1).elements(), Affine::IDENTITY, surface);
+            assert!(path.bound.empty, "{bbox:?}");
+        }
+        // A visible subpixel edge and a path surrounding the viewport still draw.
+        for bbox in [
+            Rect::new(99.75, 10.25, 110.25, 20.25),
+            Rect::new(-10.25, -10.25, 110.25, 110.25),
+        ] {
+            assert!(grid(bbox, surface).is_some(), "{bbox:?}");
+            let path = prepare_gpu(bbox.to_path(0.1).elements(), Affine::IDENTITY, surface);
+            assert!(!path.bound.empty, "{bbox:?}");
+        }
+    }
 
     /// The translation's fraction is rasterized exactly and hashed as f32
     /// bits, not snapped to the 1/4 px grid.

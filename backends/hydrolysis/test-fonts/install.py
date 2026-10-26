@@ -611,7 +611,7 @@ def generate() -> None:
         # DejaVuSansEmojiCoverage — the monochrome-emoji coverage face (the
         # Ubuntu `fonts-dejavu-core` binary package, launchpad librarian).
         dejavu_deb = fetch(
-            "https://launchpad.net/ubuntu/+archive/primary/+files/fonts-dejavu-core_2.37-2build1_all.deb",
+            "https://archive.ubuntu.com/ubuntu/pool/main/f/fonts-dejavu/fonts-dejavu-core_2.37-2build1_all.deb",
             "c33fe8bf33b50d99d6448804a090123b1bbba37d7a8703c630695676d110a47d",
         )
         dejavu = work / "DejaVuSans.ttf"

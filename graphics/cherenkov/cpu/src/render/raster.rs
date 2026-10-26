@@ -2099,6 +2099,8 @@ fn shade_windowed(
 /// The input borrow lasts through the joined raster tasks. Claims never
 /// create a shared reference to pixel contents or reuse a claimed band.
 struct BandQueue<'a, T> {
+    selected: Option<&'a cherenkov::damage::Region>,
+    count: usize,
     output: *mut T,
     len: usize,
     chunk_len: NonZeroUsize,
@@ -2113,8 +2115,18 @@ struct BandQueue<'a, T> {
 unsafe impl<T: Send> Sync for BandQueue<'_, T> {}
 
 impl<'a, T> BandQueue<'a, T> {
-    const fn new(output: &'a mut [T], chunk_len: NonZeroUsize) -> Self {
+    fn new(
+        output: &'a mut [T],
+        chunk_len: NonZeroUsize,
+        selected: Option<&'a cherenkov::damage::Region>,
+    ) -> Self {
+        let count = selected.map_or_else(
+            || output.len().div_ceil(chunk_len.get()),
+            |selected| usize::try_from(selected.pixel_area()).expect("band count fits usize"),
+        );
         Self {
+            selected,
+            count,
             output: output.as_mut_ptr(),
             len: output.len(),
             chunk_len,
@@ -2123,29 +2135,35 @@ impl<'a, T> BandQueue<'a, T> {
         }
     }
 
-    const fn band_count(&self) -> usize {
-        self.len.div_ceil(self.chunk_len.get())
-    }
-
     #[expect(
         clippy::mut_from_ref,
         reason = "unique atomic claims partition the exclusively borrowed output"
     )]
     fn claim(&self) -> Option<(usize, &mut [T])> {
-        let count = self.band_count();
-        let index = self
+        let ordinal = self
             .next
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
-                (next < count).then(|| next + 1)
+                (next < self.count).then(|| next + 1)
             })
             .ok()?;
+        let index = self.selected.map_or(ordinal, |selected| {
+            let mut remaining = ordinal;
+            for rect in selected.rectangles() {
+                let length = rect.height() as usize;
+                if remaining < length {
+                    return rect.y0() as usize + remaining;
+                }
+                remaining -= length;
+            }
+            unreachable!("claimed band lies inside selected coverage")
+        });
         let start = index * self.chunk_len.get();
         let len = self.chunk_len.get().min(self.len - start);
-        // SAFETY: try_update claims each index below count exactly once,
-        // without wrapping. Thus start < self.len, multiplication cannot
-        // overflow, and this band lies wholly within the original slice.
-        // Distinct indices yield disjoint bands. The exclusive input borrow
-        // and this queue borrow keep the allocation alive for the result.
+        // SAFETY: try_update claims each ordinal exactly once. The selected
+        // region contains disjoint bands within this output, so mapping an
+        // ordinal to its band preserves uniqueness and keeps start < len.
+        // The exclusive input borrow and this queue borrow keep the
+        // allocation alive for the result.
         let band = unsafe { std::slice::from_raw_parts_mut(self.output.add(start), len) };
         Some((index, band))
     }
@@ -2161,6 +2179,7 @@ fn for_each_band<T: Send>(
     h: usize,
     edges: Option<usize>,
     meter: &FrameMeter,
+    selected: Option<&cherenkov::damage::Region>,
     shade_band: impl Fn(usize, &mut [T], &mut Scratch<'_>) -> Result<(), cherenkov::RenderError> + Sync,
 ) -> Result<(), cherenkov::RenderError> {
     if output.is_empty() || h == 0 {
@@ -2168,8 +2187,8 @@ fn for_each_band<T: Send>(
     }
     let chunk_len =
         NonZeroUsize::new(w * h.min(BAND_H)).expect("non-empty raster output has non-zero width");
-    let queue = BandQueue::new(output, chunk_len);
-    let tasks = queue.band_count().min(rayon::current_num_threads());
+    let queue = BandQueue::new(output, chunk_len, selected);
+    let tasks = queue.count.min(rayon::current_num_threads());
     (0..tasks).into_par_iter().try_for_each(|_| {
         let Some((mut index, mut band)) = queue.claim() else {
             return Ok(());
@@ -2203,6 +2222,7 @@ pub fn render_bands(
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
     meter: &mut FrameMeter,
+    selected: Option<&cherenkov::damage::Region>,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     index.rebuild(items, h);
     meter.record_index(index.heap_bytes());
@@ -2215,6 +2235,7 @@ pub fn render_bands(
         h,
         index.coverage_capacity(has_backdrop),
         meter,
+        selected,
         |y0, band, scratch| {
             shade(
                 level,
@@ -2252,6 +2273,7 @@ pub fn render_bands_f16(
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
     meter: &mut FrameMeter,
+    selected: Option<&cherenkov::damage::Region>,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     index.rebuild(items, h);
     meter.record_index(index.heap_bytes());
@@ -2264,6 +2286,7 @@ pub fn render_bands_f16(
         h,
         index.coverage_capacity(has_backdrop),
         meter,
+        selected,
         |y0, out_slice, scratch| {
             let mut band_px = scratch.buffers.take_color(out_slice.len());
             let result = shade(
@@ -3803,36 +3826,59 @@ mod tests {
                 .build()
                 .unwrap();
             for len in [0usize, 1, 6, 7, 8, 127, 4097] {
-                let mut output = vec![usize::MAX; len];
-                let claims: Vec<_> = (0..len.div_ceil(chunk_len.get()))
-                    .map(|_| AtomicUsize::new(0))
-                    .collect();
-                {
-                    let queue = BandQueue::new(&mut output, chunk_len);
-                    pool.install(|| {
-                        (0..workers).into_par_iter().for_each(|_| {
-                            while let Some((index, band)) = queue.claim() {
-                                assert_eq!(claims[index].fetch_add(1, Ordering::Relaxed), 0);
-                                for (offset, value) in band.iter_mut().enumerate() {
-                                    *value = index * chunk_len.get() + offset;
-                                }
+                for mode in 0..3 {
+                    let selected: Vec<_> = (0..len.div_ceil(chunk_len.get()))
+                        .map(|index| match mode {
+                            0 => true,
+                            1 => index % 2 == 0,
+                            _ => false,
+                        })
+                        .collect();
+                    let mut output = vec![usize::MAX; len];
+                    let claims: Vec<_> = (0..len.div_ceil(chunk_len.get()))
+                        .map(|_| AtomicUsize::new(0))
+                        .collect();
+                    {
+                        let mut region = cherenkov::damage::Region::new((
+                            1,
+                            u32::try_from(selected.len()).unwrap(),
+                        ));
+                        for (index, &dirty) in selected.iter().enumerate() {
+                            if dirty {
+                                region.add(0, u32::try_from(index).unwrap(), 1, 1);
                             }
+                        }
+                        let queue = BandQueue::new(&mut output, chunk_len, Some(&region));
+                        pool.install(|| {
+                            (0..workers).into_par_iter().for_each(|_| {
+                                while let Some((index, band)) = queue.claim() {
+                                    assert_eq!(claims[index].fetch_add(1, Ordering::Relaxed), 0);
+                                    for (offset, value) in band.iter_mut().enumerate() {
+                                        *value = index * chunk_len.get() + offset;
+                                    }
+                                }
+                            });
                         });
-                    });
-                    assert!(queue.claim().is_none());
-                    assert_eq!(queue.next.load(Ordering::Relaxed), claims.len());
+                        assert!(queue.claim().is_none());
+                        assert_eq!(
+                            queue.next.load(Ordering::Relaxed),
+                            selected.iter().filter(|dirty| **dirty).count()
+                        );
+                    }
+                    assert!(
+                        claims
+                            .iter()
+                            .enumerate()
+                            .all(|(index, count)| count.load(Ordering::Relaxed)
+                                == usize::from(selected[index]))
+                    );
+                    assert!(output.iter().enumerate().all(|(index, &value)| value
+                        == if selected[index / chunk_len.get()] {
+                            index
+                        } else {
+                            usize::MAX
+                        }));
                 }
-                assert!(
-                    claims
-                        .iter()
-                        .all(|count| count.load(Ordering::Relaxed) == 1)
-                );
-                assert!(
-                    output
-                        .iter()
-                        .enumerate()
-                        .all(|(index, &value)| index == value)
-                );
             }
         }
     }

@@ -120,6 +120,10 @@ pub enum ReadKind {
 pub struct Read {
     pub image: LogicalImageId,
     pub kind: ReadKind,
+    /// The last pass before the reader that wrote `image`; `None` when
+    /// no earlier pass did — the image entered the frame already written
+    /// (a retained projected image), or the reader itself opens it.
+    pub writer: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -184,10 +188,19 @@ pub struct ScratchSlot {
 #[derive(Default)]
 pub struct ExecutionPlan {
     pub scratch: Vec<ScratchSlot>,
-    captures: Vec<Option<LogicalImageId>>,
     pub images: Vec<LogicalImage>,
     pub targets: Vec<LogicalImageId>,
     pub reads: Vec<Vec<Option<Read>>>,
+    /// The target contents retained by each load pass, before its draws.
+    /// A clear starts a new image and has no dependency on the old contents.
+    pub loads: Vec<Option<Read>>,
+    /// Destination snapshots copied before blended draws, including a clear pass.
+    pub backdrops: Vec<Option<Read>>,
+    /// Per pass, the read its capture performs: the source logical
+    /// image, [`ReadKind::FrozenSnapshot`], and the last pass that
+    /// wrote that image before the capture. `None` for a pass without
+    /// a capture.
+    pub captures: Vec<Option<Read>>,
     pub segments: Vec<Segment>,
     native: Vec<Option<usize>>,
     /// Whether this frame's logical images have been analyzed.
@@ -197,7 +210,6 @@ pub struct ExecutionPlan {
 impl ExecutionPlan {
     pub fn bytes(&self) -> u64 {
         (self.scratch.capacity() * std::mem::size_of::<ScratchSlot>()
-            + self.captures.capacity() * std::mem::size_of::<Option<LogicalImageId>>()
             + self.images.capacity() * std::mem::size_of::<LogicalImage>()
             + self.native.capacity() * std::mem::size_of::<Option<usize>>()
             + self.targets.capacity() * std::mem::size_of::<LogicalImageId>()
@@ -207,6 +219,9 @@ impl ExecutionPlan {
                 .iter()
                 .map(|reads| reads.capacity() * std::mem::size_of::<Option<Read>>())
                 .sum::<usize>()
+            + self.captures.capacity() * std::mem::size_of::<Option<Read>>()
+            + self.loads.capacity() * std::mem::size_of::<Option<Read>>()
+            + self.backdrops.capacity() * std::mem::size_of::<Option<Read>>()
             + self.segments.capacity() * std::mem::size_of::<Segment>()
             + self
                 .segments
@@ -233,11 +248,31 @@ impl ExecutionPlan {
             planned: true,
             ..Self::default()
         };
-        let mut current: Vec<(Target, LogicalImageId)> = Vec::new();
+        // The logical image each pass target currently names and the
+        // last pass that wrote it. A clear opens a new generation with
+        // no writer yet; a load continues the image and becomes its
+        // latest writer; an image no pass produces — a retained
+        // projected image — has none.
+        let mut current: Vec<(Target, LogicalImageId, Option<usize>)> = Vec::new();
         for (index, pass) in frame.passes.iter().enumerate() {
             let previous = current
                 .iter()
-                .position(|(target, _)| *target == pass.target);
+                .position(|(target, ..)| *target == pass.target);
+            let prior = previous.map(|previous| Read {
+                image: current[previous].1,
+                kind: ReadKind::CorrespondingPixel,
+                writer: current[previous].2,
+            });
+            plan.loads
+                .push(prior.clone().filter(|_| pass.clear.is_none()));
+            plan.backdrops.push(
+                prior
+                    .filter(|_| pass.backdrop_copy.is_some())
+                    .map(|read| Read {
+                        kind: ReadKind::FrozenSnapshot,
+                        ..read
+                    }),
+            );
             let image = if let Some(previous) = previous.filter(|_| pass.clear.is_none()) {
                 current[previous].1
             } else {
@@ -256,63 +291,89 @@ impl ExecutionPlan {
                     storage: Storage::Materialized(initial(pass.target)),
                 });
                 if let Some(p) = previous {
-                    current[p].1 = id;
+                    current[p] = (pass.target, id, None);
                 } else {
-                    current.push((pass.target, id));
+                    current.push((pass.target, id, None));
                 }
                 id
             };
             plan.images[image.0].last_consumer = index;
             plan.targets.push(image);
+            // Reads resolve before this pass records itself as its
+            // target's last writer, so a writer never names the reading
+            // pass or a later one.
             let reads = pass
                 .ranges
                 .iter()
-                .map(|range| {
-                    let source = range.source?;
-                    let target = source_target(source);
-                    let id = if let Some((_, id)) = current.iter().find(|(t, _)| *t == target) {
-                        *id
-                    } else {
-                        // Retained projected images can be sampled without a
-                        // producer in this frame. They enter already materialized.
-                        assert!(matches!(target, Target::Projected(_)));
-                        let id = LogicalImageId(plan.images.len());
-                        plan.images.push(LogicalImage {
-                            backing: None,
-                            color_range: ColorRange::HighDynamicRange,
-                            target,
-                            generation: 0,
-                            region: [0; 4],
-                            space: cherenkov::BlendSpace::Linear,
-                            format: formats.of(frame, target),
-                            producer: None,
-                            last_consumer: index,
-                            storage: Storage::Materialized(Materialization::Persistent),
-                        });
-                        current.push((target, id));
-                        id
-                    };
-                    plan.images[id.0].last_consumer = index;
-                    let kind = read_kind(frame, range);
-                    Some(Read { image: id, kind })
-                })
+                .map(|range| plan.resolve_read(frame, formats, range, index, &mut current))
                 .collect();
             plan.reads.push(reads);
-            let capture = pass.capture.map(|capture| {
-                let id = current
+            // A capture freezes its source: the image the pass names and
+            // the last pass that wrote it before this one.
+            plan.captures.push(pass.capture.map(|capture| {
+                let (_, id, writer) = current
                     .iter()
-                    .find(|(t, _)| *t == capture.copy_from)
-                    .expect("capture source exists")
-                    .1;
+                    .find(|(t, ..)| *t == capture.copy_from)
+                    .expect("capture source exists");
                 plan.images[id.0].last_consumer = index;
-                id
-            });
-            plan.captures.push(capture);
+                Read {
+                    image: *id,
+                    kind: ReadKind::FrozenSnapshot,
+                    writer: *writer,
+                }
+            }));
+            // This pass writes its target — producing the image or
+            // continuing it — so later reads name it as the last writer.
+            current
+                .iter_mut()
+                .find(|(t, ..)| *t == pass.target)
+                .expect("the pass's target was resolved above")
+                .2 = Some(index);
         }
         plan.classify_ranges(frame);
         plan.partition(frame, limits);
         plan.assign_backing(frame, formats);
         plan
+    }
+
+    fn resolve_read(
+        &mut self,
+        frame: &Frame,
+        formats: Formats,
+        range: &DrawRange,
+        index: usize,
+        current: &mut Vec<(Target, LogicalImageId, Option<usize>)>,
+    ) -> Option<Read> {
+        let target = source_target(range.source?);
+        let (image, writer) =
+            if let Some((_, id, writer)) = current.iter().find(|(t, ..)| *t == target) {
+                (*id, *writer)
+            } else {
+                // Retained projected images can be sampled without a producer
+                // in this frame. They enter already materialized.
+                assert!(matches!(target, Target::Projected(_)));
+                let id = LogicalImageId(self.images.len());
+                self.images.push(LogicalImage {
+                    backing: None,
+                    color_range: ColorRange::HighDynamicRange,
+                    target,
+                    generation: 0,
+                    region: [0; 4],
+                    space: cherenkov::BlendSpace::Linear,
+                    format: formats.of(frame, target),
+                    producer: None,
+                    last_consumer: index,
+                    storage: Storage::Materialized(Materialization::Persistent),
+                });
+                current.push((target, id, None));
+                (id, None)
+            };
+        self.images[image.0].last_consumer = index;
+        Some(Read {
+            image,
+            kind: read_kind(frame, range),
+            writer,
+        })
     }
 
     pub fn update_placement(
@@ -338,7 +399,10 @@ impl ExecutionPlan {
     pub fn scratch_slot(&self, pass: usize, target: Target) -> usize {
         let id = if self.images[self.targets[pass].0].target == target {
             self.targets[pass]
-        } else if let Some(id) = self.captures[pass].filter(|id| self.images[id.0].target == target)
+        } else if let Some(id) = self.captures[pass]
+            .as_ref()
+            .map(|read| read.image)
+            .filter(|id| self.images[id.0].target == target)
         {
             id
         } else {
@@ -371,7 +435,7 @@ impl ExecutionPlan {
                 && image.color_range != ColorRange::HighDynamicRange
                 && image.space == cherenkov::BlendSpace::Linear
                 && !native_output
-                && !self.captures.contains(&Some(id))
+                && !self.captures.iter().flatten().any(|read| read.image == id)
             {
                 image.format = wgpu::TextureFormat::Rgba8UnormSrgb;
             }
@@ -718,8 +782,11 @@ impl ExecutionPlan {
         })
     }
 
-    /// Whether a backend planned this frame. Only a planned frame has
-    /// logical images to report on (issue #2547's attribution).
+    /// Whether a dependency graph exists for this frame — logical
+    /// images, reads and capture reads — built natively or portably.
+    /// Only a planned frame has logical images to report on (issue
+    /// #2547's attribution), and only a graph lets damage propagation
+    /// walk image dependencies (#2558).
     pub const fn is_planned(&self) -> bool {
         self.planned
     }
@@ -752,7 +819,6 @@ impl ExecutionPlan {
         self.native.get(pass).copied().flatten()
     }
 
-    #[cfg(any(unix, test))]
     pub fn epoch_at(&self, pass: usize) -> Option<&TileEpoch> {
         self.native_segment(pass)
             .and_then(|index| match &self.segments[index] {
@@ -851,7 +917,7 @@ const fn contains(outer: [u32; 4], inner: [u32; 4]) -> bool {
     clippy::cast_precision_loss,
     reason = "device pixel coordinates fit f32"
 )]
-fn corresponds(frame: &Frame, range: &DrawRange, region: [u32; 4]) -> bool {
+pub(super) fn corresponds(frame: &Frame, range: &DrawRange, region: [u32; 4]) -> bool {
     let [x, y, width, height] = region.map(|v| v as f32);
     frame.instances[range.instances.start as usize..range.instances.end as usize]
         .iter()

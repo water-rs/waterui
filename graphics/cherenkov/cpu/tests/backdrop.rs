@@ -17,6 +17,85 @@ fn engine() -> Engine<Raster> {
     Engine::<Raster>::new(RasterConfig::default()).expect("engine")
 }
 
+#[test]
+fn reduced_capture_repaints_members_when_only_sampling_apron_changes() {
+    let engine = engine();
+    let size = (128, 512);
+    let target = || Offscreen::new(size, OffscreenFormat::LinearF32);
+    let build = |surface: &cherenkov::Surface<Raster>| {
+        let group = surface.backdrop_group(
+            filtrate::filters::GaussianBlur::new(3.0f32),
+            cherenkov::CaptureScale::new(0.5).unwrap(),
+        );
+        let patch = surface.layer();
+        let glass = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()]
+                .push(&patch)
+                .push(&glass)
+                .content(surface.record(|r| {
+                    r.fill(
+                        Rect::new(0.0, 0.0, 128.0, 512.0),
+                        WorkingColor::new([0.1, 0.2, 0.3, 1.0]),
+                    );
+                }));
+            tx[&glass]
+                .clip(Rect::new(24.0, 64.0, 88.0, 96.0))
+                .backdrop(group.sample());
+        });
+        (patch, glass, group)
+    };
+    let surface = engine.surface(target(), || {}).unwrap();
+    let (patch, _glass, _group) = build(&surface);
+    for (step, (y, color)) in [
+        (Some(58.0), WorkingColor::new([3.0, 0.1, 0.0, 1.0])),
+        (Some(58.0), WorkingColor::new([0.1, 2.0, 0.0, 1.0])),
+        (Some(400.0), WorkingColor::WHITE),
+        (None, WorkingColor::WHITE),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let paint = |r: &mut cherenkov::Recorder| {
+            if let Some(y) = y {
+                r.fill(Rect::new(32.0, y, 80.0, y + 4.0), color);
+            }
+        };
+        surface.update(|tx| {
+            tx[&patch].content(surface.record(paint));
+        });
+        engine.render(FrameTime::now()).unwrap();
+        if step > 0 {
+            let passes = engine.stats().passes;
+            assert!(passes > 0 && passes < 16, "frame {step}: {passes} bands");
+        }
+        let actual = surface.readback().unwrap();
+        let reference = engine.surface(target(), || {}).unwrap();
+        let (reference_patch, _reference_glass, _reference_group) = build(&reference);
+        reference.update(|tx| {
+            tx[&reference_patch].content(reference.record(paint));
+        });
+        engine.render(FrameTime::now()).unwrap();
+        let expected = reference.readback().unwrap();
+        let actual = F32Image {
+            width: size.0,
+            height: size.1,
+            pixels: actual.pixels,
+        };
+        let expected = F32Image {
+            width: size.0,
+            height: size.1,
+            pixels: expected.pixels,
+        };
+        actual
+            .write_png(
+                &std::env::temp_dir().join(format!("cherenkov-cpu-capture-damage-{step}.png")),
+            )
+            .unwrap();
+        assert_images_match(&expected, &actual);
+    }
+}
+
 fn pixel(readback: &cherenkov::Readback, x: usize, y: usize) -> [f32; 4] {
     readback.pixels[y * readback.width as usize + x]
 }

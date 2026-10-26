@@ -1217,7 +1217,10 @@ impl Presenter {
             device,
             &mut encoder,
             source,
-            output,
+            &Presentation {
+                texture: output,
+                coverage: WholeOutput,
+            },
             &self.uniform.clone(),
             None,
         );
@@ -1253,7 +1256,17 @@ impl Presenter {
             label: Some("present"),
         });
         let uniform = self.uniform.clone();
-        self.encode(device, &mut encoder, source, output, &uniform, timestamps);
+        self.encode(
+            device,
+            &mut encoder,
+            source,
+            &Presentation {
+                texture: output,
+                coverage: WholeOutput,
+            },
+            &uniform,
+            timestamps,
+        );
         queue.submit([encoder.finish()]);
         crate::diag::submit(device, queue, "present");
     }
@@ -1333,16 +1346,19 @@ impl Presenter {
     ///
     /// # Panics
     /// If the textures violate wgpu's attachment and sampling requirements.
-    pub(crate) fn encode(
+    pub(crate) fn encode<C: Coverage>(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         source: &wgpu::TextureView,
-        output: TextureOutput<'_>,
+        output: &Presentation<'_, C>,
         uniform: &wgpu::Buffer,
         timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
-        let target = output.texture;
+        if output.coverage.is_empty() {
+            return;
+        }
+        let target = output.texture.texture;
         let format = target.format();
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1370,7 +1386,7 @@ impl Presenter {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    load: output.coverage.load(),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -1381,12 +1397,64 @@ impl Presenter {
         });
         pass.set_pipeline(self.pipeline(device, format));
         pass.set_bind_group(0, &bind, &[]);
+        output.coverage.draw(&mut pass);
+    }
+}
+
+/// The write contract of one presentation attachment.
+pub struct Presentation<'a, C> {
+    pub texture: TextureOutput<'a>,
+    pub coverage: C,
+}
+
+pub trait Coverage {
+    fn is_empty(&self) -> bool;
+    fn load(&self) -> wgpu::LoadOp<wgpu::Color>;
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>);
+}
+
+/// Acquired drawables have no preserved-content contract.
+pub struct WholeOutput;
+
+impl Coverage for WholeOutput {
+    fn is_empty(&self) -> bool {
+        false
+    }
+    fn load(&self) -> wgpu::LoadOp<wgpu::Color> {
+        wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+    }
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.draw(0..3, 0..1);
     }
 }
 
+/// Repair regions in an attachment whose other pixels remain initialized.
+#[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
+pub struct RetainedRegion<'a>(pub &'a cherenkov::damage::Region);
+
+#[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
+impl Coverage for RetainedRegion<'_> {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    fn load(&self) -> wgpu::LoadOp<wgpu::Color> {
+        if self.0.is_full() {
+            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+        } else {
+            wgpu::LoadOp::Load
+        }
+    }
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+        for rect in self.0.rectangles() {
+            let (x, y, width, height) = rect.xywh();
+            pass.set_scissor_rect(x, y, width, height);
+            pass.draw(0..3, 0..1);
+        }
+    }
+}
+
 /// Color space of a host-owned presentation texture.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputColor {
     /// sRGB primaries and transfer; sRGB texture formats encode in hardware.
     Srgb,
@@ -2225,3 +2293,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "present_retained_tests.rs"]
+mod retained_tests;

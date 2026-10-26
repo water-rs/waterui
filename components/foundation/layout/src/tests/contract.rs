@@ -2378,3 +2378,262 @@ fn the_lower_band_gives_way_before_the_higher_on_both_axes() {
         assert_negotiation(axis, &placements, 0.0, &[(100.0, 100.0), (50.0, 50.0)]);
     }
 }
+
+// ============================================================================
+// ScrollView on the non-scrolling axis (docs/layout-spec.md §6)
+// ============================================================================
+
+/// A scroll leaf under the contract. On its scrolling axis it claims the
+/// whole offer — a finite proposal is answered with the proposal, `None` with
+/// the content's intrinsic extent, `0` with `0`. On the non-scrolling axis it
+/// answers the content's own answer to the content proposal — that axis gets
+/// the scroll's offer, the scrolling axis `None` — clamped to a finite offer
+/// (docs/layout-spec.md §6, water-rs/waterui#1208). `scrolls_both` models
+/// `Axis::All`, which fills both axes.
+struct ScrollLeaf {
+    axis: Axis,
+    scrolls_both: bool,
+    /// The content's minimum on the non-scrolling axis — what a `0` proposal
+    /// there measures.
+    content_min_cross: f32,
+    /// The content's own (non-filling) answer on the non-scrolling axis plus
+    /// its intrinsic extent on the scrolling axis.
+    content_intrinsic: Size,
+    /// Whether the content fills the non-scrolling axis — then the scroll
+    /// fills it too, naturally.
+    content_fills_cross: bool,
+}
+
+impl ScrollLeaf {
+    /// The scroll's answer on its non-scrolling axis: the content's own
+    /// answer to the content proposal on that axis, clamped to a finite
+    /// offer; `0` and `None` keep the minimum and intrinsic behaviours.
+    fn cross_answer(&self, offer: Option<f32>) -> f32 {
+        match offer {
+            None => cross_extent(self.axis, self.content_intrinsic),
+            Some(0.0) => self.content_min_cross,
+            Some(offer) => {
+                let content = if self.content_fills_cross {
+                    offer
+                } else {
+                    cross_extent(self.axis, self.content_intrinsic)
+                };
+                content.min(offer)
+            }
+        }
+    }
+}
+
+impl SubView for ScrollLeaf {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        if self.scrolls_both {
+            return ViewDimensions::new(Size::new(
+                proposal.width.unwrap_or(self.content_intrinsic.width),
+                proposal.height.unwrap_or(self.content_intrinsic.height),
+            ));
+        }
+        let main = main_proposal(self.axis, proposal)
+            .unwrap_or_else(|| main_extent(self.axis, self.content_intrinsic));
+        let cross = self.cross_answer(cross_proposal(self.axis, proposal));
+        ViewDimensions::new(axis_size(self.axis, main, cross))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        if self.scrolls_both {
+            return StretchAxis::Both;
+        }
+        match (self.axis, self.content_fills_cross) {
+            (Axis::Vertical, false) => StretchAxis::Vertical,
+            (Axis::Horizontal, false) => StretchAxis::Horizontal,
+            _ => StretchAxis::Both,
+        }
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+/// The issue scenario (water-rs/waterui#1208): a horizontal chip row inside a
+/// vertical stack answers the content's height on the scroll's non-scrolling
+/// axis, not the offer's — the stack wraps the chips at 240x28 instead of
+/// claiming the whole 240x160.
+#[test]
+fn scrollview_hugs_content_on_the_non_scrolling_axis() {
+    let scroll = ScrollLeaf {
+        axis: Axis::Horizontal,
+        scrolls_both: false,
+        content_min_cross: 28.0,
+        content_intrinsic: Size::new(328.5, 28.0),
+        content_fills_cross: false,
+    };
+    let layout = stack(Axis::Vertical);
+    let proposal = ProposalSize::new(Some(240.0), Some(160.0));
+    let size = layout.size_that_fits(proposal, &[&scroll]);
+    assert_extent(size.width, 240.0, "stack width");
+    assert_extent(size.height, 28.0, "stack height hugs the scroll's content");
+    let placements = layout.place(Rect::new(Point::new(0.0, 0.0), size), proposal, &[&scroll]);
+    assert_eq!(placements.len(), 1);
+    assert_extent(
+        placements[0].frame.size().width,
+        240.0,
+        "scroll fills the stack's cross axis",
+    );
+    assert_extent(
+        placements[0].frame.size().height,
+        28.0,
+        "scroll hugs the content's height",
+    );
+}
+
+/// The symmetric case: a vertical scroll of 28 pt-wide content inside a
+/// horizontal stack answers 28x160.
+#[test]
+fn scrollview_hugs_content_on_the_non_scrolling_axis_vertically() {
+    let scroll = ScrollLeaf {
+        axis: Axis::Vertical,
+        scrolls_both: false,
+        content_min_cross: 28.0,
+        content_intrinsic: Size::new(28.0, 328.5),
+        content_fills_cross: false,
+    };
+    let layout = stack(Axis::Horizontal);
+    let proposal = ProposalSize::new(Some(240.0), Some(160.0));
+    let size = layout.size_that_fits(proposal, &[&scroll]);
+    assert_extent(size.width, 28.0, "stack width hugs the scroll's content");
+    assert_extent(size.height, 160.0, "stack height");
+    let placements = layout.place(Rect::new(Point::new(0.0, 0.0), size), proposal, &[&scroll]);
+    assert_extent(
+        placements[0].frame.size().width,
+        28.0,
+        "scroll hugs the width",
+    );
+    assert_extent(
+        placements[0].frame.size().height,
+        160.0,
+        "scroll fills the stack's cross axis",
+    );
+}
+
+/// Content that itself fills the non-scrolling axis still fills it through
+/// the scroll: a horizontal scroll of height-filling content in a vertical
+/// stack answers 240x160.
+#[test]
+fn scrollview_fills_the_non_scrolling_axis_with_filling_content() {
+    let scroll = ScrollLeaf {
+        axis: Axis::Horizontal,
+        scrolls_both: false,
+        content_min_cross: 0.0,
+        content_intrinsic: Size::new(328.5, 0.0),
+        content_fills_cross: true,
+    };
+    let layout = stack(Axis::Vertical);
+    let proposal = ProposalSize::new(Some(240.0), Some(160.0));
+    let size = layout.size_that_fits(proposal, &[&scroll]);
+    assert_extent(size.width, 240.0, "stack width");
+    assert_extent(size.height, 160.0, "stack height fills with the content");
+    let placements = layout.place(Rect::new(Point::new(0.0, 0.0), size), proposal, &[&scroll]);
+    assert_extent(placements[0].frame.size().height, 160.0, "scroll fills");
+}
+
+/// An omnidirectional scroll (`Axis::All`) fills both axes of the offer.
+#[test]
+fn scrollview_all_fills_both_axes() {
+    let scroll = ScrollLeaf {
+        axis: Axis::Vertical,
+        scrolls_both: true,
+        content_min_cross: 0.0,
+        content_intrinsic: Size::new(328.5, 480.0),
+        content_fills_cross: false,
+    };
+    let layout = stack(Axis::Vertical);
+    let proposal = ProposalSize::new(Some(240.0), Some(160.0));
+    let size = layout.size_that_fits(proposal, &[&scroll]);
+    assert_extent(size.width, 240.0, "stack width");
+    assert_extent(size.height, 160.0, "stack height");
+    let placements = layout.place(Rect::new(Point::new(0.0, 0.0), size), proposal, &[&scroll]);
+    assert_extent(
+        placements[0].frame.size().width,
+        240.0,
+        "scroll fills width",
+    );
+    assert_extent(
+        placements[0].frame.size().height,
+        160.0,
+        "scroll fills height",
+    );
+}
+
+/// The hug is clamped to a finite offer: content 28 pt tall under a 10 pt
+/// offer answers 10, never more. `0` still answers the content's minimum and
+/// `None` its intrinsic extent, unchanged from the previous rule.
+#[test]
+fn scrollview_cross_axis_answer_is_clamped_to_the_offer() {
+    let scroll = ScrollLeaf {
+        axis: Axis::Horizontal,
+        scrolls_both: false,
+        content_min_cross: 28.0,
+        content_intrinsic: Size::new(328.5, 28.0),
+        content_fills_cross: false,
+    };
+    // Finite offers: the content's own answer, never larger than the offer.
+    assert_extent(
+        scroll
+            .measure(ProposalSize::new(Some(240.0), Some(160.0)))
+            .size
+            .height,
+        28.0,
+        "offer above the content hugs the content",
+    );
+    assert_extent(
+        scroll
+            .measure(ProposalSize::new(Some(240.0), Some(10.0)))
+            .size
+            .height,
+        10.0,
+        "offer below the content clamps to the offer",
+    );
+    // `0` and `None` keep the content minimum and intrinsic behaviours.
+    assert_extent(
+        scroll
+            .measure(ProposalSize::new(Some(240.0), Some(0.0)))
+            .size
+            .height,
+        28.0,
+        "zero offer measures the content's minimum",
+    );
+    assert_extent(
+        scroll
+            .measure(ProposalSize::new(Some(240.0), None))
+            .size
+            .height,
+        28.0,
+        "unspecified offer answers the intrinsic extent",
+    );
+    // The scrolling axis is unchanged: finite -> proposal, `None` ->
+    // content's intrinsic extent, `0` -> 0.
+    assert_extent(
+        scroll
+            .measure(ProposalSize::new(Some(240.0), Some(160.0)))
+            .size
+            .width,
+        240.0,
+        "scrolling axis answers the proposal",
+    );
+    assert_extent(
+        scroll
+            .measure(ProposalSize::new(None, Some(160.0)))
+            .size
+            .width,
+        328.5,
+        "scrolling axis answers the content's intrinsic extent",
+    );
+    assert_extent(
+        scroll
+            .measure(ProposalSize::new(Some(0.0), Some(160.0)))
+            .size
+            .width,
+        0.0,
+        "scrolling axis answers zero to a zero offer",
+    );
+}

@@ -1036,10 +1036,7 @@ fn flush_material_prompt_label(
         kurbo::Rect::new(0.0, 0.0, width, measured_label_height),
     );
     let renderer = ctx.renderer_mut();
-    let (state, scene) = renderer.state_and_run_mut();
-    HydrolysisRenderer::render_styled_text_limited(
-        state,
-        scene,
+    renderer.render_styled_text_limited(
         child,
         prompt_styled,
         HorizontalAlignment::Leading,

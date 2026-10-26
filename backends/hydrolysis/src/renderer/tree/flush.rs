@@ -139,12 +139,13 @@ impl RenderNode {
         match self {
             Self::Color(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
-                let color = waterui_graphics::draw::Paint::Solid(renderer.read_signal(&node.color));
-                renderer.scene_mut().fill_paint(
-                    peniko::Fill::NonZero,
+                if nami::Signal::snapshot(&node.bounds) != ctx.bounds {
+                    node.bounds.set(ctx.bounds);
+                }
+                renderer.scene_mut().live_rect(
                     ctx.local,
-                    color,
-                    &ctx.bounds,
+                    node.bounds.clone().into(),
+                    node.color.clone(),
                 );
             }
             // §7.1's fill rule, paint side: the extension layout recorded
@@ -168,10 +169,7 @@ impl RenderNode {
                 let alignment = renderer.read_signal(&text.alignment);
                 TextNode::emit_accessibility(renderer, Some(ctx), &styled, env);
                 renderer.pop_render_owner();
-                let (state, scene) = renderer.state_and_run_mut();
-                HydrolysisRenderer::render_styled_text_limited(
-                    state,
-                    scene,
+                renderer.render_styled_text_limited(
                     ctx,
                     styled,
                     alignment,
@@ -1125,6 +1123,10 @@ impl RenderNode {
                             f64::INFINITY,
                             f64::INFINITY,
                             (0.0, 0.0),
+                            // The semantic domain is not real geometry: the
+                            // painted pass's position report stays attached
+                            // and is reported against its own extents.
+                            None,
                         )
                     } else {
                         ScrollHandle::new(

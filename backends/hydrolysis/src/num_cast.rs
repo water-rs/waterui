@@ -204,18 +204,6 @@ pub const fn i32_as_u32(v: i32) -> u32 {
     v as u32
 }
 
-/// Truncates and re-signs a `usize` to `i32` — `as` semantics; the values are
-/// within `i32` range.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "the values are extents within i32 range"
-)]
-#[cfg(test)]
-pub const fn usize_as_i32(v: usize) -> i32 {
-    v as i32
-}
-
 /// `i16` → `u16` re-interpretation used for DOM key/button codes: negative
 /// codes become large values that match `Other`, never wrapping to small
 /// keys.

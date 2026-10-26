@@ -2189,7 +2189,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -4771,7 +4771,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#0add1da1efe14f4b42349de93c687df033ec258e"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#48493b6c9dae93cc7237f0555f885dc4d7abd236"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -10693,29 +10693,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "swift-bridge-build"
-version = "0.1.59"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71b36df21e7f8a8b5eeb718d2e71f9cfc308477bfb705981cca705de9767dcb7"
-dependencies = [
- "proc-macro2 1.0.107",
- "swift-bridge-ir",
- "syn 1.0.109",
- "tempfile",
-]
-
-[[package]]
-name = "swift-bridge-ir"
-version = "0.1.59"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c73bd16155df50708b92306945656e57d62d321290a7db490f299f709fb31c83"
-dependencies = [
- "proc-macro2 1.0.107",
- "quote 1.0.47",
- "syn 1.0.109",
-]
-
-[[package]]
 name = "sxd-document-no-unsafe"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10927,17 +10904,6 @@ dependencies = [
  "proc-macro2 0.4.30",
  "quote 0.6.13",
  "unicode-xid 0.1.0",
-]
-
-[[package]]
-name = "syn"
-version = "1.0.109"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
-dependencies = [
- "proc-macro2 1.0.107",
- "quote 1.0.47",
- "unicode-ident",
 ]
 
 [[package]]
@@ -12341,7 +12307,7 @@ dependencies = [
 [[package]]
 name = "waterkit-audio"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
@@ -12388,19 +12354,18 @@ dependencies = [
 [[package]]
 name = "waterkit-build"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "futures-channel",
  "jni 0.22.4",
  "ndk-context",
- "swift-bridge-build",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "waterkit-camera"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "async-channel",
  "core-graphics-types 0.2.0",
@@ -12448,7 +12413,7 @@ dependencies = [
 [[package]]
 name = "waterkit-clipboard"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
@@ -12480,7 +12445,7 @@ dependencies = [
 [[package]]
 name = "waterkit-codec"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "avif-parse",
  "cfg_aliases",
@@ -12519,7 +12484,7 @@ dependencies = [
 [[package]]
 name = "waterkit-core"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "dispatch2",
  "executor-core",
@@ -12535,7 +12500,7 @@ dependencies = [
 [[package]]
 name = "waterkit-dialog"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",
@@ -12558,7 +12523,7 @@ dependencies = [
 [[package]]
 name = "waterkit-fs"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "async-fs",
  "dirs 7.0.0",
@@ -12576,7 +12541,7 @@ dependencies = [
 [[package]]
 name = "waterkit-haptic"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "block2 0.6.2",
  "futures",
@@ -12597,7 +12562,7 @@ dependencies = [
 [[package]]
 name = "waterkit-location"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "async-channel",
  "dispatch2",
@@ -12622,7 +12587,7 @@ dependencies = [
 [[package]]
 name = "waterkit-menu"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "async-channel",
  "futures",
@@ -12637,7 +12602,7 @@ dependencies = [
 [[package]]
 name = "waterkit-permission"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
@@ -12665,7 +12630,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "waterkit-video-container",
  "waterkit-video-core",
@@ -12676,7 +12641,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-container"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "broadcast-common",
  "byteorder",
@@ -12691,7 +12656,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-core"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -12699,7 +12664,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-player"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "aes",
  "async-channel",
@@ -12734,7 +12699,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-streaming"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#e99ea9bff5d83a3549c6a127e81ad69cd38a13a4"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
 dependencies = [
  "async-fs",
  "base64 0.23.1",
@@ -12796,12 +12761,14 @@ dependencies = [
  "tracing-panic",
  "tracing-subscriber",
  "waterkit-audio",
+ "waterkit-build",
  "waterui",
  "waterui-backend-core",
  "waterui-core",
  "waterui-graphics",
  "waterui-locale",
  "waterui-map",
+ "waterui-meta",
  "waterui-preview-protocol",
  "waterui-video",
  "waterui-webview",

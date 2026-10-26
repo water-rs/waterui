@@ -8,7 +8,7 @@
 //! allocates one block in the coverage arena per path and accumulates
 //! the per-path dispatch records and the decision-R2 bound they size
 //! from. The kernels write only geometry: each block carries a count
-//! word, the emitted 32-byte geometry records and the packed R8 texels.
+//! word, the emitted 24-byte geometry records and the packed R8 texels.
 //! The cell-buffer vertex stage joins each record to the draw's anchor
 //! instance (water-rs/waterui#3081); the draw loops read each draw's
 //! indirect arguments from `draws`, whose count words arrive through
@@ -65,7 +65,7 @@ pub const ARGS_PARTIAL: u32 = 16;
 pub const ARGS_NORMAL: u32 = 36;
 /// The kernel workgroup size `coverage.wgsl` declares.
 const WORKGROUP: u32 = 64;
-const CLASSIFY_WIDTH: u32 = 128;
+const CLASSIFY_WIDTH: u32 = super::path::GPU_CLASSIFY_WIDTH;
 /// Decision R2's hard per-batch cap on the coverage buffers' total
 /// size. A path whose own bound passes it is routed to the CPU sweep
 /// ([`CoverageLimit::admits`]); a frame whose paths together pass it is
@@ -76,8 +76,8 @@ const GPU_COV_MAX_BYTES: u64 = 256 << 20;
 const FRAME_FIXED_BYTES: u64 = 18 * 1024 + 128 + 48;
 
 /// u32 words of one geometry record in the arena: the device bounds
-/// vec4 plus `(texel offset, width, interior, kind)`.
-const GEOMETRY_WORDS: u32 = 8;
+/// vec4 plus `(texel offset, interior)`; an all-ones offset denotes a span.
+const GEOMETRY_WORDS: u32 = 6;
 /// u32 words of one block's header: the emitted instance count and pad.
 const BLOCK_HEADER_WORDS: u32 = 4;
 
@@ -190,8 +190,17 @@ struct Pipes {
     classify: wgpu::ComputePipeline,
     fill_cells: wgpu::ComputePipeline,
     emit_counts: wgpu::ComputePipeline,
+    strokes: Option<StrokePipes>,
+    dashes: Option<DashPipes>,
+}
+
+struct StrokePipes {
     stroke_vertices: wgpu::ComputePipeline,
     stroke_emit: wgpu::ComputePipeline,
+    bin_strokes: wgpu::ComputePipeline,
+}
+
+struct DashPipes {
     dash_length: wgpu::ComputePipeline,
     dash_scan_reduce: wgpu::ComputePipeline,
     dash_scan_blocks: wgpu::ComputePipeline,
@@ -199,7 +208,6 @@ struct Pipes {
     dash_fragments: wgpu::ComputePipeline,
     dash_args: wgpu::ComputePipeline,
     dash_emit: wgpu::ComputePipeline,
-    bin_strokes: wgpu::ComputePipeline,
     bin_dashes: wgpu::ComputePipeline,
 }
 
@@ -288,9 +296,8 @@ struct Batch {
     list_total: u32,
     dash_table_words: u32,
     seg_total: u32,
-    cov_total: u32,
     bin_total: u32,
-    fragment_total: u32,
+    totals: FrameTotals,
     row_total: u32,
     bound: BufferBounds,
 }
@@ -522,6 +529,10 @@ impl GpuCoverage {
     /// The frame's submit landed: entries it generated are replayable
     /// and a compaction's copies have executed (water-rs/waterui#3081).
     pub fn submitted(&mut self) {
+        // Submitted commands retain these buffers until the GPU finishes.
+        // Do not keep generation scratch waiting for another frame: a static
+        // application may never submit a retained-only frame to release it.
+        self.buffers = None;
         if !self.encoded {
             return;
         }
@@ -571,15 +582,7 @@ impl GpuCoverage {
             ..
         } = prepared;
         let append = |batch: &Batch| {
-            path_rows(
-                prepared,
-                bound,
-                FrameTotals {
-                    fragments: batch.fragment_total,
-                    columns: batch.cov_total,
-                },
-            )
-            .and_then(|(rows, totals)| {
+            path_rows(prepared, bound, batch.totals).and_then(|(rows, totals)| {
                 let mut next = batch.bound;
                 next.add(&rows);
                 if next.total() + FRAME_FIXED_BYTES > GPU_COV_MAX_BYTES {
@@ -610,10 +613,6 @@ impl GpuCoverage {
             }
             Err(error) => return Err(error),
         };
-        let FrameTotals {
-            fragments: fragment_total,
-            columns: cov_total,
-        } = totals;
         self.batch.bound = next;
         let record = u32::try_from(self.paths.len()).expect("path count fits u32");
         let elem_base = self.batch.element_total;
@@ -621,7 +620,7 @@ impl GpuCoverage {
         let texels =
             u32::try_from(bound.texels.div_ceil(4) + bound.cell_cap).expect("texel words fit u32");
         let (base, texel_base, block_words) = self.alloc_block(device, geometry_slots, texels)?;
-        let grid_base = self.batch.cov_total;
+        let grid_base = self.batch.totals.columns;
         let [xx, yx, xy, yy, tx, ty] = raster.as_coeffs();
         let mut words = [0u32; PATH_WORDS];
         // atom[0..3]: bbox ordered-bits +inf/-inf seeds (the kernel's
@@ -704,8 +703,7 @@ impl GpuCoverage {
         self.draws.push(Draw { key, shift });
         self.batch.seg_total += u32::try_from(bound.segments).expect("segments");
         self.batch.bin_total += u32::try_from(bound.bins).expect("bins");
-        self.batch.fragment_total = fragment_total;
-        self.batch.cov_total = cov_total;
+        self.batch.totals = totals;
         self.batch.row_total += u32::try_from(bound.grid_h).expect("rows");
 
         Ok(u32::try_from(self.draws.len() - 1).expect("draw count fits u32"))
@@ -870,7 +868,7 @@ impl GpuCoverage {
         anchor.uv[0] = f32::from_bits(entry.texel_base);
         anchor.uv[1] = 0.0;
         let first_vertex = (anchor_global + 1) * 8;
-        let first_instance = entry.base / 8;
+        let first_instance = entry.base / GEOMETRY_WORDS;
         let base = usize::try_from(index).expect("draw index") * ARGS_WORDS as usize;
         if self.draw_args.len() < base + ARGS_WORDS as usize {
             self.draw_args.resize(base + ARGS_WORDS as usize, 0);
@@ -971,7 +969,7 @@ impl GpuCoverage {
             });
             let mut sizes = [0; 7];
             for &batch in self.batches.iter().chain(std::iter::once(&self.batch)) {
-                let plan = BatchPlan::new(batch, &self.paths[batch.start..batch.end]);
+                let plan = BatchPlan::new(batch);
                 for (peak, size) in sizes.iter_mut().zip(plan.sizes) {
                     *peak = (*peak).max(size);
                 }
@@ -1106,7 +1104,7 @@ impl GpuCoverage {
         delivery: crate::render::shaders::ShaderDelivery,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
-        self.ensure_pipes(device, delivery);
+        self.ensure_pipes(device, delivery, batch);
         self.work.clear();
         self.elements.clear();
         self.strokes.clear();
@@ -1137,7 +1135,7 @@ impl GpuCoverage {
             work_header_bytes,
             radix_pass_count,
             ..
-        } = BatchPlan::new(batch, &self.paths[batch.start..batch.end]);
+        } = BatchPlan::new(batch);
         let stroke_total = params[18];
         let dash_total = params[19];
         let dash_blocks = params[21];
@@ -1296,12 +1294,14 @@ impl GpuCoverage {
             pass.set_pipeline(&pipes.flatten);
             dispatch(&mut pass, params[0]);
             if stroke_total > 0 {
+                let pipes = pipes.strokes.as_ref().expect("stroke pipelines prepared");
                 pass.set_pipeline(&pipes.stroke_vertices);
                 dispatch(&mut pass, stroke_total);
                 pass.set_pipeline(&pipes.stroke_emit);
                 dispatch(&mut pass, stroke_total);
             }
             if dash_total > 0 {
+                let pipes = pipes.dashes.as_ref().expect("dash pipelines prepared");
                 // Lengths, their per-subpath prefix, the dashes of every
                 // record, then the fragment and chord offsets that compact
                 // them (7.4); the scans read their operation from the
@@ -1332,10 +1332,12 @@ impl GpuCoverage {
             pass.set_pipeline(&pipes.bin);
             dispatch(&mut pass, params[0]);
             if stroke_total > 0 {
+                let pipes = pipes.strokes.as_ref().expect("stroke pipelines prepared");
                 pass.set_pipeline(&pipes.bin_strokes);
                 dispatch(&mut pass, stroke_total);
             }
             if dash_total > 0 {
+                let pipes = pipes.dashes.as_ref().expect("dash pipelines prepared");
                 pass.set_pipeline(&pipes.bin_dashes);
                 pass.dispatch_workgroups_indirect(&buffers.args, ARGS_DASH);
             }
@@ -1386,61 +1388,61 @@ impl GpuCoverage {
         }
     }
 
-    /// Lazily build the bind layout and the pipelines from the
-    /// precompiled coverage module.
+    /// Build only the kernel families this batch dispatches.
     fn ensure_pipes(
         &mut self,
         device: &wgpu::Device,
         delivery: crate::render::shaders::ShaderDelivery,
+        batch: Batch,
     ) {
-        if self.pipes.is_some() {
+        if self.pipes.as_ref().is_some_and(|pipes| {
+            (batch.stroke_total == 0 || pipes.strokes.is_some())
+                && (batch.dash_total == 0 || pipes.dashes.is_some())
+        }) {
             return;
         }
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("gpu coverage"),
-            entries: &super::layout_entries(bindings::COVERAGE_MAIN_GROUP0),
+        let layout = self.layout.get_or_insert_with(|| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("gpu coverage"),
+                entries: &super::layout_entries(bindings::COVERAGE_MAIN_GROUP0),
+            })
         });
-        let args_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("gpu coverage argument writes"),
-            entries: &super::layout_entries(bindings::COVERAGE_GROUP0),
+        let args_layout = self.args_layout.get_or_insert_with(|| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("gpu coverage argument writes"),
+                entries: &super::layout_entries(bindings::COVERAGE_GROUP0),
+            })
         });
         let pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("gpu coverage"),
-            bind_group_layouts: &[Some(&layout)],
+            bind_group_layouts: &[Some(layout)],
             immediate_size: 0,
         });
         let args_pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("gpu coverage argument writes"),
-            bind_group_layouts: &[Some(&args_layout)],
+            bind_group_layouts: &[Some(args_layout)],
             immediate_size: 0,
         });
-        let mut kernels: Vec<_> = delivery
-            .coverage_programs(device)
-            .into_iter()
-            .map(|program| {
-                let pipeline_layout = match program.layout {
-                    super::programs::ComputeLayout::CoverageMain => &pipe_layout,
-                    super::programs::ComputeLayout::CoverageArguments => &args_pipe_layout,
-                };
-                let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some(program.entry),
-                    layout: Some(pipeline_layout),
-                    module: &program.module,
-                    entry_point: Some(program.entry),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    cache: None,
-                });
-                (program.entry, pipeline)
-            })
-            .collect();
-        let mut make = |entry: &str| {
-            let at = kernels
+        let programs = delivery.coverage_programs(device);
+        let make = |entry| {
+            let program = programs
                 .iter()
-                .position(|(name, _)| *name == entry)
-                .unwrap_or_else(|| panic!("`{entry}` is a coverage kernel"));
-            kernels.swap_remove(at).1
+                .find(|program| program.entry == entry)
+                .expect("coverage kernel has a shader program");
+            let layout = match program.layout {
+                super::programs::ComputeLayout::CoverageMain => &pipe_layout,
+                super::programs::ComputeLayout::CoverageArguments => &args_pipe_layout,
+            };
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(entry),
+                layout: Some(layout),
+                module: &program.module,
+                entry_point: Some(entry),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            })
         };
-        self.pipes = Some(Pipes {
+        let pipes = self.pipes.get_or_insert_with(|| Pipes {
             prepare_dispatch: make("prepare_dispatch"),
             prepare_cells: make("prepare_cells"),
             radix_count: make("radix_count"),
@@ -1458,25 +1460,28 @@ impl GpuCoverage {
             classify: make("classify"),
             fill_cells: make("fill_cells"),
             emit_counts: make("emit_counts"),
-            stroke_vertices: make("stroke_vertices"),
-            stroke_emit: make("stroke_emit"),
-            dash_length: make("dash_length"),
-            dash_scan_reduce: make("dash_scan_reduce"),
-            dash_scan_blocks: make("dash_scan_blocks"),
-            dash_scan_apply: make("dash_scan_apply"),
-            dash_fragments: make("dash_fragments"),
-            dash_args: make("dash_args"),
-            dash_emit: make("dash_emit"),
-            bin_strokes: make("bin_strokes"),
-            bin_dashes: make("bin_dashes"),
+            strokes: None,
+            dashes: None,
         });
-        let missing: Vec<_> = kernels.iter().map(|(name, _)| *name).collect();
-        assert!(
-            missing.is_empty(),
-            "coverage kernels without a pipe: {missing:?}"
-        );
-        self.layout = Some(layout);
-        self.args_layout = Some(args_layout);
+        if batch.stroke_total > 0 {
+            pipes.strokes.get_or_insert_with(|| StrokePipes {
+                stroke_vertices: make("stroke_vertices"),
+                stroke_emit: make("stroke_emit"),
+                bin_strokes: make("bin_strokes"),
+            });
+        }
+        if batch.dash_total > 0 {
+            pipes.dashes.get_or_insert_with(|| DashPipes {
+                dash_length: make("dash_length"),
+                dash_scan_reduce: make("dash_scan_reduce"),
+                dash_scan_blocks: make("dash_scan_blocks"),
+                dash_scan_apply: make("dash_scan_apply"),
+                dash_fragments: make("dash_fragments"),
+                dash_args: make("dash_args"),
+                dash_emit: make("dash_emit"),
+                bin_dashes: make("bin_dashes"),
+            });
+        }
     }
 }
 
@@ -1541,19 +1546,12 @@ struct BatchPlan {
 }
 
 impl BatchPlan {
-    fn new(batch: Batch, paths: &[[u32; PATH_WORDS]]) -> Self {
-        let strip_total: u32 = paths
-            .iter()
-            .map(|path| {
-                path[17].div_ceil(
-                    u32::try_from(crate::render::path::STRIP_H).expect("strip height fits u32"),
-                )
-            })
-            .sum();
-        let tile_total: u32 = paths
-            .iter()
-            .map(|path| path[16].div_ceil(CLASSIFY_WIDTH) * path[17].div_ceil(4))
-            .sum();
+    fn new(batch: Batch) -> Self {
+        let FrameTotals {
+            strips: strip_total,
+            tiles: tile_total,
+            ..
+        } = batch.totals;
         // The compute stroker's scratch precedes the bins: the vertex slots,
         // then the dashed passes' per-record words, scan blocks, staging and
         // compacted list. It is empty in a frame without strokes, which
@@ -1572,10 +1570,10 @@ impl BatchPlan {
             bin_base,
         } = scratch;
         let fragment_base = bin_base + batch.bin_total * 3;
-        let sorted = fragment_base + batch.fragment_total * 8;
-        let groups = sorted + batch.fragment_total * 2;
-        let sort_scratch = groups + group_words(batch.fragment_total, batch.cov_total);
-        let radix_pass_count = radix_passes(batch.cov_total);
+        let sorted = fragment_base + batch.totals.fragments * 8;
+        let groups = sorted + batch.totals.fragments * 2;
+        let sort_scratch = groups + group_words(batch.totals.fragments, batch.totals.columns);
+        let radix_pass_count = radix_passes(batch.totals.columns);
         // Start on the opposite side for odd pass counts so the result always
         // precedes the group arena, leaving sort_scratch free for tokens.
         let (sort_a, sort_b) = if radix_pass_count.is_multiple_of(2) {
@@ -1583,13 +1581,10 @@ impl BatchPlan {
         } else {
             (sort_scratch, sorted)
         };
-        let histogram = sort_scratch + batch.fragment_total * 2;
-        let histogram_end =
-            histogram + batch.fragment_total.div_ceil(WORKGROUP).div_ceil(256) * 256 * 16;
+        let histogram = sort_scratch + batch.totals.fragments * 2;
         // Classification starts after radix sorting has released sort_scratch and
         // its histogram. The sorted keys stay live through texel generation.
         let tokens = sort_scratch;
-        let token_end = tokens + (batch.fragment_total.min(batch.cov_total) * 2 + strip_total) * 3;
         let params: [u32; PARAMS_WORDS] = [
             batch.element_total,
             batch.row_total,
@@ -1597,11 +1592,11 @@ impl BatchPlan {
             u32::try_from(batch.end - batch.start).expect("coverage capacity fits u32"),
             tile_total,
             CLASSIFY_WIDTH,
-            batch.cov_total,
+            batch.totals.columns,
             bin_base,
             sort_scratch,
             fragment_base,
-            batch.fragment_total,
+            batch.totals.fragments,
             sort_a,
             sort_b,
             histogram,
@@ -1620,11 +1615,7 @@ impl BatchPlan {
             list_base,
             0,
         ];
-        let cov_words = u64::from(
-            token_end
-                .max(histogram_end)
-                .max(sort_scratch + tile_total * 4),
-        );
+        let cov_words = u64::from(groups) + batch.totals.scratch_words();
         let scratch_bytes = cov_words * 4;
         let work_header_bytes = u64::from(5 + batch.row_total) * 4;
         let strokes_bytes = (u64::from(stroke_total) * u64::from(RECORD_WORDS)
@@ -1735,6 +1726,20 @@ impl CoverageLimit {
 struct FrameTotals {
     fragments: u32,
     columns: u32,
+    strips: u32,
+    tiles: u32,
+}
+
+impl FrameTotals {
+    /// Sort groups remain live; radix sort, classification tokens and tile
+    /// records reuse the following arena at different points in the prologue.
+    fn scratch_words(self) -> u64 {
+        let radix = u64::from(self.fragments) * 2
+            + u64::from(self.fragments.div_ceil(WORKGROUP).div_ceil(256)) * 256 * 16;
+        let tokens = (u64::from(self.fragments.min(self.columns)) * 2 + u64::from(self.strips)) * 3;
+        u64::from(group_words(self.fragments, self.columns))
+            + radix.max(tokens).max(u64::from(self.tiles) * 4)
+    }
 }
 
 /// The rows the draw of `path` at `bound` adds to decision R2's bound of
@@ -1751,6 +1756,7 @@ fn path_rows(
     let strips = bound.grid_h.div_ceil(crate::render::path::STRIP_H);
     let to64 = |n: usize| u64::try_from(n).expect("bound fits u64");
     let key_range = || RenderError::Unsupported("GPU coverage key range exceeds u32");
+    let tiles = strips * bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize);
     // The sort groups take up to 16 words per fragment at u32 word
     // offsets, so a frame past this many fragments cannot be laid out.
     let after = FrameTotals {
@@ -1765,21 +1771,16 @@ fn path_rows(
             .ok()
             .and_then(|columns| before.columns.checked_add(columns))
             .ok_or_else(key_range)?,
+        strips: before.strips + u32::try_from(strips).map_err(|_| key_range())?,
+        tiles: before.tiles + u32::try_from(tiles).map_err(|_| key_range())?,
     };
-    let groups =
-        group_words(after.fragments, after.columns) - group_words(before.fragments, before.columns);
-    let tokens = after.fragments.min(after.columns) * 6 - before.fragments.min(before.columns) * 6;
-    let tiles = to64(strips * bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize));
     let mut bounds = BufferBounds {
         elements: to64(path.elements.len()) * (std::mem::size_of::<GpuElement>() as u64),
         segments: to64(bound.segments) * 16,
         scratch: to64(bound.bins) * 12
             + to64(bound.fragments) * 40
-            + to64(bound.fragments.div_ceil(64)) * 64
-            + to64(strips) * 12
-            + tiles * 16
-            + u64::from(groups + tokens) * 4,
-        work: to64(rows) * 4 + (to64(strips) + tiles) * 8,
+            + (after.scratch_words() - before.scratch_words()) * 4,
+        work: to64(rows) * 4 + (to64(strips) + to64(tiles)) * 8,
         paths: (PATH_WORDS as u64) * 4,
         arena: to64(bound.texels.div_ceil(4) + bound.cell_cap) * 4
             + to64(bound.instance_cap) * u64::from(GEOMETRY_WORDS) * 4,
@@ -1862,12 +1863,72 @@ mod tests {
     use kurbo::{Affine, PathEl, Point};
 
     #[test]
+    fn coverage_pipelines_follow_later_stroke_and_dash_use() {
+        let Some((device, _, delivery)) = delivery_device() else {
+            return;
+        };
+        let mut coverage = GpuCoverage::new(&device, u64::MAX);
+        let mut batch = Batch::default();
+        coverage.ensure_pipes(&device, delivery, batch);
+        let pipes = coverage.pipes.as_ref().unwrap();
+        let fill = pipes.flatten.clone();
+        assert!(pipes.strokes.is_none());
+        assert!(pipes.dashes.is_none());
+
+        batch.stroke_total = 1;
+        coverage.ensure_pipes(&device, delivery, batch);
+        let pipes = coverage.pipes.as_ref().unwrap();
+        let stroke = pipes.strokes.as_ref().unwrap().stroke_emit.clone();
+        assert_eq!(pipes.flatten, fill);
+        assert!(pipes.dashes.is_none());
+
+        batch.dash_total = 1;
+        coverage.ensure_pipes(&device, delivery, batch);
+        let pipes = coverage.pipes.as_ref().unwrap();
+        assert_eq!(pipes.flatten, fill);
+        assert_eq!(pipes.strokes.as_ref().unwrap().stroke_emit, stroke);
+        assert!(pipes.dashes.is_some());
+    }
+
+    #[test]
     fn radix_passes_order_keys_below_the_sentinel() {
         assert_eq!(radix_passes(255), 2);
         assert_eq!(radix_passes(256), 3);
         assert_eq!(radix_passes(1 << 16), 5);
         assert_eq!(radix_passes(1 << 24), 7);
         assert_eq!(radix_passes(u32::MAX), 8);
+    }
+
+    #[test]
+    fn dense_path_scratch_bound_covers_radix_sort() {
+        let Some(device) = device() else {
+            return;
+        };
+        let mut elements = Vec::new();
+        for _ in 0..256 {
+            elements.extend([
+                PathEl::MoveTo(Point::new(0.0, 0.0)),
+                PathEl::LineTo(Point::new(64.0, 64.0)),
+                PathEl::LineTo(Point::new(0.0, 64.0)),
+                PathEl::ClosePath,
+            ]);
+        }
+        let path = crate::render::path::prepare_gpu(&elements, Affine::IDENTITY, (64.0, 64.0));
+        let mut frame = GpuCoverage::new(&device, u64::MAX);
+        frame.begin_frame();
+        frame
+            .draw(
+                &device,
+                &GpuDraw::new(1, 0, Affine::IDENTITY, path, (64, 64)),
+            )
+            .expect("dense path fits");
+        let plan = BatchPlan::new(frame.batch);
+        assert!(
+            plan.sizes[0] <= frame.batch.bound.scratch,
+            "allocation {} exceeds admitted scratch {}",
+            plan.sizes[0],
+            frame.batch.bound.scratch
+        );
     }
 
     #[test]
@@ -2085,11 +2146,32 @@ mod tests {
             }
         }
         frame.submitted();
+        assert!(
+            frame.buffers.is_none(),
+            "idle frames release generation scratch"
+        );
         assert_eq!(frame.uploads.len(), 0);
         frame.begin_frame();
         frame.draw(&device, first).expect("first cache hit");
         frame.draw(&device, second).expect("second cache hit");
         assert!(!frame.has_misses(), "both batches remain cached");
+        frame.ensure(&device);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        frame
+            .record_prologue(&device, &queue, &mut encoder, delivery, None)
+            .expect("cached prologue");
+        let replay = read_back(
+            &device,
+            &queue,
+            &[(frame.draws_buffer(), 0, u64::from(ARGS_WORDS) * 8)],
+            encoder,
+        );
+        assert_eq!(replay[0], words[2], "cached coverage preserves draw counts");
+        frame.submitted();
+        assert!(
+            frame.buffers.is_none(),
+            "replay releases generation scratch"
+        );
     }
 
     fn device() -> Option<wgpu::Device> {
@@ -2380,7 +2462,7 @@ mod tests {
         reason = "one frame's setup, readback and assertions"
     )]
     fn stroke_segments_close_and_fit_their_bound() {
-        use crate::render::path::{FLATTEN, sigma_max};
+        use crate::render::path::FLATTEN;
         use cherenkov::ShapeData;
         use std::collections::HashMap;
 
@@ -2440,7 +2522,7 @@ mod tests {
                     &shape,
                     stroke,
                     raster,
-                    FLATTEN / sigma_max(raster).max(1e-12),
+                    FLATTEN / raster.spectral_norm().max(1e-12),
                     (1024.0, 1024.0),
                 )
                 .expect("the stroke encodes");

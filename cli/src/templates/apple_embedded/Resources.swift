@@ -1,4 +1,5 @@
 import Foundation
+import WaterUIBridge
 
 /// Pass `.module` to the host's `resources` argument for this package's assets and fonts.
 extension WaterUIResourceContext {
