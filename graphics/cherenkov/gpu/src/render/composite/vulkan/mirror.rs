@@ -209,6 +209,8 @@ struct FrameSets {
     /// Set by the submission-completion callback the renderer registers
     /// once the frame's command buffers have retired.
     idle: Arc<AtomicBool>,
+    /// Attachments retired by this submission, released with its pools.
+    retired: Vec<Slot>,
 }
 
 /// What a descriptor set was written for. Every handle written into a
@@ -244,11 +246,6 @@ pub struct PipeKey {
     pub slots: u8,
 }
 
-/// Objects whose destruction waits for a submission to complete.
-enum Retired {
-    Slot(Slot),
-}
-
 /// Whether `vkCmdBeginRendering` is reached as core 1.3 or through
 /// `VK_KHR_dynamic_rendering`.
 enum Rendering {
@@ -281,7 +278,6 @@ pub struct Mirror {
     frames: Vec<FrameSets>,
     active: Option<usize>,
     stamp: Option<Stamp>,
-    retired: Vec<Retired>,
 }
 
 impl std::fmt::Debug for Mirror {
@@ -373,7 +369,6 @@ impl Mirror {
             frames: Vec::new(),
             active: None,
             stamp: None,
-            retired: Vec::new(),
         })
     }
 
@@ -422,6 +417,11 @@ impl Mirror {
                 }
                 .map_err(|e| MirrorError::Vulkan("vkResetDescriptorPool", e))?;
             }
+            for slot in frame.retired.drain(..) {
+                // SAFETY: completion of this frame also completes every
+                // earlier submission that could reference the retired slot.
+                unsafe { slot.destroy(&self.device) };
+            }
             frame.sets.clear();
             frame.allocated = 0;
             frame.idle.store(false, Ordering::Release);
@@ -436,22 +436,12 @@ impl Mirror {
                 sets: FxHashMap::default(),
                 allocated: 0,
                 idle: Arc::new(AtomicBool::new(false)),
+                retired: Vec::new(),
             });
             self.frames.len() - 1
         };
         self.active = Some(index);
         self.stamp = Some(stamp);
-        // Everything retired before this frame opened was referenced
-        // only by submissions older than the one whose completion
-        // released this frame's pools.
-        let retired = std::mem::take(&mut self.retired);
-        for item in retired {
-            match item {
-                // SAFETY: the slot's objects were created on
-                // `self.device` by this mirror and are destroyed once.
-                Retired::Slot(slot) => unsafe { slot.destroy(&self.device) },
-            }
-        }
         Ok(())
     }
 
@@ -575,7 +565,10 @@ impl Mirror {
                 false
             }
         });
-        self.retired.extend(dropped.into_iter().map(Retired::Slot));
+        let index = self
+            .active
+            .expect("attachment retirement belongs to an open frame");
+        self.frames[index].retired.extend(dropped);
     }
 
     /// Creates one transient attachment at `size`: an image with the
@@ -1171,12 +1164,10 @@ impl Mirror {
                     slot.destroy(&self.device);
                 }
             }
-            for item in self.retired.drain(..) {
-                match item {
-                    Retired::Slot(slot) => slot.destroy(&self.device),
-                }
-            }
             for frame in self.frames.drain(..) {
+                for slot in frame.retired {
+                    slot.destroy(&self.device);
+                }
                 for pool in frame.pools {
                     self.device.destroy_descriptor_pool(pool, None);
                 }
