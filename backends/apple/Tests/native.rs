@@ -7747,6 +7747,13 @@ mod navigation {
                     Ok(())
                 },
             ),
+            libtest_mimic::Trial::test(
+                "navigation::toolbar_labels_default_to_icons_and_preserve_explicit_titles",
+                || {
+                    toolbar_labels_default_to_icons_and_preserve_explicit_titles();
+                    Ok(())
+                },
+            ),
             libtest_mimic::Trial::test("navigation::a_text_toolbar_button_draws_its_title", || {
                 a_text_toolbar_button_draws_its_title();
                 Ok(())
@@ -7780,6 +7787,63 @@ mod navigation {
         item.title()
             .map(|text| text.to_string())
             .unwrap_or_default()
+    }
+
+    /// Toolbar context hides automatic titles without overriding explicit label style.
+    fn toolbar_labels_default_to_icons_and_preserve_explicit_titles() {
+        use waterui::component::label;
+        use waterui_core::layout::ProposalSize;
+
+        let icon = || SystemIcon::new("plus");
+        let icon_leaf = resolve::render(icon());
+        let icon_width = f64::from(
+            icon_leaf
+                .layout()
+                .measure(ProposalSize::UNSPECIFIED)
+                .size
+                .width,
+        );
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
+                vec![
+                    NavigationToolbarItem::new(
+                        NavigationToolbarPlacement::TopBarLeading,
+                        button(label("").icon(icon())).style(ButtonStyle::Borderless),
+                    ),
+                    NavigationToolbarItem::new(
+                        NavigationToolbarPlacement::TopBarTrailing,
+                        button(label("Keep title").icon(icon()).title_and_icon())
+                            .style(ButtonStyle::Borderless),
+                    ),
+                ],
+            )),
+        ));
+        let nav = nav_controller_in(leaf.view()).expect("the stack mounts a navigation controller");
+        let item = nav
+            .topViewController()
+            .expect("the root page")
+            .navigationItem();
+        let leading = item
+            .leftBarButtonItems()
+            .expect("the default action")
+            .objectAtIndex(0);
+        let automatic = leading.customView().expect("the icon label remains hosted");
+        let actual = view::bounds(&automatic).size.width;
+        assert!(
+            (actual - icon_width).abs() < 0.5,
+            "automatic toolbar label width {actual} must equal icon width {icon_width} without empty-title spacing"
+        );
+        let trailing = item
+            .rightBarButtonItems()
+            .expect("the explicit action")
+            .objectAtIndex(0);
+        let explicit = trailing
+            .customView()
+            .expect("the explicit title-and-icon remains hosted");
+        assert!(
+            view::bounds(&explicit).size.width > icon_width + 8.0,
+            "an explicit title-and-icon preference keeps its title"
+        );
     }
 
     /// A leading text button is the bar's own title item, and the title

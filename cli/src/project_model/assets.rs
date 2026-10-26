@@ -433,6 +433,7 @@ pub async fn seed_managed_crate_lock(
 /// feature selection the build invokes with — optional dependencies (and the
 /// metadata they declare) only enter the resolved graph under it; an empty
 /// slice resolves the manifest's default feature set.
+#[cfg(test)]
 pub async fn crate_metadata(
     host: &crate::toolchain::Host,
     build_manifest: &Path,
