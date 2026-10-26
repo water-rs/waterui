@@ -6619,13 +6619,8 @@ impl GpuRenderer {
             if pictures.iter().all(|bytes| *bytes == 0) {
                 break;
             }
-            if self.gpu_cov.has_draws()
-                && let Err(error) = self.gpu_cov.ensure(&self.device)
-            {
-                results[0] = Err(error);
-                return results;
-            }
-            let resident = self.resident_bytes()
+            let resident = self.resident_bytes() + self.gpu_cov.planned_bytes()
+                - self.gpu_cov.bytes()
                 + pending
                     .iter()
                     .map(|surf| surf.gpu_bytes() - surf.projective_bytes())

@@ -465,6 +465,53 @@ impl GpuCoverage {
             + self.draws_buffer.as_ref().map_or(0, wgpu::Buffer::size)
     }
 
+    /// Resident storage plus the allocations the accepted frame will need.
+    /// Admission uses the same layout as ensure, before creating buffers.
+    pub fn planned_bytes(&self) -> u64 {
+        let mut bytes = self.bytes();
+        if !self.has_draws() {
+            return bytes;
+        }
+        if self.arena.pending {
+            bytes += u64::from(self.arena.words) * 4;
+        }
+        let draws = (self.draws.len() as u64).max(1) * u64::from(ARGS_WORDS) * 4;
+        bytes += draws.saturating_sub(self.draws_buffer.as_ref().map_or(0, wgpu::Buffer::size));
+        if self.has_misses() {
+            let sizes = allocation_sizes(self.generation_sizes());
+            let resident = self.buffers.as_ref().map_or([0; 8], |b| {
+                [
+                    b.coverage.size(),
+                    b.elements.size(),
+                    b.strokes.size(),
+                    b.paths.size(),
+                    b.segments.size(),
+                    b.args.size(),
+                    b.work.size(),
+                    b.params.size(),
+                ]
+            });
+            let required = sizes
+                .into_iter()
+                .chain([PARAMS_BLOCKS * u64::from(PARAMS_STRIDE)]);
+            bytes += required
+                .zip(resident)
+                .map(|(need, have)| need.saturating_sub(have))
+                .sum::<u64>();
+        }
+        bytes
+    }
+
+    fn generation_sizes(&self) -> [u64; 7] {
+        let mut sizes = [0; 7];
+        for &batch in self.batches.iter().chain(std::iter::once(&self.batch)) {
+            for (peak, size) in sizes.iter_mut().zip(BatchPlan::new(batch).sizes) {
+                *peak = (*peak).max(size);
+            }
+        }
+        sizes
+    }
+
     fn generation_resident_bytes(&self) -> u64 {
         self.buffers.as_ref().map_or(0, |b| {
             b.params.size()
@@ -938,14 +985,7 @@ impl GpuCoverage {
                 },
         ));
         if self.has_misses() {
-            let mut sizes = [0; 7];
-            for &batch in self.batches.iter().chain(std::iter::once(&self.batch)) {
-                let plan = BatchPlan::new(batch);
-                for (peak, size) in sizes.iter_mut().zip(plan.sizes) {
-                    *peak = (*peak).max(size);
-                }
-            }
-            self.size_buffers(device, sizes)?;
+            self.size_buffers(device, self.generation_sizes())?;
         }
         Ok(())
     }
@@ -1077,6 +1117,7 @@ impl GpuCoverage {
                 "GPU coverage input exceeds device buffer limit",
             ));
         }
+        let sizes = allocation_sizes(sizes);
         let previous = self.buffers.as_ref();
         // Tests read the buffers back; the runtime never does.
         let storage = wgpu::BufferUsages::STORAGE
@@ -1098,7 +1139,7 @@ impl GpuCoverage {
                 device,
                 previous.map(|b| &b.elements),
                 "cov elements",
-                sizes[1].max(48),
+                sizes[1],
                 storage,
             ),
             paths: sized_buffer(
@@ -1112,7 +1153,7 @@ impl GpuCoverage {
                 device,
                 previous.map(|b| &b.segments),
                 "cov segments",
-                sizes[4].max(16),
+                sizes[4],
                 storage,
             ),
             coverage: sized_buffer(
@@ -1126,7 +1167,7 @@ impl GpuCoverage {
                 device,
                 previous.map(|b| &b.strokes),
                 "cov strokes",
-                sizes[2].next_multiple_of(16).max(16),
+                sizes[2],
                 storage,
             ),
             args: sized_buffer(
@@ -1899,6 +1940,13 @@ const fn radix_passes(key_end: u32) -> u32 {
     key_end.bit_width().div_ceil(4)
 }
 
+fn allocation_sizes(mut sizes: [u64; 7]) -> [u64; 7] {
+    sizes[1] = sizes[1].max(48);
+    sizes[2] = sizes[2].next_multiple_of(16).max(16);
+    sizes[4] = sizes[4].max(16);
+    sizes
+}
+
 fn sized_buffer(
     device: &wgpu::Device,
     previous: Option<&wgpu::Buffer>,
@@ -2179,7 +2227,13 @@ mod tests {
             frame.arena().is_none(),
             "planning allocates no intermediate arenas"
         );
+        let planned_bytes = frame.planned_bytes();
         frame.ensure(&device).expect("coverage buffers fit");
+        assert_eq!(
+            frame.bytes(),
+            planned_bytes,
+            "admission budgets actual buffer allocations"
+        );
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         frame.record_prologue(&device, &queue, &mut encoder, delivery, None);
         let arena = frame.arena().expect("retained arena");
