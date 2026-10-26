@@ -10578,10 +10578,9 @@ impl GpuRenderer {
             // it done. Nothing waits on this: a later frame takes a
             // fresh set of pools until one is released (#2191).
             #[cfg(all(unix, not(target_vendor = "apple")))]
-            if let Some(idle) = tile_idle {
-                self.queue.on_submitted_work_done(move || {
-                    idle.store(true, std::sync::atomic::Ordering::Release);
-                });
+            if let Some(completion) = tile_idle {
+                self.queue
+                    .on_submitted_work_done(move || completion.complete());
             }
             #[cfg(all(unix, not(target_vendor = "apple")))]
             if let Some(native) = self.native.as_mut()
