@@ -6708,7 +6708,7 @@ impl GpuRenderer {
                     .zip(frames)
                     .zip(group_maps.iter().zip(inputs).zip(self.ready_sets.iter()))
                     .map(|(((surf, fonts), frame), ((groups, inputs), ready))| {
-                        let prepared = prepared.remove(&frame.id).unwrap_or_default();
+                        let mut prepared = prepared.remove(&frame.id).unwrap_or_default();
                         s.spawn(move || {
                             let result = Self::lower_content(
                                 surf,
@@ -6724,9 +6724,9 @@ impl GpuRenderer {
                                 inputs,
                                 ready,
                                 coverage_options,
-                                prepared,
+                                &mut prepared,
                             );
-                            (result, fonts)
+                            (result.map(|()| prepared), fonts)
                         })
                     })
                     .collect::<Vec<_>>()
@@ -6749,6 +6749,7 @@ impl GpuRenderer {
                 .zip(frames)
                 .zip(group_maps.iter().zip(inputs).zip(self.ready_sets.iter()))
                 .map(|((surf, frame), ((groups, inputs), ready))| {
+                    let mut prepared = prepared.remove(&frame.id).unwrap_or_default();
                     Self::lower_content(
                         surf,
                         frame,
@@ -6763,8 +6764,9 @@ impl GpuRenderer {
                         inputs,
                         ready,
                         coverage_options,
-                        prepared.remove(&frame.id).unwrap_or_default(),
+                        &mut prepared,
                     )
+                    .map(|()| prepared)
                 })
                 .collect()
         };
@@ -6801,6 +6803,7 @@ impl GpuRenderer {
             .zip(frames)
             .zip(group_maps.iter().zip(inputs).zip(self.ready_sets.iter()))
             .map(|((surf, frame), ((groups, inputs), ready))| {
+                let mut prepared = prepared.remove(&frame.id).unwrap_or_default();
                 Self::lower_content(
                     surf,
                     frame,
@@ -6815,8 +6818,9 @@ impl GpuRenderer {
                     inputs,
                     ready,
                     coverage_options,
-                    prepared.remove(&frame.id).unwrap_or_default(),
+                    &mut prepared,
                 )
+                .map(|()| prepared)
             })
             .collect();
         // The batch's pending rasters commit transactionally
@@ -7168,8 +7172,8 @@ impl GpuRenderer {
         inputs: &projective::Inputs,
         ready: &FxHashSet<LayerId>,
         coverage_options: (Option<gpu_cov::CoverageLimit>, path::CoverageRoute),
-        mut lowered: Lowered,
-    ) -> Result<Lowered, RenderError> {
+        lowered: &mut Lowered,
+    ) -> Result<(), RenderError> {
         surf.frame.reset();
         surf.plan_dirty = false;
         let mut candidates = FxHashMap::default();
@@ -7242,7 +7246,7 @@ impl GpuRenderer {
                     &mut layers,
                     (&glyphs, groups),
                     (&surf.projective, inputs, surf.size),
-                    &mut lowered,
+                    lowered,
                 )?;
                 let projective_bytes: u64 = lowered
                     .composed
@@ -7292,7 +7296,7 @@ impl GpuRenderer {
         surf.frame.content.sort_unstable_by_key(|(id, _)| id.raw());
         surf.frame.external.sort_unstable_by_key(|id| id.raw());
         surf.frame.external.dedup();
-        result.map(|()| lowered)
+        result
     }
 
     /// Plans the surface's projective layers and lowers the local image of
