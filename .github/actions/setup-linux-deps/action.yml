@@ -27,6 +27,13 @@ inputs:
       job installs them through the same verified path.
     required: false
     default: ""
+  runtime-fonts:
+    description: >
+      Install the system fallback font faces used by rendering tests.
+      Compile-only callers do not read these assets; font libraries and
+      headers are always installed.
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -45,15 +52,12 @@ runs:
         # (xcap -> waterkit-screen pulls it in under --all-features). It has so
         # far arrived only as a transitive dependency of libgtk-4-dev; declare
         # what the workspace actually links rather than inheriting it.
-        # fonts-noto-cjk and fonts-noto-core are faces, not headers: the
-        # self-drawn renderer shapes a script the bundled Roboto does not cover
-        # through the platform's own fallback, exactly as it does on a user's
-        # machine, so a runner with no CJK, Arabic, Hebrew, Thai or Devanagari
-        # face installed makes that text shape to `.notdef` and the coverage
-        # tests fail for want of a font rather than for want of a fix.
         # spirv-tools: cherenkov-gpu's build script optimizes its precompiled
         # SPIR-V with spirv-opt on every non-Apple native target.
-        packages="nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libegl-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev fonts-noto-core fonts-noto-cjk spirv-tools"
+        packages="nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libegl-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev spirv-tools"
+        if [ "${{ inputs.runtime-fonts }}" = "true" ]; then
+          packages="$packages fonts-noto-core fonts-noto-cjk"
+        fi
         if [ "${{ inputs.gpu }}" = "true" ]; then
           packages="$packages mesa-vulkan-drivers libvulkan1"
         fi
