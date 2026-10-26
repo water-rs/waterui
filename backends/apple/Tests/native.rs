@@ -2407,8 +2407,7 @@ mod navigation {
             &pane,
             labels
                 .iter()
-                .enumerate()
-                .map(|(_index, label)| {
+                .map(|label| {
                     let title = (*label).to_string();
                     Tab::new(*label, move || {
                         NavigationView::new(title.clone(), text(title.clone()))
