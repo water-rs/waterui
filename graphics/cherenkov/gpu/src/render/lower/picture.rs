@@ -12,6 +12,8 @@ pub(super) struct PreparedDomain {
     source: cherenkov::Picture,
     bucket: i32,
     format: wgpu::TextureFormat,
+    replacements: u64,
+    source_bytes: u64,
     visible: bool,
     domain: Option<crate::render::planes::static_layer::Domain>,
 }
@@ -21,10 +23,8 @@ impl PreparedDomain {
         std::ptr::eq(self.source.display_list(), source.display_list())
     }
 
-    pub(super) fn source_bytes(&self) -> u64 {
-        self.source
-            .display_list()
-            .heap_bytes(cherenkov::lowering::memory::command_bytes)
+    pub(super) const fn source_bytes(&self) -> u64 {
+        self.source_bytes
     }
 }
 
@@ -157,13 +157,24 @@ impl Lowering<'_> {
         // pixels across small scale changes. Whole octaves can charge 4x.
         let density = (f64::from(scale as f32).log2() * 2.0).ceil();
         let density = (density * 0.5).exp2();
-        let format = if crate::render::content_range::of_ops(ops, glyphs.images)
-            == crate::render::present::ColorRange::HighDynamicRange
-        {
-            wgpu::TextureFormat::Rgba16Float
-        } else {
-            wgpu::TextureFormat::Rgba8UnormSrgb
-        };
+        let replacements = context.inputs.replacements;
+        let format = domains
+            .get(&index)
+            .filter(|prepared| {
+                prepared.matches_source(picture) && prepared.replacements == replacements
+            })
+            .map_or_else(
+                || {
+                    if crate::render::content_range::of_ops(ops, glyphs.images)
+                        == crate::render::present::ColorRange::HighDynamicRange
+                    {
+                        wgpu::TextureFormat::Rgba16Float
+                    } else {
+                        wgpu::TextureFormat::Rgba8UnormSrgb
+                    }
+                },
+                |prepared| prepared.format,
+            );
         let key = LocalKey {
             layer,
             picture: Some(std::ptr::from_ref(picture.display_list()) as usize),
@@ -212,6 +223,10 @@ impl Lowering<'_> {
                         source: picture.clone(),
                         bucket: key.bucket,
                         format,
+                        replacements,
+                        source_bytes: picture
+                            .display_list()
+                            .heap_bytes(cherenkov::lowering::memory::command_bytes),
                         visible: true,
                         domain,
                     },
@@ -243,11 +258,16 @@ impl Lowering<'_> {
             source: picture.clone(),
             bucket: key.bucket,
             format,
+            replacements,
+            source_bytes: picture
+                .display_list()
+                .heap_bytes(cherenkov::lowering::memory::command_bytes),
             visible: true,
             domain: Some(domain),
         });
         prepared.bucket = key.bucket;
         prepared.format = format;
+        prepared.replacements = replacements;
         prepared.domain = Some(domain);
         prepared.visible = !bounds.is_zero_area();
         if !prepared.visible {
