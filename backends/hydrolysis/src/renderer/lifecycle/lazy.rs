@@ -107,13 +107,6 @@ pub fn place_lazy_stack_item(
 ) -> kurbo::Rect {
     match axis_config {
         LazyStackAxisConfig::Vertical { alignment, .. } => {
-            assert!(
-                !(matches!(
-                    stretch_axis,
-                    StretchAxis::Vertical | StretchAxis::Both | StretchAxis::MainAxis
-                )),
-                "hydrolysis LazyContainer VStackLayout does not support children stretching on main axis"
-            );
             let child_width = if matches!(
                 stretch_axis,
                 StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::CrossAxis
@@ -139,13 +132,6 @@ pub fn place_lazy_stack_item(
             kurbo::Rect::new(x, cursor, x + child_width, cursor + child_height)
         }
         LazyStackAxisConfig::Horizontal { alignment, .. } => {
-            assert!(
-                !(matches!(
-                    stretch_axis,
-                    StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::MainAxis
-                )),
-                "hydrolysis LazyContainer HStackLayout does not support children stretching on main axis"
-            );
             let child_width = f64::from(size.width);
             let child_height = if matches!(
                 stretch_axis,
@@ -478,5 +464,43 @@ mod tests {
         );
 
         assert_eq!(rect, kurbo::Rect::new(80.0, 0.0, 100.0, 10.0));
+    }
+
+    #[test]
+    fn vertical_stack_keeps_main_axis_stretch_item_at_ideal_extent() {
+        let axis = LazyStackAxisConfig::Vertical {
+            spacing: Computed::constant(0.0),
+            alignment: HorizontalAlignment::Leading,
+            direction: Computed::constant(LayoutDirection::LeftToRight),
+        };
+
+        let rect = place_lazy_stack_item(
+            &axis,
+            StretchAxis::MainAxis,
+            Size::new(20.0, 30.0),
+            kurbo::Rect::new(0.0, 0.0, 100.0, 100.0),
+            8.0,
+        );
+
+        assert_eq!(rect, kurbo::Rect::new(0.0, 8.0, 20.0, 38.0));
+    }
+
+    #[test]
+    fn horizontal_stack_keeps_main_axis_stretch_item_at_ideal_extent() {
+        let axis = LazyStackAxisConfig::Horizontal {
+            spacing: Computed::constant(0.0),
+            alignment: VerticalAlignment::Top,
+            direction: Computed::constant(LayoutDirection::LeftToRight),
+        };
+
+        let rect = place_lazy_stack_item(
+            &axis,
+            StretchAxis::MainAxis,
+            Size::new(30.0, 20.0),
+            kurbo::Rect::new(0.0, 0.0, 100.0, 100.0),
+            8.0,
+        );
+
+        assert_eq!(rect, kurbo::Rect::new(8.0, 0.0, 38.0, 20.0));
     }
 }

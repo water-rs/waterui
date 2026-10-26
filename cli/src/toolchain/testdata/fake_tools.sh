@@ -637,6 +637,28 @@ cmake | meson | spirv-opt | sh | bash)
             printf '%s 1.0.0 (waterui-test)\n' "$tool"
             ;;
     esac
+    if [ "$tool" = "cmake" ]; then
+        # WPE source-build fixture: --install --prefix <dir> materializes the
+        # two bridge outputs (or only the bridge under OMIT_EXTENSION); any
+        # invocation fails under WATERUI_FAKE_CMAKE_FAIL.
+        if [ -n "${WATERUI_FAKE_LOG-}" ]; then
+            printf 'cmake-env PKG_CONFIG_PATH=%s\n' "${PKG_CONFIG_PATH-}" >> "$WATERUI_FAKE_LOG"
+        fi
+        [ -n "${WATERUI_FAKE_CMAKE_FAIL-}" ] && exit 1
+        _prefix=""
+        _prev=""
+        for _arg in "$@"; do
+            [ "$_prev" = "--prefix" ] && _prefix="$_arg"
+            _prev="$_arg"
+        done
+        if [ -n "$_prefix" ]; then
+            /bin/mkdir -p "$_prefix/lib/waterui-wpe/extensions"
+            printf 'fake bridge' > "$_prefix/lib/libwaterui_wpe.so"
+            if [ -z "${WATERUI_FAKE_CMAKE_OMIT_EXTENSION-}" ]; then
+                printf 'fake extension' > "$_prefix/lib/waterui-wpe/extensions/waterui_wpe_extension.so"
+            fi
+        fi
+    fi
     exit 0
     ;;
 wasm-pack)
