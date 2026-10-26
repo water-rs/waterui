@@ -59,9 +59,9 @@ pub use web::WebSystemWebViewController;
 use crate::renderer::{HydroNativeView, HydroState};
 
 #[cfg(not(hydrolysis_android_system_webview))]
-impl HydroNativeView for WebView {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for WebView {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &std::rc::Rc<dyn crate::theme::WidgetTheme>,
@@ -78,9 +78,9 @@ impl HydroNativeView for WebView {
 /// The Android system bridge measures like `Native<PlatformView>`: the mounted
 /// `WebView` has no intrinsic size and fills the proposal its slot assigns.
 #[cfg(hydrolysis_android_system_webview)]
-impl HydroNativeView for WebView {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for WebView {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &std::rc::Rc<dyn crate::theme::WidgetTheme>,
@@ -89,7 +89,7 @@ impl HydroNativeView for WebView {
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &std::rc::Rc<dyn crate::theme::WidgetTheme>,

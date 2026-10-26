@@ -26,9 +26,9 @@ fn materialize_all(snapshot: &AnyViewsSnapshot<AnyView>, env: &Environment) -> V
     views
 }
 
-impl HydroNativeView for Native<FixedContainer> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<FixedContainer> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -38,7 +38,7 @@ impl HydroNativeView for Native<FixedContainer> {
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -62,8 +62,8 @@ impl HydroNativeView for Native<FixedContainer> {
     clippy::option_if_let_else,
     reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
 )]
-fn lazy_stack_sample_size(
-    state: &mut HydroState,
+fn lazy_stack_sample_size<E: crate::text::TextEngine>(
+    state: &mut HydroState<E>,
     view: &Native<LazyContainer>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -143,9 +143,9 @@ fn lazy_stack_sample_size(
     }
 }
 
-impl HydroNativeView for Native<LazyContainer> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<LazyContainer> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -154,7 +154,7 @@ impl HydroNativeView for Native<LazyContainer> {
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,

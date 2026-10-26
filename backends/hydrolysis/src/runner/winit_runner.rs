@@ -48,7 +48,7 @@ use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events_with,
     pump_window_semantics, render_window, runtime_window_origin,
 };
-use crate::text::SessionTextEngine;
+use crate::text::ParleyEngine;
 
 #[derive(Debug)]
 pub(super) enum RunnerEvent {
@@ -719,7 +719,9 @@ pub fn run(
     // registry: a compositor that hands a popup window keyboard focus routes
     // the menu's chords to that window's dispatch, which must resolve them
     // while the menu is open (water-rs/hydrolysis#247).
-    let _ = env.get_or_insert_with::<MenuShortcutRegistry, _>(MenuShortcutRegistry::default);
+    let _ = env.get_or_insert_with::<MenuShortcutRegistry<crate::text::ParleyEngine>, _>(
+        MenuShortcutRegistry::default,
+    );
     crate::theme::install_theme_tokens(&mut env, Some(&style));
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
     // The application's fonts, discovered once. Every window's renderer is
@@ -769,11 +771,11 @@ pub fn run(
     // `MainThreadMarker` contract needs.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let native_menu_bar = crate::platform::native_menu_bar::NativeMenuBar::install(
-        &super::menu_bar::register_menu_bar(&menu_bar, &env),
+        &super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env),
         &env,
     );
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    super::menu_bar::register_menu_bar(&menu_bar, &env);
+    super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     // The capture service mounts its subtree under a snapshot of the
     // assembled environment — the theme tokens, hooks and font collection a
     // window's subtree resolves — so it must be installed last
@@ -851,7 +853,7 @@ struct WinitRunner {
     /// What the application does once it has no window left.
     last_window: LastWindowPolicy,
     pending_window_queue: Rc<RefCell<Vec<PendingWindow>>>,
-    windows: HashMap<WindowId, RuntimeWindow<WinitWindow>>,
+    windows: HashMap<WindowId, RuntimeWindow<WinitWindow, crate::text::ParleyEngine>>,
     /// Transient popup windows (mounted through `PopupWindowManager`): a
     /// pointer press that lands outside every app window dismisses them.
     popup_window_ids: std::collections::HashSet<WindowId>,
@@ -1103,7 +1105,9 @@ impl WinitRunner {
         }
     }
 
-    fn current_window_origin(runtime: &RuntimeWindow<WinitWindow>) -> HydrolysisWindowOrigin {
+    fn current_window_origin<E: crate::text::TextEngine>(
+        runtime: &RuntimeWindow<WinitWindow, E>,
+    ) -> HydrolysisWindowOrigin {
         let native_window = runtime.platform.native_window();
         if let Ok(position) = native_window.outer_position() {
             let logical = position.to_logical::<f64>(native_window.scale_factor());
@@ -1177,7 +1181,10 @@ impl WinitRunner {
         &mut self,
         event_loop: &ActiveEventLoop,
         pending: PendingWindow,
-    ) -> (RuntimeWindow<WinitWindow>, AccessKitAdapter) {
+    ) -> (
+        RuntimeWindow<WinitWindow, crate::text::ParleyEngine>,
+        AccessKitAdapter,
+    ) {
         let PendingWindow { window, activates } = pending;
         let activation = window.activation;
         // `Window::placement` resolves each time the window is shown — and a
@@ -1221,12 +1228,12 @@ impl WinitRunner {
         }
         let mut platform = self.create_platform_window(native_window, &window);
         platform.apply_properties(&window);
-        let text = SessionTextEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
+        let text = ParleyEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
         let renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
         let closable = window.closable;
         window.arm_close_requests(&self.env);
         let mut runtime =
-            RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config);
+            RuntimeWindow::new_gpu(window, platform, renderer, self.render_diagnostics_config);
         runtime
             .renderer
             .set_window_id(crate::renderer::WindowId::Winit(runtime.platform.id()));
@@ -1357,7 +1364,10 @@ impl WinitRunner {
         )
     }
 
-    fn handle_input_events(runtime: &mut RuntimeWindow<WinitWindow>, env: &Environment) -> bool {
+    fn handle_input_events<E: crate::text::TextEngine>(
+        runtime: &mut RuntimeWindow<WinitWindow, E>,
+        env: &Environment,
+    ) -> bool {
         handle_input_events_with(runtime, env, |runtime, env| {
             env.extending(Self::current_window_origin(runtime))
         })
@@ -1368,7 +1378,10 @@ impl WinitRunner {
     /// its HWND) is destroyed, so detaching the menu and both subclass
     /// procs only ever run on live handles.
     #[cfg(target_os = "windows")]
-    fn detach_menu_bar_hwnd(&self, runtime: &RuntimeWindow<WinitWindow>) {
+    fn detach_menu_bar_hwnd<E: crate::text::TextEngine>(
+        &self,
+        runtime: &RuntimeWindow<WinitWindow, E>,
+    ) {
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
         if let Ok(handle) = runtime.platform.native_window().window_handle()
             && let RawWindowHandle::Win32(win) = handle.as_raw()

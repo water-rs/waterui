@@ -139,14 +139,16 @@ use waterui_graphics::draw::{
     MaterialShader, Paint, Recorder, Shadow, SharedLive, WorkingColor,
 };
 
-fn test_renderer() -> HydrolysisRenderer {
+fn test_renderer() -> HydrolysisRenderer<crate::text::ParleyEngine> {
     test_renderer_with_theme(MinimalTestTheme::default())
 }
 
-fn test_renderer_with_theme(theme: MinimalTestTheme) -> HydrolysisRenderer {
+fn test_renderer_with_theme(
+    theme: MinimalTestTheme,
+) -> HydrolysisRenderer<crate::text::ParleyEngine> {
     HydrolysisRenderer::with_engine(
         Rc::new(theme),
-        SessionTextEngine::system(FontFamilyResolution::Strict),
+        ParleyEngine::system(FontFamilyResolution::Strict),
     )
 }
 
@@ -155,12 +157,12 @@ fn test_renderer_with_theme(theme: MinimalTestTheme) -> HydrolysisRenderer {
 /// registered, and the interaction key is linked so the pointer machinery —
 /// and keyboard traversal, which reads the semantic tree — resolves the node.
 #[cfg(feature = "accessibility")]
-fn emit_focusable_node(
-    renderer: &mut HydrolysisRenderer,
+fn emit_focusable_node<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     key: &InteractionKey,
     bounds: Rect,
     env: &Environment,
-    activation: Option<AccessibilityActivation>,
+    activation: Option<AccessibilityActivation<E>>,
 ) -> AccessibilityNodeId {
     let mut node = AccessibilityNode::new(AccessibilityNodeRole::Button);
     node.add_action(AccessibilityAction::Focus);
@@ -266,7 +268,9 @@ fn themed_test_environment() -> Environment {
     crate::localization::install(&mut env);
     // The runners seed the chord table; a test that mounts menus resolves
     // shortcuts through the same path (water-rs/hydrolysis#247).
-    env.insert(crate::renderer::MenuShortcutRegistry::default());
+    env.insert(crate::renderer::MenuShortcutRegistry::<
+        crate::text::ParleyEngine,
+    >::default());
     // `App::into_parts` installs the application's decided Close Window
     // chord; the test environment installs the same value over an empty
     // bar, so a Close Window item reads the free ⌘W / Ctrl+W.
@@ -283,10 +287,10 @@ fn themed_test_environment() -> Environment {
 /// the walk descends into.
 pub fn material_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId> {
     struct Members(Vec<cherenkov::LayerId>);
-    impl mount::layers::LayerVisitor for Members {
+    impl<E: crate::text::TextEngine> mount::layers::LayerVisitor<E> for Members {
         fn node(
             &mut self,
-            layers: &mount::layers::NodeLayers,
+            layers: &mount::layers::NodeLayers<E>,
             _world: kurbo::Affine,
             _alphas: &[f32],
         ) {
@@ -312,10 +316,10 @@ pub fn mounted_anchor_parent_children(
         child: cherenkov::LayerId,
         children: Option<(cherenkov::LayerId, Vec<cherenkov::LayerId>, bool)>,
     }
-    impl mount::layers::LayerVisitor for Parent {
+    impl<E: crate::text::TextEngine> mount::layers::LayerVisitor<E> for Parent {
         fn node(
             &mut self,
-            layers: &mount::layers::NodeLayers,
+            layers: &mount::layers::NodeLayers<E>,
             _world: kurbo::Affine,
             _alphas: &[f32],
         ) {
@@ -343,10 +347,10 @@ pub fn mounted_anchor_parent_children(
 
 pub fn inner_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId> {
     struct Inner(Vec<cherenkov::LayerId>);
-    impl mount::layers::LayerVisitor for Inner {
+    impl<E: crate::text::TextEngine> mount::layers::LayerVisitor<E> for Inner {
         fn node(
             &mut self,
-            layers: &mount::layers::NodeLayers,
+            layers: &mount::layers::NodeLayers<E>,
             _world: kurbo::Affine,
             _alphas: &[f32],
         ) {
@@ -361,7 +365,9 @@ pub fn inner_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId>
 }
 
 /// The window's mount — the test renders one window.
-pub fn window_mount(runtime: &crate::HeadlessRuntime) -> &mount::Mount<cherenkov_gpu::Gpu> {
+pub fn window_mount(
+    runtime: &crate::HeadlessRuntime,
+) -> &mount::Mount<cherenkov_gpu::Gpu, crate::text::ParleyEngine> {
     &runtime
         .renderer()
         .cherenkov_window
@@ -373,7 +379,7 @@ pub fn window_mount(runtime: &crate::HeadlessRuntime) -> &mount::Mount<cherenkov
 /// The window's backdrop-group table — the test renders one window.
 pub fn mounts(
     runtime: &crate::HeadlessRuntime,
-) -> &mount::backdrop::MaterialBackdropGroups<cherenkov::BackdropGroup> {
+) -> &mount::backdrop::MaterialBackdropGroups<cherenkov::BackdropGroup, crate::text::ParleyEngine> {
     window_mount(runtime).groups()
 }
 
@@ -384,7 +390,7 @@ pub fn capture_bytes(runtime: &crate::HeadlessRuntime) -> u64 {
         .cherenkov_window
         .as_ref()
         .expect("the frame installed into a window")
-        .state
+        .host
         .engine
         .memory()
         .backdrop_captures
@@ -730,7 +736,7 @@ fn secure_field_model(value: &str) -> TextInputModel {
 fn text_input_target(
     model: TextInputModel,
     selection: Rc<RefCell<TextSelectionSlot>>,
-) -> TextInputTarget {
+) -> TextInputTarget<crate::text::ParleyEngine> {
     let interaction_key = InteractionKey::for_rc(&selection, 0);
     TextInputTarget {
         owner: std::rc::Weak::new(),
@@ -742,9 +748,9 @@ fn text_input_target(
         text_bounds: Rect::ZERO,
         text_clip_bounds: Rect::ZERO,
         content_alpha: 1.0,
-        layout: SessionTextEngine::system(FontFamilyResolution::Strict).empty_layout(),
+        layout: ParleyEngine::system(FontFamilyResolution::Strict).empty_layout(),
         display_text: waterui_core::Str::default(),
-        display_layout: SessionTextEngine::system(FontFamilyResolution::Strict).empty_layout(),
+        display_layout: ParleyEngine::system(FontFamilyResolution::Strict).empty_layout(),
         purpose: TextInputPurpose::Normal,
         depth: 0,
         order: 0,
@@ -773,7 +779,7 @@ fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
         alignment: HorizontalAlignment::Leading,
         spacing: Computed::constant(0.0),
     };
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let dimensions = measure_layout_dimensions(
         &layout,
         [&child],
@@ -817,7 +823,7 @@ fn plain_fixed_container_measurement_mirrors_guides_under_rtl() {
         )),
         &env,
     );
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let dimensions = measure_view_dimensions(&view, &mut state, &env, &theme);
 
     // Under RTL the 20-wide leading child mirrors to the trailing edge —
@@ -865,11 +871,11 @@ fn scale_metadata_is_layout_transparent() {
         &env,
     );
 
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let initial = measure_view_dimensions(&view, &mut state, &env, &theme).size;
 
     scale.set(2.0);
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let scaled = measure_view_dimensions(&view, &mut state, &env, &theme).size;
 
     assert_eq!(initial, LayoutSize::new(80.0, 120.0));
@@ -885,7 +891,7 @@ fn hydro_subview_preserves_stretch_control_minimum_under_zero_width_proposal() {
         AnyView::new(slider("Playback position", &value).hide_label()),
         &env,
     );
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let state = RefCell::new(&mut state);
     let subview = HydroSubview::from_view(&view, &state, &env, &theme);
 
@@ -902,7 +908,7 @@ fn hydro_subview_preserves_non_stretch_button_intrinsic_under_zero_width_proposa
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let view = normalize_layout_view(AnyView::new(button("Medium (0.7)").action(|| {})), &env);
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let state = RefCell::new(&mut state);
     let subview = HydroSubview::from_view(&view, &state, &env, &theme);
 
@@ -932,7 +938,7 @@ fn state_wrapped_button_remains_non_stretch_for_layout() {
         ),
         &env,
     );
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let state = RefCell::new(&mut state);
     let subview = HydroSubview::from_view(&view, &state, &env, &theme);
 
@@ -1219,7 +1225,7 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
 
     let mut renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
-        SessionTextEngine::system(FontFamilyResolution::Strict),
+        ParleyEngine::system(FontFamilyResolution::Strict),
     );
     let env = test_environment();
     let bounds = kurbo::Rect::new(0.0, 0.0, 160.0, 160.0);
@@ -1243,7 +1249,7 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
 fn string_views_measure_through_body_recursion() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let proposal = ProposalSize::UNSPECIFIED;
 
     let raw = measure_view_dimensions_with_proposal(
@@ -1302,8 +1308,8 @@ fn fixed_scroll_content_keeps_offscreen_children_registered() {
     );
 }
 
-fn capture_root_window<V: waterui_core::View>(
-    renderer: &mut HydrolysisRenderer,
+fn capture_root_window<V: waterui_core::View, E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     view: V,
     env: &Environment,
     bounds: Rect,
@@ -1357,7 +1363,7 @@ fn a_segmented_picker_takes_the_width_it_is_offered() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let mut renderer = test_renderer();
-    let mut hydro = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut hydro = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let mut measure = |style, width: Option<f32>| {
         let mut node = crate::widgets::controls::picker::PickerRenderState::from_config(
             waterui_core::view::ConfigurableView::config(picker(style)),
@@ -2566,8 +2572,8 @@ fn keyboard_focus_activates_control_on_key_release() {
     #[cfg(feature = "accessibility")]
     {
         let counter = Rc::clone(&semantic_activations);
-        let activation: AccessibilityActivation = Rc::new(RefCell::new(
-            move |_: &mut SemanticCore, _: &Environment| {
+        let activation: AccessibilityActivation<crate::text::ParleyEngine> = Rc::new(RefCell::new(
+            move |_: &mut SemanticCore<crate::text::ParleyEngine>, _: &Environment| {
                 counter.set(counter.get() + 1);
                 true
             },
@@ -3521,7 +3527,7 @@ fn text_input_focus_stays_on_its_field_when_a_row_is_inserted_above_it() {
     renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
     let first = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let focused = Rc::new(RefCell::new(TextSelectionSlot::default()));
-    let emit = |renderer: &mut HydrolysisRenderer,
+    let emit = |renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
                 targets: &[(&str, &Rc<RefCell<TextSelectionSlot>>)]| {
         seed_text_input_targets(
             renderer,
@@ -3640,7 +3646,10 @@ fn text_selection_pointer_update_uses_transient_redraw_path() {
 /// materializes, so staged and retained readers both see them exactly like
 /// a flush's. The owner is the root cell, the owner a window-level
 /// registration carries.
-fn seed_text_input_targets(renderer: &mut HydrolysisRenderer, targets: Vec<TextInputTarget>) {
+fn seed_text_input_targets<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    targets: Vec<TextInputTarget<E>>,
+) {
     let anchor = renderer.window_placement();
     let owner = Rc::clone(renderer.root_cell());
     renderer.purge_registrations(&owner);
@@ -3670,8 +3679,8 @@ fn shaped_text_input_target(
     value: &str,
     selection: &Rc<RefCell<TextSelectionSlot>>,
     env: &Environment,
-) -> TextInputTarget {
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+) -> TextInputTarget<crate::text::ParleyEngine> {
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let layout = HydrolysisRenderer::build_text_layout(
         &mut state,
         StyledStr::plain(value.to_owned()),
@@ -3692,7 +3701,10 @@ fn shaped_text_input_target(
 
 /// The window point at the center of the caret geometry for `byte_index`, used
 /// to aim synthetic clicks inside a specific word.
-fn caret_point_in_target(target: &TextInputTarget, byte_index: usize) -> Point {
+fn caret_point_in_target<E: crate::text::TextEngine>(
+    target: &TextInputTarget<E>,
+    byte_index: usize,
+) -> Point {
     let geometry = target.layout.caret_rect(TextPosition {
         index: byte_index,
         affinity: Affinity::Downstream,
@@ -3882,7 +3894,7 @@ fn bare_str_at_window_root_renders_into_page() {
 #[test]
 fn text_shaping_produces_nonzero_intrinsic_in_tests() {
     let env = test_environment();
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let size = HydrolysisRenderer::measure_text_intrinsic_size(
         &mut state,
         waterui_text::styled::StyledStr::plain("probe"),
@@ -3909,7 +3921,7 @@ fn resolved_text_fast_path_matches_the_recursive_measure() {
     let string_view = AnyView::new(String::from("hello world"));
 
     for view in [&str_view, &string_view] {
-        let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+        let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
         let state_cell = RefCell::new(&mut state);
         let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
         let fast_path = HydroSubview::from_view(view, &state_cell, &env, &theme).measure(proposal);
@@ -3956,7 +3968,7 @@ fn bare_str_renders_into_page() {
 #[test]
 fn render_path_text_layout_has_lines() {
     let env = test_environment();
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let layout = HydrolysisRenderer::build_text_layout(
         &mut state,
         waterui_text::styled::StyledStr::plain("probe"),
@@ -4021,7 +4033,7 @@ fn every_view_answers_the_three_point_probe_consistently() {
         // The layout path measures normalized views, so the contract is about
         // those, not about raw bodies.
         let view = normalize_layout_view(view, &env);
-        let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+        let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
         let cell = RefCell::new(&mut state);
         let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
         let subview = HydroSubview::from_view(&view, &cell, &env, &theme);
@@ -4160,7 +4172,7 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
 fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let measured = measure_view_dimensions_with_proposal(
         &normalize_layout_view(AnyView::new(button("OK").padding_with(8.0)), &env),
         ProposalSize::new(Some(160.0), Some(160.0)),
@@ -4210,7 +4222,7 @@ fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
 fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let measured = measure_view_dimensions_with_proposal(
         &normalize_layout_view(
             AnyView::new(button("OK").padding_with([0.0, 0.0, 20.0, 0.0])),

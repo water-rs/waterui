@@ -173,7 +173,7 @@ impl GpuFrameProfiler {
     }
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Writes a timestamp marker when this frame can be profiled, folding the
     /// marker's queue drain into `gpu_wait`; a no-op when the frame's context
     /// has no profiler (a device without `TIMESTAMP_QUERY`).

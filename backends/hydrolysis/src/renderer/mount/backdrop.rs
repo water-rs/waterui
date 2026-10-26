@@ -14,7 +14,7 @@ use std::collections::hash_map::Entry;
 use std::num::NonZeroU64;
 use std::rc::{Rc, Weak};
 
-use cherenkov::{Layer, LayerId, Transaction};
+use cherenkov_record::{Layer, LayerId, Transaction};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use cherenkov_record::{CaptureClass, MaterialEffect, MaterialGrouping, SharedLive};
@@ -74,11 +74,11 @@ impl BackdropGroupKey {
     /// node's identity, or the member's own frame layer outside every
     /// group. A scoped group anchors at the layer its `(scope, canvas)`
     /// pair registered in `anchors` (water-rs/waterui#2097).
-    pub(crate) fn new(
+    pub(crate) fn new<E: crate::text::TextEngine>(
         member: LayerId,
         request: &MaterialRequest,
         canvas: Option<LayerId>,
-        anchors: &ScopeAnchors,
+        anchors: &ScopeAnchors<E>,
     ) -> Self {
         let (scope, anchor) = request
             .scope
@@ -134,13 +134,13 @@ impl ChromeGroupKey {
     /// and anchors at the layer the scope's `(scope, canvas)` pair
     /// registered in `anchors`, like a material group
     /// (water-rs/waterui#2097).
-    pub(crate) fn new(
+    pub(crate) fn new<E: crate::text::TextEngine>(
         member: LayerId,
         scope: cherenkov_record::MaterialScope,
         class: CaptureClass,
         grouping: MaterialGrouping,
         canvas: Option<LayerId>,
-        anchors: &ScopeAnchors,
+        anchors: &ScopeAnchors<E>,
     ) -> Self {
         let (scope, anchor) = match scope.id() {
             Some(scope) if grouping != MaterialGrouping::Solo => (
@@ -175,21 +175,21 @@ impl ChromeGroupKey {
 /// reaching the table — and the member's cell, the link a group rebuild
 /// follows to re-point the member's frame layer at the replacement group
 /// without waiting for the member's own commit.
-pub struct MaterialMembership {
+pub struct MaterialMembership<E: crate::text::TextEngine> {
     marker: Rc<MemberMarker>,
-    owner: Weak<NodeCell>,
+    owner: Weak<NodeCell<E>>,
 }
 
-impl std::fmt::Debug for MaterialMembership {
+impl<E: crate::text::TextEngine> std::fmt::Debug for MaterialMembership<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MaterialMembership").finish_non_exhaustive()
     }
 }
 
-impl MaterialMembership {
+impl<E: crate::text::TextEngine> MaterialMembership<E> {
     /// A membership for `owner`'s node — `Weak::new()` for the window
     /// layer's own membership, which the mount owns directly.
-    pub(crate) fn new(owner: Weak<NodeCell>) -> Self {
+    pub(crate) fn new(owner: Weak<NodeCell<E>>) -> Self {
         Self {
             marker: Rc::new(MemberMarker),
             owner,
@@ -204,7 +204,7 @@ struct MemberMarker;
 /// membership its `NodeLayers` holds, and the cell owning those layers —
 /// the link a group rebuild follows to re-point the member's frame layer
 /// at the replacement group without waiting for the member's own commit.
-struct MemberEntry<K, M> {
+struct MemberEntry<K, M, E: crate::text::TextEngine> {
     key: K,
     /// The member's own binding payload — its shader handle and live
     /// effect — kept so a group rebuild rebinds each member's own
@@ -216,7 +216,7 @@ struct MemberEntry<K, M> {
     /// over a bind that still samples the released group.
     stale: bool,
     marker: Weak<MemberMarker>,
-    owner: Weak<NodeCell>,
+    owner: Weak<NodeCell<E>>,
 }
 
 /// One live backdrop group in the table: the target's group object, the
@@ -266,23 +266,23 @@ pub enum MemberBind {
 /// whose tree dropped releases here at the next sweep. A group of its
 /// own — a member outside every scope, or a chrome member of a `Solo`
 /// class — keeps the first-member rule.
-pub struct ScopeAnchors {
-    anchors: FxHashMap<(NonZeroU64, Option<LayerId>), AnchorRegistration>,
+pub struct ScopeAnchors<E: crate::text::TextEngine> {
+    anchors: FxHashMap<(NonZeroU64, Option<LayerId>), AnchorRegistration<E>>,
     epoch: u64,
 }
 
-type AnchorRegistration = (LayerId, Weak<NodeCell>, u64);
+type AnchorRegistration<E> = (LayerId, Weak<NodeCell<E>>, u64);
 
 /// The identity a `.material_group()` scope keys its groups by: the
 /// address of its mount cell. The scope's anchor item holds an [`Rc`] to
 /// the cell for as long as its registration stands, so the address
 /// cannot be reused while it keys a group.
-pub fn scope_id(cell: &NodeCell) -> NonZeroU64 {
+pub fn scope_id<E: crate::text::TextEngine>(cell: &NodeCell<E>) -> NonZeroU64 {
     NonZeroU64::new(std::ptr::from_ref(cell).addr() as u64)
         .expect("hydrolysis materials: a live node cell's address is never zero")
 }
 
-impl ScopeAnchors {
+impl<E: crate::text::TextEngine> ScopeAnchors<E> {
     pub(crate) fn new() -> Self {
         Self {
             anchors: FxHashMap::default(),
@@ -297,7 +297,7 @@ impl ScopeAnchors {
     /// key: a second live registration under the same `(scope, canvas)`
     /// names the same layer or it is a bug within one commit; an older
     /// registration is replaced outright.
-    pub(crate) fn set(&mut self, cell: &Rc<NodeCell>, canvas: Option<LayerId>, layer: LayerId) {
+    pub(crate) fn set(&mut self, cell: &Rc<NodeCell<E>>, canvas: Option<LayerId>, layer: LayerId) {
         let scope = scope_id(cell);
         match self.anchors.entry((scope, canvas)) {
             Entry::Occupied(mut entry) => {
@@ -395,11 +395,11 @@ impl SpecCarrier for cherenkov::BackdropGroup {
 /// The member side of a [`BackdropGroups::join`]: the joining layer, its
 /// node's membership hold, and the resolver a group rebuild re-points
 /// the other members' live layers with.
-pub struct MemberJoin<'a, R, F> {
+pub struct MemberJoin<'a, R, F, E: crate::text::TextEngine> {
     /// The member's frame layer.
     pub layer: &'a Layer,
     /// Its node's hold on the group: the rebuild sweeps through it.
-    pub membership: &'a MaterialMembership,
+    pub membership: &'a MaterialMembership<E>,
     /// Builds the member's own binding payload, stored on its entry so
     /// a group rebuild rebinds each member's own terms. Called only when
     /// the join binds the member.
@@ -413,11 +413,13 @@ pub struct MemberJoin<'a, R, F> {
 /// material groups (`BackdropGroupKey` → `MaterialRuntime`) and the
 /// chrome groups (`ChromeGroupKey` → `MaterialCapture`) share one
 /// mechanism.
-pub struct BackdropGroups<K, P, G, M> {
+pub struct BackdropGroups<K, P, G, M, E: crate::text::TextEngine> {
     groups: FxHashMap<K, MountedBackdrop<P, G>>,
-    members: FxHashMap<LayerId, MemberEntry<K, M>>,
+    members: FxHashMap<LayerId, MemberEntry<K, M, E>>,
 }
-impl<K: std::fmt::Debug, P: std::fmt::Debug, G, M> std::fmt::Debug for BackdropGroups<K, P, G, M> {
+impl<K: std::fmt::Debug, P: std::fmt::Debug, G, M, E: crate::text::TextEngine> std::fmt::Debug
+    for BackdropGroups<K, P, G, M, E>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BackdropGroups")
             .field("groups", &self.groups.keys())
@@ -427,7 +429,7 @@ impl<K: std::fmt::Debug, P: std::fmt::Debug, G, M> std::fmt::Debug for BackdropG
 }
 
 /// The material groups a [`Mount`] keeps — one table per mount.
-pub type MaterialBackdropGroups<G> = BackdropGroups<BackdropGroupKey, MaterialRuntime, G, ()>;
+pub type MaterialBackdropGroups<G, E> = BackdropGroups<BackdropGroupKey, MaterialRuntime, G, (), E>;
 
 /// A chrome member's own binding terms (water-rs/waterui#1788): the
 /// shader's engine handle and the member's live effect. Stored on the
@@ -443,10 +445,12 @@ pub struct ChromeMemberPayload<S> {
 }
 
 /// The chrome groups a [`Mount`] keeps (water-rs/waterui#1788).
-pub type ChromeBackdropGroups<G, S> =
-    BackdropGroups<ChromeGroupKey, cherenkov_record::MaterialCapture, G, ChromeMemberPayload<S>>;
+pub type ChromeBackdropGroups<G, S, E> =
+    BackdropGroups<ChromeGroupKey, cherenkov_record::MaterialCapture, G, ChromeMemberPayload<S>, E>;
 
-impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
+impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
+    BackdropGroups<K, P, G, M, E>
+{
     pub(crate) fn new() -> Self {
         Self {
             groups: FxHashMap::default(),
@@ -489,8 +493,9 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
         display_scale: f64,
         member: MemberJoin<
             '_,
-            impl for<'a> Fn(&'a super::layers::NodeLayers, LayerId) -> Option<&'a Layer>,
+            impl for<'a> Fn(&'a super::layers::NodeLayers<E>, LayerId) -> Option<&'a Layer>,
             impl FnOnce() -> M,
+            E,
         >,
         hooks: (
             impl Fn(&P, f64) -> G,
@@ -688,7 +693,9 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
     }
 }
 
-impl BackdropGroups<BackdropGroupKey, MaterialRuntime, cherenkov::BackdropGroup, ()> {
+impl<E: crate::text::TextEngine>
+    BackdropGroups<BackdropGroupKey, MaterialRuntime, cherenkov::BackdropGroup, (), E>
+{
     /// The id of the backdrop group `member` samples — `None` while the
     /// member holds no membership. Two members answering the same id
     /// share one capture. A test-facing answer.
@@ -700,12 +707,13 @@ impl BackdropGroups<BackdropGroupKey, MaterialRuntime, cherenkov::BackdropGroup,
 }
 
 /// Chrome-group test accessors over the members the key maps.
-impl<G>
+impl<G, E: crate::text::TextEngine>
     BackdropGroups<
         ChromeGroupKey,
         cherenkov_record::MaterialCapture,
         G,
         ChromeMemberPayload<cherenkov::BackdropShader>,
+        E,
     >
 {
     /// The scope `member`'s chrome group is keyed by — `None` while the
@@ -740,7 +748,7 @@ impl<G>
     }
 }
 
-impl<G> BackdropGroups<BackdropGroupKey, MaterialRuntime, G, ()> {
+impl<G, E: crate::text::TextEngine> BackdropGroups<BackdropGroupKey, MaterialRuntime, G, (), E> {
     /// The scope `member`'s backdrop group is keyed by — `None` while the
     /// member holds no membership. A test-facing answer.
     #[cfg(test)]

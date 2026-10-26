@@ -5,7 +5,7 @@ use waterui_core::layout::{HorizontalAlignment, Size as LayoutSize};
 use waterui_text::styled::StyledStr;
 
 use super::{
-    Affinity, FontFamilyResolution, SessionTextEngine, TextEngine, TextLayout, TextPosition,
+    Affinity, FontFamilyResolution, ParleyEngine, TextEngine, TextLayout, TextPosition,
     TextSelection, TextService, resolve_text_layout_input,
 };
 use crate::renderer::tests::test_environment;
@@ -121,7 +121,7 @@ fn editing_contract<E: TextEngine>(service: &TextService<E>) {
 /// The session's bound engine satisfies the editing contract.
 #[test]
 fn session_engine_satisfies_the_editing_contract() {
-    let service = TextService::new(SessionTextEngine::system(FontFamilyResolution::Lenient));
+    let service = TextService::new(ParleyEngine::system(FontFamilyResolution::Lenient));
     editing_contract(&service);
 }
 
@@ -132,7 +132,7 @@ fn session_engine_satisfies_the_editing_contract() {
 #[test]
 fn a_truncated_leaf_reports_the_drawn_line() {
     let env = test_environment();
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let styled = StyledStr::plain("aaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
 
     let dimensions = HydrolysisRenderer::measure_text_dimensions(
@@ -159,7 +159,7 @@ fn a_truncated_leaf_reports_the_drawn_line() {
 #[test]
 fn a_line_count_truncation_reports_the_drawn_extent() {
     let env = test_environment();
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let styled = StyledStr::plain("a\nb\nc");
 
     let dimensions = HydrolysisRenderer::measure_text_dimensions(

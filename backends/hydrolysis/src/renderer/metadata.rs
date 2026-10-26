@@ -30,7 +30,7 @@ pub(super) struct GestureA11yClaim {
     pub(super) synthesized: bool,
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Apply a clip-shape prop on the recording node's own frame layer (§A.1):
     /// the wrapper's `frame` carries the clip, not a `("clip", 0)` scope layer.
     /// Callers must be layer nodes — a pass-through would clip the enclosing
@@ -287,9 +287,9 @@ impl HydrolysisRenderer {
     /// registered, with no renderer in hand.
     #[cfg(feature = "accessibility")]
     pub(super) fn apply_focused_semantic(
-        renderer: &mut SemanticCore,
+        renderer: &mut SemanticCore<E>,
         value: &Focused,
-        render_content: impl FnOnce(&mut SemanticCore),
+        render_content: impl FnOnce(&mut SemanticCore<E>),
     ) {
         let should_focus = renderer.read_signal(&value.0);
         let scope = renderer
@@ -353,11 +353,11 @@ impl HydrolysisRenderer {
     fn tap_accessibility_activation(
         env: &Environment,
         action: &Rc<RefCell<BoxedAction<()>>>,
-    ) -> AccessibilityActivation {
+    ) -> AccessibilityActivation<E> {
         let captured_env = env.clone();
         let action = Rc::clone(action);
         Rc::new(RefCell::new(
-            move |_renderer: &mut crate::renderer::SemanticCore, runtime_env: &Environment| {
+            move |_renderer: &mut crate::renderer::SemanticCore<E>, runtime_env: &Environment| {
                 let action_env = captured_env.layered_on(runtime_env);
                 action.borrow_mut()(&action_env);
                 true
@@ -416,7 +416,7 @@ impl HydrolysisRenderer {
                 .is_some_and(AccessibilityHidden::is_hidden)
         {
             let has_role = env.get::<AccessibilityRole>().is_some();
-            let has_scope = env.get::<ScopedAccessibilitySemantics>().is_some();
+            let has_scope = env.get::<ScopedAccessibilitySemantics<E>>().is_some();
             if !renderer.accessibility_scope_is_claimed(env) && (has_role || !has_scope) {
                 // A tap with no naming scope to claim is the wrapped view's
                 // own representative: it synthesizes `Button`'s role and a
@@ -432,11 +432,11 @@ impl HydrolysisRenderer {
                     if !has_role {
                         env_for_claim.insert(AccessibilityRole::Button);
                     }
-                    env_for_claim.insert(ScopedAccessibilitySemantics::new());
+                    env_for_claim.insert(ScopedAccessibilitySemantics::<E>::new());
                     env_for_claim
                 };
                 let mut node = AccessibilityNode::new(
-                    crate::renderer::SemanticCore::resolve_accessibility_role(
+                    crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                         &env_for_claim,
                         AccessibilityNodeRole::Button,
                     ),
@@ -475,7 +475,7 @@ impl HydrolysisRenderer {
                 if claimed_naming_node.is_some() {
                     claim_env = Some(env_for_claim);
                 }
-            } else if !disabled && let Some(scope) = env.get::<ScopedAccessibilitySemantics>() {
+            } else if !disabled && let Some(scope) = env.get::<ScopedAccessibilitySemantics<E>>() {
                 // The scope names this view's representative — registering a
                 // second node would emit a silenced duplicate — so the tap
                 // delegates its activation to the scope instead, which the
@@ -692,7 +692,7 @@ impl HydrolysisRenderer {
     /// delegated to the scope's representative instead, and `None` returns.
     #[cfg(feature = "accessibility")]
     pub(super) fn emit_gesture_observer_accessibility(
-        renderer: &mut SemanticCore,
+        renderer: &mut SemanticCore<E>,
         env: &Environment,
         effect: &GestureObserverEffect,
     ) -> Option<GestureA11yClaim> {
@@ -710,7 +710,7 @@ impl HydrolysisRenderer {
             return None;
         }
         let has_role = env.get::<AccessibilityRole>().is_some();
-        let has_scope = env.get::<ScopedAccessibilitySemantics>().is_some();
+        let has_scope = env.get::<ScopedAccessibilitySemantics<E>>().is_some();
         if !renderer.accessibility_scope_is_claimed(env) && (has_role || !has_scope) {
             // The claim's env is what the content walk and the scope drain
             // resolve against: the view's own scope when it carries one, a
@@ -723,14 +723,15 @@ impl HydrolysisRenderer {
                 if !has_role {
                     claim_env.insert(AccessibilityRole::Button);
                 }
-                claim_env.insert(ScopedAccessibilitySemantics::new());
+                claim_env.insert(ScopedAccessibilitySemantics::<E>::new());
                 (claim_env, true)
             };
-            let mut node =
-                AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+            let mut node = AccessibilityNode::new(
+                crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                     &claim_env,
                     AccessibilityNodeRole::Button,
-                ));
+                ),
+            );
             if let Some(label) =
                 renderer.resolve_accessibility_label(env, effect.default_a11y_label.clone())
             {
@@ -757,7 +758,7 @@ impl HydrolysisRenderer {
                     synthesized,
                 });
         }
-        if !disabled && let Some(scope) = env.get::<ScopedAccessibilitySemantics>() {
+        if !disabled && let Some(scope) = env.get::<ScopedAccessibilitySemantics<E>>() {
             // Claimed or not, the scope's representative drains the donation
             // when its subtree ends — the same contract the rendered arm of
             // `apply_gesture_observer` holds. The semantic walk has no
@@ -835,7 +836,7 @@ impl HydrolysisRenderer {
         renderer: &mut Self,
         ctx: RenderContext,
         env: &Environment,
-        value: &ContextMenuEffect,
+        value: &ContextMenuEffect<E>,
         render_content: impl FnOnce(&mut Self),
     ) {
         let bounds = ctx.bounds;
@@ -861,7 +862,7 @@ impl HydrolysisRenderer {
         renderer: &mut Self,
         ctx: RenderContext,
         env: &Environment,
-        value: &AnchoredOverlayEffect,
+        value: &AnchoredOverlayEffect<E>,
         render_content: impl FnOnce(&mut Self),
     ) {
         let bounds = renderer.resolve_window_rect(ctx.bounds);
@@ -893,7 +894,7 @@ impl HydrolysisRenderer {
     pub(super) fn apply_dialog(
         renderer: &mut Self,
         env: &Environment,
-        value: &DialogEffect,
+        value: &DialogEffect<E>,
         render_content: impl FnOnce(&mut Self),
     ) {
         let presented = renderer.read_signal(value.dialog.is_presented());

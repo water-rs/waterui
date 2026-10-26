@@ -28,11 +28,10 @@ pub struct ScopeKey {
 }
 
 /// What a run sits directly beneath.
-#[derive(Clone)]
-pub enum ItemKey {
+pub enum ItemKey<E: crate::text::TextEngine> {
     /// A `.material_group()` scope's anchor item — its cell identity.
-    Anchor(Rc<NodeCell>),
-    Node(Rc<NodeCell>),
+    Anchor(Rc<NodeCell<E>>),
+    Node(Rc<NodeCell<E>>),
     Scope(ScopeKey),
     /// A `ChromeMaterial` member layer, identified by its material
     /// ordinal in the node's record (water-rs/waterui#1788).
@@ -42,7 +41,7 @@ pub enum ItemKey {
     Live(u32),
 }
 
-impl PartialEq for ItemKey {
+impl<E: crate::text::TextEngine> PartialEq for ItemKey<E> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Anchor(a), Self::Anchor(b)) | (Self::Node(a), Self::Node(b)) => Rc::ptr_eq(a, b),
@@ -54,9 +53,8 @@ impl PartialEq for ItemKey {
 }
 
 /// A run's identity: the item it is drawn beneath, or the tail of its list.
-#[derive(Clone, PartialEq)]
-pub enum RunKey {
-    Before(ItemKey),
+pub enum RunKey<E: crate::text::TextEngine> {
+    Before(ItemKey<E>),
     Tail,
 }
 
@@ -107,15 +105,15 @@ pub struct LiveItem {
 }
 
 /// One entry of a layer's ordered content.
-pub enum Item {
+pub enum Item<E: crate::text::TextEngine> {
     /// A `.material_group()` scope's anchor: a plain, empty layer the
     /// scope's members capture beneath, painted at this position in the
     /// canvas the item's program mounts in (water-rs/waterui#2097).
     /// Carrying the scope's cell pins its address against reuse while
     /// the registration keyed by it stands.
-    Anchor(Rc<NodeCell>),
+    Anchor(Rc<NodeCell<E>>),
     Run(Recording),
-    Node(Rc<NodeCell>),
+    Node(Rc<NodeCell<E>>),
     Chrome(ChromeMaterial),
     Live(LiveItem),
     Scope {
@@ -127,8 +125,8 @@ pub enum Item {
     },
 }
 
-impl Item {
-    pub(crate) fn key(&self) -> Option<ItemKey> {
+impl<E: crate::text::TextEngine> Item<E> {
+    pub(crate) fn key(&self) -> Option<ItemKey<E>> {
         match self {
             Self::Anchor(cell) => Some(ItemKey::Anchor(Rc::clone(cell))),
             Self::Run(_) => None,
@@ -142,7 +140,7 @@ impl Item {
 
 /// The scroll node's `inner` layer: viewport clip, scroll offset and the
 /// content child (§E).
-pub struct InnerProgram {
+pub struct InnerProgram<E: crate::text::TextEngine> {
     pub viewport: kurbo::Rect,
     pub offset: kurbo::Vec2,
     /// The overscroll stretch direction the scrolled content draws with —
@@ -150,7 +148,7 @@ pub struct InnerProgram {
     /// viewport's frame — or `None` at rest. It never reaches the clip:
     /// the content stretches inside the unchanged viewport.
     pub stretch: Option<kurbo::Vec2>,
-    pub items: Vec<Item>,
+    pub items: Vec<Item<E>>,
 }
 
 /// A producer-backed node's content, installed by the target at commit.
@@ -204,17 +202,17 @@ pub struct MaterialRequest {
 }
 
 /// A node's finished record.
-pub struct Program {
+pub struct Program<E: crate::text::TextEngine> {
     pub opacity: f32,
     pub clip: Option<ShapeData>,
     pub filter: Option<Rc<RefCell<crate::renderer::effects::FilteredRuntime>>>,
     pub material: Option<MaterialRequest>,
     pub producer: Option<ProducerContent>,
-    pub inner: Option<InnerProgram>,
-    pub items: Vec<Item>,
+    pub inner: Option<InnerProgram<E>>,
+    pub items: Vec<Item<E>>,
 }
 
-impl Program {
+impl<E: crate::text::TextEngine> Program<E> {
     const fn new() -> Self {
         Self {
             opacity: 1.0,
@@ -228,21 +226,21 @@ impl Program {
     }
 }
 
-struct OpenScope {
+struct OpenScope<E: crate::text::TextEngine> {
     key: ScopeKey,
     props: ScopeProps,
     placement: Rc<Placement>,
-    items: Vec<Item>,
+    items: Vec<Item<E>>,
     /// The record-space transform of the scope's layer origin, relative to
     /// the node's frame.
     origin: kurbo::Affine,
 }
 
 /// The recording target while a node records (`renderer.program`).
-pub struct ProgramBuilder {
-    cell: Rc<NodeCell>,
-    program: Program,
-    scopes: Vec<OpenScope>,
+pub struct ProgramBuilder<E: crate::text::TextEngine> {
+    cell: Rc<NodeCell<E>>,
+    program: Program<E>,
+    scopes: Vec<OpenScope<E>>,
     inner_open: bool,
     /// The placement the inner list's children are ordered under (the
     /// scroll content placement, carrying the content offset).
@@ -255,8 +253,8 @@ pub struct ProgramBuilder {
     lives: u32,
 }
 
-impl ProgramBuilder {
-    pub(crate) fn new(cell: Rc<NodeCell>) -> Self {
+impl<E: crate::text::TextEngine> ProgramBuilder<E> {
+    pub(crate) fn new(cell: Rc<NodeCell<E>>) -> Self {
         Self {
             cell,
             program: Program::new(),
@@ -269,15 +267,15 @@ impl ProgramBuilder {
         }
     }
 
-    pub(crate) const fn cell(&self) -> &Rc<NodeCell> {
+    pub(crate) const fn cell(&self) -> &Rc<NodeCell<E>> {
         &self.cell
     }
 
-    pub(crate) const fn program_mut(&mut self) -> &mut Program {
+    pub(crate) const fn program_mut(&mut self) -> &mut Program<E> {
         &mut self.program
     }
 
-    fn items_mut(&mut self) -> &mut Vec<Item> {
+    fn items_mut(&mut self) -> &mut Vec<Item<E>> {
         if let Some(scope) = self.scopes.last_mut() {
             return &mut scope.items;
         }
@@ -306,12 +304,12 @@ impl ProgramBuilder {
 
     /// Appends a `.material_group()` scope's anchor item — the empty
     /// layer the scope's members capture beneath (water-rs/waterui#2097).
-    pub(crate) fn push_anchor(&mut self, cell: Rc<NodeCell>) {
+    pub(crate) fn push_anchor(&mut self, cell: Rc<NodeCell<E>>) {
         self.items_mut().push(Item::Anchor(cell));
     }
 
     /// Appends a child node's frame.
-    pub(crate) fn push_node(&mut self, cell: Rc<NodeCell>) {
+    pub(crate) fn push_node(&mut self, cell: Rc<NodeCell<E>>) {
         self.items_mut().push(Item::Node(cell));
     }
 
@@ -478,7 +476,7 @@ impl ProgramBuilder {
     /// The record-space transform, from the window, of the current item
     /// list's origin: the frame's world, the scroll offset when the inner
     /// list is open, and the open scope's origin.
-    pub(crate) fn finish(self) -> Program {
+    pub(crate) fn finish(self) -> Program<E> {
         assert!(
             self.scopes.is_empty(),
             "hydrolysis program: {} scope(s) left open at the end of a record",
@@ -498,6 +496,37 @@ impl ProgramBuilder {
 }
 
 /// Drops runs nothing drew into: an opened but unused run mounts no layer.
-fn drop_empty_runs(items: &mut Vec<Item>) {
+fn drop_empty_runs<E: crate::text::TextEngine>(items: &mut Vec<Item<E>>) {
     items.retain(|item| !matches!(item, Item::Run(recording) if recording.is_empty()));
+}
+
+impl<E: crate::text::TextEngine> PartialEq for RunKey<E> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Before(a), Self::Before(b)) => a == b,
+            (Self::Tail, Self::Tail) => true,
+            _ => false,
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> Clone for RunKey<E> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Before(f0) => Self::Before(f0.clone()),
+            Self::Tail => Self::Tail,
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> Clone for ItemKey<E> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Anchor(f0) => Self::Anchor(f0.clone()),
+            Self::Node(f0) => Self::Node(f0.clone()),
+            Self::Scope(f0) => Self::Scope(*f0),
+            Self::Chrome(f0) => Self::Chrome(*f0),
+            Self::Live(f0) => Self::Live(*f0),
+        }
+    }
 }

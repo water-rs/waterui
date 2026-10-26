@@ -29,17 +29,17 @@ use crate::widgets::util::widget_disabled;
 /// it is held as a [`RetainedSubview`] built once and re-flushed each frame; its
 /// `content` is a cloneable `Rc`-backed builder rebuilt fresh each frame; `tag`
 /// drives selection.
-struct TabRenderState {
+struct TabRenderState<E: crate::text::TextEngine> {
     tag: Id,
-    label: RetainedSubview,
+    label: RetainedSubview<E>,
     /// The label's icon, lifted out so the tab item can place it above the
     /// label (vertical) or beside it (horizontal).
-    icon: Option<RetainedSubview>,
-    content: RetainedSubview,
+    icon: Option<RetainedSubview<E>>,
+    content: RetainedSubview<E>,
     enabled: nami::Computed<bool>,
 }
 
-impl TabRenderState {
+impl<E: crate::text::TextEngine> TabRenderState<E> {
     fn from_tab(tag: Id, tab: Tab) -> Self {
         Self {
             tag,
@@ -64,10 +64,10 @@ impl TabRenderState {
 /// then applies it, so a tab whose id survives keeps its retained sub-views —
 /// navigation state, focus, in-flight gestures — while only inserted or
 /// removed tabs materialize or drop theirs.
-pub struct TabsRenderState {
+pub struct TabsRenderState<E: crate::text::TextEngine> {
     selection: Binding<Id>,
     style: NativeTabStyle,
-    tabs: Vec<TabRenderState>,
+    tabs: Vec<TabRenderState<E>>,
     /// The collection snapshot the last applied change reported — every
     /// reconcile works this membership, never the live collection.
     snapshot: Rc<RefCell<AnyViewsSnapshot<Tab>>>,
@@ -81,8 +81,8 @@ pub struct TabsRenderState {
     _watch: BoxWatcherGuard,
 }
 
-impl TabsRenderState {
-    pub(crate) fn from_tabs(tabs: TabsLayout, renderer: &crate::renderer::SemanticCore) -> Self {
+impl<E: crate::text::TextEngine> TabsRenderState<E> {
+    pub(crate) fn from_tabs(tabs: TabsLayout, renderer: &crate::renderer::SemanticCore<E>) -> Self {
         // `TabsLayout` is `#[non_exhaustive]`, so access fields rather than destructuring.
         let selection = tabs.selection;
         let style = tabs.style;
@@ -137,7 +137,7 @@ impl TabsRenderState {
             .get()
             .unwrap_or_else(|| self.selection.snapshot());
         let old_index = self.tabs.iter().position(|tab| tab.tag == selected);
-        let mut old: std::collections::BTreeMap<Id, TabRenderState> =
+        let mut old: std::collections::BTreeMap<Id, TabRenderState<E>> =
             self.tabs.drain(..).map(|tab| (tab.tag, tab)).collect();
         let mut tabs = Vec::with_capacity(snapshot.len());
         for index in 0..snapshot.len() {
@@ -184,7 +184,7 @@ impl TabsRenderState {
     /// has no renderer to build on.
     pub(crate) fn prepare_tabs(
         &mut self,
-        renderer: &mut crate::renderer::HydrolysisRenderer,
+        renderer: &mut crate::renderer::HydrolysisRenderer<E>,
         env: &Environment,
     ) {
         self.reconcile();
@@ -196,7 +196,7 @@ impl TabsRenderState {
     /// the icon itself, so the label must not draw it a second time.
     pub(crate) fn prebuild_labels(
         &mut self,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         self.reconcile();
@@ -244,9 +244,9 @@ impl TabsRenderState {
     }
 }
 
-impl HydroNativeView for Native<TabsLayout> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<TabsLayout> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -261,7 +261,7 @@ impl HydroNativeView for Native<TabsLayout> {
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -284,8 +284,8 @@ impl HydroNativeView for Native<TabsLayout> {
 /// rect — the docked band [`WidgetRenderContext::chrome_splits`] carves out;
 /// the semantic walk has no bounds and passes `None`.
 #[cfg(feature = "accessibility")]
-pub fn tabs_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn tabs_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     bar_rect: Option<kurbo::Rect>,
     selection: &Binding<Id>,
     style: NativeTabStyle,
@@ -293,11 +293,12 @@ pub fn tabs_accessibility(
     env: &Environment,
 ) {
     let disabled = renderer.read_signal(&widget_disabled(env));
-    let mut tab_list =
-        AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+    let mut tab_list = AccessibilityNode::new(
+        crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
             env,
             AccessibilityNodeRole::TabList,
-        ));
+        ),
+    );
     let tab_list_label = renderer.resolve_accessibility_label(env, None);
     if let Some(label) = tab_list_label {
         tab_list.set_label(label);
@@ -306,11 +307,12 @@ pub fn tabs_accessibility(
         tab_list.set_value(value);
     }
     for (index, (tag, interaction_key, default_label, is_selected)) in labels.iter().enumerate() {
-        let mut tab_node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut tab_node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::Tab,
-            ));
+            ),
+        );
         let label = renderer.resolve_accessibility_label(env, default_label.clone());
         if let Some(label) = label {
             tab_node.set_label(label);
@@ -362,10 +364,10 @@ pub fn tabs_accessibility(
 /// content rect: the rendered content keeps the whole frame only once the
 /// keyboard covers the band outright (keyboard deeper than container inset
 /// plus bar height). Mirrors `measure_tabs_layout`.
-pub fn measure_tabs_node(
-    state: &TabsRenderState,
+pub fn measure_tabs_node<E: crate::text::TextEngine>(
+    state: &TabsRenderState<E>,
     proposal: ProposalSize,
-    hydro: &mut HydroState,
+    hydro: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -428,9 +430,9 @@ pub fn measure_tabs_node(
 /// hidden) then the bar + selected content, reading the selection signal live.
 /// The docked split is derived once per flush — the a11y tree's bar node and
 /// the painted bar land on the same band (§7.1).
-pub fn render_tabs_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<TabsRenderState>>,
+pub fn render_tabs_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<TabsRenderState<E>>>,
     env: &Environment,
 ) {
     let style = state.borrow().style;
@@ -501,9 +503,9 @@ pub fn render_tabs_node(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-fn render_tabs_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<TabsRenderState>>,
+fn render_tabs_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<TabsRenderState<E>>>,
     env: &Environment,
     chrome: crate::renderer::ChromeGroup<1>,
     layout: TabItemLayout,
@@ -961,9 +963,9 @@ fn tabs_highlight_rect(
 /// the selected tab's content subtree — it flushes unsuppressed in the
 /// rendered path, so it emits its own nodes here too.
 #[cfg(feature = "accessibility")]
-pub fn emit_tabs_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<TabsRenderState>>,
+pub fn emit_tabs_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<TabsRenderState<E>>>,
     env: &Environment,
 ) {
     let owner = state;
