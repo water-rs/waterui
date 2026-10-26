@@ -226,6 +226,9 @@ mod platform {
         tab: &Mounted,
         env: &Environment,
     ) -> Retained<TabContentController> {
+        // `env` feeds only the `gpu_surface` icon raster below.
+        #[cfg(not(feature = "gpu_surface"))]
+        let _ = env;
         let controller = TabContentController::new(mtm, tab.pane.view());
         controller.apply_spec(&spec(tab));
         controller.set_bottom_scroll_surface(|controller| {
