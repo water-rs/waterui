@@ -28,7 +28,7 @@ pub mod text;
 pub use code::{Code, CodeConfig, OnCopied, code};
 #[cfg(feature = "font-collection")]
 pub use collection::FontCollection;
-pub use styled::StyledStr;
+pub use styled::{StyledStr, TapSpan};
 pub use text::{Formatter, IntoText, Text, TextConfig, text};
 
 /// Installs the system's fonts as the application's font collection, for a host
