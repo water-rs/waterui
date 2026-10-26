@@ -79,7 +79,9 @@ while IFS= read -r file; do
 done < <(find "$ROOT/Sources" -name '*.swift' | sort)
 
 if [[ "$PLATFORM" == "ios" ]]; then
-  swiftc -O -o "$BIN_DIR/E2EReference" ${SOURCES[@]+"${SOURCES[@]}"} \
+  # Select Clang's SDK context as well as Swift's explicit -sdk.
+  xcrun --sdk iphonesimulator swiftc -O -o "$BIN_DIR/E2EReference" \
+    ${SOURCES[@]+"${SOURCES[@]}"} \
     -target "arm64-apple-ios${MIN_VERSION}-simulator" \
     -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)"
 else
