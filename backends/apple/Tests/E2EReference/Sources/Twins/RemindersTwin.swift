@@ -208,7 +208,7 @@ struct RemindersTwin: View {
         reminderSection("Today", rows: todayRows)
         reminderSection("Upcoming", rows: upcomingRows)
       }
-      .background(.regularMaterial)
+      .background(.regularMaterial, ignoresSafeAreaEdges: [])
       .navigationTitle((selection ?? .today).title)
       .searchable(text: $search, prompt: "Search reminders")
       .toolbar {
