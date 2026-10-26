@@ -1752,6 +1752,7 @@ pub struct PictureInputs<'a> {
     pub retained: &'a FxHashMap<LayerId, Vec<super::projective::Entry>>,
     pub inputs: &'a super::projective::Inputs,
     pub available: u64,
+    selected: Option<FxHashSet<LocalKey>>,
 }
 
 /// The lowering walk state for one surface frame.

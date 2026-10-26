@@ -11,6 +11,8 @@ use cherenkov::lowering::projective::{Homography, LocalImage, mip_levels};
 pub(super) struct PreparedDomain {
     source: cherenkov::Picture,
     bucket: i32,
+    format: wgpu::TextureFormat,
+    visible: bool,
     domain: Option<crate::render::planes::static_layer::Domain>,
 }
 
@@ -23,6 +25,75 @@ impl PreparedDomain {
         self.source
             .display_list()
             .heap_bytes(cherenkov::lowering::memory::command_bytes)
+    }
+}
+
+impl<'a> super::PictureInputs<'a> {
+    pub fn new(
+        retained: &'a super::FxHashMap<LayerId, Vec<crate::render::projective::Entry>>,
+        inputs: &'a crate::render::projective::Inputs,
+        available: u64,
+        layers: &super::FxHashMap<LayerId, super::ContentData>,
+    ) -> Self {
+        let mut candidates = Vec::new();
+        for (&layer, content) in layers {
+            let Some((ops, _)) = content.retained.current() else {
+                continue;
+            };
+            for (&index, prepared) in &content.storage.picture_domains {
+                if !prepared.visible {
+                    continue;
+                }
+                if !matches!(ops.get(index), Some(Op::BeginPicture { picture, .. }) if prepared.matches_source(picture))
+                {
+                    continue;
+                }
+                let Some(domain) = prepared.domain else {
+                    continue;
+                };
+                let key = LocalKey {
+                    layer,
+                    picture: Some(std::ptr::from_ref(prepared.source.display_list()) as usize),
+                    bucket: prepared.bucket,
+                    format: prepared.format,
+                };
+                let mut size = domain.size;
+                let mut bytes = 0;
+                loop {
+                    bytes += crate::render::texel_bytes(key.format)
+                        * u64::from(size.0)
+                        * u64::from(size.1);
+                    if size == (1, 1) {
+                        break;
+                    }
+                    size = ((size.0 / 2).max(1), (size.1 / 2).max(1));
+                }
+                candidates.push((key, prepared.source_bytes(), bytes));
+            }
+        }
+        let selected = if candidates.is_empty() {
+            None
+        } else {
+            // Geometry preparation saved per retained texture byte, rather
+            // than paint order deciding which content receives the budget.
+            candidates.sort_by(|a, b| {
+                (u128::from(b.1) * u128::from(a.2)).cmp(&(u128::from(a.1) * u128::from(b.2)))
+            });
+            let mut remaining = available;
+            let mut selected = super::FxHashSet::default();
+            for (key, _, bytes) in candidates {
+                if bytes <= remaining && selected.insert(key) {
+                    remaining -= bytes;
+                }
+            }
+            Some(selected)
+        };
+        Self {
+            retained,
+            inputs,
+            available,
+            selected,
+        }
     }
 }
 
@@ -140,6 +211,8 @@ impl Lowering<'_> {
                     PreparedDomain {
                         source: picture.clone(),
                         bucket: key.bucket,
+                        format,
+                        visible: true,
                         domain,
                     },
                 );
@@ -166,7 +239,18 @@ impl Lowering<'_> {
                 f64::from(self.width),
                 f64::from(self.height),
             ));
-        if bounds.is_zero_area() {
+        let prepared = domains.entry(index).or_insert_with(|| PreparedDomain {
+            source: picture.clone(),
+            bucket: key.bucket,
+            format,
+            visible: true,
+            domain: Some(domain),
+        });
+        prepared.bucket = key.bucket;
+        prepared.format = format;
+        prepared.domain = Some(domain);
+        prepared.visible = !bounds.is_zero_area();
+        if !prepared.visible {
             return Ok(None);
         }
         let mut image = LocalImage {
@@ -188,6 +272,13 @@ impl Lowering<'_> {
         let current = pending.is_some()
             || (!context.inputs.stale.contains(&key)
                 && entry.is_some_and(|entry| entry.key == Some(cache)));
+        if context
+            .selected
+            .as_ref()
+            .is_some_and(|selected| !selected.contains(&key))
+        {
+            return Ok(None);
+        }
         let already_composed = self.picture_composed.contains(&key);
         let bytes = if current {
             entry.map_or_else(

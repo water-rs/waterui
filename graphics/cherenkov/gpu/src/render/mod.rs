@@ -7233,13 +7233,14 @@ impl GpuRenderer {
                         )
                     })
                     .sum();
-                lowering.pictures = Some(lower::PictureInputs {
-                    retained: &surf.projective,
+                lowering.pictures = Some(lower::PictureInputs::new(
+                    &surf.projective,
                     inputs,
-                    available: inputs
+                    inputs
                         .picture_bytes
                         .min(inputs.limits.max_bytes.saturating_sub(projective_bytes)),
-                });
+                    &layers,
+                ));
                 lowering.run(
                     frame.tree,
                     &mut layers,
