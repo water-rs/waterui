@@ -67,7 +67,7 @@ fn owns_safe_area(view: &PlatformView) -> bool {
 /// transparent wrapper forwards the declaration through its
 /// `cocoaUiPrimaryContent` chain: `Color.opacity(..)` in a background
 /// slot stays a fill without the wrapper copying the bit.
-#[cfg(target_os = "ios")]
+#[cfg(all(target_os = "ios", feature = "fixed_container"))]
 pub fn is_fill(view: &PlatformView) -> bool {
     if view.respondsToSelector(objc2::sel!(cocoaUiIsFill))
         // SAFETY: cocoa-ui's classes declare this selector as a boolean query.
@@ -365,6 +365,7 @@ impl WindowContext {
 
     /// The window's bounds in `view`'s coordinate space — the outermost
     /// extension target.
+    #[cfg(feature = "fixed_container")]
     fn window_rect(&self, view: &PlatformView) -> Rect {
         let frame = window_frame(view);
         Rect::new(
@@ -462,6 +463,7 @@ fn fold_released(
 
 /// Half a physical pixel on `view`'s display — the distance at which a
 /// laid-out frame counts as ending on a boundary (§7.1 "touches").
+#[cfg(any(target_os = "ios", feature = "fixed_container"))]
 fn touch_tolerance(view: &PlatformView) -> f64 {
     0.5 / view::backing_scale_factor(view)
 }
@@ -574,6 +576,7 @@ impl<'a> LayoutContext<'a> {
     /// the host's bounds. On an edge no region releases, the target is
     /// the boundary itself, so an edge with no extension stays where it
     /// was laid out.
+    #[cfg(feature = "fixed_container")]
     #[must_use]
     pub fn extend_child(&self, child: &PlatformView, frame: Rect, fill_slot: bool) -> Rect {
         // Inside a scroll surface nothing touches an edge — the surface
@@ -654,6 +657,7 @@ impl<'a> LayoutContext<'a> {
 
     /// `AppKit` keeps the container region only: a safe-area manager
     /// extends to the host's bounds on the edges it touches.
+    #[cfg(feature = "fixed_container")]
     #[must_use]
     pub fn extend_child(&self, child: &PlatformView, frame: Rect, _fill_slot: bool) -> Rect {
         if manages_safe_area(child) {
