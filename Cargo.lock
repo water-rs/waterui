@@ -2189,7 +2189,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -4771,7 +4771,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#0add1da1efe14f4b42349de93c687df033ec258e"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#48493b6c9dae93cc7237f0555f885dc4d7abd236"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
