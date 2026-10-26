@@ -320,7 +320,8 @@ static WPEDRMDevice *water_display_get_drm_device(WPEDisplay *display)
 static WPEBufferFormats *water_display_get_preferred_buffer_formats(
     WPEDisplay *display)
 {
-    return ((WaterDisplay *)display)->formats;
+    /* WebKit adopts this reference; the field keeps its own until dispose. */
+    return g_object_ref(((WaterDisplay *)display)->formats);
 }
 
 static gboolean water_display_use_explicit_sync(WPEDisplay *display)
@@ -467,7 +468,6 @@ WaterWpeRuntime *water_wpe_runtime_new(char **error)
         DRM_FORMAT_XRGB8888,
         DRM_FORMAT_MOD_LINEAR);
     display->formats = wpe_buffer_formats_builder_end(builder);
-    wpe_buffer_formats_builder_unref(builder);
     runtime->display = WPE_DISPLAY(display);
     return runtime;
 }

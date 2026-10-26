@@ -10,6 +10,11 @@ description = "Bundled WPE WebKit runtime for WaterUI on Linux"
 keywords = ["wpe", "webkit", "webview", "browser", "waterui"]
 categories = ["gui", "web-programming"]
 
+[package.metadata.waterui.wpe-runtime]
+version = "2.52.5"
+bridge-abi = 4
+native-source = "native"
+
 [dependencies]
 tracing.workspace = true
 executor-core.workspace = true

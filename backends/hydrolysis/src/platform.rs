@@ -1450,8 +1450,12 @@ pub struct EngineWindowTarget<'a> {
     /// The window the engine presents on.
     pub(crate) window: &'a std::sync::Arc<winit::window::Window>,
     /// The window's engine surface and mount, owned by the window's surface.
-    pub(crate) window_slot:
-        &'a mut Option<crate::renderer::CherenkovWindow<crate::engine::WindowCherenkovSurface>>,
+    pub(crate) window_slot: &'a mut Option<
+        crate::renderer::CherenkovWindow<
+            crate::engine::WindowCherenkovSurface,
+            crate::text::ParleyEngine,
+        >,
+    >,
     /// Whether the window composites with what lies behind it.
     pub(crate) transparent: bool,
     /// Whether the window crossed displays since the previous frame.
@@ -1463,8 +1467,12 @@ pub struct EngineWindowTarget<'a> {
 pub struct EngineAndroidTarget<'a> {
     pub state: &'a std::rc::Rc<crate::engine::SharedEngineState>,
     pub window: &'a ndk::native_window::NativeWindow,
-    pub window_slot:
-        &'a mut Option<crate::renderer::CherenkovWindow<crate::engine::AndroidCherenkovSurface>>,
+    pub window_slot: &'a mut Option<
+        crate::renderer::CherenkovWindow<
+            crate::engine::AndroidCherenkovSurface,
+            crate::text::ParleyEngine,
+        >,
+    >,
 }
 
 /// The window's platform safe area in logical units.
@@ -3327,8 +3335,12 @@ mod winit_impl {
         display_moved: std::rc::Rc<std::cell::Cell<bool>>,
         /// The typed Cherenkov engine target, created on the first render.
         #[cfg(target_os = "macos")]
-        engine_window:
-            Option<crate::renderer::CherenkovWindow<crate::engine::WindowCherenkovSurface>>,
+        engine_window: Option<
+            crate::renderer::CherenkovWindow<
+                crate::engine::WindowCherenkovSurface,
+                crate::text::ParleyEngine,
+            >,
+        >,
         /// The screen-change observer that sets `display_moved`;
         /// unregisters itself on drop.
         #[cfg(target_os = "macos")]

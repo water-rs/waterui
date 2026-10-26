@@ -207,8 +207,7 @@ impl NodeMeasureEntry {
     }
 }
 
-#[derive(Default)]
-pub struct MeasurementCaches {
+pub struct MeasurementCaches<E: crate::text::TextEngine> {
     view_dimensions: FxHashMap<ViewMeasurementKey, ViewDimensions>,
     dynamic_intrinsic: FxHashMap<usize, ViewDimensions>,
     dynamic_proposal: FxHashMap<(usize, ProposalKey), ViewDimensions>,
@@ -217,7 +216,7 @@ pub struct MeasurementCaches {
     /// `DynamicHostNode`, so a dispatch measure of the `Dynamic` measures
     /// this child for the real proposal instead of guessing from a cache
     /// keyed by a different probe.
-    dynamic_nodes: FxHashMap<usize, Weak<RefCell<RenderNode>>>,
+    dynamic_nodes: FxHashMap<usize, Weak<RefCell<RenderNode<E>>>>,
     /// Re-entrancy guard: `Dynamic` nodes currently being measured.
     dynamic_measurement_stack: Vec<(usize, ProposalSize)>,
     /// Depth of the transient-measurement scopes currently open; see
@@ -230,7 +229,7 @@ pub struct MeasurementCaches {
     misses: u32,
 }
 
-impl MeasurementCaches {
+impl<E: crate::text::TextEngine> MeasurementCaches<E> {
     /// The frame stamp node memos validate against.
     pub(crate) const fn frame(&self) -> u64 {
         self.frame
@@ -356,14 +355,14 @@ impl MeasurementCaches {
     pub(crate) fn register_dynamic_node(
         &mut self,
         identity: usize,
-        child: &Rc<RefCell<RenderNode>>,
+        child: &Rc<RefCell<RenderNode<E>>>,
     ) {
         self.dynamic_nodes.insert(identity, Rc::downgrade(child));
     }
 
     /// The retained child a connected `Dynamic` is measured through, or
     /// `None` when the host node was dropped before the caches were pruned.
-    pub(crate) fn dynamic_node(&self, identity: usize) -> Option<Rc<RefCell<RenderNode>>> {
+    pub(crate) fn dynamic_node(&self, identity: usize) -> Option<Rc<RefCell<RenderNode<E>>>> {
         self.dynamic_nodes.get(&identity).and_then(Weak::upgrade)
     }
 
@@ -470,6 +469,22 @@ impl MeasurementCaches {
     }
 }
 
+impl<E: crate::text::TextEngine> Default for MeasurementCaches<E> {
+    fn default() -> Self {
+        Self {
+            view_dimensions: FxHashMap::default(),
+            dynamic_intrinsic: FxHashMap::default(),
+            dynamic_proposal: FxHashMap::default(),
+            dynamic_nodes: FxHashMap::default(),
+            dynamic_measurement_stack: Vec::default(),
+            transient_depth: Default::default(),
+            frame: Default::default(),
+            hits: Default::default(),
+            misses: Default::default(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,7 +496,7 @@ mod tests {
 
     #[test]
     fn view_dimensions_hit_and_miss_are_counted() {
-        let mut caches = MeasurementCaches::default();
+        let mut caches = MeasurementCaches::<crate::text::ParleyEngine>::default();
         let proposal = ProposalSize::new(Some(100.0), None);
         assert!(caches.view_dimensions(1, 2, proposal).is_none());
         caches.store_view_dimensions(1, 2, proposal, dimensions(40.0, 20.0));
@@ -576,7 +591,7 @@ mod tests {
 
     #[test]
     fn begin_frame_clears_view_dimensions_but_keeps_dynamic_entries() {
-        let mut caches = MeasurementCaches::default();
+        let mut caches = MeasurementCaches::<crate::text::ParleyEngine>::default();
         caches.store_view_dimensions(1, 2, ProposalSize::UNSPECIFIED, dimensions(1.0, 1.0));
         caches.store_dynamic_dimensions(7, ProposalSize::UNSPECIFIED, dimensions(2.0, 2.0));
         caches.store_dynamic_dimensions(
@@ -606,7 +621,7 @@ mod tests {
 
     #[test]
     fn unspecified_proposal_routes_to_intrinsic_entry() {
-        let mut caches = MeasurementCaches::default();
+        let mut caches = MeasurementCaches::<crate::text::ParleyEngine>::default();
         caches.store_dynamic_dimensions(5, ProposalSize::UNSPECIFIED, dimensions(8.0, 9.0));
         assert_eq!(
             caches
@@ -623,7 +638,7 @@ mod tests {
 
     #[test]
     fn pruning_drops_dead_dynamic_identities() {
-        let mut caches = MeasurementCaches::default();
+        let mut caches = MeasurementCaches::<crate::text::ParleyEngine>::default();
         caches.store_dynamic_dimensions(1, ProposalSize::UNSPECIFIED, dimensions(1.0, 1.0));
         caches.store_dynamic_dimensions(
             2,
@@ -642,14 +657,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "re-entered Dynamic measurement")]
     fn reentrant_dynamic_measurement_crashes() {
-        let mut caches = MeasurementCaches::default();
+        let mut caches = MeasurementCaches::<crate::text::ParleyEngine>::default();
         caches.begin_dynamic_measurement(1, ProposalSize::UNSPECIFIED);
         caches.begin_dynamic_measurement(1, ProposalSize::new(Some(1.0), None));
     }
 
     #[test]
     fn nested_distinct_dynamic_measurements_balance() {
-        let mut caches = MeasurementCaches::default();
+        let mut caches = MeasurementCaches::<crate::text::ParleyEngine>::default();
         caches.begin_dynamic_measurement(1, ProposalSize::UNSPECIFIED);
         caches.begin_dynamic_measurement(2, ProposalSize::UNSPECIFIED);
         caches.finish_dynamic_measurement(2, "inner");

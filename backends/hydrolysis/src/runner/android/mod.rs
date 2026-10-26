@@ -27,8 +27,11 @@
 //! host's instrumentation invokes it through `PreviewBridge`'s JNI calls.
 
 mod accessibility;
+#[cfg(not(hydrolysis_hwui))]
 mod gpu;
 mod host;
+#[cfg(hydrolysis_hwui)]
+mod hwui;
 mod ime;
 pub(crate) mod jni;
 mod platform_views;
@@ -42,6 +45,15 @@ use tracing_log::AsLog;
 use waterui::app::App;
 
 pub use preview::register_preview;
+
+/// The text engine this build's painter uses: the HWUI platform shaper under
+/// the HWUI backend, Parley under GPU. The choice is a build-time property —
+/// the same alias feeds the runtime, the mount and the shortcut registry so
+/// they can never disagree.
+#[cfg(hydrolysis_hwui)]
+pub(super) type AndroidTextEngine = crate::text::HwuiTextEngine<crate::hwui::text::JniTextProvider>;
+#[cfg(not(hydrolysis_hwui))]
+pub(super) type AndroidTextEngine = crate::text::ParleyEngine;
 
 /// The app factory the Kotlin host instantiates per session create.
 ///

@@ -206,7 +206,12 @@ pub struct AndroidSurface {
     /// The generation the Kotlin host assigned this attachment; a stale
     /// `surfaceDestroyed` from an older `SurfaceHolder` callback is ignored.
     generation: u64,
-    engine_window: Option<crate::renderer::CherenkovWindow<crate::engine::AndroidCherenkovSurface>>,
+    engine_window: Option<
+        crate::renderer::CherenkovWindow<
+            crate::engine::AndroidCherenkovSurface,
+            crate::text::ParleyEngine,
+        >,
+    >,
     /// GPU pipelines survive `SurfaceHolder` teardown while this host stays alive.
     engine_state: Option<std::rc::Rc<crate::engine::SharedEngineState>>,
     native_window: Option<WindowLease>,
@@ -476,7 +481,7 @@ impl PresentationSurface for AndroidSurface {
 impl crate::runner::window::GpuSurfaceFrame for AndroidSurface {
     fn render_frame(
         &mut self,
-        renderer: &mut crate::renderer::HydrolysisRenderer,
+        renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
         clear_color: peniko::Color,
         display_scale: f64,
     ) -> Result<crate::runner::window::SurfaceRenderResult, SurfaceError> {

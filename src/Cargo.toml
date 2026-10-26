@@ -32,6 +32,9 @@ waterui-widgets = { workspace = true, optional = true }
 # through `waterui_locale::LocalizedArgument`, so a WaterUI application that
 # formats a number into a string already depends on it.
 waterui-locale = { workspace = true, features = ["number"] }
+# `dir_static!` expansion lands inside the `assets` feature's generated
+# code, so the record helpers it names ride that feature's gate.
+waterui-meta = { workspace = true, optional = true }
 executor-core.workspace = true
 futures.workspace = true
 tracing.workspace = true
@@ -136,7 +139,7 @@ gpu = [
 # behind `waterui-assets`' `media` feature) and video-kind assets into
 # `waterui::video` (`VideoAsset`, behind `waterui-assets`' `video` feature);
 # each is enabled only when both sides are present.
-assets = ["dep:waterui-assets", "dep:waterui-assets-macros"]
+assets = ["dep:waterui-assets", "dep:waterui-assets-macros", "dep:waterui-meta"]
 media = ["dep:waterui-media", "waterui-assets?/media"]
 video = ["dep:waterui-video", "waterui-media?/video", "waterui-assets?/video"]
 # Remote fetching (`Url::fetch`, `Data::from_remote`, remote `Photo` sources)

@@ -13,9 +13,14 @@ name = "hydrolysis_test_app"
 [dependencies]
 # `testing` for `hydrolysis::testing::TestStyle`: the debug app exercises the
 # host, not a style package, so it mounts the in-tree test theme.
-hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
-waterui = { workspace = true, features = ["gpu"] }
+hydrolysis = { workspace = true, default-features = false, features = ["accessibility", "testing"] }
+waterui = { workspace = true, default-features = false }
 waterui-core.workspace = true
+
+[features]
+default = ["gpu"]
+gpu = ["waterui/gpu"]
+hwui = ["hydrolysis/hwui"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true

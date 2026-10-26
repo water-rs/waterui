@@ -225,15 +225,18 @@ mod tests {
 
     use super::*;
 
-    /// The library artifact `cargo build --lib` reported for `fixture`'s own
-    /// manifest — the same `compiler-artifact` stream scan
-    /// [`crate::build::app_library_artifact`] applies to a real target build,
-    /// so these tests read exactly the artifact a `water` build produces.
-    fn built_lib_fixture(fixture: &Path, extra_args: &[&str]) -> std::io::Result<PathBuf> {
-        let output = crate::toolchain::Host::current()
-            .without_cargo_target_dir()
+    /// The `cargo build` artifact stream for `fixture`'s own manifest — the
+    /// same `compiler-artifact` scan [`crate::build::compiler_artifacts`]
+    /// applies to a real target build, so tests read exactly the artifacts a
+    /// `water` build produces.
+    fn built_fixture(
+        host: &crate::toolchain::Host,
+        fixture: &Path,
+        extra_args: &[&str],
+    ) -> std::io::Result<Vec<cargo_metadata::Artifact>> {
+        let output = host
             .std_command("cargo")?
-            .args(["build", "--lib", "--message-format=json-render-diagnostics"])
+            .args(["build", "--message-format=json-render-diagnostics"])
             .args(extra_args)
             .current_dir(fixture)
             .output()
@@ -243,12 +246,27 @@ mod tests {
             "the fixture build must succeed:\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        Ok(crate::build::app_library_artifact(
-            &crate::build::compiler_artifacts(&output.stdout).expect("cargo messages parse"),
-            &fixture.join("Cargo.toml"),
+        crate::build::compiler_artifacts(&output.stdout)
+            .map_err(|error| std::io::Error::other(format!("{error}")))
+    }
+
+    /// The library artifact `cargo build --lib` reported for `fixture`'s own
+    /// manifest, selected the way [`crate::build::app_library_artifact`]
+    /// selects it for a real target build.
+    fn built_lib_fixture(fixture: &Path, extra_args: &[&str]) -> std::io::Result<PathBuf> {
+        let mut args = Vec::with_capacity(extra_args.len() + 1);
+        args.push("--lib");
+        args.extend_from_slice(extra_args);
+        let artifacts = built_fixture(
+            &crate::toolchain::Host::current().without_cargo_target_dir(),
+            fixture,
+            &args,
+        )?;
+        Ok(
+            crate::build::app_library_artifact(&artifacts, &fixture.join("Cargo.toml"))
+                .expect("the artifact scan parses")
+                .expect("cargo reported a library artifact for the fixture"),
         )
-        .expect("the artifact scan parses")
-        .expect("cargo reported a library artifact for the fixture"))
     }
 
     #[test]
@@ -299,6 +317,172 @@ mod tests {
         assert!(
             symbols.leaves_with_prefix("waterui_meta_").is_empty(),
             "a release rlib must not carry waterui_meta_* statics"
+        );
+        Ok(())
+    }
+
+    /// The fixture's rlib, selected by target name and kind — never the
+    /// `waterui-meta` path dependency's.
+    #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
+    fn retention_lib(artifacts: &[cargo_metadata::Artifact]) -> PathBuf {
+        artifacts
+            .iter()
+            .find(|artifact| {
+                artifact.target.name == "meta_retention"
+                    && artifact.target.kind.iter().any(|kind| {
+                        matches!(
+                            kind,
+                            cargo_metadata::TargetKind::Lib | cargo_metadata::TargetKind::RLib
+                        )
+                    })
+            })
+            .and_then(|artifact| {
+                artifact
+                    .filenames
+                    .iter()
+                    .find(|path| path.extension() == Some("rlib"))
+            })
+            .map(|path| path.as_std_path().to_path_buf())
+            .expect("cargo reported the fixture rlib")
+    }
+
+    /// The fixture's linked binary, selected by target name and kind.
+    #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
+    fn retention_bin(artifacts: &[cargo_metadata::Artifact]) -> PathBuf {
+        artifacts
+            .iter()
+            .find(|artifact| {
+                artifact.target.name == "meta-retention"
+                    && artifact
+                        .target
+                        .kind
+                        .iter()
+                        .any(|kind| matches!(kind, cargo_metadata::TargetKind::Bin))
+            })
+            .and_then(|artifact| artifact.executable.clone())
+            .map(Into::into)
+            .expect("cargo reported the fixture binary")
+    }
+
+    /// Stages `tests/fixtures/meta_retention/src/` into `fixture` and writes
+    /// its manifest: one package, the checkout's `utils/meta` by path, one
+    /// codegen unit in both profiles so linking the marker pulls the object
+    /// the records live in.
+    #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
+    fn stage_retention_fixture(cli_dir: &Path, fixture: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(fixture.join("src"))?;
+        for source in ["lib.rs", "main.rs"] {
+            std::fs::copy(
+                cli_dir
+                    .join("tests/fixtures/meta_retention/src")
+                    .join(source),
+                fixture.join("src").join(source),
+            )?;
+        }
+
+        let mut package = cargo_toml::Package::new(
+            "meta-retention".to_string(),
+            "0.0.0".parse().expect("fixture version"),
+        );
+        package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
+        let mut manifest = cargo_toml::Manifest::<()> {
+            package: Some(package),
+            ..Default::default()
+        };
+        manifest.dependencies.insert(
+            "waterui-meta".to_string(),
+            cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                path: Some(
+                    cli_dir
+                        .join("../utils/meta")
+                        .to_str()
+                        .expect("the meta crate path is UTF-8")
+                        .to_string(),
+                ),
+                ..Default::default()
+            })),
+        );
+        let single_cgu = cargo_toml::Profile {
+            codegen_units: Some(1),
+            ..Default::default()
+        };
+        manifest.profile.dev = Some(single_cgu.clone());
+        manifest.profile.release = Some(single_cgu);
+        std::fs::write(
+            fixture.join("Cargo.toml"),
+            toml::to_string(&manifest)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
+        )
+    }
+
+    /// The records the shared `waterui_meta::dir_static!` emits stay in the
+    /// rlib in every profile — the CLI reads them there — while the
+    /// `__DWARF,__wmeta` placement lets `ld` strip them from a release
+    /// binary: debug's `__DATA,__wmeta` keeps them in the linked image.
+    ///
+    /// Runs its own `cargo build` twice against fixture sources, so it is
+    /// ignored for the suite and selected on an Apple aarch64 host.
+    #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
+    #[ignore = "builds the fixture for debug and release"]
+    #[test]
+    fn apple_release_metadata_retention() -> std::io::Result<()> {
+        const RECORDS: [(&str, &[u8]); 3] = [
+            ("waterui_meta_retention_root", b"root record"),
+            ("waterui_meta_retention_private", b"private module record"),
+            ("waterui_meta_retention_anon", b"anonymous const record"),
+        ];
+
+        let cli_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let staging = tempfile::tempdir()?;
+        let fixture = staging.path().join("meta-retention");
+        stage_retention_fixture(cli_dir, &fixture)?;
+
+        // A persistent target under the worktree lets a nextest retry and a
+        // later run resume the two fixture builds rather than recompile.
+        let target_dir = cli_dir
+            .parent()
+            .expect("cli has a worktree parent")
+            .join("target/meta-retention");
+        std::fs::create_dir_all(&target_dir)?;
+        let host = crate::toolchain::Host::current()
+            .with_env("CARGO_TARGET_DIR", &target_dir)
+            .with_env("CARGO_NET_OFFLINE", "true");
+
+        let debug = built_fixture(&host, &fixture, &["--offline"])?;
+        let release = built_fixture(&host, &fixture, &["--offline", "--release"])?;
+
+        for archive in [retention_lib(&debug), retention_lib(&release)] {
+            let symbols = ArtifactSymbols::read(&archive).expect("fixture rlib parses");
+            for (name, payload) in RECORDS {
+                assert_eq!(
+                    symbols
+                        .meta_record(name)
+                        .unwrap_or_else(|_| panic!("{name} in {}", archive.display())),
+                    payload,
+                    "{name} in {}",
+                    archive.display(),
+                );
+            }
+        }
+        let debug_symbols =
+            ArtifactSymbols::read(&retention_bin(&debug)).expect("the debug image parses");
+        for (name, payload) in RECORDS {
+            assert_eq!(
+                debug_symbols
+                    .meta_record(name)
+                    .unwrap_or_else(|_| panic!("{name} in the debug image")),
+                payload,
+                "{name} in the debug image",
+            );
+        }
+
+        let release_image = std::fs::read(retention_bin(&release))?;
+        let object = File::parse(&*release_image).expect("the release image parses");
+        assert!(
+            object
+                .sections()
+                .all(|section| section.name() != Ok("__wmeta")),
+            "ld stripped __DWARF,__wmeta from the release binary"
         );
         Ok(())
     }

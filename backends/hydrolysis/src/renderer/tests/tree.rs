@@ -24,7 +24,7 @@ fn export_path(case: &str, stage: &str) -> std::path::PathBuf {
 use waterui_layout::stack::{VStackLayout, vstack};
 use waterui_text::styled::StyledStr;
 
-fn text_node(content: &'static str) -> RenderNode {
+fn text_node<E: crate::text::TextEngine>(content: &'static str) -> RenderNode<E> {
     let content = Computed::constant(StyledStr::plain(content));
     let alignment = Computed::constant(HorizontalAlignment::Leading);
     RenderNode::Text(Box::new(TextNode {

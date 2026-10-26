@@ -1033,7 +1033,11 @@ impl ScrollSurfaceArea {
     /// offset follows each frame directly — the host's own animation is
     /// the pacing, never an eased chase — using the previous frame's
     /// stored field rect, so the content paints already clear.
-    pub fn begin_flush(&self, renderer: &HydrolysisRenderer, handle: &ScrollHandle) {
+    pub fn begin_flush<E: crate::text::TextEngine>(
+        &self,
+        renderer: &HydrolysisRenderer<E>,
+        handle: &ScrollHandle,
+    ) {
         let Some(facts) = self.facts.get() else {
             return;
         };
@@ -1048,9 +1052,9 @@ impl ScrollSurfaceArea {
     /// ([`HydrolysisRenderer::clear_focused_fields`]). The registration is
     /// retained: a clean surface that does not record keeps it, so a field
     /// gaining focus under it is still scrolled clear.
-    pub fn register_clearance(
+    pub fn register_clearance<E: crate::text::TextEngine>(
         self: &std::rc::Rc<Self>,
-        renderer: &HydrolysisRenderer,
+        renderer: &HydrolysisRenderer<E>,
         handle: &ScrollHandle,
     ) {
         let scope = renderer
@@ -1086,10 +1090,10 @@ impl ScrollSurfaceArea {
     /// [`HydrolysisRenderer::focused_field_frame_in_scope`] reads the
     /// focused field out of the buckets the cells under this surface's own
     /// record wrote, so it answers exactly dev's set.
-    fn clear_focused_field(
+    fn clear_focused_field<E: crate::text::TextEngine>(
         &self,
-        renderer: &HydrolysisRenderer,
-        scope: &std::rc::Rc<crate::renderer::mount::cell::NodeCell>,
+        renderer: &HydrolysisRenderer<E>,
+        scope: &std::rc::Rc<crate::renderer::mount::cell::NodeCell<E>>,
         handle: &ScrollHandle,
     ) {
         let Some(facts) = self.facts.get() else {
@@ -1143,8 +1147,8 @@ impl ScrollSurfaceArea {
     /// `min(keyboard top, surface bottom)`; a field taller than the
     /// surface clamps the distance so its top stays inside the surface's
     /// frame.
-    fn scroll_field_clear(
-        renderer: &HydrolysisRenderer,
+    fn scroll_field_clear<E: crate::text::TextEngine>(
+        renderer: &HydrolysisRenderer<E>,
         handle: &ScrollHandle,
         facts: ScrollSurfaceFacts,
         field: kurbo::Rect,
@@ -1196,7 +1200,7 @@ pub fn released_size(size: Size, released: EdgeOffsets) -> Size {
     )
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// The frame's post-record focus clearance (§B step 7): every live
     /// registered surface clears the focused field its subtree holds,
     /// reading the retained registrations after recording, so a focus

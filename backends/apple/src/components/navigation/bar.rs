@@ -11,6 +11,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
+#[cfg(target_os = "ios")]
+use waterui::component::LabelDisplayMode;
 use waterui::navigation::{
     Bar, BarColor, NavigationSearch, NavigationTitleDisplayMode, NavigationToolbarItem,
     NavigationToolbarPlacement, ToolbarItemIcon,
@@ -209,8 +211,29 @@ fn bar_title(view: &mut waterui_backend_core::AnyView, ctx: &RenderContext<'_>) 
 }
 
 /// A semantic toolbar item rendered with its name and icon apart.
+///
+/// iOS toolbar labels default to icon-only presentation. Explicit label
+/// preferences retain precedence over the toolbar environment.
 fn bar_item(item: NavigationToolbarItem, ctx: &RenderContext<'_>) -> BarItem {
-    let leaf = ctx.render(item.content);
+    #[cfg(target_os = "ios")]
+    let toolbar_env = toolbar_environment(ctx.env());
+    #[cfg(target_os = "ios")]
+    let content = match item
+        .content
+        .downcast::<waterui_core::Metadata<Environment>>()
+    {
+        Ok(mut metadata) => {
+            metadata.value = toolbar_environment(&metadata.value);
+            waterui_backend_core::AnyView::new(*metadata)
+        }
+        Err(content) => content,
+    };
+    #[cfg(target_os = "macos")]
+    let content = item.content;
+    #[cfg(target_os = "ios")]
+    let ctx = ctx.with_env(&toolbar_env);
+
+    let leaf = ctx.render(content);
     let title = item.title.map(|title| title.resolve(ctx.env()).content);
     let icon = item.icon.map(|icon| match icon {
         ToolbarItemIcon::System(icon) => BarItemIcon::System(icon.name.to_string()),
@@ -222,6 +245,19 @@ fn bar_item(item: NavigationToolbarItem, ctx: &RenderContext<'_>) -> BarItem {
         title,
         icon,
     }
+}
+
+/// Adds the toolbar default without overriding an explicit label context.
+#[cfg(target_os = "ios")]
+fn toolbar_environment(env: &Environment) -> Environment {
+    let mut env = env.clone();
+    if env
+        .get::<LabelDisplayMode>()
+        .is_none_or(|mode| matches!(mode, LabelDisplayMode::Automatic))
+    {
+        env.insert(LabelDisplayMode::IconOnly);
+    }
+    env
 }
 
 /// The intrinsic size the chrome offers a hosted item: its measured size at
