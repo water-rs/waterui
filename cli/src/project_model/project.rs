@@ -1765,17 +1765,22 @@ impl Project {
             .apple_managed_crate_context(self.apple_crate_path(), &apple_companion_targets())
             .await?;
 
+        let crate_path = self.apple_crate_path();
+        smol::fs::create_dir_all(&crate_path)
+            .await
+            .map_err(crate::backend::FailToInitBackend::Io)?;
+        self.seed_managed_crate_lock(&crate_path, framework).await?;
+
         templates::apple_companion::scaffold(
             self.host(),
-            &self.apple_crate_path(),
+            &crate_path,
             &ctx,
             &self.apple_crate_name(),
         )
         .await
         .map_err(crate::backend::FailToInitBackend::Io)?;
 
-        self.seed_managed_crate_lock(&self.apple_crate_path(), framework)
-            .await
+        Ok(())
     }
 
     /// Scaffold the managed Apple in-process preview package `water preview
@@ -1805,17 +1810,22 @@ impl Project {
             )
             .await?;
 
+        let crate_path = self.apple_preview_crate_path();
+        smol::fs::create_dir_all(&crate_path)
+            .await
+            .map_err(crate::backend::FailToInitBackend::Io)?;
+        self.seed_managed_crate_lock(&crate_path, framework).await?;
+
         templates::apple_preview::scaffold(
             self.host(),
-            &self.apple_preview_crate_path(),
+            &crate_path,
             &ctx,
             &self.apple_preview_crate_name(),
         )
         .await
         .map_err(crate::backend::FailToInitBackend::Io)?;
 
-        self.seed_managed_crate_lock(&self.apple_preview_crate_path(), framework)
-            .await
+        Ok(())
     }
 
     /// Create a new `WaterUI` project at the specified path.
