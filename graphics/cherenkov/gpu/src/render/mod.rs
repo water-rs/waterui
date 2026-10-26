@@ -1109,6 +1109,9 @@ fn retire_binds1(
         diag::bind_groups_dropped(device, dropped as u64, reason);
     }
     surf.binds1_stamp = (surf.bind_gen, images_gen, mask_gen);
+    for entry in surf.projective.values_mut().flatten() {
+        entry.retire_binds((surf.bind_gen, mask_gen));
+    }
 }
 
 impl SurfaceState {
@@ -1117,6 +1120,9 @@ impl SurfaceState {
     /// by the caller; the direct-resolve drops report their own count.
     fn retire_binds(&mut self, device: &wgpu::Device) {
         self.binds1.clear();
+        for entry in self.projective.values_mut().flatten() {
+            entry.binds.clear();
+        }
         self.drop_resolve_binds(device, "backdrop resolve");
     }
 
@@ -9093,6 +9099,9 @@ impl GpuRenderer {
         surf.painter_replays
             .retain(|index, _| *index < surf.frame.passes.len());
         let mask_gen = self.atlas.mask_texture_generation();
+        for entry in surf.projective.values_mut().flatten() {
+            entry.retire_binds((surf.bind_gen, mask_gen));
+        }
         // Decision S2: the whole frame's coverage dispatch runs once,
         // in this encoder ahead of the raster passes — whichever dirty
         // surface is encoded first records it (#2543).

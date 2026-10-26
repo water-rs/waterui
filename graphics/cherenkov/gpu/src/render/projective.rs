@@ -382,6 +382,14 @@ impl Entry {
         (s.width, s.height) == size
     }
 
+    /// Release obsolete texture views even while this cached image is undrawn.
+    pub fn retire_binds(&mut self, stamp: (u64, u64)) {
+        if self.binds_stamp != stamp {
+            self.binds.clear();
+            self.binds_stamp = stamp;
+        }
+    }
+
     /// The composite bind group reading this image with the blend backdrop
     /// `(slot, view)` and the mask texture `(key, view)`, rebuilt when the
     /// `(surface bind generation, mask texture generation)` stamp moved.
@@ -394,10 +402,7 @@ impl Entry {
         stamp: (u64, u64),
         dummy: &wgpu::TextureView,
     ) -> &wgpu::BindGroup {
-        if self.binds_stamp != stamp {
-            self.binds.clear();
-            self.binds_stamp = stamp;
-        }
+        self.retire_binds(stamp);
         let view = &self.view;
         self.binds.entry((slot, mask_key)).or_insert_with(|| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
