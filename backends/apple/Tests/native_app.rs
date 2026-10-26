@@ -2051,7 +2051,10 @@ mod list_spacing {
     fn check_spacing(searchable: bool) {
         let list = || List::for_each(vec![SelfId::new(0_u32)], |_| ListItem::new(text("Row")));
         let query = binding(Str::default());
-        let page = NavigationView::new("Lists", vstack((list(), list())));
+        let page = NavigationView::new(
+            "Lists",
+            vstack((list(), list())).background(waterui::background::Material::Regular),
+        );
         let page = if searchable {
             page.searchable(&query, "Search")
         } else {
