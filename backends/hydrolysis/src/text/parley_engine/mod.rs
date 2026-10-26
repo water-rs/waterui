@@ -37,11 +37,11 @@ use super::engine::{
 };
 use super::input::{ResolvedTextLayoutInput, ResolvedTextStyleSpec};
 
-/// The [`TextEngine`] built on the parley stack.
+/// The `TextEngine` built on the parley stack.
 ///
 /// `fonts` is the collection the engine was born with — the session's
-/// installed fonts via [`Self::from_collection`], or the enumerated system
-/// collection via [`Self::system`]. An engine's fonts never change after
+/// installed fonts via `Self::from_collection`, or the enumerated system
+/// collection via `Self::system`. An engine's fonts never change after
 /// construction, so no shape cache keyed on its inputs can go stale.
 pub struct ParleyEngine {
     /// Fonts registered at construction; the clone source for shaping scratch.
@@ -194,16 +194,15 @@ impl TextEngine for ParleyEngine {
         }))
     }
 
-    fn truncate_tail(
+    fn shape_limited(
         &self,
-        layout: Self::Layout,
         input: &ResolvedTextLayoutInput,
         max_width: Option<f32>,
         max_lines: NonZeroUsize,
         mut shape: impl FnMut(&ResolvedTextLayoutInput, Option<f32>) -> Self::Layout,
     ) -> Self::Layout {
         let limit = max_lines.get();
-        let mut layout = layout;
+        let mut layout = shape(input, max_width);
         if !needs_tail_truncation(&layout.0.layout, limit) {
             return layout;
         }
@@ -1116,3 +1115,20 @@ fn parley_alignment(alignment: HorizontalAlignment, right_to_left: bool) -> parl
 
 #[cfg(test)]
 mod tests;
+
+impl core::fmt::Debug for ParleyEngine {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ParleyEngine")
+            .field("family_resolution", &self.family_resolution)
+            .finish_non_exhaustive()
+    }
+}
+
+impl core::fmt::Debug for ParleyLayout {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ParleyLayout")
+            .field("lines", &self.line_count())
+            .field("height", &self.height())
+            .finish_non_exhaustive()
+    }
+}

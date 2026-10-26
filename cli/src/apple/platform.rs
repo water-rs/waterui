@@ -27,7 +27,7 @@ use crate::{
     },
     device::Artifact,
     platform::{PackageOptions, TargetBackend, TargetPlatform},
-    project::{BrowserRuntimePlan, Project, ResolvedWebViewBackend},
+    project::{BrowserRuntimePlan, Project},
     utils::copy_file,
 };
 
@@ -222,7 +222,7 @@ pub async fn stage_packaged_host_library(
 /// Returns an error when the project's enabled capabilities cannot be resolved.
 pub(crate) async fn apple_dependency_features(
     project: &Project,
-    browser_runtime: BrowserRuntimePlan,
+    browser_runtime: &BrowserRuntimePlan,
     target: &Triple,
 ) -> eyre::Result<Vec<String>> {
     let build_manifest = project.apple_crate_path().join("Cargo.toml");
@@ -233,7 +233,7 @@ pub(crate) async fn apple_dependency_features(
     if browser_runtime.chromium {
         features.push("chromium".to_string());
     }
-    if matches!(browser_runtime.webview, Some(ResolvedWebViewBackend::Cef)) {
+    if browser_runtime.cef_webview {
         features.push("webview-cef".to_string());
     }
     Ok(features)
@@ -241,7 +241,7 @@ pub(crate) async fn apple_dependency_features(
 
 async fn apple_build_features(
     project: &Project,
-    browser_runtime: BrowserRuntimePlan,
+    browser_runtime: &BrowserRuntimePlan,
     linkage: RustLinkage,
     target: &Triple,
 ) -> eyre::Result<Vec<String>> {
@@ -291,7 +291,7 @@ pub(crate) async fn apple_rust_build(
         .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
         .await?;
     let features =
-        apple_build_features(project, browser_runtime_plan, options.linkage(), &triple).await?;
+        apple_build_features(project, &browser_runtime_plan, options.linkage(), &triple).await?;
     let target = triple.to_string();
     let target_underscore = target.replace('-', "_");
     let mut build = RustBuild::for_project(project, crate_path, triple)
@@ -781,35 +781,6 @@ pub(crate) fn apple_deployment_target_env<'a>(
 // Validation
 // ============================================================================
 
-/// The checkout the project's `waterui-apple` dependency compiles from —
-/// the source directory `cargo metadata` resolved for the companion crate's
-/// dependency, whether it names the canonical `waterui_path/backends/apple`
-/// checkout or the framework repository's member at the selected revision.
-///
-/// # Errors
-/// Returns an error when the backend source cannot be located.
-pub(crate) async fn apple_backend_source_root(project: &Project) -> eyre::Result<PathBuf> {
-    let mut command = cargo_metadata::MetadataCommand::new();
-    command.manifest_path(project.apple_crate_path().join("Cargo.toml"));
-    let metadata = project
-        .facts()
-        .cargo_metadata(&command)
-        .await
-        .wrap_err("cargo metadata failed to resolve the Apple backend source")?;
-    let package = metadata
-        .packages
-        .iter()
-        .find(|package| package.name.as_str() == "waterui-apple")
-        .ok_or_else(|| {
-            eyre::eyre!("the companion crate does not depend on a `waterui-apple` package")
-        })?;
-    package
-        .manifest_path
-        .parent()
-        .map(|directory| directory.as_std_path().to_path_buf())
-        .ok_or_else(|| eyre::eyre!("`waterui-apple` manifest path has no parent"))
-}
-
 // ============================================================================
 // Clean
 // ============================================================================
@@ -883,7 +854,7 @@ pub async fn package_apple(
     let mut apple_declarations = crate::assets::scan_apple_declarations(
         project,
         &project.apple_crate_path().join("Cargo.toml"),
-        &apple_dependency_features(project, browser_runtime_plan, &triple).await?,
+        &apple_dependency_features(project, &browser_runtime_plan, &triple).await?,
     )
     .await?;
     apple_declarations.supply_app_values(&project.manifest().app_values)?;

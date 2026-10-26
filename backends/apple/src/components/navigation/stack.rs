@@ -50,6 +50,35 @@ fn stack_leaf(stack: NavigationStack<(), ()>, ctx: &RenderContext<'_>) -> Native
     leaf
 }
 
+/// The split-column leaf: `content` renders as the root page of a fresh
+/// [`platform::Stack`], and the returned `UINavigationController` is the
+/// column's `viewController`. A collapsed split then pushes the page onto
+/// the compact stack with the platform's back affordance, and the page's
+/// `navigationItem` chrome — large title, the `searchable` field,
+/// toolbar items — applies instead of drawing in-content.
+#[cfg(target_os = "ios")]
+pub(super) fn column_leaf(
+    content: waterui_backend_core::AnyView,
+    ctx: &RenderContext<'_>,
+) -> (
+    NativeLeaf,
+    cocoa_ui::Retained<cocoa_ui::uikit::NavigationController>,
+) {
+    let driver = Rc::new(platform::Stack::for_column());
+    let erased: Rc<dyn Sink> = driver.clone();
+    let mut env = ctx.env().clone();
+    let controller = NavigationController::new(Receiver {
+        driver: Rc::downgrade(&erased),
+    });
+    env.insert(controller);
+    driver.prepare(ctx, env.clone());
+    let root = resolve_navigation_root(content, &env);
+    let mut leaf = driver.build(root);
+    let nav = driver.nav();
+    leaf.keep(driver);
+    (leaf, nav)
+}
+
 /// What each platform driver answers to transactions.
 pub(super) trait Sink {
     /// Applies one suffix-replacing transaction.
@@ -200,6 +229,11 @@ mod platform {
         pending: RefCell<Option<Pending>>,
         /// The main-thread proof.
         mtm: MainThreadMarker,
+        /// Whether the stack drives a split column: a collapsed
+        /// `UISplitViewController` pushes the column's top page onto the
+        /// compact stack, so the root keeps its back affordance and a page
+        /// appearing on a foreign bar re-shows it.
+        column: bool,
     }
 
     impl fmt::Debug for Stack {
@@ -223,7 +257,24 @@ mod platform {
                 pages: RefCell::new(Vec::new()),
                 pending: RefCell::new(None),
                 mtm: MainThreadMarker::new().expect("views resolve on the main thread"),
+                column: false,
             }
+        }
+
+        /// A stack driving one split column — the split installs the
+        /// native controller as the column's `viewController`.
+        pub(super) fn for_column() -> Self {
+            Self {
+                column: true,
+                ..Self::new(AnyNavigationTransition::new(
+                    waterui::navigation::navigation_transition::automatic(),
+                ))
+            }
+        }
+
+        /// The column's `UINavigationController`, once `build` ran.
+        pub(super) fn nav(&self) -> Retained<cocoa_ui::uikit::NavigationController> {
+            self.nav.get().expect("built").clone()
         }
 
         /// Captures the environment the children resolve against and the
@@ -337,7 +388,10 @@ mod platform {
                     LargeTitle::Large
                 }
             };
-            page.hides_back = root;
+            // A column stack's root keeps the back affordance: a collapsed
+            // split pushes the page onto the compact stack, where the
+            // button returns to the sidebar column.
+            page.hides_back = root && !self.column;
             if !root {
                 let state = Rc::clone(&state);
                 let env = self.env().clone();
@@ -353,6 +407,28 @@ mod platform {
             }
             page.hidden = bar.hidden.snapshot();
             controller.set_page(&page);
+            if self.column {
+                // A collapsed split pushes the column's own stack onto the
+                // compact stack, so the page's `navigationController()` is
+                // still its column nav and the page's recorded intent
+                // applies to it — while the pushed stack's
+                // `navigationController()` answers the compact stack,
+                // whose bar carries the back affordance and must show.
+                let hidden = bar.hidden.clone();
+                let page_controller = cocoa_ui::objc2::rc::Weak::new(&*controller);
+                controller.set_will_appear_handler(move |animated| {
+                    let Some(controller) = page_controller.load() else {
+                        return;
+                    };
+                    let Some(nav) = controller.navigationController() else {
+                        return;
+                    };
+                    if let Some(outer) = nav.navigationController() {
+                        outer.setNavigationBarHidden_animated(false, animated);
+                    }
+                    nav.setNavigationBarHidden_animated(hidden.snapshot(), animated);
+                });
+            }
             {
                 let appear_state = Rc::clone(&state);
                 let env = self.env().clone();
@@ -618,7 +694,11 @@ mod platform {
         let config = NavSearch {
             placeholder: search_prompt(search, env).snapshot().to_plain().to_string(),
             text: search.text.snapshot().to_string(),
-            placement: Some(cocoa_ui::uikit::SearchBarPlacement::Stacked),
+            // `.automatic`: on iOS 26 a page pushed by a collapsed split
+            // carries the field in the bottom toolbar, matching the
+            // platform's own `.searchable` presentation; `Stacked` would
+            // pin it under the bar.
+            placement: None,
             hides_when_scrolling: Some(false),
         };
         let binding = search.text.clone();

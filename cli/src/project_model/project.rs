@@ -1142,7 +1142,60 @@ impl Project {
                  with backend {backend:?}"
             );
         }
-        Ok(BrowserRuntimePlan { webview, chromium })
+        let wpe = if matches!(webview, Some(ResolvedWebViewBackend::Wpe)) {
+            Some(self.resolved_wpe_runtime(target).await?)
+        } else {
+            None
+        };
+        Ok(BrowserRuntimePlan {
+            wpe,
+            cef_webview: matches!(webview, Some(ResolvedWebViewBackend::Cef)),
+            chromium,
+        })
+    }
+
+    /// The `waterui-browser-wpe` package the application's resolved graph for
+    /// `target` reaches through normal dependency edges, with the producer
+    /// contract its `[package.metadata.waterui.wpe-runtime]` declares.
+    ///
+    /// The answer comes from `cargo metadata --filter-platform <triple>`,
+    /// not `cargo tree` — the tree's `{p}` spellings carry no manifest path
+    /// or declared metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the graph reaches zero or several such
+    /// packages, or when the selected package's producer metadata or native
+    /// source directory is missing or malformed.
+    async fn resolved_wpe_runtime(&self, target: &Triple) -> eyre::Result<ResolvedWpeRuntime> {
+        let layout = self.cargo_layout().await?;
+        let fact = WpeRuntimePackage {
+            project_root: self.root.clone(),
+            manifest: application_manifest(&self.root).await?,
+            root_package_id: layout.root_package_id,
+            target: target.to_string(),
+            permits: Arc::clone(&self.cargo_resolve_permits),
+        };
+        let package = self.facts.answer(&fact).await?;
+        if package.declared.native_source.is_absolute() {
+            eyre::bail!(
+                "waterui-browser-wpe {} declares an absolute native-source {}; it must be package-relative",
+                package.package_version,
+                package.declared.native_source.display()
+            );
+        }
+        let native_source = package
+            .manifest_directory
+            .join(&package.declared.native_source);
+        Ok(ResolvedWpeRuntime {
+            package_name: package.package_name.clone(),
+            package_version: package.package_version.clone(),
+            manifest_directory: package.manifest_directory.clone(),
+            native_source,
+            webkit_version: package.declared.version.clone(),
+            bridge_abi: package.declared.bridge_abi,
+            target: target.clone(),
+        })
     }
 
     /// Get the bundle identifier of the project.
@@ -1765,17 +1818,22 @@ impl Project {
             .apple_managed_crate_context(self.apple_crate_path(), &apple_companion_targets())
             .await?;
 
+        let crate_path = self.apple_crate_path();
+        smol::fs::create_dir_all(&crate_path)
+            .await
+            .map_err(crate::backend::FailToInitBackend::Io)?;
+        self.seed_managed_crate_lock(&crate_path, framework).await?;
+
         templates::apple_companion::scaffold(
             self.host(),
-            &self.apple_crate_path(),
+            &crate_path,
             &ctx,
             &self.apple_crate_name(),
         )
         .await
         .map_err(crate::backend::FailToInitBackend::Io)?;
 
-        self.seed_managed_crate_lock(&self.apple_crate_path(), framework)
-            .await
+        Ok(())
     }
 
     /// Scaffold the managed Apple in-process preview package `water preview
@@ -1805,17 +1863,22 @@ impl Project {
             )
             .await?;
 
+        let crate_path = self.apple_preview_crate_path();
+        smol::fs::create_dir_all(&crate_path)
+            .await
+            .map_err(crate::backend::FailToInitBackend::Io)?;
+        self.seed_managed_crate_lock(&crate_path, framework).await?;
+
         templates::apple_preview::scaffold(
             self.host(),
-            &self.apple_preview_crate_path(),
+            &crate_path,
             &ctx,
             &self.apple_preview_crate_name(),
         )
         .await
         .map_err(crate::backend::FailToInitBackend::Io)?;
 
-        self.seed_managed_crate_lock(&self.apple_preview_crate_path(), framework)
-            .await
+        Ok(())
     }
 
     /// Create a new `WaterUI` project at the specified path.
@@ -2748,6 +2811,166 @@ impl Fact for CargoTree {
     }
 }
 
+/// The producer metadata `[package.metadata.waterui.wpe-runtime]` declares,
+/// decoded as a typed value so a malformed or overflowing ABI fails serde
+/// decoding rather than truncating.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) struct WpeRuntimeMetadata {
+    /// The `WebKit` version the package pins.
+    pub version: String,
+    /// The bridge ABI the package declares.
+    pub bridge_abi: u32,
+    /// The package-relative directory the bridge sources live in.
+    pub native_source: PathBuf,
+}
+
+/// What a resolved WPE package is, before the domain type attaches the
+/// target.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ResolvedWpePackage {
+    /// The resolved package name.
+    pub package_name: String,
+    /// The resolved package version.
+    pub package_version: String,
+    /// The directory holding the package's manifest.
+    pub manifest_directory: PathBuf,
+    /// The producer metadata, decoded.
+    pub declared: WpeRuntimeMetadata,
+}
+
+/// The `waterui-browser-wpe` package one resolved application graph reaches,
+/// with the producer metadata the staging contract reads.
+struct WpeRuntimePackage {
+    project_root: PathBuf,
+    manifest: PathBuf,
+    root_package_id: String,
+    target: String,
+    permits: Arc<async_lock::Semaphore>,
+}
+
+impl Fact for WpeRuntimePackage {
+    const KIND: &'static str = "wpe-runtime-package";
+    type Question = (PathBuf, PathBuf, String, String);
+    type Value = ResolvedWpePackage;
+
+    fn question(&self) -> Self::Question {
+        (
+            self.project_root.clone(),
+            self.manifest.clone(),
+            self.root_package_id.clone(),
+            self.target.clone(),
+        )
+    }
+
+    /// Cargo reads the application manifest, the lockfile, and the manifest
+    /// of every package the resolve reaches.
+    async fn resolve(&self, scope: &Scope<'_>) -> eyre::Result<ResolvedWpePackage> {
+        let metadata = {
+            let _permit = self.permits.acquire_arc().await;
+            let mut command = cargo_metadata::MetadataCommand::new();
+            command
+                .current_dir(&self.project_root)
+                .manifest_path(&self.manifest)
+                .other_options(vec!["--filter-platform".to_string(), self.target.clone()]);
+            scope.cargo_metadata(&command).await?
+        };
+        let package = select_wpe_package(&metadata, &self.root_package_id, &self.target)?;
+        let manifest_directory = package
+            .manifest_path
+            .parent()
+            .ok_or_else(|| eyre::eyre!("waterui-browser-wpe manifest path has no parent"))?
+            .as_std_path()
+            .to_path_buf();
+        let declared: WpeRuntimeMetadata =
+            serde_json::from_value(package.metadata["waterui"]["wpe-runtime"].clone())
+                .wrap_err("waterui-browser-wpe declares malformed wpe-runtime metadata")?;
+        scope.manifests([package.manifest_path.as_std_path().to_path_buf()]);
+        Ok(ResolvedWpePackage {
+            package_name: package.name.as_str().to_owned(),
+            package_version: package.version.to_string(),
+            manifest_directory,
+            declared,
+        })
+    }
+}
+
+/// The `waterui-browser-wpe` package `root_package_id`'s resolved graph for
+/// `target` reaches through normal dependency edges — pure over the
+/// `cargo metadata` document so synthetic graphs exercise it directly.
+///
+/// Normal edges only: dev and build dependencies do not reach the runtime
+/// the application actually links. Candidates deduplicate on package id — a
+/// diamond reaching one package through two parents is not an ambiguity —
+/// while two distinct versions error.
+fn select_wpe_package<'m>(
+    metadata: &'m cargo_metadata::Metadata,
+    root_package_id: &str,
+    target: &str,
+) -> eyre::Result<&'m cargo_metadata::Package> {
+    let resolve = metadata
+        .resolve
+        .as_ref()
+        .ok_or_else(|| eyre::eyre!("cargo metadata returned no resolve graph"))?;
+    let root = resolve
+        .nodes
+        .iter()
+        .find(|node| node.id.to_string() == root_package_id)
+        .ok_or_else(|| {
+            eyre::eyre!("the resolved graph holds no node for root package {root_package_id}")
+        })?;
+    let mut found = std::collections::BTreeMap::new();
+    let mut stack = vec![root];
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(node) = stack.pop() {
+        if !visited.insert(node.id.clone()) {
+            continue;
+        }
+        for dependency in node.deps.iter().filter(|dependency| {
+            dependency
+                .dep_kinds
+                .iter()
+                .any(|kind| kind.kind == cargo_metadata::DependencyKind::Normal)
+        }) {
+            let package = metadata
+                .packages
+                .iter()
+                .find(|package| package.id == dependency.pkg)
+                .ok_or_else(|| {
+                    eyre::eyre!(
+                        "the resolved graph references a package {} that metadata omits",
+                        dependency.pkg
+                    )
+                })?;
+            if package.name.as_str() == "waterui-browser-wpe" {
+                found.entry(package.id.to_string()).or_insert(package);
+            }
+            let next = resolve
+                .nodes
+                .iter()
+                .find(|node| node.id == dependency.pkg)
+                .ok_or_else(|| {
+                    eyre::eyre!(
+                        "the resolved graph references a node {} it omits",
+                        dependency.pkg
+                    )
+                })?;
+            stack.push(next);
+        }
+    }
+    match found.values().collect::<Vec<_>>().as_slice() {
+        [package] => Ok(*package),
+        [] => eyre::bail!(
+            "the resolved graph for {target} reaches no waterui-browser-wpe through normal edges"
+        ),
+        _ => eyre::bail!(
+            "the resolved graph for {target} reaches {} distinct waterui-browser-wpe versions; \
+             unify the dependency before staging a runtime",
+            found.len()
+        ),
+    }
+}
+
 /// Every package's enabled features in a manifest's resolved graph for
 /// one target — the answer `Project::generated_manifest_features` replays
 /// instead of the whole `cargo metadata --filter-platform` document.
@@ -3627,12 +3850,94 @@ impl std::fmt::Display for ResolvedWebViewBackend {
     }
 }
 
+/// The WPE browser package the application's resolved graph selected, with
+/// the producer contract its staging reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ResolvedWpeRuntime {
+    package_name: String,
+    package_version: String,
+    manifest_directory: std::path::PathBuf,
+    native_source: std::path::PathBuf,
+    webkit_version: String,
+    bridge_abi: u32,
+    target: Triple,
+}
+
+impl ResolvedWpeRuntime {
+    /// The resolved `waterui-browser-wpe` package name.
+    #[must_use]
+    pub fn package_name(&self) -> &str {
+        &self.package_name
+    }
+
+    /// The resolved package version.
+    #[must_use]
+    pub fn package_version(&self) -> &str {
+        &self.package_version
+    }
+
+    /// The directory holding the package's Cargo manifest.
+    #[must_use]
+    pub fn manifest_directory(&self) -> &std::path::Path {
+        &self.manifest_directory
+    }
+
+    /// The absolute path to the package's native source directory — the
+    /// package-relative `native-source` joined onto the manifest directory.
+    #[must_use]
+    pub fn native_source(&self) -> &std::path::Path {
+        &self.native_source
+    }
+
+    /// The `WebKit` version the package's producer metadata pins.
+    #[must_use]
+    pub fn webkit_version(&self) -> &str {
+        &self.webkit_version
+    }
+
+    /// The bridge ABI the package's producer metadata declares — the value a
+    /// source build asserts the headers agree with.
+    #[must_use]
+    pub const fn bridge_abi(&self) -> u32 {
+        self.bridge_abi
+    }
+
+    /// The build target triple this package was resolved for — the SDK's
+    /// architecture answers to it, not to the host.
+    #[must_use]
+    pub const fn target(&self) -> &Triple {
+        &self.target
+    }
+
+    /// A resolved package fixed at construction, for tests of the staging
+    /// path that never consult `cargo metadata`.
+    #[cfg(all(test, unix))]
+    pub(crate) fn testing(
+        manifest_directory: std::path::PathBuf,
+        native_source: std::path::PathBuf,
+        target: Triple,
+    ) -> Self {
+        Self {
+            package_name: "waterui-browser-wpe".to_owned(),
+            package_version: "0.5.1".to_owned(),
+            manifest_directory,
+            native_source,
+            webkit_version: "2.52.5".to_owned(),
+            bridge_abi: 4,
+            target,
+        }
+    }
+}
+
 /// Browser engines that must be staged for one resolved application graph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct BrowserRuntimePlan {
-    /// Standard `WebView` engine, when `waterui-webview` is linked.
-    pub webview: Option<ResolvedWebViewBackend>,
+    /// The resolved WPE package, when the standard `WebView` engine is WPE.
+    pub wpe: Option<ResolvedWpeRuntime>,
+    /// Whether the standard `WebView` resolved to the CEF engine.
+    pub cef_webview: bool,
     /// Whether the independent full Chromium component is linked.
     pub chromium: bool,
 }
@@ -3641,8 +3946,8 @@ impl BrowserRuntimePlan {
     /// Returns whether this application requires a packaged CEF runtime and
     /// subprocess helper.
     #[must_use]
-    pub const fn requires_cef(self) -> bool {
-        self.chromium || matches!(self.webview, Some(ResolvedWebViewBackend::Cef))
+    pub const fn requires_cef(&self) -> bool {
+        self.cef_webview || self.chromium
     }
 }
 
@@ -5963,5 +6268,187 @@ mod embedded_declaration_tests {
                 .expect("package serializes")
                 .contains("embedded = true")
         );
+    }
+}
+
+#[cfg(test)]
+mod wpe_metadata_tests {
+    use cargo_metadata::{Metadata, MetadataCommand};
+    use serde_json::{Value, json};
+
+    use super::select_wpe_package;
+
+    fn package(id: &str, name: &str, version: &str) -> Value {
+        json!({
+            "id": id,
+            "name": name,
+            "version": version,
+            "source": null,
+            "license": null,
+            "license_file": null,
+            "description": null,
+            "dependencies": [],
+            "targets": [],
+            "features": {},
+            "manifest_path": format!("/workspace/{id}/Cargo.toml"),
+            "metadata": {},
+            "publish": null,
+            "authors": [],
+            "categories": [],
+            "keywords": [],
+            "edition": "2024",
+            "rust_version": null,
+            "readme": null,
+            "repository": null,
+            "homepage": null,
+            "documentation": null,
+            "links": null,
+            "default_run": null
+        })
+    }
+
+    fn node(id: &str, edges: &[(&str, Option<&str>)]) -> Value {
+        let dependencies: Vec<_> = edges.iter().map(|(package, _)| *package).collect();
+        let deps: Vec<_> = edges
+            .iter()
+            .map(|(package, kind)| {
+                json!({
+                    "name": package,
+                    "pkg": package,
+                    "dep_kinds": [{"kind": kind, "target": null}]
+                })
+            })
+            .collect();
+        json!({
+            "id": id,
+            "dependencies": dependencies,
+            "deps": deps,
+            "features": []
+        })
+    }
+
+    fn graph(nodes: &[Value]) -> Metadata {
+        let document = json!({
+            "packages": [
+                package("app", "app", "0.1.0"),
+                package("left", "left", "0.1.0"),
+                package("right", "right", "0.1.0"),
+                package("wpe-one", "waterui-browser-wpe", "0.5.1"),
+                package("wpe-two", "waterui-browser-wpe", "0.6.0")
+            ],
+            "workspace_members": ["app"],
+            "workspace_default_members": ["app"],
+            "resolve": {"root": "app", "nodes": nodes},
+            "target_directory": "/workspace/target",
+            "build_directory": "/workspace/target",
+            "workspace_root": "/workspace",
+            "metadata": {},
+            "version": 1
+        });
+        MetadataCommand::parse(serde_json::to_string(&document).unwrap())
+            .expect("the synthetic Cargo metadata graph must decode")
+    }
+
+    #[test]
+    fn wpe_package_reached_through_a_diamond_is_selected_once() {
+        let metadata = graph(&[
+            node("app", &[("left", None), ("right", None)]),
+            node("left", &[("wpe-one", None)]),
+            node("right", &[("wpe-one", None)]),
+            node("wpe-one", &[]),
+        ]);
+        let selected = select_wpe_package(&metadata, "app", "x86_64-unknown-linux-gnu").unwrap();
+        assert_eq!(selected.id.repr, "wpe-one");
+        assert_eq!(selected.version.to_string(), "0.5.1");
+    }
+
+    #[test]
+    fn distinct_reachable_wpe_versions_are_ambiguous() {
+        let metadata = graph(&[
+            node("app", &[("wpe-one", None), ("wpe-two", None)]),
+            node("wpe-one", &[]),
+            node("wpe-two", &[]),
+        ]);
+        let error = select_wpe_package(&metadata, "app", "x86_64-unknown-linux-gnu")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("2 distinct waterui-browser-wpe versions"));
+    }
+
+    #[test]
+    fn dev_and_build_wpe_versions_do_not_make_the_runtime_ambiguous() {
+        let metadata = graph(&[
+            node(
+                "app",
+                &[
+                    ("wpe-one", None),
+                    ("wpe-two", Some("dev")),
+                    ("wpe-two", Some("build")),
+                ],
+            ),
+            node("wpe-one", &[]),
+            node("wpe-two", &[]),
+        ]);
+        let selected = select_wpe_package(&metadata, "app", "x86_64-unknown-linux-gnu").unwrap();
+        assert_eq!(selected.id.repr, "wpe-one");
+    }
+
+    #[test]
+    fn dev_and_build_only_wpe_packages_are_not_application_runtimes() {
+        let metadata = graph(&[
+            node(
+                "app",
+                &[("wpe-one", Some("dev")), ("wpe-two", Some("build"))],
+            ),
+            node("wpe-one", &[]),
+            node("wpe-two", &[]),
+        ]);
+        let error = select_wpe_package(&metadata, "app", "aarch64-unknown-linux-gnu")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reaches no waterui-browser-wpe"));
+    }
+
+    #[test]
+    fn a_missing_reachable_resolve_node_is_an_error() {
+        let metadata = graph(&[node("app", &[("wpe-one", None)])]);
+        let error = select_wpe_package(&metadata, "app", "x86_64-unknown-linux-gnu")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("references a node wpe-one it omits"));
+    }
+
+    #[test]
+    fn a_missing_reachable_package_is_an_error() {
+        let metadata = graph(&[
+            node("app", &[("unlisted-package", None)]),
+            node("unlisted-package", &[]),
+        ]);
+        let error = select_wpe_package(&metadata, "app", "x86_64-unknown-linux-gnu")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("references a package unlisted-package that metadata omits"));
+    }
+
+    #[test]
+    fn wpe_runtime_metadata_rejects_an_out_of_range_abi() {
+        let declared: Result<super::WpeRuntimeMetadata, _> =
+            serde_json::from_value(serde_json::json!({
+                "version": "2.52.5",
+                "bridge-abi": 4_294_967_300_u64,
+                "native-source": "native"
+            }));
+        assert!(
+            declared.is_err(),
+            "an ABI outside u32 must fail decoding, never truncate"
+        );
+        let valid: super::WpeRuntimeMetadata = serde_json::from_value(serde_json::json!({
+            "version": "2.52.5",
+            "bridge-abi": 4,
+            "native-source": "native"
+        }))
+        .expect("a valid producer contract must decode");
+        assert_eq!(valid.bridge_abi, 4);
+        assert_eq!(valid.native_source, std::path::Path::new("native"));
     }
 }

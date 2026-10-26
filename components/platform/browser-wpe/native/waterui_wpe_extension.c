@@ -1,3 +1,5 @@
+#include "waterui_wpe.h"
+
 #include <gmodule.h>
 #include <jsc/jsc.h>
 #include <string.h>

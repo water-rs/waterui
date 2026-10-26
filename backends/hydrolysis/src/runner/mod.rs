@@ -167,7 +167,7 @@ use crate::renderer::{
     SemanticCore,
 };
 use crate::renderer::{HydrolysisTextContextMenuMode, MenuShortcutRegistry, PopupWindowManager};
-use crate::text::SessionTextEngine;
+use crate::text::ParleyEngine;
 use crate::time::Instant;
 
 /// Subscribes every reactive input of a window declaration once, for the
@@ -192,7 +192,10 @@ use crate::time::Instant;
 /// The runtime's own writes land on the same flag — a resize writes
 /// `frame`, so that write is one bounded extra frame, not a loop: the
 /// frame the flag arms performs no further write to the declaration.
-fn subscribe_window_declaration_signals(window: &Window, core: &SemanticCore) -> Vec<Retain> {
+fn subscribe_window_declaration_signals<E: crate::text::TextEngine>(
+    window: &Window,
+    core: &SemanticCore<E>,
+) -> Vec<Retain> {
     let mut watches = vec![
         core.refresh_watch(&window.title),
         core.refresh_watch(&window.frame),
@@ -284,7 +287,7 @@ fn install_native_component_hooks(env: &mut Environment) {
     }));
 }
 
-fn install_headless_window_managers(
+fn install_headless_window_managers<E: crate::text::TextEngine>(
     env: &mut Environment,
     pending_windows: Rc<RefCell<Vec<Window>>>,
 ) {
@@ -297,7 +300,7 @@ fn install_headless_window_managers(
     env.insert(PopupWindowManager::new(move |window| {
         pending_windows.borrow_mut().push(window);
     }));
-    let _ = env.get_or_insert_with::<MenuShortcutRegistry, _>(MenuShortcutRegistry::default);
+    let _ = env.get_or_insert_with::<MenuShortcutRegistry<E>, _>(MenuShortcutRegistry::default);
 }
 
 // The headless offscreen `run` never exists on Android: `hydrolysis::run`
@@ -364,10 +367,13 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     install_native_component_hooks(&mut env);
-    install_headless_window_managers(&mut env, Rc::clone(&pending_window_queue));
+    install_headless_window_managers::<crate::text::ParleyEngine>(
+        &mut env,
+        Rc::clone(&pending_window_queue),
+    );
     // App-level menu bar: arms its chords on the shared registry. The
     // headless host renders no chrome, so there is no surface to draw.
-    menu_bar::register_menu_bar(&menu_bar, &env);
+    menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     crate::theme::install_theme_tokens(&mut env, Some(&style));
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
@@ -389,7 +395,7 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
         ),
     ));
     let shortcuts = env
-        .get::<MenuShortcutRegistry>()
+        .get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
         .expect("install_headless_window_managers seeds MenuShortcutRegistry")
         .clone();
     let mut pending_windows = VecDeque::from(windows);
@@ -402,11 +408,12 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
             Rc::clone(&theme),
-            SessionTextEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
+            ParleyEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
         );
         renderer.set_window_id(shortcuts.mint_window_id());
         renderer.set_window_closable(window.closable);
-        let mut runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
+        let mut runtime =
+            RuntimeWindow::new_gpu(window, platform, renderer, render_diagnostics_config);
         render_window(&mut runtime, &env, &mut || local_executor.drain());
         pending_windows.extend(pending_window_queue.borrow_mut().drain(..));
     }

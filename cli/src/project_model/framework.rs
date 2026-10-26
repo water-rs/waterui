@@ -4425,7 +4425,7 @@ async fn foreign_locked_packages(
 
 /// A git URL in the spelling Cargo canonicalizes sources to: the query,
 /// fragment, `.git` suffix and trailing slash carry no meaning.
-fn canonical_git_url(url: &str) -> &str {
+pub(crate) fn canonical_git_url(url: &str) -> &str {
     let url = url.split(['?', '#']).next().unwrap_or_default();
     url.trim_end_matches('/')
         .trim_end_matches(".git")

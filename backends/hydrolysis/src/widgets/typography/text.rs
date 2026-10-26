@@ -6,9 +6,9 @@ use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{Environment, Native};
 use waterui_text::TextConfig;
 
-impl HydroNativeView for Native<TextConfig> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<TextConfig> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -27,7 +27,7 @@ impl HydroNativeView for Native<TextConfig> {
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
