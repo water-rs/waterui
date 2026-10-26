@@ -14,9 +14,10 @@
 //! [`waterui_meta_ts_runtime_library`] out of this crate's rlib, which is the
 //! same constant, on the channel every other `waterui_meta_*` payload uses.
 
+#[cfg(debug_assertions)]
+use waterui_ts_schema::dir_entry;
 use waterui_ts_schema::{
-    HASH_BASIS, RuntimePart, dir_entry, encode_runtime_half, hash_extend, payload,
-    runtime_half_encoded_len,
+    HASH_BASIS, RuntimePart, encode_runtime_half, hash_extend, payload, runtime_half_encoded_len,
 };
 
 /// Every file of the library, in the order they are hashed.
@@ -81,6 +82,7 @@ pub static waterui_meta_ts_runtime_library: [u8; RUNTIME_LIBRARY_RECORD_LEN] =
     );
 
 /// The record's length: the name, NUL, the encoded half, NUL.
+#[cfg(debug_assertions)]
 const RUNTIME_LIBRARY_RECORD_LEN: usize =
     b"waterui_meta_ts_runtime_library".len() + ENCODED.len() + 1;
 
