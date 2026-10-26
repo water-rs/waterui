@@ -66,8 +66,9 @@ impl<E: crate::text::TextEngine> LayerVisitor<E> for TopEdge {
         }
         let alpha: f32 = alphas.iter().product();
         for solid in rects {
-            if contains(world.transform_rect_bbox(solid.rect), self.edge) {
-                self.color = over(solid.color, alpha, self.color);
+            let (rect, color) = solid.current();
+            if contains(world.transform_rect_bbox(rect), self.edge) {
+                self.color = over(color, alpha, self.color);
             }
         }
     }

@@ -211,6 +211,25 @@ struct FrameSets {
     idle: Arc<AtomicBool>,
 }
 
+/// Resources released by the renderer's submission-completion callback.
+pub struct Completion {
+    device: ash::Device,
+    idle: Arc<AtomicBool>,
+    retired: Vec<Slot>,
+}
+
+impl Completion {
+    /// Releases attachments and descriptor pools after their submission completes.
+    pub fn complete(self) {
+        for slot in self.retired {
+            // SAFETY: the queue invokes this only after the submission covering
+            // every use of these retired attachments has completed.
+            unsafe { slot.destroy(&self.device) };
+        }
+        self.idle.store(true, Ordering::Release);
+    }
+}
+
 /// What a descriptor set was written for. Every handle written into a
 /// set appears here, so a hit is a set that describes exactly the same
 /// resources.
@@ -244,11 +263,6 @@ pub struct PipeKey {
     pub slots: u8,
 }
 
-/// Objects whose destruction waits for a submission to complete.
-enum Retired {
-    Slot(Slot),
-}
-
 /// Whether `vkCmdBeginRendering` is reached as core 1.3 or through
 /// `VK_KHR_dynamic_rendering`.
 enum Rendering {
@@ -268,11 +282,11 @@ pub struct Mirror {
     /// device's lazily allocated memory types.
     eligible: Eligible,
     /// The tile modules, `[family][self]` with families short, long
-    /// gradient and image source (see [`family`]):
+    /// gradient, image source, clipped glyph and span composite (see [`family`]):
     /// `engine_tile{,_long,_image}.spv` for a draw sourcing another slot,
     /// `engine_tile{,_long,_image}_self.spv` for a draw sourcing its own
     /// slot.
-    modules: [[vk::ShaderModule; 2]; 3],
+    modules: [[vk::ShaderModule; 2]; 5],
     set_layouts: [vk::DescriptorSetLayout; 3],
     layout: vk::PipelineLayout,
     cache: vk::PipelineCache,
@@ -281,7 +295,7 @@ pub struct Mirror {
     frames: Vec<FrameSets>,
     active: Option<usize>,
     stamp: Option<Stamp>,
-    retired: Vec<Retired>,
+    retired: Vec<Slot>,
 }
 
 impl std::fmt::Debug for Mirror {
@@ -441,29 +455,21 @@ impl Mirror {
         };
         self.active = Some(index);
         self.stamp = Some(stamp);
-        // Everything retired before this frame opened was referenced
-        // only by submissions older than the one whose completion
-        // released this frame's pools.
-        let retired = std::mem::take(&mut self.retired);
-        for item in retired {
-            match item {
-                // SAFETY: the slot's objects were created on
-                // `self.device` by this mirror and are destroyed once.
-                Retired::Slot(slot) => unsafe { slot.destroy(&self.device) },
-            }
-        }
         Ok(())
     }
 
-    /// Closes the frame and hands back the flag whose release lets the
-    /// next frame recycle this one's descriptor pools. The renderer
-    /// sets it from the submission-completion callback.
+    /// Closes the frame and transfers retired attachments to its completion
+    /// callback, which also releases this frame's descriptor pools.
     ///
     /// Returns `None` when the frame recorded no tile epoch.
-    pub fn end_frame(&mut self) -> Option<Arc<AtomicBool>> {
+    pub fn end_frame(&mut self) -> Option<Completion> {
         self.stamp = None;
         let index = self.active.take()?;
-        Some(Arc::clone(&self.frames[index].idle))
+        Some(Completion {
+            device: self.device.clone(),
+            idle: Arc::clone(&self.frames[index].idle),
+            retired: std::mem::take(&mut self.retired),
+        })
     }
 
     /// Checks the frame's resource identities have not moved under the
@@ -563,8 +569,8 @@ impl Mirror {
 
     /// Retires attachment sizes this frame did not use, so animated
     /// bounds do not keep every historical size alive. The images are
-    /// destroyed at the start of a later frame, once the submissions
-    /// that referenced them have completed.
+    /// destroyed by this frame's submission-completion callback, which
+    /// covers every earlier submission that referenced them.
     pub fn finish_frame(&mut self) {
         let mut dropped = Vec::new();
         self.attachments.retain(|_, entry| {
@@ -575,7 +581,7 @@ impl Mirror {
                 false
             }
         });
-        self.retired.extend(dropped.into_iter().map(Retired::Slot));
+        self.retired.extend(dropped);
     }
 
     /// Creates one transient attachment at `size`: an image with the
@@ -992,7 +998,7 @@ impl Mirror {
         let fragment_entry = match key.variant {
             0 => c"tile_simple",
             1 => c"tile_shadow",
-            2 | 4 | 5 => c"tile_full",
+            2 | 4 | 5 | 6 | 7 | 8 => c"tile_full",
             3 => c"tile_clear",
             _ => unreachable!("closed tile shader set"),
         };
@@ -1171,10 +1177,8 @@ impl Mirror {
                     slot.destroy(&self.device);
                 }
             }
-            for item in self.retired.drain(..) {
-                match item {
-                    Retired::Slot(slot) => slot.destroy(&self.device),
-                }
+            for slot in self.retired.drain(..) {
+                slot.destroy(&self.device);
             }
             for frame in self.frames.drain(..) {
                 for pool in frame.pools {
@@ -1258,11 +1262,13 @@ fn raw(buffer: vk::Buffer) -> u64 {
 
 /// The tile module family a pipeline key's engine variant draws through:
 /// 0 for the short module (variants 0–3), 1 for long gradients (4), 2 for
-/// image sources (6).
+/// image sources (6), solid clipped glyphs (7), and span composites (8).
 const fn family(variant: u8) -> usize {
     match variant {
         4 => 1,
         6 => 2,
+        7 => 3,
+        8 => 4,
         _ => 0,
     }
 }
@@ -1277,7 +1283,7 @@ fn raw_view(view: vk::ImageView) -> u64 {
 #[derive(Default)]
 struct Built {
     /// `[family][self]` — see [`Mirror::modules`].
-    modules: [[vk::ShaderModule; 2]; 3],
+    modules: [[vk::ShaderModule; 2]; 5],
     set_layouts: [vk::DescriptorSetLayout; 3],
     layout: vk::PipelineLayout,
     cache: vk::PipelineCache,
@@ -1303,6 +1309,10 @@ impl Built {
             spirv::TILE_LONG_SELF,
             spirv::TILE_IMAGE,
             spirv::TILE_IMAGE_SELF,
+            spirv::TILE_GLYPH,
+            spirv::TILE_GLYPH_SELF,
+            spirv::TILE_COMPOSITE,
+            spirv::TILE_COMPOSITE_SELF,
         ];
         for (slot, bytes) in self.modules.iter_mut().flatten().zip(blobs) {
             *slot = create_module(bytes)?;

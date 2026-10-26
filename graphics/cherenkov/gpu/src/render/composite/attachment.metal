@@ -58,6 +58,14 @@ VsOut tile_input(TileInput v, metal::float4 position, constant Globals& globals)
     metal::texture2d<float> mask_tex [[texture(4)]] \
     TILE_IMAGE_DECODE_PARAM
 
+#if defined(TILE_GLYPH)
+#define TILE_SHADE \
+    return { fs_full(tile_input(v, position, globals), globals, instances, atlas, mask_tex) };
+#elif defined(TILE_COMPOSITE_SOURCE_OVER)
+#define TILE_SHADE \
+    metal::float4 source_pixel = metal::float4(src); \
+    return { fs_full(tile_input(v, position, globals), globals, instances, source_pixel) };
+#else
 #define TILE_SHADE \
     metal::float2 backdrop_origin = {}, backdrop_size = {}; \
     float backdrop_scale = {}; \
@@ -68,6 +76,8 @@ VsOut tile_input(TileInput v, metal::float4 position, constant Globals& globals)
     return { fs_full(tile_input(v, position, globals), globals, instances, stops, \
         atlas, mask_tex, source, image_tex, TILE_IMAGE_DECODE_ARG backdrop_origin, backdrop_size, \
         backdrop_scale, backdrop_levels, backdrop_member, source_pixel, destination_pixel) };
+
+#endif
 
 #define TILE_OUTPUT(D) \
     struct TileOutput##D { \

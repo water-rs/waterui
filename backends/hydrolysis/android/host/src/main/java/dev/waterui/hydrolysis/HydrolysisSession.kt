@@ -241,16 +241,17 @@ class HydrolysisSession internal constructor(
     }
 
     /**
-     * Routes the scheduler's refresh demand: a session-owned painter applies
-     * it on the bound host; the GPU path asks the native surface.
+     * Routes the scheduler's frame demand: a session-owned painter applies
+     * it on the bound host; the GPU path reports it to native, which
+     * combines it with the engine's content-rate range.
      */
-    internal fun setHighRefresh(active: Boolean) {
-        check(!destroyed) { "hydrolysis: refresh demand reached a destroyed HydrolysisSession" }
+    internal fun setFrameDemand(continuous: Boolean, touching: Boolean) {
+        check(!destroyed) { "hydrolysis: frame demand reached a destroyed HydrolysisSession" }
         if (painter != null) {
-            painter.setHighRefresh(active)
+            painter.setHighRefresh(continuous || touching)
         } else {
-            withNativePtr(NativeBridge::nativeSetHighRefresh.name) { ptr ->
-                NativeBridge.nativeSetHighRefresh(ptr, active)
+            withNativePtr(NativeBridge::nativeSetFrameDemand.name) { ptr ->
+                NativeBridge.nativeSetFrameDemand(ptr, continuous, touching)
             }
         }
     }

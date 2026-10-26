@@ -12,6 +12,8 @@
 //!
 //! The cases are iOS-only: on macOS the binary lists no trials.
 
+#[cfg(target_os = "ios")]
+use cocoa_ui::{Rect, uikit::native_test, view};
 use libtest_mimic::Arguments;
 
 // The target runner launches this binary as an application from the
@@ -30,13 +32,341 @@ fn main() {
     libtest_mimic::run(&arguments, Vec::new()).exit();
 }
 
+/// A main-thread marker for cases that construct `UIKit` objects — the
+/// harness application guarantees it.
+#[cfg(target_os = "ios")]
+fn mtm() -> cocoa_ui::MainThreadMarker {
+    cocoa_ui::MainThreadMarker::new().expect("native_app cases run on the main thread")
+}
+
+/// A key, visible window in the application's scene with `content`
+/// filling it, laid out.
+#[cfg(target_os = "ios")]
+fn scene_window(
+    mtm: cocoa_ui::MainThreadMarker,
+    content: &cocoa_ui::PlatformView,
+) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow> {
+    let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+    window.addSubview(content);
+    view::set_frame(content, view::bounds(&window));
+    window.makeKeyAndVisible();
+    window.layoutIfNeeded();
+    window
+}
+
+#[cfg(target_os = "ios")]
+fn find<T: cocoa_ui::objc2::DowncastTarget>(
+    view: &cocoa_ui::PlatformView,
+) -> Option<cocoa_ui::Retained<cocoa_ui::PlatformView>> {
+    for sub in view::subviews(view) {
+        if sub.downcast_ref::<T>().is_some() {
+            return Some(sub);
+        }
+        if let Some(found) = find::<T>(&sub) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 /// Every `native_app` case: trials that need a running `UIApplication`.
 #[cfg(target_os = "ios")]
 fn trials() -> Vec<libtest_mimic::Trial> {
     let mut trials = scroll_animation::trials();
     trials.extend(main_menu::trials());
     trials.extend(key_commands::trials());
+    trials.extend(embedded_menus::trials());
+    trials.extend(gesture_events::trials());
+    trials.extend(list_spacing::trials());
+    trials.extend(text_selection_ios::trials());
     trials
+}
+
+#[cfg(target_os = "ios")]
+mod embedded_menus {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::{Message, msg_send, sel};
+    use cocoa_ui::objc2_core_foundation::CGPoint;
+    use cocoa_ui::objc2_foundation::NSCopying;
+    use cocoa_ui::objc2_ui_kit::{
+        UIApplication, UIButtonType, UIContextMenuConfiguration, UIContextMenuInteraction,
+        UIKeyCommand, UIMenu, UIResponder, UIView,
+    };
+    use cocoa_ui::uikit::{CocoaUiButton, HostView, KeyCommands};
+    use cocoa_ui::{Retained, view};
+    use libtest_mimic::Trial;
+    use waterui::component::menu::{Command, Menu, MenuItem, Shortcut};
+    use waterui::reactive::{SignalExt, binding};
+    use waterui::{AnyView, ViewExt};
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, mount_uikit_window, render_environment,
+    };
+
+    use crate::{find, mtm, native_test};
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "embedded_menus::menu_routes_and_retires_on_its_button",
+                || {
+                    menu_routes_and_retires_on_its_button();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "embedded_menus::context_menu_routes_and_retires_on_its_host",
+                || {
+                    context_menu_routes_and_retires_on_its_host();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn command(fired: &Rc<Cell<usize>>) -> MenuItem {
+        let fired = Rc::clone(fired);
+        MenuItem::Command(
+            Command::builder("Fire")
+                .action(move || fired.set(fired.get() + 1))
+                .shortcut(Shortcut::new('k').command()),
+        )
+    }
+
+    fn commands(owner: &UIResponder) -> Vec<Retained<UIKeyCommand>> {
+        owner
+            .keyCommands()
+            .map_or_else(Vec::new, |commands| commands.to_vec())
+    }
+
+    fn can(owner: &UIResponder, command: &UIKeyCommand) -> bool {
+        can_with_sender(owner, command, Some(command.as_ref()))
+    }
+
+    fn can_with_sender(
+        owner: &UIResponder,
+        command: &UIKeyCommand,
+        sender: Option<&objc2::runtime::AnyObject>,
+    ) -> bool {
+        // SAFETY: this is the responder's declared query signature.
+        unsafe {
+            owner.canPerformAction_withSender(
+                command.action().expect("an armed command has an action"),
+                sender,
+            )
+        }
+    }
+
+    fn fire(owner: &UIResponder, command: &UIKeyCommand) {
+        assert!(can(owner, command));
+        assert!(can_with_sender(owner, command, None));
+        // SAFETY: the command supplies the action, sender and owning responder.
+        unsafe {
+            let action = command.action().expect("an armed command has an action");
+            let target = owner
+                .targetForAction_withSender(action, Some(command.as_ref()))
+                .expect("the owner resolves its command");
+            assert!(std::ptr::eq::<objc2::runtime::AnyObject>(
+                &raw const *target,
+                owner.as_ref()
+            ));
+            assert!(
+                UIApplication::sharedApplication(mtm()).sendAction_to_from_forEvent(
+                    action,
+                    Some(&target),
+                    Some(command.as_ref()),
+                    None,
+                )
+            );
+        }
+    }
+
+    fn foreign_menu(scope: &KeyCommands) -> Retained<UIMenu> {
+        cocoa_ui::uikit::menu(
+            mtm(),
+            scope,
+            &cocoa_ui::menu::Command::default(),
+            &[cocoa_ui::menu::MenuTreeNode::Command(
+                cocoa_ui::menu::Command {
+                    key_equivalent: "f".into(),
+                    ..Default::default()
+                },
+                Rc::new(|| {}),
+            )],
+        )
+    }
+
+    fn menu_routes_and_retires_on_its_button() {
+        let mtm = mtm();
+        let fired = Rc::new(Cell::new(0));
+        let items = binding(vec![command(&fired)]);
+        let mount = mount_uikit_window(
+            mtm,
+            AnyView::new(Menu::new("More", items.computed())),
+            &render_environment(),
+            native_test::window(mtm, cocoa_ui::Rect::new(0.0, 0.0, 390.0, 844.0)),
+        );
+        let button = find::<CocoaUiButton>(&mount.host)
+            .expect("Menu mounts a kit button")
+            .downcast::<CocoaUiButton>()
+            .expect("the found view is a kit button");
+        assert_eq!(button.armed_command_count(), 1);
+        let key = commands(&button)
+            .pop()
+            .expect("the button vends its shortcut");
+        fire(&button, &key);
+        assert_eq!(fired.get(), 1);
+        // A copied command keeps its property-list token and still routes
+        // to this registry.
+        let copied = key.copy();
+        fire(&button, &copied);
+        assert_eq!(fired.get(), 2);
+        for foreign in [
+            CocoaUiButton::new(mtm),
+            CocoaUiButton::with_type(mtm, UIButtonType::System),
+        ] {
+            assert_eq!(foreign.armed_command_count(), 0);
+            assert!(!can_with_sender(&foreign, &key, None));
+            let scope = foreign.menu_commands();
+            let _menu = foreign_menu(&scope);
+            assert_eq!(foreign.armed_command_count(), 1);
+            assert!(!can(&foreign, &key));
+            assert!(can_with_sender(&foreign, &key, None));
+        }
+        items.set(vec![command(&fired)]);
+        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || !can(&button, &key));
+        assert!(!can(&button, &key));
+        assert_eq!(button.armed_command_count(), 1);
+        let rebuilt = commands(&button)
+            .pop()
+            .expect("the rebuilt shortcut is vended");
+        fire(&button, &rebuilt);
+        assert_eq!(fired.get(), 3);
+        items.set(vec![]);
+        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            button.armed_command_count() == 0
+        });
+        assert_eq!(button.armed_command_count(), 0);
+        assert!(!can(&button, &rebuilt));
+        assert!(!can_with_sender(&button, &rebuilt, None));
+        assert_eq!(commands(&button), [] as [Retained<UIKeyCommand>; 0]);
+        // The mount owns the widget tree: dropping it retires the scope
+        // even while the button and its last command stay retained.
+        items.set(vec![command(&fired)]);
+        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            button.armed_command_count() == 1
+        });
+        let live = commands(&button)
+            .pop()
+            .expect("the repopulated shortcut is vended");
+        drop(mount);
+        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            button.armed_command_count() == 0
+        });
+        assert_eq!(button.armed_command_count(), 0);
+        assert!(!can(&button, &live));
+        assert!(
+            commands(&button).iter().all(|command| {
+                // SAFETY: `UIKeyCommand.action`'s declared getter.
+                (unsafe { command.action() }) != Some(sel!(cocoaUiButtonMenuCommandFired:))
+            }),
+            "a retired private command is still vended"
+        );
+    }
+
+    fn context_host(
+        view: &UIView,
+    ) -> Option<(Retained<HostView>, Retained<UIContextMenuInteraction>)> {
+        if let Some(host) = view.downcast_ref::<HostView>()
+            && let Some(interaction) = host
+                .interactions()
+                .iter()
+                .find_map(|interaction| interaction.downcast::<UIContextMenuInteraction>().ok())
+        {
+            return Some((host.retain(), interaction));
+        }
+        view::subviews(view)
+            .iter()
+            .find_map(|child| context_host(child))
+    }
+
+    fn configure(
+        interaction: &UIContextMenuInteraction,
+    ) -> Option<Retained<UIContextMenuConfiguration>> {
+        let delegate = interaction
+            .delegate()
+            .expect("the installed interaction has a delegate");
+        // SAFETY: the installed delegate implements this UIKit protocol method.
+        unsafe {
+            msg_send![&*delegate, contextMenuInteraction: interaction, configurationForMenuAtLocation: CGPoint::ZERO]
+        }
+    }
+
+    fn context_menu_routes_and_retires_on_its_host() {
+        let mtm = mtm();
+        let fired = Rc::new(Cell::new(0));
+        let items = binding(vec![command(&fired)]);
+        let mount = mount_uikit_window(
+            mtm,
+            AnyView::new(waterui::text::Text::new("Context").context_menu(items.computed())),
+            &render_environment(),
+            native_test::window(mtm, cocoa_ui::Rect::new(0.0, 0.0, 390.0, 844.0)),
+        );
+        let (host, interaction) =
+            context_host(&mount.host).expect("ContextMenu installs an interaction on a host");
+        assert_eq!(host.armed_command_count(), 0);
+        let _configuration = configure(&interaction).expect("the installed handler builds a menu");
+        assert_eq!(host.armed_command_count(), 1);
+        let key = commands(&host).pop().expect("the host vends its shortcut");
+        fire(&host, &key);
+        assert_eq!(fired.get(), 1);
+        let copied = key.copy();
+        fire(&host, &copied);
+        assert_eq!(fired.get(), 2);
+        let foreign = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        assert!(!can(&foreign, &key));
+        assert!(!can_with_sender(&foreign, &key, None));
+        let scope = foreign.menu_commands();
+        let _menu = foreign_menu(&scope);
+        assert_eq!(foreign.armed_command_count(), 1);
+        assert!(!can(&foreign, &key));
+        assert!(can_with_sender(&foreign, &key, None));
+        let _rebuilt = configure(&interaction).expect("a new presentation rebuilds the menu");
+        assert!(!can(&host, &key));
+        assert_eq!(host.armed_command_count(), 1);
+        let rebuilt = commands(&host)
+            .pop()
+            .expect("the rebuilt shortcut is vended");
+        fire(&host, &rebuilt);
+        assert_eq!(fired.get(), 3);
+        items.set(vec![]);
+        assert!(configure(&interaction).is_none());
+        assert_eq!(host.armed_command_count(), 0);
+        assert!(!can(&host, &rebuilt));
+        assert!(!can_with_sender(&host, &rebuilt, None));
+        assert_eq!(commands(&host), [] as [Retained<UIKeyCommand>; 0]);
+        // Repopulate, configure, then drop the mount: the scope retires
+        // while the retained host and its command outlive it.
+        items.set(vec![command(&fired)]);
+        let _repopulated = configure(&interaction).expect("repopulated items build a menu");
+        let live = commands(&host)
+            .pop()
+            .expect("the repopulated shortcut is vended");
+        drop(mount);
+        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            host.armed_command_count() == 0
+        });
+        assert_eq!(host.armed_command_count(), 0);
+        assert!(!can(&host, &live));
+        assert!(
+            commands(&host).iter().all(|command| {
+                // SAFETY: `UIKeyCommand.action`'s declared getter.
+                (unsafe { command.action() }) != Some(sel!(cocoaUiContextMenuCommandFired:))
+            }),
+            "a retired private command is still vended"
+        );
+    }
 }
 
 /// The main menu — the iPad menu bar and the keyboard-shortcut list — is
@@ -81,9 +411,9 @@ mod main_menu {
 #[cfg(target_os = "ios")]
 mod scroll_animation {
     use cocoa_ui::geometry::{Point, Size};
-    use cocoa_ui::objc2_ui_kit::UIWindow;
-    use cocoa_ui::uikit::{ScrollView, native_test};
-    use cocoa_ui::{MainThreadMarker, PlatformView, Rect, Retained, view};
+    use cocoa_ui::uikit::ScrollView;
+
+    use super::{mtm, scene_window};
     use waterui::animation::Animation;
     use waterui::component::list::ListItem;
     use waterui::layout::scroll::ScrollController;
@@ -128,21 +458,6 @@ mod scroll_animation {
                 })
             })
             .collect()
-    }
-
-    fn mtm() -> MainThreadMarker {
-        MainThreadMarker::new().expect("native_app cases run on the main thread")
-    }
-
-    /// A key, visible window in the application's scene with `content`
-    /// filling it, laid out.
-    fn scene_window(mtm: MainThreadMarker, content: &PlatformView) -> Retained<UIWindow> {
-        let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
-        window.addSubview(content);
-        view::set_frame(content, view::bounds(&window));
-        window.makeKeyAndVisible();
-        window.layoutIfNeeded();
-        window
     }
 
     fn animated_content_offset_lands_after_a_native_animation() {
@@ -702,6 +1017,834 @@ mod key_commands {
     impl Drop for ChordScene {
         fn drop(&mut self) {
             self.window.setHidden(true);
+        }
+    }
+}
+
+/// The shared gesture contract end to end inside the real `UIApplication`
+/// scene: a completed gesture inserts the observed `Gesture` and its
+/// typed event — `TapEvent`, `DragEvent`, `RotationEvent`,
+/// `MagnificationEvent` — into the action's environment, so a `Use<T>`
+/// handler extracts the same value Hydrolysis reports for the same input.
+/// These cases cover the observer's state/getter mapping, not the OS's
+/// gesture recognition: they drive the installed recognizer's documented
+/// `setState:`/getter-seeding transitions, which dispatch the target
+/// through the same `on_recognized` path a real completion does.
+#[cfg(target_os = "ios")]
+mod gesture_events {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use cocoa_ui::Retained;
+    use cocoa_ui::objc2::DowncastTarget;
+    use cocoa_ui::objc2_ui_kit::{
+        UIGestureRecognizerState, UIPanGestureRecognizer, UIPinchGestureRecognizer,
+        UIRotationGestureRecognizer, UITapGestureRecognizer,
+    };
+    use waterui::ViewExt as _;
+    use waterui::extract::Use;
+    use waterui::gesture::{DragEvent, DragGesture, GesturePhase};
+    use waterui::gesture::{MagnificationEvent, MagnificationGesture};
+    use waterui::gesture::{PointerButton, RotationEvent, RotationGesture, TapEvent, TapGesture};
+    use waterui::prelude::text;
+    use waterui_apple::dispatch;
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, pump_main_until, render_environment,
+    };
+
+    use super::{mtm, scene_window};
+
+    /// The `gesture_events::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        let cases: [(&str, fn()); 4] = [
+            (
+                "a_tap_gesture_delivers_its_event",
+                a_tap_gesture_delivers_its_event,
+            ),
+            (
+                "a_drag_gesture_delivers_its_events",
+                a_drag_gesture_delivers_its_events,
+            ),
+            (
+                "a_rotation_gesture_reports_native_radians",
+                a_rotation_gesture_reports_native_radians,
+            ),
+            (
+                "a_magnification_gesture_honours_the_shared_minimum",
+                a_magnification_gesture_honours_the_shared_minimum,
+            ),
+        ];
+        cases
+            .into_iter()
+            .map(|(name, case)| {
+                libtest_mimic::Trial::test(format!("gesture_events::{name}"), move || {
+                    case();
+                    Ok(())
+                })
+            })
+            .collect()
+    }
+
+    /// The host's recognizers — the first of `T` attached — as the
+    /// test's handle on the concrete recognizer the observer wired.
+    fn recognizer<T: DowncastTarget>(host: &cocoa_ui::PlatformView) -> Retained<T> {
+        host.gestureRecognizers()
+            .expect("the observer attaches a recognizer")
+            .iter()
+            .find_map(|recognizer| recognizer.downcast::<T>().ok())
+            .expect("the observer attaches a recognizer of the requested kind")
+    }
+
+    /// Driving the tap recognizer's `Recognized` transition completes it;
+    /// the action's environment carries a `TapEvent` whose count and
+    /// button match the configured gesture.
+    fn a_tap_gesture_delivers_its_event() {
+        let taps = Rc::new(RefCell::new(Vec::new()));
+        let leaf = dispatch::render(
+            waterui::AnyView::new({
+                let taps = Rc::clone(&taps);
+                text("tap").gesture(TapGesture::new(), move |Use(event): Use<TapEvent>| {
+                    taps.borrow_mut().push(event);
+                })
+            }),
+            &render_environment(),
+        );
+        let host = leaf.view();
+        let _window = scene_window(mtm(), host);
+        let recognizer = recognizer::<UITapGestureRecognizer>(host);
+        let before = taps.borrow().len();
+        recognizer.setState(UIGestureRecognizerState::Recognized);
+        pump_main_until(MAIN_QUEUE_DEADLINE, || taps.borrow().len() > before);
+        let taps = taps.borrow();
+        assert_eq!(taps.len(), before + 1, "one completion appends one event");
+        let tap = &taps[before];
+        assert_eq!(tap.count, 1);
+        assert_eq!(tap.button, PointerButton::Primary);
+    }
+
+    /// Driving the pan recognizer's `Began`→`Changed`→`Ended` transitions
+    /// delivers the phase sequence the shared contract names — the
+    /// events the same input produces on Hydrolysis.
+    fn a_drag_gesture_delivers_its_events() {
+        let drags = Rc::new(RefCell::new(Vec::new()));
+        let leaf = dispatch::render(
+            waterui::AnyView::new({
+                let drags = Rc::clone(&drags);
+                text("drag").gesture(DragGesture::new(0.0), move |Use(e): Use<DragEvent>| {
+                    drags.borrow_mut().push(e);
+                })
+            }),
+            &render_environment(),
+        );
+        let host = leaf.view();
+        let _window = scene_window(mtm(), host);
+        let recognizer = recognizer::<UIPanGestureRecognizer>(host);
+        for state in [
+            UIGestureRecognizerState::Began,
+            UIGestureRecognizerState::Changed,
+            UIGestureRecognizerState::Ended,
+        ] {
+            let before = drags.borrow().len();
+            recognizer.setState(state);
+            pump_main_until(MAIN_QUEUE_DEADLINE, || drags.borrow().len() > before);
+            assert_eq!(
+                drags.borrow().len(),
+                before + 1,
+                "one transition appends one event"
+            );
+        }
+        let drags = drags.borrow();
+        assert_eq!(
+            drags.iter().map(|e| e.phase).collect::<Vec<_>>(),
+            vec![
+                GesturePhase::Started,
+                GesturePhase::Updated,
+                GesturePhase::Ended
+            ],
+            "the pan's transitions are the contract's phase sequence"
+        );
+        assert!(
+            drags.iter().all(|e| e.button == PointerButton::Primary),
+            "a touches contact presses as the primary button"
+        );
+    }
+
+    /// `UIRotationGestureRecognizer.rotation` is already radians — the
+    /// event's angle is the raw getter value, phases map the state
+    /// transitions, and `Ended` carries zero velocity (#2757).
+    fn a_rotation_gesture_reports_native_radians() {
+        let rotations = Rc::new(RefCell::new(Vec::new()));
+        let leaf = dispatch::render(
+            waterui::AnyView::new({
+                let rotations = Rc::clone(&rotations);
+                text("rotate").gesture(
+                    RotationGesture::new(0.0),
+                    move |Use(e): Use<RotationEvent>| {
+                        rotations.borrow_mut().push(e);
+                    },
+                )
+            }),
+            &render_environment(),
+        );
+        let host = leaf.view();
+        let _window = scene_window(mtm(), host);
+        let recognizer = recognizer::<UIRotationGestureRecognizer>(host);
+        let fire = |state, angle: f64| {
+            recognizer.setRotation(angle);
+            let before = rotations.borrow().len();
+            recognizer.setState(state);
+            pump_main_until(MAIN_QUEUE_DEADLINE, || rotations.borrow().len() > before);
+            let rotations = rotations.borrow();
+            assert_eq!(
+                rotations.len(),
+                before + 1,
+                "one callback appends one event"
+            );
+            rotations[before].clone()
+        };
+
+        let e = fire(UIGestureRecognizerState::Began, 0.0);
+        assert_eq!(
+            (e.phase, e.angle, e.velocity),
+            (GesturePhase::Started, 0.0, 0.0)
+        );
+        let e = fire(UIGestureRecognizerState::Changed, 0.75);
+        assert_eq!(e.phase, GesturePhase::Updated);
+        assert!(
+            (e.angle - 0.75).abs() < 1e-6,
+            "raw radians getter, saw {}",
+            e.angle
+        );
+        let e = fire(UIGestureRecognizerState::Changed, 1.25);
+        assert!((e.angle - 1.25).abs() < 1e-6);
+        let e = fire(UIGestureRecognizerState::Ended, 1.25);
+        assert_eq!((e.phase, e.velocity), (GesturePhase::Ended, 0.0));
+        assert!((e.angle - 1.25).abs() < 1e-6);
+    }
+
+    /// The shared scale composition clamps at the contract's `.01`
+    /// minimum each update — an `initial_scale` below it and a relative
+    /// delta both stay inside the floor (#2757).
+    fn a_magnification_gesture_honours_the_shared_minimum() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let leaf = dispatch::render(
+            waterui::AnyView::new({
+                let events = Rc::clone(&events);
+                text("pinch").gesture(
+                    MagnificationGesture::new(0.001),
+                    move |Use(e): Use<MagnificationEvent>| {
+                        events.borrow_mut().push(e);
+                    },
+                )
+            }),
+            &render_environment(),
+        );
+        let host = leaf.view();
+        let _window = scene_window(mtm(), host);
+        let recognizer = recognizer::<UIPinchGestureRecognizer>(host);
+        let fire = |state, scale: f64| {
+            recognizer.setScale(scale);
+            let before = events.borrow().len();
+            recognizer.setState(state);
+            pump_main_until(MAIN_QUEUE_DEADLINE, || events.borrow().len() > before);
+            let events = events.borrow();
+            assert_eq!(events.len(), before + 1, "one callback appends one event");
+            events[before].clone()
+        };
+
+        let e = fire(UIGestureRecognizerState::Began, 1.0);
+        assert_eq!((e.phase, e.velocity), (GesturePhase::Started, 0.0));
+        assert!((e.scale - 0.001).abs() < 1e-6, "saw {}", e.scale);
+        let e = fire(UIGestureRecognizerState::Changed, 1.5);
+        assert!(
+            (e.scale - 0.01).abs() < 1e-6,
+            "clamp to .01, saw {}",
+            e.scale
+        );
+        let e = fire(UIGestureRecognizerState::Changed, 3.0);
+        assert!(
+            (e.scale - 0.02).abs() < 1e-6,
+            "factor 2 on .01, saw {}",
+            e.scale
+        );
+        let e = fire(UIGestureRecognizerState::Changed, 3.0);
+        assert!((e.scale - 0.02).abs() < 1e-6 && e.velocity == 0.0);
+        let e = fire(UIGestureRecognizerState::Ended, 3.0);
+        assert_eq!((e.phase, e.velocity), (GesturePhase::Ended, 0.0));
+        assert!((e.scale - 0.02).abs() < 1e-6);
+    }
+}
+
+#[cfg(all(target_os = "ios", feature = "native-test", feature = "text_field"))]
+mod text_selection_ios {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use cocoa_ui::Retained;
+    use cocoa_ui::objc2::runtime::AnyObject;
+    use cocoa_ui::objc2::sel;
+    use cocoa_ui::objc2::{Message, msg_send};
+    use cocoa_ui::objc2_foundation::{NSArray, NSRange, NSString, NSValue};
+    use cocoa_ui::objc2_ui_kit::{
+        UIAction, UIApplication, UIKeyCommand, UIMenu, UIMenuElement, UIMenuElementAttributes,
+    };
+    use waterui::Str;
+    use waterui::component::menu::{Command, MenuItem, Shortcut};
+    use waterui::component::text_field::TextField;
+    use waterui::component::text_selection::TextSelection;
+    use waterui::reactive::{Signal, SignalExt, binding};
+    use waterui::text::StyledStr;
+
+    use cocoa_ui::geometry::Rect;
+    use cocoa_ui::native_test::pump_main_until;
+    use cocoa_ui::objc2::MainThreadMarker;
+    use cocoa_ui::uikit::native_test;
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, mount_uikit_window, render_environment,
+    };
+
+    use crate::{find, mtm};
+
+    /// The titles of a `UIMenu`'s flattened leaf actions.
+    fn titles(menu: &UIMenu) -> Vec<String> {
+        fn walk(out: &mut Vec<String>, el: &UIMenuElement) {
+            if let Some(action) = el.downcast_ref::<UIAction>() {
+                out.push(action.title().to_string());
+            } else if let Some(sub) = el.downcast_ref::<UIMenu>() {
+                for child in &sub.children() {
+                    walk(out, &child);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for el in &menu.children() {
+            walk(&mut out, &el);
+        }
+        out
+    }
+
+    /// Invokes the menu action titled `title` through the public
+    /// `UIControl.sendAction(_:)` API — the generated `UIAction` runs its
+    /// handler as if the row had been picked.
+    fn perform(field: &cocoa_ui::uikit::TextField, menu: &UIMenu, title: &str) {
+        fn find_action(el: &UIMenuElement, title: &str) -> Option<Retained<UIAction>> {
+            if let Some(action) = el.downcast_ref::<UIAction>() {
+                if action.title().to_string() == title {
+                    return Some(action.retain());
+                }
+            } else if let Some(sub) = el.downcast_ref::<UIMenu>() {
+                for child in &sub.children() {
+                    if let Some(a) = find_action(&child, title) {
+                        return Some(a);
+                    }
+                }
+            }
+            None
+        }
+        let action = (0..menu.children().count())
+            .find_map(|i| {
+                menu.children()
+                    .objectAtIndex(i)
+                    .downcast::<UIMenuElement>()
+                    .ok()
+                    .and_then(|el| find_action(&el, title))
+            })
+            .unwrap_or_else(|| panic!("no menu action titled {title}"));
+        field.sendAction(&action);
+    }
+
+    /// The field's edit menu — the delegate method invoked directly with
+    /// empty suggestions.
+    fn edit_menu(field: &cocoa_ui::uikit::TextField) -> Retained<UIMenu> {
+        let suggested: Retained<NSArray<UIMenuElement>> = NSArray::new();
+        let ranges: Retained<NSArray<NSValue>> = NSArray::new();
+        // SAFETY: the plural `editMenuForCharactersInRanges:` selector is
+        // `UITextFieldDelegate`'s declared signature.
+        let menu: Option<Retained<UIMenu>> = unsafe {
+            msg_send![&**field, textField: &**field, editMenuForCharactersInRanges: &*ranges, suggestedActions: &*suggested]
+        };
+        menu.expect("the field produced an edit menu")
+    }
+
+    /// A `selection_menu` command reads the live selection and edits it
+    /// through `replaceRange:withText:` — the field's text and the value
+    /// binding both move.
+    pub fn a_selection_menu_command_edits_the_live_selection() {
+        let mtm = mtm();
+        let value = binding(Str::from("hé😀b"));
+        let observed = Rc::new(RefCell::new((String::new(), 0usize, 0usize)));
+        let optional_seen = Rc::new(RefCell::new(false));
+
+        let observe = Command::builder("Observe").action({
+            let observed = Rc::clone(&observed);
+            move |selection: TextSelection| {
+                let range = selection.range();
+                *observed.borrow_mut() = (selection.text().to_string(), range.start, range.end);
+            }
+        });
+        let optional = Command::builder("Optional").action({
+            let optional_seen = Rc::clone(&optional_seen);
+            move |selection: Option<TextSelection>| {
+                *optional_seen.borrow_mut() = selection.is_some();
+            }
+        });
+        let mark =
+            Command::builder("Mark").action(|selection: TextSelection| selection.select(3..7));
+        let wrap_fired: Rc<RefCell<Option<std::ops::Range<usize>>>> = Rc::new(RefCell::new(None));
+        let wrap = Command::builder("Wrap").action({
+            let wrap_fired = Rc::clone(&wrap_fired);
+            move |selection: TextSelection| {
+                *wrap_fired.borrow_mut() = Some(selection.range());
+                selection.replace("《");
+            }
+        });
+        let styled = Command::builder("Styled").action(|selection: TextSelection| {
+            selection
+                .styled_value()
+                .expect("a plain field answers styled_value")
+                .set(StyledStr::plain("ZZ"));
+        });
+        let brk = Command::builder("Break").action(|selection: TextSelection| {
+            selection.replace("M\r\nN");
+        });
+        let off = Command::builder("Off").action(|| {}).disabled(true);
+        let chord_seen = Rc::new(RefCell::new(None));
+        let chord = Command::builder("Chord")
+            .action({
+                let chord_seen = Rc::clone(&chord_seen);
+                move |selection: TextSelection| {
+                    *chord_seen.borrow_mut() = Some(selection.range());
+                }
+            })
+            .shortcut(Shortcut::new('x').command());
+
+        let items = binding(vec![
+            MenuItem::Command(observe),
+            MenuItem::Command(optional),
+            MenuItem::Command(mark),
+            MenuItem::Command(wrap),
+            MenuItem::Command(styled),
+            MenuItem::Command(brk),
+            MenuItem::Command(off),
+            MenuItem::Command(chord),
+        ]);
+        let window = native_test::window(mtm, Rect::new(0.0, 0.0, 400.0, 300.0));
+        let mount = mount_uikit_window(
+            mtm,
+            waterui::AnyView::new(TextField::new("Name", &value).selection_menu(items.computed())),
+            &render_environment(),
+            window,
+        );
+        let field_view = find::<cocoa_ui::uikit::TextField>(&mount.host)
+            .expect("the leaf mounts a kit TextField");
+        let field = field_view
+            .downcast::<cocoa_ui::uikit::TextField>()
+            .expect("the found view is the kit TextField");
+
+        assert!(field.begin_editing(), "the field never began editing");
+
+        // UTF-16 units: h=1 é=1 😀=2 b=1 — 😀 spans units 2..4.
+        field.set_selected_range(NSRange::new(2, 2));
+        let menu = edit_menu(&field);
+        let built_titles = titles(&menu);
+        for title in [
+            "Observe", "Optional", "Mark", "Wrap", "Styled", "Break", "Off",
+        ] {
+            assert!(
+                built_titles.contains(&title.to_owned()),
+                "the {title} row is missing"
+            );
+        }
+
+        field.set_selected_range(NSRange::new(0, 2));
+        perform(&field, &menu, "Observe");
+        let (text, start, end) = observed.borrow().clone();
+        assert_eq!((text.as_str(), start, end), ("hé😀b", 0, 3));
+
+        perform(&field, &menu, "Optional");
+        assert!(*optional_seen.borrow());
+
+        perform(&field, &menu, "Mark");
+        assert_eq!(field.selected_range(), Some(NSRange::new(2, 2)));
+
+        assert!(field.isEditing(), "the field is not editing");
+
+        wrap_undo_and_single_line(&field, &menu, &value, &wrap_fired);
+
+        perform(&field, &menu, "Styled");
+        assert_eq!(value.snapshot(), Str::from("ZZ"));
+        assert_eq!(field.string(), "ZZ");
+
+        edit_menu_routes_and_retires(mtm, &field, &menu, &items, &chord_seen);
+    }
+
+    /// The `Wrap` edit's live range, caret, undo/redo roundtrip and the
+    /// single-line newline invariant — kept out of the trial so each
+    /// section reads as one step.
+    fn wrap_undo_and_single_line(
+        field: &cocoa_ui::uikit::TextField,
+        menu: &UIMenu,
+        value: &waterui::Binding<Str>,
+        wrap_fired: &Rc<RefCell<Option<std::ops::Range<usize>>>>,
+    ) {
+        perform(field, menu, "Wrap");
+        assert_eq!(
+            *wrap_fired.borrow(),
+            Some(3..7),
+            "Wrap fired with the live byte range"
+        );
+        assert_eq!(field.string(), "hé《b");
+        assert_eq!(value.snapshot(), Str::from("hé《b"));
+        assert_eq!(
+            field.selected_range(),
+            Some(NSRange::new(3, 0)),
+            "the caret landed after the replacement"
+        );
+
+        // The field's own undo manager rewinds the menu edit — undo
+        // restores the original text on both the field and the binding,
+        // redo brings the replacement back.
+        let undo = field
+            .undoManager()
+            .expect("an editing field carries an undo manager");
+        pump_main_until(MAIN_QUEUE_DEADLINE, || undo.canUndo());
+        assert!(undo.canUndo(), "the native edit registered no undo");
+        undo.undo();
+        pump_main_until(MAIN_QUEUE_DEADLINE, || field.string() == "hé😀b");
+        assert_eq!(field.string(), "hé😀b");
+        assert_eq!(value.snapshot(), Str::from("hé😀b"));
+        pump_main_until(MAIN_QUEUE_DEADLINE, || undo.canRedo());
+        assert!(undo.canRedo(), "the native undo registered no redo");
+        undo.redo();
+        pump_main_until(MAIN_QUEUE_DEADLINE, || field.string() == "hé《b");
+        assert_eq!(field.string(), "hé《b");
+        assert_eq!(value.snapshot(), Str::from("hé《b"));
+
+        // A single-line field accepts no line breaks through the native
+        // edit path — an LF or a CRLF in the replacement normalizes away.
+        perform(field, menu, "Break");
+        let normalized = field.string();
+        assert_eq!(
+            value.snapshot(),
+            Str::from(normalized.clone()),
+            "the binding diverged from the normalized field text"
+        );
+        assert!(
+            !normalized.contains(['\n', '\r']),
+            "a line break survived the replacement"
+        );
+    }
+
+    /// The `UIKeyCommand` route, the disabled row, suggested-action
+    /// preservation and scope retirement — split out of the trial so the
+    /// mounted-field assertions stay readable.
+    fn edit_menu_routes_and_retires(
+        mtm: MainThreadMarker,
+        field: &cocoa_ui::uikit::TextField,
+        menu: &UIMenu,
+        items: &waterui::Binding<Vec<MenuItem>>,
+        chord_seen: &Rc<RefCell<Option<std::ops::Range<usize>>>>,
+    ) {
+        // A shortcut row is a native `UIKeyCommand` armed on the field's
+        // own registry; firing its declared action through the public
+        // `sendAction:to:from:forEvent:` route lands on the field's own
+        // registry — the application registry is never consulted.
+        field.set_selected_range(NSRange::new(1, 1));
+        let chord = find_key_command(menu, "Chord");
+        let app = UIApplication::sharedApplication(mtm);
+        // SAFETY: the selector is the field's armed-command route; the
+        // target is the first-responder field, the sender the armed
+        // `UIKeyCommand`, and `None` is a valid event.
+        let delivered = unsafe {
+            app.sendAction_to_from_forEvent(
+                sel!(cocoaUiTextSelectionCommandFired:),
+                Some(AsRef::<AnyObject>::as_ref(field)),
+                Some(AsRef::<AnyObject>::as_ref(&*chord)),
+                None,
+            )
+        };
+        assert!(delivered, "the field declined its own command route");
+        assert_eq!(
+            chord_seen.borrow().as_ref().map(|r| (r.start, r.end)),
+            Some((1, 2)),
+            "the chord fired the live selection's handler"
+        );
+
+        // A disabled command renders a disabled native row.
+        let off = find_element(menu, "Off")
+            .downcast::<UIAction>()
+            .expect("the Off row is a UIAction");
+        assert!(
+            off.attributes().contains(UIMenuElementAttributes::Disabled),
+            "a disabled command is not disabled"
+        );
+
+        // A suggested system element survives beside the custom rows.
+        // SAFETY: `actionWithTitle:...` is `UIAction`'s declared
+        // constructor; the handler is a valid `RcBlock` it copies.
+        let suggested_action = unsafe {
+            UIAction::actionWithTitle_image_identifier_handler(
+                &NSString::from_str("Suggested"),
+                None,
+                None,
+                block2::RcBlock::as_ptr(&block2::RcBlock::new(
+                    |_action: core::ptr::NonNull<UIAction>| {},
+                ))
+                .cast(),
+                mtm,
+            )
+        };
+        let suggested: Retained<NSArray<UIMenuElement>> =
+            NSArray::from_retained_slice(&[suggested_action.into_super()]);
+        let ranges: Retained<NSArray<NSValue>> = NSArray::new();
+        // SAFETY: the plural delegate signature, as `edit_menu` uses.
+        let with_suggested: Option<Retained<UIMenu>> = unsafe {
+            msg_send![field, textField: field, editMenuForCharactersInRanges: &*ranges, suggestedActions: &*suggested]
+        };
+        let with_suggested = with_suggested.expect("the field produced an edit menu");
+        assert!(
+            titles(&with_suggested).contains(&"Suggested".to_owned()),
+            "the suggested action was dropped"
+        );
+
+        // Emptying the items retires the armed scope outright — nothing
+        // stays registered for a menu that is no longer presented.
+        items.set(vec![]);
+        // SAFETY: the plural delegate signature, as `edit_menu` uses.
+        let empty: Option<Retained<UIMenu>> = unsafe {
+            msg_send![field, textField: field, editMenuForCharactersInRanges: &*ranges, suggestedActions: &*suggested]
+        };
+        assert!(empty.is_none(), "an empty menu still presented rows");
+        assert_eq!(
+            field.armed_command_count(),
+            0,
+            "the retired menu's commands were left armed"
+        );
+    }
+
+    /// Two fields each arm their own `KeyCommandRegistry`: a command from
+    /// `A`'s menu is declined by `B` and accepted by `A`, and retiring `B`'s
+    /// scope by emptying its items makes `B` decline its own command — a
+    /// `UIKeyCommand` delivered to the wrong responder can never invoke a
+    /// foreign action.
+    pub fn two_fields_own_their_commands_and_retire_them() {
+        let mtm = mtm();
+        let items_a = binding(vec![MenuItem::Command(
+            Command::builder("ChordA")
+                .action(|_: TextSelection| {})
+                .shortcut(Shortcut::new('a').command()),
+        )]);
+        let items_b = binding(vec![MenuItem::Command(
+            Command::builder("ChordB")
+                .action(|_: TextSelection| {})
+                .shortcut(Shortcut::new('b').command()),
+        )]);
+
+        let mount_field = |items: &waterui::Binding<Vec<MenuItem>>, placeholder| {
+            let window = native_test::window(mtm, Rect::new(0.0, 0.0, 400.0, 300.0));
+            let mount = mount_uikit_window(
+                mtm,
+                waterui::AnyView::new(
+                    TextField::new(placeholder, &binding(Str::from("t")))
+                        .selection_menu(items.computed()),
+                ),
+                &render_environment(),
+                window,
+            );
+            let field = find::<cocoa_ui::uikit::TextField>(&mount.host)
+                .expect("the leaf mounts a kit TextField")
+                .downcast::<cocoa_ui::uikit::TextField>()
+                .expect("the found view is the kit TextField");
+            (mount, field)
+        };
+        let (_mount_a, field_a) = mount_field(&items_a, "A");
+        let (_mount_b, field_b) = mount_field(&items_b, "B");
+
+        let menu_a = edit_menu(&field_a);
+        let menu_b = edit_menu(&field_b);
+        let chord_a = find_key_command(&menu_a, "ChordA");
+        let chord_b = find_key_command(&menu_b, "ChordB");
+        let action = sel!(cocoaUiTextSelectionCommandFired:);
+        let can = |field: &cocoa_ui::uikit::TextField, command: &UIKeyCommand| -> bool {
+            // SAFETY: `canPerformAction:withSender:` is `UIResponder`'s
+            // declared signature; the sender is a `UICommand`.
+            unsafe {
+                msg_send![field, canPerformAction: action, withSender: AsRef::<AnyObject>::as_ref(command)]
+            }
+        };
+        assert!(can(&field_a, &chord_a), "A declined its own command");
+        assert!(can(&field_b, &chord_b), "B declined its own command");
+        assert!(
+            !can(&field_b, &chord_a),
+            "B accepted a foreign field's command"
+        );
+        assert!(
+            !can(&field_a, &chord_b),
+            "A accepted a foreign field's command"
+        );
+
+        // Emptying B's items retires its scope — B then declines even its
+        // own command.
+        items_b.set(vec![]);
+        // SAFETY: the plural delegate signature, as `edit_menu` uses.
+        let retired: Option<Retained<UIMenu>> = unsafe {
+            msg_send![&*field_b, textField: &*field_b, editMenuForCharactersInRanges: &*NSArray::<NSValue>::new(), suggestedActions: &*NSArray::<UIMenuElement>::new()]
+        };
+        assert!(retired.is_none(), "an empty menu still presented rows");
+        assert!(
+            !can(&field_b, &chord_b),
+            "B still accepted a retired command"
+        );
+        assert_eq!(
+            field_b.armed_command_count(),
+            0,
+            "B's retired commands stayed armed"
+        );
+    }
+
+    /// The `UIMenuElement` titled `title` anywhere in `menu`.
+    fn find_element(menu: &UIMenu, title: &str) -> Retained<UIMenuElement> {
+        fn walk(el: &UIMenuElement, title: &str) -> Option<Retained<UIMenuElement>> {
+            if let Some(action) = el.downcast_ref::<UIAction>() {
+                if action.title().to_string() == title {
+                    return Some(el.retain());
+                }
+            } else if let Some(command) = el.downcast_ref::<UIKeyCommand>() {
+                if command.title().to_string() == title {
+                    return Some(el.retain());
+                }
+            } else if let Some(sub) = el.downcast_ref::<UIMenu>() {
+                for child in &sub.children() {
+                    if let Some(found) = walk(&child, title) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+        (0..menu.children().count())
+            .find_map(|i| {
+                menu.children()
+                    .objectAtIndex(i)
+                    .downcast::<UIMenuElement>()
+                    .ok()
+                    .and_then(|el| walk(&el, title))
+            })
+            .unwrap_or_else(|| panic!("no menu element titled {title}"))
+    }
+
+    /// The `UIKeyCommand` titled `title` anywhere in `menu`.
+    fn find_key_command(menu: &UIMenu, title: &str) -> Retained<UIKeyCommand> {
+        find_element(menu, title)
+            .downcast::<UIKeyCommand>()
+            .unwrap_or_else(|_| panic!("the {title} row is not a UIKeyCommand"))
+    }
+
+    /// The `text_selection_ios::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "text_selection_ios::two_fields_own_their_commands_and_retire_them",
+                || {
+                    two_fields_own_their_commands_and_retire_them();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "text_selection_ios::a_selection_menu_command_edits_the_live_selection",
+                || {
+                    a_selection_menu_command_edits_the_live_selection();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+}
+
+/// Independent lists retain their own header spacing within a navigation page.
+#[cfg(target_os = "ios")]
+mod list_spacing {
+    use super::mtm;
+    use cocoa_ui::Retained;
+    use cocoa_ui::objc2_ui_kit::{NSIndexPathUIKitAdditions, UITableView};
+    use waterui::component::list::{List, ListItem};
+    use waterui::id::SelfId;
+    use waterui::prelude::*;
+    use waterui::reactive::binding;
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, drain_main_queue, mount_uikit_window, pump_main_until,
+        render_environment, spawned_window,
+    };
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "list_spacing::navigation_lists_keep_distinct_header_spacing_with_search",
+                || {
+                    check_spacing(true);
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "list_spacing::navigation_lists_keep_distinct_header_spacing_without_search",
+                || {
+                    check_spacing(false);
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn tables(view: &cocoa_ui::PlatformView, out: &mut Vec<Retained<UITableView>>) {
+        if let Some(table) = view.downcast_ref::<UITableView>() {
+            out.push(Retained::from(table));
+            return;
+        }
+        for child in cocoa_ui::view::subviews(view) {
+            tables(&child, out);
+        }
+    }
+
+    fn check_spacing(searchable: bool) {
+        let list = || List::for_each(vec![SelfId::new(0_u32)], |_| ListItem::new(text("Row")));
+        let query = binding(Str::default());
+        let page = NavigationView::new("Lists", vstack((list(), list())));
+        let page = if searchable {
+            page.searchable(&query, "Search")
+        } else {
+            page
+        };
+        let mount = mount_uikit_window(
+            mtm(),
+            AnyView::new(NavigationStack::new(page)),
+            &render_environment(),
+            spawned_window(mtm()),
+        );
+        let row = cocoa_ui::objc2_foundation::NSIndexPath::indexPathForRow_inSection(0, 0);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                mount.window.layoutIfNeeded();
+                let mut found = Vec::new();
+                tables(&mount.host, &mut found);
+                found.len() == 2
+                    && found.iter().all(|t| {
+                        t.bounds().size.height > 0.0
+                            && t.rectForRowAtIndexPath(&row).size.height > 0.0
+                    })
+            }),
+            "both lists must finish their native row layout"
+        );
+        assert!(drain_main_queue(mtm()), "pending row updates must finish");
+        mount.window.layoutIfNeeded();
+        let mut found = Vec::new();
+        tables(&mount.host, &mut found);
+        let expected = [0.0, 35.0];
+        for (index, (table, expected)) in found.iter().zip(expected).enumerate() {
+            let actual = table.rectForRowAtIndexPath(&row).origin.y;
+            assert!(
+                (actual - expected).abs() < 0.5,
+                "list {index} with searchable={searchable}: first row begins at {actual}, expected {expected}"
+            );
         }
     }
 }

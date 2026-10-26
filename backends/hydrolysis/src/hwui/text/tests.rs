@@ -709,11 +709,13 @@ fn a_limited_layout_caches_apart_from_the_unlimited_one() {
     }
     // Recording with the same limit reuses the cached layout — no reshape.
     let mut counters = crate::renderer::FrameWorkCounters::default();
+    let mut scenes = crate::text::TextScenes::default();
     let _scene = service.record(
         &input,
         Some(30.0),
         crate::text::TailMark::Ellipsis(1),
         &mut counters,
+        &mut scenes,
     );
     assert_eq!(provider.requests.lock().unwrap().len(), 1);
     // The unlimited layout is a different cache key — a fresh request.

@@ -1124,6 +1124,7 @@ pub struct GestureObserverEffect {
 }
 
 pub struct ColorNode<E: crate::text::TextEngine> {
+    pub(crate) bounds: nami::Binding<kurbo::Rect>,
     pub(crate) core: NodeCore<E>,
     pub(crate) color: Computed<waterui_graphics::draw::WorkingColor>,
 }
@@ -1342,17 +1343,13 @@ pub struct GpuContentNode<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> GpuContentNode<E> {
-    /// The leaf's natural-size answer under `proposal` — the
-    /// `measure_body` arm's own computation.
+    /// The leaf's live measure under `proposal` — the `measure_body`
+    /// arm's own call. [`GpuContentView::measure`] asks the content
+    /// itself, so a source whose size resolves after mount answers its
+    /// new natural size instead of the `intrinsic_size` snapshot
+    /// [`GpuContentView::new`] took (water-rs/waterui#1958).
     pub(super) fn intrinsic_dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
-        let resolved = waterui_graphics::resolve_scene_proposal(
-            self.runtime.borrow().view.intrinsic_size(),
-            proposal,
-        );
-        ViewDimensions::new(Size::new(
-            resolved.width.unwrap_or(0.0),
-            resolved.height.unwrap_or(0.0),
-        ))
+        self.runtime.borrow().view.measure(proposal)
     }
 
     /// Whether a fresh probe at the last proposal answers a different

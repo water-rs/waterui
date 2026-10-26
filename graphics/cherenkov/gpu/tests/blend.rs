@@ -181,6 +181,62 @@ fn nonseparable_modes_blend_in_the_extended_domain() -> Result<(), Box<dyn std::
 }
 
 split_test! {
+/// #2908's trigger shape on the GPU path: a non-separable blended layer
+/// under a clip compositing HDR content — the corpus
+/// `blend-{color,hue,saturation}-clip-hdr` scenes. Finite output is not
+/// enough by itself (the GPU rendered finite even with the SDR-domain
+/// bug), so the clipped region's HDR greys must also keep the backdrop
+/// luminance.
+fn nonseparable_blends_under_a_clip_on_hdr_stay_finite() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::kurbo::RoundedRect;
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    for (mode, want) in [
+        (BlendMode::Hue, 4.0_f32),
+        (BlendMode::Saturation, 4.0),
+        (BlendMode::Color, 4.0),
+        (BlendMode::Luminosity, 2.0),
+    ] {
+        let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 32.0, 32.0), GREY4);
+            }));
+        });
+        let layer = surface.layer();
+        surface.update(|tx| {
+            tx[&layer].blend(mode);
+            tx[&layer].clip(RoundedRect::new(4.0, 4.0, 28.0, 28.0, 4.0));
+            tx[surface.root()].push(&layer);
+        });
+        surface.update(|tx| {
+            tx[&layer].content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 32.0, 32.0), GREY2);
+            }));
+        });
+        wait!(engine.render(cherenkov::FrameTime::now()))?;
+        let pixels = wait!(surface.readback())?.pixels;
+        for (i, px) in pixels.iter().enumerate() {
+            assert!(
+                px.iter().all(|c| c.is_finite()),
+                "{mode:?} wrote non-finite pixel {i}: {px:?}"
+            );
+        }
+        // A pixel inside the clip kept the blend semantics; a pixel
+        // outside it kept the backdrop.
+        let inside = pixels[16 * 32 + 16];
+        let outside = pixels[2 * 32 + 2];
+        for c in &inside[..3] {
+            assert!((c - want).abs() < 0.02, "{mode:?} clipped inside: {inside:?}");
+        }
+        for c in &outside[..3] {
+            assert!((c - 4.0).abs() < 0.02, "{mode:?} outside clip: {outside:?}");
+        }
+    }
+    Ok(())
+}
+}
+
+split_test! {
 /// A half-alpha extended-range source still composites source-over on the
 /// un-normalized straight values: H/S/C keep `Cr` at backdrop grey 4
 /// (`0.5·4 + 0.5·4 = 4`), Luminosity mixes to `0.5·2 + 0.5·4 = 3`.

@@ -1402,14 +1402,14 @@ fn a_tab_page_background_stops_at_the_tab_bar() {
     use waterui::navigation::{Tab, Tabs};
 
     let insets = waterui::binding(SAFE_INSETS);
-    let selection = Binding::container(0i32);
+    let selection = Binding::container(0usize);
     let mut app = mount_rendered(
         env_with_insets(&insets),
         move || {
             Tabs::new(
                 &selection,
                 vec![
-                    Tab::new(0i32, "Messages", move || {
+                    Tab::new("Messages", move || {
                         NavigationView::new(
                             "Messages",
                             vstack((card("tab content"), spacer()))
@@ -1417,7 +1417,7 @@ fn a_tab_page_background_stops_at_the_tab_bar() {
                                 .a11y_label("tab-page"),
                         )
                     }),
-                    Tab::new(1i32, "Settings", move || {
+                    Tab::new("Settings", move || {
                         NavigationView::new("Settings", text("settings"))
                     }),
                 ],
@@ -1452,7 +1452,7 @@ fn a_tab_bar_stays_docked_under_the_keyboard() {
 
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(EdgeInsets::new(0.0, 0.0, 0.0, 0.0));
-    let selection = Binding::container(0i32);
+    let selection = Binding::container(0usize);
     let value = Binding::container(waterui::Str::from(""));
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
@@ -1460,7 +1460,7 @@ fn a_tab_bar_stays_docked_under_the_keyboard() {
             Tabs::new(
                 &selection,
                 vec![
-                    Tab::new(0i32, "Messages", {
+                    Tab::new("Messages", {
                         let value = value.clone();
                         move || {
                             NavigationView::new(
@@ -1484,7 +1484,7 @@ fn a_tab_bar_stays_docked_under_the_keyboard() {
                             )
                         }
                     }),
-                    Tab::new(1i32, "Settings", move || {
+                    Tab::new("Settings", move || {
                         NavigationView::new("Settings", text("settings"))
                     }),
                 ],
@@ -1616,14 +1616,14 @@ fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar() {
 
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(EdgeInsets::new(0.0, 0.0, 0.0, 0.0));
-    let selection = Binding::container(0i32);
+    let selection = Binding::container(0usize);
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
         move || {
             Tabs::new(
                 &selection,
                 vec![
-                    Tab::container(0i32, "Messages", move || {
+                    Tab::container("Messages", move || {
                         NavigationStack::new(
                             NavigationView::new("Root", vstack((card("content"), spacer())))
                                 .navigation_toolbar(NavigationToolbar::new(vec![
@@ -1635,7 +1635,7 @@ fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar() {
                                 ])),
                         )
                     }),
-                    Tab::container(1i32, "Settings", move || {
+                    Tab::container("Settings", move || {
                         NavigationStack::new(NavigationView::new("Settings", text("settings")))
                     }),
                 ],
@@ -1683,15 +1683,15 @@ fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar() {
 
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(EdgeInsets::new(0.0, 0.0, 0.0, 0.0));
-    let selection = Binding::container(0i32);
-    let inner = Binding::container(0i32);
+    let selection = Binding::container(0usize);
+    let inner = Binding::container(0usize);
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
         move || {
             Tabs::new(
                 &selection,
                 vec![
-                    Tab::new(0i32, "Outer", {
+                    Tab::new("Outer", {
                         let inner = inner.clone();
                         move || {
                             NavigationView::new(
@@ -1700,10 +1700,10 @@ fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar() {
                                     Tabs::new(
                                         &inner,
                                         vec![
-                                            Tab::new(0i32, "Inner A", move || {
+                                            Tab::new("Inner A", move || {
                                                 NavigationView::new("A", text("a"))
                                             }),
-                                            Tab::new(1i32, "Inner B", move || {
+                                            Tab::new("Inner B", move || {
                                                 NavigationView::new("B", text("b"))
                                             }),
                                         ],
@@ -1726,9 +1726,7 @@ fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar() {
                             )
                         }
                     }),
-                    Tab::new(1i32, "Other", move || {
-                        NavigationView::new("Other", text("other"))
-                    }),
+                    Tab::new("Other", move || NavigationView::new("Other", text("other"))),
                 ],
             )
         },
@@ -2005,14 +2003,14 @@ fn chrome_surface_extension_captures() {
     app.pump_for(Duration::from_millis(180));
     app.capture_snapshot("safe-area", "navigation-chrome-extension", "transition");
 
-    let selection = Binding::container(0i32);
+    let selection = Binding::container(0usize);
     let mut app = mount_rendered(
         env_with_insets(&insets),
         move || {
             Tabs::new(
                 &selection,
                 vec![
-                    Tab::new(0i32, "Messages", move || {
+                    Tab::new("Messages", move || {
                         NavigationView::new(
                             "Messages",
                             vstack((card("chat list"), spacer()))
@@ -2020,7 +2018,7 @@ fn chrome_surface_extension_captures() {
                                 .a11y_label("tab-page"),
                         )
                     }),
-                    Tab::new(1i32, "Settings", move || {
+                    Tab::new("Settings", move || {
                         NavigationView::new("Settings", text("settings"))
                     }),
                 ],

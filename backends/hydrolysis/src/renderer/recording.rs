@@ -15,6 +15,7 @@ use core::cell::RefCell;
 use core::fmt;
 use core::hash::Hash;
 use kurbo::{Affine, Rect, Shape, Vec2};
+use nami::{Computed, Signal as _};
 use peniko::{BlendMode, Fill, FontData};
 use rustc_hash::FxHashMap;
 use std::rc::{Rc, Weak};
@@ -86,6 +87,11 @@ impl fmt::Debug for Recording {
 
 #[derive(Clone)]
 enum Op {
+    LiveRect {
+        transform: Affine,
+        rect: Computed<Rect>,
+        color: Computed<WorkingColor>,
+    },
     Fill {
         transform: Affine,
         brush: peniko::Brush,
@@ -597,6 +603,20 @@ impl Recording {
         });
     }
 
+    /// Records a rectangle whose geometry and colour remain live engine operands.
+    pub(crate) fn live_rect(
+        &mut self,
+        transform: Affine,
+        rect: Computed<Rect>,
+        color: Computed<WorkingColor>,
+    ) {
+        self.ops.push(Op::LiveRect {
+            transform,
+            rect,
+            color,
+        });
+    }
+
     /// Fills `shape` under `transform` with an engine paint.
     pub(crate) fn fill_paint<S: Shape + 'static>(
         &mut self,
@@ -754,21 +774,19 @@ impl Recording {
     /// Appends `other` under `placement`.
     pub(crate) fn append(&mut self, other: &Self, placement: Affine) {
         self.ops.extend(other.ops.iter().cloned().map(|mut op| {
-            let transform = match &mut op {
-                Op::Fill { transform, .. }
+            match &mut op {
+                Op::LiveRect { transform, .. }
+                | Op::Fill { transform, .. }
                 | Op::FillPaint { transform, .. }
                 | Op::StrokePaint { transform, .. }
                 | Op::Glyphs { transform, .. }
                 | Op::BlurredRoundedRect { transform, .. }
                 | Op::Shadow { transform, .. }
                 | Op::PushGroup { transform, .. }
-                | Op::Picture { transform, .. } => Some(transform),
+                | Op::Picture { transform, .. } => *transform = placement * *transform,
                 #[cfg(any(test, hydrolysis_hwui))]
-                Op::Text { transform, .. } => Some(transform),
-                Op::PopLayer => None,
-            };
-            if let Some(transform) = transform {
-                *transform = placement * *transform;
+                Op::Text { transform, .. } => *transform = placement * *transform,
+                Op::PopLayer => {}
             }
             op
         }));
@@ -807,6 +825,9 @@ impl Recording {
     #[cfg(test)]
     pub(crate) fn fill_bounds(&self) -> impl Iterator<Item = (Affine, Rect)> {
         self.ops.iter().filter_map(|op| match op {
+            Op::LiveRect {
+                transform, rect, ..
+            } => Some((*transform, rect.snapshot())),
             Op::Fill {
                 transform, shape, ..
             }
@@ -894,18 +915,31 @@ impl Recording {
         let mut scopes: Vec<Scope> = Vec::new();
         let mut rects = Vec::new();
         for op in &self.ops {
-            let (transform, color, shape) = match op {
+            let (transform, color, rect) = match op {
                 Op::Fill {
                     transform,
                     brush: peniko::Brush::Solid(color),
-                    shape,
+                    shape: ShapeData::Rect(rect),
                     ..
-                } => (transform, working_color(*color), shape),
+                } => (
+                    transform,
+                    Computed::constant(working_color(*color)),
+                    Computed::constant(*rect),
+                ),
                 Op::FillPaint {
                     transform,
                     paint: Paint::Solid(color),
-                    shape,
-                } => (transform, *color, shape),
+                    shape: ShapeData::Rect(rect),
+                } => (
+                    transform,
+                    Computed::constant(*color),
+                    Computed::constant(*rect),
+                ),
+                Op::LiveRect {
+                    transform,
+                    rect,
+                    color,
+                } => (transform, color.clone(), rect.clone()),
                 Op::PushGroup {
                     blend,
                     opacity,
@@ -932,9 +966,6 @@ impl Recording {
                 }
                 _ => continue,
             };
-            let ShapeData::Rect(rect) = shape else {
-                continue;
-            };
             let Some((bounds, alpha)) = scopes.last().copied().unwrap_or(Some((UNBOUNDED, 1.0)))
             else {
                 continue;
@@ -942,10 +973,12 @@ impl Recording {
             if !axis_aligned(*transform) {
                 continue;
             }
-            let [r, g, b, a] = color.components;
             rects.push(SolidRect {
-                rect: bounds.intersect(transform.transform_rect_bbox(*rect)),
-                color: WorkingColor::new([r, g, b, a * alpha]),
+                rect,
+                color,
+                transform: *transform,
+                clip: bounds,
+                alpha,
             });
         }
         rects.into_boxed_slice()
@@ -955,12 +988,25 @@ impl Recording {
 /// A rectangle a recording fills with one colour: its bounds in the space
 /// the recording was made in, and the colour that reaches the target there,
 /// straight alpha folded with every enclosing opacity scope.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct SolidRect {
-    /// The filled area, cut to the clips around the fill.
-    pub rect: Rect,
-    /// The colour painted over it.
-    pub color: WorkingColor,
+    rect: Computed<Rect>,
+    color: Computed<WorkingColor>,
+    transform: Affine,
+    clip: Rect,
+    alpha: f32,
+}
+
+impl SolidRect {
+    /// Samples the current clipped rectangle and its opacity-adjusted colour.
+    #[must_use]
+    pub fn current(&self) -> (Rect, WorkingColor) {
+        let rect = self
+            .clip
+            .intersect(self.transform.transform_rect_bbox(self.rect.snapshot()));
+        let [r, g, b, a] = self.color.snapshot().components;
+        (rect, WorkingColor::new([r, g, b, a * self.alpha]))
+    }
 }
 
 /// The bounds of a fill no clip narrows.
@@ -1006,6 +1052,13 @@ fn lower(
         let op = &ops[*index];
         *index += 1;
         match op {
+            Op::LiveRect {
+                transform,
+                rect,
+                color,
+            } => {
+                recorder.transform(*transform, |r| r.fill(rect.clone(), color.clone()));
+            }
             Op::Fill {
                 transform,
                 brush,
@@ -1376,6 +1429,20 @@ impl Recording {
         if !picture.display_list().is_empty() {
             self.draw_picture(transform, picture);
         }
+    }
+}
+
+impl crate::renderer::chrome::LiveSource for Recording {
+    fn record(
+        &self,
+        recorder: &mut Recorder,
+        resources: &SceneResources,
+    ) -> Option<LoweredResources> {
+        Some(self.record_on(recorder, resources))
+    }
+
+    fn recording(&self) -> Option<&Recording> {
+        Some(self)
     }
 }
 

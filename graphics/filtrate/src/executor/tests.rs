@@ -46,6 +46,7 @@ impl Filter for Masked {
         const STAGE: SpatialStage = SpatialStage {
             name: "masked",
             source: include_str!("test_snippets/masked.wgsl"),
+            source_f16: None,
             params: &[],
             space: OperatingSpace::Working,
             shape: Some(ShapeInput::Mask),
@@ -76,6 +77,7 @@ impl Filter for UndeclaredShape {
         const STAGE: SpatialStage = SpatialStage {
             name: "median",
             source: include_str!("../shaders/image/convolution/median3x3.wgsl"),
+            source_f16: None,
             params: &[],
             space: OperatingSpace::Working,
             shape: Some(ShapeInput::Sdf),
@@ -122,6 +124,7 @@ struct SampleHalf;
 const SAMPLE_HALF: SpatialStage = SpatialStage {
     name: "sample_half",
     source: include_str!("test_snippets/sample_half.wgsl"),
+    source_f16: None,
     params: &[],
     space: OperatingSpace::Working,
     shape: None,
@@ -151,6 +154,7 @@ impl SpatialFilter for SampleHalf {
 const READ_AUX: SpatialStage = SpatialStage {
     name: "read_aux",
     source: include_str!("test_snippets/read_aux.wgsl"),
+    source_f16: None,
     params: &[],
     space: OperatingSpace::Working,
     shape: None,
@@ -228,20 +232,24 @@ impl SpatialFilter for ReadAuxTexture {
 /// Composes `filter` and wraps and validates every pass's entry point —
 /// for the hardware-filtered plan and for the manual-bilinear one.
 fn assert_composes<F: Filter>(name: &str, filter: &F) -> Plan {
-    for filterable in [true, false] {
-        let plan = Plan::new(filter, filterable, filterable, false).unwrap_or_else(|error| {
-            panic!("{name} does not compose (filterable={filterable}): {error}")
-        });
-        for (index, pass) in plan.passes.iter().enumerate() {
-            for resized in [false, true] {
-                entry::pass_module(&plan.module, plan.capabilities, index, pass, resized)
-                    .unwrap_or_else(|error| {
-                        panic!("{name} (filterable={filterable}, resized={resized}): {error}")
-                    });
+    for half in [
+        cherenkov_shader::Precision::F32,
+        cherenkov_shader::Precision::F16,
+    ] {
+        for filterable in [true, false] {
+            let plan =
+                Plan::new(filter, filterable, filterable, false, half).unwrap_or_else(|error| {
+                    panic!("{name} (filterable={filterable}, half={half:?}): {error}")
+                });
+            for (index, pass) in plan.passes.iter().enumerate() {
+                for resized in [false, true] {
+                    entry::pass_module(&plan.module, plan.capabilities, index, pass, resized)
+                        .unwrap_or_else(|error| panic!("{name} (filterable={filterable}, half={half:?}, resized={resized}): {error}"));
+                }
             }
         }
     }
-    Plan::new(filter, true, true, false)
+    Plan::new(filter, true, true, false, cherenkov_shader::Precision::F32)
         .unwrap_or_else(|error| panic!("{name} does not compose: {error}"))
 }
 
@@ -516,6 +524,25 @@ fn srgb_stages_are_converted_around() {
     // The conversions are colour stages, so they share the stage's segment.
     assert_eq!(plan.passes.len(), 1);
     assert_eq!(plan.passes[0].segment.stages, 0..3);
+
+    let plan = assert_composes(
+        "consecutive sRGB stages",
+        &CssInvert.then(filters::GaussianBlur::new(2.0_f32).in_space(OperatingSpace::Srgb)),
+    );
+    // Convert in once, run both spatial stages, then convert out once.
+    let stages: Vec<_> = plan
+        .passes
+        .iter()
+        .map(|pass| pass.segment.stages.clone())
+        .collect();
+    assert_eq!(stages, [0..2, 2..3, 3..4, 4..5]);
+
+    let plan = assert_composes(
+        "sRGB runs separated by a working-space stage",
+        &CssInvert.then(filters::Brightness(0.1_f32)).then(CssInvert),
+    );
+    // Each encoded stage still needs its own pair across the working stage.
+    assert_eq!(plan.passes[0].segment.stages, 0..7);
 }
 
 #[test]
@@ -523,7 +550,13 @@ fn a_stage_declares_the_shape_input_its_snippet_takes() {
     let plan = assert_composes("masked", &Masked);
     assert_eq!(plan.passes[0].shape, Some(ShapeInput::Mask));
     assert!(matches!(
-        Plan::new(&UndeclaredShape, true, true, false),
+        Plan::new(
+            &UndeclaredShape,
+            true,
+            true,
+            false,
+            cherenkov_shader::Precision::F32
+        ),
         Err(EffectSetupError::StageMismatch {
             stage: "median",
             ..
@@ -1016,9 +1049,11 @@ fn create_test_device() -> TestGpu {
         apply_limit_buckets: false,
     }))
     .expect("filter GPU tests require a high-performance adapter");
-    let (device, queue) =
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-            .expect("filter GPU tests require a working device");
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_features: adapter.features() & wgpu::Features::SHADER_F16,
+        ..Default::default()
+    }))
+    .expect("filter GPU tests require a working device");
     TestGpu {
         device,
         queue,
@@ -2142,12 +2177,11 @@ const F16_ONE_PASS: f64 = 1.0;
 /// writing `Rgba16Float` once.
 const F16_SEPARABLE: f64 = 2.0;
 
-/// Steps for a separable stage in encoded sRGB. Each spatial stage is
-/// wrapped in conversions, so the route runs `to_srgb`, the horizontal
-/// stage, `from_srgb` + `to_srgb`, the vertical stage and `from_srgb`: four
+/// Steps for a separable stage in encoded sRGB. The route runs `to_srgb`,
+/// the horizontal stage, the vertical stage and `from_srgb`: three
 /// writes of encoded values, which decoding amplifies by up to sRGB's
 /// exponent 2.4, and one of the linear result.
-const F16_SEPARABLE_SRGB: f64 = 4.0 * 2.4 + 1.0;
+const F16_SEPARABLE_SRGB: f64 = 3.0 * 2.4 + 1.0;
 
 /// Runs `filter` on the wgpu executor over f16 textures and on the CPU,
 /// checks they agree to the precision of the `steps` half-float writes on
@@ -2601,6 +2635,16 @@ fn gpu_export_filter_gallery_images() {
     export_filter!("invert.png", Invert);
     export_filter!("blur.png", Blur(3.0_f32));
     export_filter!("gaussian_blur.png", GaussianBlur::new(2.0_f32));
+    export_filter!(
+        "luma_curve_srgb_blur.png",
+        LumaCurve {
+            curve: [0.9_f32, 0.83, 0.925, 0.815],
+            amount: 0.75,
+            chroma: 0.375,
+            offset: 0.1,
+        }
+        .then(GaussianBlur::new(2.0_f32).in_space(OperatingSpace::Srgb))
+    );
     export_filter!("motion_blur.png", MotionBlur(6.0_f32, 30.0_f32));
     export_filter!("zoom_blur.png", ZoomBlur(0.2_f32, 0.5_f32, 0.5_f32));
     export_filter!("sharpen.png", Sharpen(1.5_f32));

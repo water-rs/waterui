@@ -139,12 +139,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         match self {
             Self::Color(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
-                let color = waterui_graphics::draw::Paint::Solid(renderer.read_signal(&node.color));
-                renderer.scene_mut().fill_paint(
-                    peniko::Fill::NonZero,
+                if nami::Signal::snapshot(&node.bounds) != ctx.bounds {
+                    node.bounds.set(ctx.bounds);
+                }
+                renderer.scene_mut().live_rect(
                     ctx.local,
-                    color,
-                    &ctx.bounds,
+                    node.bounds.clone().into(),
+                    node.color.clone(),
                 );
             }
             // §7.1's fill rule, paint side: the extension layout recorded
@@ -168,10 +169,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 let alignment = renderer.read_signal(&text.alignment);
                 TextNode::emit_accessibility(renderer, Some(ctx), &styled, env);
                 renderer.pop_render_owner();
-                let (state, scene) = renderer.state_and_run_mut();
-                HydrolysisRenderer::render_styled_text_limited(
-                    state,
-                    scene,
+                renderer.render_styled_text_limited(
                     ctx,
                     styled,
                     alignment,
@@ -232,6 +230,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     &node.value.value,
                     &node.core.cell,
                     OPACITY_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_SLOW,
                 );
                 let program = renderer.program().program_mut();
                 program.opacity = alpha;
@@ -250,11 +249,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     &node.value.x,
                     &node.core.cell,
                     SCALE_X_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 );
                 let scale_y = renderer.resolve_owned_scalar(
                     &node.value.y,
                     &node.core.cell,
                     SCALE_Y_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 );
                 let transform = kurbo::Affine::translate((center.x, center.y))
                     * kurbo::Affine::scale_non_uniform(f64::from(scale_x), f64::from(scale_y))
@@ -268,6 +269,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     &node.value.angle,
                     &node.core.cell,
                     ROTATION_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 ))
                 .to_radians();
                 let transform = kurbo::Affine::translate((center.x, center.y))
@@ -281,11 +283,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     &node.value.x,
                     &node.core.cell,
                     OFFSET_X_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 );
                 let offset_y = renderer.resolve_owned_scalar(
                     &node.value.y,
                     &node.core.cell,
                     OFFSET_Y_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 );
                 let transform =
                     kurbo::Affine::translate((f64::from(offset_x), f64::from(offset_y)));
@@ -1119,6 +1123,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             f64::INFINITY,
                             f64::INFINITY,
                             (0.0, 0.0),
+                            // The semantic domain is not real geometry: the
+                            // painted pass's position report stays attached
+                            // and is reported against its own extents.
+                            None,
                         )
                     } else {
                         ScrollHandle::new(

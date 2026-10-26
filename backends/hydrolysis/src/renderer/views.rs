@@ -334,7 +334,12 @@ pub fn render_morph_shape_parts<E: crate::text::TextEngine>(
     let (path, fill) = {
         let resolved = shape.borrow();
         let progress = if let Some(progress) = resolved.progress.as_ref() {
-            renderer.resolve_owned_scalar(progress, shape, MORPH_PROGRESS_ANIMATION_KEY)
+            renderer.resolve_owned_scalar(
+                progress,
+                shape,
+                MORPH_PROGRESS_ANIMATION_KEY,
+                cherenkov_record::tree::RATE_FAST,
+            )
         } else {
             renderer.sample_morph_progress(resolved.animation, shape)
         };
@@ -440,15 +445,8 @@ pub fn render_str_parts<E: crate::text::TextEngine>(
 ) {
     let styled = StyledStr::plain(text.borrow().clone());
     let render_ctx = ctx.render_context();
-    let (state, scene) = ctx.renderer_mut().state_and_run_mut();
-    HydrolysisRenderer::render_styled_text(
-        state,
-        scene,
-        render_ctx,
-        styled,
-        HorizontalAlignment::Leading,
-        env,
-    );
+    ctx.renderer_mut()
+        .render_styled_text(render_ctx, styled, HorizontalAlignment::Leading, env);
 }
 
 /// Emits a retained `Str` leaf's accessibility node for the semantic walk —

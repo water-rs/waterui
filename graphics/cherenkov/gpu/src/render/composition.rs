@@ -190,6 +190,9 @@ pub struct FrameReport {
     pub surface: u64,
     /// Passes the frame's canonical plan holds.
     pub passes: usize,
+    /// Union of raster scissor pixels over persistent base-level outputs.
+    /// Repeated writes count once per output; this is not fragment invocations.
+    pub repaint_pixels: u64,
     /// The tile epochs, in pass order.
     pub epochs: Vec<Epoch>,
     /// Every logical image that reaches device memory, with its reason.
@@ -395,6 +398,7 @@ pub(crate) fn frame_report(
     plan: &super::composite::plan::ExecutionPlan,
     attachments: AttachmentBytes,
     pipelines: Vec<PipelineCreated>,
+    repaint_pixels: u64,
 ) -> FrameReport {
     use super::composite::plan::Storage;
 
@@ -437,6 +441,7 @@ pub(crate) fn frame_report(
         frame,
         surface,
         passes: lowered.passes.len(),
+        repaint_pixels,
         epochs,
         materialized,
         on_chip,

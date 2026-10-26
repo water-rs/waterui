@@ -13,17 +13,18 @@ use std::ptr;
 use std::rc::Rc;
 
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, Bool, Sel};
 use objc2::sel;
 use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSMutableSet, NSObject, NSObjectProtocol};
 use objc2_ui_kit::{
-    UIAccessibilityConvertFrameToScreenCoordinates, UIEdgeInsets, UIEvent,
-    UIGestureRecognizerState, UIHoverGestureRecognizer, UIPress, UIPressesEvent,
-    UITraitDisplayScale, UITraitEnvironment, UIView,
+    UIAccessibilityConvertFrameToScreenCoordinates, UICommand, UIEdgeInsets, UIEvent,
+    UIGestureRecognizerState, UIHoverGestureRecognizer, UIKeyCommand, UIMenu, UIPress,
+    UIPressesEvent, UITraitDisplayScale, UITraitEnvironment, UIView,
 };
 
+use super::key_commands::{KeyCommandRegistry, KeyCommands};
 use super::trait_change::{TraitChangeObservation, register_trait_change};
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Edges, MeasureProposal, Point, Rect, Size};
@@ -59,6 +60,8 @@ type KeyHandler = Rc<dyn Fn(&HostView, &KeyEvent) -> bool>;
 /// The handlers a [`HostView`] calls, and the state it keeps for them.
 #[derive(Default)]
 pub struct HostViewIvars {
+    key_commands: RefCell<Option<Rc<KeyCommandRegistry>>>,
+    menu_commands: RefCell<Vec<Retained<UIKeyCommand>>>,
     layout: RefCell<Option<LayoutHandler>>,
     resize: RefCell<Option<ResizeHandler>>,
     hit_test: RefCell<Option<HitTestHandler>>,
@@ -231,6 +234,49 @@ define_class!(
     unsafe impl NSObjectProtocol for HostView {}
 
     impl HostView {
+        // SAFETY: armed commands send this selector with themselves as sender.
+        #[unsafe(method(cocoaUiContextMenuCommandFired:))]
+        fn menu_command_fired(&self, command: &UICommand) {
+            guarded("HostView cocoaUiContextMenuCommandFired:", || {
+                let registry = self.ivars().key_commands.borrow().clone()
+                    .expect("a context-menu command fired before its host armed commands");
+                registry.fire(command);
+            });
+        }
+
+        // SAFETY: UIResponder's declared signature, forwarding other selectors to super.
+        #[unsafe(method(canPerformAction:withSender:))]
+        fn can_perform_action_with_sender(&self, action: Sel, sender: Option<&AnyObject>) -> Bool {
+            if action != sel!(cocoaUiContextMenuCommandFired:) {
+                // SAFETY: the inherited responder query has this signature.
+                return unsafe { msg_send![super(self), canPerformAction: action, withSender: sender] };
+            }
+            Bool::from(self.ivars().key_commands.borrow().as_ref().is_some_and(|registry| {
+                sender.and_then(|sender| sender.downcast_ref::<UICommand>()).map_or_else(
+                    || registry.any_armed(),
+                    |command| registry.owns(command),
+                )
+            }))
+        }
+
+        // SAFETY: the responder property returns the menu's retained commands.
+        #[unsafe(method_id(keyCommands))]
+        fn key_commands_override(&self) -> Option<Retained<NSArray<UIKeyCommand>>> {
+            guarded("HostView keyCommands", || {
+                // SAFETY: `UIResponder.keyCommands`' declared signature.
+                let inherited: Option<Retained<NSArray<UIKeyCommand>>> =
+                    unsafe { msg_send![super(self), keyCommands] };
+                match self.ivars().key_commands.borrow().as_ref() {
+                    Some(registry) => registry.commands(
+                        &self.ivars().menu_commands.borrow(),
+                        inherited,
+                        sel!(cocoaUiContextMenuCommandFired:),
+                    ),
+                    None => inherited,
+                }
+            })
+        }
+
         // SAFETY: see the module safety note.
         #[unsafe(method(layoutSubviews))]
         fn layout_subviews_override(&self) {
@@ -497,6 +543,36 @@ define_class!(
 );
 
 impl HostView {
+    /// A scope routing context-menu commands through this host's own registry.
+    #[must_use]
+    pub fn menu_commands(&self) -> KeyCommands {
+        let registry = self
+            .ivars()
+            .key_commands
+            .borrow_mut()
+            .get_or_insert_with(|| Rc::new(KeyCommandRegistry::default()))
+            .clone();
+        KeyCommands::in_registry_with_action(registry, sel!(cocoaUiContextMenuCommandFired:))
+    }
+
+    /// Replaces the menu commands this host vends to its responder chain.
+    pub fn set_menu_commands(&self, menu: Option<&UIMenu>) {
+        self.ivars()
+            .menu_commands
+            .replace(menu.map_or_else(Vec::new, super::menu::key_commands));
+    }
+
+    /// How many commands this host's menu has armed.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn armed_command_count(&self) -> usize {
+        self.ivars()
+            .key_commands
+            .borrow()
+            .as_ref()
+            .map_or(0, |registry| registry.armed())
+    }
+
     /// A host view occupying `frame` in its future superview's coordinates.
     #[must_use]
     pub fn new(mtm: MainThreadMarker, frame: Rect) -> Retained<Self> {
@@ -697,6 +773,7 @@ impl HostView {
             self.removeGestureRecognizer(&recognizer);
         }
         ivars.key.replace(None);
+        ivars.menu_commands.borrow_mut().clear();
         ivars.backing_changed.replace(None);
     }
 

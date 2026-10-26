@@ -668,6 +668,7 @@ impl Filter for GpuOnlyFilter {
         const STAGE: SpatialStage = SpatialStage {
             name: "gpu_only_test",
             source: "",
+            source_f16: None,
             params: &[],
             space: OperatingSpace::Working,
             shape: None,

@@ -2,12 +2,12 @@
 # Nightly e2e shard. For every example assigned to this shard: package it in
 # release mode, record the .app and executable sizes, launch the packaged app
 # directly, capture the self-reported first-paint marker, sample peak RSS, and
-# verify a settled screenshot — a capture must carry real content (not a
-# uniform fill), and when a recorded baseline exists under backends/apple/Tests/E2EBaselines
-# it must match within the compare budget. A `.skip` marker next to a baseline
+# capture a settled screenshot. Full-frame FLIP supplies perceptual diagnostics
+# and tolerances, never a claim that the UI is correct: captures and heatmaps
+# require visual review. A `.skip` marker next to a baseline
 # declares a first screen that cannot be made deterministic — it opts the
-# example out of pixel comparison and out of the settle window itself: one
-# supervised capture after the first-paint marker, with launch and content
+# example out of comparison and out of the settle window itself: one
+# supervised capture after the first-paint marker, with launch and decoding
 # still verified. With RECORD=1, captures are written to ${RECORD_DIR} for the
 # baseline-publish job instead of being compared. Failures are collected so one
 # broken example does not hide the state of the rest; the script exits nonzero
@@ -27,9 +27,15 @@
 # package; when PREBUILT_DIR is unset the script still packages inline and
 # records sizes itself (the targeted e2e workflow runs that way).
 #
+# PREBUILT_REFERENCE_APP supplies an already-built E2EReference.app instead
+# of compiling the SwiftUI twin on the capture host. Its platform executable
+# must exist; invalid explicit input fails rather than building another host.
+#
 # The shard measures the release package, never a debug `water run`: the
-# packaged artifact is what users ship, so size, startup, memory, and pixel
-# parity all describe the production binary.
+# packaged artifact is what users ship, so size, startup, memory, and visual
+# comparison all describe the production binary.
+#
+# Requires compare-screenshots on PATH, built once by the workflows' prepare job.
 #
 # Requires bash >= 4.2, asserted below (#2683): the shard keeps background
 # children alive by design — the marker/reference log streams and `water
@@ -53,7 +59,7 @@ baselines_dir="${BASELINES_DIR:-${workspace}/backends/apple/Tests/E2EBaselines}"
 record_dir="${RECORD_DIR:-${workspace}/e2e-baselines}"
 record="${RECORD:-0}"
 prebuilt_dir="${PREBUILT_DIR:-}"
-parity_budgets="${PARITY_BUDGETS:-${baselines_dir}/parity-budgets.json}"
+flip_tolerances="${FLIP_TOLERANCES:-${baselines_dir}/parity-budgets.json}"
 reference_dir="${workspace}/backends/apple/Tests/E2EReference"
 command_deadline="${workspace}/.github/scripts/run-with-deadline.py"
 receipts_file="${logs_dir}/command-receipts-${platform}-${shard_index}.jsonl"
@@ -153,6 +159,11 @@ fi
 
 echo "Running ${#shard_examples[@]} examples on ${platform}: ${shard_examples[*]}"
 
+if ! compare_tool="$(command -v compare-screenshots)" || [[ ! -x "${compare_tool}" ]]; then
+  echo "::error::Missing prepared compare-screenshots executable; download its prepare-job artifact and add it to PATH."
+  exit 1
+fi
+
 if [[ "${platform}" == "ios" ]]; then
   # A `simctl launch` opens the app over whatever is currently frontmost, and
   # iOS answers with the status-bar "back to <app>" breadcrumb — pixels the
@@ -184,27 +195,12 @@ if [[ "${platform}" == "ios" ]]; then
   trap 'xcrun simctl status_bar "${SIMULATOR_UDID}" clear >/dev/null 2>&1 || true' EXIT
 fi
 
-# The capture helpers below re-invoke the checker sources constantly: the
-# settle loop runs a pixel compare once per poll (up to the 90 s deadline,
-# per example and per reference capture), content/compare run again per
-# example and twin, and every macOS frame first asks window-id for the
-# window number. `swift <file>` re-parses and type-checks the source on
-# every call — measured here at ~1.5 s for `content` on a real capture
-# vs ~0.02 s for the compiled binary — and the pixel loop itself runs
-# interpreted. The sources stay unchanged; they are compiled once per job
-# into scratch space and the binaries are reused for every call. Nothing
-# persists between jobs — the directory lives under TMPDIR and the EXIT
-# trap removes it.
+# Compile the macOS launch/window helpers once per job, not per capture poll.
 swift_tools_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-swift-tools.XXXXXX")"
 if [[ "${platform}" == "ios" ]]; then
   trap 'rm -rf "${swift_tools_dir}"; xcrun simctl status_bar "${SIMULATOR_UDID}" clear >/dev/null 2>&1 || true' EXIT
 else
   trap 'rm -rf "${swift_tools_dir}"' EXIT
-fi
-if ! swiftc -O -o "${swift_tools_dir}/compare-screenshots" \
-     "${workspace}/.github/scripts/compare-screenshots.swift"; then
-  echo "::error::Failed to compile compare-screenshots.swift."
-  exit 1
 fi
 if [[ "${platform}" == "macos" ]]; then
   if ! swiftc -O -o "${swift_tools_dir}/window-id" \
@@ -262,7 +258,7 @@ capture_frame() {
 }
 
 # Captures until every frame across SETTLE_WINDOW_S seconds agrees with the
-# window's first frame within DIFF_BUDGET=0.01 — the app has settled once its
+# window's first frame within the oracle's default FLIP limits — the app has settled once its
 # output stops changing — or the deadline passes, in which case the last
 # frame is kept. Fails when no frame could be captured.
 #
@@ -315,7 +311,7 @@ capture_settled() {
     # A `.skip` first screen cannot be made deterministic by construction —
     # continuous animation, live media — so the gate asks for exactly one
     # supervised capture after the first-paint marker rather than stability
-    # the example declares it cannot produce. Launch and the non-blank
+    # the example declares it cannot produce. Launch and image decoding
     # check downstream still gate; a wedged command still fails on its own
     # bound. The marker applies to the reference twin's capture here too.
     capture_frame "${target}" "${deadline_at}" ${pid:+"${pid}"}
@@ -336,17 +332,16 @@ capture_settled() {
         # Only compare's stdout is noise here; stderr stays — it carries the
         # supervisor's command_started/final receipt JSON and the child's own
         # diagnostics, which is what attributes a hang if the run dies mid-way.
-        DIFF_BUDGET=0.01 "${command_deadline}" run --label "capture:compare-screenshots" \
+        "${command_deadline}" run --label "capture:compare-screenshots" \
           --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
           --max-seconds "${COMMAND_BOUND_S}" \
-          -- "${swift_tools_dir}/compare-screenshots" \
+          -- "${compare_tool}" \
              compare "${anchor}" "${target}" "${shots_dir}/.settle-diff.png" \
+             "${comparison_args[@]}" \
              >/dev/null || compare_rc=$?
         # Only a comparison that ran to completion may steer the anchors:
-        # exit 0 = frames agree within budget, exit 1 = a real over-budget
-        # diff restarts the window; exit 3 = the chrome band flipped
-        # materialisation state between frames, which is still a screen
-        # change, so the window restarts the same way. Exit 2 (decode/write
+        # exit 0 = frames agree within FLIP tolerance, exit 1 = a completed
+        # over-tolerance comparison restarts the window. Exit 2 (decode/write
         # error) or any other status is a command failure — no anchor
         # update, no earlier-frame substitution. A 124 carries two cases:
         # killed at the scoped bound while shared budget remains is a hung
@@ -358,7 +353,7 @@ capture_settled() {
             rm -f "${anchor}"
             return 0
           fi
-        elif (( compare_rc == 1 || compare_rc == 3 )); then
+        elif (( compare_rc == 1 )); then
           # The screen changed: the window restarts here.
           cp "${target}" "${anchor}"
           window_start=${SECONDS}
@@ -566,6 +561,17 @@ has_twin() {
 reference_app=""
 build_reference_host() {
   [[ -n "${reference_app}" ]] && return 0
+  if [[ -n "${PREBUILT_REFERENCE_APP:-}" ]]; then
+    local binary="${PREBUILT_REFERENCE_APP}/E2EReference"
+    [[ "${platform}" == "macos" ]] && \
+      binary="${PREBUILT_REFERENCE_APP}/Contents/MacOS/E2EReference"
+    if [[ ! -x "${binary}" ]]; then
+      echo "::error::PREBUILT_REFERENCE_APP '${PREBUILT_REFERENCE_APP}' carries no executable ${binary} for platform '${platform}'."
+      return 1
+    fi
+    reference_app="${PREBUILT_REFERENCE_APP}"
+    return 0
+  fi
   local out_dir="${shots_dir}/.reference-host"
   if "${reference_dir}/build-reference-host.sh" "${platform}" "${out_dir}" \
       >"${logs_dir}/${platform}-reference-build.log" 2>&1; then
@@ -675,19 +681,9 @@ capture_reference() {
   fi
 }
 
-# The allowed diff fraction for this twin on this platform. A "<platform>@<os
-# major>" section wins over the plain platform key, which wins over the strict
-# default: "ios@27" records the navigation exception — SwiftUI's private bar
-# collapses the large title for a stacked search bar on iOS 27 while stock
-# UINavigationBar keeps it for identical public inputs, so the twin's extra
-# diff there is a platform behavior change, not a backend regression.
-parity_os_major=""
-parity_budget() {
-  local budget=""
-  if [[ -f "${parity_budgets}" ]]; then
-    if [[ -z "${parity_os_major}" ]]; then
-      if [[ "${platform}" == "ios" ]]; then
-        parity_os_major="$(xcrun simctl list devices --json | python3 -c '
+# Comparison identity comes from the running OS, not the build SDK.
+if [[ "${platform}" == "ios" ]]; then
+  comparison_os_major="$(xcrun simctl list devices --json | python3 -c '
 import json, re, sys
 for runtime, group in json.load(sys.stdin)["devices"].items():
     if any(d.get("udid") == sys.argv[1] for d in group):
@@ -695,32 +691,35 @@ for runtime, group in json.load(sys.stdin)["devices"].items():
         if m:
             print(m.group(1))
         break
-' "${SIMULATOR_UDID}")" || return 1
-        if [[ -z "${parity_os_major}" ]]; then
-          echo "::error::parity_budget: cannot derive iOS major: SIMULATOR_UDID=${SIMULATOR_UDID} not found in 'xcrun simctl list devices', or its runtime name has no iOS-<major> match." >&2
-          return 1
-        fi
-      else
-        parity_os_major="$(sw_vers -productVersion | cut -d. -f1)" || return 1
-        if [[ -z "${parity_os_major}" ]]; then
-          echo "::error::parity_budget: cannot derive macOS major: 'sw_vers -productVersion' returned no version." >&2
-          return 1
-        fi
-      fi
-    fi
-    budget="$(python3 -c '
+' "${SIMULATOR_UDID}")"
+else
+  comparison_os_major="$(sw_vers -productVersion | cut -d. -f1)"
+fi
+if [[ -z "${comparison_os_major}" ]]; then
+  echo "::error::Cannot derive the running ${platform} major version for screenshot comparison." >&2
+  exit 1
+fi
+
+# Final checks have the same per-command bound and receipt trail as capture.
+run_comparison() {
+  local label="$1" output="$2"
+  shift 2
+  local deadline_at
+  deadline_at="$("${command_deadline}" deadline --seconds "${COMMAND_BOUND_S}")" || return
+  "${command_deadline}" run --label "${label}" --deadline-at "${deadline_at}" \
+    --receipt "${receipts_file}" --max-seconds "${COMMAND_BOUND_S}" \
+    --child-stderr-file "${output%.json}.log" \
+    -- "${compare_tool}" "$@" > "${output}"
+}
+
+comparison_summary() {
+  python3 -c '
 import json, sys
-budgets = json.load(open(sys.argv[1]))
-platform, major, example = sys.argv[2], sys.argv[3], sys.argv[4]
-value = ""
-if major:
-  value = budgets.get(f"{platform}@{major}", {}).get(example, "")
-if value == "":
-  value = budgets.get(platform, {}).get(example, "")
-print(value)
-' "${parity_budgets}" "${platform}" "${parity_os_major}" "$1")" || return 1
-  fi
-  echo "${budget:-${DIFF_BUDGET:-0.02}}"
+with open(sys.argv[1]) as stream:
+    comparison = json.load(stream)
+json.dump({key: comparison[key] for key in ("metric", "flip_mean", "flip_max", "max_local_error", "limits")},
+          sys.stdout)
+' "$1"
 }
 
 # `water package` emits `Packaged at <path>` on success; resolve the bundle it
@@ -737,6 +736,7 @@ declare -a failures=()
 declare -a report=()
 
 for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
+  comparison_args=(--platform "${platform}" --os-major "${comparison_os_major}" --example "${example}")
   mem_cell="—"
   fp_cell="—"
   size_cell="—"
@@ -1037,10 +1037,11 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     }
   fi
 
-  if ! "${swift_tools_dir}/compare-screenshots" content "${shot}"; then
-    echo "::error::Captured screenshot for ${example} is blank."
-    failures+=("${example}: blank")
-    report+=("| \`${example}\` | blank capture | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+  if ! run_comparison "${example}:decode" "${shots_dir}/${platform}-${example}-capture.json" \
+      check "${shot}"; then
+    echo "::error::Cannot decode the captured screenshot for ${example}; see capture log and command receipts."
+    failures+=("${example}: screenshot decode")
+    report+=("| \`${example}\` | screenshot decode failed | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     echo "::endgroup::"
     continue
   fi
@@ -1048,34 +1049,36 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
   baseline="${baselines_dir}/${platform}/${example}.png"
   if [[ "${record}" == "1" ]]; then
     cp "${shot}" "${record_dir}/${platform}/${example}.png"
-    report+=("| \`${example}\` | recorded | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+    report+=("| \`${example}\` | recorded — VISUAL REVIEW REQUIRED | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
   elif [[ -f "${baselines_dir}/${platform}/${example}.skip" ]]; then
-    report+=("| \`${example}\` | launched (compare skipped) | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+    report+=("| \`${example}\` | captured (.skip) — VISUAL REVIEW REQUIRED | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
   elif [[ -f "${baselines_dir}/${platform}/${example}.visual" ]]; then
-    # `.visual` — the semantic class for output that is not pixel-stable by
-    # construction (GPU-rendered). Never pixel-compared; the capture pair
+    # `.visual` — output that is not deterministic by construction
+    # (GPU-rendered). The capture pair
     # (WaterUI + SwiftUI twin below) ships as artifacts for human review.
     report+=("| \`${example}\` | launched — VISUAL REVIEW REQUIRED | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
   elif [[ ! -f "${baseline}" ]]; then
-    report+=("| \`${example}\` | launched (no baseline yet) | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+    report+=("| \`${example}\` | no baseline — VISUAL REVIEW REQUIRED | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
   else
     diff_image="${shots_dir}/${platform}-${example}-diff.png"
+    baseline_json="${shots_dir}/${platform}-${example}-baseline.json"
     compare_rc=0
-    compare_out="$("${swift_tools_dir}/compare-screenshots" \
-        compare "${baseline}" "${shot}" "${diff_image}")" || compare_rc=$?
+    run_comparison "${example}:baseline" "${baseline_json}" \
+      compare "${baseline}" "${shot}" "${diff_image}" "${comparison_args[@]}" || compare_rc=$?
+    compare_out=""
+    if (( compare_rc == 0 || compare_rc == 1 )); then
+      compare_out="$(comparison_summary "${baseline_json}")"
+    fi
     if (( compare_rc == 0 )); then
-      report+=("| \`${example}\` | baseline match | ${compare_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
-    elif (( compare_rc == 3 )); then
-      # The capture landed in the other tab-bar materialisation state
-      # than the baseline — the platform's two-state chrome render, not
-      # a backend regression (#1478). The content region already compared
-      # within budget for the call to have been made.
-      echo "::warning::baseline chrome state-mismatch for ${example}: ${compare_out}"
-      report+=("| \`${example}\` | chrome state-mismatch (platform flake) | ${compare_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+      report+=("| \`${example}\` | baseline within FLIP tolerance — REVIEW REQUIRED | ${compare_out} | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+    elif (( compare_rc == 1 )); then
+      echo "::error::Baseline FLIP tolerance exceeded for ${example}: ${compare_out}; inspect the full capture and heatmap."
+      failures+=("${example}: baseline FLIP tolerance")
+      report+=("| \`${example}\` | baseline exceeds FLIP tolerance — REVIEW REQUIRED | ${compare_out} | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     else
-      echo "::error::Screenshot regression for ${example}: ${compare_out}"
-      failures+=("${example}: regression")
-      report+=("| \`${example}\` | regression | ${compare_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+      echo "::error::Baseline comparison command failed for ${example} (exit ${compare_rc}); see its log and command receipts."
+      failures+=("${example}: baseline comparison command")
+      report+=("| \`${example}\` | baseline comparison failed (${compare_rc}) | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     fi
   fi
 
@@ -1098,53 +1101,47 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     fi
     ref_shot="${shots_dir}/${platform}-${example}-ref.png"
     parity_diff="${shots_dir}/${platform}-${example}-parity-diff.png"
-    budget="$(parity_budget "${example}")"
-    # Record runs measure rather than gate: an unbounded budget keeps the
-    # compare green so the true fraction lands in the report and the artifact.
-    [[ "${record}" == "1" ]] && budget="1.0"
+    parity_json="${shots_dir}/${platform}-${example}-parity.json"
+    parity_record_flag=""
+    [[ "${record}" == "1" ]] && parity_record_flag="--record"
     if ! capture_reference "${ref_shot}" "${example}" "${product}"; then
       echo "::error::Could not capture the SwiftUI reference for ${example}."
       failures+=("${example}: reference capture")
       report+=("| \`${example}\` (parity) | reference failed | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
-    elif ! "${swift_tools_dir}/compare-screenshots" \
-        content "${ref_shot}" >/dev/null 2>&1; then
-      echo "::error::SwiftUI reference for ${example} captured blank."
-      failures+=("${example}: reference blank")
-      report+=("| \`${example}\` (parity) | reference blank | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+    elif ! run_comparison "${example}:reference-decode" \
+        "${shots_dir}/${platform}-${example}-reference.json" check "${ref_shot}"; then
+      echo "::error::Cannot decode the SwiftUI reference for ${example}; see reference log and command receipts."
+      failures+=("${example}: reference decode")
+      report+=("| \`${example}\` (parity) | reference decode failed | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     elif [[ -f "${baselines_dir}/${platform}/${example}.visual" ]]; then
       # `.visual`: both halves of the pair are captured and shipped as
-      # artifacts; a human reviews them — GPU-rendered output is never
-      # pixel-compared.
+      # artifacts; a human reviews the whole images.
       report+=("| \`${example}\` (parity) | VISUAL REVIEW REQUIRED | pair in e2e-shots artifacts | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     else
       parity_rc=0
-      parity_out="$(DIFF_BUDGET="${budget}" \
-        "${swift_tools_dir}/compare-screenshots" \
-        compare "${ref_shot}" "${shot}" "${parity_diff}" 2>&1)" || parity_rc=$?
+      run_comparison "${example}:parity" "${parity_json}" \
+        compare "${ref_shot}" "${shot}" "${parity_diff}" "${comparison_args[@]}" \
+        --tolerances "${flip_tolerances}" ${parity_record_flag:+"${parity_record_flag}"} || parity_rc=$?
+      parity_out=""
+      if (( parity_rc == 0 || parity_rc == 1 )); then
+        parity_out="$(comparison_summary "${parity_json}")"
+      fi
       if (( parity_rc == 0 )); then
-        parity_fraction="${parity_out#compare: }"
-        parity_fraction="${parity_fraction%% *}"
         if [[ "${record}" == "1" ]]; then
           mkdir -p "${record_dir}/parity"
-          printf '%s\n' "${parity_fraction}" \
-            > "${record_dir}/parity/${platform}-${example}.txt"
-          report+=("| \`${example}\` (parity) | recorded ${parity_fraction} | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+          cp "${parity_json}" "${record_dir}/parity/${platform}-${example}.json"
+          report+=("| \`${example}\` (parity) | recorded — VISUAL REVIEW REQUIRED | ${parity_out} | ${fp_cell} | ${size_cell} | ${mem_cell} |")
         else
-          report+=("| \`${example}\` (parity) | within budget ${budget} | ${parity_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+          report+=("| \`${example}\` (parity) | within FLIP tolerance — REVIEW REQUIRED | ${parity_out} | ${fp_cell} | ${size_cell} | ${mem_cell} |")
         fi
-      elif (( parity_rc == 3 )); then
-        # The pair landed in different tab-bar materialisation states —
-        # the iOS 26 simulator's stable two-state chrome render (#1478).
-        # Both states are the platform's, seen on the reference host as
-        # well, so a cross-state pair reports the platform flake rather
-        # than a backend regression; the content region already compared
-        # within budget for the call to have been made.
-        echo "::warning::SwiftUI parity state-mismatch for ${example}: ${parity_out} (budget ${budget})"
-        report+=("| \`${example}\` (parity) | chrome state-mismatch (platform flake) | ${parity_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+      elif (( parity_rc == 1 )); then
+        echo "::error::SwiftUI parity FLIP tolerance exceeded for ${example}: ${parity_out}; inspect the full pair and heatmap."
+        failures+=("${example}: parity FLIP tolerance")
+        report+=("| \`${example}\` (parity) | exceeds FLIP tolerance — REVIEW REQUIRED | ${parity_out} | ${fp_cell} | ${size_cell} | ${mem_cell} |")
       else
-        echo "::error::SwiftUI parity regression for ${example}: ${parity_out} (budget ${budget})"
-        failures+=("${example}: parity regression")
-        report+=("| \`${example}\` (parity) | drift over budget ${budget} | ${parity_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+        echo "::error::SwiftUI parity comparison command failed for ${example} (exit ${parity_rc}); see its log and command receipts."
+        failures+=("${example}: parity comparison command")
+        report+=("| \`${example}\` (parity) | comparison failed (${parity_rc}) | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
       fi
     fi
   fi

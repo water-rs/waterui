@@ -201,7 +201,7 @@ executor-core = { version = "0.7.1", features = ["std"]}
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 futures-lite = "2.6"
 geo = { version = "0.33", default-features = false }
-getrandom = "0.4"
+getrandom = { version = "0.4", default-features = false }
 geo-types = "0.7"
 lru = "0.19"
 mvt-reader = "2.5.0"

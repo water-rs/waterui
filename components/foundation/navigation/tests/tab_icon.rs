@@ -13,22 +13,13 @@ use waterui::navigation::tab::{Tab, TabIcon};
 use waterui::text::Text;
 use waterui_icons_lucide as lucide;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Pane {
-    Home,
-    Browse,
-    Plain,
-}
-
-fn tab(pane: Pane, label: impl waterui::component::IntoLabel) -> Tab<Pane> {
-    Tab::new(pane, label, || {
-        NavigationView::new("Root", Text::new("content"))
-    })
+fn tab(label: impl waterui::component::IntoLabel) -> Tab {
+    Tab::new(label, || NavigationView::new("Root", Text::new("content")))
 }
 
 #[test]
 fn a_system_symbol_stays_a_symbol() {
-    let tab = tab(Pane::Home, label("Home").icon(system_icon::home()));
+    let tab = tab(label("Home").icon(system_icon::home()));
 
     // A symbol the platform knows by name: the backend renders it natively
     // rather than receiving a bitmap.
@@ -40,7 +31,7 @@ fn a_system_symbol_stays_a_symbol() {
 
 #[test]
 fn a_packaged_icon_arrives_as_a_view() {
-    let tab = tab(Pane::Browse, label("Browse").icon(lucide::compass()));
+    let tab = tab(label("Browse").icon(lucide::compass()));
 
     // Not a platform symbol, so the backend has to draw it: the icon crosses as
     // a view for the host to rasterize.
@@ -52,24 +43,31 @@ fn a_packaged_icon_arrives_as_a_view() {
 
 #[test]
 fn a_label_without_an_icon_carries_none() {
-    let tab = tab(Pane::Plain, "Plain");
+    let tab = tab("Plain");
     assert!(tab.icon.is_none(), "a title-only tab has no icon to place");
 }
 
 #[test]
 fn erasing_tab_identity_keeps_the_icon() {
     use waterui::navigation::Tabs;
+    use waterui::views::{ViewSnapshot as _, Views as _};
 
-    let selection = Binding::container(Pane::Home);
+    let selection = Binding::container(0usize);
     let tabs = Tabs::new(
         &selection,
-        vec![tab(Pane::Home, label("Home").icon(system_icon::home()))],
+        vec![tab(label("Home").icon(system_icon::home()))],
     );
 
     // The icon has to survive the projection into the `Id`-keyed container the
     // C ABI carries, which is the only form a backend ever sees.
     let layout = tabs.into_layout();
-    match &layout.tabs[0].icon {
+    match &layout
+        .tabs
+        .snapshot()
+        .get_view(0)
+        .expect("a mounted tab")
+        .icon
+    {
         Some(TabIcon::System(icon)) => assert_eq!(icon.name.as_str(), "house"),
         other => panic!("expected the symbol to survive erasure, got {other:?}"),
     }

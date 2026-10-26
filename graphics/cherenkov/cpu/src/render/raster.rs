@@ -66,6 +66,8 @@ pub struct Scratch<'a> {
 struct Buffers {
     free: Vec<Vec<[f32; 4]>>,
     coverage: Vec<Compiler>,
+    clips: Vec<ClipScratch>,
+    clip_charge: u64,
     /// Live colour-buffer bytes and their peak for the current band.
     meter: Meter,
     /// Expanded-window query scratch: each `run` depth's item selection.
@@ -198,6 +200,7 @@ fn capture_rows(
     items: &[Item],
     need: (usize, usize),
     (width, h): (usize, usize),
+    meter: Option<&FrameMeter>,
 ) -> Option<CaptureRows> {
     let (mut k0, mut k1) = kept_rows(&item.union, item.reach, need, h);
     let device = (k0, k1);
@@ -207,7 +210,15 @@ fn capture_rows(
             _ => None,
         }) == Some(item.group)
     {
-        let sampled = sample_rows_at(level, items, 0..items.len(), item.group, need, (width, h));
+        let sampled = sample_rows_at(
+            level,
+            items,
+            0..items.len(),
+            item.group,
+            need,
+            (width, h),
+            meter,
+        );
         k0 = k0.max(sampled.0);
         k1 = k1.min(sampled.1);
     }
@@ -296,9 +307,10 @@ fn sample_rows_at(
     group: u64,
     band: (usize, usize),
     (w, h): (usize, usize),
+    meter: Option<&FrameMeter>,
 ) -> (usize, usize) {
     fearless_simd::dispatch!(level, _simd => {
-        sample_rows(level, items, range, group, band, (w, h))
+        sample_rows(level, items, range, group, band, (w, h), meter)
     })
 }
 
@@ -319,8 +331,12 @@ fn sample_rows(
     group: u64,
     band: (usize, usize),
     (w, h): (usize, usize),
+    meter: Option<&FrameMeter>,
 ) -> (usize, usize) {
     let mut rows = (h, 0);
+    let mut clips = ClipScratch::default();
+    let mut compiler = Compiler::default();
+    let mut charged = 0;
     let mut i = range.start;
     while i < range.end {
         match &items[i] {
@@ -333,6 +349,7 @@ fn sample_rows(
                     group,
                     (band.0.saturating_sub(*apron), (band.1 + apron).min(h)),
                     (w, h),
+                    meter,
                 );
                 rows = (rows.0.min(nested.0), rows.1.max(nested.1));
                 i = end;
@@ -355,9 +372,16 @@ fn sample_rows(
                     {
                         let x0 = (bounds.x0.max(0) as usize).min(w);
                         let x1 = (bounds.x1.max(0) as usize).min(w);
+                        let clip = clips.prepare(
+                            clip.as_ref(),
+                            first..last,
+                            w,
+                            &mut compiler,
+                            meter.map(|m| (&mut charged, m)),
+                        );
                         for py in first..last {
                             for px in x0..x1 {
-                                if clip_cov(clip.as_ref(), w, px, py) <= 0.0 {
+                                if clip_cov(clip, w, px, py) <= 0.0 {
                                     continue;
                                 }
                                 let (field, coverage) =
@@ -379,6 +403,10 @@ fn sample_rows(
             _ => {}
         }
         i += 1;
+    }
+    if let Some(meter) = meter {
+        meter.query_live.fetch_sub(charged, Ordering::Relaxed);
+        meter.clip_live.fetch_sub(charged, Ordering::Relaxed);
     }
     rows
 }
@@ -467,6 +495,8 @@ impl<'a> Scratch<'a> {
             buffers: Buffers {
                 free: Vec::new(),
                 coverage: Vec::new(),
+                clips: Vec::new(),
+                clip_charge: 0,
                 meter: Meter::default(),
                 sel_items: Vec::new(),
                 sel_charge: Vec::new(),
@@ -488,9 +518,12 @@ impl Drop for Scratch<'_> {
         if let Some(m) = self.meter {
             let bytes = (self.buffers.sel_items_charge
                 + self.buffers.sel_charge.iter().sum::<usize>() * size_of::<usize>())
-                as u64;
+                as u64
+                + self.buffers.clip_charge;
             m.query_live
                 .fetch_sub(bytes, std::sync::atomic::Ordering::Relaxed);
+            m.clip_live
+                .fetch_sub(self.buffers.clip_charge, Ordering::Relaxed);
         }
     }
 }
@@ -674,7 +707,7 @@ fn shadow_edge<S: Simd>(
     py: usize,
     cx: f32,
     inv_sqrt2_sigma: f32,
-    clip_mask: Option<&[f32]>,
+    clip_mask: Option<ClipCoverage<'_>>,
     color: &[f32; 4],
     space: cherenkov::BlendSpace,
     from: usize,
@@ -694,7 +727,7 @@ fn shadow_edge<S: Simd>(
             }
             let x = x + j;
             let cc = match clip_mask {
-                Some(m) => m[py * w + x],
+                Some(m) => clip_cov(Some(m), w, x, py),
                 None => 1.0,
             };
             if cc <= 0.0 {
@@ -707,22 +740,108 @@ fn shadow_edge<S: Simd>(
     }
 }
 
-/// The clip coverage of `(px, py)`: 1/0 for the rect fast path, the mask
-/// sample otherwise.
+/// Charge new clip storage to both query diagnostics and the public peak.
+fn clip_alloc(bytes: u64, meter: Option<&FrameMeter>) {
+    sel_alloc(bytes, meter);
+    if let Some(meter) = meter {
+        let live = meter.clip_live.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        meter.clip_peak.fetch_max(live, Ordering::Relaxed);
+    }
+}
+
+/// Coverage borrowed from one raster window, never retained by the scene.
+#[derive(Clone, Copy, Debug)]
+pub enum ClipCoverage<'a> {
+    /// Integer clip, without a raster allocation.
+    Rect(IRect),
+    /// Exact-area coverage of the current row window.
+    Samples {
+        /// Row-major coverage at the surface width.
+        cells: &'a [f32],
+        /// Device row represented by the first sample row.
+        top: usize,
+    },
+}
+
+/// Reused by a worker across items and bands; one slot per recursive window.
+#[derive(Default)]
+struct ClipScratch {
+    cells: Vec<f32>,
+    previous: Option<ClipRef>,
+    rows: Range<usize>,
+    width: usize,
+}
+
+impl ClipScratch {
+    fn prepare<'a>(
+        &'a mut self,
+        clip: Option<&ClipRef>,
+        rows: Range<usize>,
+        width: usize,
+        compiler: &mut Compiler,
+        meter: Option<(&mut u64, &FrameMeter)>,
+    ) -> Option<ClipCoverage<'a>> {
+        let clip = clip?;
+        match clip.as_ref() {
+            ClipMask::Rect(rect) => Some(ClipCoverage::Rect(*rect)),
+            ClipMask::Geometry { boundary, .. } => {
+                if self.width != width
+                    || self.rows != rows
+                    || !self
+                        .previous
+                        .as_ref()
+                        .is_some_and(|old| std::sync::Arc::ptr_eq(old, clip))
+                {
+                    let before =
+                        compiler.heap_bytes() + (self.cells.capacity() * size_of::<f32>()) as u64;
+                    self.cells.resize(width * rows.len(), 0.0);
+                    self.cells.fill(0.0);
+                    compiler.prepare(
+                        boundary,
+                        super::tiles::Fixed::default(),
+                        rows.clone(),
+                        width,
+                    );
+                    compiler.rows(rows.len(), |y, range, run| {
+                        for (i, x) in range.enumerate() {
+                            self.cells[y * width + x] = run.at(i);
+                        }
+                    });
+                    if let Some((charged, meter)) = meter {
+                        let bytes = compiler.heap_bytes()
+                            + (self.cells.capacity() * size_of::<f32>()) as u64
+                            - before;
+                        clip_alloc(bytes, Some(meter));
+                        *charged += bytes;
+                    }
+                    self.previous = Some(clip.clone());
+                    self.rows = rows;
+                    self.width = width;
+                }
+                Some(ClipCoverage::Samples {
+                    cells: &self.cells,
+                    top: self.rows.start,
+                })
+            }
+        }
+    }
+}
+
+/// The clip coverage of one device pixel in a prepared row window.
 #[expect(
     clippy::cast_sign_loss,
     reason = "clip rect edges are clamped non-negative before indexing"
 )]
-fn clip_cov(clip: Option<&ClipRef>, w: usize, px: usize, py: usize) -> f32 {
-    match clip.map(std::convert::AsRef::as_ref) {
+fn clip_cov(clip: Option<ClipCoverage<'_>>, w: usize, px: usize, py: usize) -> f32 {
+    match clip {
         None => 1.0,
-        Some(ClipMask::Rect(r)) => f32::from(
-            px >= (r.x0.max(0) as usize)
-                && px < (r.x1.max(0) as usize)
-                && py >= (r.y0.max(0) as usize)
-                && py < (r.y1.max(0) as usize),
+        Some(ClipCoverage::Rect(r)) => f32::from(
+            px >= r.x0.max(0) as usize
+                && px < r.x1.max(0) as usize
+                && py >= r.y0.max(0) as usize
+                && py < r.y1.max(0) as usize,
         ),
-        Some(ClipMask::Cover(mask)) => mask[py * w + px],
+        Some(ClipCoverage::Samples { cells, top }) => cells[(py - top) * w + px],
     }
 }
 
@@ -1182,29 +1301,54 @@ fn composite(
     )
 }
 
-/// The clip-coverage source of one run on a device row: [`clip_cov`]
-/// sampled per pixel column from the run's first column `x0` on.
+/// Clip coverage already resolved to one row and run origin.
 #[derive(Clone, Copy, Debug)]
 pub struct ClipRun<'a> {
-    clip: Option<&'a ClipRef>,
-    /// The coverage mask's stride (the surface width).
-    w: usize,
-    /// The run's first device column.
-    x0: usize,
-    /// The run's device row.
-    py: usize,
+    span: ClipSpan<'a>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ClipSpan<'a> {
+    Full,
+    Rect { first: usize, last: usize },
+    Samples(&'a [f32]),
 }
 
 impl<'a> ClipRun<'a> {
-    /// The clip source of the run `x0..` on device row `py`.
+    /// Resolve the clip at `x0..` on device row `py` once per span.
     #[must_use]
-    pub const fn new(clip: Option<&'a ClipRef>, w: usize, x0: usize, py: usize) -> Self {
-        Self { clip, w, x0, py }
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "rectangle edges are clamped non-negative"
+    )]
+    pub fn new(clip: Option<&ClipCoverage<'a>>, w: usize, x0: usize, py: usize) -> Self {
+        let span = match clip {
+            None => ClipSpan::Full,
+            Some(ClipCoverage::Rect(rect)) => {
+                if py < rect.y0.max(0) as usize || py >= rect.y1.max(0) as usize {
+                    ClipSpan::Rect { first: 0, last: 0 }
+                } else {
+                    ClipSpan::Rect {
+                        first: (rect.x0.max(0) as usize).saturating_sub(x0),
+                        last: (rect.x1.max(0) as usize).saturating_sub(x0),
+                    }
+                }
+            }
+            Some(ClipCoverage::Samples { cells, top }) => {
+                let row = (py - top) * w;
+                ClipSpan::Samples(&cells[row + x0..row + w])
+            }
+        };
+        Self { span }
     }
 
     /// The clip coverage of the run's `i`th pixel.
     fn at(&self, i: usize) -> f32 {
-        clip_cov(self.clip, self.w, self.x0 + i, self.py)
+        match self.span {
+            ClipSpan::Full => 1.0,
+            ClipSpan::Rect { first, last } => f32::from(i >= first && i < last),
+            ClipSpan::Samples(cells) => cells[i],
+        }
     }
 }
 
@@ -1406,7 +1550,7 @@ pub fn composite_span<S: Simd, C: Source>(
     cov.check_len(dst.len());
     match (
         space == cherenkov::BlendSpace::SrgbEncoded,
-        clip.clip.is_some(),
+        !matches!(clip.span, ClipSpan::Full),
     ) {
         (true, true) => composite_span_in::<S, C, true, true>(simd, dst, src, cov, clip),
         (true, false) => composite_span_in::<S, C, true, false>(simd, dst, src, cov, clip),
@@ -1436,10 +1580,14 @@ pub fn composite_solid<S: Simd, C: Source>(
     space: cherenkov::BlendSpace,
 ) {
     cov.check_len(dst.len());
-    if space == cherenkov::BlendSpace::SrgbEncoded {
-        composite_solid_in::<S, C, true>(simd, dst, cov, clip, color);
-    } else {
-        composite_solid_in::<S, C, false>(simd, dst, cov, clip, color);
+    match (
+        space == cherenkov::BlendSpace::SrgbEncoded,
+        !matches!(clip.span, ClipSpan::Full),
+    ) {
+        (true, true) => composite_solid_in::<S, C, true, true>(simd, dst, cov, clip, color),
+        (true, false) => composite_solid_in::<S, C, true, false>(simd, dst, cov, clip, color),
+        (false, true) => composite_solid_in::<S, C, false, true>(simd, dst, cov, clip, color),
+        (false, false) => composite_solid_in::<S, C, false, false>(simd, dst, cov, clip, color),
     }
 }
 
@@ -1465,7 +1613,7 @@ fn store_solid_block<S: Simd>(planes: [f32x4<S>; 4], pixels: &mut [[f32; 4]; 4])
     reason = "compiled under the dispatched CPU level"
 )]
 #[inline(always)]
-fn composite_solid_in<S: Simd, C: Source, const SRGB: bool>(
+fn composite_solid_in<S: Simd, C: Source, const SRGB: bool, const CLIPPED: bool>(
     simd: S,
     dst: &mut [[f32; 4]],
     cov: C,
@@ -1484,7 +1632,7 @@ fn composite_solid_in<S: Simd, C: Source, const SRGB: bool>(
         simd.splat_f32x4(stored[2]),
         simd.splat_f32x4(stored[3]),
     ];
-    if opaque && cov.full() && clip.clip.is_none() {
+    if opaque && cov.full() && !CLIPPED {
         let (groups, tail) = dst.as_chunks_mut::<4>();
         for group in groups {
             store_solid_block(stored_planes, group);
@@ -1497,9 +1645,9 @@ fn composite_solid_in<S: Simd, C: Source, const SRGB: bool>(
     let count = dst.len();
     let mut pos = 0;
     while pos < count {
-        if opaque && cov.at(pos) == 1.0 && clip.at(pos) == 1.0 {
+        if opaque && cov.at(pos) == 1.0 && (!CLIPPED || clip.at(pos) == 1.0) {
             let start = pos;
-            while pos < count && cov.at(pos) == 1.0 && clip.at(pos) == 1.0 {
+            while pos < count && cov.at(pos) == 1.0 && (!CLIPPED || clip.at(pos) == 1.0) {
                 pos += 1;
             }
             let (groups, tail) = dst[start..pos].as_chunks_mut::<4>();
@@ -1512,11 +1660,13 @@ fn composite_solid_in<S: Simd, C: Source, const SRGB: bool>(
         } else if pos + 4 <= count {
             for lane in 0..4 {
                 let i = pos + lane;
-                blend_packed::<S, SRGB>(simd, &mut dst[i], color, cov.at(i), clip.at(i));
+                let cc = if CLIPPED { clip.at(i) } else { 1.0 };
+                blend_packed::<S, SRGB>(simd, &mut dst[i], color, cov.at(i), cc);
             }
             pos += 4;
         } else {
-            blend_packed::<S, SRGB>(simd, &mut dst[pos], color, cov.at(pos), clip.at(pos));
+            let cc = if CLIPPED { clip.at(pos) } else { 1.0 };
+            blend_packed::<S, SRGB>(simd, &mut dst[pos], color, cov.at(pos), cc);
             pos += 1;
         }
     }
@@ -1538,11 +1688,11 @@ fn shade_run<S: Simd>(
     py: usize,
     w: usize,
     paint: &PaintData,
-    clip: Option<&ClipRef>,
+    clip: Option<&ClipCoverage<'_>>,
     space: cherenkov::BlendSpace,
     src: &mut [MaybeUninit<[f32; 4]>],
 ) {
-    let (range, cov, clip) = if let Some(ClipMask::Rect(rect)) = clip.map(AsRef::as_ref) {
+    let (range, cov, clip) = if let Some(ClipCoverage::Rect(rect)) = clip {
         if py < rect.y0.max(0) as usize || py >= rect.y1.max(0) as usize {
             return;
         }
@@ -1660,7 +1810,7 @@ fn shade(
     // A surface that used no backdrop group cannot contain a `Capture`,
     // so the scan is skipped outright.
     let top = if has_backdrop {
-        top_captures(level, items, surface, (w, h))
+        top_captures(level, items, surface, (w, h), meter)
     } else {
         TopCaptures::new()
     };
@@ -1734,6 +1884,7 @@ fn top_captures(
     items: &[Item],
     surface: (usize, usize),
     size: (usize, usize),
+    meter: Option<&FrameMeter>,
 ) -> TopCaptures {
     // (capture item, its group, the first item sampling the group)
     let mut plan: Vec<(usize, u64, usize)> = Vec::new();
@@ -1770,7 +1921,7 @@ fn top_captures(
         let Item::Capture(capture) = &items[i] else {
             unreachable!("only capture items are planned");
         };
-        top[k].1 = capture_rows(level, capture, items, need, size);
+        top[k].1 = capture_rows(level, capture, items, need, size, meter);
     }
     top
 }
@@ -1948,6 +2099,8 @@ fn shade_windowed(
 /// The input borrow lasts through the joined raster tasks. Claims never
 /// create a shared reference to pixel contents or reuse a claimed band.
 struct BandQueue<'a, T> {
+    selected: Option<&'a cherenkov::damage::Region>,
+    count: usize,
     output: *mut T,
     len: usize,
     chunk_len: NonZeroUsize,
@@ -1962,8 +2115,18 @@ struct BandQueue<'a, T> {
 unsafe impl<T: Send> Sync for BandQueue<'_, T> {}
 
 impl<'a, T> BandQueue<'a, T> {
-    const fn new(output: &'a mut [T], chunk_len: NonZeroUsize) -> Self {
+    fn new(
+        output: &'a mut [T],
+        chunk_len: NonZeroUsize,
+        selected: Option<&'a cherenkov::damage::Region>,
+    ) -> Self {
+        let count = selected.map_or_else(
+            || output.len().div_ceil(chunk_len.get()),
+            |selected| usize::try_from(selected.pixel_area()).expect("band count fits usize"),
+        );
         Self {
+            selected,
+            count,
             output: output.as_mut_ptr(),
             len: output.len(),
             chunk_len,
@@ -1972,29 +2135,35 @@ impl<'a, T> BandQueue<'a, T> {
         }
     }
 
-    const fn band_count(&self) -> usize {
-        self.len.div_ceil(self.chunk_len.get())
-    }
-
     #[expect(
         clippy::mut_from_ref,
         reason = "unique atomic claims partition the exclusively borrowed output"
     )]
     fn claim(&self) -> Option<(usize, &mut [T])> {
-        let count = self.band_count();
-        let index = self
+        let ordinal = self
             .next
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
-                (next < count).then(|| next + 1)
+                (next < self.count).then(|| next + 1)
             })
             .ok()?;
+        let index = self.selected.map_or(ordinal, |selected| {
+            let mut remaining = ordinal;
+            for rect in selected.rectangles() {
+                let length = rect.height() as usize;
+                if remaining < length {
+                    return rect.y0() as usize + remaining;
+                }
+                remaining -= length;
+            }
+            unreachable!("claimed band lies inside selected coverage")
+        });
         let start = index * self.chunk_len.get();
         let len = self.chunk_len.get().min(self.len - start);
-        // SAFETY: try_update claims each index below count exactly once,
-        // without wrapping. Thus start < self.len, multiplication cannot
-        // overflow, and this band lies wholly within the original slice.
-        // Distinct indices yield disjoint bands. The exclusive input borrow
-        // and this queue borrow keep the allocation alive for the result.
+        // SAFETY: try_update claims each ordinal exactly once. The selected
+        // region contains disjoint bands within this output, so mapping an
+        // ordinal to its band preserves uniqueness and keeps start < len.
+        // The exclusive input borrow and this queue borrow keep the
+        // allocation alive for the result.
         let band = unsafe { std::slice::from_raw_parts_mut(self.output.add(start), len) };
         Some((index, band))
     }
@@ -2010,6 +2179,7 @@ fn for_each_band<T: Send>(
     h: usize,
     edges: Option<usize>,
     meter: &FrameMeter,
+    selected: Option<&cherenkov::damage::Region>,
     shade_band: impl Fn(usize, &mut [T], &mut Scratch<'_>) -> Result<(), cherenkov::RenderError> + Sync,
 ) -> Result<(), cherenkov::RenderError> {
     if output.is_empty() || h == 0 {
@@ -2017,8 +2187,8 @@ fn for_each_band<T: Send>(
     }
     let chunk_len =
         NonZeroUsize::new(w * h.min(BAND_H)).expect("non-empty raster output has non-zero width");
-    let queue = BandQueue::new(output, chunk_len);
-    let tasks = queue.band_count().min(rayon::current_num_threads());
+    let queue = BandQueue::new(output, chunk_len, selected);
+    let tasks = queue.count.min(rayon::current_num_threads());
     (0..tasks).into_par_iter().try_for_each(|_| {
         let Some((mut index, mut band)) = queue.claim() else {
             return Ok(());
@@ -2052,6 +2222,7 @@ pub fn render_bands(
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
     meter: &mut FrameMeter,
+    selected: Option<&cherenkov::damage::Region>,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     index.rebuild(items, h);
     meter.record_index(index.heap_bytes());
@@ -2064,6 +2235,7 @@ pub fn render_bands(
         h,
         index.coverage_capacity(has_backdrop),
         meter,
+        selected,
         |y0, band, scratch| {
             shade(
                 level,
@@ -2101,6 +2273,7 @@ pub fn render_bands_f16(
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
     meter: &mut FrameMeter,
+    selected: Option<&cherenkov::damage::Region>,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     index.rebuild(items, h);
     meter.record_index(index.heap_bytes());
@@ -2113,6 +2286,7 @@ pub fn render_bands_f16(
         h,
         index.coverage_capacity(has_backdrop),
         meter,
+        selected,
         |y0, out_slice, scratch| {
             let mut band_px = scratch.buffers.take_color(out_slice.len());
             let result = shade(
@@ -2278,6 +2452,7 @@ fn run<S: Simd>(
     depth: usize,
 ) -> Result<(), cherenkov::RenderError> {
     let bh = band.fb.len() / band.w;
+    let mut clips = buffers.clips.pop().unwrap_or_default();
     let h = ctx.h;
     // Item indexes below `skip` were consumed by a filter scope's
     // nested run.
@@ -2293,15 +2468,24 @@ fn run<S: Simd>(
                 bbox,
                 paint,
                 clip,
-            } => band.draw(
-                simd,
-                acc,
-                stack,
-                (edges, *offset),
-                *bbox,
-                paint,
-                clip.as_ref(),
-            ),
+            } => {
+                let clip = clips.prepare(
+                    clip.as_ref(),
+                    band.y0..band.y0 + bh,
+                    band.w,
+                    acc,
+                    ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                );
+                band.draw(
+                    simd,
+                    acc,
+                    stack,
+                    (edges, *offset),
+                    *bbox,
+                    paint,
+                    clip.as_ref(),
+                );
+            }
             Item::PushIsolate { space } => stack.push(Plane {
                 buf: buffers.take_color(slice_len(band.w, bh)),
                 space: *space,
@@ -2319,7 +2503,13 @@ fn run<S: Simd>(
                     plane.space,
                     *opacity,
                     *blend,
-                    clip.as_ref(),
+                    clips.prepare(
+                        clip.as_ref(),
+                        band.y0..band.y0 + bh,
+                        band.w,
+                        acc,
+                        ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                    ),
                     stack,
                 );
                 buffers.give_color(plane.buf);
@@ -2396,7 +2586,20 @@ fn run<S: Simd>(
                 }
                 let first = (band.y0 - top) * band.w;
                 let central = &window[first..first + band.fb.len()];
-                band.composite_isolate(central, *space, *opacity, *blend, clip.as_ref(), stack);
+                band.composite_isolate(
+                    central,
+                    *space,
+                    *opacity,
+                    *blend,
+                    clips.prepare(
+                        clip.as_ref(),
+                        band.y0..band.y0 + bh,
+                        band.w,
+                        acc,
+                        ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                    ),
+                    stack,
+                );
                 buffers.give_color(window);
                 skip = scope_end + 1;
             }
@@ -2408,7 +2611,14 @@ fn run<S: Simd>(
             Item::Capture(capture) => {
                 let rows = match ctx.top.iter().find(|(j, _)| *j == i) {
                     Some((_, rows)) => *rows,
-                    None => capture_rows(ctx.level, capture, items, ctx.surface, (band.w, h)),
+                    None => capture_rows(
+                        ctx.level,
+                        capture,
+                        items,
+                        ctx.surface,
+                        (band.w, h),
+                        ctx.meter,
+                    ),
                 };
                 if let Some(rows) = rows {
                     capture_band(simd, band, stack.as_slice(), buffers, ctx, capture, rows)?;
@@ -2426,7 +2636,13 @@ fn run<S: Simd>(
                     band.sample(
                         capture,
                         *bounds,
-                        clip.as_ref(),
+                        clips.prepare(
+                            clip.as_ref(),
+                            band.y0..band.y0 + bh,
+                            band.w,
+                            acc,
+                            ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                        ),
                         effect,
                         union.as_ref(),
                         *space,
@@ -2449,11 +2665,42 @@ fn run<S: Simd>(
                 *sigma_eff,
                 color,
                 *bbox,
-                clip.as_ref(),
+                clips.prepare(
+                    clip.as_ref(),
+                    band.y0..band.y0 + bh,
+                    band.w,
+                    acc,
+                    ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                ),
             ),
-            Item::Project(item) => band.project(stack, item),
+            Item::Project(item) => {
+                let clip = clips.prepare(
+                    item.clip.as_ref(),
+                    band.y0..band.y0 + bh,
+                    band.w,
+                    acc,
+                    ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                );
+                band.project(stack, item, clip);
+            }
             Item::Silhouette { slot, paint, clip } => {
-                band.glyph(simd, stack, slot, 0, 0, paint, clip.as_ref());
+                band.glyph(
+                    simd,
+                    stack,
+                    slot,
+                    0,
+                    0,
+                    paint,
+                    clips
+                        .prepare(
+                            clip.as_ref(),
+                            band.y0..band.y0 + bh,
+                            band.w,
+                            acc,
+                            ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                        )
+                        .as_ref(),
+                );
             }
             Item::Glyph {
                 slot,
@@ -2461,8 +2708,31 @@ fn run<S: Simd>(
                 y,
                 paint,
                 clip,
-            } => band.glyph(simd, stack, slot, *x, *y, paint, clip.as_ref()),
+            } => band.glyph(
+                simd,
+                stack,
+                slot,
+                *x,
+                *y,
+                paint,
+                clips
+                    .prepare(
+                        clip.as_ref(),
+                        band.y0..band.y0 + bh,
+                        band.w,
+                        acc,
+                        ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                    )
+                    .as_ref(),
+            ),
         }
+    }
+    if !clips.cells.is_empty() {
+        let before = buffers.clips.capacity();
+        buffers.clips.push(clips);
+        let bytes = ((buffers.clips.capacity() - before) * size_of::<ClipScratch>()) as u64;
+        clip_alloc(bytes, ctx.meter);
+        buffers.clip_charge += bytes;
     }
     Ok(())
 }
@@ -2895,7 +3165,7 @@ impl Band<'_> {
         (edges, offset): (&EdgeTiles, super::tiles::Fixed),
         bbox: crate::render::lower::DrawBox,
         paint: &PaintData,
-        clip: Option<&ClipRef>,
+        clip: Option<&ClipCoverage<'_>>,
     ) {
         let bh = self.fb.len() / self.w;
         let first = usize::from(bbox.y0).max(self.y0);
@@ -2951,7 +3221,7 @@ impl Band<'_> {
         sigma_eff: f32,
         color: &[f32; 4],
         bbox: IRect,
-        clip: Option<&ClipRef>,
+        clip: Option<ClipCoverage<'_>>,
     ) {
         let bh = self.fb.len() / self.w;
         let (y_lo, y_hi) = (
@@ -2977,13 +3247,13 @@ impl Band<'_> {
         let inv_sqrt2_sigma = 1.0 / (sigma * std::f32::consts::SQRT_2);
         // Rect-clip rows touch only `cx_lo..cx_hi`; a coverage clip stays
         // a per-pixel sample.
-        let (cx_lo, cx_hi, clip_mask) = match clip.map(AsRef::as_ref) {
-            Some(ClipMask::Rect(r)) => (
+        let (cx_lo, cx_hi, clip_mask) = match clip {
+            Some(ClipCoverage::Rect(r)) => (
                 usize::try_from(r.x0).unwrap_or(0).clamp(x_lo, x_hi),
                 usize::try_from(r.x1).unwrap_or(0).clamp(x_lo, x_hi),
                 None,
             ),
-            Some(ClipMask::Cover(mask)) => (x_lo, x_hi, Some(mask.as_slice())),
+            Some(mask @ ClipCoverage::Samples { .. }) => (x_lo, x_hi, Some(mask)),
             None => (x_lo, x_hi, None),
         };
         if cx_lo >= cx_hi && clip_mask.is_none() {
@@ -3091,7 +3361,7 @@ impl Band<'_> {
                                 continue;
                             }
                             let cc = match clip_mask {
-                                Some(m) => m[py_i * self.w + x],
+                                Some(m) => clip_cov(Some(m), self.w, x, py_i),
                                 None => 1.0,
                             };
                             if cc <= 0.0 {
@@ -3129,7 +3399,7 @@ impl Band<'_> {
                     );
                     for x in x_in_lo..x_in_hi {
                         let cc = match clip_mask {
-                            Some(m) => m[py_i * self.w + x],
+                            Some(m) => clip_cov(Some(m), self.w, x, py_i),
                             None => 1.0,
                         };
                         if cc <= 0.0 {
@@ -3179,7 +3449,7 @@ impl Band<'_> {
         &mut self,
         capture: &Capture,
         bounds: IRect,
-        clip: Option<&ClipRef>,
+        clip: Option<ClipCoverage<'_>>,
         effect: &SampleEffect,
         union: Option<&UnionSample>,
         member_space: cherenkov::BlendSpace,
@@ -3279,7 +3549,7 @@ impl Band<'_> {
         ox: i32,
         oy: i32,
         paint: &PaintData,
-        clip: Option<&ClipRef>,
+        clip: Option<&ClipCoverage<'_>>,
     ) {
         let Some(mask) = slot.get() else { return };
         let bh = self.fb.len() / self.w;
@@ -3352,7 +3622,12 @@ impl Band<'_> {
         reason = "compiled under the dispatched CPU level so mul_add is one instruction"
     )]
     #[inline(always)]
-    fn project(&mut self, stack: &mut [Plane], item: &super::lower::ProjectItem) {
+    fn project(
+        &mut self,
+        stack: &mut [Plane],
+        item: &super::lower::ProjectItem,
+        clip: Option<ClipCoverage<'_>>,
+    ) {
         let bh = self.fb.len() / self.w;
         let [x0, y0, x1, y1] = item.placed.bounds.map(|v| v as usize);
         let (x1, y_lo, y_hi) = (x1.min(self.w), y0.max(self.y0), y1.min(self.y0 + bh));
@@ -3363,7 +3638,7 @@ impl Band<'_> {
             for px in x0..x1 {
                 let here = q;
                 q = [q[0] + step[0], q[1] + step[1], q[2] + step[2]];
-                let cc = clip_cov(item.clip.as_ref(), self.w, px, py);
+                let cc = clip_cov(clip, self.w, px, py);
                 if cc <= 0.0 {
                     continue;
                 }
@@ -3392,7 +3667,7 @@ impl Band<'_> {
         src_space: cherenkov::BlendSpace,
         opacity: f32,
         blend: (cherenkov::BlendMode, cherenkov::BlendSpace),
-        clip: Option<&ClipRef>,
+        clip: Option<ClipCoverage<'_>>,
         stack: &mut Vec<Plane>,
     ) {
         let (dst, dst_space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
@@ -3453,7 +3728,7 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
 }
 
 /// A disjoint proof or topology compilation supplies the visible boundaries.
-fn boundary_mask(edges: &[super::tiles::IntegerEdge], w: usize, h: usize) -> Vec<f32> {
+pub fn boundary_mask(edges: &[super::tiles::IntegerEdge], w: usize, h: usize) -> Vec<f32> {
     let edges = EdgeTiles::from_boundaries(edges);
     let mut mask = vec![0.0; w * h];
     mask.par_chunks_mut(BAND_H * w).enumerate().for_each_init(
@@ -3551,47 +3826,68 @@ mod tests {
                 .build()
                 .unwrap();
             for len in [0usize, 1, 6, 7, 8, 127, 4097] {
-                let mut output = vec![usize::MAX; len];
-                let claims: Vec<_> = (0..len.div_ceil(chunk_len.get()))
-                    .map(|_| AtomicUsize::new(0))
-                    .collect();
-                {
-                    let queue = BandQueue::new(&mut output, chunk_len);
-                    pool.install(|| {
-                        (0..workers).into_par_iter().for_each(|_| {
-                            while let Some((index, band)) = queue.claim() {
-                                assert_eq!(claims[index].fetch_add(1, Ordering::Relaxed), 0);
-                                for (offset, value) in band.iter_mut().enumerate() {
-                                    *value = index * chunk_len.get() + offset;
-                                }
+                for mode in 0..3 {
+                    let selected: Vec<_> = (0..len.div_ceil(chunk_len.get()))
+                        .map(|index| match mode {
+                            0 => true,
+                            1 => index % 2 == 0,
+                            _ => false,
+                        })
+                        .collect();
+                    let mut output = vec![usize::MAX; len];
+                    let claims: Vec<_> = (0..len.div_ceil(chunk_len.get()))
+                        .map(|_| AtomicUsize::new(0))
+                        .collect();
+                    {
+                        let mut region = cherenkov::damage::Region::new((
+                            1,
+                            u32::try_from(selected.len()).unwrap(),
+                        ));
+                        for (index, &dirty) in selected.iter().enumerate() {
+                            if dirty {
+                                region.add(0, u32::try_from(index).unwrap(), 1, 1);
                             }
+                        }
+                        let queue = BandQueue::new(&mut output, chunk_len, Some(&region));
+                        pool.install(|| {
+                            (0..workers).into_par_iter().for_each(|_| {
+                                while let Some((index, band)) = queue.claim() {
+                                    assert_eq!(claims[index].fetch_add(1, Ordering::Relaxed), 0);
+                                    for (offset, value) in band.iter_mut().enumerate() {
+                                        *value = index * chunk_len.get() + offset;
+                                    }
+                                }
+                            });
                         });
-                    });
-                    assert!(queue.claim().is_none());
-                    assert_eq!(queue.next.load(Ordering::Relaxed), claims.len());
+                        assert!(queue.claim().is_none());
+                        assert_eq!(
+                            queue.next.load(Ordering::Relaxed),
+                            selected.iter().filter(|dirty| **dirty).count()
+                        );
+                    }
+                    assert!(
+                        claims
+                            .iter()
+                            .enumerate()
+                            .all(|(index, count)| count.load(Ordering::Relaxed)
+                                == usize::from(selected[index]))
+                    );
+                    assert!(output.iter().enumerate().all(|(index, &value)| value
+                        == if selected[index / chunk_len.get()] {
+                            index
+                        } else {
+                            usize::MAX
+                        }));
                 }
-                assert!(
-                    claims
-                        .iter()
-                        .all(|count| count.load(Ordering::Relaxed) == 1)
-                );
-                assert!(
-                    output
-                        .iter()
-                        .enumerate()
-                        .all(|(index, &value)| index == value)
-                );
             }
         }
     }
 
-    use std::sync::Arc;
-
     use super::{
-        ClipRef, ClipRun, Edge, composite_solid, composite_span, convert_span, coverage_mask,
+        ClipCoverage, ClipRun, Edge, composite_solid, composite_span, convert_span, coverage_mask,
         member, move_space, reduce_rows, src_over,
     };
-    use crate::render::lower::{ClipMask, IRect};
+    use crate::render::lower::IRect;
     use cherenkov::{BlendSpace, FillRule};
 
     /// The long edges of water-rs/waterui#2665 against the independent f64
@@ -3739,35 +4035,32 @@ mod tests {
                                 for len in 0..=67usize {
                                     let w = x0 + len + 8;
                                     let py = 1usize;
-                                    let mask: Option<ClipRef> = match clip_kind {
-                                        1 => Some(Arc::new(ClipMask::Rect(IRect {
+                                    let mut cells = vec![0.0; w];
+                                    for (i, cell) in cells[x0..x0 + len].iter_mut().enumerate() {
+                                        *cell = match (i + x0) % 4 {
+                                            0 => 0.25,
+                                            1 => 1.0,
+                                            2 => 0.0,
+                                            _ => 0.5,
+                                        };
+                                    }
+                                    let mask = match clip_kind {
+                                        1 => Some(ClipCoverage::Rect(IRect {
                                             x0: (x0 + 2) as i32,
                                             y0: 0,
                                             x1: (x0 + 5) as i32,
                                             y1: 4,
-                                        }))),
-                                        2 => {
-                                            let mut cells = vec![0.0; (py + 1) * w];
-                                            for (i, cell) in cells[py * w + x0..py * w + x0 + len]
-                                                .iter_mut()
-                                                .enumerate()
-                                            {
-                                                *cell = match (i + x0) % 4 {
-                                                    0 => 0.25,
-                                                    1 => 1.0,
-                                                    2 => 0.0,
-                                                    _ => 0.5,
-                                                };
-                                            }
-                                            Some(Arc::new(ClipMask::Cover(cells)))
-                                        }
-                                        // A rect covering the whole run.
-                                        3 => Some(Arc::new(ClipMask::Rect(IRect {
+                                        })),
+                                        2 => Some(ClipCoverage::Samples {
+                                            cells: &cells,
+                                            top: py,
+                                        }),
+                                        3 => Some(ClipCoverage::Rect(IRect {
                                             x0: 0,
                                             y0: 0,
                                             x1: (x0 + len) as i32,
                                             y1: 4,
-                                        }))),
+                                        })),
                                         _ => None,
                                     };
                                     let clip = ClipRun::new(mask.as_ref(), w, x0, py);

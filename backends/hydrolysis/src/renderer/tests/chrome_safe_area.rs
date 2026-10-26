@@ -256,13 +256,13 @@ fn tab_bar_and_nested_navigation_bar_extend() {
     let theme = MinimalTestTheme::default();
     let tab_draws = Rc::clone(&theme.tabs_bar_draws);
     let nav_draws = Rc::clone(&theme.navigation_bar_draws);
-    let selection = Binding::container(0i32);
+    let selection = Binding::container(0usize);
     let renderer = capture(
         Tabs::new(
             &selection,
             vec![
-                Tab::new(0, "First", || NavigationView::new("One", text("one"))),
-                Tab::new(1, "Second", || NavigationView::new("Two", text("two"))),
+                Tab::new("First", || NavigationView::new("One", text("one"))),
+                Tab::new("Second", || NavigationView::new("Two", text("two"))),
             ],
         ),
         &env_with_insets(edge_insets(), EdgeInsets::default()),
@@ -315,13 +315,13 @@ fn sidebar_strip_extends_through_the_top_inset_with_a_trailing_divider() {
     let theme = MinimalTestTheme::default();
     let tab_draws = Rc::clone(&theme.tabs_bar_draws);
     let divider_draws = Rc::clone(&theme.tabs_bar_divider_draws);
-    let selection = Binding::container(0i32);
+    let selection = Binding::container(0usize);
     let _renderer = capture(
         Tabs::new(
             &selection,
             vec![
-                Tab::new(0, "First", || NavigationView::new("One", text("one"))),
-                Tab::new(1, "Second", || NavigationView::new("Two", text("two"))),
+                Tab::new("First", || NavigationView::new("One", text("one"))),
+                Tab::new("Second", || NavigationView::new("Two", text("two"))),
             ],
         )
         .style(tab_style::Sidebar),
@@ -415,13 +415,13 @@ fn the_bottom_bar_extends_through_the_keyboard_region() {
 fn the_docked_tab_bar_surface_reaches_the_window_edge_under_the_keyboard() {
     let theme = MinimalTestTheme::default();
     let tab_draws = Rc::clone(&theme.tabs_bar_draws);
-    let selection = Binding::container(0i32);
+    let selection = Binding::container(0usize);
     capture(
         Tabs::new(
             &selection,
             vec![
-                Tab::new(0, "First", || NavigationView::new("One", text("one"))),
-                Tab::new(1, "Second", || NavigationView::new("Two", text("two"))),
+                Tab::new("First", || NavigationView::new("One", text("one"))),
+                Tab::new("Second", || NavigationView::new("Two", text("two"))),
             ],
         ),
         &env_with_insets(
@@ -456,12 +456,12 @@ fn a_nested_bottom_bar_inside_tab_content_does_not_extend() {
     let theme = MinimalTestTheme::default();
     let bar_draws = Rc::clone(&theme.navigation_bar_draws);
     let tab_draws = Rc::clone(&theme.tabs_bar_draws);
-    let selection = Binding::container(0i32);
+    let selection = Binding::container(0usize);
     let renderer = capture(
         Tabs::new(
             &selection,
             vec![
-                Tab::new(0, "First", || {
+                Tab::new("First", || {
                     NavigationView::new("Nested", text("nested page")).navigation_toolbar(
                         NavigationToolbar::default().item(NavigationToolbarItem::new(
                             NavigationToolbarPlacement::BottomBar,
@@ -469,7 +469,7 @@ fn a_nested_bottom_bar_inside_tab_content_does_not_extend() {
                         )),
                     )
                 }),
-                Tab::new(1, "Second", || NavigationView::new("Other", text("other"))),
+                Tab::new("Second", || NavigationView::new("Other", text("other"))),
             ],
         ),
         &env_with_insets(edge_insets(), EdgeInsets::default()),

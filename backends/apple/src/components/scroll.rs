@@ -1,9 +1,10 @@
 //! The `scroll` leaf: `Native<ScrollView>` rendered through the kit's
 //! scroll surface.
 //!
-//! Mirrors `WuiScroll`: the scroll view claims the space it is offered and
-//! answers `0` on a min query it cannot satisfy, `stretchAxis` is `.both`,
-//! the content keeps its measured extent on the non-scrolling axis — centred
+//! Mirrors `WuiScroll`: the scroll view claims the space it is offered on
+//! its scrolling axis, answers `0` on a min query it cannot satisfy, and
+//! stretches on the non-scrolling axis only when its content does; the
+//! content keeps its measured extent on the non-scrolling axis — centred
 //! in the viewport and clipped on both edges when wider — and the scrollable
 //! extent is the placement's answer. The controller drives the offset
 //! through generation bumps; the offset binding reports every scroll,
@@ -20,7 +21,9 @@ use core::cell::Cell;
 
 use cocoa_ui::{MainThreadMarker, Retained};
 use waterui::animation::Animation;
-use waterui::layout::scroll::{Axis, ScrollController, ScrollRequest, ScrollView};
+use waterui::layout::scroll::{
+    Axis, ScrollController, ScrollPosition, ScrollRequest, ScrollView, scroll_stretch_axis,
+};
 use waterui::reactive::{Binding, Signal};
 use waterui_core::layout::{Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions};
 
@@ -45,83 +48,92 @@ fn as_view(scroll: &ScrollSurface) -> &PlatformView {
     scroll
 }
 
-/// The scroll's answer to a size proposal, matching `scrollMinSize`.
+/// The scroll's answer to a size proposal, matching `scrollMinSize`
+/// (layout-spec.md §6, water-rs/waterui#1208).
 ///
-/// A finite proposal is claimed. An unspecified axis asks for the content's
-/// intrinsic extent — the measure runs only when an axis is actually
-/// unspecified, so a fully finite proposal never reads the answer. A min
-/// (zero) query answers the content's minimum on the non-scrolling axis and
-/// `0` on the scrolling one.
+/// On the scrolling axis a finite proposal is claimed, `None` asks for the
+/// content's intrinsic extent and `0` answers `0`. On the non-scrolling axis
+/// the scroll answers the content's own answer to the content proposal —
+/// the offer on that axis, `None` on the scrolling axis — clamped to a
+/// finite offer, so a scroll hugs non-filling content; `0` and `None` keep
+/// their existing behaviour (the content's minimum and intrinsic extent).
+/// The one content measure under that content proposal serves the
+/// non-scrolling answer and an unspecified scrolling-axis extent together.
 fn scroll_min_size(
     axis: Axis,
     proposal: ProposalSize,
     measure_content: impl Fn(ProposalSize) -> Size,
 ) -> Size {
-    let min_width = proposal.width == Some(0.0);
-    let min_height = proposal.height == Some(0.0);
-    let dimension = |value: Option<f32>| value.unwrap_or(0.0);
-    if !min_width && !min_height {
-        if proposal.width.is_some() && proposal.height.is_some() {
-            return Size::new(dimension(proposal.width), dimension(proposal.height));
+    // A `0` proposal measures the content's minimum: clamp a non-finite or
+    // negative answer out of the layout arithmetic.
+    let minimum = |value: f32| {
+        if value.is_finite() {
+            value.max(0.0)
+        } else {
+            0.0
         }
-        let intrinsic = measure_content(ProposalSize::UNSPECIFIED);
-        return Size::new(
-            proposal.width.unwrap_or(intrinsic.width),
-            proposal.height.unwrap_or(intrinsic.height),
-        );
-    }
-    let content_minimum = |content_proposal: ProposalSize| {
-        let minimum = measure_content(content_proposal);
-        Size::new(
-            if minimum.width.is_finite() {
-                minimum.width.max(0.0)
-            } else {
-                0.0
-            },
-            if minimum.height.is_finite() {
-                minimum.height.max(0.0)
-            } else {
-                0.0
-            },
-        )
+    };
+    // A finite offer caps the content's own answer on the non-scrolling
+    // axis; an unbounded answer fills the offer.
+    let cross = |answer: f32, offer: f32| {
+        if answer.is_finite() {
+            answer.clamp(0.0, offer)
+        } else {
+            offer
+        }
     };
     match axis {
-        Axis::Vertical => Size::new(
-            if min_width {
-                content_minimum(ProposalSize::new(Some(0.0), None)).width
-            } else {
-                dimension(proposal.width)
-            },
-            if min_height {
-                0.0
-            } else {
-                dimension(proposal.height)
-            },
-        ),
-        Axis::Horizontal => Size::new(
-            if min_width {
-                0.0
-            } else {
-                dimension(proposal.width)
-            },
-            if min_height {
-                content_minimum(ProposalSize::new(None, Some(0.0))).height
-            } else {
-                dimension(proposal.height)
-            },
-        ),
-        Axis::All => Size::new(
-            if min_width {
-                0.0
-            } else {
-                dimension(proposal.width)
-            },
-            if min_height {
-                0.0
-            } else {
-                dimension(proposal.height)
-            },
-        ),
+        Axis::Vertical => {
+            // The §6 content proposal for a vertical scroll: the width offer
+            // on the content, its height free.
+            let measured = measure_content(ProposalSize::new(proposal.width, None));
+            Size::new(
+                match proposal.width {
+                    Some(0.0) => minimum(measured.width),
+                    Some(offer) => cross(measured.width, offer),
+                    None => measured.width,
+                },
+                match proposal.height {
+                    Some(0.0) => 0.0,
+                    Some(height) => height,
+                    None => measured.height,
+                },
+            )
+        }
+        Axis::Horizontal => {
+            let measured = measure_content(ProposalSize::new(None, proposal.height));
+            Size::new(
+                match proposal.width {
+                    Some(0.0) => 0.0,
+                    Some(width) => width,
+                    None => measured.width,
+                },
+                match proposal.height {
+                    Some(0.0) => minimum(measured.height),
+                    Some(offer) => cross(measured.height, offer),
+                    None => measured.height,
+                },
+            )
+        }
+        Axis::All => {
+            // `Axis::All` is unchanged: both axes scroll, so a finite
+            // proposal is claimed, `None` asks for the intrinsic extent and
+            // `0` answers `0`.
+            let measured = (proposal.width.is_none() || proposal.height.is_none())
+                .then(|| measure_content(ProposalSize::UNSPECIFIED));
+            Size::new(
+                match proposal.width {
+                    Some(0.0) => 0.0,
+                    Some(width) => width,
+                    None => measured.map_or(0.0, |measured| measured.width),
+                },
+                match proposal.height {
+                    Some(0.0) => 0.0,
+                    Some(height) => height,
+                    None => measured.map_or(0.0, |measured| measured.height),
+                },
+            )
+        }
         _ => panic!("unsupported WaterUI scroll axis: {axis:?}"),
     }
 }
@@ -228,7 +240,10 @@ impl SubView for ScrollSubView {
     }
 
     fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
+        scroll_stretch_axis(
+            self.content.axis,
+            self.content.child.layout().stretch_axis(),
+        )
     }
 
     fn priority(&self) -> i32 {
@@ -406,6 +421,24 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
         laid_out_viewport: Cell::new(Size::zero()),
     });
 
+    // `measured` flips when the first layout completes `place_child` —
+    // until then the surface's geometry is placeholder, and the position
+    // sink must not see a fabricated `Some` ahead of real layout. The
+    // offset binding keeps its existing report-immediately semantics.
+    let measured = Rc::new(Cell::new(false));
+    // One reporter serves both sinks: `report_offset`'s binding and the
+    // controller's position report. Every write is deduped against the
+    // binding's current value so the layout handler and the scroll observer
+    // may both fire it without double-notifying.
+    let report = {
+        let offset = parts.offset.clone();
+        let position = parts
+            .controller
+            .as_ref()
+            .map(ScrollController::position_report);
+        (offset.is_some() || position.is_some())
+            .then(|| scroll_reporter(parts.axis, offset, position, Rc::clone(&measured)))
+    };
     scroll.set_layout_handler({
         // Strong capture, the way mounted `HostView` handlers capture
         // their state since water-rs/waterui#1860: the scroll view's
@@ -416,9 +449,19 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
         // leaf's release boundary; a layout pass the platform delivers
         // to a view that outlives the leaf finds `None`.
         let content = Rc::clone(&content);
+        let report = report.clone();
+        let measured = Rc::clone(&measured);
         move |scroll| {
             content.laid_out_viewport.set(layout_viewport(scroll));
             place_child(&content, scroll);
+            // The extent `place_child` just committed — and any viewport
+            // resize that triggered the layout — is real geometry: mark
+            // measured, then report, so a resize or content growth reaches
+            // the controller without a scroll happening.
+            measured.set(true);
+            if let Some(report) = &report {
+                report(scroll);
+            }
         }
     });
 
@@ -454,8 +497,8 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
         wire_controller(&mut leaf, &scroll, &controller);
     }
 
-    if let Some(offset) = parts.offset {
-        wire_offset_reporting(&mut leaf, &scroll, offset, mtm);
+    if let Some(report) = &report {
+        wire_scroll_reporting(&mut leaf, &scroll, report, mtm);
     }
 
     leaf
@@ -487,28 +530,69 @@ fn wire_controller(
     });
 }
 
-/// `UIKit`: every scroll reports the inset-adjusted content offset, so a
-/// rest position reports zero and a controller target reports its own
-/// coordinate.
+/// `UIKit`: reads the surface's completed geometry into the report sinks —
+/// the offset adjusted by the adjusted content insets like
+/// `report_offset` always did, the viewport excluding them, and the
+/// content extent as `UIKit` keeps it, so `at_end` lands where the
+/// platform's own maximum does. Both writes dedupe against the binding's
+/// current value; nothing here reads a pending request.
 #[cfg(target_os = "ios")]
-fn wire_offset_reporting(
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "kit geometry is f64; the report bindings are f32"
+)]
+fn scroll_reporter(
+    axis: Axis,
+    offset: Option<Binding<Point>>,
+    position: Option<Binding<Option<ScrollPosition>>>,
+    measured: Rc<Cell<bool>>,
+) -> Rc<dyn Fn(&ScrollSurface)> {
+    Rc::new(move |scroll| {
+        let inset = scroll.adjusted_content_inset();
+        let raw = scroll.content_offset();
+        let adjusted = Point::new((raw.x + inset.left) as f32, (raw.y + inset.top) as f32);
+        if let Some(offset) = &offset
+            && offset.snapshot() != adjusted
+        {
+            offset.set(adjusted);
+        }
+        if let Some(sink) = &position
+            && measured.get()
+        {
+            // The offset write just ran watchers that may have scrolled:
+            // re-read the surface so the position snapshot is coherent.
+            let inset = scroll.adjusted_content_inset();
+            let raw = scroll.content_offset();
+            let adjusted = Point::new((raw.x + inset.left) as f32, (raw.y + inset.top) as f32);
+            let viewport = scroll.viewport_size();
+            let extent = scroll.content_extent();
+            let current = ScrollPosition::new(
+                axis,
+                adjusted,
+                Size::new(
+                    (viewport.width - inset.left - inset.right).max(0.0) as f32,
+                    (viewport.height - inset.top - inset.bottom).max(0.0) as f32,
+                ),
+                Size::new(extent.width as f32, extent.height as f32),
+            );
+            if sink.snapshot() != Some(current) {
+                sink.set(Some(current));
+            }
+        }
+    })
+}
+
+/// `UIKit`: the scroll observer fires the reporter on every scroll —
+/// user-, flight- or controller-driven — and once now for the surface's
+/// initial geometry. Layout-driven changes reach it through the layout
+/// handler registered in `render`.
+#[cfg(target_os = "ios")]
+fn wire_scroll_reporting(
     _leaf: &mut NativeLeaf,
     scroll: &Retained<ScrollSurface>,
-    offset: Binding<Point>,
+    report: &Rc<dyn Fn(&ScrollSurface)>,
     _mtm: MainThreadMarker,
 ) {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "kit geometry is f64; the offset binding is f32"
-    )]
-    let report = move |scroll: &ScrollSurface| {
-        let position = scroll.content_offset();
-        let inset = scroll.adjusted_content_inset();
-        offset.set(Point::new(
-            (position.x + inset.left) as f32,
-            (position.y + inset.top) as f32,
-        ));
-    };
     scroll.on_scroll({
         let report = report.clone();
         move |scroll| report(scroll)
@@ -516,27 +600,66 @@ fn wire_offset_reporting(
     report(scroll);
 }
 
-/// `AppKit`: the clip view's bounds origin is the content offset; it
-/// changes on every scroll, whether from the user or a controller request.
+/// `AppKit`: reads the surface's completed geometry into the report sinks —
+/// the clip view's bounds origin is the content offset, its bounds the
+/// viewport, and the document frame the content extent. Both writes dedupe
+/// against the binding's current value; nothing here reads a pending
+/// request.
 #[cfg(target_os = "macos")]
-fn wire_offset_reporting(
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "kit geometry is f64; the report bindings are f32"
+)]
+fn scroll_reporter(
+    axis: Axis,
+    offset: Option<Binding<Point>>,
+    position: Option<Binding<Option<ScrollPosition>>>,
+    measured: Rc<Cell<bool>>,
+) -> Rc<dyn Fn(&ScrollSurface)> {
+    Rc::new(move |scroll| {
+        let origin = scroll.content_offset();
+        let offset_point = Point::new(origin.x as f32, origin.y as f32);
+        if let Some(offset) = &offset
+            && offset.snapshot() != offset_point
+        {
+            offset.set(offset_point);
+        }
+        if let Some(sink) = &position
+            && measured.get()
+        {
+            // The offset write just ran watchers that may have scrolled:
+            // re-read the surface so the position snapshot is coherent.
+            let origin = scroll.content_offset();
+            let viewport = scroll.viewport_size();
+            let extent = scroll
+                .document_view()
+                .map(|document| cocoa_ui::view::frame(&document).size)
+                .expect("the kit scroll view always installs its document");
+            let current = ScrollPosition::new(
+                axis,
+                Point::new(origin.x as f32, origin.y as f32),
+                Size::new(viewport.width as f32, viewport.height as f32),
+                Size::new(extent.width as f32, extent.height as f32),
+            );
+            if sink.snapshot() != Some(current) {
+                sink.set(Some(current));
+            }
+        }
+    })
+}
+
+/// `AppKit`: the clip view's bounds change on every scroll and resize —
+/// the observer fires the reporter for both, and once now for the
+/// surface's initial geometry. Content-extent changes reach it through
+/// the layout handler registered in `render`.
+#[cfg(target_os = "macos")]
+fn wire_scroll_reporting(
     leaf: &mut NativeLeaf,
     scroll: &Retained<ScrollSurface>,
-    offset: Binding<Point>,
+    report: &Rc<dyn Fn(&ScrollSurface)>,
     mtm: MainThreadMarker,
 ) {
     scroll.clip_view().setPostsBoundsChangedNotifications(true);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "kit geometry is f64; the offset binding is f32"
-    )]
-    let report = {
-        let scroll = Retained::clone(scroll);
-        move || {
-            let origin = scroll.content_offset();
-            offset.set(Point::new(origin.x as f32, origin.y as f32));
-        }
-    };
     leaf.keep(cocoa_ui::notification::observe_object(
         mtm,
         // SAFETY: reads a notification-name constant `AppKit` owns for the
@@ -547,10 +670,11 @@ fn wire_offset_reporting(
         scroll.clip_view().as_ref(),
         {
             let report = report.clone();
-            move || report()
+            let scroll = Retained::clone(scroll);
+            move || report(&scroll)
         },
     ));
-    report();
+    report(scroll);
 }
 
 /// Registers the `scroll` leaf.
@@ -672,5 +796,107 @@ mod tests {
             Size::new(60.0, 300.0)
         });
         assert_eq!(twin, Size::new(60.0, 80.0));
+    }
+
+    /// A rigid 28 pt-tall chip row: whatever the height offer, it answers
+    /// 28 — the shape that exposed water-rs/waterui#1208.
+    fn chip_row(proposal: ProposalSize) -> Size {
+        Size::new(proposal.width.unwrap_or(328.5), 28.0)
+    }
+
+    /// The issue scenario (water-rs/waterui#1208): a horizontal scroll of
+    /// 28 pt-tall content under a 240x160 offer answers 240x28 — it hugs the
+    /// content on the non-scrolling axis instead of claiming the slot.
+    #[test]
+    fn horizontal_scroll_hugs_the_contents_height() {
+        let size = scroll_min_size(
+            Axis::Horizontal,
+            ProposalSize::new(Some(240.0), Some(160.0)),
+            chip_row,
+        );
+        assert_eq!(size, Size::new(240.0, 28.0));
+    }
+
+    /// The symmetric case: a vertical scroll of 28 pt-wide content under a
+    /// 240x160 offer answers 28x160.
+    #[test]
+    fn vertical_scroll_hugs_the_contents_width() {
+        let size = scroll_min_size(
+            Axis::Vertical,
+            ProposalSize::new(Some(240.0), Some(160.0)),
+            |proposal| Size::new(28.0, proposal.height.unwrap_or(328.5)),
+        );
+        assert_eq!(size, Size::new(28.0, 160.0));
+    }
+
+    /// The hug clamps to a finite offer: 28 pt content under a 10 pt offer
+    /// answers 10, never more. `0` still answers the content's minimum and
+    /// `None` its intrinsic extent.
+    #[test]
+    fn non_scrolling_answer_clamps_to_the_offer() {
+        let clamped = scroll_min_size(
+            Axis::Horizontal,
+            ProposalSize::new(Some(240.0), Some(10.0)),
+            chip_row,
+        );
+        assert_eq!(clamped, Size::new(240.0, 10.0));
+        let floor = scroll_min_size(
+            Axis::Horizontal,
+            ProposalSize::new(Some(240.0), Some(0.0)),
+            chip_row,
+        );
+        assert_eq!(floor, Size::new(240.0, 28.0));
+        let intrinsic = scroll_min_size(
+            Axis::Horizontal,
+            ProposalSize::new(Some(240.0), None),
+            chip_row,
+        );
+        assert_eq!(intrinsic, Size::new(240.0, 28.0));
+        // The scrolling axis is unchanged: `None` asks for the content's
+        // intrinsic extent.
+        let unspecified = scroll_min_size(
+            Axis::Horizontal,
+            ProposalSize::new(None, Some(160.0)),
+            chip_row,
+        );
+        assert_eq!(unspecified, Size::new(328.5, 28.0));
+    }
+
+    /// Content that itself fills the non-scrolling axis still fills it —
+    /// the paragraph wraps to the offered width, so a vertical scroll under
+    /// a finite width fills it.
+    #[test]
+    fn filling_content_still_fills_the_non_scrolling_axis() {
+        let size = scroll_min_size(
+            Axis::Vertical,
+            ProposalSize::new(Some(240.0), Some(160.0)),
+            paragraph,
+        );
+        assert_eq!(size, Size::new(240.0, 160.0));
+    }
+
+    /// An unspecified scrolling-axis answer reports the content's extent at
+    /// the offered non-scrolling extent — the wrapped height, not the
+    /// unwrapped intrinsic the previous claim-everything rule also
+    /// measured, but the height the layout pass will actually place.
+    #[test]
+    fn unspecified_scrolling_axis_answers_at_the_offered_cross_extent() {
+        let size = scroll_min_size(
+            Axis::Vertical,
+            ProposalSize::new(Some(240.0), None),
+            paragraph,
+        );
+        assert_eq!(size, Size::new(240.0, 200.0));
+    }
+
+    /// `Axis::All` is unchanged: it fills a fully finite offer.
+    #[test]
+    fn bidirectional_scroll_fills_the_offer() {
+        let size = scroll_min_size(
+            Axis::All,
+            ProposalSize::new(Some(240.0), Some(160.0)),
+            chip_row,
+        );
+        assert_eq!(size, Size::new(240.0, 160.0));
     }
 }

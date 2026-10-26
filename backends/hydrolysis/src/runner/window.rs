@@ -67,6 +67,8 @@ pub(super) struct RuntimeWindow<P: PlatformWindow, E: crate::text::TextEngine> {
     pub(super) platform: P,
     pub(super) renderer: HydrolysisRenderer<E>,
     pub(super) mode: FrameMode,
+    #[cfg(target_os = "android")]
+    pub(super) engine_next: cherenkov::Next,
     /// The pump is parked: the host reports the window cannot be seen
     /// (minimized, occluded, backgrounded or surface-less). While parked no
     /// frame is produced and no wake is posted — armed work stays armed for
@@ -129,6 +131,8 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
             platform,
             renderer,
             mode: FrameMode::Refresh,
+            #[cfg(target_os = "android")]
+            engine_next: cherenkov::Next::Idle,
             hidden: false,
             presented_frames: 0,
             pointer_position: None,
@@ -939,7 +943,11 @@ pub(super) fn pump_window_scene<P: PlatformWindow, E: crate::text::TextEngine>(
 
     let mut built = false;
     match runtime.mode {
-        FrameMode::Idle => {}
+        FrameMode::Idle => {
+            runtime
+                .renderer
+                .record_text_input_overlay(env, kurbo::Affine::IDENTITY);
+        }
         FrameMode::Refresh | FrameMode::Animate if !runtime.renderer.has_render_tree() => {
             build_window_scene(
                 runtime,
@@ -1069,6 +1077,18 @@ pub struct SurfaceRenderResult {
     snapshot: Option<HeadlessSnapshot>,
 }
 
+impl SurfaceRenderResult {
+    #[cfg(target_os = "android")]
+    pub(crate) const fn engine_presented(render: Duration) -> Self {
+        Self {
+            acquire: Duration::ZERO,
+            render,
+            present: Duration::ZERO,
+            snapshot: None,
+        }
+    }
+}
+
 /// How a window's presentation kind renders one frame and gets it to the
 /// display. Host-acquired surfaces ([`SurfaceProvider`]) acquire, copy the
 /// engine output in and present; the macOS winit window's and the browser
@@ -1155,7 +1175,6 @@ crate::engine::cfg_async_fn! {
     surface.ensure_live();
     let (width, height) = surface.size();
     let format = surface.format();
-    let output_alpha = surface.output_alpha();
     let context = surface.device_loss().gpu_context();
     let context_id = context.context_id;
     // The engine renders into its own retained output before the swapchain
@@ -1183,6 +1202,8 @@ crate::engine::cfg_async_fn! {
     .unwrap_or_else(|error| {
         panic!("hydrolysis renderer: engine render failed: {error:#}")
     });
+    surface.set_content_range(engine_frame.content_range);
+    let output_alpha = surface.output_alpha();
     let engine_render = render_started_at.elapsed();
     let acquire_started_at = Instant::now();
     let frame = acquire_surface_frame(surface)?;
@@ -1606,11 +1627,15 @@ crate::engine::cfg_async_fn! {
     // The engine's own scheduling answer: an in-flight animation asks for its
     // next frame through `Next::At` (the surface's wake may already have woken
     // the host too — the request is idempotent).
-    if matches!(
-        runtime.renderer.take_engine_next(),
-        Some(cherenkov::Next::At { .. })
-    ) {
-        runtime.platform.request_redraw();
+    if let Some(next) = runtime.renderer.take_engine_next() {
+        #[cfg(target_os = "android")]
+        {
+            runtime.engine_next = next;
+        }
+        #[cfg(not(target_os = "android"))]
+        if matches!(next, cherenkov::Next::At { .. }) {
+            runtime.platform.request_redraw();
+        }
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

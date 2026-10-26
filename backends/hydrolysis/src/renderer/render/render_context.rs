@@ -285,10 +285,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
             kurbo::Rect::new(0.0, 0.0, bounds.width(), bounds.height()),
         );
         let renderer = self.renderer_mut();
-        let (state, scene) = renderer.state_and_run_mut();
-        HydrolysisRenderer::render_styled_text_limited(
-            state,
-            scene,
+        renderer.render_styled_text_limited(
             child_ctx,
             styled,
             alignment,
@@ -308,10 +305,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
             kurbo::Rect::new(0.0, 0.0, bounds.width(), bounds.height()),
         );
         let renderer = self.renderer_mut();
-        let (state, scene) = renderer.state_and_run_mut();
-        HydrolysisRenderer::render_styled_text_single_line_centered(
-            state, scene, child_ctx, styled, env,
-        );
+        renderer.render_styled_text_single_line_centered(child_ctx, styled, env);
     }
 }
 

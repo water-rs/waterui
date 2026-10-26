@@ -185,6 +185,7 @@ pub struct UIKitMount {
 #[cfg(target_os = "ios")]
 impl Drop for UIKitMount {
     fn drop(&mut self) {
+        self.host.clear_handlers();
         self.window.setHidden(true);
         self.window.setRootViewController(None);
     }
@@ -350,17 +351,13 @@ pub fn mount_uikit_embedded(
 }
 
 #[cfg(target_os = "macos")]
-use cocoa_ui::Retained;
-#[cfg(target_os = "macos")]
 use waterui::Signal;
-#[cfg(target_os = "macos")]
-use waterui::Str;
 #[cfg(target_os = "macos")]
 use waterui::color::Color;
 #[cfg(target_os = "macos")]
-use waterui::reactive::{Binding, Computed, SignalExt, binding};
+use waterui::reactive::{Binding, binding};
 #[cfg(target_os = "macos")]
-use waterui::window::{UserAttention, WindowBackground, WindowLevel, WindowState, WindowStyle};
+use waterui::window::{WindowBackground, WindowState, WindowStyle};
 #[cfg(target_os = "macos")]
 use waterui_core::layout::{Point, Rect, Size};
 
@@ -401,72 +398,47 @@ pub fn window_environment(mtm: MainThreadMarker) -> (Environment, crate::theme::
 
 /// Checks two-way bindings on a real native root window.
 ///
-/// `bind_root_window` adopts a window the host already created: the
-/// declared style and title land on it, the real frame publishes into
-/// the binding, a declared frame drives the window back, and platform
-/// close publishes `Closed`. The window is never ordered in — the whole
-/// lifecycle stays offscreen.
+/// `windows::realize` turns a declaration into a live window: the
+/// declared style and title land on it, the declared frame seeds the
+/// window's content rect, platform close publishes `Closed` through the
+/// state binding, and the armed `on_close_request` gate fires.
+///
+/// `realize` orders the window in — this trial opens and closes a real
+/// window, so it runs only on a host where a window may appear on a
+/// display.
 ///
 /// # Panics
-/// Panics if the native window cannot be retained or a binding assertion fails.
+/// Panics if the window cannot be realized or an assertion fails.
 #[cfg(target_os = "macos")]
-pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
-    let window = cocoa_ui::appkit::Window::new(
-        mtm,
-        cocoa_ui::Rect::new(100.0, 100.0, 640.0, 480.0),
-        cocoa_ui::appkit::WindowStyle::TITLED,
-    );
-
-    let (env, _theme) = window_environment(mtm);
-    let title: Computed<Str> = binding(Str::from("Bind Root")).computed();
-    let frame: Binding<Rect> = binding(Rect::new(Point::new(0.0, 0.0), Size::new(0.0, 0.0)));
+pub fn a_declared_window_realizes_its_declaration(mtm: MainThreadMarker) {
+    let (mut env, _theme) = window_environment(mtm);
+    env.insert(crate::first_paint::FirstPaint::default());
     let state: Binding<WindowState> = binding(WindowState::Normal);
-    let style: Computed<WindowStyle> = binding(WindowStyle::Titled).computed();
-    let level: Computed<WindowLevel> = binding(WindowLevel::Normal).computed();
-    let attention: Binding<Option<UserAttention>> = binding(None);
-    let background: Computed<WindowBackground> =
-        binding(WindowBackground::Color(Color::srgb(255, 255, 255))).computed();
+    let closed = alloc::rc::Rc::new(core::cell::RefCell::new(false));
+    let declaration = waterui::window::Window::new("Bind Root", state.clone(), || {
+        waterui::component::text::Text::new("x")
+    })
+    .style(WindowStyle::Titled)
+    .background(WindowBackground::Color(Color::srgb(255, 255, 255)))
+    .on_close_request({
+        let closed = alloc::rc::Rc::clone(&closed);
+        move || {
+            let closed = alloc::rc::Rc::clone(&closed);
+            async move {
+                *closed.borrow_mut() = true;
+                waterui::window::CloseReply::Close
+            }
+        }
+    });
 
-    // SAFETY: `window.native()` is a live +0 object; the binding retains it
-    // for the declaration's lifetime on the main thread.
-    let native = unsafe {
-        Retained::retain(std::ptr::from_ref(window.native()).cast_mut())
-            .expect("a live NSWindow retains")
-    };
-    // The embedding's WaterUI-owned root inside the host's content view —
-    // the view a material background fills.
-    let root = cocoa_ui::appkit::HostView::new(mtm, window.content_rect());
-    cocoa_ui::view::add_subview(
-        &window
-            .native()
-            .contentView()
-            .expect("a new window has a content view"),
-        &root,
-    );
-    let binding = crate::windows::bind_root_window(
-        native,
-        &root,
-        &env,
-        &title,
-        &frame,
-        &state,
-        None,
-        &style,
-        &level,
-        &attention,
-        None,
-        &background,
-        true,
-        true,
-        // The declaration this models registers no `on_close_request`
-        // handler, so the embed path's
-        // `has_close_handler().then(|| declaration.handle())` is `None` —
-        // the host window's close button stays unconditional.
-        None,
-        mtm,
-    );
+    declaration
+        .frame
+        .set(Rect::new(Point::new(0.0, 0.0), Size::new(640.0, 480.0)));
+    let host = crate::windows::realize(declaration, &env, mtm);
+    let window = host.window();
+    let native = window.native();
 
-    // The declared style was adopted on top of the kit window's mask.
+    // The declared style lands on the window's mask.
     let mask = window.style_mask();
     assert!(mask.contains(
         cocoa_ui::appkit::WindowStyle::TITLED
@@ -475,37 +447,26 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
             | cocoa_ui::appkit::WindowStyle::RESIZABLE
     ));
 
-    // The declared title landed on the window.
-    assert_eq!(window.native().title().to_string(), "Bind Root");
+    // The declared title lands on the window.
+    assert_eq!(native.title().to_string(), "Bind Root");
 
-    // The window's real frame seeded the frame binding (outer-frame
-    // convention — the host's position on screen wins over the declared
-    // origin).
-    let snapshot = frame.snapshot();
-    let current = window.frame();
-    let expected = cocoa_ui::Rect::new(
-        f64::from(snapshot.origin().x),
-        f64::from(snapshot.origin().y),
-        f64::from(snapshot.size().width),
-        f64::from(snapshot.size().height),
+    // The declared frame seeds the window's content size — the platform
+    // positions the chrome around it.
+    let content = native.contentRectForFrameRect(native.frame());
+    assert_eq!(
+        cocoa_ui::Size::new(content.size.width, content.size.height),
+        cocoa_ui::Size::new(640.0, 480.0)
     );
-    assert_eq!(current, expected);
 
-    // A declared frame write drives the real window.
-    frame.set(Rect::new(Point::new(20.0, 30.0), Size::new(320.0, 240.0)));
-    let moved = window.frame();
-    assert_eq!(moved, cocoa_ui::Rect::new(20.0, 30.0, 320.0, 240.0));
-
-    // Platform close publishes `Closed` through the binding — the
-    // window's own lifecycle event driving the declared state.
-    window.close();
-    assert_eq!(state.snapshot(), WindowState::Closed);
-    window.close();
+    // The armed close gate intercepts the platform close — `AppKit` does
+    // not close outright — and the handler's `Close` reply publishes
+    // `Closed` through the state binding.
+    window.native().performClose(None);
+    assert!(drain_main_queue(mtm));
+    assert!(*closed.borrow());
     assert_eq!(state.snapshot(), WindowState::Closed);
 
-    // Dropping the binding releases the window's declaration — the
-    // owned-ABI replacement for a free function over a raw handle.
-    drop(binding);
+    drop(host);
 }
 
 /// Re-exports the GPU-surface mounted-scene fixtures.

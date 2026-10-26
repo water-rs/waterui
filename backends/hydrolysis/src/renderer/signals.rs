@@ -620,6 +620,34 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             .bind_repeating_phase(key, cycle, self.frame_instant)
     }
 
+    fn navigation_animating(&self, now: Instant) -> bool {
+        self.navigation.slots.values().any(|slot| {
+            slot.transition
+                .as_ref()
+                .is_some_and(|state| state.is_active(now))
+                || slot
+                    .interactive_pop
+                    .as_ref()
+                    .is_some_and(NavigationInteractivePop::is_animating)
+        })
+    }
+
+    /// Content demand for the host's animation cadence. Input-release and
+    /// navigation motion keep the fast range regardless of scalar fades.
+    #[cfg(any(target_os = "android", test))]
+    pub(crate) fn animation_refresh_range(&self) -> Option<cherenkov::RefreshRange> {
+        let now = self.frame_instant;
+        if self.has_pending_interaction_releases(now)
+            || self.navigation_animating(now)
+            || self.has_gliding_smooth_scrolls()
+            || self.has_active_touch_fling()
+        {
+            Some(cherenkov_record::tree::RATE_FAST)
+        } else {
+            self.animation_controller.refresh_range(now)
+        }
+    }
+
     pub fn advance_animations(&mut self) -> bool {
         let now = self.frame_instant;
         let pending_releases = self.flush_interaction_releases(now);
@@ -640,17 +668,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 active.contains(key)
             });
         }
-        ticked
-            || pending_releases
-            || self.navigation.slots.values().any(|slot| {
-                slot.transition
-                    .as_ref()
-                    .is_some_and(|state| state.is_active(now))
-                    || slot
-                        .interactive_pop
-                        .as_ref()
-                        .is_some_and(NavigationInteractivePop::is_animating)
-            })
+        ticked || pending_releases || self.navigation_animating(now)
     }
 
     pub fn animations_active(&self) -> bool {
@@ -667,14 +685,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         };
         controller_active
             || self.has_pending_interaction_releases(now)
-            || self.navigation.slots.values().any(|slot| {
-                slot.transition
-                    .as_ref()
-                    .is_some_and(|state| state.is_active(now))
-                    || slot
-                        .interactive_pop
-                        .as_ref()
-                        .is_some_and(NavigationInteractivePop::is_animating)
-            })
+            || self.navigation_animating(now)
     }
 }

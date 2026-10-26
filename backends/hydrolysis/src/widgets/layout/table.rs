@@ -103,6 +103,7 @@ impl<E: crate::text::TextEngine> TableRenderState<E> {
                 content.width,
                 content.height,
                 (0.0, 0.0),
+                None,
             )
         } else {
             let handle = ScrollHandle::new(

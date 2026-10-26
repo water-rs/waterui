@@ -189,24 +189,23 @@ fn join_gpu_instance(vi: u32, ii: u32) -> GpuJoin {
     let a = (vi >> 3u) - 1u;
     var inst = instances[a];
     let shift = inst.shape.half;
-    let base = ii * 8u + 4u;
+    let base = ii * 6u + 4u;
     let bounds = bitcast<vec4<f32>>(vec4<u32>(
         coverage_arena[base], coverage_arena[base + 1u],
         coverage_arena[base + 2u], coverage_arena[base + 3u]));
-    let data = vec4<u32>(
-        coverage_arena[base + 4u], coverage_arena[base + 5u],
-        coverage_arena[base + 6u], coverage_arena[base + 7u]);
+    let offset = coverage_arena[base + 4u];
+    let interior = coverage_arena[base + 5u];
     inst.bounds = bounds + shift.xyxy;
-    var kind = data.w;
+    var kind = select(KIND_GLYPH, KIND_SPAN, offset == 0xffffffffu);
     var texel = 0u;
     if kind == KIND_GLYPH {
-        inst.shape.half = vec2<f32>(f32(data.z & 0xffffu), f32(data.z >> 16u));
-        texel = bitcast<u32>(inst.uv.x) + data.x;
-        inst.uv.y = f32(data.y);
+        inst.shape.half = vec2<f32>(f32(interior & 0xffffu), f32(interior >> 16u));
+        texel = bitcast<u32>(inst.uv.x) + offset;
+        inst.uv.y = bounds.z - bounds.x;
         inst.meta_.w = inst.meta_.w | (FLAG_CELL_BUFFER << 24u);
-        if data.z != 0u && inst.meta_.y == PAINT_SOLID {
+        if interior != 0u && inst.meta_.y == PAINT_SOLID {
             kind = KIND_REGION;
-            inst.meta_.z = data.z;
+            inst.meta_.z = interior;
         }
     }
     inst.meta_.x = kind;
@@ -343,7 +342,10 @@ struct LamePoint {
 
 fn lame_point(r: vec2<f32>, n: f32, w: f32) -> LamePoint {
     // w^(n-2) is 1 at w = 0 for an ellipse (n = 2) and 0 for n > 2.
-    let wm2 = pow(max(w, 1e-30), n - 2.0);
+    var wm2 = 1.0;
+    if n != 2.0 {
+        wm2 = pow(max(w, 1e-30), n - 2.0);
+    }
     let p = w * wm2;
     let one = 1.0 + w * p;
     let s = pow(one, -1.0 / n);
@@ -448,17 +450,12 @@ fn lame_corner(q_in: vec2<f32>, r_in: vec2<f32>, n: f32) -> vec4<f32> {
     }
     var lo = 0.0;
     var hi = 1.0;
-    var foot = vec4<f32>(0.0);
-    for (var i = 0; i < LAME_EVALS; i++) {
+    // Only the last evaluated point contributes distance and curvature.
+    // Refine to it without computing discarded foot geometry or taking
+    // a final Newton step whose result would never be used.
+    for (var i = 0; i < LAME_EVALS - 1; i++) {
         let pt = lame_point(r, n, w);
-        let len = length(pt.normal);
-        let normal = pt.normal / len;
         let qc = q - pt.c;
-        // Curvature from the implicit form,
-        // κ = (n - 1)(w^(2n-2) + w^(n-2))·r.x·r.y / (s·|normal|³).
-        let p = pt.normal.y / r.x;
-        let kappa = (n - 1.0) * (p * p + pt.wm2) * r.x * r.y / (pt.s * len * len * len);
-        foot = vec4<f32>(dot(qc, normal), normal, kappa);
         let t = vec2<f32>(-pt.normal.y, pt.normal.x);
         let f = dot(qc, t);
         let df = -pt.s / pt.one * dot(t, t) - qc.x * r.x * (n - 1.0) * pt.wm2;
@@ -469,6 +466,15 @@ fn lame_corner(q_in: vec2<f32>, r_in: vec2<f32>, n: f32) -> vec4<f32> {
         }
         w = select(0.5 * (lo + hi), clamp(w - f / df, lo, hi), df < 0.0);
     }
+    let pt = lame_point(r, n, w);
+    let qc = q - pt.c;
+    let len = length(pt.normal);
+    let normal = pt.normal / len;
+    // Curvature from the implicit form,
+    // κ = (n - 1)(w^(2n-2) + w^(n-2))·r.x·r.y / (s·|normal|³).
+    let p = pt.normal.y / r.x;
+    let kappa = (n - 1.0) * (p * p + pt.wm2) * r.x * r.y / (pt.s * len * len * len);
+    let foot = vec4<f32>(dot(qc, normal), normal, kappa);
     return vec4<f32>(foot.x, select(foot.yz, foot.zy, swap), 1.0 / max(foot.w, 1e-6));
 }
 
@@ -477,6 +483,20 @@ fn lame_corner(q_in: vec2<f32>, r_in: vec2<f32>, n: f32) -> vec4<f32> {
 struct DistanceSample {
     distance: f32,
     gradient: vec4<f32>,
+}
+
+// Sharp-box distance and gradient, shared by general shapes and clipped glyphs.
+fn rect_sample(half: vec2<f32>, p: vec2<f32>) -> DistanceSample {
+    let sgn = select(vec2<f32>(-1.0), vec2<f32>(1.0), p >= vec2<f32>(0.0));
+    let a = abs(p) - half;
+    let d = length(max(a, vec2<f32>(0.0))) + min(max(a.x, a.y), 0.0);
+    var g: vec4<f32>;
+    if a.x > 0.0 && a.y > 0.0 {
+        g = vec4<f32>(a / length(a), 0.0, 1.0);
+    } else {
+        g = vec4<f32>(select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), a.x > a.y), 0.0, 0.0);
+    }
+    return DistanceSample(d, vec4<f32>(sgn * g.xy, g.zw));
 }
 
 fn sdf_sample(s: Shape, p: vec2<f32>, specialize_quadratic: bool) -> DistanceSample {
@@ -492,14 +512,7 @@ fn sdf_sample(s: Shape, p: vec2<f32>, specialize_quadratic: bool) -> DistanceSam
     let ry = rx * s.aspect;
     let a = abs(p) - s.half;
     if rx <= 0.0 || ry <= 0.0 {
-        let d = length(max(a, vec2<f32>(0.0))) + min(max(a.x, a.y), 0.0);
-        var g: vec4<f32>;
-        if a.x > 0.0 && a.y > 0.0 {
-            g = vec4<f32>(a / length(a), 0.0, 1.0);
-        } else {
-            g = vec4<f32>(select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), a.x > a.y), 0.0, 0.0);
-        }
-        return DistanceSample(d, vec4<f32>(sgn * g.xy, g.zw));
+        return rect_sample(s.half, p);
     }
     let q = a + vec2<f32>(rx, ry);
     if abs(s.exponent - 2.0) < 1e-4 && abs(s.aspect - 1.0) < 1e-4 {
@@ -698,8 +711,81 @@ fn corner_coverage(a: vec2<f32>, v1: vec2<f32>, v2: vec2<f32>, scale: f32) -> f3
     return clamp(abs(sum) * 0.5, 0.0, 1.0);
 }
 
-// Coverage of the shape `s` at local point `p`, `m` mapping local to device.
-fn shape_coverage(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_quadratic: bool) -> f32 {
+// Exact area of the unit device pixel inside the half-planes
+// `p[i].x + dot(p[i].yz, u) <= 0`, `u` the device offset from the pixel
+// centre: each `x` the signed outside-positive distance at the centre in
+// its own local units, `yz` the distance's device-space gradient in local
+// units per device pixel. Sutherland–Hodgman clips the pixel square by
+// every plane in turn, so where a draw edge and a clip edge coincide the
+// two planes describe the same boundary and the joint coverage is the
+// single edge's — not the product of two half-covered ramps that
+// multiplying the shapes' separate coverages produces (#2933). Each clip
+// adds at most one vertex to the convex square: six planes need ten.
+alias JointPlanes = array<vec3<f32>, 6>;
+
+fn planes_coverage(planes: JointPlanes, count: u32) -> f32 {
+    var poly: array<vec2<f32>, 10>;
+    poly[0] = vec2<f32>(-0.5, -0.5);
+    poly[1] = vec2<f32>(0.5, -0.5);
+    poly[2] = vec2<f32>(0.5, 0.5);
+    poly[3] = vec2<f32>(-0.5, 0.5);
+    var n = 4u;
+    for (var k = 0u; k < count; k = k + 1u) {
+        let pl = planes[k];
+        var clipped: array<vec2<f32>, 10>;
+        var m = 0u;
+        var previous = poly[n - 1u];
+        var previous_distance = pl.x + dot(pl.yz, previous);
+        for (var i = 0u; i < n; i = i + 1u) {
+            let p = poly[i];
+            let distance = pl.x + dot(pl.yz, p);
+            if (distance <= 0.0) != (previous_distance <= 0.0) {
+                let t = clamp(previous_distance / (previous_distance - distance), 0.0, 1.0);
+                clipped[m] = previous + t * (p - previous);
+                m = m + 1u;
+            }
+            if distance <= 0.0 {
+                clipped[m] = p;
+                m = m + 1u;
+            }
+            previous = p;
+            previous_distance = distance;
+        }
+        if m < 3u {
+            return 0.0;
+        }
+        for (var i = 0u; i < m; i = i + 1u) {
+            poly[i] = clipped[i];
+        }
+        n = m;
+    }
+    var twice = 0.0;
+    var previous = poly[n - 1u];
+    for (var i = 0u; i < n; i = i + 1u) {
+        let p = poly[i];
+        twice = twice + previous.x * p.y - previous.y * p.x;
+        previous = p;
+    }
+    return clamp(abs(twice) * 0.5, 0.0, 1.0);
+}
+
+// A shape's boundary at the pixel as up to two half-planes in the
+// `planes_coverage` form: both faces at a sharp-corner pixel, the SDF's
+// tangent plane everywhere else. The gradient is J^-T times the local
+// one — `device_grad_vec(m, g) / det`, signed so a mirroring keeps the
+// outward side — which `coverage_dir`'s magnitude-only use never sees.
+struct ShapePlanes {
+    n: u32,
+    p: array<vec3<f32>, 2>,
+}
+
+struct ShapeEval {
+    cov: f32,
+    planes: ShapePlanes,
+}
+
+fn shape_eval(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_quadratic: bool) -> ShapeEval {
+    var out: ShapeEval;
     let sample = sdf_sample(s, p, specialize_quadratic);
     let g = sample.gradient;
     // A sharp corner inside this pixel: the exact area inside both
@@ -717,6 +803,7 @@ fn shape_coverage(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_qua
     let rx = max(r, 0.0);
     let ry = rx * s.aspect;
     let a = abs(p) - s.half;
+    let det = m[0].x * m[0].w - m[0].y * m[0].z;
     if rx <= 0.0 || ry <= 0.0 {
         let scale = device_grad_scale(m);
         let v1 = device_grad_vec(m, vec2<f32>(sgn.x, 0.0));
@@ -724,50 +811,122 @@ fn shape_coverage(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_qua
         let h1 = 0.5 * scale * (abs(v1.x) + abs(v1.y));
         let h2 = 0.5 * scale * (abs(v2.x) + abs(v2.y));
         if abs(a.x) < h1 && abs(a.y) < h2 {
-            return corner_coverage(a, v1, v2, scale);
+            out.cov = corner_coverage(a, v1, v2, scale);
+            out.planes.n = 2u;
+            out.planes.p[0] = vec3<f32>(a.x, v1 / det);
+            out.planes.p[1] = vec3<f32>(a.y, v2 / det);
+            return out;
         }
     }
-    return coverage_dir(
+    out.cov = coverage_dir(
         sample.distance,
         device_grad_vec(m, g.xy),
         device_grad_scale(m),
         g.w > 0.0,
         g.z,
     );
+    out.planes.n = 1u;
+    out.planes.p[0] = vec3<f32>(sample.distance, device_grad_vec(m, g.xy) / det);
+    return out;
 }
 
+// Coverage of the shape `s` at local point `p`, `m` mapping local to device.
+fn shape_coverage(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_quadratic: bool) -> f32 {
+    return shape_eval(s, p, m, specialize_quadratic).cov;
+}
+
+// The clip's boundary half-planes at the fragment, in the
+// `planes_coverage` form: `clip_inv` is device → clip-local, so J^-T is
+// its own transpose — the same mapping `clip_mask_coverage` applies to
+// the SDF gradient.
+fn clip_planes(in: VsOut) -> ShapePlanes {
+    let i = in.instance;
+    let s = instances[i].clip;
+    let ci = instances[i].clip_inv;
+    let pc = apply(ci, in.device);
+    let sample = sdf_sample(s, pc, false);
+    let right = pc.x > 0.0;
+    let bottom = pc.y > 0.0;
+    let r = select(
+        select(s.radii.x, s.radii.w, bottom),
+        select(s.radii.y, s.radii.z, bottom),
+        right,
+    );
+    let rx = max(r, 0.0);
+    let ry = rx * s.aspect;
+    return clip_sample_planes(in, pc, sample, rx <= 0.0 || ry <= 0.0);
+}
+
+fn clip_sample_planes(in: VsOut, pc: vec2<f32>, sample: DistanceSample, sharp: bool) -> ShapePlanes {
+    var out: ShapePlanes;
+    let ci = instances[in.instance].clip_inv;
+    let s = instances[in.instance].clip;
+    let g = sample.gradient;
+    let sgn = select(vec2<f32>(-1.0), vec2<f32>(1.0), pc >= vec2<f32>(0.0));
+    let a = abs(pc) - s.half;
+    if sharp {
+        let v1 = vec2<f32>(ci[0].x * sgn.x, ci[0].z * sgn.x);
+        let v2 = vec2<f32>(ci[0].y * sgn.y, ci[0].w * sgn.y);
+        let h1 = 0.5 * (abs(v1.x) + abs(v1.y));
+        let h2 = 0.5 * (abs(v2.x) + abs(v2.y));
+        if abs(a.x) < h1 && abs(a.y) < h2 {
+            out.n = 2u;
+            out.p[0] = vec3<f32>(a.x, v1);
+            out.p[1] = vec3<f32>(a.y, v2);
+            return out;
+        }
+    }
+    out.n = 1u;
+    out.p[0] = vec3<f32>(
+        sample.distance,
+        vec2<f32>(ci[0].x * g.x + ci[0].y * g.y, ci[0].z * g.x + ci[0].w * g.y),
+    );
+    return out;
+}
+
+
+// The clip's atlas-or-texture mask texel at the fragment, or 1 where the
+// clip carries no mask. The mask stays a coverage product: a raster cell
+// has no signed-distance boundary a half-plane could intersect.
+fn mask_coverage(in: VsOut) -> f32 {
+    let i = in.instance;
+    let flags = (in.meta_.w >> 24u) & 0xffu;
+    if (flags & FLAG_HAS_MASK) == 0u {
+        return 1.0;
+    }
+    // Mask texel for this device pixel; texels outside the cell
+    // contribute zero coverage.
+    let mp = floor(in.device) - in.params.zw;
+    let msize = vec2<f32>(instances[i].clip.aspect, instances[i].clip.exponent);
+    let inside = all(mp >= vec2<f32>(0.0)) && all(mp < msize);
+    var m: f32;
+    if (flags & FLAG_MASK_TEXTURE) != 0u {
+        m = textureLoad(mask_tex, vec2<i32>(mp), 0).r;
+    } else {
+        m = textureLoad(atlas, vec2<i32>(mp) + vec2<i32>(instances[i].uv.zw), 0).r;
+    }
+    return select(0.0, m, inside);
+}
 
 // Coverage of the instance's clip shape and mask at `in.device`: the
 // geometric clip SDF times the atlas-or-texture mask texel, matching
 // fs_full's own evaluation verbatim.
+fn clip_sample_coverage(in: VsOut, sample: DistanceSample) -> f32 {
+    let g = sample.gradient;
+    let ci = instances[in.instance].clip_inv;
+    let dg = vec2<f32>(ci[0].x * g.x + ci[0].y * g.y, ci[0].z * g.x + ci[0].w * g.y);
+    return coverage_dir(sample.distance, dg, 1.0, g.w > 0.0, g.z);
+}
+
 fn clip_mask_coverage(in: VsOut) -> f32 {
     let i = in.instance;
     let flags = (in.meta_.w >> 24u) & 0xffu;
     var cov = 1.0;
     if (flags & FLAG_HAS_CLIP) != 0u {
-        // `clip_inv` maps device to clip-local: J^-T is its transpose.
         let pc = apply(instances[i].clip_inv, in.device);
-        let sample = sdf_sample(instances[i].clip, pc, false);
-        let g = sample.gradient;
-        let ci = instances[i].clip_inv;
-        let dg = vec2<f32>(ci[0].x * g.x + ci[0].y * g.y, ci[0].z * g.x + ci[0].w * g.y);
-        cov = coverage_dir(sample.distance, dg, 1.0, g.w > 0.0, g.z);
+        cov = clip_sample_coverage(in, sdf_sample(instances[i].clip, pc, false));
     }
-    if (flags & FLAG_HAS_MASK) != 0u {
-        // Mask texel for this device pixel; texels outside the cell
-        // contribute zero coverage.
-        let mp = floor(in.device) - in.params.zw;
-        let msize = vec2<f32>(instances[i].clip.aspect, instances[i].clip.exponent);
-        let inside = all(mp >= vec2<f32>(0.0)) && all(mp < msize);
-        var m: f32;
-        if (flags & FLAG_MASK_TEXTURE) != 0u {
-            m = textureLoad(mask_tex, vec2<i32>(mp), 0).r;
-        } else {
-            m = textureLoad(atlas, vec2<i32>(mp) + vec2<i32>(instances[i].uv.zw), 0).r;
-        }
-        cov *= select(0.0, m, inside);
-    }
-    return cov;
+    return cov * mask_coverage(in);
 }
 
 // One premultiplied pixel moved between spaces: the space fragment's

@@ -8,6 +8,7 @@ pub struct HydroState<E: crate::text::TextEngine> {
     /// Thread-safe text service built on the session's text engine, shared
     /// with worker-thread layout measurement via `Arc`. See [`TextService`].
     pub(crate) text: Arc<TextService<E>>,
+    pub(crate) text_scenes: crate::text::TextScenes,
     pub(crate) measurement: MeasurementCaches<E>,
     /// Per-frame work counters for the fine-grained frame model; see
     /// [`crate::renderer::FrameWorkCounters`].
@@ -30,6 +31,7 @@ impl<E: crate::text::TextEngine> HydroState<E> {
     pub(crate) fn new(text: E) -> Self {
         Self {
             text: Arc::new(TextService::new(text)),
+            text_scenes: crate::text::TextScenes::default(),
             measurement: MeasurementCaches::default(),
             counters: FrameWorkCounters::default(),
             layout_dependencies: None,

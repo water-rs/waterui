@@ -16,9 +16,7 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<GpuContentView> {
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
-        view.as_inner()
-            .intrinsic_size()
-            .unwrap_or_else(LayoutSize::zero)
+        view.as_inner().measure(ProposalSize::UNSPECIFIED).size
     }
 
     fn dimensions(
@@ -28,13 +26,11 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<GpuContentView> {
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
-        // Same intrinsic-proposal contract as `SceneView`: a natural size
-        // answers it where the container left an axis open, and content that
-        // is not fills the proposal.
-        graphics_dimensions_from_proposal(resolve_scene_proposal(
-            view.as_inner().intrinsic_size(),
-            proposal,
-        ))
+        // The view's own measure asks the live content: a source whose
+        // size resolves after mount reports it here, where the
+        // `intrinsic_size` snapshot would keep answering what the content
+        // claimed at construction (water-rs/waterui#1958).
+        view.as_inner().measure(proposal)
     }
 }
 
@@ -45,9 +41,7 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ExternalFrameView
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
-        view.as_inner()
-            .intrinsic_size()
-            .unwrap_or_else(LayoutSize::zero)
+        view.as_inner().measure(ProposalSize::UNSPECIFIED).size
     }
 
     fn dimensions(

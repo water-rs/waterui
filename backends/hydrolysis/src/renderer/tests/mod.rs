@@ -489,7 +489,12 @@ fn animated_scalar_subscribes_before_reading_its_snapshot() {
     let mut renderer = test_renderer();
     let owner = Rc::new(());
 
-    let resolved = renderer.resolve_owned_scalar(&signal, &owner, usize::MAX);
+    let resolved = renderer.resolve_owned_scalar(
+        &signal,
+        &owner,
+        usize::MAX,
+        cherenkov_record::tree::RATE_FAST,
+    );
 
     assert_eq!(resolved, 0.25);
     assert!(signal.subscribed.get());
@@ -2222,28 +2227,21 @@ fn a11y_value_overrides_a_controls_own_value() {
 #[cfg(feature = "accessibility")]
 #[test]
 fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
-    use core::convert::TryFrom as _;
     use jiff::civil::Date;
-    use waterui_core::id::Id;
 
     let env = test_environment();
     let mut renderer = test_renderer();
     let picker_selection = Binding::container("Alpha");
     let date = Binding::container(Date::new(2025, 1, 10).expect("valid test date"));
     let color = Binding::container(Color::srgb(0, 0, 0));
-    let first = Id::try_from(1).expect("non-zero tab id");
-    let second = Id::try_from(2).expect("non-zero tab id");
-    let tabs = TabsLayout::new(
-        Binding::container(first),
-        vec![
-            Tab::new(first, "First tab", || {
-                NavigationView::new("First", text("One"))
-            }),
-            Tab::new(second, "Second tab", || {
-                NavigationView::new("Second", text("Two"))
-            }),
-        ],
-    );
+    let tab_items = waterui_core::views::SharedAnyViews::new(vec![
+        Tab::new("First tab", || NavigationView::new("First", text("One"))),
+        Tab::new("Second tab", || NavigationView::new("Second", text("Two"))),
+    ]);
+    let snapshot = waterui_core::views::Views::snapshot(&tab_items);
+    let first = waterui_core::views::ViewSnapshot::get_id(&snapshot, 0)
+        .expect("a non-empty tab set reports an id");
+    let tabs = TabsLayout::new(Binding::container(first), tab_items);
     let view = vstack((
         Picker::new(
             "Letter",
@@ -4303,4 +4301,28 @@ fn a_labelled_container_that_stands_reports_its_assigned_frame() {
         bounds.width(),
         bounds.height(),
     );
+}
+
+fn diagnostic_gpu() -> (
+    crate::platform::OffscreenGpuContext,
+    cherenkov_gpu::composition::Sink,
+    Rc<crate::engine::SharedEngineState>,
+) {
+    let gpu = crate::platform::OffscreenGpuContext::new_for_tests_blocking();
+    let probe = crate::platform::OffscreenSurface::on_context(
+        gpu.clone(),
+        1,
+        1,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let context = probe.device_loss().gpu_context();
+    let diagnostics = cherenkov_gpu::composition::Sink::new();
+    let engine = crate::engine::GpuEngine::new(cherenkov_gpu::GpuConfig {
+        device: Some(context.shared_device.clone()),
+        composition_diag: Some(diagnostics.clone()),
+        ..cherenkov_gpu::GpuConfig::default()
+    })
+    .expect("diagnostic engine");
+    let state = crate::engine::SharedEngineState::register(context.context_id, Rc::new(engine));
+    (gpu, diagnostics, state)
 }

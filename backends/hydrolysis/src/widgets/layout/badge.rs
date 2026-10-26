@@ -221,15 +221,8 @@ pub fn render_badge_parts<E: crate::text::TextEngine>(
         local: ctx.local,
         bounds: text_rect,
     };
-    let (hydro, scene) = ctx.renderer_mut().state_and_run_mut();
-    HydrolysisRenderer::render_styled_text(
-        hydro,
-        scene,
-        text_ctx,
-        label,
-        HorizontalAlignment::Center,
-        env,
-    );
+    ctx.renderer_mut()
+        .render_styled_text(text_ctx, label, HorizontalAlignment::Center, env);
 }
 
 /// Emits a retained badge's accessibility nodes for the semantic walk: the
