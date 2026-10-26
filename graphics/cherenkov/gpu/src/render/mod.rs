@@ -6154,7 +6154,8 @@ impl GpuRenderer {
             stale: surf.stale_projective(&self.filters, &self.shaders, &self.producers),
             picture_bytes: self
                 .projective_available()
-                .saturating_sub(self.gpu_cov.generation_reservation()),
+                .saturating_sub(self.gpu_cov.generation_reservation())
+                .min(self.config.budget.gpu.0 / gpu_cov::BUDGET_SHARE),
         }
     }
 
@@ -6288,7 +6289,15 @@ impl GpuRenderer {
     fn evict_projective(&mut self, incoming_bytes: u64) {
         let available = self.projective_available().saturating_sub(incoming_bytes);
         let mut total = self.projective_bytes();
-        if total <= available {
+        let mut pictures: u64 = self
+            .surfaces
+            .values()
+            .flat_map(|surface| surface.projective.values().flatten())
+            .filter(|entry| entry.picture.is_some())
+            .map(projective::Entry::bytes)
+            .sum();
+        let picture_limit = self.config.budget.gpu.0 / gpu_cov::BUDGET_SHARE;
+        if total <= available && pictures <= picture_limit {
             return;
         }
         let mut optional: Vec<(u64, SurfaceId, projective::LocalKey)> = self
@@ -6305,8 +6314,11 @@ impl GpuRenderer {
             .collect();
         optional.sort_unstable_by_key(|(last, ..)| *last);
         for (_, sid, key) in optional {
-            if total <= available {
+            if total <= available && pictures <= picture_limit {
                 break;
+            }
+            if total <= available && key.picture.is_none() {
+                continue;
             }
             let Some(entries) = self
                 .surfaces
@@ -6318,6 +6330,9 @@ impl GpuRenderer {
             if let Some(i) = entries.iter().position(|e| e.matches(key)) {
                 let entry = entries.swap_remove(i);
                 total -= entry.bytes();
+                if entry.picture.is_some() {
+                    pictures -= entry.bytes();
+                }
                 diag::retire(
                     &self.device,
                     diag::RetireArgs {
