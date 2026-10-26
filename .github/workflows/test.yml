@@ -173,7 +173,16 @@ jobs:
             echo "compiles=${compiles}"
           } >> "${GITHUB_OUTPUT}"
       - name: Install native dependencies
+        id: native-deps
+        timeout-minutes: 3
         uses: ./.github/actions/setup-linux-deps
+      - name: Preserve native installation diagnostics
+        if: failure() && steps.native-deps.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-install-diagnostics-${{ github.run_id }}
+          path: ~/cache-apt-pkgs/*.log
+          if-no-files-found: error
       # cherenkov-oracle, cherenkov-gpu, and cherenkov-cpu compile
       # `include_bytes!` of fonts only `scenes/tools/generate.py` writes;
       # `--all-targets` compiles them, so the fonts must exist first.
