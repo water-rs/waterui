@@ -7427,7 +7427,7 @@ impl GpuRenderer {
         }
         // One eviction and compaction pass per commit, ahead of every
         // miss's allocation.
-        self.gpu_cov.settle(&self.device, draws_coverage);
+        self.gpu_cov.settle(draws_coverage);
         let n_cells: usize = rasters.iter().map(|r| r.cell_count()).sum();
         // A frame whose batch places strictly needs no replay pins and
         // no eviction, so no emission scan and no touch decoding runs —
@@ -7974,7 +7974,7 @@ impl GpuRenderer {
                 Ok(PendingOrigin::None)
             }
             PendingRaster::GpuPath(draw) => {
-                let index = self.gpu_cov.draw(&self.device, &draw)?;
+                let index = self.gpu_cov.draw(&draw)?;
                 Ok(PendingOrigin::Gpu(index))
             }
         }
