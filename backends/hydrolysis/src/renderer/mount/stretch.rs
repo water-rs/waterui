@@ -15,12 +15,12 @@
 //! At rest the layer carries no filter, as a node HWUI draws without a
 //! stretch is not composed through the shader.
 
-use cherenkov::{Filter, FilterId};
+use cherenkov_record::FilterId;
 use nami::Binding;
 use waterui_graphics::filtrate::filters::OverscrollStretch;
 use waterui_graphics::{ParamGuards, Reactive};
 
-use super::target::LayerTarget;
+use super::target::{FilterHandle, LayerTarget};
 
 /// A stretch the inner layer draws: its viewport in the scroll node's
 /// space and HWUI's stretch direction.
@@ -69,7 +69,7 @@ pub(super) struct StretchFilter {
     /// carried through — what a commit that does not re-lower the node
     /// re-resolves.
     shown: Option<(ShownStretch, kurbo::Affine)>,
-    filter: Filter,
+    filter: FilterHandle,
     _guards: ParamGuards,
 }
 
@@ -84,7 +84,7 @@ impl std::fmt::Debug for StretchFilter {
 
 impl StretchFilter {
     /// Registers the filter for `shown` under `world`.
-    pub(super) fn new<T: LayerTarget>(
+    pub(super) fn new<T: LayerTarget<E>, E: crate::text::TextEngine>(
         host: &T::Host,
         shown: ShownStretch,
         world: kurbo::Affine,
@@ -140,7 +140,7 @@ impl StretchFilter {
         self.shown = None;
     }
 
-    pub(super) fn id(&self) -> FilterId {
+    pub(super) const fn id(&self) -> FilterId {
         self.filter.id()
     }
 

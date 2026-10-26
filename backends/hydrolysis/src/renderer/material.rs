@@ -339,7 +339,7 @@ pub struct WindowBackdrop {
     level: WithinWindowLevel,
 }
 
-impl crate::renderer::HydrolysisRenderer {
+impl<E: crate::text::TextEngine> crate::renderer::HydrolysisRenderer<E> {
     /// Sets the within-window material the window's background names, or
     /// `None` for any other background. The window's root is mounted over
     /// it, as a view is over its material background. A change of level

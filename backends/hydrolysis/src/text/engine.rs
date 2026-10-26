@@ -4,9 +4,9 @@
 //! [`TextEngine`] is the backend's contract for shaping, ink measurement and
 //! recording, and [`TextLayout`] its contract for everything a laid-out text
 //! answers — metrics, hit testing, and the visual moves editing makes. The
-//! session binds exactly one engine (`SessionTextEngine`), so there is no
-//! `dyn` dispatch and no runtime choice: the seam exists so the platform
-//! backends each name their own shaper in one place.
+//! renderer carries its concrete engine as a type parameter, and each painter
+//! constructs that engine at its entry point. Shaping and editing use static
+//! dispatch throughout.
 //!
 //! Coordinates are in layout space before the ink shift, the way the shaping
 //! backend reports them today.
@@ -16,80 +16,7 @@ use core::num::NonZeroUsize;
 use crate::renderer::{FrameWorkCounters, Recording};
 
 use super::input::ResolvedTextLayoutInput;
-
-/// The caret width every caret rectangle carries.
-pub const CARET_WIDTH: f32 = 1.0;
-
-/// Which side of a cluster boundary a position attaches to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Affinity {
-    /// The position attaches to the cluster that follows it.
-    Downstream,
-    /// The position attaches to the cluster that precedes it.
-    Upstream,
-}
-
-/// A caret position inside a layout: a byte index into the layout's text and
-/// the side it attaches to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TextPosition {
-    /// Byte index into the layout's text.
-    pub(crate) index: usize,
-    /// The side the position attaches to.
-    pub(crate) affinity: Affinity,
-}
-
-impl TextPosition {
-    /// The rule every editing caller uses today: at or past the end attaches
-    /// upstream.
-    pub(crate) const fn in_text(index: usize, text_len: usize) -> Self {
-        Self {
-            index,
-            affinity: if index >= text_len {
-                Affinity::Upstream
-            } else {
-                Affinity::Downstream
-            },
-        }
-    }
-}
-
-/// An anchor/focus pair inside a layout, each end already snapped to the
-/// layout's cluster boundaries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TextSelection {
-    /// The end the selection was initiated at.
-    pub(crate) anchor: TextPosition,
-    /// The end the selection currently extends to.
-    pub(crate) focus: TextPosition,
-}
-
-impl TextSelection {
-    /// A caret at `at`.
-    pub(crate) const fn collapsed(at: TextPosition) -> Self {
-        Self {
-            anchor: at,
-            focus: at,
-        }
-    }
-
-    /// Whether the selection is a single position rather than a range:
-    /// anchor and focus carry the same index.
-    pub(crate) const fn is_collapsed(&self) -> bool {
-        self.anchor.index == self.focus.index
-    }
-}
-
-/// One line's advance, line height and baseline.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LineMetrics {
-    /// The line's laid-out width.
-    pub(crate) advance: f32,
-    /// The height the line occupies.
-    pub(crate) line_height: f32,
-    /// The line's baseline offset.
-    pub(crate) baseline: f32,
-}
+pub use super::types::{Affinity, CARET_WIDTH, LineMetrics, TextPosition, TextSelection};
 
 /// Everything a laid-out text answers: metrics, hit testing and the visual
 /// moves editing makes.
@@ -133,13 +60,13 @@ pub trait TextEngine: Send + Sync + 'static {
     /// in its default style — the line a caret in an empty field occupies.
     fn shape(&self, input: &ResolvedTextLayoutInput, max_width: Option<f32>) -> Self::Layout;
 
-    /// At most `max_lines`, the last ending in an ellipsis when the text
-    /// overflows; otherwise `layout`.
+    /// At most `max_lines` lines, the last ending in an ellipsis when the
+    /// text overflows; a platform that ellipsizes itself does so in one
+    /// call, otherwise the callback re-shapes respelled input.
     ///
     /// `shape` is the service's cached shaper; every reshape goes through it.
-    fn truncate_tail(
+    fn shape_limited(
         &self,
-        layout: Self::Layout,
         input: &ResolvedTextLayoutInput,
         max_width: Option<f32>,
         max_lines: NonZeroUsize,

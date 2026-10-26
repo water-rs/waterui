@@ -53,7 +53,11 @@ fn sidebar_tabs_view(count: usize) -> TabsLayout {
 
 /// Intrinsic width of a plain-text view, measured the same way the
 /// renderer measures a tab's icon or label.
-fn measure_plain(renderer: &mut HydrolysisRenderer, env: &Environment, s: &str) -> f64 {
+fn measure_plain<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    env: &Environment,
+    s: &str,
+) -> f64 {
     f64::from(
         HydrolysisRenderer::measure_text_intrinsic_size(
             renderer.state_mut(),

@@ -57,12 +57,12 @@ use crate::renderer::{MISSING_MENU_SHORTCUT_REGISTRY, MenuShortcutRegistry};
 /// signal for whichever surface consumes it: the winit runner feeds it to
 /// `NativeMenuBar::install` on macOS and Windows; runners with no menu-bar
 /// surface just arm the chords and drop it.
-pub fn register_menu_bar(
+pub fn register_menu_bar<E: crate::text::TextEngine>(
     menu_bar: &Computed<Vec<Menu>>,
     env: &Environment,
 ) -> Computed<Vec<ResolvedMenuItem>> {
     let items = resolve_menu_bar_items(menu_bar, env);
-    env.get::<MenuShortcutRegistry>()
+    env.get::<MenuShortcutRegistry<E>>()
         .expect(MISSING_MENU_SHORTCUT_REGISTRY)
         .register_menu_bar(items.clone(), env.clone());
     items

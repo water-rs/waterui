@@ -49,9 +49,18 @@ object NativeBridge {
      * session, and a recreation that exhausts its loss budget already
      * reaches the host as the frame call's `IllegalStateException`;
      * 17 = [nativeSetFrameDemand] separates continuous work and touch, and
-     * surface attachment carries the display's suggested ARR rates.
+     * surface attachment carries the display's suggested ARR rates; 18 =
+     * the frame carries the HWUI command buffer (`src/hwui` on the Rust
+     * side, `dev.waterui.hydrolysis.hwui` here) decoded onto retained
+     * `RenderNode`s (water-rs/waterui#1811); 19 = the HWUI text wire
+     * carries a default-style row: row zero of every packed shape request
+     * is the paragraph's base paint; 20 = [nativeCreateSession] takes the
+     * session-owned painter and [nativeSetHostAttached] reports the host
+     * view's bind state; 21 = the BindPlatformView op binds a platform
+     * view inside its owner's RenderNode; 22 = [nativePlatformViewHitTest]
+     * answers the retained tree's platform view under a host pixel.
      */
-    private const val SCHEMA: Int = 17
+    private const val SCHEMA: Int = 22
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -123,14 +132,32 @@ object NativeBridge {
      * `uiThreadServices` is the handle [load] created — every session
      * shares that executor rather than installing its own.
      */
+    /**
+     * `painter` is the session-owned [SessionPainter] — null on the GPU
+     * backend, the HWUI painter object otherwise.
+     */
     @JvmStatic
     external fun nativeCreateSession(
         session: HydrolysisSession,
         context: Context,
+        painter: SessionPainter?,
         uiThreadServices: Long,
     ): Long
 
     @JvmStatic external fun nativeDestroySession(sessionPtr: Long)
+
+    /**
+     * The host bound (`true`) or unbound (`false`) its view — the session's
+     * attach gate; called from [HydrolysisSession.bind] / `unbind`.
+     */
+    @JvmStatic external fun nativeSetHostAttached(sessionPtr: Long, attached: Boolean)
+
+    /**
+     * The retained tree's platform view under host pixel (`x`, `y`) — the
+     * HWUI painter's ordered hit test. `0` means content or nothing covers
+     * the point; any other value is a placement id.
+     */
+    @JvmStatic external fun nativePlatformViewHitTest(sessionPtr: Long, x: Float, y: Float): Long
 
     @JvmStatic
     external fun nativeSetMetrics(
