@@ -518,8 +518,6 @@ mod tests {
         );
     }
 
-    use target_lexicon::Aarch64Architecture;
-
     #[test]
     fn default_artifact_has_only_arm64_desktop_device_and_simulator() {
         let selected = slices(None).unwrap();

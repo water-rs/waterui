@@ -279,11 +279,10 @@ objc2-core-image = { version = "0.3", default-features = false, features = [
     "objc2-metal",
 ], optional = true }
 
-# cargo-machete: `cfg_aliases` is named only in `build.rs`, which the
-# analysis does not read; the `objc2-app-kit` dev-dependency only enables
-# features on cocoa-ui's edge and is reached as `cocoa_ui::objc2_app_kit`.
+# cargo-machete: `cfg_aliases` and `waterkit-build` are named only in
+# `build.rs`, which the analysis does not read.
 [package.metadata.cargo-machete]
-ignored = ["cfg_aliases", "objc2-app-kit"]
+ignored = ["cfg_aliases", "waterkit-build"]
 
 [dev-dependencies]
 block2 = { workspace = true }

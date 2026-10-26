@@ -30,8 +30,8 @@ private func runtimeDrop(_ _: UnsafeMutableRawPointer)
 private func mountCreate(
   _ _: UnsafeRawPointer, _ _: UnsafeMutableRawPointer,
   _ _: UnsafePointer<CChar>, _ _: UnsafePointer<CChar>,
-  _ dark: Bool, _ rtl: Bool, _ locale: UnsafePointer<CChar>?,
-  _ hostFonts: UnsafePointer<Double>?
+  _ _: Bool, _ _: Bool, _ _: UnsafePointer<CChar>?,
+  _ _: UnsafePointer<Double>?
 ) -> UnsafeMutableRawPointer
 @_extern(c, "waterui_apple_mount_drop")
 private func mountDrop(_ _: UnsafeMutableRawPointer)
@@ -39,13 +39,13 @@ private func mountDrop(_ _: UnsafeMutableRawPointer)
 private func updateVisibilityNative(_ _: UnsafeRawPointer)
 @_extern(c, "waterui_apple_update_environment")
 private func updateEnvironmentNative(
-  _ _: UnsafeRawPointer, _ dark: Bool, _ rtl: Bool,
-  _ locale: UnsafePointer<CChar>, _ hostFonts: UnsafePointer<Double>
+  _ _: UnsafeRawPointer, _ _: Bool, _ _: Bool,
+  _ _: UnsafePointer<CChar>, _ _: UnsafePointer<Double>
 )
 @_extern(c, "waterui_apple_measure")
 private func measureNative(
-  _ _: UnsafeRawPointer, _ width: Double, _ height: Double,
-  _ hasWidth: Bool, _ hasHeight: Bool, _ result: UnsafeMutablePointer<Double>
+  _ _: UnsafeRawPointer, _ _: Double, _ _: Double,
+  _ _: Bool, _ _: Bool, _ _: UnsafeMutablePointer<Double>
 )
 
 /// Resources supplied by the native application or the embedding package.

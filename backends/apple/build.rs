@@ -2,6 +2,8 @@
 //! gates on.
 
 use cfg_aliases::cfg_aliases;
+#[cfg(all(feature = "swiftui", any(target_os = "ios", target_os = "macos")))]
+use waterkit_build::SwiftModule;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -90,7 +92,7 @@ fn compile_waterui_bridge() {
     let deployment = std::env::var(env_var).unwrap_or_else(|_| {
         panic!("waterui-apple's swiftui feature requires {env_var}=26.0 or newer")
     });
-    let artifacts = waterkit_build::SwiftModule::new("WaterUIBridge")
+    let artifacts = SwiftModule::new("WaterUIBridge")
         .swift_source("Sources/WaterUI/Embedding.swift")
         .framework("Foundation")
         .framework("SwiftUI")
