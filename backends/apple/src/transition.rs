@@ -15,13 +15,15 @@
 //! animations (`UIKit`); the ghost's `TransitionState` clock — a
 //! `FrameClock` on its window — decides when the slot and view release.
 //!
-//! Pixel (`captures_content`) transitions panic: the window-level overlay
-//! they present through needs a `Computed<TransitionFrame>`, and
-//! `TransitionFrame`/`TransitionContext` are `#[non_exhaustive]` without a
-//! public constructor — no backend can build one until waterui-core grows
-//! a constructor for them. The panic names that gap instead of silently
-//! degrading to a property animation, per the contract's "a failed
-//! capture is an error, never a property fallback".
+//! Pixel (`captures_content`) transitions panic for now: the window
+//! overlay machinery exists (`cocoa_ui::capture::ViewCapture` for the
+//! frozen `MTLTexture`, `TransitionContext::new`/`TransitionFrame::new`
+//! for the effect's inputs), but the filtered pipeline has no public
+//! surface that accepts a frozen texture as effect input —
+//! `imported_input`/`imported_texture` only ever receive the live
+//! frame's own capture lease. The panic names that gap instead of
+//! silently degrading to a property animation, per the contract's
+//! "a failed capture is an error, never a property fallback".
 
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
@@ -53,11 +55,11 @@ impl core::fmt::Debug for TransitionClaim {
     }
 }
 
-/// Rejects a transition that still needs pixel capture: the window-level
-/// overlay is unreachable while `TransitionFrame` has no public
-/// constructor (see the module docs). Reduce Motion already resolved in
-/// `spec.start`, so a capture transition whose declared `reduced()` is a
-/// property effect never reaches here.
+/// Rejects a transition that still needs pixel capture: the filtered
+/// pipeline has no public frozen-texture input surface yet (see the
+/// module docs). Reduce Motion already resolved in `spec.start`, so a
+/// capture transition whose declared `reduced()` is a property effect
+/// never reaches here — the reduced path still works.
 fn assert_property_transition(state: &TransitionState) {
     assert!(
         !state.captures_content(),
