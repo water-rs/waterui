@@ -2,7 +2,7 @@
 # Builds the SwiftUI reference host as a minimal .app bundle — no Xcode project
 # required, so it compiles in seconds with just the toolchain.
 #
-# Usage: build-reference-host.sh <macos|ios> <output-dir>
+# Usage: build-reference-host.sh <macos|ios> <output-dir> [deployment-version]
 #
 # Produces <output-dir>/E2EReference.app. Launch it with
 #   -E2EExample <name> -E2ETitle <window title>
@@ -10,8 +10,10 @@
 
 set -euo pipefail
 
-PLATFORM="${1:?usage: build-reference-host.sh <macos|ios> <output-dir>}"
-OUT_DIR="${2:?usage: build-reference-host.sh <macos|ios> <output-dir>}"
+PLATFORM="${1:?usage: build-reference-host.sh <macos|ios> <output-dir> [deployment-version]}"
+OUT_DIR="${2:?usage: build-reference-host.sh <macos|ios> <output-dir> [deployment-version]}"
+# Optional deployment floor; when empty each platform keeps its automatic selection below.
+DEPLOY_VERSION="${3:-}"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 APP="$OUT_DIR/E2EReference.app"
 
@@ -21,7 +23,7 @@ case "$PLATFORM" in
     PLIST="$APP/Contents/Info.plist"
     PLATFORMS=("MacOSX")
     MIN_KEY="LSMinimumSystemVersion"
-    MIN_VERSION="$(sw_vers -productVersion)"
+    MIN_VERSION="${DEPLOY_VERSION:-$(sw_vers -productVersion)}"
     ;;
   ios)
     BIN_DIR="$APP"
@@ -36,7 +38,10 @@ case "$PLATFORM" in
     # the same device a default `simctl` pick would boot. The value also
     # drives the swiftc deployment target, so it can never drop below what
     # the twins' newest APIs require.
-    MIN_VERSION="$(python3 - "$(xcrun --sdk iphonesimulator --show-sdk-platform-version)" <<'PY'
+    if [[ -n "${DEPLOY_VERSION}" ]]; then
+      MIN_VERSION="${DEPLOY_VERSION}"
+    else
+      MIN_VERSION="$(python3 - "$(xcrun --sdk iphonesimulator --show-sdk-platform-version)" <<'PY'
 import json, os, subprocess, sys
 sdk_version = [int(x) for x in sys.argv[1].split(".")]
 udid = os.environ.get("SIMULATOR_UDID", "")
@@ -62,7 +67,8 @@ if version and [int(x) for x in version.split(".")] > sdk_version:
 print(version)
 PY
 )"
-    [[ -z "${MIN_VERSION}" ]] && MIN_VERSION="$(xcrun --sdk iphonesimulator --show-sdk-platform-version)"
+      [[ -z "${MIN_VERSION}" ]] && MIN_VERSION="$(xcrun --sdk iphonesimulator --show-sdk-platform-version)"
+    fi
     ;;
   *)
     echo "unknown platform: $PLATFORM" >&2
@@ -85,7 +91,9 @@ if [[ "$PLATFORM" == "ios" ]]; then
     -target "arm64-apple-ios${MIN_VERSION}-simulator" \
     -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)"
 else
-  swiftc -O -o "$BIN_DIR/E2EReference" ${SOURCES[@]+"${SOURCES[@]}"}
+  # ARM64 is the only published Apple target.
+  swiftc -O -o "$BIN_DIR/E2EReference" ${SOURCES[@]+"${SOURCES[@]}"} \
+    -target "arm64-apple-macos${MIN_VERSION}"
 fi
 
 mkdir -p "$(dirname "$PLIST")"
