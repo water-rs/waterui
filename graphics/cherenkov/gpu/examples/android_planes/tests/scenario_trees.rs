@@ -59,20 +59,21 @@ fn every_scenario_tree_commits_and_renders() {
     }
 }
 
-/// The ordering the fix prevents: a layer allocated, pushed and dropped
-/// inside one transaction queues its `Remove` into `pending`, which is
-/// emitted before the transaction's own `Push` — the tree then applies
-/// `Push` for a layer it already forgot and the render thread dies.
+/// A layer allocated, pushed and dropped inside one transaction leaves a
+/// `Push` naming the removed child: the commit drops it with the layer's
+/// other stream edits, so only `Create` and `Remove` reach the tree and
+/// rendering survives (water-rs/waterui#3453). The fail-fast on a raw
+/// `Remove`-before-`Push` stream stays with the tree —
+/// `cherenkov_record::tree` pins it.
 #[test]
-fn a_layer_dropped_inside_its_own_transaction_kills_rendering() {
+fn a_layer_dropped_inside_its_own_transaction_commits_cleanly() {
     let engine = engine();
     let surface = surface(&engine);
     surface.update(|tx| {
         let transient = surface.layer();
         tx[surface.root()].push(&transient);
     });
-    assert!(
-        engine.render(FrameTime::now()).is_err(),
-        "a Remove emitted before its Push must kill the render thread"
-    );
+    engine
+        .render(FrameTime::now())
+        .expect("a transient layer commits only its Create and Remove");
 }
