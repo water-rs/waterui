@@ -54,6 +54,8 @@ runs:
         rustc --version
         cargo --version
     - uses: ./.github/actions/setup-linux-deps
+      with:
+        runtime-fonts: "false"
     - uses: ./.github/actions/install-tool
       with:
         tool: cargo-msrv@0.19.3
