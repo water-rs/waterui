@@ -214,7 +214,7 @@ struct RemindersTwin: View {
       .toolbar {
         ToolbarItem(placement: .primaryAction) {
           Button {} label: {
-            MaterialIcon.plus.view(size: 18)
+            MaterialIcon.plus.view()
           }
           .buttonStyle(.borderless)
         }
