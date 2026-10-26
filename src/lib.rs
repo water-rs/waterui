@@ -24,6 +24,15 @@ pub mod widget;
 pub use view::View;
 pub use waterui_core::accessibility;
 
+/// The shared `waterui_meta_*` record emitters — `dir_static!` lands its
+/// section and retention cfg at the invoking crate's profile — re-exported
+/// for the asset macros that emit into user code. Gated on `assets`:
+/// generated expansions only reference `__meta` when that feature's code
+/// exists.
+#[cfg(feature = "assets")]
+#[doc(hidden)]
+pub use waterui_meta as __meta;
+
 pub mod theme;
 pub mod prelude {
     //! A collection of commonly used traits and types for easy importing.

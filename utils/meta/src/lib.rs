@@ -3,9 +3,17 @@
 //!
 //! A proc macro that must convey metadata to tooling (the `water` CLI, a
 //! test, a packager) emits a `static` whose item name starts with
-//! `waterui_meta_`, parks it in a dedicated linker section — `.wmeta`
-//! (`__DATA,__wmeta` on Apple targets) — and makes its bytes a
-//! self-describing record: the item's name, NUL, the payload, NUL.
+//! `waterui_meta_`, parks it in a dedicated linker section — `.wmeta` on
+//! COFF and ELF, `__DATA,__wmeta` for an Apple debug build and
+//! `__DWARF,__wmeta,regular,debug` for an Apple release build — and makes
+//! its bytes a self-describing record: the item's name, NUL, the payload,
+//! NUL.
+//!
+//! The two Apple placements split retention: `__DWARF` content is stripped
+//! with the rest of the debug data when `ld` links a final image, so a
+//! release binary ships no record while its rlib still carries one, and a
+//! debug build's `__DATA,__wmeta` keeps the record in the linked image a
+//! harness reads.
 //!
 //! The section exists because a symbol table cannot be trusted to: a linked
 //! PE image keeps no COFF symbol table at all (the header's symbol fields
@@ -24,8 +32,8 @@ use alloc::vec::Vec;
 /// The section name the metadata directory is parked in on COFF and ELF
 /// targets.
 ///
-/// Mach-O's `__DATA,__wmeta` spelling does not fit one string; the emitter
-/// picks per-target, and readers match either spelling.
+/// On Mach-O, readers match `__wmeta` regardless of its segment: `__DATA`
+/// in debug and `__DWARF` in release.
 pub const DIR_SECTION: &str = ".wmeta";
 
 /// Builds one directory record — `name`, NUL, `payload`, NUL — in const
@@ -124,6 +132,39 @@ pub const fn dir_records(data: &[u8]) -> DirRecords<'_> {
     DirRecords { rest: data }
 }
 
+/// Emits a `waterui_meta_*` record static with the placement and retention
+/// the *invoking* crate's own target and profile call for.
+///
+/// The emitted static keeps the caller's attributes, visibility, `[u8; N]`
+/// type and value verbatim and adds, at the invocation site — the profile
+/// the record lands under is the consumer's, not this crate's:
+///
+/// - on Apple targets, `#[used]` plus `__DATA,__wmeta` under
+///   `debug_assertions`, or `__DWARF,__wmeta,regular,debug` in a release
+///   build — `#[used]` keeps the static in the object, and the DWARF
+///   section flag is what lets `ld` strip it from the shipped image;
+/// - on COFF and ELF targets, `.wmeta` and nothing else — the macro adds
+///   no retention attribute there, so the caller's own visibility decides
+///   whether the compiler keeps the static in the object; the linker's
+///   ordinary dead strip removes the record from a linked image.
+#[macro_export]
+macro_rules! dir_static {
+    ($(#[$attr:meta])* $vis:vis static $name:ident: [u8; $len:expr] = $value:expr;) => {
+        $(#[$attr])*
+        #[cfg_attr(
+            all(target_vendor = "apple", debug_assertions),
+            unsafe(link_section = "__DATA,__wmeta")
+        )]
+        #[cfg_attr(
+            all(target_vendor = "apple", not(debug_assertions)),
+            unsafe(link_section = "__DWARF,__wmeta,regular,debug")
+        )]
+        #[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
+        #[cfg_attr(target_vendor = "apple", used)]
+        $vis static $name: [u8; $len] = $value;
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,6 +174,24 @@ mod tests {
         const ENTRY: [u8; 19] = dir_entry::<19>(b"waterui_meta_x", b"abc");
         assert_eq!(ENTRY, *b"waterui_meta_x\0abc\0");
         assert_eq!(dir_record(b"waterui_meta_x", b"abc"), ENTRY.to_vec());
+    }
+
+    #[test]
+    fn dir_static_builds_a_walkable_record() {
+        const NAME: &[u8] = b"waterui_meta_test_dir_static";
+        const PAYLOAD: &[u8] = b"dir_static probe";
+        const LEN: usize = NAME.len() + PAYLOAD.len() + 2;
+        crate::dir_static! {
+            /// The `dir_static!` round-trip record.
+            #[allow(non_upper_case_globals)]
+            static waterui_meta_test_dir_static: [u8; LEN] =
+                dir_entry::<LEN>(NAME, PAYLOAD);
+        }
+        let record = dir_records(&waterui_meta_test_dir_static)
+            .next()
+            .expect("the emitted static carries one record");
+        assert_eq!(record.name, NAME);
+        assert_eq!(record.payload, PAYLOAD);
     }
 
     #[test]
