@@ -29,7 +29,6 @@ mod native_log;
 pub mod preview;
 pub mod resources;
 
-#[cfg(any(platform_timing, frame_progress))]
 mod animation;
 #[cfg(feature = "gpu_surface")]
 pub(crate) mod capture_image;
@@ -72,6 +71,7 @@ mod termination;
 pub(crate) mod theme;
 #[cfg(target_os = "macos")]
 mod toolbar;
+pub(crate) mod transition;
 pub(crate) mod window_background;
 pub(crate) mod windows;
 

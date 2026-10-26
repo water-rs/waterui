@@ -257,6 +257,7 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
     "std",
     "CALayer",
     "CAShapeLayer",
+    "CATransform3D",
     "objc2-core-foundation",
     "objc2-core-graphics",
 ] }

@@ -93,6 +93,12 @@ pub struct NativeLeaf {
     keepalive: KeepAlive,
     layout: Rc<dyn SubView>,
     view: Retained<PlatformView>,
+    /// The `.transition(...)` declaration the `Metadata<TransitionSpec>`
+    /// handler stored on this leaf, waiting for a structural site to claim
+    /// it. A leaf rendered beneath another modifier keeps its declaration,
+    /// but only a leaf a site holds directly can be claimed — the
+    /// outermost-modifier rule docs/layout-spec.md §4.5 states.
+    transition: Option<crate::transition::TransitionClaim>,
     /// The view controllers [`mount`] adopted from this leaf's subtree —
     /// `UIKit` only forwards appearance and layout callbacks down a real
     /// containment chain.
@@ -116,9 +122,34 @@ impl NativeLeaf {
             keepalive: KeepAlive::default(),
             layout: Rc::new(crate::measure_memo::MemoizingSubView::new(Box::new(layout))),
             view: cocoa_ui::view::retain_base(view),
+            transition: None,
             #[cfg(target_os = "ios")]
             attached_controllers: Vec::new(),
         }
+    }
+
+    /// Stores the leaf's `.transition(...)` declaration — the
+    /// `Metadata<TransitionSpec>` handler's only write.
+    ///
+    /// # Panics
+    ///
+    /// On a second nested declaration: a `.transition(...)` beneath another
+    /// `.transition(...)` has no site that can own it (docs/layout-spec.md
+    /// §4.5).
+    pub fn set_transition(&mut self, claim: crate::transition::TransitionClaim) {
+        assert!(
+            self.transition.is_none(),
+            "waterui-apple: a `.transition(...)` declaration beneath another `.transition(...)` \
+             is never owned — remove the inner declaration (docs/layout-spec.md §4.5)"
+        );
+        self.transition = Some(claim);
+    }
+
+    /// The leaf's `.transition(...)` declaration, for the structural site
+    /// claiming it. `None` when the root carries no declaration.
+    #[must_use]
+    pub fn transition_claim(&self) -> Option<crate::transition::TransitionClaim> {
+        self.transition.clone()
     }
 
     /// The platform view. Borrowed: the leaf owns it.
@@ -315,6 +346,17 @@ impl Mounted {
     #[must_use]
     pub fn layout(&self) -> &dyn SubView {
         self.0.as_ref().expect("a live Mounted").layout()
+    }
+
+    /// The child's `.transition(...)` declaration, for the structural site
+    /// claiming it — `None` when the mounted root carries none.
+    ///
+    /// # Panics
+    ///
+    /// When called on a `Mounted` that is already unmounting.
+    #[must_use]
+    pub fn transition_claim(&self) -> Option<crate::transition::TransitionClaim> {
+        self.0.as_ref().expect("a live Mounted").transition_claim()
     }
 
     /// Detaches the view and hands the leaf back, for moving it elsewhere.

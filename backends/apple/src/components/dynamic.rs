@@ -37,8 +37,13 @@ struct DynamicState {
     renderer: Renderer,
     /// The host view — the leaf's platform object.
     host: Retained<HostView>,
+    /// The main-thread marker the leaf was rendered under.
+    mtm: cocoa_ui::MainThreadMarker,
     /// The mounted child the leaf's layout delegates to.
     child: Option<Mounted>,
+    /// Removal transitions in flight — the conditional owns the ghosts of
+    /// the content it replaces and holds no slot for them (§4.5).
+    ghosts: Vec<crate::transition::RemovalGhost>,
     /// The proposal the parent layout selected when it placed this leaf —
     /// `selectedProposal` in the Swift port — forwarded to the current
     /// child and re-applied to every replacement so a swapped-in child is
@@ -122,13 +127,43 @@ impl SubView for DynamicSubView {
 /// state.
 fn update_child(state: &Rc<RefCell<DynamicState>>, view: AnyView) {
     let host = {
+        let state_rc = Rc::clone(state);
         let mut state = state.borrow_mut();
         let Some(leaf) = state.renderer.try_render(view) else {
             return;
         };
-        // `Mounted`'s drop detaches the previous child's view.
-        drop(state.child.take());
+        // The outgoing child leaves the semantic tree now: `retire` drops
+        // its leaf — ending watchers and subscriptions — while a declared
+        // transition retains its view as a non-interactive ghost painted
+        // beneath the incoming child (§4.5). No slot is held; the layout
+        // sees the live child alone.
+        if let Some(previous) = state.child.take() {
+            let (outgoing, claim) = crate::transition::retire(previous);
+            if let Some(claim) = claim {
+                view::add_subview_at_bottom(&state.host, &outgoing);
+                let weak = Rc::downgrade(&state_rc);
+                let ghost_view = outgoing.clone();
+                let ghost = crate::transition::start_removal(
+                    state.mtm,
+                    &outgoing,
+                    &claim,
+                    None,
+                    move || {
+                        let Some(state) = weak.upgrade() else { return };
+                        let mut state = state.borrow_mut();
+                        state.ghosts.retain(|ghost| {
+                            Retained::as_ptr(&ghost.view) != Retained::as_ptr(&ghost_view)
+                        });
+                        view::remove_from_superview(&ghost_view);
+                    },
+                );
+                state.ghosts.push(ghost);
+            }
+        }
         let mounted = leaf.mount(&state.host);
+        if let Some(claim) = mounted.transition_claim() {
+            crate::transition::play_insertion(mounted.view(), &claim);
+        }
         view::set_translates_autoresizing(mounted.view(), true);
         // The replacement inherits the last negotiated proposal until the
         // parent re-places us.
@@ -154,7 +189,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let state = Rc::new(RefCell::new(DynamicState {
             renderer: ctx.renderer(),
             host: host.clone(),
+            mtm: ctx.mtm(),
             child: None,
+            ghosts: Vec::new(),
             selected: Cell::new(None),
         }));
 

@@ -260,6 +260,13 @@ fn base_trials() -> Vec<Trial> {
             Ok(())
         }),
         Trial::test(
+            "transition::a_replaced_child_semantics_die_while_its_view_ghosts",
+            || {
+                transition::a_replaced_child_semantics_die_while_its_view_ghosts();
+                Ok(())
+            },
+        ),
+        Trial::test(
             "resolve::unclaimed_wrappers_panic_while_claimed_render",
             || {
                 resolve::unclaimed_wrappers_panic_while_claimed_render();
@@ -10152,5 +10159,113 @@ mod text_selection {
         assert_eq!(field.string(), "ZZ");
 
         window.close();
+    }
+}
+
+/// §4.5 structural transitions: a removed `Dynamic` child leaves the
+/// semantic tree at once — watchers and retained values die with the
+/// leaf — while a declared removal keeps the outgoing view alive as a
+/// non-interactive ghost beneath the new child until the clock ends.
+mod transition {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    use waterui::animation::Animation;
+    use waterui::component::Dynamic;
+    use waterui::component::label::label;
+    use waterui_apple::native_test_support::pump_main_until;
+    use waterui_core::Metadata;
+    use waterui_core::metadata::Retain;
+    use waterui_core::transition::{PropertyTransition, TransitionSpec};
+
+    use cocoa_ui::objc2::rc::{Weak, autoreleasepool};
+    use cocoa_ui::view;
+
+    use super::{PlatformView, mtm};
+
+    /// A flag whose drop proves the leaf's keepalive ended — the same
+    /// lifetime every watcher and subscription shares.
+    struct Died(Rc<Cell<bool>>);
+
+    impl Drop for Died {
+        fn drop(&mut self) {
+            self.0.set(true);
+        }
+    }
+
+    /// The outgoing child's leaf dies at replacement — the `Retain` probe
+    /// proves every subscription ended — while its view is retained as a
+    /// ghost beneath the incoming child until the transition clock
+    /// releases it. The new child is untouched.
+    pub fn a_replaced_child_semantics_die_while_its_view_ghosts() {
+        let _mtm = mtm();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = super::resolve::render(dynamic);
+        let _window = super::mount_and_order_front(leaf.view());
+
+        let died = Rc::new(Cell::new(false));
+        // The update path autoreleases `subviews` arrays that retain the
+        // tree in the caller's pool — without these pools the weak probe
+        // could never see the release.
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(
+                Metadata::new(label("gone"), Retain::new(Died(Rc::clone(&died)))),
+                TransitionSpec::new(PropertyTransition::opacity())
+                    .with_animation(Animation::linear(Duration::from_millis(60))),
+            ));
+        });
+        let ghost_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
+        let live_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
+        let weak = autoreleasepool(|_| {
+            let subviews = view::subviews(leaf.view());
+            assert_eq!(subviews.len(), 1, "the child mounts inside the host");
+            ghost_ptr.set(std::ptr::from_ref(&*subviews[0]));
+            Weak::new(&*subviews[0])
+        });
+
+        autoreleasepool(|_| handler.set(label("here")));
+        // The semantic boundary: the old leaf — its watchers, guards and
+        // retained values — is dead immediately.
+        assert!(died.get(), "the removed leaf's keepalive ended at removal");
+        // Its view lives on as the ghost, painted beneath the new child.
+        assert!(weak.load().is_some(), "the ghost retains the outgoing view");
+        autoreleasepool(|_| {
+            let subviews = view::subviews(leaf.view());
+            assert_eq!(subviews.len(), 2, "ghost beneath the live child");
+            assert_eq!(
+                std::ptr::from_ref(&*subviews[0]),
+                ghost_ptr.get(),
+                "the ghost paints at the bottom of the host"
+            );
+            assert_ne!(
+                std::ptr::from_ref(&*subviews[1]),
+                ghost_ptr.get(),
+                "the new child mounts on top"
+            );
+            live_ptr.set(std::ptr::from_ref(&*subviews[1]));
+        });
+
+        // The clock releases the ghost when the animation ends — the
+        // window is ordered, so the frame clock ticks.
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| view::subviews(leaf.view()).len() == 1)
+            }),
+            "the completion detaches the ghost when the transition completes"
+        );
+        assert!(
+            pump_main_until(1.0, || weak.load().is_none()),
+            "the ghost releases the outgoing view"
+        );
+        let (count, first) = autoreleasepool(|_| {
+            let remaining = view::subviews(leaf.view());
+            (remaining.len(), std::ptr::from_ref(&*remaining[0]))
+        });
+        assert_eq!(
+            (count, first),
+            (1, live_ptr.get()),
+            "only the live child remains"
+        );
     }
 }
