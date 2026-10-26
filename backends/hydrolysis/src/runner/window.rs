@@ -5,7 +5,14 @@ use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::animation::PerpetualAnimation;
 use crate::platform::GpuSurfaceWindow;
-#[cfg(not(target_os = "android"))]
+// Concrete `PresentationSurface` method calls — `WinitSurface::device_loss`
+// and `BrowserSurface::device_loss` in the `GpuSurfaceFrame` impls below —
+// exist only on these cfgs; everywhere else the trait is reached through
+// `dyn SurfaceProvider`, which needs no import.
+#[cfg(any(
+    all(target_os = "macos", hydrolysis_winit),
+    all(target_arch = "wasm32", feature = "web")
+))]
 use crate::platform::PresentationSurface as _;
 use crate::renderer::material::{Blending, WithinWindowLevel};
 #[cfg(any(target_os = "android", test))]

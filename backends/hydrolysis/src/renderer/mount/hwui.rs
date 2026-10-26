@@ -142,6 +142,13 @@ use crate::hwui::{HwuiResources, HwuiSurface};
 use crate::renderer::HydrolysisRenderer;
 use crate::renderer::mount::Mount;
 
+#[cfg_attr(
+    not(hydrolysis_hwui),
+    expect(
+        dead_code,
+        reason = "the Android HWUI runner is the only caller; test builds keep the methods alongside the mount's contract surface"
+    )
+)]
 impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// The mount and host of `surface`: the HWUI peer of the compositor's
     /// window mount, built against the renderer's material registry.

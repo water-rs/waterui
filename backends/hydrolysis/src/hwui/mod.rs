@@ -138,6 +138,7 @@ impl HwuiQueue {
     }
 
     /// Whether queued demand waits for a frame.
+    #[must_use]
     pub fn has_pending(&self) -> bool {
         self.state.pending.get()
     }

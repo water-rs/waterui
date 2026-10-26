@@ -514,8 +514,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             placement: crate::platform_view::PlatformViewPlacement,
             frame: kurbo::Rect,
             clip: kurbo::Rect,
+            #[cfg(any(test, hydrolysis_hwui))]
             owner: Weak<mount::NodeCell<E>>,
+            #[cfg(any(test, hydrolysis_hwui))]
             local: kurbo::Rect,
+            #[cfg(not(any(test, hydrolysis_hwui)))]
+            _phantom: std::marker::PhantomData<fn() -> E>,
         }
 
         let epoch = self.placement_clock.epoch();
@@ -804,8 +808,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     placement: entry.payload.placement.clone(),
                     frame,
                     clip: clipped,
+                    #[cfg(any(test, hydrolysis_hwui))]
                     owner: entry.owner.clone(),
+                    #[cfg(any(test, hydrolysis_hwui))]
                     local: entry.region.local,
+                    #[cfg(not(any(test, hydrolysis_hwui)))]
+                    _phantom: std::marker::PhantomData,
                 });
             }
 
@@ -967,8 +975,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 crate::renderer::MaterializedPlatformView {
                     table: staged.table,
                     placement,
+                    #[cfg(any(test, hydrolysis_hwui))]
                     owner: staged.owner,
+                    #[cfg(any(test, hydrolysis_hwui))]
                     local: staged.local,
+                    #[cfg(not(any(test, hydrolysis_hwui)))]
+                    _phantom: std::marker::PhantomData,
                 }
             }));
 

@@ -275,6 +275,10 @@ const IDENTITY_PARTS: Decomposed = Decomposed {
 
 /// The HWUI frame encoder.
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the flags track independent axes — the frame's open state, two dirty domains and whether recorded content animates"
+)]
 pub struct Encoder {
     tree: SurfaceTree,
     buffer: CommandBuffer,
@@ -555,29 +559,37 @@ impl Encoder {
     /// # Errors
     ///
     /// A [`HwuiError`] naming the first layer this target cannot render.
+    ///
+    /// # Panics
+    ///
+    /// A mirrored layer a staged id names is always in `self.layers` — the
+    /// unwraps and `expect`s inside are invariants established by the same
+    /// call, not inputs.
     pub fn frame(
         &mut self,
         time: waterui_graphics::draw::Instant,
         scale: f64,
     ) -> Result<Frame<'_>, HwuiError> {
-        if !(scale > 0.0) || !scale.is_finite() {
+        if !scale.is_finite() || scale <= 0.0 {
             return Err(HwuiError::Encoding {
                 op: "frame",
                 reason: format!("density {scale} is not finite and positive"),
             });
         }
         self.ensure_open();
-        if scale != self.platform_scale {
+        // `platform_scale` holds the previous call's argument verbatim, so
+        // the change check is a bit-exact comparison, not an epsilon test.
+        if scale.to_bits() != self.platform_scale.to_bits() {
             // A density change resizes every native view and moves its
             // portal's draw matrix: re-emit every binding.
             self.platform_scale = scale;
             self.platform_dirty = true;
-            let mut owners: Vec<u64> = self
+            let owners: Vec<u64> = self
                 .layers
                 .iter()
                 .filter_map(|(raw, state)| state.platform.as_ref().map(|_| *raw))
                 .collect();
-            for raw in owners.drain(..) {
+            for raw in owners {
                 self.layers.get_mut(&raw).unwrap().record_dirty = true;
                 self.mark_ink_ancestors(LayerId::new(raw));
             }
@@ -680,20 +692,19 @@ impl Encoder {
             }
         }
         // Release portals the desired set dropped.
-        let stale: Vec<u64> = self
+        let released: Vec<u64> = self
             .layers
             .iter()
             .filter_map(|(raw, state)| {
-                state.platform.as_ref().and_then(|platform| {
-                    (!self
+                (state.platform.is_some()
+                    && !self
                         .desired_bindings
                         .iter()
                         .any(|binding| binding.layer.raw() == *raw))
-                    .then_some(*raw)
-                })
+                .then_some(*raw)
             })
             .collect();
-        for raw in stale {
+        for raw in released {
             let portal = self.layers.get_mut(&raw).unwrap().platform.take().unwrap();
             self.lower(LayerId::new(raw).raw())
                 .release_node(portal.node)?;

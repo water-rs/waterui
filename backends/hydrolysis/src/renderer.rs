@@ -374,9 +374,15 @@ pub struct MaterializedPlatformView<E: crate::text::TextEngine> {
     /// rank, visibility).
     pub(crate) placement: crate::platform_view::PlatformViewPlacement,
     /// The retained node that emitted the view.
+    #[cfg(any(test, hydrolysis_hwui))]
     pub(crate) owner: Weak<crate::renderer::mount::NodeCell<E>>,
     /// The view's bounds in `owner`'s local coordinates.
+    #[cfg(any(test, hydrolysis_hwui))]
     pub(crate) local: kurbo::Rect,
+    /// `E` reaches the record only through `owner`; where the HWUI portal
+    /// does not compile, the parameter is phantom.
+    #[cfg(not(any(test, hydrolysis_hwui)))]
+    _phantom: std::marker::PhantomData<fn() -> E>,
 }
 
 /// The GPU-free dispatch core: everything the retained view tree's build,

@@ -69,7 +69,7 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// packed shape request is the paragraph's base paint. 20 = `nativeCreateSession`
 /// takes the session-owned painter object, and `nativeSetHostAttached` reports
 /// the host view's bind state (water-rs/waterui#1811). 21 = the
-/// BindPlatformView op binds a platform view inside its owner's RenderNode.
+/// `BindPlatformView` op binds a platform view inside its owner's `RenderNode`.
 /// 21->22 = `nativePlatformViewHitTest` answers the retained tree's platform
 /// view under a host pixel — the HWUI painter's ordered-input query.
 pub const JNI_SCHEMA: jint = 22;

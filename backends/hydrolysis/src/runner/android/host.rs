@@ -428,12 +428,12 @@ impl AndroidHostWindow {
     /// surface attached; the HWUI path draws into the bound view once it
     /// carries real metrics.
     #[cfg(not(hydrolysis_hwui))]
-    pub(crate) fn presentation_attached(&self) -> bool {
+    pub(crate) const fn presentation_attached(&self) -> bool {
         self.surface.is_attached()
     }
 
     #[cfg(hydrolysis_hwui)]
-    pub(crate) fn presentation_attached(&self) -> bool {
+    pub(crate) const fn presentation_attached(&self) -> bool {
         self.metrics.width_px > 0 && self.metrics.height_px > 0
     }
 }
@@ -858,6 +858,204 @@ fn install_view_renderer(env: &mut Environment, theme: &Rc<dyn WidgetTheme>) {
     env.insert(waterui_core::ViewRenderer::new(renderer));
 }
 
+/// What `create` wires into the platform host and the session: the one
+/// window the app registered, its environment, theme and fonts, the
+/// window's registry id, and the bindings and sinks the host later drives.
+struct SessionMounts {
+    env: Environment,
+    window: waterui::window::Window,
+    theme: Rc<dyn WidgetTheme>,
+    /// The collection the env installs; only the GPU runtime's
+    /// `ParleyEngine` reads it back — the HWUI engine draws text through
+    /// the platform's own `StaticLayout`.
+    #[cfg(not(hydrolysis_hwui))]
+    fonts: waterui_text::FontCollection,
+    window_id: crate::renderer::WindowId,
+    pending_window_queue: Rc<RefCell<Vec<waterui::window::Window>>>,
+    platform_views: crate::platform_view::PlatformViewSink,
+    platform_view_focus: crate::platform_view::PlatformViewFocus,
+    safe_area: nami::Binding<waterui_layout::padding::EdgeInsets>,
+    keyboard_area: nami::Binding<waterui_layout::padding::EdgeInsets>,
+}
+
+/// Builds the session's mount inputs: instantiates the app, layers the
+/// window's environment over the process's, installs the component hooks,
+/// theme, fonts and platform-view state, and mints the window's registry
+/// id — everything `create` then wires into the platform host and the
+/// runtime window.
+#[cfg_attr(
+    not(hydrolysis_android_system_webview),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the `Result` exists for the system-WebView controller install, which is the only fallible step"
+    )
+)]
+fn session_mounts(
+    services: &'static UiThreadServices,
+    #[cfg(hydrolysis_android_system_webview)] jni_env: &mut Env,
+    #[cfg(hydrolysis_android_system_webview)] bridge: &HostBridge,
+) -> Result<SessionMounts, JniError> {
+    let (app, style) = super::instantiate_app();
+    let waterui::app::AppParts {
+        windows,
+        menu_bar,
+        env,
+        // A phone activity already embodies both policies: when the last
+        // window asks to close the host finishes the activity, and the OS
+        // itself decides whether the process stays resident.
+        last_window: _,
+        // Android kills the process without notice, so the termination
+        // hooks are never called and the machine is never started.
+        termination: _,
+    } = app.into_parts();
+    let mut env = env
+        .extending(waterui_graphics::SceneViewMergeToParent)
+        .layered_on(&services.env);
+    let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
+    install_native_component_hooks(&mut env);
+    install_headless_window_managers::<super::AndroidTextEngine>(
+        &mut env,
+        Rc::clone(&pending_window_queue),
+    );
+    menu_bar::register_menu_bar::<super::AndroidTextEngine>(&menu_bar, &env);
+    env.insert(HydrolysisTextContextMenuMode::Overlay);
+    crate::theme::install_theme_tokens(&mut env, Some(&*style));
+    let theme: Rc<dyn WidgetTheme> = style;
+    let fonts = crate::text::fonts::native_collection(&env);
+    fonts.clone().install(&mut env);
+    let shortcuts = env
+        .get::<MenuShortcutRegistry<super::AndroidTextEngine>>()
+        .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+        .clone();
+    let safe_area = nami::binding(waterui_layout::padding::EdgeInsets::default());
+    env.insert(crate::platform::WindowSafeArea(safe_area.clone()));
+    let keyboard_area = nami::binding(waterui_layout::padding::EdgeInsets::default());
+    env.insert(crate::platform::WindowKeyboardArea(keyboard_area.clone()));
+    // The platform-view sink `PlatformView` leaves record their frames
+    // into; the published table is what `nativePlatformViewFrames` serves.
+    let platform_views = crate::platform_view::PlatformViewSink::new();
+    env.insert(platform_views.clone());
+    // The session-wide "focus sits inside a platform-view container"
+    // state the Kotlin registry reports through
+    // `onNativePlatformViewFocus`: while a mounted child holds the IME,
+    // the renderer must not keep a `WaterUI` text-input claim, and the
+    // window reads the same state to gate its soft-input pushes.
+    let platform_view_focus = crate::platform_view::PlatformViewFocus::default();
+
+    // The system-WebView controller joins the same environment: a
+    // `WebView` opened through it mounts as a platform-view *instance*
+    // the registry resolves by id. Resolving the wrapper class must
+    // happen here, on the JNI thread — a thread that did not enter from
+    // Java cannot resolve app classes later.
+    #[cfg(hydrolysis_android_system_webview)]
+    crate::widgets::platform::webview::install_controller(
+        &mut env,
+        jni_env,
+        Arc::clone(&bridge.host_view),
+    )?;
+
+    install_view_renderer(&mut env, &theme);
+
+    let mut windows = VecDeque::from(windows);
+    let window = windows
+        .pop_front()
+        .unwrap_or_else(|| panic!("hydrolysis android: the app registered no window to mount"));
+    assert!(
+        windows.is_empty(),
+        "hydrolysis android: multiple windows are unsupported — the host mounts exactly one window per session"
+    );
+
+    Ok(SessionMounts {
+        env,
+        window,
+        theme,
+        #[cfg(not(hydrolysis_hwui))]
+        fonts,
+        window_id: shortcuts.mint_window_id(),
+        pending_window_queue,
+        platform_views,
+        platform_view_focus,
+        safe_area,
+        keyboard_area,
+    })
+}
+
+/// The GPU build's runtime window: the Parley-engine renderer under
+/// diagnostics. A painter reaching `nativeCreateSession` on this build is
+/// a feature mismatch, not a surface to adopt.
+#[cfg(not(hydrolysis_hwui))]
+fn gpu_runtime_window(
+    window: waterui::window::Window,
+    platform: AndroidHostWindow,
+    theme: Rc<dyn WidgetTheme>,
+    fonts: &waterui_text::FontCollection,
+    window_id: crate::renderer::WindowId,
+    painter: &JObject<'_>,
+) -> Result<RuntimeWindow<AndroidHostWindow, super::AndroidTextEngine>, JniError> {
+    if !painter.is_null() {
+        return Err(JniError(
+            "hydrolysis GPU: nativeCreateSession got a painter — this build is the GPU backend; rebuild with the HWUI feature".to_owned(),
+        ));
+    }
+    let mut renderer = HydrolysisRenderer::with_engine(
+        theme,
+        ParleyEngine::from_collection(fonts, FontFamilyResolution::Lenient),
+    );
+    renderer.set_window_id(window_id);
+    renderer.set_window_closable(window.closable);
+    Ok(RuntimeWindow::new_gpu(
+        window,
+        platform,
+        renderer,
+        RenderDiagnosticsConfig::from_env(),
+    ))
+}
+
+/// The HWUI build's runtime window and the painter peer it renders
+/// through: the renderer is wired to the surface's `SurfaceId`, the
+/// registry's window id and the host's redraw handle.
+#[cfg(hydrolysis_hwui)]
+fn hwui_runtime_window(
+    jni_env: &mut Env,
+    painter: &JObject<'_>,
+    window: waterui::window::Window,
+    platform: AndroidHostWindow,
+    theme: Rc<dyn WidgetTheme>,
+    window_id: crate::renderer::WindowId,
+) -> Result<
+    (
+        super::hwui::HwuiWindow,
+        RuntimeWindow<AndroidHostWindow, super::AndroidTextEngine>,
+    ),
+    JniError,
+> {
+    let ordinal = match window_id {
+        crate::renderer::WindowId::Runner(id) => id,
+        crate::renderer::WindowId::Orphan => {
+            unreachable!("the Android window registry minted an orphan")
+        }
+    };
+    let (hwui, mut renderer) = super::hwui::HwuiWindow::new(
+        jni_env,
+        painter,
+        SurfaceId::new(ordinal),
+        theme,
+        platform.frame_wake(),
+    )?;
+    renderer.set_window_id(window_id);
+    renderer.set_window_closable(window.closable);
+    renderer.set_host_redraw_handle(platform.content_redraw_handle());
+    Ok((
+        hwui,
+        RuntimeWindow::new(
+            window,
+            platform,
+            renderer,
+            RenderDiagnosticsConfig::from_env(),
+        ),
+    ))
+}
+
 impl AndroidSession {
     /// Mounts the registered app on the host view: builds the environment,
     /// GPU context and the runtime window. `services` is the UI-thread
@@ -879,75 +1077,25 @@ impl AndroidSession {
 
         waterui_locale::start_system_locale_listener();
 
-        let (app, style) = super::instantiate_app();
-        let waterui::app::AppParts {
-            windows,
-            menu_bar,
+        let SessionMounts {
             env,
-            // A phone activity already embodies both policies: when the last
-            // window asks to close the host finishes the activity, and the OS
-            // itself decides whether the process stays resident.
-            last_window: _,
-            // Android kills the process without notice, so the termination
-            // hooks are never called and the machine is never started.
-            termination: _,
-        } = app.into_parts();
-        let mut env = env
-            .extending(waterui_graphics::SceneViewMergeToParent)
-            .layered_on(&services.env);
-        let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
-        install_native_component_hooks(&mut env);
-        install_headless_window_managers::<super::AndroidTextEngine>(
-            &mut env,
-            Rc::clone(&pending_window_queue),
-        );
-        menu_bar::register_menu_bar::<super::AndroidTextEngine>(&menu_bar, &env);
-        env.insert(HydrolysisTextContextMenuMode::Overlay);
-        crate::theme::install_theme_tokens(&mut env, Some(&*style));
-        let theme: Rc<dyn WidgetTheme> = style;
-        let fonts = crate::text::fonts::native_collection(&env);
-        fonts.clone().install(&mut env);
-        let shortcuts = env
-            .get::<MenuShortcutRegistry<super::AndroidTextEngine>>()
-            .expect("install_headless_window_managers seeds MenuShortcutRegistry")
-            .clone();
-        let safe_area = nami::binding(waterui_layout::padding::EdgeInsets::default());
-        env.insert(crate::platform::WindowSafeArea(safe_area.clone()));
-        let keyboard_area = nami::binding(waterui_layout::padding::EdgeInsets::default());
-        env.insert(crate::platform::WindowKeyboardArea(keyboard_area.clone()));
-        // The platform-view sink `PlatformView` leaves record their frames
-        // into; the published table is what `nativePlatformViewFrames` serves.
-        let platform_views = crate::platform_view::PlatformViewSink::new();
-        env.insert(platform_views.clone());
-        // The session-wide "focus sits inside a platform-view container"
-        // state the Kotlin registry reports through
-        // `onNativePlatformViewFocus`: while a mounted child holds the IME,
-        // the renderer must not keep a `WaterUI` text-input claim, and the
-        // window reads the same state to gate its soft-input pushes.
-        let platform_view_focus = crate::platform_view::PlatformViewFocus::default();
-
-        // The system-WebView controller joins the same environment: a
-        // `WebView` opened through it mounts as a platform-view *instance*
-        // the registry resolves by id. Resolving the wrapper class must
-        // happen here, on the JNI thread — a thread that did not enter from
-        // Java cannot resolve app classes later.
-        #[cfg(hydrolysis_android_system_webview)]
-        crate::widgets::platform::webview::install_controller(
-            &mut env,
+            window,
+            theme,
+            #[cfg(not(hydrolysis_hwui))]
+            fonts,
+            window_id,
+            pending_window_queue,
+            platform_views,
+            platform_view_focus,
+            safe_area,
+            keyboard_area,
+        } = session_mounts(
+            services,
+            #[cfg(hydrolysis_android_system_webview)]
             jni_env,
-            Arc::clone(&bridge.host_view),
+            #[cfg(hydrolysis_android_system_webview)]
+            &bridge,
         )?;
-
-        install_view_renderer(&mut env, &theme);
-
-        let mut windows = VecDeque::from(windows);
-        let window = windows
-            .pop_front()
-            .unwrap_or_else(|| panic!("hydrolysis android: the app registered no window to mount"));
-        assert!(
-            windows.is_empty(),
-            "hydrolysis android: multiple windows are unsupported — the host mounts exactly one window per session"
-        );
 
         #[cfg(not(hydrolysis_hwui))]
         let gpu = AndroidGpuContext::request().map_err(JniError::from)?;
@@ -970,55 +1118,11 @@ impl AndroidSession {
             frame_transaction: FrameTransaction::default(),
         };
         platform.apply_properties(&window);
-        let window_id = shortcuts.mint_window_id();
         #[cfg(not(hydrolysis_hwui))]
-        let mut runtime = {
-            if !painter.is_null() {
-                return Err(JniError(
-                    "hydrolysis GPU: nativeCreateSession got a painter — this build is the GPU backend; rebuild with the HWUI feature".to_owned(),
-                ));
-            }
-            let mut renderer = HydrolysisRenderer::with_engine(
-                theme,
-                ParleyEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
-            );
-            renderer.set_window_id(window_id);
-            renderer.set_window_closable(window.closable);
-            RuntimeWindow::new_gpu(
-                window,
-                platform,
-                renderer,
-                RenderDiagnosticsConfig::from_env(),
-            )
-        };
+        let mut runtime = gpu_runtime_window(window, platform, theme, &fonts, window_id, painter)?;
         #[cfg(hydrolysis_hwui)]
-        let (hwui, mut runtime) = {
-            let ordinal = match window_id {
-                crate::renderer::WindowId::Runner(id) => id,
-                crate::renderer::WindowId::Orphan => {
-                    unreachable!("the Android window registry minted an orphan")
-                }
-            };
-            let (hwui, mut renderer) = super::hwui::HwuiWindow::new(
-                jni_env,
-                painter,
-                SurfaceId::new(ordinal),
-                theme,
-                platform.frame_wake(),
-            )?;
-            renderer.set_window_id(window_id);
-            renderer.set_window_closable(window.closable);
-            renderer.set_host_redraw_handle(platform.content_redraw_handle());
-            (
-                hwui,
-                RuntimeWindow::new(
-                    window,
-                    platform,
-                    renderer,
-                    RenderDiagnosticsConfig::from_env(),
-                ),
-            )
-        };
+        let (hwui, mut runtime) =
+            hwui_runtime_window(jni_env, painter, window, platform, theme, window_id)?;
         // The session mounts parked: the activity's `onStart` and the
         // surface band's attach are the reports that unpark it.
         runtime.set_hidden(runtime.platform.is_occluded());

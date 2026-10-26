@@ -313,6 +313,10 @@ fn plain_picture() -> Picture {
 /// A tree of three layers — one scrolled, one skewed — over two frames: the
 /// first creates and records everything, the second removes a layer,
 /// replaces content and releases every registered resource kind.
+#[expect(
+    clippy::too_many_lines,
+    reason = "a scene fixture reads as one staged sequence; splitting it would scatter the script it exists to spell out"
+)]
 fn tree_scene() -> Result<Scene, HwuiError> {
     let mut encoder = Encoder::new(34)?;
     let mut registry = encoder.registry().lock();
@@ -1243,6 +1247,10 @@ fn the_hwui_mount_commits_and_reuses_its_nodes() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the test reads as one staged sequence; splitting it would scatter the scenario it asserts on"
+)]
 fn platform_view_node_keeps_parent_composition() {
     fn binding_node(log: &[String]) -> u32 {
         log.iter()
