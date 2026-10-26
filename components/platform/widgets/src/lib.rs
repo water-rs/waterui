@@ -39,7 +39,7 @@ pub use authoring::{
     HStack, IntoTimeline, VStack, WidgetChildren, WidgetContent, ZStack, fill, hstack, intent,
     link, text, vstack, zstack,
 };
-pub use declaration::WidgetDeclaration;
+pub use declaration::{IntentDeclaration, WidgetDeclaration};
 pub use schema::*;
 
 #[doc(hidden)]
@@ -94,6 +94,7 @@ macro_rules! __export_widget {
             const PAYLOAD: &[u8] = $payload.as_bytes();
             const LEN: usize = NAME.len() + PAYLOAD.len() + 2;
             #[allow(non_upper_case_globals)]
+            #[used]
             #[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
             #[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wmeta"))]
             static META: [u8; LEN] = $crate::meta::dir_entry::<LEN>(NAME, PAYLOAD);
@@ -116,11 +117,59 @@ macro_rules! __export_widget {
     };
 }
 
+/// Emits the `waterui_intent_*` export and its `waterui_meta_intent_*`
+/// record for a `#[widget_intent]`-attributed `impl WidgetIntent` block.
+///
+/// `#waterui::widgets::__export_intent!` expands the exported symbol
+/// `waterui_intent_<crate>_<hash>` — a `#[no_mangle]` C entry point the
+/// generated extension calls through the `WUIIntent_<hash>` type — plus
+/// the `waterui_meta_intent_<crate>_<hash>` record `water` reads while it
+/// generates the extension. `$hash` is the declared kind's stable
+/// `SHA-256` hex digest; `$body` decodes the action from the payload bytes
+/// and calls `I::perform`.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __export_intent {
+    ($hash:expr, $payload:expr, [$ptr:ident, $len:ident] => $body:block) => {
+        const _: () = {
+            const NAME: &[u8] =
+                concat!("waterui_meta_intent_", env!("CARGO_CRATE_NAME"), "_", $hash).as_bytes();
+            const PAYLOAD: &[u8] = $payload.as_bytes();
+            const LEN: usize = NAME.len() + PAYLOAD.len() + 2;
+            #[allow(non_upper_case_globals)]
+            #[used]
+            #[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
+            #[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wmeta"))]
+            static META: [u8; LEN] = $crate::meta::dir_entry::<LEN>(NAME, PAYLOAD);
+        };
+        $crate::pastey::paste! {
+            #[doc(hidden)]
+            #[allow(unsafe_code)]
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn [<waterui_intent_ env!("CARGO_CRATE_NAME") _ $hash>](
+                $ptr: *const u8,
+                $len: usize,
+            ) $body
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
 
     use super::*;
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct DummyIntent;
+
+    impl WidgetIntent for DummyIntent {
+        fn perform(self) {}
+    }
+
+    impl DeclaredWidgetIntent for DummyIntent {
+        const KIND: &'static str = "mark-done";
+    }
 
     #[test]
     fn timeline_serializes_to_the_swift_contract() {
@@ -179,7 +228,7 @@ mod tests {
             Node::Color(Color::srgb_u8(0x33, 0x66, 0xcc)),
             Node::Link(Link::new("waterui://open", text("open"))),
             Node::Intent(Intent::new(
-                "mark-done",
+                &DummyIntent,
                 Shape::circle().fill(Color::ACCENT),
             )),
         ];

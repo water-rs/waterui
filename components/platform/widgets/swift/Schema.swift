@@ -228,6 +228,7 @@ public struct WUILink: Decodable {
 }
 
 public struct WUIIntent: Decodable {
-    public let name: String
+    public let kind: String
+    public let payload: String
     public let label: WUINode
 }

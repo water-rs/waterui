@@ -13,9 +13,9 @@ use core::time::Duration;
 use suiteki::Str;
 
 use crate::schema::{
-    Alignment, Axis, Color, Date, Font, FontStyle, FontWeight, HorizontalAlignment, Image,
-    ImageSource, Intent, Link, Node, ReloadPolicy, SemanticColor, Shape, ShapeKind, Stack, Text,
-    Timeline, TimelineEntry, VerticalAlignment,
+    Alignment, Axis, Color, Date, DeclaredWidgetIntent, Font, FontStyle, FontWeight,
+    HorizontalAlignment, Image, ImageSource, Intent, Link, Node, ReloadPolicy, SemanticColor,
+    Shape, ShapeKind, Stack, Text, Timeline, TimelineEntry, VerticalAlignment,
 };
 
 /// A value that can occupy a widget snapshot.
@@ -402,21 +402,49 @@ pub fn link(url: impl Into<String>, content: impl WidgetContent) -> Link {
 }
 
 impl Intent {
-    /// A tappable region that performs the declared intent `name`.
+    /// A tappable region that performs `action`.
     ///
-    /// The generated extension bridges the name to an `AppIntent` that opens
-    /// the application with a `waterui-intent://<name>` URL.
-    pub fn new(name: impl Into<String>, label: impl WidgetContent) -> Self {
-        Self {
-            name: name.into(),
-            label: alloc::boxed::Box::new(label.into_node()),
-        }
+    /// `action` is a `#[widget_intent]` declaration — the extension decodes
+    /// the concrete `AppIntent` named by the action's kind and calls its
+    /// `perform()` with the action's serialized parameters.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `action` cannot be serialized as JSON.
+    pub fn new<I: DeclaredWidgetIntent>(action: &I, label: impl WidgetContent) -> Self {
+        Self::from_action(
+            <I as DeclaredWidgetIntent>::KIND,
+            crate::serde_json::to_string(action).expect("a WidgetIntent action always serializes"),
+            label.into_node(),
+        )
     }
 }
 
-/// A tappable region that performs the declared intent `name`.
-pub fn intent(name: impl Into<String>, label: impl WidgetContent) -> Intent {
-    Intent::new(name, label)
+/// A tappable region that performs `action`.
+///
+/// A string cannot substitute for a declared action:
+///
+/// ```compile_fail
+/// use waterui_widgets::{intent, text};
+/// let _ = intent(&"undeclared", text("Run"));
+/// ```
+///
+/// Implementing the action alone does not declare its native handler:
+///
+/// ```compile_fail
+/// use waterui_widgets::{WidgetIntent, intent, text};
+///
+/// #[derive(serde::Serialize, serde::Deserialize)]
+/// struct Undeclared;
+///
+/// impl WidgetIntent for Undeclared {
+///     fn perform(self) {}
+/// }
+///
+/// let _ = intent(&Undeclared, text("Run"));
+/// ```
+pub fn intent<I: DeclaredWidgetIntent>(action: &I, label: impl WidgetContent) -> Intent {
+    Intent::new(action, label)
 }
 
 // ══════════════════════════════════════════════════════════════════════════

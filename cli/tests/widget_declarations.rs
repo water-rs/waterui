@@ -9,7 +9,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use cargo_metadata::Message;
-use waterui_cli::apple::widgets::declared_widgets;
+#[cfg(target_os = "macos")]
+use waterui_cli::apple::widgets::{
+    WIDGET_MINIMUM_APPLE_VERSION, render_declared_intents_swift, widget_swift_sources,
+};
+use waterui_cli::apple::widgets::{declared_intents, declared_widgets};
 use waterui_cli::artifact_symbols::ArtifactSymbols;
 use waterui_cli::toolchain::Host;
 
@@ -25,7 +29,7 @@ struct WidgetFixture {
     native_links: Vec<OsString>,
 }
 
-fn build_fixture() -> WidgetFixture {
+fn build_fixture(profile: &str) -> WidgetFixture {
     smol::block_on(async {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -53,6 +57,8 @@ fn build_fixture() -> WidgetFixture {
                     "--lib",
                     "--offline",
                     "--locked",
+                    "--profile",
+                    profile,
                     "--message-format=json-render-diagnostics",
                     "--",
                     "--print=native-static-libs",
@@ -105,13 +111,18 @@ fn build_fixture() -> WidgetFixture {
 #[test]
 #[ignore = "builds framework source; runs in the nightly cli-ignored job"]
 fn widget_declarations_pair_exports_with_records() {
-    let fixture = build_fixture();
+    for profile in ["dev", "release"] {
+        assert_fixture_declarations(&build_fixture(profile));
+    }
+}
+
+fn assert_fixture_declarations(fixture: &WidgetFixture) {
     let symbols = ArtifactSymbols::read(&fixture.artifact).expect("read the fixture artifact");
 
     let widgets = declared_widgets(&symbols).expect("pair declarations with exports");
-    assert_eq!(widgets.len(), 2);
+    assert_eq!(widgets.len(), 3);
 
-    // Sorted by `kind`: `now-kind` before `steps`.
+    // Sorted by `kind`: `now-kind`, then `record-kind`, then `steps`.
     let now = &widgets[0];
     assert_eq!(now.function, "now");
     assert_eq!(now.kind, "now-kind");
@@ -120,7 +131,15 @@ fn widget_declarations_pair_exports_with_records() {
     assert_eq!(now.families, ["systemSmall"]);
     assert_eq!(now.symbol, "waterui_widget_widget_app_now");
 
-    let steps = &widgets[1];
+    let record = &widgets[1];
+    assert_eq!(record.function, "record");
+    assert_eq!(record.kind, "record-kind");
+    assert_eq!(record.display_name, "Record");
+    assert_eq!(record.description, "Writes a record");
+    assert_eq!(record.families, ["systemSmall"]);
+    assert_eq!(record.symbol, "waterui_widget_widget_app_record");
+
+    let steps = &widgets[2];
     assert_eq!(steps.function, "steps");
     assert_eq!(steps.kind, "steps");
     assert_eq!(steps.display_name, "Steps");
@@ -131,23 +150,49 @@ fn widget_declarations_pair_exports_with_records() {
     );
     assert_eq!(steps.symbol, "waterui_widget_widget_app_steps");
 
+    let intents = declared_intents(&symbols).expect("pair intent declarations with exports");
+    assert_eq!(intents.len(), 1);
+    let intent = &intents[0];
+    assert_eq!(intent.kind(), "WriteRecord");
+    assert_eq!(intent.declaration().display_name(), "Write record");
+    assert_eq!(
+        intent.declaration().description(),
+        "Writes a value to the record file"
+    );
+    let hash = intent
+        .swift_type()
+        .strip_prefix("WUIIntent_")
+        .expect("the macro emits a stable intent type");
+    assert_eq!(hash.len(), 64);
+    assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert_eq!(intent.symbol(), format!("waterui_intent_widget_app_{hash}"));
+
     // The `waterui-widgets` static record the extension build locates the
     // shipped Swift sources through rides the same artifact.
-    let sources = symbols
-        .meta_record("waterui_meta_widgets_swift_sources")
-        .expect("the swift sources record is in the artifact");
-    let sources = String::from_utf8(sources).expect("the record is UTF-8");
+    let sources = fixture_swift_sources(&symbols);
     assert!(
-        Path::new(&sources).join("FFI.swift").is_file(),
-        "the record points at the crate's Swift sources: {sources}"
+        sources.join("FFI.swift").is_file(),
+        "the record points at the crate's Swift sources: {}",
+        sources.display()
     );
+}
+
+fn fixture_swift_sources(symbols: &ArtifactSymbols) -> PathBuf {
+    PathBuf::from(
+        String::from_utf8(
+            symbols
+                .meta_record("waterui_meta_widgets_swift_sources")
+                .expect("the widget sources are declared"),
+        )
+        .expect("the sources path is UTF-8"),
+    )
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 #[ignore = "builds framework source and uses the Swift SDK; runs in nightly cli-ignored"]
 fn widget_snapshot_round_trips_through_swift() {
-    let fixture = build_fixture();
+    let fixture = build_fixture("dev");
     smol::block_on(async {
         let output = tempfile::tempdir_in(&fixture.target_dir).expect("probe build directory");
         let main = output.path().join("main.swift");
@@ -159,52 +204,149 @@ fn widget_snapshot_round_trips_through_swift() {
         .await
         .expect("copy the probe verbatim as the Swift entry point");
         let symbols = ArtifactSymbols::read(&fixture.artifact).expect("read the fixture artifact");
-        let sources = PathBuf::from(
-            String::from_utf8(
-                symbols
-                    .meta_record("waterui_meta_widgets_swift_sources")
-                    .expect("the widget sources are declared"),
-            )
-            .expect("the sources path is UTF-8"),
-        );
-        let executable = output.path().join("widget-ffi-probe");
+        let sources = fixture_swift_sources(&symbols);
+        run_swift_probe(
+            &fixture,
+            output.path(),
+            &[
+                sources.join("FFI.swift"),
+                sources.join("Schema.swift"),
+                main,
+            ],
+            &[],
+            &[],
+        )
+        .await;
+    });
+}
+
+#[cfg(target_os = "macos")]
+async fn run_swift_probe(
+    fixture: &WidgetFixture,
+    directory: &Path,
+    sources: &[PathBuf],
+    swift_flags: &[OsString],
+    run_args: &[&str],
+) {
+    let executable = directory.join("widget-probe");
+    let mut args: Vec<OsString> = [
+        "--sdk",
+        "macosx",
+        "swiftc",
+        "-enable-experimental-feature",
+        "Extern",
+        "-o",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect();
+    args.push(executable.clone().into_os_string());
+    args.extend(swift_flags.iter().cloned());
+    args.extend(sources.iter().map(|path| path.as_os_str().to_owned()));
+    args.push(fixture.artifact.as_os_str().to_owned());
+    args.extend(fixture.native_links.iter().cloned());
+    let host = Host::current().with_cwd(directory);
+    let compile = host
+        .output_within("xcrun", args, Duration::from_secs(120))
+        .await
+        .expect("compile the shipped Swift bridge against the Rust exports");
+    assert!(compile.status.success(), "{compile:?}");
+    let run = host
+        .output_within(&executable, run_args, Duration::from_secs(30))
+        .await
+        .expect("execute the native Swift probe");
+    assert!(run.status.success(), "{run:?}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "builds framework source and executes AppIntents; runs in nightly cli-ignored"]
+fn widget_intent_performs_through_generated_app_intent() {
+    #[derive(askama::Template)]
+    #[template(path = "apple_widgets/IntentProbe.swift.tpl", escape = "none")]
+    struct IntentProbe<'a> {
+        provider_symbol: &'a str,
+        intent_type: &'a str,
+    }
+
+    let fixture = build_fixture("dev");
+    smol::block_on(async {
+        let output = tempfile::tempdir_in(&fixture.target_dir).expect("intent probe directory");
+        let symbols = ArtifactSymbols::read(&fixture.artifact).expect("read the fixture artifact");
+        let intents = declared_intents(&symbols).expect("the fixture declares its action");
+        let intent = &intents[0];
+        let widgets = declared_widgets(&symbols).expect("the fixture declares its widgets");
+        let widget = widgets
+            .iter()
+            .find(|widget| widget.kind == "record-kind")
+            .expect("the record widget invokes the action");
+        let shipped_sources = fixture_swift_sources(&symbols);
+        let generated = output.path().join("DeclaredIntents.swift");
+        render_declared_intents_swift(&generated, &intents)
+            .await
+            .expect("render the production AppIntent declarations");
+        let probe = output.path().join("IntentProbe.swift");
+        smol::fs::write(
+            &probe,
+            askama::Template::render(&IntentProbe {
+                provider_symbol: &widget.symbol,
+                intent_type: intent.swift_type(),
+            })
+            .expect("the intent probe template renders"),
+        )
+        .await
+        .expect("write the generated probe");
+        let mut sources = widget_swift_sources(&shipped_sources)
+            .await
+            .expect("collect the extension's shipped Swift sources");
+        sources.extend([generated, probe]);
+        let flags = [
+            "-parse-as-library".into(),
+            "-target".into(),
+            format!("arm64-apple-macosx{WIDGET_MINIMUM_APPLE_VERSION}").into(),
+        ];
+        run_swift_probe(&fixture, output.path(), &sources, &flags, &[intent.kind()]).await;
+        assert!(output.path().join("record.txt").is_file());
+    });
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "builds framework source and uses the Swift SDK; runs in nightly cli-ignored"]
+fn widget_renderer_typechecks_without_intents() {
+    let fixture = build_fixture("dev");
+    smol::block_on(async {
+        let output = tempfile::tempdir_in(&fixture.target_dir).expect("renderer probe directory");
+        let symbols = ArtifactSymbols::read(&fixture.artifact).expect("read the fixture artifact");
+        let generated = output.path().join("DeclaredIntents.swift");
+        render_declared_intents_swift(&generated, &[])
+            .await
+            .expect("render the empty intent dispatch");
         let mut args: Vec<OsString> = [
             "--sdk",
             "macosx",
             "swiftc",
+            "-typecheck",
             "-enable-experimental-feature",
             "Extern",
-            "-o",
+            "-target",
         ]
         .into_iter()
         .map(OsString::from)
         .collect();
-        args.extend([
-            executable.clone().into_os_string(),
-            sources.join("FFI.swift").into_os_string(),
-            sources.join("Schema.swift").into_os_string(),
-            main.into_os_string(),
-            fixture.artifact.into_os_string(),
-        ]);
-        args.extend(fixture.native_links);
-        let host = Host::current();
-        let compile = host
+        args.push(format!("arm64-apple-macosx{WIDGET_MINIMUM_APPLE_VERSION}").into());
+        args.extend(
+            widget_swift_sources(&fixture_swift_sources(&symbols))
+                .await
+                .expect("collect the extension's shipped Swift sources")
+                .into_iter()
+                .chain([generated])
+                .map(PathBuf::into_os_string),
+        );
+        let checked = Host::current()
             .output_within("xcrun", args, Duration::from_secs(120))
             .await
-            .expect("compile the shipped Swift bridge against the Rust exports");
-        assert!(compile.status.success(), "{compile:?}");
-        let run = host
-            .output_within(
-                &executable,
-                std::iter::empty::<&str>(),
-                Duration::from_secs(30),
-            )
-            .await
-            .expect("execute the snapshot probe");
-        assert!(run.status.success(), "{run:?}");
-        assert!(
-            String::from_utf8_lossy(&run.stdout).contains("FFI probe passed"),
-            "{run:?}"
-        );
+            .expect("typecheck the renderer with no declared intents");
+        assert!(checked.status.success(), "{checked:?}");
     });
 }

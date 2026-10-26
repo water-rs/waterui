@@ -1,34 +1,14 @@
-import AppIntents
 import Foundation
 
-/// The `AppIntent` a declared `Intent` node performs.
-///
-/// The node's `name` is the declared intent identifier; performing the
-/// intent opens the host application with `waterui-intent://<name>`, which
-/// the application handles through its `onOpenURL` — the deep-link contract
-/// is how an intent reaches the app's `WaterUI` code from an extension that
-/// shares no process with it.
-public struct WaterUIDeclaredIntent: AppIntent {
-    public static let title: LocalizedStringResource = "WaterUI Intent"
+/// The `waterui_intent_<crate>_<hash>` C export a generated `WUIIntent_<hash>`
+/// calls — decodes the payload and runs the declared `fn perform(self)`.
+public typealias WUIIntentHandler = (UnsafePointer<UInt8>, Int) -> Void
 
-    @Parameter(title: "Name")
-    public var name: String
-
-    public init() {
-        name = ""
-    }
-
-    public init(name: String) {
-        self.name = name
-    }
-
-    public func perform() async throws -> some IntentResult {
-        guard
-            let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed),
-            let url = URL(string: "waterui-intent://\(encoded)")
-        else {
-            fatalError("declared widget intent name does not form a URL: \(name)")
-        }
-        return .result(opensIntent: OpenURLIntent(url))
+/// Runs a `waterui_intent_*` export against the intent's serialized
+/// payload — UTF-8 bytes passed straight through to Rust.
+public func performWidgetIntent(_ handler: WUIIntentHandler, payload: String) {
+    var payload = payload
+    payload.withUTF8 { raw in
+        handler(raw.baseAddress!, raw.count)
     }
 }

@@ -330,17 +330,63 @@ pub struct Link {
 
 /// A tappable region performing a declared intent.
 ///
-/// The `name` identifies the intent the extension performs; the generated
-/// extension bridges it to an `AppIntent` that opens the application with
-/// the declared name as a `waterui-intent://` URL.
+/// `kind` is the `#[widget_intent]` declaration's kind; `payload` is the
+/// action's serialized parameters — the extension decodes the concrete
+/// `AppIntent` named by `kind` and calls its `perform()` with `payload`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[non_exhaustive]
 pub struct Intent {
-    /// The declared intent name.
-    pub name: String,
+    kind: String,
+    payload: String,
+    label: Box<Node>,
+}
+
+impl Intent {
+    /// A tappable region carrying `action_kind`/`action_payload`.
+    pub(crate) fn from_action(action_kind: &str, action_payload: String, label: Node) -> Self {
+        Self {
+            kind: action_kind.to_string(),
+            payload: action_payload,
+            label: Box::new(label),
+        }
+    }
+
+    /// The declared intent kind.
+    #[must_use]
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    /// The action's serialized parameters.
+    #[must_use]
+    pub fn payload(&self) -> &str {
+        &self.payload
+    }
+
     /// The rendered label.
-    pub label: Box<Node>,
+    #[must_use]
+    pub fn label(&self) -> &Node {
+        &self.label
+    }
+}
+
+/// A user-declared widget action — `#[widget_intent]` on an `impl` block.
+///
+/// The action is serialized to the `Intent` node's `payload`; the
+/// extension decodes the concrete `AppIntent` named by the action's kind
+/// and calls `perform()` with it. `perform` is a synchronous unit action —
+/// the extension owns no application state, so the action is its own
+/// context.
+pub trait WidgetIntent: Serialize + serde::de::DeserializeOwned + 'static {
+    /// The action's effect — run in the extension's process.
+    fn perform(self);
+}
+
+/// The identity emitted by `#[widget_intent]` for a declared action.
+#[doc(hidden)]
+pub trait DeclaredWidgetIntent: WidgetIntent {
+    /// The declared kind — unique per application.
+    const KIND: &'static str;
 }
 
 /// One dated entry of a widget timeline: an immutable snapshot and the

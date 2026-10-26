@@ -1,6 +1,4 @@
-//! Fixture for `apple::widgets`: two `#[widget]` declarations exercising
-//! the export + record emission — one with a `WidgetContext` parameter and
-//! the default families, one context-free with an explicit family list.
+//! Widget declarations and a typed action exercised through native Swift.
 
 use waterui::widgets::*;
 
@@ -39,4 +37,38 @@ fn steps(context: &WidgetContext) -> Timeline {
 )]
 fn now() -> impl WidgetContent {
     hstack((text("now"), Image::system("clock.fill")))
+}
+
+/// A serializable widget action — `#[widget_intent]` on the `impl`
+/// declares it; the extension decodes the payload and calls `perform`.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct WriteRecord {
+    /// The owned record file the action writes.
+    pub output_path: String,
+    /// The value the action writes.
+    pub value: String,
+}
+
+#[waterui::widget_intent(name = "Write record", description = "Writes a value to the record file")]
+impl waterui::widgets::WidgetIntent for WriteRecord {
+    fn perform(self) {
+        std::fs::write(&self.output_path, &self.value).expect("the record file writes");
+    }
+}
+
+#[waterui::widget(
+    name = "Record",
+    description = "Writes a record",
+    kind = "record-kind",
+    families = [systemSmall]
+)]
+fn record() -> impl WidgetContent {
+    intent(
+        &WriteRecord {
+            // The probe runs in its own scratch directory.
+            output_path: "record.txt".into(),
+            value: "record \"value\"\\line\n\u{65e5}\u{672c}\u{8a9e}".into(),
+        },
+        text("Tap to write"),
+    )
 }

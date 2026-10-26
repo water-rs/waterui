@@ -155,10 +155,7 @@ public struct WUINodeView: View {
 
     @ViewBuilder
     private func intentView(_ intent: WUIIntent) -> some View {
-        Button(intent: WaterUIDeclaredIntent(name: intent.name)) {
-            WUINodeView(intent.label)
-        }
-        .buttonStyle(.plain)
+        WUIDeclaredIntentButton(intent)
     }
 
     private func swiftUIFont(_ font: WUIFont) -> Font {

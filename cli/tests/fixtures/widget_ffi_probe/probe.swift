@@ -42,5 +42,3 @@ precondition({
 // Context-free: the same decode runs with no abort.
 let now = try WUITimeline.decode(from: runSnapshot(nowProvider, context: context))
 precondition(!now.entries.isEmpty, "now produced no entries")
-
-print("FFI probe passed: steps=\(steps.entries.count) entries @ \(steps.entries[0].date), now=\(now.entries.count)")

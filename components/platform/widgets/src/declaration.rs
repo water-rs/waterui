@@ -30,3 +30,38 @@ pub struct WidgetDeclaration {
     /// (`systemSmall`, `systemMedium`, …).
     pub families: Vec<String>,
 }
+
+/// What a `#[widget_intent]` impl declares — the `waterui_meta_intent_*`
+/// record payload. `kind` names the generated `Swift` `AppIntent` type
+/// (`swift_type` is its stable hash-derived identifier).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntentDeclaration {
+    kind: String,
+    display_name: String,
+    description: String,
+    swift_type: String,
+}
+
+impl IntentDeclaration {
+    /// The declared kind — unique per application.
+    #[must_use]
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+    /// The intent's display title.
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+    /// The intent's description.
+    #[must_use]
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+    /// The generated `Swift` `AppIntent` type name.
+    #[must_use]
+    pub fn swift_type(&self) -> &str {
+        &self.swift_type
+    }
+}

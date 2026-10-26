@@ -13414,6 +13414,7 @@ dependencies = [
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "serde_json",
+ "sha2",
  "syn 3.0.9",
  "toml 1.1.8+spec-1.1.0",
  "trybuild",

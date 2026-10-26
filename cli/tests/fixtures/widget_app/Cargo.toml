@@ -16,3 +16,5 @@ crate-type = ["staticlib"]
 # and an offline-resolved `cherenkov-gpu` generation does not enter the
 # fixture's own lockfile either.
 waterui = { path = "../../../..", default-features = false, features = ["widgets"] }
+
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
