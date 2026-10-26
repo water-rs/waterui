@@ -6140,7 +6140,9 @@ impl GpuRenderer {
             replacements,
             interop: surf.interop,
             stale: surf.stale_projective(&self.filters, &self.shaders, &self.producers),
-            picture_bytes: self.projective_available(),
+            picture_bytes: self
+                .projective_available()
+                .saturating_sub(self.gpu_cov.generation_reservation()),
         }
     }
 

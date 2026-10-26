@@ -282,6 +282,8 @@ pub struct GpuCoverage {
     args_layout: Option<wgpu::BindGroupLayout>,
     pipes: Option<Pipes>,
     buffers: Option<Buffers>,
+    /// Last generation working set, reserved before optional picture admission.
+    generation_bytes: u64,
 }
 
 /// A contiguous range of misses sharing one temporary buffer allocation.
@@ -396,6 +398,7 @@ impl GpuCoverage {
             args_layout: None,
             pipes: None,
             buffers: None,
+            generation_bytes: 0,
         }
     }
 
@@ -446,22 +449,33 @@ impl GpuCoverage {
     /// is still held next to the new one until the submit lands.
     pub fn bytes(&self) -> u64 {
         self.uploads.iter().map(wgpu::Buffer::size).sum::<u64>()
-            + self.buffers.as_ref().map_or(0, |b| {
-                b.params.size()
-                    + b.elements.size()
-                    + b.paths.size()
-                    + b.segments.size()
-                    + b.coverage.size()
-                    + b.strokes.size()
-                    + b.args.size()
-                    + b.work.size()
-            })
+            + self.generation_resident_bytes()
             + self.arena.buffer.as_ref().map_or(0, wgpu::Buffer::size)
             + self
                 .compaction
                 .as_ref()
                 .map_or(0, |compaction| compaction.source.size())
             + self.draws_buffer.as_ref().map_or(0, wgpu::Buffer::size)
+    }
+
+    fn generation_resident_bytes(&self) -> u64 {
+        self.buffers.as_ref().map_or(0, |b| {
+            b.params.size()
+                + b.elements.size()
+                + b.paths.size()
+                + b.segments.size()
+                + b.coverage.size()
+                + b.strokes.size()
+                + b.args.size()
+                + b.work.size()
+        })
+    }
+
+    /// Released generation buffers will be needed again when picture misses
+    /// rasterize. Do not offer their working set to optional image retention.
+    pub fn generation_reservation(&self) -> u64 {
+        self.generation_bytes
+            .saturating_sub(self.generation_resident_bytes())
     }
 
     /// Retained host input/draw-list allocation capacities.
@@ -938,6 +952,7 @@ impl GpuCoverage {
     }
 
     pub fn trim(&mut self) {
+        self.generation_bytes = 0;
         self.entries.clear();
         self.compaction = None;
         self.live_words = 0;
@@ -1087,6 +1102,7 @@ impl GpuCoverage {
                 storage,
             ),
         });
+        self.generation_bytes = self.generation_resident_bytes();
 
         Ok(())
     }
@@ -2146,7 +2162,15 @@ mod tests {
                 assert_eq!(words[2][index * ARGS_WORDS as usize + offset], count);
             }
         }
+        let generation_bytes = frame.generation_resident_bytes();
+        assert!(generation_bytes > 0);
+        assert_eq!(
+            frame.generation_reservation(),
+            0,
+            "resident scratch is already counted"
+        );
         frame.submitted();
+        assert_eq!(frame.generation_reservation(), generation_bytes);
         assert!(
             frame.buffers.is_none(),
             "idle frames release generation scratch"
@@ -2171,6 +2195,8 @@ mod tests {
             frame.buffers.is_none(),
             "replay releases generation scratch"
         );
+        frame.trim();
+        assert_eq!(frame.generation_reservation(), 0);
     }
 
     fn device() -> Option<wgpu::Device> {
