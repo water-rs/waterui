@@ -27,6 +27,10 @@
 # package; when PREBUILT_DIR is unset the script still packages inline and
 # records sizes itself (the targeted e2e workflow runs that way).
 #
+# PREBUILT_REFERENCE_APP supplies an already-built E2EReference.app instead
+# of compiling the SwiftUI twin on the capture host. Its platform executable
+# must exist; invalid explicit input fails rather than building another host.
+#
 # The shard measures the release package, never a debug `water run`: the
 # packaged artifact is what users ship, so size, startup, memory, and visual
 # comparison all describe the production binary.
@@ -557,6 +561,17 @@ has_twin() {
 reference_app=""
 build_reference_host() {
   [[ -n "${reference_app}" ]] && return 0
+  if [[ -n "${PREBUILT_REFERENCE_APP:-}" ]]; then
+    local binary="${PREBUILT_REFERENCE_APP}/E2EReference"
+    [[ "${platform}" == "macos" ]] && \
+      binary="${PREBUILT_REFERENCE_APP}/Contents/MacOS/E2EReference"
+    if [[ ! -x "${binary}" ]]; then
+      echo "::error::PREBUILT_REFERENCE_APP '${PREBUILT_REFERENCE_APP}' carries no executable ${binary} for platform '${platform}'."
+      return 1
+    fi
+    reference_app="${PREBUILT_REFERENCE_APP}"
+    return 0
+  fi
   local out_dir="${shots_dir}/.reference-host"
   if "${reference_dir}/build-reference-host.sh" "${platform}" "${out_dir}" \
       >"${logs_dir}/${platform}-reference-build.log" 2>&1; then
