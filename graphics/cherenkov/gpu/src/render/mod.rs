@@ -1462,6 +1462,8 @@ pub struct GpuRenderer {
     projective: Option<projective::Pipelines>,
     /// Counts rendered frames; the projective cache's recency clock.
     frame_count: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    picture_commands_pending: bool,
 }
 
 impl std::fmt::Debug for GpuRenderer {
@@ -3027,6 +3029,8 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             config,
             projective: None,
             frame_count: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            picture_commands_pending: false,
         };
         Ok((
             renderer,
@@ -3374,6 +3378,8 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         config,
         projective: None,
         frame_count: 0,
+        #[cfg(not(target_arch = "wasm32"))]
+        picture_commands_pending: false,
     };
     Ok((
         renderer,
@@ -4075,6 +4081,8 @@ impl Renderer for GpuRenderer {
     fn trim(&mut self, pressure: Pressure) {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         diag::set_phase("trim");
+        #[cfg(not(target_arch = "wasm32"))]
+        self.reclaim_command_memory();
         self.gpu_cov.trim();
         if self.gpu_cov.arena_generation() != self.bound_arena_gen {
             let atlas = &self.atlas;
@@ -8107,6 +8115,11 @@ impl GpuRenderer {
         stats.projective_composed +=
             u32::try_from(composed.iter().filter(|key| key.picture.is_none()).count())
                 .unwrap_or(u32::MAX);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.picture_commands_pending |=
+                realize.iter().any(|image| image.key.picture.is_some());
+        }
         self.allocate_projective(id, realize, composed)?;
         // What the backend's tile executor can hold, read before the
         // surface is borrowed for the frame's attachment planning.
@@ -8713,8 +8726,21 @@ impl GpuRenderer {
     }
 
     fn finish_picture_coverage(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::mem::take(&mut self.picture_commands_pending) {
+            self.reclaim_command_memory();
+        }
         self.gpu_cov.finish_pictures();
         self.rebind_coverage_arena();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn reclaim_command_memory(&self) {
+        let device = self.device.clone();
+        self.queue.on_submitted_work_done(move || {
+            device.free_unused_command_encoders();
+        });
+        self.device.free_unused_command_encoders();
     }
 
     fn rebind_coverage_arena(&mut self) {
