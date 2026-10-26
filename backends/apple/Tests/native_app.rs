@@ -77,6 +77,7 @@ fn trials() -> Vec<libtest_mimic::Trial> {
     trials.extend(key_commands::trials());
     trials.extend(embedded_menus::trials());
     trials.extend(gesture_events::trials());
+    trials.extend(navigation::trials());
     trials.extend(list_spacing::trials());
     trials.extend(text_selection_ios::trials());
     trials
@@ -1272,6 +1273,268 @@ mod gesture_events {
         let e = fire(UIGestureRecognizerState::Ended, 3.0);
         assert_eq!((e.phase, e.velocity), (GesturePhase::Ended, 0.0));
         assert!((e.scale - 0.02).abs() < 1e-6);
+    }
+}
+
+/// `NavigationSplitView` chrome inside the real `UIApplication` scene:
+/// the leaf mounts under a `UIViewController` the window adopts, so the
+/// split sees `parentViewController` and a live trait collection — the
+/// shape a bare `initWithFrame` window never gives it.
+#[cfg(target_os = "ios")]
+mod navigation {
+    use cocoa_ui::objc2_ui_kit::{
+        UINavigationController, UISplitViewController, UISplitViewControllerColumn,
+        UITraitEnvironment, UIUserInterfaceSizeClass, UIViewController,
+    };
+    use cocoa_ui::uikit::native_test;
+    use cocoa_ui::uikit::view_controller::enclosing_controller;
+    use cocoa_ui::{PlatformView, Rect, Retained, view};
+    use waterui::background::Material;
+    use waterui::component::{ButtonStyle, button, label};
+    use waterui::icon::SystemIcon;
+    use waterui::navigation::{
+        NavigationSplitView, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
+        NavigationView, ToolbarItemIcon,
+    };
+    use waterui::prelude::text;
+    use waterui::reactive::binding;
+    use waterui::{Str, ViewExt as _};
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until, render};
+
+    use super::mtm;
+
+    /// The `navigation::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![libtest_mimic::Trial::test(
+            "navigation::a_split_detail_column_carries_navigation_item_chrome",
+            || {
+                a_split_detail_column_carries_navigation_item_chrome();
+                Ok(())
+            },
+        )]
+    }
+
+    /// The `UISplitViewController` a leaf's subtree lives under.
+    fn split_controller_in(view: &PlatformView) -> Option<Retained<UISplitViewController>> {
+        if let Some(controller) = enclosing_controller(view)
+            && let Ok(split) = controller.downcast()
+        {
+            return Some(split);
+        }
+        for sub in view::subviews(view) {
+            if let Some(found) = split_controller_in(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The compact split fixture includes both a platform symbol and a hosted SVG label.
+    fn navigation_fixture() -> waterui_apple::contract::NativeLeaf {
+        let selection = binding(Some(0_i32));
+        let query = binding(Str::default());
+        render(NavigationSplitView::new(
+            &selection,
+            || text("sidebar"),
+            move |_id: i32| {
+                let mut item = NavigationToolbarItem::new(
+                    NavigationToolbarPlacement::PrimaryAction,
+                    button("").style(ButtonStyle::Plain),
+                );
+                item.icon = Some(ToolbarItemIcon::System(SystemIcon::new("plus")));
+                NavigationView::new("Today", text("detail").background(Material::Regular))
+                    .searchable(&query, "Search reminders")
+                    .navigation_toolbar(NavigationToolbar::new(vec![
+                        item,
+                        NavigationToolbarItem::new(
+                            NavigationToolbarPlacement::PrimaryAction,
+                            button(label("").icon(waterui::svg::Svg::from_path(
+                                "M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z",
+                                24.0,
+                                24.0,
+                            )))
+                            .style(ButtonStyle::Borderless),
+                        ),
+                    ]))
+            },
+        ))
+    }
+
+    /// Native chrome must keep hosted icon and page content visible after collapse.
+    fn assert_content_shown(
+        window: &cocoa_ui::objc2_ui_kit::UIWindow,
+        item: &cocoa_ui::objc2_ui_kit::UINavigationItem,
+        page: &UIViewController,
+    ) {
+        let hosted = item
+            .rightBarButtonItems()
+            .expect("the page retains its actions")
+            .iter()
+            .find_map(|item| item.customView())
+            .expect("arbitrary button content remains hosted");
+        let icon = super::find::<cocoa_ui::uikit::ImageView>(&hosted)
+            .expect("the hosted button retains its label icon");
+        assert!(
+            icon.downcast_ref::<cocoa_ui::uikit::ImageView>()
+                .expect("picture image view")
+                .image()
+                .is_some(),
+            "the hosted SVG produces a UIKit image"
+        );
+        let icon_shown = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            window.layoutIfNeeded();
+            let bounds = view::bounds(&icon);
+            icon.window().is_some()
+                && view::has_visible_ancestry(&icon)
+                && bounds.size.width > 0.0
+                && bounds.size.height > 0.0
+        });
+        assert!(
+            icon_shown,
+            "the hosted toolbar icon remains visible with a nonempty frame: {:?}; wrapper: {:?}",
+            view::bounds(&icon),
+            view::bounds(&hosted),
+        );
+        let detail = super::find::<cocoa_ui::uikit::Label>(&page.view().expect("page view"))
+            .expect("the detail page retains its rendered label");
+        let content_shown = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            window.layoutIfNeeded();
+            let bounds = view::bounds(&detail);
+            detail.window().is_some()
+                && view::has_visible_ancestry(&detail)
+                && bounds.size.width > 0.0
+                && bounds.size.height > 0.0
+        });
+        assert!(
+            content_shown,
+            "the collapsed detail content remains visible with a nonempty frame: {:?}",
+            view::bounds(&detail)
+        );
+        let field = super::find::<cocoa_ui::objc2_ui_kit::UITextField>(window)
+            .expect("the visible search text field")
+            .downcast::<cocoa_ui::objc2_ui_kit::UITextField>()
+            .expect("search text field type");
+        // SAFETY: UIKit font accessors run on the test's main thread.
+        let body = cocoa_ui::objc2_ui_kit::UIFont::preferredFontForTextStyle(unsafe {
+            cocoa_ui::objc2_ui_kit::UIFontTextStyleBody
+        });
+        let configured = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            let actual = field.font().expect("the search field has a font");
+            // SAFETY: UIKit font accessors run on the test's main thread.
+            unsafe {
+                actual.fontName() == body.fontName()
+                    && (actual.pointSize() - body.pointSize()).abs() < 0.01
+            }
+        });
+        assert!(
+            configured,
+            "the presented search field uses preferred body typography"
+        );
+    }
+
+    /// A `NavigationSplitView` detail column is a stack-driven
+    /// `UINavigationController`: the page's chrome lands on
+    /// `navigationItem` — the `searchable` controller attaches, the
+    /// action's symbol is a real bar image, the large-title gate is open —
+    /// and `hidesBackButton` stays off, so a collapse onto compact pushes
+    /// the page with the platform's own back affordance. The bare
+    /// `NavContentController` column it replaces left the page drawing a
+    /// standalone in-content bar: no back button, a stacked search field,
+    /// an inline title and a hosted action drawn as an empty capsule
+    /// (water-rs/waterui#2717).
+    fn a_split_detail_column_carries_navigation_item_chrome() {
+        let leaf = navigation_fixture();
+        let mtm = mtm();
+        let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+        let controller = UIViewController::new(mtm);
+        window.setRootViewController(Some(&controller));
+        let root_view = controller.view().expect("the controller's view is loaded");
+        let mounted = leaf.mount(&root_view);
+        view::set_frame(mounted.view(), view::bounds(&root_view));
+        window.makeKeyAndVisible();
+        window.layoutIfNeeded();
+        let split =
+            split_controller_in(&root_view).expect("the leaf mounts a UISplitViewController");
+        assert!(
+            split.parentViewController().is_some(),
+            "the mounted scene adopts the split controller"
+        );
+        let detail_nav = split
+            .viewControllerForColumn(UISplitViewControllerColumn::Secondary)
+            .and_then(|controller| controller.downcast::<UINavigationController>().ok())
+            .expect("the detail column is a UINavigationController");
+        assert!(
+            detail_nav.navigationBar().prefersLargeTitles(),
+            "the column's bar leaves the large-title gate open"
+        );
+        let page = detail_nav
+            .topViewController()
+            .expect("the column stack has a root page");
+        let item = page.navigationItem();
+        assert!(
+            !item.hidesBackButton(),
+            "the column's root keeps the back affordance for the compact push"
+        );
+        assert!(
+            item.searchController().is_some(),
+            "the searchable field attaches as the item's search controller"
+        );
+        let trailing = item
+            .rightBarButtonItems()
+            .expect("the primary action is a bar item")
+            .objectAtIndex(0);
+        assert!(
+            trailing.image().is_some() && trailing.customView().is_none(),
+            "the action's symbol is the bar item's image, not a hosted view"
+        );
+
+        // The real scene's compact width already reports Compact: the
+        // split collapses through the same trait transition production
+        // responds to — no `traitOverrides` needed.
+        // SAFETY: the trait collection is read on the main thread the
+        // harness guarantees.
+        let size_class = unsafe { split.traitCollection().horizontalSizeClass() };
+        assert_eq!(
+            size_class,
+            UIUserInterfaceSizeClass::Compact,
+            "the mounted scene carries compact width traits"
+        );
+        let collapsed = pump_main_until(MAIN_QUEUE_DEADLINE, || split.isCollapsed());
+        assert!(collapsed, "compact traits collapse the split");
+        let sidebar_nav = split
+            .viewControllerForColumn(UISplitViewControllerColumn::Primary)
+            .and_then(|controller| controller.downcast::<UINavigationController>().ok())
+            .expect("the sidebar column stays a nav controller");
+        let pushed = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            sidebar_nav.viewControllers().count() == 2
+        });
+        assert!(
+            pushed,
+            "the collapsed split pushes the detail column onto the compact stack"
+        );
+        let top = sidebar_nav.topViewController().expect("a pushed column");
+        assert!(
+            core::ptr::eq(
+                Retained::as_ptr(&top).cast::<u8>(),
+                Retained::as_ptr(&detail_nav).cast::<u8>(),
+            ),
+            "the pushed column is the detail's own navigation stack"
+        );
+        assert!(
+            !top.navigationItem().hidesBackButton(),
+            "the pushed detail keeps the platform back button"
+        );
+        let bar_shown =
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !sidebar_nav.isNavigationBarHidden());
+        assert!(
+            bar_shown,
+            "the pushed column unhides the compact stack's bar for the back button"
+        );
+        assert!(
+            sidebar_nav.navigationBar().prefersLargeTitles(),
+            "the compact stack's visible bar keeps the large-title gate open"
+        );
+        assert_content_shown(&window, &item, &page);
     }
 }
 
