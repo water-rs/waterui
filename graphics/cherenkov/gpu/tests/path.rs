@@ -1063,10 +1063,15 @@ fn retained_picture_reuses_pixels_across_fractional_translation() -> Result<(), 
     let placement = Binding::container(Affine::IDENTITY);
     let picture = Picture::record(|c| c.fill(overhang(), RED));
     surface.update(|tx| {
-        tx[surface.root()].content(surface.record(|c| c.picture(&picture, placement.clone())));
+        tx[surface.root()].content(surface.record(|c| {
+            c.picture(&picture, placement.clone());
+        }));
     });
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     assert_eq!(engine.stats().paths_rasterized, 1);
+    placement.set(Affine::rotate(0.4));
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(engine.stats().paths_rasterized, 0, "rotation must not increase raster density");
     for x in [0.25, -10.5, 8.125] {
         placement.set(Affine::translate((x, 0.375)));
         wait!(engine.render(cherenkov::FrameTime::now()))?;

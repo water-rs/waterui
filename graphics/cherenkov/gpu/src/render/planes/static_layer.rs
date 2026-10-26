@@ -290,9 +290,15 @@ fn bounds(
             continue;
         }
         let margin: kurbo::Vec2 = margins.iter().copied().sum();
+        // Compose transforms before taking an axis-aligned bound: bounding
+        // a rotation and then its inverse inflates even an unchanged shape.
+        let [a, b, c, d, _, _] = space.as_coeffs();
         union(
             &mut result,
-            space.transform_rect_bbox(local.transform_rect_bbox(rect).inflate(margin.x, margin.y)),
+            (space * local).transform_rect_bbox(rect).inflate(
+                c.abs().mul_add(margin.y, a.abs() * margin.x),
+                d.abs().mul_add(margin.y, b.abs() * margin.x),
+            ),
         );
     }
     Ok(result)

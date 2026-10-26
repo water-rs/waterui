@@ -53,12 +53,16 @@ impl Lowering<'_> {
         }
         let to_parent = self.transform * local;
         let [a, b, c, d, _, _] = to_parent.as_coeffs();
-        let density = ((a.abs() + c.abs()).max(b.abs() + d.abs())
-            * (a.abs() + b.abs()).max(c.abs() + d.abs()))
-        .sqrt()
-        .log2()
-        .ceil()
-        .exp2();
+        // The largest singular value measures scale without charging rotation
+        // as magnification. Match the raster's f32 precision before bucketing,
+        // so roundoff in an orthogonal transform cannot double its density.
+        let (xx, yy, xy) = (
+            b.mul_add(b, a * a),
+            d.mul_add(d, c * c),
+            b.mul_add(d, a * c),
+        );
+        let scale = ((xx + yy + (xx - yy).hypot(2.0 * xy)) * 0.5).sqrt();
+        let density = f64::from(scale as f32).log2().ceil().exp2();
         let key = LocalKey {
             layer,
             picture: Some(std::ptr::from_ref(picture.display_list()) as usize),

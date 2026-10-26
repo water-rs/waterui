@@ -211,6 +211,8 @@ pub struct Inputs {
     /// Retained images whose renderer-side inputs changed since they were
     /// realized.
     pub stale: FxHashSet<LocalKey>,
+    /// Optional picture storage admitted beside this frame's raster resources.
+    pub picture_bytes: u64,
 }
 
 /// Immutable source and raster bounds of a retained picture.
