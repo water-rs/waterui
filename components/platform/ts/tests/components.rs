@@ -1077,17 +1077,33 @@ fn ts_tabs_is_a_tabs() {
                 }),
             ] })"#,
         ),
-        Tabs::new(
-            &selection,
-            vec![
-                Tab::new(Str::from("inbox"), label("Inbox"), || {
-                    NavigationView::new("All messages", text("Messages"))
+        {
+            let pairs = vec![
+                (
+                    Str::from("inbox"),
+                    Tab::new(label("Inbox"), || {
+                        NavigationView::new("All messages", text("Messages"))
+                    }),
+                ),
+                (
+                    Str::from("sent"),
+                    Tab::new(label("Sent"), || NavigationView::new("", text("Sent mail"))),
+                ),
+            ];
+            let tabs: std::collections::BTreeMap<Str, Tab> = pairs.iter().cloned().collect();
+            let ids = pairs
+                .into_iter()
+                .map(|(value, _)| SelfId::new(value))
+                .collect::<Vec<_>>();
+            Tabs::new(
+                &selection,
+                ForEach::new(nami::collection::List::from(ids), move |id: SelfId<Str>| {
+                    tabs.get(&id.into_inner())
+                        .expect("a keyed tab collection reports a tab for every id")
+                        .clone()
                 }),
-                Tab::new(Str::from("sent"), label("Sent"), || {
-                    NavigationView::new("", text("Sent mail"))
-                }),
-            ],
-        ),
+            )
+        },
     );
 }
 

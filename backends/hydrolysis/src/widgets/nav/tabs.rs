@@ -1,5 +1,5 @@
 use crate::renderer::bounded_proposal;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 #[cfg(feature = "accessibility")]
@@ -13,11 +13,13 @@ use crate::theme::TabItemLayout;
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
+use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Signal};
-use waterui::navigation::tab::{NativeTabStyle, TabIcon, TabsLayout};
+use waterui::navigation::tab::{NativeTabStyle, Tab, TabIcon, TabsLayout};
 use waterui_controls::label::LabelDisplayMode;
 use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
+use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot, Views};
 use waterui_core::{AnyView, Environment, Native};
 
 #[cfg(feature = "accessibility")]
@@ -37,44 +39,156 @@ struct TabRenderState {
     enabled: nami::Computed<bool>,
 }
 
+impl TabRenderState {
+    fn from_tab(tag: Id, tab: Tab) -> Self {
+        Self {
+            tag,
+            label: RetainedSubview::new(tab.label.build()),
+            icon: tab.icon.map(|icon| {
+                RetainedSubview::new(match icon {
+                    TabIcon::System(icon) => AnyView::new(icon),
+                    TabIcon::View(builder) => builder.build(),
+                })
+            }),
+            content: RetainedSubview::new(AnyView::new(tab.content.build())),
+            enabled: tab.enabled,
+        }
+    }
+}
+
 /// The retained render state of a `TabsLayout` container. The selection `Binding` and tab
 /// native style are kept by value; each tab is a [`TabRenderState`].
+///
+/// `tabs` mirrors the layout's collection: a membership change the watcher
+/// reports sets `tabs_dirty` and stores the event's snapshot; `reconcile`
+/// then applies it, so a tab whose id survives keeps its retained sub-views —
+/// navigation state, focus, in-flight gestures — while only inserted or
+/// removed tabs materialize or drop theirs.
 pub struct TabsRenderState {
     selection: Binding<Id>,
     style: NativeTabStyle,
     tabs: Vec<TabRenderState>,
+    /// The collection snapshot the last applied change reported — every
+    /// reconcile works this membership, never the live collection.
+    snapshot: Rc<RefCell<AnyViewsSnapshot<Tab>>>,
+    /// A relocation [`reconcile`] decided but has not published: callers run
+    /// it under a `borrow_mut` of the whole state, and writing `selection`
+    /// there would let a user watcher re-enter the borrowed state. The id
+    /// resolves reads immediately; the binding write is flushed after the
+    /// borrow drops.
+    pending_selection: Cell<Option<Id>>,
+    tabs_dirty: Rc<Cell<bool>>,
+    _watch: BoxWatcherGuard,
 }
 
 impl TabsRenderState {
-    pub(crate) fn from_tabs(tabs: TabsLayout) -> Self {
-        assert!(
-            !(tabs.tabs.is_empty()),
-            "hydrolysis Tabs requires at least one tab"
-        );
+    pub(crate) fn from_tabs(tabs: TabsLayout, renderer: &crate::renderer::SemanticCore) -> Self {
         // `TabsLayout` is `#[non_exhaustive]`, so access fields rather than destructuring.
         let selection = tabs.selection;
         let style = tabs.style;
-        let tabs = tabs
-            .tabs
-            .into_iter()
-            .map(|tab| TabRenderState {
-                tag: tab.id,
-                label: RetainedSubview::new(tab.label),
-                icon: tab.icon.map(|icon| {
-                    RetainedSubview::new(match icon {
-                        TabIcon::System(icon) => AnyView::new(icon),
-                        TabIcon::View(builder) => builder.build(),
-                    })
-                }),
-                content: RetainedSubview::new(AnyView::new(tab.content.build())),
-                enabled: tab.enabled,
+        let snapshot = Rc::new(RefCell::new(tabs.tabs.snapshot()));
+        // Membership changes mark the owning widget's cell — the node whose
+        // read built this state, or the window root when built unowned.
+        let tabs_dirty = Rc::new(Cell::new(true));
+        let cell = Rc::downgrade(
+            &renderer
+                .reader_cell()
+                .unwrap_or_else(|| Rc::clone(renderer.root_cell())),
+        );
+        let watch = {
+            let snapshot = Rc::clone(&snapshot);
+            let tabs_dirty = Rc::clone(&tabs_dirty);
+            tabs.tabs.watch(.., move |ctx, _change| {
+                tabs_dirty.set(true);
+                *snapshot.borrow_mut() = ctx.into_value();
+                if let Some(cell) = cell.upgrade() {
+                    cell.mark(crate::renderer::Dirty::STRUCTURE);
+                }
             })
-            .collect();
-        Self {
+        };
+        let mut state = Self {
             selection,
             style,
-            tabs,
+            tabs: Vec::new(),
+            snapshot,
+            pending_selection: Cell::new(None),
+            tabs_dirty,
+            _watch: watch,
+        };
+        state.reconcile();
+        state.flush_pending_selection();
+        state
+    }
+
+    /// Applies the membership change the watcher reported, when there is
+    /// one: states are re-keyed by tab id into the snapshot's order — a
+    /// surviving id keeps its [`RetainedSubview`]s untouched, an inserted id
+    /// materializes, a removed one drops — and the selection relocates when
+    /// the selected tab left the set.
+    fn reconcile(&mut self) {
+        if !self.tabs_dirty.replace(false) {
+            return;
         }
+        let snapshot = self.snapshot.borrow().clone();
+        // A relocation a previous reconcile queued counts as selected until
+        // the binding write is flushed — reads must not see the stale value.
+        let selected = self
+            .pending_selection
+            .get()
+            .unwrap_or_else(|| self.selection.snapshot());
+        let old_index = self.tabs.iter().position(|tab| tab.tag == selected);
+        let mut old: std::collections::BTreeMap<Id, TabRenderState> =
+            self.tabs.drain(..).map(|tab| (tab.tag, tab)).collect();
+        let mut tabs = Vec::with_capacity(snapshot.len());
+        for index in 0..snapshot.len() {
+            let tag = snapshot
+                .get_id(index)
+                .expect("a collection snapshot reports an id for every index");
+            let tab = old.remove(&tag).unwrap_or_else(|| {
+                TabRenderState::from_tab(
+                    tag,
+                    snapshot
+                        .get_view(index)
+                        .expect("a collection snapshot reports a view for every index"),
+                )
+            });
+            tabs.push(tab);
+        }
+        self.tabs = tabs;
+        // The selected tab left the set: queue the tab now at its index —
+        // the new last tab when it was trailing — for the post-borrow flush
+        // to publish. An empty set leaves the binding untouched; a selection
+        // that never named a tab keeps its existing read-time failure.
+        if let Some(old_index) = old_index
+            && !self.tabs.is_empty()
+            && !self.tabs.iter().any(|tab| tab.tag == selected)
+        {
+            let index = old_index.min(self.tabs.len() - 1);
+            self.pending_selection.set(Some(self.tabs[index].tag));
+        }
+    }
+
+    /// Publishes a queued relocation to the selection binding. Call only
+    /// while no `RefCell<TabsRenderState>` borrow is held — the write runs
+    /// watchers synchronously, and a watcher mutating the collection must
+    /// be free to re-enter the membership watch.
+    pub(crate) fn flush_pending_selection(&self) {
+        if let Some(id) = self.pending_selection.take() {
+            self.selection.set(id);
+        }
+    }
+
+    /// The `impl_widget_behavior` `prepare` hook: reconciles a pending
+    /// membership change before measure and render touch `self.tabs`, and
+    /// builds the inserted tabs' sub-views — the measure pass that follows
+    /// has no renderer to build on.
+    pub(crate) fn prepare_tabs(
+        &mut self,
+        renderer: &mut crate::renderer::HydrolysisRenderer,
+        env: &Environment,
+    ) {
+        self.reconcile();
+        self.prebuild_labels(renderer, env);
     }
 
     /// Eagerly build the tab-label and icon sub-views (the measure path has
@@ -85,6 +199,7 @@ impl TabsRenderState {
         renderer: &mut crate::renderer::SemanticCore,
         env: &Environment,
     ) {
+        self.reconcile();
         let label_env = tab_label_env(env);
         for tab in &mut self.tabs {
             tab.label.ensure_built(renderer, &label_env);
@@ -95,17 +210,28 @@ impl TabsRenderState {
         }
     }
 
-    fn selected_index(&self, selected_id: Id) -> usize {
-        self.tabs
-            .iter()
-            .position(|tab| tab.tag == selected_id)
-            .unwrap_or_else(|| panic!("hydrolysis Tabs selection is not present in tabs"))
+    /// The selected tab's index, or `None` when the set is empty. A
+    /// selection naming no tab of a non-empty set fails as it always has.
+    fn selected_index(&self, selected_id: Id) -> Option<usize> {
+        if self.tabs.is_empty() {
+            return None;
+        }
+        let selected_id = self.pending_selection.get().unwrap_or(selected_id);
+        Some(
+            self.tabs
+                .iter()
+                .position(|tab| tab.tag == selected_id)
+                .unwrap_or_else(|| panic!("hydrolysis Tabs selection is not present in tabs")),
+        )
     }
 
     /// Consume every tab's label/icon/content layout-dirty marks: their
     /// measured sizes feed the bar's, so an enclosing retained sub-view
     /// must see them (water-rs/waterui#1957).
     pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        // No reconcile here: membership changes materialize sub-views, which
+        // only `prepare_tabs` can build — this hook has no renderer. The
+        // prepare pass applies the change before measure ever reads it.
         self.tabs.iter_mut().fold(false, |dirty, tab| {
             dirty
                 | tab.label.take_layout_dirty_if_built()
@@ -330,8 +456,10 @@ pub fn render_tabs_node(
             .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
         if !hidden {
             let selected_id = ctx.renderer_mut().read_signal(&state.borrow().selection);
-            let (selection, labels) = {
-                let st = state.borrow();
+            let (selection, labels, relocation) = {
+                let mut st = state.borrow_mut();
+                st.reconcile();
+                st.prebuild_labels(ctx.renderer_mut(), env);
                 let selected_index = st.selected_index(selected_id);
                 let labels: Vec<(Id, crate::renderer::InteractionKey, Option<String>, bool)> = st
                     .tabs
@@ -345,12 +473,17 @@ pub fn render_tabs_node(
                                 crate::num_cast::i32_as_u32(i32::from(tab.tag)) as usize,
                             ),
                             tab.label.default_a11y_label(),
-                            index == selected_index,
+                            Some(index) == selected_index,
                         )
                     })
                     .collect();
-                (st.selection.clone(), labels)
+                (st.selection.clone(), labels, st.pending_selection.take())
             };
+            // The relocation publishes after the borrow drops — a watcher
+            // mutating the collection re-enters the membership watch freely.
+            if let Some(id) = relocation {
+                selection.set(id);
+            }
             tabs_accessibility(
                 ctx.renderer_mut(),
                 Some(bar.band),
@@ -376,14 +509,22 @@ fn render_tabs_parts(
     layout: TabItemLayout,
     theme_metrics: crate::theme::TabsMetrics,
 ) {
-    let (selection, style, tab_count) = {
-        let st = state.borrow();
-        assert!(
-            !st.tabs.is_empty(),
-            "hydrolysis Tabs requires at least one tab"
-        );
-        (st.selection.clone(), st.style, st.tabs.len())
+    let (selection, style, tab_count, relocation) = {
+        let mut st = state.borrow_mut();
+        st.reconcile();
+        st.prebuild_labels(ctx.renderer_mut(), env);
+        (
+            st.selection.clone(),
+            st.style,
+            st.tabs.len(),
+            st.pending_selection.take(),
+        )
     };
+    // Publish the relocation outside the borrow — a selection watcher may
+    // mutate the collection synchronously.
+    if let Some(id) = relocation {
+        selection.set(id);
+    }
     let selected_id = ctx.renderer_mut().read_signal(&selection);
     let selected_index = state.borrow().selected_index(selected_id);
 
@@ -461,7 +602,7 @@ fn render_tabs_parts(
                 ctx.renderer_mut()
                     .bind_interaction_target(interaction_key, hit_bounds, env);
             let interaction = crate::renderer::local_interaction_state(interaction, hit_transform);
-            let is_selected = index == selected_index;
+            let is_selected = Some(index) == selected_index;
             // A horizontal item's indicator and state layer hug the icon+label
             // content grown by the button inset, not the whole button share;
             // vertical items keep the button-wide bounds. The hit target stays
@@ -577,7 +718,10 @@ fn render_tabs_parts(
         }
     }
 
-    if content_rect.width() > 0.0 && content_rect.height() > 0.0 {
+    if let Some(selected_index) = selected_index
+        && content_rect.width() > 0.0
+        && content_rect.height() > 0.0
+    {
         let mut st = state.borrow_mut();
         let render_ctx = ctx.render_context();
         // §7.1: tab content is chrome-hosted — it inherits the widget's
@@ -823,6 +967,18 @@ pub fn emit_tabs_accessibility(
     env: &Environment,
 ) {
     let owner = state;
+    let relocation = {
+        let mut st = state.borrow_mut();
+        st.reconcile();
+        st.prebuild_labels(renderer, env);
+        st.pending_selection.take()
+    };
+    // Publish outside the borrow so a watcher mutating the collection can
+    // re-enter the membership watch.
+    if let Some(id) = relocation {
+        let selection = state.borrow().selection.clone();
+        selection.set(id);
+    }
     let mut state = state.borrow_mut();
     let selected_id = renderer.read_signal(&state.selection);
     let (selection, style, labels) = {
@@ -839,15 +995,16 @@ pub fn emit_tabs_accessibility(
                         crate::num_cast::i32_as_u32(i32::from(tab.tag)) as usize,
                     ),
                     tab.label.default_a11y_label(),
-                    index == selected_index,
+                    Some(index) == selected_index,
                 )
             })
             .collect();
         (state.selection.clone(), state.style, labels)
     };
     tabs_accessibility(renderer, None, &selection, style, &labels, env);
-    let selected_index = state.selected_index(selected_id);
-    state.tabs[selected_index]
-        .content
-        .emit_accessibility(renderer, env);
+    if let Some(selected_index) = state.selected_index(selected_id) {
+        state.tabs[selected_index]
+            .content
+            .emit_accessibility(renderer, env);
+    }
 }

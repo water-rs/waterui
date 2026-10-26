@@ -783,19 +783,21 @@ pub fn measure_tabs_layout(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    assert!(
-        !(tabs.tabs.is_empty()),
-        "hydrolysis Tabs requires at least one tab"
-    );
+    // An empty set mounts: nothing answers but the bar's own metrics.
+    let snapshot = tabs.tabs.snapshot();
+    let tab_at = |index: usize| {
+        snapshot
+            .get_view(index)
+            .expect("a collection snapshot reports a view for every index")
+    };
 
     // Labels measure title-only: the bar places the icon itself, so the label
     // must not count it a second time.
     let label_env = env.extending(waterui_controls::label::LabelDisplayMode::TitleOnly);
-    let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = tabs
-        .tabs
-        .iter()
-        .map(|tab| {
-            let label_size = measure_view_intrinsic(&tab.label, state, &label_env, theme);
+    let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = (0..snapshot.len())
+        .map(|index| {
+            let tab = tab_at(index);
+            let label_size = measure_view_intrinsic(&tab.label.build(), state, &label_env, theme);
             let icon_size = tab.icon.as_ref().map(|icon| {
                 let icon_view = match icon {
                     TabIcon::System(icon) => AnyView::new(icon.clone()),
@@ -824,7 +826,8 @@ pub fn measure_tabs_layout(
     let mut max_content_width: f64 = 0.0;
     let mut max_content_height: f64 = 0.0;
     let mut bar_width = 0.0;
-    for (tab, (label_size, icon_size)) in tabs.tabs.iter().zip(item_sizes.iter()) {
+    for (index, (label_size, icon_size)) in item_sizes.iter().enumerate() {
+        let tab = tab_at(index);
         bar_width += tabs_item_natural_width(*label_size, *icon_size, &metrics, layout);
 
         let content = normalize_layout_view(AnyView::new(tab.content.build()), env);
@@ -842,7 +845,7 @@ pub fn measure_tabs_layout(
         NativeTabStyle::Sidebar => (
             max_content_width + metrics.bar_height,
             max_content_height
-                .max(metrics.button_min_width * crate::num_cast::usize_as_f64(tabs.tabs.len())),
+                .max(metrics.button_min_width * crate::num_cast::usize_as_f64(snapshot.len())),
         ),
     };
     LayoutSize::new(

@@ -9,7 +9,7 @@
 
 use alloc::vec::Vec;
 
-use crate::contract::{NativeLeaf, RenderContext};
+use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
 use waterui::navigation::{
     TabsLayout,
@@ -42,7 +42,9 @@ impl SubView for Fill {
 }
 
 /// A tab rendered once: its pane's leaf, its label's extracted text and the
-/// reactive `Tab` fields a spec bind still needs.
+/// reactive `Tab` fields a spec bind still needs. `keep` holds the tab's own
+/// watchers and tasks — badge ticks, enabled flips, the deferred icon
+/// raster — so they die with the tab, not the container.
 struct Mounted {
     /// Identifier the selection binding stores.
     id: Id,
@@ -65,44 +67,85 @@ struct Mounted {
     /// Search-role tab.
     #[allow(dead_code)]
     is_search: bool,
+    /// Per-tab guards, kept while the tab is mounted.
+    #[allow(dead_code)]
+    keep: core::cell::RefCell<crate::contract::KeepAlive>,
 }
 
-/// Renders every tab once and returns the mounted set.
-fn mount_tabs(tabs: Vec<Tab<Id>>, ctx: &RenderContext) -> Vec<Mounted> {
-    tabs.into_iter()
-        .map(|mut tab| {
-            let pane = ctx.render(waterui_backend_core::AnyView::new(tab.content.build()));
-            let label_leaf = ctx.render(core::mem::replace(
-                &mut tab.label,
-                waterui_backend_core::AnyView::new(()),
-            ));
-            let label = extract_title_text(label_leaf.view());
-            let (symbol, icon_leaf) = match tab.icon {
-                Some(TabIcon::System(icon)) => (Some(icon.name.to_string()), None),
-                Some(TabIcon::View(icon)) => (None, Some(ctx.render(icon.build()))),
-                None => (None, None),
-            };
+/// Renders one tab once: the pane, the label's extracted text and the icon's
+/// leaf the platform chrome still binds.
+fn mount_tab(id: Id, tab: Tab, renderer: &crate::contract::Renderer) -> Mounted {
+    let pane = renderer.render(waterui_backend_core::AnyView::new(tab.content.build()));
+    let label_leaf = renderer.render(tab.label.build());
+    let label = extract_title_text(label_leaf.view());
+    let (symbol, icon_leaf) = match tab.icon {
+        Some(TabIcon::System(icon)) => (Some(icon.name.to_string()), None),
+        Some(TabIcon::View(icon)) => (None, Some(renderer.render(icon.build()))),
+        None => (None, None),
+    };
 
-            Mounted {
-                id: tab.id,
-                pane,
-                label_leaf,
-                label: label.unwrap_or_default(),
-                symbol,
-                icon_leaf,
-                badge: tab.badge,
-                enabled: tab.enabled,
-                is_search: matches!(tab.role, TabRole::Search),
-            }
-        })
-        .collect()
+    Mounted {
+        id,
+        pane,
+        label_leaf,
+        label: label.unwrap_or_default(),
+        symbol,
+        icon_leaf,
+        badge: tab.badge,
+        enabled: tab.enabled,
+        is_search: matches!(tab.role, TabRole::Search),
+        keep: core::cell::RefCell::new(crate::contract::KeepAlive::default()),
+    }
+}
+
+/// Rekeys `mounted` to `snapshot`'s membership by tab id: a surviving id
+/// keeps its [`Mounted`] — pane, navigation state, GPU surfaces — untouched;
+/// an inserted id mounts, a removed one drops. When the selected tab left
+/// the set the id to relocate the selection to is returned — the tab now at
+/// its index, the new last tab when it was trailing. The caller writes the
+/// binding outside the `mounted` borrow so the selection watcher's own read
+/// cannot re-enter it; an empty set leaves the binding untouched.
+fn reconcile_tabs(
+    mounted: &mut Vec<Mounted>,
+    snapshot: &waterui_core::views::AnyViewsSnapshot<Tab>,
+    renderer: &crate::contract::Renderer,
+    selection: &waterui::reactive::Binding<Id>,
+) -> Option<Id> {
+    use waterui::reactive::Signal as _;
+    use waterui_core::views::ViewSnapshot as _;
+    let selected = selection.snapshot();
+    let old_index = mounted.iter().position(|tab| tab.id == selected);
+    let mut old: alloc::collections::BTreeMap<Id, Mounted> =
+        mounted.drain(..).map(|tab| (tab.id, tab)).collect();
+    let mut tabs = Vec::with_capacity(snapshot.len());
+    for index in 0..snapshot.len() {
+        let id = snapshot
+            .get_id(index)
+            .expect("a collection snapshot reports an id for every index");
+        tabs.push(old.remove(&id).unwrap_or_else(|| {
+            mount_tab(
+                id,
+                snapshot
+                    .get_view(index)
+                    .expect("a collection snapshot reports a view for every index"),
+                renderer,
+            )
+        }));
+    }
+    *mounted = tabs;
+    old_index.and_then(|old_index| {
+        (!mounted.is_empty() && !mounted.iter().any(|tab| tab.id == selected))
+            .then(|| mounted[old_index.min(mounted.len() - 1)].id)
+    })
 }
 
 #[cfg(target_os = "ios")]
 mod platform {
-    use super::{Fill, Mounted, mount_tabs};
+    use super::{Fill, Mounted, reconcile_tabs};
+    use alloc::collections::BTreeMap;
     use alloc::rc::Rc;
     use alloc::vec::Vec;
+    use core::cell::RefCell;
 
     use crate::contract::{NativeLeaf, RenderContext};
     use cocoa_ui::geometry::Rect;
@@ -113,9 +156,12 @@ mod platform {
         HostView, TabContentController, TabSpec, TabsController, view_controller,
     };
     use cocoa_ui::{Retained, view};
+    use waterui::Environment;
     use waterui::navigation::{TabsLayout, tab::TabBarMinimizeBehavior};
     use waterui::reactive::Signal;
+    use waterui_core::id::Id;
     use waterui_core::layout::ProposalSize;
+    use waterui_core::views::Views as _;
 
     use crate::contract::KeepAlive;
 
@@ -169,29 +215,26 @@ mod platform {
         declared_scroll_view(controller.topViewController()?.view()?.as_ref())
     }
 
-    /// `UITabBarController` with one `UIViewController` per pane.
-    #[allow(clippy::too_many_lines)]
-    pub(super) fn tabs_leaf(mut layout: TabsLayout, ctx: &RenderContext) -> NativeLeaf {
-        let mtm = ctx.mtm();
-        let tabs = TabsController::new(mtm);
-        let mut keep = KeepAlive::default();
-        let mounted = Rc::new(mount_tabs(core::mem::take(&mut layout.tabs), ctx));
-
-        let specs: Vec<TabSpec> = mounted.iter().map(spec).collect();
-        tabs.set_tabs(
-            &specs,
-            &mounted
-                .iter()
-                .map(|tab| Retained::from(tab.pane.view()))
-                .collect::<Vec<_>>(),
-        );
+    /// Installs one tab's `TabContentController`: the spec's chrome, the
+    /// declared-scroll-surface association — `UIKit` asks the selected
+    /// controller for its `contentScrollViewForEdge:` whenever it tracks a
+    /// scroll — a rasterized template image for a custom icon, and the
+    /// badge/enabled watchers mutating the `UITabBarItem` in place, all into
+    /// the tab's own keep so they die with the tab, not the container.
+    fn install_controller(
+        mtm: cocoa_ui::MainThreadMarker,
+        tab: &Mounted,
+        env: &Environment,
+    ) -> Retained<TabContentController> {
+        let controller = TabContentController::new(mtm, tab.pane.view());
+        controller.apply_spec(&spec(tab));
+        controller.set_bottom_scroll_surface(|controller| {
+            declared_scroll_view(controller.view()?.as_ref())
+        });
 
         // A declared icon view draws inside the tab item as a template image
         // — the baseline's `installIconViews`, capped at the same 25pt side.
-        for (index, tab) in mounted.iter().enumerate() {
-            let Some(icon_leaf) = &tab.icon_leaf else {
-                continue;
-            };
+        if let Some(icon_leaf) = &tab.icon_leaf {
             let size = icon_leaf
                 .layout()
                 .measure(ProposalSize {
@@ -203,47 +246,104 @@ mod platform {
                 icon_leaf.view(),
                 cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
             );
-            #[cfg(feature = "gpu_surface")]
-            {
-                // The raster cannot run synchronously under `CAMetalLayer`:
-                // the item waits, and the task the central capture completes
-                // installs the image — `keep` cancels it on unmount.
-                let bounds = view::bounds(icon_leaf.view());
-                if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
-                    let icon_view = view::retain_base(icon_leaf.view());
-                    let env = ctx.env().clone();
-                    let tabs = tabs.clone();
-                    keep.keep(executor_core::spawn_local(async move {
-                        let image =
-                            crate::capture_image::template_image(&icon_view, &env, 25.0).await;
-                        tabs.tab_item(index).setImage(Some(&image));
-                    }));
+            if let Some(item) = controller.tabBarItem() {
+                #[cfg(feature = "gpu_surface")]
+                {
+                    // The raster cannot run synchronously under `CAMetalLayer`:
+                    // the item waits, and the task the central capture
+                    // completes installs the image — the tab's keep cancels
+                    // it on removal.
+                    let bounds = view::bounds(icon_leaf.view());
+                    if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
+                        let icon_view = view::retain_base(icon_leaf.view());
+                        let env = env.clone();
+                        tab.keep
+                            .borrow_mut()
+                            .keep(executor_core::spawn_local(async move {
+                                let image =
+                                    crate::capture_image::template_image(&icon_view, &env, 25.0)
+                                        .await;
+                                item.setImage(Some(&image));
+                            }));
+                    }
                 }
-            }
-            #[cfg(not(feature = "gpu_surface"))]
-            if let Some(image) = cocoa_ui::bitmap::view_template_image(icon_leaf.view(), 25.0) {
-                tabs.tab_item(index).setImage(Some(&image));
+                #[cfg(not(feature = "gpu_surface"))]
+                if let Some(image) = cocoa_ui::bitmap::view_template_image(icon_leaf.view(), 25.0) {
+                    item.setImage(Some(&image));
+                }
             }
         }
 
-        // `UITabBarMinimizeBehavior` collapses bottom chrome on the
-        // pane's scroll: `UIKit` asks each selected controller for its
-        // `contentScrollViewForEdge:` whenever it tracks a scroll —
-        // answering through the declared walk on every query keeps the
-        // association current, so navigation pushes, pops and pane
-        // replacements resolve the surface that is actually showing
-        // rather than a pointer captured at install.
-        if let Some(controllers) = tabs.viewControllers() {
-            for controller in &controllers {
-                let controller = controller
-                    .clone()
-                    .downcast::<TabContentController>()
-                    .expect("tab controllers are CocoaUiTabContentController");
-                controller.set_bottom_scroll_surface(|controller| {
-                    declared_scroll_view(controller.view()?.as_ref())
+        // Reactive chrome mutates the `UITabBarItem` in place — the item
+        // survives as long as its controller does.
+        if let Some(item) = controller.tabBarItem() {
+            if let Some(badge) = &tab.badge {
+                let item = item.clone();
+                tab.keep.borrow_mut().bind(badge, move |value| {
+                    let badge = (value > 0)
+                        .then(|| objc2_foundation::NSString::from_str(&value.to_string()));
+                    item.setBadgeValue(badge.as_deref());
                 });
             }
+            tab.keep.borrow_mut().bind(&tab.enabled, move |enabled| {
+                item.setEnabled(enabled);
+            });
         }
+        controller
+    }
+
+    /// Rekeys the installed controllers to `mounted`'s membership: dropped
+    /// ids' controllers release — unmounting their panes — new ids install,
+    /// and the array is re-set in the mounted order.
+    fn refresh(
+        mtm: cocoa_ui::MainThreadMarker,
+        env: &Environment,
+        tabs: &TabsController,
+        mounted: &RefCell<Vec<Mounted>>,
+        controllers: &RefCell<BTreeMap<Id, Retained<TabContentController>>>,
+    ) {
+        let mounted = mounted.borrow();
+        let mut controllers = controllers.borrow_mut();
+        controllers.retain(|id, _| mounted.iter().any(|tab| tab.id == *id));
+        for tab in mounted.iter() {
+            controllers
+                .entry(tab.id)
+                .or_insert_with(|| install_controller(mtm, tab, env));
+        }
+        let ordered: Vec<_> = mounted
+            .iter()
+            .map(|tab| {
+                controllers
+                    .get(&tab.id)
+                    .expect("a mounted tab has its controller installed")
+                    .clone()
+            })
+            .collect();
+        tabs.set_view_controllers(&ordered);
+    }
+
+    /// `UITabBarController` with one `UIViewController` per pane.
+    #[allow(clippy::too_many_lines)]
+    pub(super) fn tabs_leaf(mut layout: TabsLayout, ctx: &RenderContext) -> NativeLeaf {
+        let mtm = ctx.mtm();
+        let tabs = TabsController::new(mtm);
+        let mut keep = KeepAlive::default();
+        let renderer = ctx.renderer();
+        let env = ctx.env().clone();
+        let mounted: Rc<RefCell<Vec<Mounted>>> = Rc::new(RefCell::new(Vec::new()));
+        let controllers = Rc::new(RefCell::new(
+            BTreeMap::<Id, Retained<TabContentController>>::new(),
+        ));
+        {
+            let snapshot = layout.tabs.snapshot();
+            let _ = reconcile_tabs(
+                &mut mounted.borrow_mut(),
+                &snapshot,
+                &renderer,
+                &layout.selection,
+            );
+        }
+        refresh(mtm, &env, &tabs, &mounted, &controllers);
 
         tabs.setTabBarMinimizeBehavior(match layout.minimize_behavior {
             TabBarMinimizeBehavior::Automatic => UITabBarMinimizeBehavior::Automatic,
@@ -338,34 +438,17 @@ mod platform {
             });
         }
 
-        // Reactive chrome mutates each `UITabBarItem` in place — rebuilding
-        // the controllers re-parents pane views UIKit still owns.
-        for (index, tab) in mounted.iter().enumerate() {
-            if let Some(badge) = &tab.badge {
-                keep.bind(badge, {
-                    let item = tabs.tab_item(index);
-                    move |value| {
-                        let badge = (value > 0)
-                            .then(|| objc2_foundation::NSString::from_str(&value.to_string()));
-                        item.setBadgeValue(badge.as_deref());
-                    }
-                });
-            }
-            keep.bind(&tab.enabled, {
-                let item = tabs.tab_item(index);
-                move |enabled| {
-                    item.setEnabled(enabled);
-                }
-            });
-        }
-
         // Two-way selection.
         tabs.set_select_handler({
             let selection = layout.selection.clone();
             let mounted = mounted.clone();
             move |index| {
-                if let Some(tab) = mounted.get(index) {
-                    selection.set(tab.id);
+                // Copy the id under a short borrow — `selection.set` runs user
+                // watchers that may mutate the collection and re-enter the
+                // membership watch, which takes `mounted` mutably.
+                let id = mounted.borrow().get(index).map(|tab| tab.id);
+                if let Some(id) = id {
+                    selection.set(id);
                 }
             }
         });
@@ -373,11 +456,30 @@ mod platform {
             let tabs = tabs.clone();
             let mounted = mounted.clone();
             move |id| {
-                if let Some(index) = mounted.iter().position(|tab| tab.id == id) {
+                let index = mounted.borrow().iter().position(|tab| tab.id == id);
+                if let Some(index) = index {
                     tabs.select(index);
                 }
             }
         });
+
+        // Membership changes re-key the mounted set by tab id: a surviving
+        // tab keeps its controller — pane, navigation state, surfaces — the
+        // array is re-set in the new order.
+        keep.keep(layout.tabs.watch(.., {
+            let mounted = mounted.clone();
+            let selection = layout.selection.clone();
+            let tabs = tabs.clone();
+            move |ctx, _change| {
+                let snapshot = ctx.into_value();
+                let relocation =
+                    reconcile_tabs(&mut mounted.borrow_mut(), &snapshot, &renderer, &selection);
+                refresh(mtm, &env, &tabs, &mounted, &controllers);
+                if let Some(id) = relocation {
+                    selection.set(id);
+                }
+            }
+        }));
 
         // A `UITabBarController` lays its own content out against the screen
         // edges — its content region reaches the top chrome and the tab bar
@@ -419,9 +521,10 @@ mod platform {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{Fill, mount_tabs};
+    use super::{Fill, Mounted, reconcile_tabs};
     use alloc::rc::Rc;
     use alloc::vec::Vec;
+    use core::cell::RefCell;
 
     use crate::contract::{NativeLeaf, RenderContext};
     use cocoa_ui::appkit::{HostView, Segment, SegmentedControl, SourceList, WindowToolbar};
@@ -429,44 +532,67 @@ mod platform {
     use cocoa_ui::{Rect, view};
     use waterui::navigation::{TabsLayout, tab::NativeTabStyle};
     use waterui::reactive::Signal;
+    use waterui_core::id::Id;
+    use waterui_core::views::{ViewSnapshot as _, Views as _};
 
     use crate::contract::KeepAlive;
+
+    /// The segments one mounted set's labels describe, in bar order.
+    fn segments(mounted: &[Mounted]) -> Vec<Segment> {
+        mounted
+            .iter()
+            .map(|tab| Segment {
+                label: tab.label.clone(),
+                symbol: tab.symbol.clone(),
+                image: None,
+                enabled: tab.enabled.snapshot(),
+                badge: tab.badge.as_ref().map(|badge| badge.snapshot().to_string()),
+            })
+            .collect()
+    }
 
     /// macOS: `Sidebar` style gets a source-list column; everything else a
     /// segmented control strip above the selected pane.
     #[allow(clippy::too_many_lines)]
-    pub(super) fn tabs_leaf(mut layout: TabsLayout, ctx: &RenderContext) -> NativeLeaf {
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the `register_native` signature takes `TabsLayout` by value; the iOS twin consumes `bottom_accessory`, AppKit has no such slot"
+    )]
+    pub(super) fn tabs_leaf(layout: TabsLayout, ctx: &RenderContext) -> NativeLeaf {
         let mtm = ctx.mtm();
         let host = HostView::new(mtm, Rect::ZERO);
         let mut keep = KeepAlive::default();
-        let mounted = Rc::new(mount_tabs(core::mem::take(&mut layout.tabs), ctx));
+        let renderer = ctx.renderer();
+        let mounted: Rc<RefCell<Vec<Mounted>>> = Rc::new(RefCell::new(Vec::new()));
+        {
+            let snapshot = layout.tabs.snapshot();
+            let _ = reconcile_tabs(
+                &mut mounted.borrow_mut(),
+                &snapshot,
+                &renderer,
+                &layout.selection,
+            );
+        }
         keep.keep(mounted.clone());
-        for tab in mounted.iter() {
+        for tab in mounted.borrow().iter() {
             view::add_subview(&host, tab.pane.view());
         }
 
         let sidebar = matches!(layout.style, NativeTabStyle::Sidebar);
         let chrome = if sidebar {
             let list = SourceList::new(mtm);
-            list.set_segments(
-                &mounted
-                    .iter()
-                    .map(|tab| Segment {
-                        label: tab.label.clone(),
-                        symbol: tab.symbol.clone(),
-                        image: None,
-                        enabled: tab.enabled.snapshot(),
-                        badge: tab.badge.as_ref().map(|badge| badge.snapshot().to_string()),
-                    })
-                    .collect::<Vec<_>>(),
-            );
+            list.set_segments(&segments(&mounted.borrow()));
             view::add_subview(&host, list.view());
             list.set_select_handler({
                 let selection = layout.selection.clone();
                 let mounted = mounted.clone();
                 move |index| {
-                    if let Some(tab) = mounted.get(index) {
-                        selection.set(tab.id);
+                    // Short borrow — `selection.set` runs watchers that may
+                    // mutate the collection, re-entering the membership
+                    // watch's `mounted` borrow_mut.
+                    let id = mounted.borrow().get(index).map(|tab| tab.id);
+                    if let Some(id) = id {
+                        selection.set(id);
                     }
                 }
             });
@@ -474,25 +600,18 @@ mod platform {
         // (control path adds via add_subview below)
         } else {
             let control = SegmentedControl::new(mtm);
-            control.set_segments(
-                &mounted
-                    .iter()
-                    .map(|tab| Segment {
-                        label: tab.label.clone(),
-                        symbol: tab.symbol.clone(),
-                        image: None,
-                        enabled: tab.enabled.snapshot(),
-                        badge: tab.badge.as_ref().map(|badge| badge.snapshot().to_string()),
-                    })
-                    .collect::<Vec<_>>(),
-            );
+            control.set_segments(&segments(&mounted.borrow()));
             view::add_subview(&host, &control);
             control.set_select_handler({
                 let selection = layout.selection.clone();
                 let mounted = mounted.clone();
                 move |index| {
-                    if let Some(tab) = mounted.get(index) {
-                        selection.set(tab.id);
+                    // Short borrow — `selection.set` runs watchers that may
+                    // mutate the collection, re-entering the membership
+                    // watch's `mounted` borrow_mut.
+                    let id = mounted.borrow().get(index).map(|tab| tab.id);
+                    if let Some(id) = id {
+                        selection.set(id);
                     }
                 }
             });
@@ -505,6 +624,7 @@ mod platform {
             let mounted = mounted.clone();
             let chrome = chrome.clone();
             move |index: Option<usize>| {
+                let mounted = mounted.borrow();
                 for (pane_index, tab) in mounted.iter().enumerate() {
                     view::set_hidden(tab.pane.view(), index != Some(pane_index));
                 }
@@ -520,15 +640,67 @@ mod platform {
             }
         };
         let selected = layout.selection.snapshot();
-        show(mounted.iter().position(|tab| tab.id == selected));
+        let index = mounted.borrow().iter().position(|tab| tab.id == selected);
+        show(index);
 
         keep.bind(&layout.selection, {
             let show = show.clone();
             let mounted = mounted.clone();
             move |id| {
-                show(mounted.iter().position(|tab| tab.id == id));
+                let index = mounted.borrow().iter().position(|tab| tab.id == id);
+                show(index);
             }
         });
+
+        // Membership changes re-key the mounted set by tab id: a removed
+        // tab's pane detaches before its Mounted drops, an inserted tab's
+        // pane mounts and joins the host, the segments rebuild in the new
+        // order — a surviving tab's Mounted — pane, navigation state,
+        // surfaces — is never touched.
+        keep.keep(layout.tabs.watch(.., {
+            let mounted = mounted.clone();
+            let host = host.clone();
+            let chrome = chrome.clone();
+            let selection = layout.selection.clone();
+            let show = show.clone();
+            move |ctx, _change| {
+                let snapshot = ctx.into_value();
+                // Detach the panes of the ids the change removes before the
+                // reconcile drops their Mounted — the leaf releases, the
+                // view must leave the host.
+                for tab in mounted.borrow().iter() {
+                    let removed =
+                        !(0..snapshot.len()).any(|index| snapshot.get_id(index) == Some(tab.id));
+                    if removed {
+                        tab.pane.view().removeFromSuperview();
+                    }
+                }
+                let before: alloc::collections::BTreeSet<Id> =
+                    mounted.borrow().iter().map(|tab| tab.id).collect();
+                let relocation =
+                    reconcile_tabs(&mut mounted.borrow_mut(), &snapshot, &renderer, &selection);
+                {
+                    let mounted = mounted.borrow();
+                    for tab in mounted.iter() {
+                        if before.contains(&tab.id) {
+                            continue;
+                        }
+                        view::add_subview(&host, tab.pane.view());
+                        view::set_hidden(tab.pane.view(), true);
+                    }
+                    match &chrome {
+                        Chrome::List(list) => list.set_segments(&segments(&mounted)),
+                        Chrome::Control(control) => control.set_segments(&segments(&mounted)),
+                    }
+                }
+                let id = selection.snapshot();
+                let index = mounted.borrow().iter().position(|tab| tab.id == id);
+                show(index);
+                if let Some(id) = relocation {
+                    selection.set(id);
+                }
+            }
+        }));
 
         // A titled window carries the segmented strip in its unified
         // titlebar instead of in-content; untitled windows keep the strip.
@@ -561,7 +733,7 @@ mod platform {
                         chrome.view(),
                         Rect::new(bounds.origin.x, bounds.origin.y, width, bounds.size.height),
                     );
-                    for tab in mounted.iter() {
+                    for tab in mounted.borrow().iter() {
                         view::set_frame(
                             tab.pane.view(),
                             Rect::new(
@@ -573,7 +745,7 @@ mod platform {
                         );
                     }
                 } else if in_toolbar.get() {
-                    for tab in mounted.iter() {
+                    for tab in mounted.borrow().iter() {
                         view::set_frame(tab.pane.view(), bounds);
                     }
                 } else {
@@ -587,7 +759,7 @@ mod platform {
                             height,
                         ),
                     );
-                    for tab in mounted.iter() {
+                    for tab in mounted.borrow().iter() {
                         view::set_frame(
                             tab.pane.view(),
                             Rect::new(
