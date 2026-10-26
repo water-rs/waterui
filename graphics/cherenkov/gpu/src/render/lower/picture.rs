@@ -79,12 +79,15 @@ impl Lowering<'_> {
         let domain = if let Some(snapshot) = snapshot {
             snapshot.domain
         } else {
-            // Groups may depend on the destination; keep their existing
-            // compositing path. Shader paints can change independently.
-            if ops
-                .iter()
-                .any(|op| matches!(op, Op::BeginIsolate { .. } | Op::BeginShadow { .. }))
-            {
+            // Composite pictures keep their children independently reusable when
+            // their placement changes or the enclosing recording is replaced.
+            // Groups may depend on the destination and keep their own path.
+            if ops.iter().any(|op| {
+                matches!(
+                    op,
+                    Op::BeginPicture { .. } | Op::BeginIsolate { .. } | Op::BeginShadow { .. }
+                )
+            }) {
                 return Ok(None);
             }
             let Some(domain) = crate::render::planes::static_layer::domain_in(

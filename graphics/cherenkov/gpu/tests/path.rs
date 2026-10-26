@@ -1080,6 +1080,18 @@ fn retained_picture_reuses_pixels_across_fractional_translation() -> Result<(), 
         assert!(px(&pixels, 20, 20)[0] > 0.99);
         assert!(px(&pixels, 60, 60)[0] < 0.01);
     }
+    // A changing parent recording must not hide the stable child's cache.
+    for x in [1.25, -3.5] {
+        let wrapper = Picture::record(|c| c.picture(&picture, Affine::translate((x, 0.0))));
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|c| c.picture(&wrapper, Affine::IDENTITY)));
+        });
+        wait!(engine.render(cherenkov::FrameTime::now()))?;
+        assert_eq!(engine.stats().paths_rasterized, 0, "a new parent must reuse its stable child");
+    }
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| c.picture(&picture, placement.clone())));
+    });
     for scale in [0.25, 2.0] {
         placement.set(Affine::scale(scale));
         wait!(engine.render(cherenkov::FrameTime::now()))?;
