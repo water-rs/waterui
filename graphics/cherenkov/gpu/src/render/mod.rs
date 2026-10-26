@@ -6628,7 +6628,9 @@ impl GpuRenderer {
                 }
             }
             for surf in pending.iter_mut() {
-                Self::discard_surface(surf);
+                for content in surf.layers.values_mut() {
+                    content.discard_emissions();
+                }
             }
             results = self.lower_batch(pending, frames, &inputs, FxHashMap::default());
         }

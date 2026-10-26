@@ -754,6 +754,17 @@ impl ContentData {
         self.storage = EmissionStorage::default();
     }
 
+    /// Rebuild emissions after picture admission changes their raster target.
+    /// Compiled operations and prepared geometry do not depend on that target.
+    pub fn discard_emissions(&mut self) {
+        self.retained.trim();
+        self.storage = EmissionStorage {
+            gpu_paths: std::mem::take(&mut self.storage.gpu_paths),
+            geometry: std::mem::take(&mut self.storage.geometry),
+            ..EmissionStorage::default()
+        };
+    }
+
     /// Whether the content samples `resource`.
     pub fn references(&self, resource: cherenkov::ResourceId) -> bool {
         self.retained.references(resource)
