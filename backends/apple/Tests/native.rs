@@ -186,6 +186,8 @@ fn trials() -> Vec<Trial> {
         tests.extend(gesture_ax::trials());
         tests.extend(a11y_extent::trials());
         tests.extend(gesture_events::trials());
+        #[cfg(all(feature = "scale", feature = "rotation"))]
+        tests.extend(transform_modifiers::trials());
         #[cfg(feature = "gpu_surface")]
         {
             tests.extend(gpu_surface::trials());
@@ -10202,5 +10204,169 @@ mod text_selection {
         assert_eq!(field.string(), "ZZ");
 
         window.close();
+    }
+}
+/// `scale`/`rotation` on `AppKit`: the modifier's transform lives on the
+/// wrapper layer's `sublayerTransform`, the one layer transform
+/// `AppKit`'s display-time geometry sync does not rewrite (#3504). After
+/// `displayIfNeeded` the anchored matrix must still be there, and a
+/// wrapper resize must recompute it for the new bounds size.
+#[cfg(all(target_os = "macos", feature = "scale", feature = "rotation"))]
+mod transform_modifiers {
+    use cocoa_ui::objc2::msg_send;
+    use cocoa_ui::objc2::rc::autoreleasepool;
+    use cocoa_ui::objc2_quartz_core::CATransform3D;
+    use cocoa_ui::{PlatformView, Point, Rect, Retained, layer, view};
+    use libtest_mimic::Trial;
+    use waterui::ViewExt as _;
+    use waterui::component::label::label;
+    use waterui::style::Anchor;
+    use waterui_apple::contract::NativeLeaf;
+    use waterui_apple::native_test_support::pump_main_until;
+    use waterui_backend_core::View;
+
+    use super::AttachedWindow;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "transform_modifiers::scale_survives_display_and_resize",
+                || {
+                    scale_survives_display_and_resize();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "transform_modifiers::rotation_survives_display_and_resize",
+                || {
+                    rotation_survives_display_and_resize();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// `T(−A) · M · T(A)` expanded element-wise — the case's own
+    /// arithmetic, not the production `concat` path it verifies. For an
+    /// affine `m` the 2×2 part passes through while the translation row
+    /// becomes `A − A·M + t` — what the anchor-maps-to-itself contract
+    /// resolves to.
+    fn expected(m: CATransform3D, anchor: Point, size: cocoa_ui::Size) -> CATransform3D {
+        let ax = anchor.x * size.width;
+        let ay = anchor.y * size.height;
+        CATransform3D {
+            m41: ay.mul_add(-m.m21, ax.mul_add(1.0 - m.m11, m.m41)),
+            m42: ax.mul_add(-m.m12, ay.mul_add(1.0 - m.m22, m.m42)),
+            m43: ay.mul_add(-m.m23, ax.mul_add(-m.m13, m.m43)),
+            ..m
+        }
+    }
+
+    /// All sixteen elements of two `CATransform3D`s within 1e-6 — the
+    /// anchored math's exactness is the point, the tolerance covers only
+    /// float representation.
+    fn assert_transform_close(actual: CATransform3D, expected: CATransform3D, what: &str) {
+        let flatten = |t: &CATransform3D| {
+            [
+                t.m11, t.m12, t.m13, t.m14, t.m21, t.m22, t.m23, t.m24, t.m31, t.m32, t.m33, t.m34,
+                t.m41, t.m42, t.m43, t.m44,
+            ]
+        };
+        for (i, (a, e)) in flatten(&actual).iter().zip(flatten(&expected)).enumerate() {
+            assert!(
+                (a - e).abs() < 1e-6,
+                "{what}: m{}{} differs — {a} vs {e}",
+                i / 4 + 1,
+                i % 4 + 1
+            );
+        }
+    }
+
+    /// Renders `view` and orders its window in — the leaf and window must
+    /// outlive the case's assertions.
+    fn mount(view: impl View) -> (NativeLeaf, Retained<PlatformView>, AttachedWindow) {
+        let leaf = autoreleasepool(|_| super::resolve::render(view));
+        let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
+        let window = autoreleasepool(|_| super::mount_and_order_front(&wrapper));
+        (leaf, wrapper, window)
+    }
+
+    /// `NSWindow.layoutIfNeeded` + `displayIfNeeded`, then a bounded
+    /// run-loop turn — the sequence that used to reset the content
+    /// layer's transform.
+    fn layout_display_pump(wrapper: &PlatformView) {
+        autoreleasepool(|_| {
+            let window = view::window(wrapper).expect("the wrapper is in a window");
+            // SAFETY: documented `NSWindow` layout/display entry points on
+            // the main thread the harness provides.
+            unsafe {
+                let () = msg_send![&window, layoutIfNeeded];
+                let () = msg_send![&window, displayIfNeeded];
+            }
+        });
+        pump_main_until(0.1, || false);
+    }
+
+    /// The wrapper layer's `sublayerTransform` as it stands now.
+    fn sublayer_transform(wrapper: &PlatformView) -> CATransform3D {
+        autoreleasepool(|_| {
+            layer::layer_of(wrapper)
+                .expect("a transform modifier's wrapper is layer-backed")
+                .sublayerTransform()
+        })
+    }
+
+    /// The display–resize–display sequence both cases run: the transform
+    /// survives the sync `displayIfNeeded` performs and follows the new
+    /// bounds size after `resize`.
+    fn assert_survives_display_and_resize(
+        wrapper: &Retained<PlatformView>,
+        m: CATransform3D,
+        anchor: Point,
+        resize: Rect,
+    ) {
+        layout_display_pump(wrapper);
+        let size = autoreleasepool(|_| view::bounds(wrapper).size);
+        assert_transform_close(
+            sublayer_transform(wrapper),
+            expected(m, anchor, size),
+            "after display",
+        );
+
+        autoreleasepool(|_| view::set_frame(wrapper, resize));
+        layout_display_pump(wrapper);
+        let size = autoreleasepool(|_| view::bounds(wrapper).size);
+        assert_transform_close(
+            sublayer_transform(wrapper),
+            expected(m, anchor, size),
+            "after resize",
+        );
+    }
+
+    /// `.scale(0.5, 0.5)` at the default centre anchor (#3504's own
+    /// reproduction): `m11`/`m22` stay `0.5` after display, and the
+    /// anchor's translation term tracks the wrapper's new size.
+    fn scale_survives_display_and_resize() {
+        let (_leaf, wrapper, _window) = mount(label("coming").scale(0.5, 0.5));
+        assert_survives_display_and_resize(
+            &wrapper,
+            CATransform3D::new_scale(0.5, 0.5, 1.0),
+            Point::new(0.5, 0.5),
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
+    }
+
+    /// `.rotation_from(30, …)` at a non-centre anchor: the rotation matrix
+    /// and its anchor translation both survive display, and a quarter-x
+    /// three-quarter-y anchor recomputes for the new size.
+    fn rotation_survives_display_and_resize() {
+        let (_leaf, wrapper, _window) =
+            mount(label("coming").rotation_from(30.0, Anchor::new(0.25, 0.75)));
+        assert_survives_display_and_resize(
+            &wrapper,
+            CATransform3D::new_rotation(30f64.to_radians(), 0.0, 0.0, 1.0),
+            Point::new(0.25, 0.75),
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
     }
 }

@@ -3,10 +3,13 @@
 //! Mirrors `WuiScale`: a transparent `HostView` container that scales its
 //! content around `anchor` without touching layout. `UIKit` sets the
 //! layer's anchor point and writes a `CGAffineTransform` scale on the
-//! content; `AppKit` lays the content out for the anchor and writes a
-//! `CATransform3D` scale on its layer — explicitly animated when the
-//! watcher metadata carries an `Animation`. Every change calls
-//! `invalidateCapturedRendering` so a cached capture re-renders.
+//! content; `AppKit` writes a `CATransform3D` scale — anchored through
+//! [`layer_transform::anchored`] — on the wrapper layer's
+//! `sublayerTransform`, which `AppKit`'s display-time geometry sync does
+//! not reset the way it does a content layer's `transform` (#3504). The
+//! write is explicitly animated when the watcher metadata carries an
+//! `Animation`. Every change calls `invalidateCapturedRendering` so a
+//! cached capture re-renders.
 
 use alloc::rc::Rc;
 use core::cell::RefCell;
@@ -36,10 +39,6 @@ struct ScaleState {
     x: f32,
     /// The current y factor.
     y: f32,
-    /// The content size the anchor layout was last applied at — `AppKit`
-    /// only, [`layer_transform::transformed_content_layer`]'s staleness key.
-    #[cfg(target_os = "macos")]
-    last_bounds_size: cocoa_ui::Size,
 }
 
 impl core::fmt::Debug for ScaleState {
@@ -50,8 +49,7 @@ impl core::fmt::Debug for ScaleState {
 
 /// `applyTransform` — the scale lands on the content, then any captured
 /// rendering is invalidated.
-#[cfg_attr(target_os = "ios", allow(clippy::needless_pass_by_ref_mut))]
-fn apply_transform(state: &mut ScaleState, host: &HostView, anchor: Point) {
+fn apply_transform(state: &ScaleState, host: &HostView, anchor: Point) {
     let x = f64::from(state.x);
     let y = f64::from(state.y);
     #[cfg(target_os = "ios")]
@@ -64,15 +62,13 @@ fn apply_transform(state: &mut ScaleState, host: &HostView, anchor: Point) {
     }
     #[cfg(target_os = "macos")]
     {
-        let child = view::retain_base(state.child.view());
-        let layer = layer_transform::transformed_content_layer(
-            &child,
-            view::bounds(host),
+        let layer = layer_transform::wrapper_transform_layer(host);
+        let transform = layer_transform::anchored(
+            cocoa_ui::objc2_quartz_core::CATransform3D::new_scale(x, y, 1.0),
             anchor,
-            &mut state.last_bounds_size,
+            view::bounds(host).size,
         );
-        let transform = cocoa_ui::objc2_quartz_core::CATransform3D::new_scale(x, y, 1.0);
-        cocoa_ui::core_animation::set_layer_transform(&layer, transform);
+        cocoa_ui::core_animation::set_sublayer_transform(&layer, transform);
     }
     view::invalidate_captured_rendering(host);
 }
@@ -128,8 +124,6 @@ pub fn install(dispatcher: &mut Dispatcher) {
             child: mounted,
             x: 1.0,
             y: 1.0,
-            #[cfg(target_os = "macos")]
-            last_bounds_size: cocoa_ui::Size::new(0.0, 0.0),
         }));
 
         // The content always fills the wrapper before the transform moves
@@ -137,10 +131,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         host.set_layout_handler({
             let state = Rc::clone(&state);
             move |host_view| {
-                #[cfg(target_os = "ios")]
                 let state = state.borrow();
-                #[cfg(target_os = "macos")]
-                let mut state = state.borrow_mut();
                 let bounds = view::bounds(host_view);
                 #[cfg(target_os = "ios")]
                 {
@@ -158,15 +149,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 }
                 #[cfg(target_os = "macos")]
                 {
-                    let child = view::retain_base(state.child.view());
-                    if cocoa_ui::layer::layout_transformed_content(
-                        &child,
-                        bounds,
-                        anchor,
-                        &mut state.last_bounds_size,
-                    ) {
-                        apply_transform(&mut state, host_view, anchor);
-                    }
+                    // The content fills the wrapper; the transform lives
+                    // on the wrapper layer's `sublayerTransform`, which
+                    // the anchor math ties to the bounds size — rewrite
+                    // it on every pass.
+                    view::set_frame(state.child.view(), bounds);
+                    apply_transform(&state, host_view, anchor);
                 }
             }
         });
@@ -195,7 +183,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             let mut borrowed = state.borrow_mut();
             borrowed.x = x.snapshot();
             borrowed.y = y.snapshot();
-            apply_transform(&mut borrowed, &host, anchor);
+            apply_transform(&borrowed, &host, anchor);
         }
 
         leaf.watch(&x, {
@@ -208,26 +196,24 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     let state = Rc::clone(&state);
                     let host = host.clone();
                     move || {
-                        let mut borrowed = state.borrow_mut();
-                        apply_transform(&mut borrowed, &host, anchor);
+                        let borrowed = state.borrow();
+                        apply_transform(&borrowed, &host, anchor);
                     }
                 });
                 #[cfg(target_os = "macos")]
                 {
-                    let mut borrowed = state.borrow_mut();
-                    let child = view::retain_base(borrowed.child.view());
-                    let layer = layer_transform::transformed_content_layer(
-                        &child,
-                        view::bounds(&host),
+                    let borrowed = state.borrow();
+                    let layer = layer_transform::wrapper_transform_layer(&host);
+                    let transform = layer_transform::anchored(
+                        cocoa_ui::objc2_quartz_core::CATransform3D::new_scale(
+                            f64::from(borrowed.x),
+                            f64::from(borrowed.y),
+                            1.0,
+                        ),
                         anchor,
-                        &mut borrowed.last_bounds_size,
+                        view::bounds(&host).size,
                     );
-                    let transform = cocoa_ui::objc2_quartz_core::CATransform3D::new_scale(
-                        f64::from(borrowed.x),
-                        f64::from(borrowed.y),
-                        1.0,
-                    );
-                    layer_transform::animate_layer_transform(
+                    layer_transform::animate_sublayer_transform(
                         &layer,
                         transform,
                         "wuiScale",
@@ -246,26 +232,24 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     let state = Rc::clone(&state);
                     let host = host.clone();
                     move || {
-                        let mut borrowed = state.borrow_mut();
-                        apply_transform(&mut borrowed, &host, anchor);
+                        let borrowed = state.borrow();
+                        apply_transform(&borrowed, &host, anchor);
                     }
                 });
                 #[cfg(target_os = "macos")]
                 {
-                    let mut borrowed = state.borrow_mut();
-                    let child = view::retain_base(borrowed.child.view());
-                    let layer = layer_transform::transformed_content_layer(
-                        &child,
-                        view::bounds(&host),
+                    let borrowed = state.borrow();
+                    let layer = layer_transform::wrapper_transform_layer(&host);
+                    let transform = layer_transform::anchored(
+                        cocoa_ui::objc2_quartz_core::CATransform3D::new_scale(
+                            f64::from(borrowed.x),
+                            f64::from(borrowed.y),
+                            1.0,
+                        ),
                         anchor,
-                        &mut borrowed.last_bounds_size,
+                        view::bounds(&host).size,
                     );
-                    let transform = cocoa_ui::objc2_quartz_core::CATransform3D::new_scale(
-                        f64::from(borrowed.x),
-                        f64::from(borrowed.y),
-                        1.0,
-                    );
-                    layer_transform::animate_layer_transform(
+                    layer_transform::animate_sublayer_transform(
                         &layer,
                         transform,
                         "wuiScale",
