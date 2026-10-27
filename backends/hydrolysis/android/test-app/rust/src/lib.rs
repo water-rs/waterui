@@ -36,7 +36,11 @@ fn app_view(
     scroll(
         vstack((
             text("Hydrolysis on Android").title(),
-            "Cherenkov paints this UI through the Kotlin host's SurfaceView band.",
+            if cfg!(feature = "hwui") {
+                "HWUI draws the retained UI and embedded Android views."
+            } else {
+                "Cherenkov paints this UI through the Kotlin host's SurfaceView band."
+            },
             // Keeps the pump visibly pumping: the indeterminate indicator
             // animates on the shared animation clock, so logcat
             // shows `frame presented` lines while the window is visible and

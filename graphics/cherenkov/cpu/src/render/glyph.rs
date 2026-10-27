@@ -13,7 +13,7 @@ use skrifa::raw::TableProvider;
 use skrifa::raw::types::F2Dot14;
 
 use crate::render::lower::GlyphReq;
-use crate::render::raster::{Accum, Edge};
+use crate::render::raster::{Edge, coverage_mask};
 use cherenkov::{FontData, RenderError};
 
 /// A glyph cache key.
@@ -381,30 +381,20 @@ pub fn rasterize_mask(font: &FontData, req: &GlyphReq) -> Result<GlyphMask, Rend
     if edges.is_empty() || bbox.width() <= 0.0 || bbox.height() <= 0.0 {
         return Ok(empty());
     }
-    // Overlapping contours resolve to the union's boundary edges, like
-    // the path lowering: `None` keeps the glyph bit-identical.
-    let (edges, _) = crate::render::lower::resolve_edges(edges, cherenkov::FillRule::NonZero);
     let left = bbox.x0.floor() as i32 - 1;
     let top = bbox.y0.floor() as i32 - 1;
     let right = bbox.x1.ceil() as i32 + 1;
     let bottom = bbox.y1.ceil() as i32 + 1;
     let (w, h) = ((right - left) as usize, (bottom - top) as usize);
     // Rasterize in mask space.
-    let mut acc = Accum::new(w, h);
     let (ox, oy) = (left as f32, top as f32);
-    for e in &edges {
-        acc.draw_line(e.x0 - ox, e.y0 - oy, e.x1 - ox, e.y1 - oy);
+    for e in &mut edges {
+        e.x0 -= ox;
+        e.x1 -= ox;
+        e.y0 -= oy;
+        e.y1 -= oy;
     }
-    let mut cov = vec![0.0; w * h];
-    for y in 0..h {
-        acc.coverage_into(
-            y,
-            cherenkov::FillRule::NonZero,
-            0,
-            w,
-            &mut cov[y * w..y * w + w],
-        );
-    }
+    let cov = coverage_mask(&edges, cherenkov::FillRule::NonZero, w, h);
     Ok(GlyphMask {
         left,
         top,

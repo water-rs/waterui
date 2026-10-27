@@ -413,15 +413,14 @@ fn a_fling_whose_scroll_view_is_replaced_mid_fling_ends_with_it() {
 /// retired owner.
 #[test]
 fn a_fling_whose_scroll_view_is_hidden_by_a_tab_switch_mid_fling_ends_with_it() {
-    let selection = Binding::container(Id::try_from(1).expect("non-zero tab id"));
-    let tabs = vec![
-        Tab::new(Id::try_from(1).expect("non-zero tab id"), "Rows", || {
-            NavigationView::new("Rows", tall_stack())
-        }),
-        Tab::new(Id::try_from(2).expect("non-zero tab id"), "Other", || {
-            NavigationView::new("Other", text("Other"))
-        }),
-    ];
+    let tabs = waterui_core::views::SharedAnyViews::new(vec![
+        Tab::new("Rows", || NavigationView::new("Rows", tall_stack())),
+        Tab::new("Other", || NavigationView::new("Other", text("Other"))),
+    ]);
+    let selection = Binding::container(
+        waterui_core::views::ViewSnapshot::get_id(&waterui_core::views::Views::snapshot(&tabs), 0)
+            .expect("a non-empty tab set reports an id"),
+    );
     let mut runtime = runtime(TabsLayout::new(selection.clone(), tabs));
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
@@ -716,10 +715,10 @@ fn inner_stretch(
             kurbo::Affine,
         )>,
     );
-    impl crate::renderer::mount::layers::LayerVisitor for Probe {
+    impl<E: crate::text::TextEngine> crate::renderer::mount::layers::LayerVisitor<E> for Probe {
         fn node(
             &mut self,
-            layers: &crate::renderer::mount::layers::NodeLayers,
+            layers: &crate::renderer::mount::layers::NodeLayers<E>,
             world: kurbo::Affine,
             _alphas: &[f32],
         ) {

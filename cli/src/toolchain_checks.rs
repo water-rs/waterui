@@ -33,7 +33,10 @@ enum AndroidCheckScope {
     Run,
 }
 
-fn toolchain_check_message<I: Installation>(component: &str, error: &ToolchainError<I>) -> String {
+pub(crate) fn toolchain_check_message<I: Installation>(
+    component: &str,
+    error: &ToolchainError<I>,
+) -> String {
     match error {
         ToolchainError::Fixable(_) => format!(
             "{component} toolchain check failed: missing dependencies can be fixed automatically with `water doctor --fix`."

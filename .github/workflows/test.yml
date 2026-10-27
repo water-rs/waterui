@@ -20,9 +20,17 @@ on:
       affected:
         type: string
         default: "workspace"
-      package-args:
+      # affected.py's `linux-package-args`: the scoped packages as `-p`
+      # flags, without the crates the Linux lint never compiles.
+      linux-package-args:
         type: string
         default: ""
+      # affected.py's `workspace-wide`: the scope is `workspace` or reaches
+      # at least 70% of the Linux-linted members (#3229, #3246), so the lint job
+      # gets the integration budget.
+      workspace-wide:
+        type: boolean
+        default: false
       comment-only:
         type: boolean
         default: false
@@ -76,9 +84,7 @@ env:
 jobs:
   # Lint before testing: it is the cheapest failure to produce, and the one a
   # contributor is most likely to hit, so it should not wait behind the whole
-  # test run — nor should the test run wait behind it. Linux only; the macOS
-  # CEF lint lives in `cef`, because that target refuses to compile anywhere
-  # else.
+  # test run — nor should the test run wait behind it. Linux only.
   lint:
     name: lint
     runs-on: ubuntu-latest
@@ -88,11 +94,13 @@ jobs:
       # generations of only this job's two cache families
       # (cargo-sources-Linux-*, lint-target-Linux-X64-*) on its own ref.
       actions: write
-    # Pull requests keep the 10-minute gate. An integration push that misses
+    # Scoped pull requests keep the 10-minute gate; a workspace-wide one
+    # compiles most of the workspace and gets the integration budget
+    # (#3229). An integration push that misses
     # the exact `lint-target` key writes the archive every later run restores,
     # so it sweeps the whole workspace, cold after a stable toolchain roll;
     # it gets the room to finish instead of timing out unsaved.
-    timeout-minutes: ${{ inputs.full && 90 || ((github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && 30 || 10) }}
+    timeout-minutes: ${{ inputs.full && 90 || ((inputs.workspace-wide || github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && 30 || 10) }}
     steps:
       - uses: actions/checkout@v4
       # The fast gate owns the target-cache budget, including workspace check
@@ -139,28 +147,21 @@ jobs:
       - name: Lint target cache writer
         id: writer
         run: echo "sweep=${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.lint-target.outputs.cache-hit != 'true' }}" >> "${GITHUB_OUTPUT}"
-      # The affected set as this Linux leg compiles it. `-p` and `--exclude`
-      # are mutually exclusive, so the Apple-only crates are dropped from the
-      # package arguments here — the macOS legs lint them. An Apple-only
-      # scope therefore compiles nothing on Linux. `compiles` is exactly the
+      # The affected set as this Linux leg compiles it. affected.py drops the
+      # Apple-only crates from `linux-package-args` (the macOS legs lint
+      # them), since `-p` and `--exclude` are mutually exclusive. An
+      # Apple-only scope therefore compiles nothing on Linux. `compiles` is exactly the
       # condition under which some cargo step below runs: each one is gated
       # on the full or workspace sweep, the writer sweep, or a package this
       # filtered set names.
       - name: Linux scope
         id: linux-scope
         env:
-          PACKAGE_ARGS: ${{ inputs.package-args }}
+          LINUX_PACKAGE_ARGS: ${{ inputs.linux-package-args }}
           SWEEPS: ${{ inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' }}
         run: |
-          # `package-args` is affected.py's `-p <name>` pairs.
-          read -ra words <<< "${PACKAGE_ARGS}"
-          args=()
-          for ((i = 0; i < ${#words[@]}; i += 2)); do
-            case "${words[i + 1]}" in
-              waterui-apple | cocoa-ui) ;;
-              *) args+=("${words[i]}" "${words[i + 1]}") ;;
-            esac
-          done
+          # `linux-package-args` is affected.py's `-p <name>` pairs.
+          read -ra args <<< "${LINUX_PACKAGE_ARGS}"
           compiles=false
           if [ "${SWEEPS}" = true ] || [ "${#args[@]}" -gt 0 ]; then
             compiles=true
@@ -171,6 +172,8 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
+        with:
+          runtime-fonts: "false"
       # cherenkov-oracle, cherenkov-gpu, and cherenkov-cpu compile
       # `include_bytes!` of fonts only `scenes/tools/generate.py` writes;
       # `--all-targets` compiles them, so the fonts must exist first.
@@ -189,21 +192,20 @@ jobs:
       # must not wait for the nightly to be noticed.
       #
       # The fast gate sweeps only when the affected scope is `workspace` —
-      # a change under no package's directory. A scoped diff gets check +
-      # clippy on the determinator's set (changed crates plus every reverse
-      # dependency that could rebuild differently); a comment-only diff
+      # a change under no package's directory. A scoped diff gets clippy on
+      # the determinator's set (changed crates plus every reverse dependency
+      # that could rebuild differently); a comment-only diff
       # narrows to rustdoc + clippy on the owning crates alone.
       - name: Clippy (workspace)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true'
         # waterui-apple / cocoa-ui compile only on Apple hosts; the macOS legs carry them.
         run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
-      - name: Check and clippy (affected packages)
+      - name: Clippy (affected packages)
         if: inputs.full == false && inputs['comment-only'] == false && inputs.affected != 'workspace' && steps.writer.outputs.sweep != 'true' && steps.linux-scope.outputs.args != ''
         env:
           LINUX_ARGS: ${{ steps.linux-scope.outputs.args }}
         run: |
           read -ra args <<< "${LINUX_ARGS}"
-          cargo check --locked --profile ci-check "${args[@]}" --all-targets --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
           cargo clippy --locked --profile ci-check "${args[@]}" --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       - name: Clippy and rustdoc (comment-only owners)
         if: inputs.full == false && inputs['comment-only'] == true && steps.linux-scope.outputs.args != ''
@@ -281,7 +283,6 @@ jobs:
             --exclude waterui-apple \
             --exclude cocoa-ui \
             --exclude waterui-core \
-            --exclude waterui-browser-cef \
             --exclude filtrate \
             --exclude cherenkov-bench \
             -- -D warnings >> "${CARGO_MESSAGES}"
@@ -291,16 +292,9 @@ jobs:
       - name: Clippy (waterui-core, every stable feature)
         if: inputs.full
         run: cargo clippy --locked --profile ci-check -p waterui-core --all-targets --features std,serde --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
-      # `compile-only` swaps in CEF's `dox` stubs and stops the build script
-      # downloading the distribution that `cef-runtime` — and the `real_engine`
-      # test target — need, so the two can never be enabled together. This is
-      # the runtime shape, which nothing else lints: the macOS `real-engine`
-      # pass has no `chromium`, and its `cef-header` pass is `compile-only`.
-      # `real-engine` stays off here because that test target is macOS-only;
-      # `--all-targets` skips it for want of its required feature.
-      - name: Clippy (waterui-browser-cef, CEF runtime)
-        if: inputs.full
-        run: cargo clippy --locked --profile ci-check -p waterui-browser-cef --all-targets --features chromium,webview --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      # The browser engine crates live in water-rs/browsers; their own CI
+      # owns every engine test and lint, including the compile-only, chromium
+      # and real-engine lanes these steps used to run (#868).
       # The feature combination Hydrolysis's own CI swept (#1428): the
       # all-features pass above covers the superset, but a feature interaction
       # that only this set compiles — webview-system stays off because its
@@ -450,6 +444,8 @@ jobs:
       # native headers.
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
+        with:
+          runtime-fonts: "false"
       # cherenkov-gpu's browser test and cherenkov-cpu's `--all-targets`
       # compile `include_bytes!` of the generated fonts. This job only
       # lints; nothing here reads the corpus or the perf scenes.
@@ -517,7 +513,7 @@ jobs:
       fail-fast: false
       matrix:
         # Windows is kept in its own workflow because it needs platform-
-        # specific exclusions and compile-only CEF coverage; `nightly.yml`
+        # specific exclusions; `nightly.yml`
         # calls it beside this one. This job runs only when `full` is set, so
         # both platforms are always in the matrix.
         os: ["ubuntu-latest", "macos-latest"]
@@ -676,7 +672,6 @@ jobs:
             --exclude waterui-apple \
             --exclude cocoa-ui \
             --exclude waterui-core \
-            --exclude waterui-browser-cef \
             --exclude skill_snippets \
             --exclude filtrate \
             --exclude cherenkov-bench \
@@ -688,9 +683,6 @@ jobs:
       # nextest cannot enumerate doc tests, so this is a `cargo test` pass.
       - name: Test (hydrolysis doc tests)
         run: cargo test --locked --doc -p hydrolysis --features accessibility,inspector-signals,testing,web,winit
-      # The CEF runtime shape; `compile-only` and `real-engine` exclude it.
-      - name: Test (waterui-browser-cef, CEF runtime)
-        run: cargo nextest run --locked -p waterui-browser-cef --features chromium,webview --profile ci
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -739,9 +731,8 @@ jobs:
         with:
           mode: full
       # Of the excluded crates, `waterui-core`'s stable feature shape runs
-      # below; the CEF runtime shape is
-      # host-independent and the Linux job covers it, and the compile-only
-      # `cef-header` shape is the `cef` job. The `trybuild_*` macro contract
+      # below, and the browser engine crates' CEF lanes live in
+      # water-rs/browsers' own CI (#868). The `trybuild_*` macro contract
       # tests ran already in `test` on this OS; see there. `filtrate` is
       # excluded for `webgl`'s off-wasm `compile_error!` — the wasm job
       # lints it where it is legal; `cherenkov-bench/skia-metal` is legal
@@ -753,7 +744,6 @@ jobs:
             --exclude waterui-apple \
             --exclude cocoa-ui \
             --exclude waterui-core \
-            --exclude waterui-browser-cef \
             --exclude skill_snippets \
             --exclude filtrate \
             -E 'not binary(/^trybuild_/)'
@@ -768,29 +758,28 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # The macOS-only CEF legs. The web view bridge has broken three times in
-  # ways no Rust-side test could see, so these drive a real Chromium. CEF is a
-  # prebuilt distribution `cef-dll-sys` downloads while building the crate.
-  # macOS only, because CEF requires its browser process to live in an
-  # application bundle; the test stages one and the target does not compile on
-  # the other platforms.
+  # The nightly's macOS host lint leg: hydrolysis's `cfg(target_os =
+  # "macos")` code, waterui-cli's Apple-side plumbing and every other crate
+  # with Apple-gated code compile nowhere else — the Linux lint gates the
+  # code away. The gate's `macos` matrix job below calls the same
+  # `macos-lint` composite for the affected scope, so the two legs can
+  # never drift on the commands.
   #
   # This was the tail of `macos-suites`, sharing the workspace build the
   # all-features pass had already paid for. Splitting it out pays a second
-  # build of just the CEF subtree in exchange for taking it off the critical
-  # path: the clippy pass and the real-engine test overlap the macOS test jobs
-  # instead of queueing behind a 35-40 minute all-features compile.
-  cef:
-    name: cef (macos-latest)
+  # macOS slot in exchange for taking the lint legs off the critical path:
+  # they overlap the macOS test jobs instead of queueing behind a 35-40
+  # minute all-features compile. The CEF legs it used to carry moved to
+  # water-rs/browsers' own CI with the engine crates (#868).
+  macos-lint:
+    name: macos-lint (macos-latest)
     if: inputs.full
     runs-on: macos-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       # Restore-only reader of the shared macOS `~/.cargo` tarball — nightly
-      # legs save nothing of their own (#1441). clippy is
-      # needed by the CEF real-engine target, which cannot be linted on Linux
-      # because CEF requires a macOS application bundle.
+      # legs save nothing of their own (#1441).
       - uses: ./.github/actions/setup-rust
         with:
           components: clippy
@@ -799,34 +788,19 @@ jobs:
       # gate's rust job (apple.yml); read-only lanes never save.
       - name: Restore Cargo sources
         uses: ./.github/actions/cargo-sources
-      # `real-engine` is the runtime shape the Linux all-features passes
-      # exclude, and its `#[cfg(target_os = "macos")]` entry points are only
-      # visible on this leg.
-      - name: Lint the CEF targets
-        run: cargo clippy --locked --profile ci-check -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
       # The cherenkov-oracle and cherenkov-cpu test targets the composite
       # lints `include_bytes!` the generated scene fonts.
       - name: Generate Cherenkov scene assets
         uses: ./.github/actions/generate-scene-assets
         with:
           mode: fonts
-      # The macOS host lint legs for hydrolysis's `cfg(target_os =
-      # "macos")` code, waterui-cli's Apple-side plumbing and every other
-      # crate with Apple-gated code. The fast gate's `macos` job below
-      # calls the same composite, so the two legs can never drift on the
-      # commands.
       - name: Clippy (macOS host crates)
         uses: ./.github/actions/macos-lint
-      # `cargo test` rather than nextest: CEF's browser process has to own the
-      # main thread, libtest runs test bodies on spawned ones, so the target is
-      # `harness = false` and nextest cannot enumerate it.
-      - name: Run the CEF real-engine tests
-        run: cargo test --locked -p waterui-browser-cef --features real-engine --test real_engine
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-snapshots-cef
+          name: test-snapshots-macos-lint
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
@@ -900,7 +874,7 @@ jobs:
   # between nightlies (#1582).
   hydrolysis-android:
     name: aarch64-linux-android
-    if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
+    if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis') || contains(inputs.affected, 'android-planes')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -923,9 +897,14 @@ jobs:
       # precompiled SPIR-V with spirv-opt on every non-Apple native target.
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
+        with:
+          runtime-fonts: "false"
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,inspector-signals,testing,web,winit -- -D warnings
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,webview-system -- -D warnings
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --no-default-features -- -D warnings
+      # The android_planes harness is `cfg(target_os = "android")` past its
+      # pattern code, so only this target compiles it.
+      - run: cargo clippy --locked --profile ci-check -p android-planes --target aarch64-linux-android --all-targets -- -D warnings
 
   # The Android host library's own lint (`warningsAsErrors`): the Kotlin
   # half of the Android runner, which no cargo pass reaches (#2047), plus
@@ -1082,15 +1061,20 @@ jobs:
       # precompiled SPIR-V with spirv-opt on every non-Apple native target.
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
+        with:
+          runtime-fonts: "false"
+      # `cherenkov-gpu`'s build script compiles its fixed shaders to DXIL
+      # through `dxc` for Windows targets (#2726).
+      - uses: ./.github/actions/install-dxc
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --features winit --target x86_64-pc-windows-msvc -- -D warnings
 
   # The Apple-target legs beside the cross-target ones above (#2143,
   # #2476): the Linux lint compiles `cfg(target_os = "macos")` and
   # `cfg(target_os = "ios")` code away, so a macOS- or iOS-only lint break,
-  # test targets included, used to surface only in the nightly's `cef` job
-  # or not at all. Same commands through the shared `macos-lint`
-  # composite; the nightly keeps the host leg in `cef`, where it shares the
-  # CEF leg's runner — running it here too under `full` would pay a second
+  # test targets included, used to surface only in the nightly's host lint
+  # leg or not at all. Same commands through the shared `macos-lint`
+  # composite; the nightly keeps the whole-workspace host leg in
+  # `macos-lint` — running it here too under `full` would pay a second
   # macOS slot for an identical pass. The host and the iOS simulator run
   # in parallel. The host's three passes each get their own leg (#2506),
   # and on the simulator the checked-feature-set pass and each crate
@@ -1200,6 +1184,16 @@ jobs:
             --exclude-features skia-metal --all-targets -- -D warnings
       - name: Bench adapter tests (cherenkov, cherenkov-cpu)
         run: cargo nextest run --locked -p cherenkov-bench --features cherenkov,cherenkov-cpu --no-tests=pass
+      # A failing oracle test leaves its scratch run in the temp dir: the
+      # engine image, heatmap and metrics of every scene it rendered.
+      - name: Upload failing oracle renders
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cherenkov-oracle-renders-lavapipe
+          path: /tmp/cherenkov-bench-*/out/
+          if-no-files-found: ignore
+          retention-days: 14
       - run: cargo build --locked --release -p cherenkov-bench --features vello-cpu,skia
       # The oracle reference depends only on the scene; build it once for
       # both passes below (#218).
@@ -1349,6 +1343,8 @@ jobs:
       # execute, so this job does not need them.
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
+        with:
+          runtime-fonts: "false"
       # cherenkov-gpu's build script optimizes its precompiled SPIR-V with
       # the NDK's bundled spirv-opt on Android targets, so the toolchain
       # setup probes for it; the NDK pin is the r27d cherenkov's own CI

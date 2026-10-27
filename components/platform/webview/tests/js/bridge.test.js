@@ -431,10 +431,17 @@ describe("replies that arrive after a navigation", () => {
 });
 
 describe("WPE isolated transport", () => {
-  const transport = readFileSync(
-    new URL("../../../browser-wpe/src/transport.js", import.meta.url),
-    "utf8",
-  );
+  // The transport ships with the `waterui-browser-wpe` package from
+  // water-rs/browsers; the caller names the checkout the lockfile pins
+  // (`.github/actions/checkout-browsers`, or `cargo metadata`'s manifest
+  // directory of `waterui-browser-wpe` locally).
+  const wpePackage = process.env.WATERUI_BROWSER_WPE_DIR;
+  if (!wpePackage) {
+    throw new Error(
+      "WATERUI_BROWSER_WPE_DIR must name the waterui-browser-wpe package directory",
+    );
+  }
+  const transport = readFileSync(`${wpePackage}/src/transport.js`, "utf8");
 
   function loadWpePage() {
     const context = vm.createContext({ atob: globalThis.atob, btoa: globalThis.btoa });

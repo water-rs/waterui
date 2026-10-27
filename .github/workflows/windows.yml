@@ -71,6 +71,16 @@ jobs:
       - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
+      # #3093: before the first test binary is built, so `target/debug/deps`
+      # already holds the pinned WARP when nextest's executables land there,
+      # and `target/debug` holds it for the binaries tests spawn through
+      # `CARGO_BIN_EXE_*` (#3163).
+      - name: Install current WARP
+        uses: ./.github/actions/install-warp
+        with:
+          into: |
+            target/debug/deps
+            target/debug
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145
@@ -95,11 +105,8 @@ jobs:
       # 290k of them, and a PE export table stops at 65535. The preview system
       # targets macOS, the iOS Simulator and Android, not Windows.
       #
-      # waterui-browser-cef links cef_sandbox from a CEF binary distribution the
-      # runner does not stage. It is still compiled in the lint job below,
-      # through the crate's own `compile-only` feature, which its build script
-      # honours ahead of `cef-runtime` for exactly this case — so Windows keeps
-      # compile coverage of the backend without provisioning the SDK.
+      # The browser engine crates live in water-rs/browsers; their own CI
+      # owns every engine test and lint, including Windows (#868).
       #
       # The `*-example` packages cost the tail of this cold build (#1441):
       # their own crates plus the dependency trees only they pull (nokhwa,
@@ -116,12 +123,12 @@ jobs:
       # `graphics/cherenkov`, so the leg is expected to run green.
       #
       # One full-workspace pass under default features.
-      - run: cargo nextest run --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example' --profile ci
+      - run: cargo nextest run --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude '*-example' --profile ci
       - name: Test (examples that carry tests)
         run: cargo nextest run --locked --profile ci -p gallery-example -p list-example -p reply-example -p stress-example -p typography-rtl-example
       # nextest cannot run doctests, and this workspace has plenty of them.
       # No example carries a doc comment, so the glob loses no doctest.
-      - run: cargo test --locked --doc --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example'
+      - run: cargo test --locked --doc --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude '*-example'
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -200,6 +207,12 @@ jobs:
       - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
+      - name: Install current WARP
+        uses: ./.github/actions/install-warp
+        with:
+          into: |
+            target/debug/deps
+            target/debug
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145
@@ -208,6 +221,13 @@ jobs:
       # fixture setup scripts install their fonts through `uv run`
       # (`.config/nextest.toml`).
       - uses: astral-sh/setup-uv@v6
+      # Same as the test job: the Cherenkov test targets this pass compiles
+      # `include_bytes!` generated fonts, and its bench tests read the
+      # generated corpus scenes.
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: full
       - name: Test (root crate, every feature but dynamic_linking)
         run: cargo nextest run --locked --features all --profile ci
       # The `trybuild_*` binaries each drive a cold fixture build that is
@@ -222,7 +242,6 @@ jobs:
             --exclude waterui-dylib `
             --exclude '*-example' `
             --exclude waterui-core `
-            --exclude waterui-browser-cef `
             --exclude skill_snippets `
             --exclude layout-twins `
             --exclude ios-test-host `
@@ -270,13 +289,8 @@ jobs:
         uses: ./.github/actions/generate-scene-assets
         with:
           mode: fonts
-      # Compile the CEF backend without its binary distribution (see the test
-      # job for why it cannot be linked here). Clippy, not check (#1441): the
-      # pass used to re-check a graph the workspace lint already covers while
-      # the crate itself had no lint coverage; now it carries its own.
-      - run: cargo clippy --locked --profile ci-check -p waterui-browser-cef --features compile-only --all-targets -- -D warnings
       # Windows-only code is invisible to every other leg: a `cfg(windows)` body
       # is compiled nowhere else, so a lint that fires only there reaches
       # nobody.
       - name: Clippy
-        run: cargo clippy --locked --profile ci-check --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings
+        run: cargo clippy --locked --profile ci-check --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --all-targets -- -D warnings

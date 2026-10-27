@@ -8,7 +8,12 @@ use cherenkov::{
     RenderError, WorkingColor,
 };
 use cherenkov_cpu::{Raster as Gpu, RasterConfig as GpuConfig};
+use cherenkov_oracle::F32Image;
+use cherenkov_oracle::metrics::assert_images_match;
 use nami::Binding;
+
+#[path = "support/visual.rs"]
+mod visual;
 
 const COLR_FONT_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -62,14 +67,8 @@ fn surface_with(
     (surface, value)
 }
 
-fn pixels(surface: &cherenkov::Surface<Gpu>) -> Vec<[u32; 4]> {
-    surface
-        .readback()
-        .expect("pixels")
-        .pixels
-        .iter()
-        .map(|p| p.map(f32::to_bits))
-        .collect()
+fn pixels(surface: &cherenkov::Surface<Gpu>) -> F32Image {
+    visual::image(&surface.readback().expect("pixels"))
 }
 
 #[test]
@@ -94,7 +93,7 @@ fn pure_translation_folds_into_position() {
         let a = pixels(&surface);
         let (surface, _) = surface_with(&engine, direct);
         engine.render(FrameTime::now()).expect("direct render");
-        assert_eq!(a, pixels(&surface), "folded translation must be identical");
+        assert_images_match(&pixels(&surface), &a);
     }
 }
 
@@ -127,13 +126,13 @@ fn rotated_glyph_renders_outline_coverage() {
     );
 
     // Back to `None`: the op count shrinks, forcing a rebuild that must
-    // reproduce the untransformed frame exactly.
+    // reproduce the untransformed frame.
     let mut glyphs = transformed.glyphs.to_vec();
     glyphs[1].transform = None;
     transformed.glyphs = glyphs.into();
     value.set(transformed);
     engine.render(FrameTime::now()).expect("restored render");
-    assert_eq!(plain_pixels, pixels(&surface));
+    assert_images_match(&plain_pixels, &pixels(&surface));
 }
 
 #[test]

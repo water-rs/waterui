@@ -333,6 +333,7 @@ struct ConvertBinds {
 /// pixels — the conversion that moves them into the working space every
 /// filter works in and back.
 pub(super) struct Scope<'a> {
+    pub cache: &'a super::PipelineCache,
     pub target: &'a super::ScratchTarget,
     pub size: (u32, u32),
     pub encoded: Option<&'a mut super::space_convert::Pipelines>,
@@ -356,20 +357,24 @@ impl Entry {
         id: FilterKey,
         context: &EffectContext<'_>,
         format: wgpu::TextureFormat,
+        cache: &super::PipelineCache,
     ) -> Result<(), RenderError> {
         #[cfg(not(target_arch = "wasm32"))]
         let setup = self.setup.get_or_insert_with(|| {
-            self.effect
+            let result = self
+                .effect
                 .setup(&EffectContext {
                     input_format: format,
                     output_format: format,
                     ..*context
                 })
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string());
+            cache.persist();
+            result
         });
         #[cfg(target_arch = "wasm32")]
         let setup = {
-            let _ = (context, format);
+            let _ = (context, format, cache);
             self.setup
                 .as_ref()
                 .expect("browser prepares active filters before encoding")
@@ -612,7 +617,7 @@ impl Registry {
             entry.sequence = Some(timing.sequence());
         }
         let format = scratch.texture.format();
-        entry.check_setup(id, context, format)?;
+        entry.check_setup(id, context, format, scope.cache)?;
         let targets_index = entry.targets_index(device, size, format, timing.sequence());
         let targets = &mut entry.io[targets_index].1;
         targets.load(device, encoder, &mut scope, format);

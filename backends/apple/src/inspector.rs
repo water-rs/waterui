@@ -185,7 +185,7 @@ fn install_interaction(root: &HostView, inspection: &Rc<Inspection>) {
     let observed = recognizer.clone();
     // Ask UIKit for its default threshold, matching an unconfigured recognizer.
     let duration = UILongPressGestureRecognizer::new(root.mtm()).minimumPressDuration();
-    let gesture = gesture::long_press(root, duration, ButtonMask::PRIMARY, move |state| {
+    let gesture = gesture::long_press(root, duration, ButtonMask::PRIMARY, move |state, _| {
         if state != GestureState::Began {
             return;
         }

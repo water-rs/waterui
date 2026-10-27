@@ -211,6 +211,25 @@ struct FrameSets {
     idle: Arc<AtomicBool>,
 }
 
+/// Resources released by the renderer's submission-completion callback.
+pub struct Completion {
+    device: ash::Device,
+    idle: Arc<AtomicBool>,
+    retired: Vec<Slot>,
+}
+
+impl Completion {
+    /// Releases attachments and descriptor pools after their submission completes.
+    pub fn complete(self) {
+        for slot in self.retired {
+            // SAFETY: the queue invokes this only after the submission covering
+            // every use of these retired attachments has completed.
+            unsafe { slot.destroy(&self.device) };
+        }
+        self.idle.store(true, Ordering::Release);
+    }
+}
+
 /// What a descriptor set was written for. Every handle written into a
 /// set appears here, so a hit is a set that describes exactly the same
 /// resources.
@@ -244,11 +263,6 @@ pub struct PipeKey {
     pub slots: u8,
 }
 
-/// Objects whose destruction waits for a submission to complete.
-enum Retired {
-    Slot(Slot),
-}
-
 /// Whether `vkCmdBeginRendering` is reached as core 1.3 or through
 /// `VK_KHR_dynamic_rendering`.
 enum Rendering {
@@ -268,20 +282,21 @@ pub struct Mirror {
     /// device's lazily allocated memory types.
     eligible: Eligible,
     /// The tile modules, `[family][self]` with families short, long
-    /// gradient and image source (see [`family`]):
+    /// gradient, image source, clipped glyph and span composite (see [`family`]):
     /// `engine_tile{,_long,_image}.spv` for a draw sourcing another slot,
     /// `engine_tile{,_long,_image}_self.spv` for a draw sourcing its own
     /// slot.
-    modules: [[vk::ShaderModule; 2]; 3],
+    modules: [[vk::ShaderModule; 2]; 5],
     set_layouts: [vk::DescriptorSetLayout; 3],
     layout: vk::PipelineLayout,
     cache: vk::PipelineCache,
+    cache_path: Option<std::path::PathBuf>,
     pipelines: FxHashMap<PipeKey, vk::Pipeline>,
     attachments: FxHashMap<(u32, u32), SizeEntry>,
     frames: Vec<FrameSets>,
     active: Option<usize>,
     stamp: Option<Stamp>,
-    retired: Vec<Retired>,
+    retired: Vec<Slot>,
 }
 
 impl std::fmt::Debug for Mirror {
@@ -312,6 +327,7 @@ impl Mirror {
         device: &wgpu::Device,
         adapter: &wgpu::Adapter,
         eligible: Eligible,
+        cache_path: Option<&std::path::Path>,
     ) -> Result<Self, MirrorError> {
         // SAFETY: `as_hal` borrows the adapter for this scope and the
         // callback only reads its instance and physical device.
@@ -323,8 +339,8 @@ impl Mirror {
         drop(hal_adapter);
         // SAFETY: `physical_device` belongs to `instance`, which is
         // live; the query writes only its own return value.
-        let api_version =
-            unsafe { instance.get_physical_device_properties(physical_device) }.api_version;
+        let properties = unsafe { instance.get_physical_device_properties(physical_device) };
+        let api_version = properties.api_version;
         // SAFETY: `as_hal` borrows the device for this scope; the
         // callback clones the `ash::Device`, which is reference counted
         // by the `wgpu::Device` the caller holds for the mirror's life.
@@ -351,8 +367,16 @@ impl Mirror {
         };
         let local_read = ash::khr::dynamic_rendering_local_read::Device::new(&instance, &vk_device);
 
+        // Native Vulkan data must not share wgpu's wrapped cache file.
+        let cache_path = cache_path.map(|path| path.with_added_extension("vulkan"));
+        let data = cache_path
+            .as_ref()
+            .and_then(|path| std::fs::read(path).ok());
+        let data = data
+            .as_deref()
+            .filter(|data| compatible_cache(data, &properties));
         let mut built = Built::default();
-        let result = built.build(&vk_device);
+        let result = built.build(&vk_device, data);
         let Ok(()) = result else {
             // SAFETY: `built` holds only objects created on `vk_device`
             // by this call, each destroyed exactly once.
@@ -368,6 +392,7 @@ impl Mirror {
             set_layouts: built.set_layouts,
             layout: built.layout,
             cache: built.cache,
+            cache_path,
             pipelines: FxHashMap::default(),
             attachments: FxHashMap::default(),
             frames: Vec::new(),
@@ -441,29 +466,21 @@ impl Mirror {
         };
         self.active = Some(index);
         self.stamp = Some(stamp);
-        // Everything retired before this frame opened was referenced
-        // only by submissions older than the one whose completion
-        // released this frame's pools.
-        let retired = std::mem::take(&mut self.retired);
-        for item in retired {
-            match item {
-                // SAFETY: the slot's objects were created on
-                // `self.device` by this mirror and are destroyed once.
-                Retired::Slot(slot) => unsafe { slot.destroy(&self.device) },
-            }
-        }
         Ok(())
     }
 
-    /// Closes the frame and hands back the flag whose release lets the
-    /// next frame recycle this one's descriptor pools. The renderer
-    /// sets it from the submission-completion callback.
+    /// Closes the frame and transfers retired attachments to its completion
+    /// callback, which also releases this frame's descriptor pools.
     ///
     /// Returns `None` when the frame recorded no tile epoch.
-    pub fn end_frame(&mut self) -> Option<Arc<AtomicBool>> {
+    pub fn end_frame(&mut self) -> Option<Completion> {
         self.stamp = None;
         let index = self.active.take()?;
-        Some(Arc::clone(&self.frames[index].idle))
+        Some(Completion {
+            device: self.device.clone(),
+            idle: Arc::clone(&self.frames[index].idle),
+            retired: std::mem::take(&mut self.retired),
+        })
     }
 
     /// Checks the frame's resource identities have not moved under the
@@ -563,8 +580,8 @@ impl Mirror {
 
     /// Retires attachment sizes this frame did not use, so animated
     /// bounds do not keep every historical size alive. The images are
-    /// destroyed at the start of a later frame, once the submissions
-    /// that referenced them have completed.
+    /// destroyed by this frame's submission-completion callback, which
+    /// covers every earlier submission that referenced them.
     pub fn finish_frame(&mut self) {
         let mut dropped = Vec::new();
         self.attachments.retain(|_, entry| {
@@ -575,7 +592,7 @@ impl Mirror {
                 false
             }
         });
-        self.retired.extend(dropped.into_iter().map(Retired::Slot));
+        self.retired.extend(dropped);
     }
 
     /// Creates one transient attachment at `size`: an image with the
@@ -970,6 +987,18 @@ impl Mirror {
         *created = true;
         let pipeline = self.create_pipeline(key)?;
         self.pipelines.insert(key, pipeline);
+        if let Some(path) = &self.cache_path {
+            // SAFETY: the cache belongs to this live device and all access
+            // is serialized on the renderer thread.
+            match unsafe { self.device.get_pipeline_cache_data(self.cache) } {
+                Ok(data) => {
+                    if let Err(error) = crate::render::write_pipeline_cache(path, &data) {
+                        tracing::debug!(?path, %error, "could not persist Vulkan pipeline cache");
+                    }
+                }
+                Err(error) => tracing::debug!(%error, "could not read Vulkan pipeline cache"),
+            }
+        }
         Ok(pipeline)
     }
 
@@ -992,7 +1021,7 @@ impl Mirror {
         let fragment_entry = match key.variant {
             0 => c"tile_simple",
             1 => c"tile_shadow",
-            2 | 4 | 5 => c"tile_full",
+            2 | 4 | 5 | 6 | 7 | 8 => c"tile_full",
             3 => c"tile_clear",
             _ => unreachable!("closed tile shader set"),
         };
@@ -1171,10 +1200,8 @@ impl Mirror {
                     slot.destroy(&self.device);
                 }
             }
-            for item in self.retired.drain(..) {
-                match item {
-                    Retired::Slot(slot) => slot.destroy(&self.device),
-                }
+            for slot in self.retired.drain(..) {
+                slot.destroy(&self.device);
             }
             for frame in self.frames.drain(..) {
                 for pool in frame.pools {
@@ -1258,11 +1285,13 @@ fn raw(buffer: vk::Buffer) -> u64 {
 
 /// The tile module family a pipeline key's engine variant draws through:
 /// 0 for the short module (variants 0–3), 1 for long gradients (4), 2 for
-/// image sources (6).
+/// image sources (6), solid clipped glyphs (7), and span composites (8).
 const fn family(variant: u8) -> usize {
     match variant {
         4 => 1,
         6 => 2,
+        7 => 3,
+        8 => 4,
         _ => 0,
     }
 }
@@ -1277,7 +1306,7 @@ fn raw_view(view: vk::ImageView) -> u64 {
 #[derive(Default)]
 struct Built {
     /// `[family][self]` — see [`Mirror::modules`].
-    modules: [[vk::ShaderModule; 2]; 3],
+    modules: [[vk::ShaderModule; 2]; 5],
     set_layouts: [vk::DescriptorSetLayout; 3],
     layout: vk::PipelineLayout,
     cache: vk::PipelineCache,
@@ -1285,7 +1314,7 @@ struct Built {
 
 impl Built {
     /// Creates the mirror's immutable objects on `device`.
-    fn build(&mut self, device: &ash::Device) -> Result<(), MirrorError> {
+    fn build(&mut self, device: &ash::Device, data: Option<&[u8]>) -> Result<(), MirrorError> {
         let create_module = |bytes| {
             let code = words(bytes);
             // SAFETY: `device` is live and `code` is SPIR-V the build
@@ -1303,6 +1332,10 @@ impl Built {
             spirv::TILE_LONG_SELF,
             spirv::TILE_IMAGE,
             spirv::TILE_IMAGE_SELF,
+            spirv::TILE_GLYPH,
+            spirv::TILE_GLYPH_SELF,
+            spirv::TILE_COMPOSITE,
+            spirv::TILE_COMPOSITE_SELF,
         ];
         for (slot, bytes) in self.modules.iter_mut().flatten().zip(blobs) {
             *slot = create_module(bytes)?;
@@ -1402,13 +1435,7 @@ impl Built {
             )
         }
         .map_err(|e| MirrorError::Vulkan("vkCreatePipelineLayout", e))?;
-        // The cache is created empty and never serialized: it exists so
-        // that the pipelines an epoch creates on first use share their
-        // compilation work within one run.
-        // SAFETY: `device` is live and the info carries no initial data.
-        self.cache =
-            unsafe { device.create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None) }
-                .map_err(|e| MirrorError::Vulkan("vkCreatePipelineCache", e))?;
+        self.cache = create_cache(device, data)?;
         Ok(())
     }
 
@@ -1430,4 +1457,37 @@ impl Built {
             }
         }
     }
+}
+
+/// Vulkan's version-one cache header is four little-endian u32 fields
+/// followed by the device's pipeline-cache UUID. Other devices or driver
+/// cache versions must start empty.
+fn compatible_cache(data: &[u8], properties: &vk::PhysicalDeviceProperties) -> bool {
+    let Some(header) = data.get(..32) else {
+        return false;
+    };
+    let word =
+        |offset| u32::from_le_bytes(header[offset..offset + 4].try_into().expect("header word"));
+    word(0) == 32
+        && word(4)
+            == u32::try_from(vk::PipelineCacheHeaderVersion::ONE.as_raw())
+                .expect("positive version")
+        && word(8) == properties.vendor_id
+        && word(12) == properties.device_id
+        && header[16..32] == properties.pipeline_cache_uuid
+}
+
+fn create_cache(
+    device: &ash::Device,
+    data: Option<&[u8]>,
+) -> Result<vk::PipelineCache, MirrorError> {
+    // SAFETY: the bytes came from our cache file and their Vulkan
+    // header matches this device; the slice outlives creation.
+    unsafe {
+        device.create_pipeline_cache(
+            &vk::PipelineCacheCreateInfo::default().initial_data(data.unwrap_or_default()),
+            None,
+        )
+    }
+    .map_err(|e| MirrorError::Vulkan("vkCreatePipelineCache", e))
 }

@@ -10,6 +10,10 @@ use cherenkov_gpu::interop::{FrameColor, HdrMetadata};
 
 /// The buffer formats the harness produces.
 #[derive(Clone, Copy, Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the harness's buffer formats are a fixed set by design"
+)]
 pub enum Format {
     /// `Y8Cb8Cr8_420`: 8-bit NV12 or I420, decoded as BT.709 video range.
     Nv12,
@@ -18,7 +22,11 @@ pub enum Format {
 }
 
 /// What one video layer produces.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the video spec is a fixed experiment input; the harness owns every field"
+)]
 pub struct Spec {
     /// The buffer format.
     pub format: Format,
@@ -36,6 +44,10 @@ pub struct Spec {
 
 /// One launch-time scenario, from the intent's `scenario` string extra.
 #[derive(Clone, Copy, Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the scenario table is a fixed set by design"
+)]
 pub enum Scenario {
     /// Recorded pixels and property tracks for the measured policy matrix.
     Recorded(crate::recorded::Spec),
@@ -85,13 +97,7 @@ impl Scenario {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Recorded(spec) => {
-                if spec.animated {
-                    "animated"
-                } else {
-                    "static"
-                }
-            }
+            Self::Recorded(spec) => spec.name(),
             Self::Overlay => "overlay",
             Self::Hdr => "hdr",
             Self::Clipped => "clipped",

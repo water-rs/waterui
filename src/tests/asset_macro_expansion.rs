@@ -21,24 +21,16 @@ fn include_bundle_expands_mount_module() {
     let _: waterui::DataAsset = web::hello();
 }
 
-/// The mount static is a metadata-directory record in the `.wmeta` section:
-/// reading `waterui_meta_bundle_web` back from this linked test binary
-/// decodes the mount exactly the way the CLI reads it — matching the name,
-/// cutting the payload.
+/// The mount static is a metadata-directory record: on non-Apple targets
+/// and Apple debug builds the linked test binary's `__wmeta`/`DIR_SECTION`
+/// section carries it, decoded exactly the way the CLI reads it — matching
+/// the name, cutting the payload. An Apple release build parks the record
+/// in `__DWARF`, which `ld` strips from the final image: there the record
+/// is asserted absent, the same way a shipped binary reports.
 #[test]
-fn bundle_record_survives_linking() {
+fn bundle_record_obeys_linked_profile() {
     use object::{Object as _, ObjectSection as _};
-    use waterui_assets_planner::BundleMountMeta;
     use waterui_meta::{DIR_SECTION, dir_records};
-
-    // The mount static carries no `#[used]` — a shipped binary dead-strips
-    // it. Reading it back here takes the reference a consumer's expansion
-    // would leave in the image anyway.
-    let emitted = &web::waterui_meta_bundle_web;
-    let record = dir_records(emitted)
-        .next()
-        .expect("the static holds one record");
-    assert_eq!(record.name, b"waterui_meta_bundle_web");
 
     let exe = std::env::current_exe().expect("current_exe resolves");
     let bytes = std::fs::read(exe).expect("read the test binary");
@@ -61,10 +53,41 @@ fn bundle_record_survives_linking() {
             }
         }
     }
-    let record = found.expect("no `waterui_meta_bundle_web` record in the section");
+    present_or_absent(found);
+}
+
+/// The non-Apple and Apple-debug profile: the runtime reference keeps the
+/// record in the image, and decoding the linked record answers the mount.
+#[cfg(any(not(target_vendor = "apple"), debug_assertions))]
+fn present_or_absent(record: Option<waterui_meta::DirRecord<'_>>) {
+    use waterui_assets_planner::BundleMountMeta;
+    use waterui_meta::dir_records;
+
+    let emitted = &web::waterui_meta_bundle_web;
+    let static_record = dir_records(emitted)
+        .next()
+        .expect("the static holds one record");
+    assert_eq!(static_record.name, b"waterui_meta_bundle_web");
+
+    let record = record.expect("no `waterui_meta_bundle_web` record in the section");
     let meta = BundleMountMeta::from_record(record).expect("decode the record");
     assert_eq!(meta.mount, "web");
-    assert!(meta.path.ends_with("tests/fixtures/web"), "{:?}", meta.path);
+    assert!(
+        meta.path.ends_with("tests/fixtures/web"),
+        "{}",
+        meta.path.display()
+    );
+}
+
+/// The Apple release profile: the record is parked in `__DWARF` for `ld`
+/// to strip, so the linked image carries none — `web::waterui_meta_bundle_web`
+/// is never referenced, because the record data is discarded with the section.
+#[cfg(all(target_vendor = "apple", not(debug_assertions)))]
+fn present_or_absent(record: Option<waterui_meta::DirRecord<'_>>) {
+    assert!(
+        record.is_none(),
+        "the release linker stripped the __wmeta record"
+    );
 }
 
 #[test]

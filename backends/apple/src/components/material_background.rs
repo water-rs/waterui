@@ -119,6 +119,14 @@ pub fn install(dispatcher: &mut Dispatcher) {
             last_proposal: Cell::new(ProposalSize::UNSPECIFIED),
         });
 
+        // Scroll discovery traverses the content without changing the
+        // material's safe-area boundary.
+        #[cfg(target_os = "ios")]
+        host.set_scroll_surface_handler({
+            let state = Rc::clone(&state);
+            move |_host| vec![view::retain_base(state.child.view())]
+        });
+
         // `.background(material)` covers exactly the view it backs: the
         // content's own measurement under the delivered proposal is the
         // frame both the effect and the content get, centered in bounds.

@@ -118,3 +118,5 @@ pub mod platform;
 pub mod provisioning;
 /// Apple toolchain management.
 pub mod toolchain;
+/// WidgetKit extension assembly from `#[widget]` declaration records.
+pub mod widgets;

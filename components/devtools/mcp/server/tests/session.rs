@@ -55,6 +55,7 @@ fn call_tool(
         CallToolParams {
             name: name.to_owned(),
             arguments,
+            meta: None,
         },
     )))
     .expect("tools/call transport error");

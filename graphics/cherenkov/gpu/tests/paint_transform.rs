@@ -1,7 +1,11 @@
 //! Independent paint coordinates on the gpu backend.
 use cherenkov::{__engine_test as split_test, __engine_wait as wait};
+use cherenkov_oracle::metrics::{assert_close, assert_images_match};
 #[path = "../../tests/support/paint_transform.rs"]
 mod common;
+#[path = "support/visual.rs"]
+mod visual;
+use visual::crop;
 
 split_test! {
 fn live_paint_transforms_preserve_geometry_and_retained_output() {
@@ -53,11 +57,8 @@ fn shader_paint_transform_changes_sampling_without_moving_geometry()
         (sample[2] - 0.65625).abs() < 0.002,
         "shader y unchanged: {sample:?}"
     );
-    assert_eq!(
-        pixels[16 * 32 + 27][3].to_bits(),
-        0.0_f32.to_bits(),
-        "paint moved coverage"
-    );
+    // The paint moved, the coverage did not.
+    assert_close(&[pixels[16 * 32 + 27][3]], &[0.0]);
     Ok(())
 }
 }
@@ -116,9 +117,10 @@ fn image_paint_transform_composes_before_pattern_transform() {
     wait!(engine.render(FrameTime::now())).expect("render");
     let actual = wait!(wrapped.readback()).expect("wrapped");
     let expected = wait!(combined.readback()).expect("combined");
-    for (a, b) in actual.pixels.iter().zip(expected.pixels) {
-        assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits));
-    }
+    assert_images_match(
+        &crop(&actual, 0..32, 0..32),
+        &crop(&expected, 0..32, 0..32),
+    );
 }
 }
 

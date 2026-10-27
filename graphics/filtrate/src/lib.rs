@@ -84,6 +84,8 @@ pub mod effect;
 mod executor;
 pub mod filters;
 #[cfg(feature = "gpu")]
+mod pipeline_cache;
+#[cfg(feature = "gpu")]
 pub mod shader_effect;
 
 #[cfg(feature = "gpu")]
@@ -104,6 +106,8 @@ pub use filtrate_core::{
     OperatingSpace, ParamArray, ParamSource, Placed, ShapeInput, SignalVisitor, SpatialFilter,
     SpatialStage, StageCollector, WatchGuard, WorkingSpace, kind, space,
 };
+#[cfg(feature = "gpu")]
+pub use pipeline_cache::PipelineCache;
 
 #[cfg(feature = "gpu")]
 pub use shader_effect::{SHADER_EFFECT_MAX_PARAMS, ShaderEffect, ShaderEffectError};

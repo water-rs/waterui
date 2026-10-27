@@ -1398,6 +1398,9 @@ impl Engine for Cherenkov {
     }
 
     fn prepare(&mut self, input: &EncodeInput<'_>) -> Result<(), BenchError> {
+        // The retained scene's command counts do not change with its frame.
+        self.counters = Counters::default();
+        convert::count_layer(&input.scene.root, &mut self.counters);
         convert::check_features(Self::NAME, input.scene, &cherenkov_features(), |f| {
             convert::missing_api(&FRONT, f)
         })?;
@@ -1488,12 +1491,15 @@ impl Engine for Cherenkov {
     }
 
     fn encode(&mut self, input: &EncodeInput<'_>) -> Result<(), BenchError> {
-        self.counters = Counters::default();
-        convert::count_layer(&input.scene.root, &mut self.counters);
         let surface = self
             .surface
             .as_ref()
             .ok_or_else(|| BenchError::Engine("cherenkov: encode before prepare".into()))?;
+        if let Some(offset) = input.scroll_offset {
+            surface.update(|tx| {
+                tx[surface.root()].scroll_offset(input.scene.root.scroll_offset + offset);
+            });
+        }
         let first_frame = self.frame == 0;
         if self.has_motion && first_frame {
             for cl in &self.content_layers {
@@ -1506,7 +1512,7 @@ impl Engine for Cherenkov {
         // Motion and live scenes record their content once: later encodes
         // only set live bindings and advance the clock. Static scenes keep
         // re-recording each frame so their numbers stay comparable.
-        if first_frame || !(self.has_motion || self.has_live) {
+        if first_frame || !(self.has_motion || self.has_live || input.scroll_offset.is_some()) {
             surface.update(|tx| {
                 if self.has_motion {
                     for cl in &self.content_layers {
@@ -1597,25 +1603,21 @@ impl Engine for Cherenkov {
                 // the comparison — the same interchange the GPU adapter
                 // uses on its presented texture.
                 Some(PresentKind::SrgbHw | PresentKind::SrgbShader) => {
-                    cherenkov_cpu::present_srgb8(
-                        cherenkov_cpu::Level::new(),
-                        self.headroom,
-                        &rb.pixels,
-                    )
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .map(|texel| {
-                        let encoded = texel.map(|v| f64::from(v) / 255.0);
-                        let p3 = presented_srgb_to_working(encoded);
-                        [p3[0] as f32, p3[1] as f32, p3[2] as f32, p3[3] as f32]
-                    })
-                    .collect()
+                    cherenkov_cpu::present_srgb8(cherenkov_cpu::detect(), self.headroom, &rb.pixels)
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|texel| {
+                            let encoded = texel.map(|v| f64::from(v) / 255.0);
+                            let p3 = presented_srgb_to_working(encoded);
+                            [p3[0] as f32, p3[1] as f32, p3[2] as f32, p3[3] as f32]
+                        })
+                        .collect()
                 }
                 // Extended linear Display P3 tone-maps to the display
                 // headroom, like the GPU's `LinearP3` destination.
                 Some(PresentKind::LinearP3) => cherenkov_cpu::present_linear_p3(
-                    cherenkov_cpu::Level::new(),
+                    cherenkov_cpu::detect(),
                     self.headroom,
                     &rb.pixels,
                 ),
@@ -1644,6 +1646,7 @@ impl Engine for Cherenkov {
                 ("shade", phases.shade_seconds),
             ]),
             composition: None,
+            gpu_wait_seconds: 0.0,
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
@@ -1652,6 +1655,11 @@ impl Engine for Cherenkov {
     fn finish_gpu(&mut self) -> Result<Vec<GpuSample>, BenchError> {
         let timings = self.engine.finish_timings().map_err(render_error)?;
         Ok(self.timings.samples(timings))
+    }
+
+    fn wait_idle(&mut self) -> Result<(), BenchError> {
+        // submit completes the CPU raster work before returning.
+        Ok(())
     }
 
     fn counters(&self) -> Counters {
@@ -1702,6 +1710,7 @@ impl Engine for Cherenkov {
             wgpu_allocator: Reading::unavailable("cherenkov-cpu has no wgpu allocator"),
             skia_budgeted: Reading::unavailable("cherenkov-cpu has no Skia budget"),
             vk_memory_budget: Reading::unavailable("cherenkov-cpu has no Vulkan device"),
+            metal_allocated_bytes: Reading::unavailable("cherenkov-cpu has no Metal device"),
         }
     }
 }

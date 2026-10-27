@@ -19,12 +19,12 @@ use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
 /// `Widget` node holds it as a [`RetainedSubview`] built once and re-flushed each
 /// frame; the `value` is read through `read_signal` so a change schedules a frame
 /// and the indicator re-renders.
-pub struct BadgeRenderState {
+pub struct BadgeRenderState<E: crate::text::TextEngine> {
     value: Computed<i32>,
-    content: RetainedSubview,
+    content: RetainedSubview<E>,
 }
 
-impl BadgeRenderState {
+impl<E: crate::text::TextEngine> BadgeRenderState<E> {
     pub(crate) fn from_config(config: BadgeConfig) -> Self {
         let BadgeConfig { value, content, .. } = config;
         Self {
@@ -37,7 +37,7 @@ impl BadgeRenderState {
     /// HydroState`, no renderer, so it must be built before then).
     pub(crate) fn prebuild_content(
         &mut self,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         self.content.ensure_built(renderer, env);
@@ -51,8 +51,8 @@ impl BadgeRenderState {
     }
 }
 
-fn badge_content_size(
-    state: &mut HydroState,
+fn badge_content_size<E: crate::text::TextEngine>(
+    state: &mut HydroState<E>,
     badge: &Native<BadgeConfig>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -67,9 +67,9 @@ fn badge_large_label(value: i32, theme: &Rc<dyn crate::theme::WidgetTheme>) -> S
         .foreground(theme.badge_label_color())
 }
 
-impl HydroNativeView for Native<BadgeConfig> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<BadgeConfig> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         badge: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -78,7 +78,7 @@ impl HydroNativeView for Native<BadgeConfig> {
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         badge: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -91,10 +91,10 @@ impl HydroNativeView for Native<BadgeConfig> {
 
 /// Measures a retained badge leaf from its [`BadgeRenderState`]: the badge sizes
 /// itself to its wrapped content, mirroring the dispatch path's `dimensions`.
-pub fn measure_badge_node(
-    state: &BadgeRenderState,
+pub fn measure_badge_node<E: crate::text::TextEngine>(
+    state: &BadgeRenderState<E>,
     _proposal: ProposalSize,
-    hydro: &mut HydroState,
+    hydro: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -104,17 +104,17 @@ pub fn measure_badge_node(
 /// Renders a retained badge leaf every flush: flushes the content sub-view (whose
 /// own dispatch drives accessibility — badge a11y is render-driven) then draws the
 /// indicator overlay from the live `value` signal.
-pub fn render_badge_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<BadgeRenderState>>,
+pub fn render_badge_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<BadgeRenderState<E>>>,
     env: &Environment,
 ) {
     render_badge_parts(ctx, state, env);
 }
 
-pub fn render_badge_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<BadgeRenderState>>,
+pub fn render_badge_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<BadgeRenderState<E>>>,
     env: &Environment,
 ) {
     let bounds = ctx.bounds;
@@ -221,15 +221,8 @@ pub fn render_badge_parts(
         local: ctx.local,
         bounds: text_rect,
     };
-    let (hydro, scene) = ctx.renderer_mut().state_and_run_mut();
-    HydrolysisRenderer::render_styled_text(
-        hydro,
-        scene,
-        text_ctx,
-        label,
-        HorizontalAlignment::Center,
-        env,
-    );
+    ctx.renderer_mut()
+        .render_styled_text(text_ctx, label, HorizontalAlignment::Center, env);
 }
 
 /// Emits a retained badge's accessibility nodes for the semantic walk: the
@@ -237,9 +230,9 @@ pub fn render_badge_parts(
 /// count indicator's `Label` node — a vector-drawn badge value is otherwise
 /// invisible to assistive technology.
 #[cfg(feature = "accessibility")]
-pub fn emit_badge_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<BadgeRenderState>>,
+pub fn emit_badge_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<BadgeRenderState<E>>>,
     env: &Environment,
 ) {
     let mut state = state.borrow_mut();

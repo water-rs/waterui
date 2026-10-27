@@ -34,16 +34,19 @@ members = [
     "backends/hydrolysis/android/test-app/rust",
     # The engine family under `graphics/` (#1449): the `cherenkov` crates in
     # `graphics/cherenkov/` and the `filtrate` family in `graphics/filtrate/`.
-    # The stand-alone apps under `graphics/cherenkov/gpu/examples/` and the
-    # iOS bench project under `graphics/cherenkov/bench/ios/` carry their own
-    # manifests and are not members, matching upstream's `exclude`.
+    # The iOS bench project under `graphics/cherenkov/bench/ios/` carries
+    # its own manifest and is not a member, matching upstream's `exclude`.
     "graphics/cherenkov",
+    "graphics/cherenkov/gpu/examples/android_planes",
+    "graphics/cherenkov/gpu/examples/apple_planes",
     "graphics/cherenkov/record",
     "graphics/cherenkov/shader",
     "graphics/cherenkov/gpu",
     "graphics/cherenkov/cpu",
     "graphics/cherenkov/scene",
     "graphics/cherenkov/oracle",
+    "graphics/cherenkov/stroke",
+    "graphics/cherenkov/simd",
     "graphics/cherenkov/bench",
     "graphics/filtrate",
     "graphics/filtrate/core",
@@ -172,9 +175,9 @@ clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 
 
 [workspace.dependencies]
-aither-core = "0.4"
-aither-mcp = { version = "0.4", default-features = false }
-arc-swap = "1.9.2"
+aither-core = "0.10"
+aither-mcp = { version = "0.10", default-features = false }
+arc-swap = "1.9.3"
 # Held at 2 on purpose. `bincode` 3.0.0 is not a release: it is a name
 # reservation whose entire `lib.rs` is a `compile_error!`, with no dependencies
 # and no features, so `cargo upgrade --incompatible` proposes it and every
@@ -199,10 +202,9 @@ executor-core = { version = "0.7.1", features = ["std"]}
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 futures-lite = "2.6"
 geo = { version = "0.33", default-features = false }
-getrandom = "0.4"
+getrandom = { version = "0.4", default-features = false }
 geo-types = "0.7"
-lru = "0.18"
-maplibre-expr = "0.3.2"
+lru = "0.19"
 mvt-reader = "2.5.0"
 # W3C UI Events key/code/modifier vocabulary, shared by the GPU-surface input
 # contract and every backend that feeds it.
@@ -227,12 +229,13 @@ cherenkov = { version = "0.0.0", path = "graphics/cherenkov" }
 cherenkov-cpu = { version = "0.0.0", path = "graphics/cherenkov/cpu" }
 cherenkov-gpu = { version = "0.0.0", path = "graphics/cherenkov/gpu" }
 cherenkov-record = { version = "0.0.0", path = "graphics/cherenkov/record" }
+cherenkov-stroke = { version = "0.0.0", path = "graphics/cherenkov/stroke" }
 pin-project-lite = "0.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-thiserror = "2.0.20"
+thiserror = "2.0.21"
 url = "2.5"
-uuid = { version = "1.26.1", default-features = false, features = ["v4", "std"] }
+uuid = { version = "1.28.0", default-features = false, features = ["v4", "std"] }
 waterui-core = { version = "0.5.1", path = "core" }
 # Renamed and extracted to water-rs/suiteki.
 suiteki = { version = "0.1", features = ["nami"] }
@@ -253,10 +256,11 @@ waterui-math = "0.2.0"
 waterui-layout = { version = "0.5.1", path = "components/foundation/layout" }
 waterui-navigation = { version = "0.5.1", path = "components/foundation/navigation" }
 waterui-webview = { version = "0.5.1", path = "components/platform/webview" }
+waterui-widgets = { version = "0.5.1", path = "components/platform/widgets" }
 waterui-chromium = { version = "0.5.1", path = "components/platform/chromium" }
-waterui-browser-cef = { version = "0.5.1", path = "components/platform/browser-cef", default-features = false }
-waterui-browser-wpe = { version = "0.5.1", path = "components/platform/browser-wpe", default-features = false }
-wgpu-external-frame = "0.3.0"
+waterui-browser-cef = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "dev", default-features = false }
+waterui-browser-wpe = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "dev", default-features = false }
+wgpu-external-frame = "0.4.0"
 waterui-icon = { version = "0.5.1", path = "components/foundation/icon" }
 waterui-icons-sf-symbol = { version = "0.5.1", path = "components/icon/sf_symbol" }
 waterui-icons-material-icon = { version = "0.5.1", path = "components/icon/material" }
@@ -332,7 +336,7 @@ waterui-ts-engine-quickjs = { version = "0.1.0", path = "components/platform/ts/
 # QuickJS-NG through `rquickjs` — the embedded engine for every non-Apple
 # target. (`rquickjs-sys` vendors the QuickJS-NG fork, not the original
 # Bellard tree.)
-rquickjs = "0.13"
+rquickjs = "0.14"
 # The system JavaScriptCore, reached through the objc2 family. Used only by
 # `waterui-ts-engine-jsc`, which gates them on `target_vendor = "apple"`.
 objc2 = "0.6"
@@ -345,9 +349,9 @@ erased-serde = { version = "0.4.10", default-features = false, features = ["allo
 # only one wgpu, and every `wgpu` type that crosses between the engine and a
 # `GpuContent` producer must be one type.
 wgpu = "30.0.1"
-parley = { version = "0.11", default-features = false }
+parley = { version = "0.12", default-features = false }
 kurbo = "0.13"
-skrifa = "0.47.0"
+skrifa = "0.48.0"
 # The only crate in the Rust ecosystem that reads the OpenType `MATH` table.
 # `read-fonts`/`skrifa` do not expose it (googlefonts/fontations#1269 has been
 # open since 2024-11), and neither `rustybuzz` nor `harfrust` port HarfBuzz's
@@ -368,7 +372,7 @@ quick-xml = "0.42"
 # filesystem, so the rules are not files anything has to install, bundle, or
 # find at runtime; without it MathCAT looks for a `Rules` directory on disk.
 mathcat = { version = "0.7.5", features = ["include-zip"] }
-toml = "1.1.6"
+toml = "1.1.8"
 lyon = "1.0"
 wgpu-hal = { version = "30.0.1", features = ["gles", "metal"] }
 # Must match the `glow` version wgpu-hal links against, or GLES handles from
@@ -377,28 +381,25 @@ wgpu-hal = { version = "30.0.1", features = ["gles", "metal"] }
 # hands a `glow::NativeFramebuffer` straight to
 # `wgpu::hal::gles::TextureInner::ExternalNativeFramebuffer`, so a different
 # major here makes that a different type and the backend stops compiling.
-glow = "0.17"
+glow = "0.18"
 tiny-skia = "0.12"
-zenwave = { version = "0.6.1", default-features = false, features = ["hyper-backend"] }
+zenwave = { version = "0.7.1", default-features = false, features = ["hyper-backend"] }
 futures-timer = "3"
 pastey = "0.2.3"
-tracing-panic = "0.1.2"
+tracing-panic = "0.1.3"
 robius-open = { version = "0.3", default-features = false }
 gtk4 = "0.11"
 gdk4 = "0.11"
 glib = "0.22"
 pollster = "1.0"
-rxing = { version = "0.9.2", default-features = false, features = ["decoders", "encoding_rs", "oned", "qrcode"] }
 jiff = { version = "0.2", features = ["serde"] }
 async-channel = "2.5"
-rodio = { version = "0.22", features = ["symphonia-isomp4", "symphonia-aac"] }
 cpal = "0.18"
 rustc-hash = "2.1.3"
 swift-bridge = "0.1"
 swift-bridge-build = "0.1"
 jni = "0.22"
 windows = { version = "0.62", features = ["Devices_Geolocation", "Foundation"] }
-zbus = "5"
 web-time = "1.1"
 cpu-time = "1.0"
 # Only the process table is read (`ProcessesToUpdate`, `Pid`), so the disk,
@@ -470,6 +471,8 @@ remote = ["waterui-internal/remote", "waterui-dylib?/remote"]
 # link it. The backend without one selects this.
 video-gpu = ["waterui-internal/video-gpu", "waterui-dylib?/video-gpu"]
 webview = ["waterui-internal/webview", "waterui-dylib?/webview"]
+# The `WidgetKit` authoring surface (`waterui::widgets`, `#[waterui::widget]`).
+widgets = ["waterui-internal/widgets", "waterui-dylib?/widgets"]
 # TypeScript views: the embedded JavaScript engine, the signal bridge, the
 # `tsx!` mount, and the props contract schema (`waterui::ts::schema`) whose
 # encoded contract the `water` CLI reads back out of a debug artifact.
@@ -555,6 +558,24 @@ debug = "line-tables-only"
 debug = false
 opt-level = 2
 
+# Workspace members are not reached by the wildcard above. cherenkov-oracle is
+# test and bench infrastructure only — the reference rasterizer and FLIP
+# metrics the cherenkov tests judge renders by — so nothing is stepped through
+# there, while its f64 rasterizing and filtering is the heaviest arithmetic
+# those tests run (water-rs/waterui#3159). `test` inherits this through `dev`.
+[profile.dev.package.cherenkov-oracle]
+debug = false
+opt-level = 2
+
+# The engine under test: the CPU sweep route and the lowering it shares with
+# the GPU routes run every corpus scene, and at opt-level 0 they were most of
+# what is left of the cherenkov tests' runtime (water-rs/waterui#3159).
+# opt-level 1 recovers nearly all of opt-level 2's test-time speed at a small
+# fraction of its compile time, and keeps debug assertions and line tables.
+# Only `test` builds take it: `dev` keeps the engine fully debuggable.
+[profile.test.package.cherenkov]
+opt-level = 1
+
 [profile.ci-check]
 inherits = "dev"
 debug = false
@@ -579,8 +600,6 @@ lto = "thin"
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
 shaderloom = { git = "https://github.com/water-rs/shaderloom", branch = "dev" }
-# Evaluate SIMD exponential constants at compile time until wide releases the fix.
-wide = { git = "https://github.com/lexoliu/wide", branch = "perf/f32x4-exp-const" }
 # Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
 # those to its own copies or the graph carries two of each and every `View`
@@ -610,6 +629,12 @@ waterui-inspector-protocol = { path = "components/devtools/inspector/protocol" }
 waterui-locale = { path = "utils/locale" }
 waterui-navigation = { path = "components/foundation/navigation" }
 waterui-webview = { path = "components/platform/webview" }
+# The browser engine crates live in water-rs/browsers and declare
+# `waterui-chromium` and `waterui-watcher-set` against the registry; both
+# must resolve to the in-tree members or the engine traits split across two
+# copies of each.
+waterui-chromium = { path = "components/platform/chromium" }
+waterui-watcher-set = { path = "utils/watcher-set" }
 # `hydrolysis-m3` declares its renderer requirement against the registry;
 # this entry makes it resolve to the in-tree backend so the graph carries
 # exactly one hydrolysis. The registry 0.3.1 theme implements the
@@ -647,22 +672,21 @@ filtrate-core = { path = "graphics/filtrate/core" }
 filtrate-derive = { path = "graphics/filtrate/derive" }
 
 
-# The suite's vello baseline is the fork WaterUI and Hydrolysis actually
-# ship, not crates.io. `vello` carries our Mali Vulkan device-loss fix
-# (linebender/vello#1817, still open upstream) plus the glifo canonical-location
-# hint-cache fix applied to vello_encoding's GlyphCache (branch
-# `glifo-canonical-location-classic`, on the Mali rev), and this rev adds the
-# bump-buffer overflow re-render on top of what cherenkov pinned (7f5e1ca5);
-# it is the rev the rest of the WaterUI graph already resolves. The
-# sparse-strip crates and glifo sit on the same canonical-location fix at
-# `glifo-canonical-location` — without it, an explicit all-default location
-# (`[0, 0, …]`) never matched a stored hint entry and every glyph run repaid
-# a HintingInstance reconfigure. `cherenkov-bench` measures against these.
-vello = { git = "https://github.com/lexoliu/vello", rev = "76292095f408cf04b901023c2053f8d424652f06" }
-vello_hybrid = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
-vello_common = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
-vello_sparse_shaders = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
-glifo = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
+# Reference engines for cherenkov-bench's cross-engine comparison only;
+# WaterUI renders through Cherenkov and ships none of these. They resolve
+# from the fork, not crates.io: `waterui/v0.11` is upstream vello v0.11.0 plus
+# our patches — the glifo hint cache keyed by the canonical location (without
+# it an explicit all-default location never matched a stored hint entry and
+# every glyph run repaid a HintingInstance reconfigure), the live atlas size
+# reported by patch-free resolves, the classic renderer's BumpBufferSizes with
+# grow-on-overflow re-render and deferred bump verification, the discarded
+# select arm's index clamped in prefix-sum lookups, and texel-centre padding of
+# image sampling in vello_gpu_shaders.
+vello = { git = "https://github.com/lexoliu/vello", branch = "waterui/v0.11" }
+vello_gpu = { git = "https://github.com/lexoliu/vello", branch = "waterui/v0.11" }
+vello_common = { git = "https://github.com/lexoliu/vello", branch = "waterui/v0.11" }
+vello_gpu_shaders = { git = "https://github.com/lexoliu/vello", branch = "waterui/v0.11" }
+glifo = { git = "https://github.com/lexoliu/vello", branch = "waterui/v0.11" }
 
 # wgpu 30.0.1's Metal backend reads the address of the kCGColorSpace* globals
 # instead of their value and crashes in CGColorSpaceCreateWithName whenever a
@@ -670,8 +694,9 @@ glifo = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6
 # trunk, not yet released for v30). Mirrored from cherenkov's own workspace
 # patch (water-rs/cherenkov#229): `[patch]` in a dependency's manifest does not
 # apply downstream, so without these entries this graph resolves the crashing
-# crates.io build while cherenkov resolves the fork. Drop them once wgpu-hal
-# ships both the color-space fix and passthrough threadgroup-memory metadata.
+# crates.io build while cherenkov resolves the fork. The branch also moves
+# wgpu-hal to glow 0.18, as trunk has. Drop them once a wgpu-hal release ships
+# the color-space fix, passthrough threadgroup-memory metadata and glow 0.18.
 naga = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-shared-memory-v30" }
 naga-types = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-shared-memory-v30" }
 wgpu = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-shared-memory-v30" }
@@ -682,6 +707,10 @@ wgpu-core-deps-windows-linux-android = { git = "https://github.com/water-rs/wgpu
 wgpu-hal = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-shared-memory-v30" }
 wgpu-naga-bridge = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-shared-memory-v30" }
 wgpu-types = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-shared-memory-v30" }
+# wgpu-external-frame hands wgpu-hal's GLES textures to its own glow context, so
+# it must link the glow 0.18 the branch above carries; its crates.io 0.4.0 links
+# 0.17 (water-rs/wgpu-external-frame#43). Drop it with the wgpu entries.
+wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame", branch = "dev" }
 
 # Split component repositories, the waterkit family and suiteki follow their
 # `dev` branch; `Cargo.lock` records the exact commit.
