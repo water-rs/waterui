@@ -57,6 +57,11 @@ pub struct MemoryUsage {
     pub gpu: Bytes,
     /// CPU-side cache bytes.
     pub cpu: Bytes,
+    /// The CPU-side part of `cpu` that exists only because glyphs were
+    /// drawn: the glyph cache (atlas bookkeeping, or masks on the CPU
+    /// backend) and per-font glyph data. It returns to its earlier value
+    /// once the fonts that filled it are dropped.
+    pub glyph_cache: Bytes,
     /// Tile-composition attachment bytes the engine reserved: storage
     /// it asked the device for and expects tile memory, not device
     /// memory, to hold. *Not* included in `gpu` — only

@@ -4346,13 +4346,14 @@ impl Renderer for GpuRenderer {
             .flat_map(|g| &g.captures)
             .map(|c| format_name(c.target.texture.format()))
             .next();
-        let cpu = self.atlas.cpu_bytes()
+        let glyph_cache =
+            self.atlas.cpu_bytes() + self.fonts.values().map(FontData::bounds_bytes).sum::<u64>();
+        let cpu = glyph_cache
             + self
                 .planes
                 .values()
                 .map(planes::SystemPlanes::cpu_bytes)
                 .sum::<u64>()
-            + self.fonts.values().map(FontData::bounds_bytes).sum::<u64>()
             + self.gpu_cov.cpu_bytes()
             + self.commit_writes.heap_bytes()
             + self
@@ -4400,6 +4401,7 @@ impl Renderer for GpuRenderer {
                     + tile_committed.unwrap_or(0),
             ),
             cpu: cherenkov::Bytes(cpu),
+            glyph_cache: cherenkov::Bytes(glyph_cache),
             tile_reserved: cherenkov::Bytes(tile_reserved),
             tile_committed: tile_committed.map(cherenkov::Bytes),
             backdrop_captures: cherenkov::Bytes(captures),
