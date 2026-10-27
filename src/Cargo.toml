@@ -27,6 +27,7 @@ waterui-navigation.workspace = true
 waterui-form.workspace = true
 waterui-controls.workspace = true
 waterui-webview = { workspace = true, optional = true }
+waterui-widgets = { workspace = true, optional = true }
 # `number` is not optional here: `text!` interpolates every numeric argument
 # through `waterui_locale::LocalizedArgument`, so a WaterUI application that
 # formats a number into a string already depends on it.
@@ -157,6 +158,11 @@ remote = [
 # wasm32 it links nothing.
 video-gpu = ["video", "gpu", "dep:waterui-video-gpu"]
 webview = ["dep:waterui-webview"]
+# The `#[waterui::widget]` authoring surface and its `WidgetKit` snapshot
+# schema (`waterui::widgets`). Off by default: an application that declares
+# no widgets pays for none of the schema or its FFI glue — and the `water`
+# CLI only generates an extension when the declaration records exist.
+widgets = ["dep:waterui-widgets", "waterui-macros/widgets"]
 # The TypeScript runtime behind `waterui::ts`: the embedded JavaScript engine,
 # the signal bridge, the component vocabulary a JSX tag resolves against, the
 # `tsx!` mount, and the props contract schema (`waterui::ts::schema`) whose
@@ -218,6 +224,7 @@ all = [
     "assets",
     "media",
     "webview",
+    "widgets",
     "flow-markdown",
     "markdown-math",
     "video-gpu",

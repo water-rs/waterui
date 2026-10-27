@@ -8,6 +8,8 @@ use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
+#[cfg(feature = "widgets")]
+use sha2::Digest as _;
 use std::collections::HashMap;
 use syn::{Data, DeriveInput, Fields, ItemFn, Meta, parse_macro_input};
 mod identifiable;
@@ -991,6 +993,618 @@ impl Parse for PreviewArg {
         let value: Expr = input.parse()?;
         Ok(Self { name, value })
     }
+}
+
+/// The `WidgetKit` families a `#[widget]` may declare — the serialized
+/// `WidgetFamily` spellings the extension renders.
+#[cfg(feature = "widgets")]
+const WIDGET_FAMILIES: &[&str] = &[
+    "systemSmall",
+    "systemMedium",
+    "systemLarge",
+    "systemExtraLarge",
+    "accessoryCircular",
+    "accessoryRectangular",
+    "accessoryInline",
+];
+
+/// A single `#[widget]` argument: `name = "…"`, `description = "…"`,
+/// `kind = "…"`, or `families = [systemSmall, …]`.
+#[cfg(feature = "widgets")]
+struct WidgetArg {
+    name: syn::Ident,
+    value: Expr,
+}
+
+#[cfg(feature = "widgets")]
+impl Parse for WidgetArg {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let name: syn::Ident = input.parse()?;
+        input.parse::<Token![=]>()?;
+        let value: Expr = input.parse()?;
+        Ok(Self { name, value })
+    }
+}
+
+#[cfg(feature = "widgets")]
+fn widget_arg_string(arg: &WidgetArg) -> syn::Result<String> {
+    if let Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Str(lit),
+        ..
+    }) = &arg.value
+    {
+        Ok(lit.value())
+    } else {
+        Err(syn::Error::new_spanned(
+            &arg.value,
+            format!("`#[widget]`'s `{}` must be a string literal", arg.name),
+        ))
+    }
+}
+
+/// Declares a `WidgetKit` widget: `#[waterui::widget(name = "…", description = "…")]`.
+///
+/// The attributed function produces the widget's timeline — either a
+/// `Timeline`/`TimelineEntry` directly or any `WidgetContent`, which becomes
+/// a single dated entry. It may take one `WidgetContext` parameter (the
+/// family and display size `WidgetKit` hands the provider). Only the
+/// `waterui::widgets` schema nodes are widget content; a `WaterUI` view in
+/// that position is a compile-time error — `WidgetKit` renders the extension
+/// from the serialized snapshot, and representable embedding cannot cross
+/// its process boundary.
+///
+/// ```rust,ignore
+/// use waterui::widgets::*;
+///
+/// #[waterui::widget(name = "Steps", description = "Today's step count")]
+/// fn steps(context: WidgetContext) -> impl WidgetContent {
+///     vstack((text("Steps"), text("6,241")))
+/// }
+/// ```
+///
+/// `kind` (the `WidgetConfiguration` kind) defaults to the function name;
+/// `families` defaults to `[systemSmall, systemMedium, systemLarge]`.
+///
+/// The attribute emits the function's `waterui_widget_<crate>_<fn>` C
+/// export and the `waterui_meta_widget_<crate>_<fn>` declaration record the
+/// `water` CLI reads while it generates and packages the extension.
+#[cfg(feature = "widgets")]
+#[proc_macro_attribute]
+pub fn widget(args: TokenStream, input: TokenStream) -> TokenStream {
+    let input_fn = parse_macro_input!(input as ItemFn);
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.into_compile_error().into(),
+    };
+    let args = parse_macro_input!(args with Punctuated::<WidgetArg, Token![,]>::parse_terminated);
+
+    let fn_name = &input_fn.sig.ident;
+    let fn_vis = &input_fn.vis;
+    let fn_attrs = &input_fn.attrs;
+    let fn_sig = &input_fn.sig;
+    let fn_block = &input_fn.block;
+    let fn_name_str = fn_name.to_string();
+
+    let params = match widget_params(&args) {
+        Ok(params) => params,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let context_mode = match widget_context_mode(&input_fn.sig) {
+        Ok(mode) => mode,
+        Err(error) => return error.to_compile_error().into(),
+    };
+
+    let call_expr = match context_mode {
+        WidgetContextMode::None => quote! { #fn_name() },
+        WidgetContextMode::ByValue => quote! { #fn_name(__wui_context) },
+        WidgetContextMode::ByRef => quote! { #fn_name(&__wui_context) },
+    };
+    // A context-free function still decodes — the extension always sends a
+    // context, and validating the wire form keeps the contract exercised —
+    // but the binding stays unnamed so nothing warns on it.
+    let context_binding = if matches!(context_mode, WidgetContextMode::None) {
+        quote! {
+            let _ = #waterui::widgets::ffi::decode_context(
+                __wui_context_ptr,
+                __wui_context_len,
+            );
+        }
+    } else {
+        quote! {
+            let __wui_context: #waterui::widgets::WidgetContext =
+                #waterui::widgets::ffi::decode_context(
+                    __wui_context_ptr,
+                    __wui_context_len,
+                );
+        }
+    };
+
+    let payload = widget_payload(&fn_name_str, &params);
+    let payload_lit = syn::LitStr::new(&payload, Span::call_site());
+
+    let expanded = quote! {
+        #(#fn_attrs)*
+        #fn_vis #fn_sig #fn_block
+
+        #waterui::widgets::__export_widget!(
+            #fn_name_str,
+            #payload_lit,
+            [__wui_context_ptr, __wui_context_len, __wui_out] => {
+                #context_binding
+                let __wui_timeline = #waterui::widgets::IntoTimeline::into_timeline(#call_expr);
+                #waterui::widgets::ffi::Buffer::from_timeline(&__wui_timeline)
+            }
+        );
+    };
+
+    TokenStream::from(expanded)
+}
+
+/// The parsed `#[widget]` arguments after defaults.
+#[cfg(feature = "widgets")]
+struct WidgetParams {
+    display_name: String,
+    description: String,
+    kind: String,
+    families: Vec<String>,
+}
+
+/// A `#[widget]` function's `WidgetContext` parameter shape.
+#[cfg(feature = "widgets")]
+enum WidgetContextMode {
+    None,
+    ByValue,
+    ByRef,
+}
+
+/// Validates the `#[widget]` attribute's arguments.
+#[cfg(feature = "widgets")]
+fn widget_params(args: &Punctuated<WidgetArg, Token![,]>) -> syn::Result<WidgetParams> {
+    let mut display_name: Option<String> = None;
+    let mut description: Option<String> = None;
+    let mut kind: Option<String> = None;
+    let mut families: Option<Vec<String>> = None;
+    for arg in args {
+        match arg.name.to_string().as_str() {
+            "name" | "description" | "kind" => {
+                let value = widget_arg_string(arg)?;
+                let slot = match arg.name.to_string().as_str() {
+                    "name" => &mut display_name,
+                    "description" => &mut description,
+                    _ => &mut kind,
+                };
+                if slot.replace(value).is_some() {
+                    return Err(syn::Error::new_spanned(
+                        &arg.name,
+                        format!("duplicate `#[widget]` argument `{}`", arg.name),
+                    ));
+                }
+            }
+            "families" => {
+                let Expr::Array(array) = &arg.value else {
+                    return Err(syn::Error::new_spanned(
+                        &arg.value,
+                        "`#[widget]`'s `families` must be a list like [systemSmall, systemMedium]",
+                    ));
+                };
+                if array.elems.is_empty() {
+                    return Err(syn::Error::new_spanned(
+                        array,
+                        "`#[widget]` requires at least one supported family",
+                    ));
+                }
+                let mut parsed = Vec::with_capacity(array.elems.len());
+                for element in &array.elems {
+                    let Some(name) = widget_family_name(element) else {
+                        return Err(syn::Error::new_spanned(
+                            element,
+                            "`#[widget]` families are `WidgetFamily` case names like `systemSmall`",
+                        ));
+                    };
+                    parsed.push(name);
+                }
+                if families.replace(parsed).is_some() {
+                    return Err(syn::Error::new_spanned(
+                        &arg.name,
+                        "duplicate `#[widget]`'s `families`",
+                    ));
+                }
+            }
+            other => {
+                return Err(syn::Error::new_spanned(
+                    &arg.name,
+                    format!(
+                        "unknown `#[widget]` argument `{other}`; expected `name`, `description`, `kind` or `families`"
+                    ),
+                ));
+            }
+        }
+    }
+
+    let Some(display_name) = display_name else {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "`#[widget]` requires `name = \"…\"` — the title the widget gallery shows",
+        ));
+    };
+    let Some(description) = description else {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "`#[widget]` requires `description = \"…\"` — the subtitle the widget gallery shows",
+        ));
+    };
+    Ok(WidgetParams {
+        display_name,
+        description,
+        kind: kind.unwrap_or_default(),
+        families: families.unwrap_or_else(|| {
+            ["systemSmall", "systemMedium", "systemLarge"]
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        }),
+    })
+}
+
+/// One `families` element: an ident naming a known `WidgetFamily` case.
+#[cfg(feature = "widgets")]
+fn widget_family_name(element: &Expr) -> Option<String> {
+    let Expr::Path(path) = element else {
+        return None;
+    };
+    let name = path.path.get_ident().map(ToString::to_string)?;
+    WIDGET_FAMILIES.contains(&name.as_str()).then_some(name)
+}
+
+/// The function may take no parameter or one `WidgetContext` parameter (by
+/// value or by reference).
+#[cfg(feature = "widgets")]
+fn widget_context_mode(sig: &syn::Signature) -> syn::Result<WidgetContextMode> {
+    let is_widget_context = |ty: &Type| {
+        if let Type::Path(path) = ty
+            && let Some(segment) = path.path.segments.last()
+        {
+            return segment.ident == "WidgetContext";
+        }
+        false
+    };
+    match sig.inputs.len() {
+        0 => Ok(WidgetContextMode::None),
+        1 => {
+            let Some(arg) = sig.inputs.iter().next() else {
+                unreachable!("the signature's input count was checked above");
+            };
+            let syn::FnArg::Typed(pat_type) = arg else {
+                return Err(syn::Error::new_spanned(
+                    arg,
+                    "`#[widget]` can only be applied to free functions",
+                ));
+            };
+            match &*pat_type.ty {
+                ty if is_widget_context(ty) => Ok(WidgetContextMode::ByValue),
+                Type::Reference(reference) if is_widget_context(&reference.elem) => {
+                    Ok(WidgetContextMode::ByRef)
+                }
+                _ => Err(syn::Error::new_spanned(
+                    &pat_type.ty,
+                    "a `#[widget]` function takes at most one `WidgetContext` parameter",
+                )),
+            }
+        }
+        _ => Err(syn::Error::new_spanned(
+            &sig.inputs,
+            "a `#[widget]` function takes at most one `WidgetContext` parameter",
+        )),
+    }
+}
+
+/// The `waterui_meta_widget_*` record's JSON payload, assembled at
+/// expansion time — a literal the declaration macro parks in `.wmeta`.
+#[cfg(feature = "widgets")]
+fn widget_payload(fn_name: &str, params: &WidgetParams) -> String {
+    let kind = if params.kind.is_empty() {
+        fn_name
+    } else {
+        params.kind.as_str()
+    };
+    serde_json::json!({
+        "fn": fn_name,
+        "kind": kind,
+        "displayName": params.display_name,
+        "description": params.description,
+        "families": params.families,
+    })
+    .to_string()
+}
+
+#[cfg(all(test, feature = "widgets"))]
+mod widget_tests {
+    use super::*;
+    use syn::parse::Parser as _;
+
+    #[test]
+    fn widget_payload_preserves_declaration_strings() {
+        let title = "quote\"\\\n\u{1}日本語";
+        let params = WidgetParams {
+            display_name: title.to_owned(),
+            description: "line\nnext".to_owned(),
+            kind: "fixture".to_owned(),
+            families: vec!["systemSmall".to_owned()],
+        };
+        let payload: serde_json::Value =
+            serde_json::from_str(&widget_payload("snapshot", &params)).unwrap();
+        assert_eq!(payload["fn"], "snapshot");
+        assert_eq!(payload["displayName"], title);
+        assert_eq!(payload["description"], params.description);
+        assert_eq!(payload["families"][0], "systemSmall");
+    }
+
+    #[test]
+    fn widget_declaration_requires_a_family() {
+        let args = Punctuated::<WidgetArg, Token![,]>::parse_terminated
+            .parse2(quote!(
+                name = "Example",
+                description = "A widget",
+                families = []
+            ))
+            .unwrap();
+        let error = widget_params(&args).err().expect("empty families fail");
+
+        assert!(error.to_string().contains("at least one supported family"));
+    }
+
+    #[test]
+    fn widget_intent_validator_accepts_concrete_generic_self_type() {
+        let input_impl: syn::ItemImpl = syn::parse_quote!(
+            impl WidgetIntent for crate::Record<String> {
+                fn perform(self) {}
+            }
+        );
+        let ident =
+            validate_widget_intent_impl(&input_impl).expect("a concrete generic Self type accepts");
+        assert_eq!(ident, "Record");
+    }
+
+    #[test]
+    fn widget_intent_validator_rejects_generic_impl() {
+        let input_impl: syn::ItemImpl = syn::parse_quote!(
+            impl<T> WidgetIntent for Record<T> {
+                fn perform(self) {}
+            }
+        );
+        let error = validate_widget_intent_impl(&input_impl).err().unwrap();
+        assert!(error.to_string().contains("concrete-type"));
+    }
+
+    #[test]
+    fn widget_intent_params_rejects_invalid_arguments() {
+        let parse = |source: &str| {
+            Punctuated::<WidgetArg, Token![,]>::parse_terminated
+                .parse_str(source)
+                .expect("the argument list parses")
+        };
+        // `name` is required.
+        assert!(
+            widget_intent_params(&parse("kind = \"mark-done\""))
+                .err()
+                .expect("a missing name fails")
+                .to_string()
+                .contains("name")
+        );
+        // Duplicate arguments are rejected.
+        assert!(
+            widget_intent_params(&parse("name = \"a\", name = \"b\""))
+                .err()
+                .expect("a duplicate name fails")
+                .to_string()
+                .contains("duplicate")
+        );
+        // An explicit `kind` must not be empty.
+        assert!(
+            widget_intent_params(&parse("name = \"a\", kind = \"\""))
+                .err()
+                .expect("an empty kind fails")
+                .to_string()
+                .contains("kind")
+        );
+        // Unknown arguments are rejected.
+        assert!(
+            widget_intent_params(&parse("name = \"a\", bogus = \"x\""))
+                .err()
+                .expect("an unknown argument fails")
+                .to_string()
+                .contains("bogus")
+        );
+    }
+}
+
+/// The parsed `#[widget_intent]` arguments after defaults.
+#[cfg(feature = "widgets")]
+struct WidgetIntentParams {
+    display_name: String,
+    kind: Option<String>,
+    description: Option<String>,
+}
+
+/// Validates `#[widget_intent]`'s `name = "…"`, `kind = "…"`,
+/// `description = "…"` arguments.
+#[cfg(feature = "widgets")]
+fn widget_intent_params(
+    args: &Punctuated<WidgetArg, Token![,]>,
+) -> syn::Result<WidgetIntentParams> {
+    let mut display_name: Option<String> = None;
+    let mut kind: Option<String> = None;
+    let mut description: Option<String> = None;
+    for arg in args {
+        let target = match arg.name.to_string().as_str() {
+            "name" => &mut display_name,
+            "kind" => &mut kind,
+            "description" => &mut description,
+            other => {
+                return Err(syn::Error::new_spanned(
+                    &arg.name,
+                    format!(
+                        "unknown `#[widget_intent]` argument `{other}`; expected `name`, `kind` or `description`"
+                    ),
+                ));
+            }
+        };
+        if target.is_some() {
+            return Err(syn::Error::new_spanned(
+                &arg.name,
+                format!("duplicate `#[widget_intent]` argument `{}`", arg.name),
+            ));
+        }
+        *target = Some(widget_arg_string(arg)?);
+    }
+    let Some(display_name) = display_name else {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "`#[widget_intent]` requires `name = \"…\"` — the intent's display title",
+        ));
+    };
+    if kind.as_deref().is_some_and(str::is_empty) {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "`#[widget_intent]`'s `kind` must not be empty — it is the intent's identifier",
+        ));
+    }
+    Ok(WidgetIntentParams {
+        display_name,
+        kind,
+        description,
+    })
+}
+
+/// Validates `#[widget_intent]`'s impl block — `impl WidgetIntent for
+/// <concrete-type>` with `fn perform(self)` — returning the `Self` type's
+/// terminal ident for the default kind.
+#[cfg(feature = "widgets")]
+fn validate_widget_intent_impl(input_impl: &syn::ItemImpl) -> syn::Result<syn::Ident> {
+    if !input_impl.generics.params.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &input_impl.generics,
+            "`#[widget_intent]` requires `impl WidgetIntent for <concrete-type>` — a generic impl cannot declare one intent kind",
+        ));
+    }
+    let type_ident = match (input_impl.trait_.as_ref(), &*input_impl.self_ty) {
+        (Some((path, _)), syn::Type::Path(type_path))
+            if path.segments.last().is_some_and(|seg| {
+                seg.ident == "WidgetIntent" && matches!(seg.arguments, syn::PathArguments::None)
+            }) =>
+        {
+            type_path.path.segments.last().map(|seg| seg.ident.clone())
+        }
+        _ => None,
+    };
+    let Some(type_ident) = type_ident else {
+        return Err(syn::Error::new_spanned(
+            input_impl,
+            "`#[widget_intent]` requires `impl WidgetIntent for <concrete-type>`",
+        ));
+    };
+    let has_perform = input_impl
+        .items
+        .iter()
+        .any(|item| matches!(item, syn::ImplItem::Fn(item_fn) if item_fn.sig.ident == "perform"));
+    if !has_perform {
+        return Err(syn::Error::new_spanned(
+            input_impl,
+            "`#[widget_intent]` requires `fn perform(self)` — the action's effect",
+        ));
+    }
+    Ok(type_ident)
+}
+
+/// Declares a `WidgetKit` intent: `#[waterui::widget_intent(name = "…")]`
+/// on an `impl WidgetIntent for T` block.
+///
+/// The attribute keeps the impl intact, implements `DeclaredWidgetIntent`
+/// for `T` (a hidden trait carrying the declared kind), and emits the
+/// `waterui_intent_<crate>_<hash>` C export plus the
+/// `waterui_meta_intent_<crate>_<hash>` record `water` reads while it
+/// generates the extension's `AppIntent` conformers — `hash` is the
+/// declared kind's `SHA-256` hex digest, so the generated `Swift` type
+/// identity is stable across record ordering.
+///
+/// `kind` defaults to the impl's concrete type ident; an explicit `kind`
+/// disambiguates impls for module-qualified type names that would collide.
+///
+/// # Panics
+///
+/// The declaration's `serde_json` record always serializes.
+#[cfg(feature = "widgets")]
+#[proc_macro_attribute]
+pub fn widget_intent(args: TokenStream, input: TokenStream) -> TokenStream {
+    let input_impl = parse_macro_input!(input as syn::ItemImpl);
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.into_compile_error().into(),
+    };
+    let args = parse_macro_input!(args with Punctuated::<WidgetArg, Token![,]>::parse_terminated);
+
+    let type_ident = match validate_widget_intent_impl(&input_impl) {
+        Ok(ident) => ident,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let params = match widget_intent_params(&args) {
+        Ok(params) => params,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let kind = params.kind.unwrap_or_else(|| type_ident.to_string());
+    let description = params
+        .description
+        .unwrap_or_else(|| params.display_name.clone());
+
+    // The declared kind's stable hash — the `Swift` type name and the C
+    // export/record suffix all derive from it, not from record ordering.
+    let hash = {
+        use std::fmt::Write as _;
+        sha2::Sha256::digest(kind.as_bytes()).iter().fold(
+            String::with_capacity(64),
+            |mut acc, byte| {
+                write!(acc, "{byte:02x}").expect("writing to a String never fails");
+                acc
+            },
+        )
+    };
+    let record = serde_json::json!({
+        "kind": kind,
+        "displayName": params.display_name,
+        "description": description,
+        "swiftType": format!("WUIIntent_{hash}"),
+    })
+    .to_string();
+    let record_lit = syn::LitStr::new(&record, Span::call_site());
+    let hash_lit = syn::LitStr::new(&hash, Span::call_site());
+    let kind_lit = syn::LitStr::new(&kind, Span::call_site());
+    let self_ty = &input_impl.self_ty;
+
+    let expanded = quote! {
+        #input_impl
+
+        #waterui::widgets::__export_intent!(
+            #hash_lit,
+            #record_lit,
+            [__wui_intent_ptr, __wui_intent_len] => {
+                let __wui_action: #self_ty = #waterui::widgets::serde_json::from_slice(
+                    unsafe {
+                        ::core::slice::from_raw_parts(
+                            __wui_intent_ptr,
+                            __wui_intent_len,
+                        )
+                    },
+                )
+                .expect("a widget intent's payload always decodes");
+                <#self_ty as #waterui::widgets::WidgetIntent>::perform(__wui_action);
+            }
+        );
+
+        impl #waterui::widgets::DeclaredWidgetIntent for #self_ty {
+            const KIND: &'static str = #kind_lit;
+        }
+    };
+    TokenStream::from(expanded)
 }
 
 fn testing_crate_path() -> syn::Result<proc_macro2::TokenStream> {
