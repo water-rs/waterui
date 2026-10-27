@@ -27,6 +27,13 @@ inputs:
       job installs them through the same verified path.
     required: false
     default: ""
+  apt-sources:
+    description: >
+      Space-separated apt source files a job added for its extra packages,
+      indexed together with Ubuntu's archive. Every other third-party source
+      on the runner stays unindexed.
+    required: false
+    default: ""
   runtime-fonts:
     description: >
       Install the system fallback font faces used by rendering tests.
@@ -42,7 +49,10 @@ runs:
     # baked index. The script path also works for cross-repository consumers.
     - name: Refresh the Ubuntu package index
       shell: bash
-      run: bash "${{ github.action_path }}/../refresh-apt-index/refresh.sh"
+      env:
+        APT_SOURCES: ${{ inputs.apt-sources }}
+      # Word splitting is the input's contract: one source file per word.
+      run: bash "${{ github.action_path }}/../refresh-apt-index/refresh.sh" $APT_SOURCES
 
     - name: Compute package list
       id: pkgs

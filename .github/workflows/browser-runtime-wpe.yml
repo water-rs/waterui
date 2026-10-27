@@ -116,6 +116,7 @@ jobs:
         with:
           gcc-version: "12"
           extra-packages: ${{ env.CLANG_PACKAGE }}
+          apt-sources: ${{ env.CLANG_APT_SOURCE }}
 
       - name: Build WPE WebKit
         if: steps.prefix.outputs.hit != 'true'
@@ -173,6 +174,7 @@ jobs:
         with:
           gcc-version: "12"
           extra-packages: ${{ env.CLANG_PACKAGE }}
+          apt-sources: ${{ env.CLANG_APT_SOURCE }}
 
       # Builds the bridge against a staging copy of the prefix and packages
       # the runtime zip with its .artifact.json metadata. build-runtime.sh
