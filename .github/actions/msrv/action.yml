@@ -28,9 +28,7 @@ runs:
         cache: "false"
     # The version comes from the manifest, not a literal in this file —
     # two sources of truth drift apart, which is the defect this leg exists
-    # to close. `cargo msrv verify` reads `rust-version` out of the
-    # manifest again on its own before compiling, so both ends agree on
-    # what is being verified.
+    # to close.
     - name: Install and pin the declared toolchain
       shell: bash
       run: |
@@ -46,25 +44,31 @@ runs:
         # so pinning through it would compile on stable and verify nothing.
         # The environment variable is the override that beats the file.
         echo "RUSTUP_TOOLCHAIN=$msrv" >> "$GITHUB_ENV"
-    # Proof, not assumption: the log records the compiler this leg actually
-    # uses, and it must equal the declared version.
-    - name: Show the pinned toolchain
+        echo "MSRV=$msrv" >> "$GITHUB_ENV"
+    # Proof, not assumption: the compiler this leg actually uses must equal
+    # the declared version.
+    - name: Check the pinned toolchain
       shell: bash
       run: |
-        rustc --version
+        set -euo pipefail
         cargo --version
+        version="$(rustc --version)"
+        echo "$version"
+        if ! [[ "$version" =~ ^rustc\ ${MSRV//./\\.}(\.|\ ) ]]; then
+          echo "::error::the pinned compiler is not the declared rust-version $MSRV"
+          exit 1
+        fi
     - uses: ./.github/actions/setup-linux-deps
       with:
         runtime-fonts: "false"
-    - uses: ./.github/actions/install-tool
-      with:
-        tool: cargo-msrv@0.19.3
-        path: ~/.cargo/bin/cargo-msrv*
+    # A plain check under the pinned toolchain: the toolchain is already
+    # installed and verified above, so no release-index lookup stands
+    # between this leg and the compile.
     - name: Verify the workspace builds on the declared MSRV
       shell: bash
       run: |
         set -o pipefail
-        if ! cargo msrv verify -- cargo check --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui; then
+        if ! cargo check --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui; then
           echo "::error::the workspace does not compile on the declared rust-version — either avoid the newer feature, or raise rust-version in [workspace.package] in Cargo.toml in the same pull request"
           exit 1
         fi
