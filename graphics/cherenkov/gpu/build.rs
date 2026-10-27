@@ -169,7 +169,13 @@ impl Stripped {
             "image-source",
         );
         let shader_no_cell = drop_marked(&shader_cell, "cell-buffer");
-        let shader_long = drop_marked(&shader_no_cell, "image-source");
+        let shader_long = drop_marked(
+            &drop_marked(
+                &drop_marked(&shader_no_cell, "image-source"),
+                "non-gradient-paint",
+            ),
+            "generic-composite",
+        );
         let shader_image = drop_marked(&shader_no_cell, "long-gradient-stub");
         let shader_plain = drop_marked(&shader_image, "image-source");
         let shared_plain = drop_marked(shared, "cell-buffer");
@@ -961,7 +967,7 @@ fn write_spirv(out_dir: &Path, spec: &Spec, module: &naga::Module, info: &naga::
                     bindings::TILE_INPUT_BINDINGS,
                     source_index,
                     match spec.name.as_str() {
-                        "engine_tile_glyph" => [false, false],
+                        "engine_tile_glyph" | "engine_tile_long" => [false, false],
                         "engine_tile_composite" => [false, true],
                         _ => [true, true],
                     },
@@ -1399,6 +1405,7 @@ fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option
         };
         if spec.attachment {
             match spec.name.as_str() {
+                "engine_tile_long" => defines.push("TILE_LONG_GRADIENT".to_owned()),
                 "engine_tile_glyph" => defines.push("TILE_GLYPH".to_owned()),
                 "engine_tile_composite" => defines.push("TILE_COMPOSITE_SOURCE_OVER".to_owned()),
                 _ => {}
