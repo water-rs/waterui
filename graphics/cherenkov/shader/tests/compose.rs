@@ -1339,3 +1339,34 @@ fn library_conflicts_are_checked_at_the_composed_precision() {
         "{f16:?}"
     );
 }
+
+/// `OpFNegate` (SPIR-V opcode 127) is the instruction naga's
+/// `ADJUST_COORDINATE_SPACE` writer flag appends to a vertex entry point's
+/// epilogue to flip `Position.y`. wgpu's Vulkan backend performs that flip
+/// itself with a negative-height viewport, so `spirv` must emit none of
+/// these (water-rs/waterui#3079).
+#[test]
+fn spirv_vertex_position_is_not_y_flipped() {
+    const OP_FNEGATE: u32 = 127;
+
+    let module = module(
+        "@vertex fn main(@location(0) pos: vec2<f32>) -> @builtin(position) vec4<f32> {
+            return vec4<f32>(pos, 0.0, 1.0);
+        }",
+    );
+    let info = validate(&module, Capabilities::empty()).expect("the vertex module validates");
+    let words = spirv(&module, &info, (1, 0)).expect("SPIR-V emits");
+
+    let mut index = 5; // The five-word SPIR-V header.
+    while index < words.len() {
+        let instruction = words[index];
+        let word_count = usize::try_from(instruction >> 16).expect("the word count fits");
+        assert_ne!(word_count, 0, "malformed SPIR-V instruction at {index}");
+        assert_ne!(
+            instruction & 0xFFFF,
+            OP_FNEGATE,
+            "a `Position.y` flip was emitted"
+        );
+        index += word_count;
+    }
+}

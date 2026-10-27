@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use eyre::{Context as _, bail};
 use serde::{Deserialize, Serialize};
+use sha2::Digest as _;
 use smol::fs;
 use walkdir::WalkDir;
 use zenwave::{Client as _, Method};
@@ -267,26 +268,53 @@ async fn stage_wpe(
     // application bundle — with the packaged bridge, extension and header
     // excluded; only engine runtime files stage, and the bridge the package
     // builds fresh from source replaces them.
-    let sdk_root = sdk_cache_root(host, &artifact.sha256).await?;
-    if !sdk_cache_ready(&sdk_root, &artifact.sha256).await? {
+    let sdk_inputs = SdkCacheInputs {
+        archive_sha256: artifact.sha256.clone(),
+        pkg_config_layout: PKG_CONFIG_LAYOUT,
+    };
+    let sdk_root = sdk_cache_root(host, &sdk_inputs).await?;
+    if !sdk_cache_ready(&sdk_root, &sdk_inputs).await? {
         let candidate = sdk_root
             .parent()
             .expect("the SDK cache entry has a parent")
             .join(format!(
                 "{}.candidate.{}",
-                artifact.sha256,
+                sdk_key(&sdk_inputs)?,
                 uuid::Uuid::new_v4()
             ));
-        extract_verified_zip(
-            &archive,
-            &artifact.sha256,
-            &candidate,
-            &wpe::SDK_NATIVE_EXCLUDES,
-        )
-        .await?;
-        fs::write(candidate.join(".extracted"), artifact.sha256.as_bytes()).await?;
+        let prepared: eyre::Result<()> = async {
+            extract_verified_zip(
+                &archive,
+                &artifact.sha256,
+                &candidate,
+                &wpe::SDK_NATIVE_EXCLUDES,
+            )
+            .await?;
+            wpe::normalize_sdk_descriptors(candidate.clone()).await?;
+            fs::write(
+                candidate.join(".extracted"),
+                serde_json::to_vec(&sdk_inputs)?,
+            )
+            .await?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = prepared {
+            match fs::remove_dir_all(&candidate).await {
+                Ok(()) => return Err(error),
+                Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(error);
+                }
+                Err(cleanup) => {
+                    return Err(error).wrap_err(format!(
+                        "cleaning up the failed SDK candidate {} also failed: {cleanup}",
+                        candidate.display()
+                    ));
+                }
+            }
+        }
         wpe::publish_candidate(&candidate, &sdk_root, || async {
-            if !sdk_cache_ready(&sdk_root, &artifact.sha256).await? {
+            if !sdk_cache_ready(&sdk_root, &sdk_inputs).await? {
                 bail!("the concurrently published WPE SDK cache has no completion record");
             }
             Ok(())
@@ -309,22 +337,50 @@ async fn stage_wpe(
     Ok(())
 }
 
-async fn sdk_cache_ready(root: &Path, sha256: &str) -> eyre::Result<bool> {
+/// The descriptor normalization layout version: bump it whenever the `.pc`
+/// normalization output changes so no cache entry of an older layout is read.
+const PKG_CONFIG_LAYOUT: u32 = 1;
+
+/// The SDK cache identity: the archive digest plus the descriptor
+/// normalization layout — a layout change never reads an old entry.
+#[derive(serde::Serialize, serde::Deserialize, PartialEq)]
+struct SdkCacheInputs {
+    archive_sha256: String,
+    pkg_config_layout: u32,
+}
+
+fn sdk_key(inputs: &SdkCacheInputs) -> eyre::Result<String> {
+    Ok(hex::encode(sha2::Sha256::digest(serde_json::to_vec(
+        inputs,
+    )?)))
+}
+
+async fn sdk_cache_ready(root: &Path, inputs: &SdkCacheInputs) -> eyre::Result<bool> {
     match fs::read(root.join(".extracted")).await {
-        Ok(record) if record == sha256.as_bytes() => Ok(true),
-        Ok(_) => bail!("the cached WPE SDK completion record has the wrong archive digest"),
+        Ok(record) => {
+            let recorded: SdkCacheInputs = serde_json::from_slice(&record)
+                .wrap_err("the cached WPE SDK completion record is malformed")?;
+            if recorded == *inputs {
+                Ok(true)
+            } else {
+                bail!("the cached WPE SDK completion record has different inputs")
+            }
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error.into()),
     }
 }
 
-/// The build host's immutable SDK cache for one verified archive digest.
-async fn sdk_cache_root(host: &crate::toolchain::Host, sdk_sha256: &str) -> eyre::Result<PathBuf> {
+/// The build host's immutable SDK cache for one verified archive + layout.
+async fn sdk_cache_root(
+    host: &crate::toolchain::Host,
+    inputs: &SdkCacheInputs,
+) -> eyre::Result<PathBuf> {
     let root = host
         .cache_dir()
         .ok_or_else(|| eyre::eyre!("platform does not expose a cache directory"))?
         .join("waterui/browser-runtimes/wpe-sdk")
-        .join(sdk_sha256);
+        .join(sdk_key(inputs)?);
     fs::create_dir_all(root.parent().expect("the SDK cache has a parent")).await?;
     Ok(root)
 }
@@ -900,6 +956,33 @@ mod tests {
     use crate::project::BrowserRuntimePlan;
     #[cfg(unix)]
     use std::io::Write as _;
+
+    fn sdk_inputs(layout: u32) -> super::SdkCacheInputs {
+        super::SdkCacheInputs {
+            archive_sha256: "ab".repeat(32),
+            pkg_config_layout: layout,
+        }
+    }
+
+    #[test]
+    fn sdk_cache_ready_distinguishes_missing_matching_and_foreign_markers() {
+        smol::block_on(async {
+            let root = tempfile::tempdir().unwrap();
+            let marker = root.path().join(".extracted");
+            let inputs = sdk_inputs(super::PKG_CONFIG_LAYOUT);
+            assert!(!super::sdk_cache_ready(root.path(), &inputs).await.unwrap());
+
+            std::fs::write(&marker, serde_json::to_vec(&inputs).unwrap()).unwrap();
+            assert!(super::sdk_cache_ready(root.path(), &inputs).await.unwrap());
+
+            let other_layout = sdk_inputs(super::PKG_CONFIG_LAYOUT + 1);
+            std::fs::write(&marker, serde_json::to_vec(&other_layout).unwrap()).unwrap();
+            assert!(super::sdk_cache_ready(root.path(), &inputs).await.is_err());
+
+            std::fs::write(&marker, "ab".repeat(32)).unwrap();
+            assert!(super::sdk_cache_ready(root.path(), &inputs).await.is_err());
+        });
+    }
 
     #[test]
     fn cef_rejects_intel_apple_and_preserves_other_intel_targets() {
