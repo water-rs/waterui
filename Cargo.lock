@@ -1751,6 +1751,7 @@ dependencies = [
  "cherenkov-oracle",
  "cherenkov-scene",
  "cherenkov-shader",
+ "cherenkov-simd",
  "cherenkov-stroke",
  "divan",
  "fearless_simd 1.1.0",
@@ -1766,7 +1767,6 @@ dependencies = [
  "rustc-hash 2.1.3",
  "skrifa 0.48.0",
  "tracing",
- "wide",
 ]
 
 [[package]]
@@ -1897,6 +1897,14 @@ dependencies = [
  "half",
  "naga",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "cherenkov-simd"
+version = "0.0.0"
+dependencies = [
+ "fearless_simd 1.1.0",
+ "libm",
 ]
 
 [[package]]
@@ -3601,6 +3609,9 @@ name = "fearless_simd"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3296eb97d869113eaf148a6bdf01884e90b3828ad7ae2340b0f93362fc158611"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "fiat-crypto"
@@ -3632,7 +3643,9 @@ dependencies = [
  "bytemuck",
  "cherenkov-oracle",
  "cherenkov-shader",
+ "cherenkov-simd",
  "divan",
+ "fearless_simd 1.1.0",
  "filtrate-core",
  "filtrate-derive",
  "half",
@@ -3642,7 +3655,6 @@ dependencies = [
  "tracing",
  "web-time",
  "wgpu",
- "wide",
 ]
 
 [[package]]
@@ -9818,15 +9830,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
-name = "safe_arch"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42c6efa15875e6ecb39ca61fb0b0c1a40b84fac5a5ffe71eef7d1000c8eb3f5f"
-dependencies = [
- "bytemuck",
-]
-
-[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14297,15 +14300,6 @@ dependencies = [
  "objc2-system-configuration",
  "wasite",
  "web-sys",
-]
-
-[[package]]
-name = "wide"
-version = "1.7.1"
-source = "git+https://github.com/lexoliu/wide?branch=perf%2Ff32x4-exp-const#a4ef6a82ea8dd0ba2b9a017cf91c81c105e5f049"
-dependencies = [
- "bytemuck",
- "safe_arch",
 ]
 
 [[package]]

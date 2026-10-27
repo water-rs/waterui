@@ -1604,7 +1604,7 @@ impl Engine for Cherenkov {
                 // uses on its presented texture.
                 Some(PresentKind::SrgbHw | PresentKind::SrgbShader) => {
                     cherenkov_cpu::present_srgb8(
-                        cherenkov_cpu::Level::new(),
+                        cherenkov_cpu::detect(),
                         self.headroom,
                         &rb.pixels,
                     )
@@ -1621,7 +1621,7 @@ impl Engine for Cherenkov {
                 // Extended linear Display P3 tone-maps to the display
                 // headroom, like the GPU's `LinearP3` destination.
                 Some(PresentKind::LinearP3) => cherenkov_cpu::present_linear_p3(
-                    cherenkov_cpu::Level::new(),
+                    cherenkov_cpu::detect(),
                     self.headroom,
                     &rb.pixels,
                 ),

@@ -203,7 +203,7 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
     builder
         .build()
         .map(|pool| {
-            let level = fearless_simd::Level::new();
+            let level = cherenkov_simd::detect();
             let info = RasterInfo {
                 threads: pool.current_num_threads(),
                 simd: level_name(level),
