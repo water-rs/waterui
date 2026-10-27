@@ -20,9 +20,9 @@ use std::rc::Rc;
 /// through the content-keyed `TextService` directly. Every other node
 /// measures by recursing through the renderer's `HydroState`, shared across one
 /// container level's children through a `RefCell`.
-pub(super) struct NodeSubView<'a> {
-    node: MainThreadBound<&'a RenderNode>,
-    state: MainThreadBound<&'a RefCell<&'a mut HydroState>>,
+pub(super) struct NodeSubView<'a, E: crate::text::TextEngine> {
+    node: MainThreadBound<&'a RenderNode<E>>,
+    state: MainThreadBound<&'a RefCell<&'a mut HydroState<E>>>,
     env: MainThreadBound<Environment>,
     /// The widget theme widget leaves measure against, forwarded by
     /// `measure` to [`RenderNode::measure`]. Main-thread only, like `state`.
@@ -37,13 +37,13 @@ pub(super) struct NodeSubView<'a> {
     measure_cache: MainThreadBound<RefCell<Vec<(ProposalSize, ViewDimensions)>>>,
     /// Present when this child is a resolved text-leaf subtree, letting `measure`
     /// shape it directly instead of recursing.
-    resolved_text: Option<ResolvedNodeTextMeasure>,
+    resolved_text: Option<ResolvedNodeTextMeasure<E>>,
 }
 
 /// A text-leaf node resolved on the main thread, ready to be shaped on any thread.
-struct ResolvedNodeTextMeasure {
+struct ResolvedNodeTextMeasure<E: crate::text::TextEngine> {
     input: ResolvedTextLayoutInput,
-    service: std::sync::Arc<TextService<SessionTextEngine>>,
+    service: std::sync::Arc<TextService<E>>,
     /// Maximum laid-out lines, from the leaf's `TextConfig::line_limit`.
     max_lines: Option<usize>,
 }
@@ -53,10 +53,10 @@ struct ResolvedNodeTextMeasure {
 /// the layout-transparent delegation arms of [`RenderNode::measure`] so the
 /// worker-thread fast path and the main-thread recursion agree on which
 /// environment scopes the text.
-fn try_resolve_node_text_leaf(
-    node: &RenderNode,
+fn try_resolve_node_text_leaf<E: crate::text::TextEngine>(
+    node: &RenderNode<E>,
     env: &Environment,
-    state: &RefCell<&mut HydroState>,
+    state: &RefCell<&mut HydroState<E>>,
 ) -> Option<(ResolvedTextLayoutInput, Option<usize>)> {
     match node {
         RenderNode::Text(text) => {
@@ -82,10 +82,10 @@ fn try_resolve_node_text_leaf(
     }
 }
 
-impl<'a> NodeSubView<'a> {
+impl<'a, E: crate::text::TextEngine> NodeSubView<'a, E> {
     pub(super) fn new(
-        node: &'a RenderNode,
-        state: &'a RefCell<&'a mut HydroState>,
+        node: &'a RenderNode<E>,
+        state: &'a RefCell<&'a mut HydroState<E>>,
         env: &'a Environment,
         theme: &'a Rc<dyn WidgetTheme>,
     ) -> Self {
@@ -131,7 +131,7 @@ impl<'a> NodeSubView<'a> {
     }
 }
 
-impl SubView for NodeSubView<'_> {
+impl<E: crate::text::TextEngine> SubView for NodeSubView<'_, E> {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         // Worker-safe path: shaping a resolved text leaf touches no
         // `MainThreadBound` state, so it may run on any thread.

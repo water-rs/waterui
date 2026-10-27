@@ -74,7 +74,7 @@ skrifa = "0.48"
 read-fonts = "0.45"
 bytemuck = "1"
 half = { version = "2", optional = true }
-glifo = { version = "0.4", optional = true }
+glifo = { version = "0.4", optional = true, features = ["png"] }
 # Minimal surface: CPU list + brand string for `cpu_model`.
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 

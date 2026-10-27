@@ -5,12 +5,15 @@ use std::path::{Path, PathBuf};
 
 use eyre::{Context as _, bail};
 use serde::{Deserialize, Serialize};
+use sha2::Digest as _;
 use smol::fs;
 use walkdir::WalkDir;
 use zenwave::{Client as _, Method};
 
 use crate::platform::TargetPlatform;
-use crate::project::{BrowserRuntimePlan, ResolvedWebViewBackend};
+mod wpe;
+
+use crate::project::{BrowserRuntimePlan, ResolvedWpeRuntime};
 
 const SOURCE_CONFIG: &str = include_str!("browser_runtime.toml");
 const RUNTIME_ROOT: &str = "waterui-browser";
@@ -48,7 +51,6 @@ impl RuntimeLayout {
 #[derive(Debug, Deserialize)]
 struct SourceConfiguration {
     release_base_url: String,
-    wpe_version: String,
     cef_version: String,
     cef_sbom_created: String,
 }
@@ -203,7 +205,7 @@ async fn stage_into(
     layout: RuntimeLayout,
 ) -> eyre::Result<()> {
     remove_staged(&layout).await?;
-    let engines = engines(plan);
+    let engines = engines(&plan);
     if engines.is_empty() {
         return Ok(());
     }
@@ -212,27 +214,28 @@ async fn stage_into(
         toml::from_str(SOURCE_CONFIG).wrap_err("invalid browser runtime source configuration")?;
     fs::create_dir_all(&layout.runtime_root).await?;
 
-    if engines.contains(&RuntimeEngine::Wpe) {
-        stage_wpe(host, &configuration, platform, &layout.runtime_root).await?;
-    }
-    if engines.contains(&RuntimeEngine::Cef) {
-        stage_cef(&configuration, platform, profile_directory, &layout).await?;
-    }
+    let stage_wpe = async {
+        if let Some(wpe) = &plan.wpe {
+            stage_wpe(host, &configuration, wpe, platform, &layout.runtime_root).await?;
+        }
+        Ok::<(), eyre::Report>(())
+    };
+    let stage_cef = async {
+        if engines.contains(&RuntimeEngine::Cef) {
+            stage_cef(&configuration, platform, profile_directory, &layout).await?;
+        }
+        Ok::<(), eyre::Report>(())
+    };
+    futures_util::future::try_join(stage_wpe, stage_cef).await?;
     Ok(())
 }
 
-fn engines(plan: BrowserRuntimePlan) -> BTreeSet<RuntimeEngine> {
+fn engines(plan: &BrowserRuntimePlan) -> BTreeSet<RuntimeEngine> {
     let mut engines = BTreeSet::new();
-    match plan.webview {
-        Some(ResolvedWebViewBackend::Wpe) => {
-            engines.insert(RuntimeEngine::Wpe);
-        }
-        Some(ResolvedWebViewBackend::Cef) => {
-            engines.insert(RuntimeEngine::Cef);
-        }
-        Some(ResolvedWebViewBackend::System) | None => {}
+    if plan.wpe.is_some() {
+        engines.insert(RuntimeEngine::Wpe);
     }
-    if plan.chromium {
+    if plan.requires_cef() {
         engines.insert(RuntimeEngine::Cef);
     }
     engines
@@ -241,26 +244,168 @@ fn engines(plan: BrowserRuntimePlan) -> BTreeSet<RuntimeEngine> {
 async fn stage_wpe(
     host: &crate::toolchain::Host,
     configuration: &SourceConfiguration,
+    wpe: &ResolvedWpeRuntime,
     platform: TargetPlatform,
     runtime_root: &Path,
 ) -> eyre::Result<()> {
     if platform != TargetPlatform::Linux {
         bail!("WPE runtime staging is Linux-only");
     }
-    let architecture = target_architecture()?;
-    let manifest_url = runtime_manifest_url(configuration);
+    let architecture = wpe.target().architecture.to_string();
+    let manifest_url = runtime_manifest_url(configuration, wpe.webkit_version());
     let manifest = download_manifest(&manifest_url).await?;
+    // The artifact pin is the resolved package's declared WebKit version, not
+    // a CLI-side default — the package's producer metadata is the pin.
     let artifact = select_artifact(
         &manifest,
         RuntimeEngine::Wpe,
-        &configuration.wpe_version,
+        wpe.webkit_version(),
         platform,
-        architecture,
+        &architecture,
     )?;
     let archive = cache_artifact(host, artifact).await?;
+    // The archive extracts into the build host's SDK cache — never the
+    // application bundle — with the packaged bridge, extension and header
+    // excluded; only engine runtime files stage, and the bridge the package
+    // builds fresh from source replaces them.
+    let sdk_inputs = SdkCacheInputs {
+        archive_sha256: artifact.sha256.clone(),
+        pkg_config_layout: PKG_CONFIG_LAYOUT,
+    };
+    let sdk_root = sdk_cache_root(host, &sdk_inputs).await?;
+    if !sdk_cache_ready(&sdk_root, &sdk_inputs).await? {
+        let candidate = sdk_root
+            .parent()
+            .expect("the SDK cache entry has a parent")
+            .join(format!(
+                "{}.candidate.{}",
+                sdk_key(&sdk_inputs)?,
+                uuid::Uuid::new_v4()
+            ));
+        let prepared: eyre::Result<()> = async {
+            extract_verified_zip(
+                &archive,
+                &artifact.sha256,
+                &candidate,
+                &wpe::SDK_NATIVE_EXCLUDES,
+            )
+            .await?;
+            wpe::normalize_sdk_descriptors(candidate.clone()).await?;
+            fs::write(
+                candidate.join(".extracted"),
+                serde_json::to_vec(&sdk_inputs)?,
+            )
+            .await?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = prepared {
+            match fs::remove_dir_all(&candidate).await {
+                Ok(()) => return Err(error),
+                Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(error);
+                }
+                Err(cleanup) => {
+                    return Err(error).wrap_err(format!(
+                        "cleaning up the failed SDK candidate {} also failed: {cleanup}",
+                        candidate.display()
+                    ));
+                }
+            }
+        }
+        wpe::publish_candidate(&candidate, &sdk_root, || async {
+            if !sdk_cache_ready(&sdk_root, &sdk_inputs).await? {
+                bail!("the concurrently published WPE SDK cache has no completion record");
+            }
+            Ok(())
+        })
+        .await?;
+    }
     let destination = runtime_root.join(RuntimeEngine::Wpe.as_str());
-    extract_verified_zip(&archive, &artifact.sha256, &destination).await?;
+    wpe::stage_engine_runtime(&sdk_root, &destination).await?;
+    let bridge = wpe::build(host, wpe, &sdk_root, &artifact.sha256).await?;
+    for output in [
+        "lib/libwaterui_wpe.so",
+        "lib/waterui-wpe/extensions/waterui_wpe_extension.so",
+    ] {
+        let target = destination.join(output);
+        fs::create_dir_all(target.parent().expect("a staged output has a parent")).await?;
+        fs::copy(bridge.prefix.join(output), target).await?;
+    }
+    stamp_wpe_runtime(&destination, wpe, &bridge, &artifact.sha256).await?;
     validate_wpe_runtime(&destination)?;
+    Ok(())
+}
+
+/// The descriptor normalization layout version: bump it whenever the `.pc`
+/// normalization output changes so no cache entry of an older layout is read.
+const PKG_CONFIG_LAYOUT: u32 = 1;
+
+/// The SDK cache identity: the archive digest plus the descriptor
+/// normalization layout — a layout change never reads an old entry.
+#[derive(serde::Serialize, serde::Deserialize, PartialEq)]
+struct SdkCacheInputs {
+    archive_sha256: String,
+    pkg_config_layout: u32,
+}
+
+fn sdk_key(inputs: &SdkCacheInputs) -> eyre::Result<String> {
+    Ok(hex::encode(sha2::Sha256::digest(serde_json::to_vec(
+        inputs,
+    )?)))
+}
+
+async fn sdk_cache_ready(root: &Path, inputs: &SdkCacheInputs) -> eyre::Result<bool> {
+    match fs::read(root.join(".extracted")).await {
+        Ok(record) => {
+            let recorded: SdkCacheInputs = serde_json::from_slice(&record)
+                .wrap_err("the cached WPE SDK completion record is malformed")?;
+            if recorded == *inputs {
+                Ok(true)
+            } else {
+                bail!("the cached WPE SDK completion record has different inputs")
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// The build host's immutable SDK cache for one verified archive + layout.
+async fn sdk_cache_root(
+    host: &crate::toolchain::Host,
+    inputs: &SdkCacheInputs,
+) -> eyre::Result<PathBuf> {
+    let root = host
+        .cache_dir()
+        .ok_or_else(|| eyre::eyre!("platform does not expose a cache directory"))?
+        .join("waterui/browser-runtimes/wpe-sdk")
+        .join(sdk_key(inputs)?);
+    fs::create_dir_all(root.parent().expect("the SDK cache has a parent")).await?;
+    Ok(root)
+}
+
+/// Writes the `native_bridge` section of the staged `runtime.json`: which
+/// package the bridge came from, at which ABI, built from which bytes,
+/// against which SDK, for which target — no local paths.
+async fn stamp_wpe_runtime(
+    destination: &Path,
+    wpe: &ResolvedWpeRuntime,
+    bridge: &wpe::NativeBridge,
+    sdk_sha256: &str,
+) -> eyre::Result<()> {
+    let path = destination.join("runtime.json");
+    let mut runtime: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).await?).wrap_err("staged WPE runtime.json")?;
+    runtime["native_bridge"] = serde_json::json!({
+        "bridge_abi": wpe.bridge_abi(),
+        "package_name": wpe.package_name(),
+        "package_version": wpe.package_version(),
+        "native_source_sha256": bridge.native_source_sha256,
+        "sdk_sha256": sdk_sha256,
+        "target": wpe.target().to_string(),
+    });
+    fs::write(&path, serde_json::to_vec_pretty(&runtime)?).await?;
     Ok(())
 }
 
@@ -472,6 +617,7 @@ async fn extract_verified_zip(
     archive: &Path,
     expected_sha256: &str,
     destination: &Path,
+    excludes: &[&str],
 ) -> eyre::Result<()> {
     let actual_sha256 = crate::utils::file_sha256(archive).await?;
     if actual_sha256 != expected_sha256 {
@@ -484,10 +630,14 @@ async fn extract_verified_zip(
     }
     let archive = archive.to_path_buf();
     let destination = destination.to_path_buf();
-    smol::unblock(move || extract_zip(&archive, &destination)).await
+    let excludes = excludes
+        .iter()
+        .map(|entry| (*entry).to_owned())
+        .collect::<Vec<_>>();
+    smol::unblock(move || extract_zip(&archive, &destination, &excludes)).await
 }
 
-fn extract_zip(archive: &Path, destination: &Path) -> eyre::Result<()> {
+fn extract_zip(archive: &Path, destination: &Path, excludes: &[String]) -> eyre::Result<()> {
     std::fs::create_dir_all(destination)?;
     let file = File::open(archive)?;
     let mut archive = zip::ZipArchive::new(file)?;
@@ -496,6 +646,12 @@ fn extract_zip(archive: &Path, destination: &Path) -> eyre::Result<()> {
         let relative = entry
             .enclosed_name()
             .ok_or_else(|| eyre::eyre!("browser runtime archive contains an unsafe path"))?;
+        if excludes
+            .iter()
+            .any(|excluded| relative == Path::new(excluded))
+        {
+            continue;
+        }
         let output = destination.join(&relative);
         if entry.is_dir() {
             std::fs::create_dir_all(&output)?;
@@ -750,10 +906,10 @@ async fn write_cef_sbom(path: &Path, version: &str, created: &str) -> eyre::Resu
 /// `WPE Runtime` workflow on a `browser-wpe-runtime/v<version>` tag, so the
 /// manifest is bound to the WPE version this CLI expects, not to the CLI
 /// release.
-fn runtime_manifest_url(configuration: &SourceConfiguration) -> String {
+fn runtime_manifest_url(configuration: &SourceConfiguration, wpe_version: &str) -> String {
     format!(
         "{}/browser-wpe-runtime/v{}/browser-runtime-manifest.json",
-        configuration.release_base_url, configuration.wpe_version
+        configuration.release_base_url, wpe_version
     )
 }
 
@@ -796,9 +952,37 @@ mod tests {
         find_cef_distribution, runtime_manifest_url, select_artifact, validate_cef_runtime,
     };
     use crate::platform::TargetPlatform;
-    use crate::project::{BrowserRuntimePlan, ResolvedWebViewBackend};
+
+    use crate::project::BrowserRuntimePlan;
     #[cfg(unix)]
     use std::io::Write as _;
+
+    fn sdk_inputs(layout: u32) -> super::SdkCacheInputs {
+        super::SdkCacheInputs {
+            archive_sha256: "ab".repeat(32),
+            pkg_config_layout: layout,
+        }
+    }
+
+    #[test]
+    fn sdk_cache_ready_distinguishes_missing_matching_and_foreign_markers() {
+        smol::block_on(async {
+            let root = tempfile::tempdir().unwrap();
+            let marker = root.path().join(".extracted");
+            let inputs = sdk_inputs(super::PKG_CONFIG_LAYOUT);
+            assert!(!super::sdk_cache_ready(root.path(), &inputs).await.unwrap());
+
+            std::fs::write(&marker, serde_json::to_vec(&inputs).unwrap()).unwrap();
+            assert!(super::sdk_cache_ready(root.path(), &inputs).await.unwrap());
+
+            let other_layout = sdk_inputs(super::PKG_CONFIG_LAYOUT + 1);
+            std::fs::write(&marker, serde_json::to_vec(&other_layout).unwrap()).unwrap();
+            assert!(super::sdk_cache_ready(root.path(), &inputs).await.is_err());
+
+            std::fs::write(&marker, "ab".repeat(32)).unwrap();
+            assert!(super::sdk_cache_ready(root.path(), &inputs).await.is_err());
+        });
+    }
 
     #[test]
     fn cef_rejects_intel_apple_and_preserves_other_intel_targets() {
@@ -817,8 +1001,9 @@ mod tests {
 
     #[test]
     fn chromium_and_cef_share_one_runtime() {
-        let engines = engines(BrowserRuntimePlan {
-            webview: Some(ResolvedWebViewBackend::Cef),
+        let engines = engines(&BrowserRuntimePlan {
+            wpe: None,
+            cef_webview: true,
             chromium: true,
         });
         assert_eq!(
@@ -857,10 +1042,10 @@ mod tests {
         let configuration: SourceConfiguration =
             toml::from_str(super::SOURCE_CONFIG).expect("source configuration must parse");
         assert_eq!(
-            runtime_manifest_url(&configuration),
+            runtime_manifest_url(&configuration, "2.52.5"),
             format!(
                 "https://github.com/water-rs/waterui/releases/download/browser-wpe-runtime/v{}/browser-runtime-manifest.json",
-                configuration.wpe_version
+                "2.52.5"
             )
         );
     }
@@ -957,12 +1142,53 @@ mod tests {
         archive.finish().expect("runtime archive must be finished");
 
         let destination = temporary.path().join("extracted");
-        super::extract_zip(&archive_path, &destination)
+        super::extract_zip(&archive_path, &destination, &[])
             .expect("runtime archive must extract successfully");
         let link = destination.join("lib/libengine.so.1");
         assert_eq!(
             std::fs::read_link(link).expect("runtime symbolic link must be restored"),
             std::path::Path::new("libengine.so")
         );
+    }
+
+    #[test]
+    fn the_sdk_excludes_its_packaged_bridge_artifacts() {
+        let temporary = tempfile::tempdir().expect("temporary sdk archive directory");
+        let archive_path = temporary.path().join("sdk.zip");
+        let archive_file =
+            std::fs::File::create(&archive_path).expect("sdk archive must be created");
+        let mut archive = zip::ZipWriter::new(archive_file);
+        for (entry, bytes) in [
+            ("lib/libwpewebkit.so", b"engine" as &[u8]),
+            ("lib/libwaterui_wpe.so", b"stale bridge"),
+            (
+                "lib/waterui-wpe/extensions/waterui_wpe_extension.so",
+                b"stale extension",
+            ),
+            ("include/waterui_wpe.h", b"stale header"),
+            ("runtime.json", b"{}"),
+        ] {
+            archive
+                .start_file(entry, zip::write::SimpleFileOptions::default())
+                .expect("sdk entry must be created");
+            archive.write_all(bytes).expect("sdk entry must be written");
+        }
+        archive.finish().expect("sdk archive must be finished");
+
+        let destination = temporary.path().join("extracted");
+        let excludes: Vec<String> = super::wpe::SDK_NATIVE_EXCLUDES
+            .iter()
+            .map(|entry| (*entry).to_owned())
+            .collect();
+        super::extract_zip(&archive_path, &destination, &excludes)
+            .expect("sdk archive must extract successfully");
+        assert!(destination.join("lib/libwpewebkit.so").is_file());
+        assert!(destination.join("runtime.json").is_file());
+        for excluded in &super::wpe::SDK_NATIVE_EXCLUDES {
+            assert!(
+                !destination.join(excluded).exists(),
+                "packaged {excluded} must not be staged"
+            );
+        }
     }
 }

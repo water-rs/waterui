@@ -42,10 +42,12 @@ mod attributes;
 mod values;
 
 use suiteki::Str;
+#[cfg(debug_assertions)]
+use waterui_ts::schema::dir_entry;
 use waterui_ts::schema::{
     CatalogSchema, ChildrenSlot, ComponentSchema, ModifierSchema, RuntimePart, TsType, TypeSchema,
-    attributes_of, catalog_encoded_len, contract_hash, dir_entry, encode_catalog,
-    encode_runtime_half, payload, runtime_half_encoded_len,
+    attributes_of, catalog_encoded_len, contract_hash, encode_catalog, encode_runtime_half,
+    payload, runtime_half_encoded_len,
 };
 
 #[cfg(feature = "media")]
@@ -337,6 +339,7 @@ pub static waterui_meta_ts_catalog: [u8; CATALOG_RECORD_LEN] =
     dir_entry::<CATALOG_RECORD_LEN>(b"waterui_meta_ts_catalog", CATALOG_ENCODED);
 
 /// The record's length: the name, NUL, the encoded catalog, NUL.
+#[cfg(debug_assertions)]
 const CATALOG_RECORD_LEN: usize = b"waterui_meta_ts_catalog".len() + ENCODED.len() + 1;
 
 /// The encoded catalog without its terminator: the exact bytes the CLI
@@ -379,6 +382,7 @@ pub static waterui_meta_ts_runtime_catalog: [u8; RUNTIME_CATALOG_RECORD_LEN] =
     );
 
 /// The record's length: the name, NUL, the encoded half, NUL.
+#[cfg(debug_assertions)]
 const RUNTIME_CATALOG_RECORD_LEN: usize =
     b"waterui_meta_ts_runtime_catalog".len() + CATALOG_HALF.len() + 1;
 

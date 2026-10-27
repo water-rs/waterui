@@ -52,7 +52,7 @@ pub struct SemanticPumpResult {
 /// and the input events queued for the next pump.
 struct SemanticWindow {
     window: Window,
-    core: SemanticCore,
+    core: SemanticCore<crate::text::ParleyEngine>,
     pending_events: VecDeque<InputEvent>,
     /// Set when state changed outside a pump (an accessibility action, a
     /// signal write from an event) so the next pump re-emits even when no
@@ -83,7 +83,7 @@ impl SemanticWindow {
     ) -> Self {
         let mut core = SemanticCore::new(
             Instant::now(),
-            SessionTextEngine::from_collection(fonts, family_resolution),
+            ParleyEngine::from_collection(fonts, family_resolution),
         );
         core.set_window_id(window_id);
         core.set_window_closable(window.closable);
@@ -211,7 +211,10 @@ impl SemanticRuntime {
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         install_native_component_hooks(&mut env);
-        install_headless_window_managers(&mut env, Rc::clone(&pending_window_queue));
+        install_headless_window_managers::<crate::text::ParleyEngine>(
+            &mut env,
+            Rc::clone(&pending_window_queue),
+        );
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // Framework tokens only: the semantic runtime has no `Style`, so no
         // style-package tokens ever install — widget structure, roles, labels
@@ -250,7 +253,7 @@ impl SemanticRuntime {
         ));
 
         let window_id = env
-            .get::<MenuShortcutRegistry>()
+            .get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
             .expect("install_headless_window_managers seeds MenuShortcutRegistry")
             .mint_window_id();
         window.arm_close_requests(&env);
@@ -347,7 +350,7 @@ impl SemanticRuntime {
     }
 
     fn is_quiescent(&self, perpetual: PerpetualAnimation) -> bool {
-        let scheduled = |core: &SemanticCore| match perpetual {
+        let scheduled = |core: &SemanticCore<crate::text::ParleyEngine>| match perpetual {
             PerpetualAnimation::Counts => core.has_scheduled_semantic_work(),
             PerpetualAnimation::Ignored => core.has_finite_semantic_work(),
         };
@@ -491,7 +494,7 @@ impl SemanticRuntime {
             let fonts = self.fonts.clone();
             let window_id = self
                 .env
-                .get::<MenuShortcutRegistry>()
+                .get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
                 .mint_window_id();
             window.arm_close_requests(&self.env);

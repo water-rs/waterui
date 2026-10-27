@@ -79,7 +79,7 @@ pub fn publish_if_pending(session: &mut super::host::AndroidSession) {
         .runtime
         .renderer
         .take_merged_accessibility_tree_update(std::iter::empty::<
-            &mut crate::renderer::SemanticCore,
+            &mut crate::renderer::SemanticCore<super::AndroidTextEngine>,
         >())
     else {
         return;

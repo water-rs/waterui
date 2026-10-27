@@ -30,9 +30,9 @@ use crate::renderer::local_interaction_state;
 use crate::theme::PickerMetrics;
 use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
 
-impl HydroNativeView for Native<PickerConfig> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<PickerConfig> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -45,13 +45,13 @@ impl HydroNativeView for Native<PickerConfig> {
 /// cloneable [`PickerConfig`] drives the field chrome + accessibility, and its
 /// label is held as a [`RetainedSubview`] built once and re-flushed each frame
 /// so reactive label content stays live.
-pub struct PickerRenderState {
+pub struct PickerRenderState<E: crate::text::TextEngine> {
     pub(crate) config: PickerConfig,
-    label_view: RetainedSubview,
+    label_view: RetainedSubview<E>,
     menu_open: Rc<Cell<bool>>,
 }
 
-impl PickerRenderState {
+impl<E: crate::text::TextEngine> PickerRenderState<E> {
     pub(crate) fn from_config(config: PickerConfig) -> Self {
         Self {
             label_view: RetainedSubview::new(menu_picker_label_view(&config.label)),
@@ -64,7 +64,7 @@ impl PickerRenderState {
     /// `&mut HydroState`, no renderer, so it must be built before then).
     pub(crate) fn prebuild(
         &mut self,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         self.label_view.ensure_built(renderer, env);
@@ -102,11 +102,11 @@ pub fn menu_picker_label_view(label: &Label) -> AnyView {
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn picker_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn picker_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
     theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
-    state: &Rc<RefCell<PickerRenderState>>,
+    state: &Rc<RefCell<PickerRenderState<E>>>,
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
@@ -146,15 +146,16 @@ pub fn picker_accessibility(
                 }
                 let selected_text = option_labels[selected_index].clone();
                 let mut node = AccessibilityNode::new(
-                    crate::renderer::SemanticCore::resolve_accessibility_role(
+                    crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                         env,
                         AccessibilityNodeRole::ComboBox,
                     ),
                 );
-                let default_label = crate::renderer::SemanticCore::accessibility_label_from_label(
-                    &picker.label,
-                    env,
-                );
+                let default_label =
+                    crate::renderer::SemanticCore::<E>::accessibility_label_from_label(
+                        &picker.label,
+                        env,
+                    );
                 let label = renderer.resolve_accessibility_label(env, default_label);
                 if let Some(label) = label {
                     node.set_label(label);
@@ -184,7 +185,7 @@ pub fn picker_accessibility(
                 });
                 for (index, item) in items.iter().enumerate() {
                     let mut option = AccessibilityNode::new(
-                        crate::renderer::SemanticCore::resolve_accessibility_role(
+                        crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                             env,
                             AccessibilityNodeRole::ListBoxOption,
                         ),
@@ -258,7 +259,7 @@ pub fn picker_accessibility(
                     let picker_env = env.clone();
                     AccessibilityActionTarget::Activate {
                         action: Rc::new(RefCell::new(
-                            move |renderer: &mut crate::renderer::SemanticCore,
+                            move |renderer: &mut crate::renderer::SemanticCore<E>,
                                   env: &Environment| {
                                 // `Click` toggles the popup — opening or
                                 // dismissing is a handled activation either
@@ -314,15 +315,16 @@ pub fn picker_accessibility(
             }
             PickerStyle::Radio | PickerStyle::Segmented => {
                 let mut group = AccessibilityNode::new(
-                    crate::renderer::SemanticCore::resolve_accessibility_role(
+                    crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                         env,
                         AccessibilityNodeRole::Group,
                     ),
                 );
-                let default_label = crate::renderer::SemanticCore::accessibility_label_from_label(
-                    &picker.label,
-                    env,
-                );
+                let default_label =
+                    crate::renderer::SemanticCore::<E>::accessibility_label_from_label(
+                        &picker.label,
+                        env,
+                    );
                 let group_label = renderer.resolve_accessibility_label(env, default_label);
                 if let Some(label) = group_label {
                     group.set_label(label);
@@ -402,7 +404,7 @@ pub fn picker_accessibility(
                         break;
                     }
                     let mut option = AccessibilityNode::new(
-                        crate::renderer::SemanticCore::resolve_accessibility_role(
+                        crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                             env,
                             AccessibilityNodeRole::RadioButton,
                         ),
@@ -477,10 +479,10 @@ pub fn picker_accessibility(
 /// A segmented picker (`StretchAxis::Horizontal`) answers a finite width
 /// proposal, never below its intrinsic width; every other picker answers its
 /// intrinsic size (`docs/layout-spec.md` §6).
-pub fn measure_picker_node(
-    state: &PickerRenderState,
+pub fn measure_picker_node<E: crate::text::TextEngine>(
+    state: &PickerRenderState<E>,
     proposal: ProposalSize,
-    hydro: &mut HydroState,
+    hydro: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -501,9 +503,9 @@ pub fn measure_picker_node(
 
 /// Renders a retained picker leaf every flush: emits a11y (unless hidden) then the
 /// style-specific chrome + options, reading the items/selection signals each frame.
-pub fn render_picker_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<PickerRenderState>>,
+pub fn render_picker_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<PickerRenderState<E>>>,
     env: &Environment,
 ) {
     let hidden = env
@@ -523,9 +525,9 @@ pub fn render_picker_node(
     render_picker_parts(ctx, state, env);
 }
 
-pub fn render_picker_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<PickerRenderState>>,
+pub fn render_picker_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<PickerRenderState<E>>>,
     env: &Environment,
 ) {
     // The items/selection signals are read through `read_signal` so a membership or
@@ -589,9 +591,9 @@ pub fn menu_picker_option_rect(
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
 )]
-pub fn render_menu_picker(
-    ctx: &mut WidgetRenderContext<'_>,
-    owner: &Rc<RefCell<PickerRenderState>>,
+pub fn render_menu_picker<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    owner: &Rc<RefCell<PickerRenderState<E>>>,
     selection: Binding<Id>,
     items: Vec<PickerItem<Id>>,
     env: &Environment,
@@ -812,9 +814,9 @@ pub fn segmented_label_area(
 /// suppressed: the label is a retained node re-flushed each frame so reactive
 /// content stays live, and its semantics are merged into the picker's own node
 /// by `picker_accessibility`, so the sub-view emits no node of its own.
-fn flush_picker_label(
-    ctx: &mut WidgetRenderContext<'_>,
-    owner: &Rc<RefCell<PickerRenderState>>,
+fn flush_picker_label<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    owner: &Rc<RefCell<PickerRenderState<E>>>,
     env: &Environment,
     rect: kurbo::Rect,
 ) {
@@ -839,9 +841,9 @@ fn flush_picker_label(
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
 )]
-pub fn render_radio_picker(
-    ctx: &mut WidgetRenderContext<'_>,
-    owner: &Rc<RefCell<PickerRenderState>>,
+pub fn render_radio_picker<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    owner: &Rc<RefCell<PickerRenderState<E>>>,
     selection: Binding<Id>,
     items: Vec<PickerItem<Id>>,
     env: &Environment,
@@ -957,9 +959,9 @@ pub fn render_radio_picker(
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
 )]
-pub fn render_segmented_picker(
-    ctx: &mut WidgetRenderContext<'_>,
-    owner: &Rc<RefCell<PickerRenderState>>,
+pub fn render_segmented_picker<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    owner: &Rc<RefCell<PickerRenderState<E>>>,
     selection: Binding<Id>,
     items: Vec<PickerItem<Id>>,
     env: &Environment,
@@ -1098,9 +1100,9 @@ fn segmented_label_rect(
 /// Emits a retained picker's accessibility tree for the semantic walk — the
 /// same nodes `picker_accessibility` registers, with no bounds.
 #[cfg(feature = "accessibility")]
-pub fn emit_picker_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<PickerRenderState>>,
+pub fn emit_picker_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<PickerRenderState<E>>>,
     env: &Environment,
 ) {
     picker_accessibility(renderer, None, None, state, env);

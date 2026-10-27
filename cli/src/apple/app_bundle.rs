@@ -663,7 +663,10 @@ async fn signing_entitlements(
 
 /// Serializes `entitlements` as an XML plist at `path`.
 #[cfg(target_os = "macos")]
-async fn write_entitlements(path: &Path, entitlements: plist::Dictionary) -> eyre::Result<()> {
+pub(crate) async fn write_entitlements(
+    path: &Path,
+    entitlements: plist::Dictionary,
+) -> eyre::Result<()> {
     let mut serialized = Vec::new();
     plist::Value::Dictionary(entitlements)
         .to_writer_xml(&mut serialized)
@@ -709,7 +712,7 @@ async fn codesign_bundle(
     codesign_path(host, app_path, identity, entitlements, identifier).await
 }
 
-async fn codesign_path(
+pub(crate) async fn codesign_path(
     host: &crate::toolchain::Host,
     path: &Path,
     identity: &str,

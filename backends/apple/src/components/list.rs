@@ -295,12 +295,22 @@ fn contains_navigation_link(view: &cocoa_ui::PlatformView) -> bool {
 }
 
 #[cfg(target_os = "ios")]
-/// The enclosing navigation item carries a `UISearchController` — its
-/// search region already occupies the space above the first card, so the
-/// 35pt label-less reserve must not stack on top of it.
-fn has_search_chrome(table: &TableView) -> bool {
-    cocoa_ui::uikit::view_controller::enclosing_controller(table)
-        .is_some_and(|controller| controller.navigationItem().searchController().is_some())
+/// Whether this table is the navigation page's first declared scroll surface.
+fn is_navigation_scroll_surface(table: &TableView) -> bool {
+    let Some(controller) = cocoa_ui::uikit::view_controller::enclosing_controller(table) else {
+        return false;
+    };
+    if controller.navigationController().is_none() {
+        return false;
+    }
+    controller
+        .view()
+        .and_then(|root| crate::primary_content::declared_scroll_view(&root))
+        .is_some_and(|surface| {
+            let surface: &cocoa_ui::PlatformView = surface.as_ref();
+            let table: &cocoa_ui::PlatformView = table;
+            core::ptr::eq(surface, table)
+        })
 }
 
 /// The selection mode `ListConfig` carries — `WuiList`'s
@@ -1246,23 +1256,25 @@ mod platform_impl {
         }
 
         fn section_header_height(&self, table: &TableView, section: usize) -> f64 {
-            // `SwiftUI`'s list is a `UICollectionView` compositional layout
-            // reserving a 35pt header region above a label-less section,
-            // while a plain `.insetGrouped` `UITableView` only leaves
-            // ~17.7pt — the first card would sit ~17pt high. Later
-            // sections already total 35pt from header+footer spacing.
-            // A navigation item carrying a `UISearchController` fills the
-            // slot the reserve mimics, so the stock spacing applies there —
-            // the `.insetGrouped` top padding goes with it.
-            let state = self.state.borrow();
-            let search = section == 0 && has_search_chrome(table);
-            if search {
-                table.set_section_header_top_padding(0.0);
+            let anonymous_first = section == 0
+                && self
+                    .state
+                    .borrow()
+                    .groups
+                    .first()
+                    .is_some_and(|group| group.label.is_none());
+            if !anonymous_first {
+                return f64::NAN;
             }
-            if section == 0 && state.groups.first().is_some_and(|g| g.label.is_none()) && !search {
-                35.0
+            // Navigation owns the first scroll surface's top spacing. Later
+            // independent lists keep the inset-grouped anonymous-section reserve.
+            if is_navigation_scroll_surface(table) {
+                table.set_section_header_top_padding(0.0);
+                // Grouped tables interpret zero as their default header height.
+                // The least positive native height suppresses the header instead.
+                f64::MIN_POSITIVE
             } else {
-                f64::NAN
+                35.0
             }
         }
 

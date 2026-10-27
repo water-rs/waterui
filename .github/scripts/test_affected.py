@@ -24,6 +24,7 @@ from affected import (
     is_workspace_wide,
     linux_package_args,
     manifest_tables,
+    msrv_relevant,
 )
 
 
@@ -100,6 +101,12 @@ def test_manifest_layout_and_comments_do_not_change_the_result():
 
 def test_an_unparseable_manifest_is_not_a_table_set():
     assert manifest_tables("not = [valid") is None
+
+
+def test_a_change_to_the_msrv_check_runs_it():
+    # Only manifests need git objects; these paths never reach them.
+    assert msrv_relevant(None, None, [("M", ".github/actions/msrv/action.yml")])
+    assert not msrv_relevant(None, None, [("M", ".github/actions/setup-rust/action.yml")])
 
 
 def test_apple_crates_are_dropped_from_linux_package_args():

@@ -24,6 +24,15 @@ pub mod widget;
 pub use view::View;
 pub use waterui_core::accessibility;
 
+/// The shared `waterui_meta_*` record emitters — `dir_static!` lands its
+/// section and retention cfg at the invoking crate's profile — re-exported
+/// for the asset macros that emit into user code. Gated on `assets`:
+/// generated expansions only reference `__meta` when that feature's code
+/// exists.
+#[cfg(feature = "assets")]
+#[doc(hidden)]
+pub use waterui_meta as __meta;
+
 pub mod theme;
 pub mod prelude {
     //! A collection of commonly used traits and types for easy importing.
@@ -184,6 +193,11 @@ pub mod ts;
 pub use waterui_video as video;
 #[cfg(feature = "webview")]
 pub use waterui_webview as webview;
+/// The `WidgetKit` widget authoring surface: the closed snapshot schema a
+/// `#[waterui::widget]` function produces, dated per timeline entry, and the
+/// restricted constructors that build it.
+#[cfg(feature = "widgets")]
+pub use waterui_widgets as widgets;
 
 // Asset types re-exported for convenience
 #[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]

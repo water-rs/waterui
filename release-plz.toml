@@ -230,10 +230,13 @@ version_group = "waterui"
 name = "waterui-backend-core"
 version_group = "waterui"
 
-# Hydrolysis releases on its own version line — it is not in the waterui
-# version group — under `hydrolysis-v*` tags.
+# Hydrolysis is in the waterui version group for the reason the CLI is
+# (#2688): it depends on group crates through workspace `^` requirements,
+# so an independent line could ship a patch whose dependency edge crosses a
+# `0.x` minor (#2961). Its tags stay namespaced under `hydrolysis-v*`.
 [[package]]
 name = "hydrolysis"
+version_group = "waterui"
 git_release_name = "hydrolysis-v{{ version }}"
 git_tag_name = "hydrolysis-v{{ version }}"
 

@@ -518,7 +518,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo -u "$E2E_USER" -H env E2E_PLATFORM="$E2E_PLATFORM" E2E_BACKEND="$E2E_BACKEND" \
+          # The Ubuntu image writes the runner's XDG_CONFIG_HOME into
+          # /etc/environment, which sudo applies to the fresh user too
+          # (actions/runner-images#13049); AGP would then put the debug
+          # keystore under /home/runner. A new account has none.
+          sudo -u "$E2E_USER" -H env -u XDG_CONFIG_HOME E2E_PLATFORM="$E2E_PLATFORM" E2E_BACKEND="$E2E_BACKEND" \
             WATERUI_SRC="$GITHUB_WORKSPACE" \
             ANDROID_HOME="${ANDROID_HOME:-}" ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-}" \
             ANDROID_NDK_ROOT="${ANDROID_NDK_ROOT:-}" ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-}" \
@@ -1015,7 +1019,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo -u "$E2E_USER" -H env E2E_PLATFORM="$E2E_PLATFORM" E2E_BACKEND="$E2E_BACKEND" \
+          # No runner XDG_CONFIG_HOME, as in the package step above.
+          sudo -u "$E2E_USER" -H env -u XDG_CONFIG_HOME E2E_PLATFORM="$E2E_PLATFORM" E2E_BACKEND="$E2E_BACKEND" \
             bash -s <<'SCRIPT'
           set -uo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"

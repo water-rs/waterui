@@ -93,11 +93,27 @@ pub fn lazy_stack_axis_config(
     })
 }
 
+/// A lazy-stack item's cross extent and whether it stretches the cross axis,
+/// following the per-child protocol of the layout specification (§4.1, §5): a
+/// cross-axis stretcher takes `max(measured, bounds)`, an unbounded
+/// measurement is a stretcher that takes the bounds, and any other item keeps
+/// its own measured answer. Nothing is clamped: an item wider than the bounds
+/// overflows them, and an overflowing stretcher is pinned to the bounds' min
+/// edge rather than alignment-placed.
+const fn lazy_cross_extent(measured: f64, flagged: bool, bounds: f64) -> (f64, bool) {
+    if measured.is_infinite() {
+        (bounds, true)
+    } else if flagged {
+        (measured.max(bounds), true)
+    } else {
+        (measured, false)
+    }
+}
+
 /// Places one lazy-stack item: given its measured `size`, `stretch_axis`, the
 /// container `bounds`, and the running main-axis `cursor`, returns the item's rect.
-/// Shared by the immediate-mode `render_lazy_container` handler and the retained
-/// render tree's `LazyStackNode` so the cross-axis sizing/alignment rules live in
-/// exactly one place.
+/// `LazyStackNode` in `renderer/tree/collection.rs` is the caller, so the
+/// cross-axis sizing/alignment rules live in exactly one place.
 pub fn place_lazy_stack_item(
     axis_config: &LazyStackAxisConfig,
     stretch_axis: StretchAxis,
@@ -107,24 +123,16 @@ pub fn place_lazy_stack_item(
 ) -> kurbo::Rect {
     match axis_config {
         LazyStackAxisConfig::Vertical { alignment, .. } => {
-            assert!(
-                !(matches!(
+            let (child_width, stretches) = lazy_cross_extent(
+                f64::from(size.width),
+                matches!(
                     stretch_axis,
-                    StretchAxis::Vertical | StretchAxis::Both | StretchAxis::MainAxis
-                )),
-                "hydrolysis LazyContainer VStackLayout does not support children stretching on main axis"
+                    StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::CrossAxis
+                ),
+                bounds.width(),
             );
-            let child_width = if matches!(
-                stretch_axis,
-                StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::CrossAxis
-            ) || size.width.is_infinite()
-            {
-                bounds.width()
-            } else {
-                f64::from(size.width).min(bounds.width())
-            };
             let child_height = f64::from(size.height);
-            let logical_x = if *alignment == HorizontalAlignment::Leading {
+            let logical_x = if stretches || *alignment == HorizontalAlignment::Leading {
                 bounds.x0
             } else if *alignment == HorizontalAlignment::Trailing {
                 bounds.x1 - child_width
@@ -139,24 +147,16 @@ pub fn place_lazy_stack_item(
             kurbo::Rect::new(x, cursor, x + child_width, cursor + child_height)
         }
         LazyStackAxisConfig::Horizontal { alignment, .. } => {
-            assert!(
-                !(matches!(
-                    stretch_axis,
-                    StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::MainAxis
-                )),
-                "hydrolysis LazyContainer HStackLayout does not support children stretching on main axis"
-            );
             let child_width = f64::from(size.width);
-            let child_height = if matches!(
-                stretch_axis,
-                StretchAxis::Vertical | StretchAxis::Both | StretchAxis::CrossAxis
-            ) || size.height.is_infinite()
-            {
-                bounds.height()
-            } else {
-                f64::from(size.height).min(bounds.height())
-            };
-            let y = if *alignment == VerticalAlignment::Top {
+            let (child_height, stretches) = lazy_cross_extent(
+                f64::from(size.height),
+                matches!(
+                    stretch_axis,
+                    StretchAxis::Vertical | StretchAxis::Both | StretchAxis::CrossAxis
+                ),
+                bounds.height(),
+            );
+            let y = if stretches || *alignment == VerticalAlignment::Top {
                 bounds.y0
             } else if *alignment == VerticalAlignment::Bottom {
                 bounds.y1 - child_height
@@ -443,25 +443,6 @@ mod tests {
     }
 
     #[test]
-    fn rtl_vertical_stack_mirrors_leading_cross_axis_placement() {
-        let axis = LazyStackAxisConfig::Vertical {
-            spacing: Computed::constant(0.0),
-            alignment: HorizontalAlignment::Leading,
-            direction: Computed::constant(LayoutDirection::RightToLeft),
-        };
-
-        let rect = place_lazy_stack_item(
-            &axis,
-            StretchAxis::None,
-            Size::new(20.0, 10.0),
-            kurbo::Rect::new(0.0, 0.0, 100.0, 100.0),
-            8.0,
-        );
-
-        assert_eq!(rect, kurbo::Rect::new(80.0, 8.0, 100.0, 18.0));
-    }
-
-    #[test]
     fn rtl_horizontal_stack_places_first_item_at_the_right_edge() {
         let axis = LazyStackAxisConfig::Horizontal {
             spacing: Computed::constant(0.0),
@@ -478,5 +459,134 @@ mod tests {
         );
 
         assert_eq!(rect, kurbo::Rect::new(80.0, 0.0, 100.0, 10.0));
+    }
+
+    #[test]
+    fn vertical_stack_keeps_main_axis_stretch_item_at_ideal_extent() {
+        let axis = LazyStackAxisConfig::Vertical {
+            spacing: Computed::constant(0.0),
+            alignment: HorizontalAlignment::Leading,
+            direction: Computed::constant(LayoutDirection::LeftToRight),
+        };
+
+        let rect = place_lazy_stack_item(
+            &axis,
+            StretchAxis::MainAxis,
+            Size::new(20.0, 30.0),
+            kurbo::Rect::new(0.0, 0.0, 100.0, 100.0),
+            8.0,
+        );
+
+        assert_eq!(rect, kurbo::Rect::new(0.0, 8.0, 20.0, 38.0));
+    }
+
+    #[test]
+    fn horizontal_stack_keeps_main_axis_stretch_item_at_ideal_extent() {
+        let axis = LazyStackAxisConfig::Horizontal {
+            spacing: Computed::constant(0.0),
+            alignment: VerticalAlignment::Top,
+            direction: Computed::constant(LayoutDirection::LeftToRight),
+        };
+
+        let rect = place_lazy_stack_item(
+            &axis,
+            StretchAxis::MainAxis,
+            Size::new(30.0, 20.0),
+            kurbo::Rect::new(0.0, 0.0, 100.0, 100.0),
+            8.0,
+        );
+
+        assert_eq!(rect, kurbo::Rect::new(8.0, 0.0, 38.0, 20.0));
+    }
+
+    #[test]
+    fn cross_placement_follows_direction_alignment_and_stretch() {
+        use StretchAxis::{CrossAxis, Horizontal, None as NoStretch};
+        const INF: f32 = f32::INFINITY;
+        let (leading, center, trailing) = (
+            HorizontalAlignment::Leading,
+            HorizontalAlignment::Center,
+            HorizontalAlignment::Trailing,
+        );
+        let ltr = LayoutDirection::LeftToRight;
+        let rtl = LayoutDirection::RightToLeft;
+        // Vertical stack in 100 x 100 with the cursor at 8:
+        // (direction, alignment, stretch, measured width, expected x0..x1).
+        let vertical = [
+            // Narrow non-stretchers follow alignment, mirrored in RTL.
+            (ltr, leading, NoStretch, 20.0, (0.0, 20.0)),
+            (ltr, center, NoStretch, 20.0, (40.0, 60.0)),
+            (ltr, trailing, NoStretch, 20.0, (80.0, 100.0)),
+            (rtl, leading, NoStretch, 20.0, (80.0, 100.0)),
+            (rtl, center, NoStretch, 20.0, (40.0, 60.0)),
+            (rtl, trailing, NoStretch, 20.0, (0.0, 20.0)),
+            // Overflowing non-stretchers are unclamped and alignment-placed.
+            (ltr, leading, NoStretch, 300.0, (0.0, 300.0)),
+            (ltr, center, NoStretch, 300.0, (-100.0, 200.0)),
+            (ltr, trailing, NoStretch, 300.0, (-200.0, 100.0)),
+            (rtl, leading, NoStretch, 300.0, (-200.0, 100.0)),
+            // Narrow stretchers fill the bounds whatever the alignment.
+            (ltr, trailing, Horizontal, 20.0, (0.0, 100.0)),
+            (rtl, trailing, CrossAxis, 20.0, (0.0, 100.0)),
+            // Overflowing stretchers keep their extent, pinned to the min
+            // edge for every alignment; RTL mirrors that pin.
+            (ltr, leading, Horizontal, 300.0, (0.0, 300.0)),
+            (ltr, center, CrossAxis, 300.0, (0.0, 300.0)),
+            (ltr, trailing, StretchAxis::Both, 300.0, (0.0, 300.0)),
+            (rtl, trailing, Horizontal, 300.0, (-200.0, 100.0)),
+            // An unbounded measurement is a stretcher taking the bounds.
+            (ltr, trailing, NoStretch, INF, (0.0, 100.0)),
+        ];
+        for (direction, alignment, stretch, width, (x0, x1)) in vertical {
+            let axis = LazyStackAxisConfig::Vertical {
+                spacing: Computed::constant(0.0),
+                alignment,
+                direction: Computed::constant(direction),
+            };
+            let rect = place_lazy_stack_item(
+                &axis,
+                stretch,
+                Size::new(width, 10.0),
+                kurbo::Rect::new(0.0, 0.0, 100.0, 100.0),
+                8.0,
+            );
+            assert_eq!(
+                rect,
+                kurbo::Rect::new(x0, 8.0, x1, 18.0),
+                "vertical {direction:?} {alignment:?} {stretch:?} width={width}"
+            );
+        }
+
+        let (top, bottom) = (VerticalAlignment::Top, VerticalAlignment::Bottom);
+        // Horizontal stack in 100 x 100 with the cursor at 8 (LTR):
+        // (alignment, stretch, measured height, expected y0..y1).
+        let horizontal = [
+            (top, NoStretch, 20.0, (0.0, 20.0)),
+            (VerticalAlignment::Center, NoStretch, 20.0, (40.0, 60.0)),
+            (bottom, NoStretch, 20.0, (80.0, 100.0)),
+            (bottom, NoStretch, 300.0, (-200.0, 100.0)),
+            (bottom, StretchAxis::Vertical, 20.0, (0.0, 100.0)),
+            (bottom, StretchAxis::Vertical, 300.0, (0.0, 300.0)),
+            (bottom, NoStretch, INF, (0.0, 100.0)),
+        ];
+        for (alignment, stretch, height, (y0, y1)) in horizontal {
+            let axis = LazyStackAxisConfig::Horizontal {
+                spacing: Computed::constant(0.0),
+                alignment,
+                direction: Computed::constant(ltr),
+            };
+            let rect = place_lazy_stack_item(
+                &axis,
+                stretch,
+                Size::new(10.0, height),
+                kurbo::Rect::new(0.0, 0.0, 100.0, 100.0),
+                8.0,
+            );
+            assert_eq!(
+                rect,
+                kurbo::Rect::new(8.0, y0, 18.0, y1),
+                "horizontal {alignment:?} {stretch:?} height={height}"
+            );
+        }
     }
 }

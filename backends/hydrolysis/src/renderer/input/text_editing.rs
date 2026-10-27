@@ -1,7 +1,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::text::{SessionTextLayout, TextLayout as _, TextPosition, TextSelection};
+use crate::text::{TextLayout as _, TextPosition, TextSelection};
 use unicode_segmentation::UnicodeSegmentation;
 use waterui_graphics::draw::Draw as _;
 
@@ -54,17 +54,16 @@ pub enum TextInputModel {
 /// changes (a row inserted above a focused field, a `when(...)` revealing an
 /// earlier one).
 /// A scroll surface registered for the post-record focus clearance.
-pub struct ClearanceSurface {
-    pub(crate) cell: std::rc::Weak<crate::renderer::mount::cell::NodeCell>,
+pub struct ClearanceSurface<E: crate::text::TextEngine> {
+    pub(crate) cell: std::rc::Weak<crate::renderer::mount::cell::NodeCell<E>>,
     pub(crate) area: std::rc::Weak<crate::renderer::ScrollSurfaceArea>,
     pub(crate) handle: crate::scroll::ScrollHandle,
 }
 
-#[derive(Default)]
-pub struct TextEditingState {
+pub struct TextEditingState<E: crate::text::TextEngine> {
     /// The scroll surfaces the post-record focus clearance runs over.
-    pub(crate) clearance_surfaces: RefCell<Vec<ClearanceSurface>>,
-    pub(crate) text_input_targets: Vec<TextInputTarget>,
+    pub(crate) clearance_surfaces: RefCell<Vec<ClearanceSurface<E>>>,
+    pub(crate) text_input_targets: Vec<TextInputTarget<E>>,
     pub(crate) active_text_selection_drag: Option<ActiveTextSelectionDrag>,
     pub(crate) last_text_selection_click: Option<TextSelectionClickState>,
     pub(crate) active_text_context_menu: Option<ActiveTextContextMenu>,
@@ -89,7 +88,7 @@ pub struct TextEditingState {
     activations: u64,
 }
 
-impl TextEditingState {
+impl<E: crate::text::TextEngine> TextEditingState<E> {
     /// Records a primary press on an editable target.
     pub(crate) const fn note_activation(&mut self) {
         self.activations = self
@@ -130,7 +129,7 @@ impl TextEditingState {
     }
 
     /// This frame's focused target, if it is still emitted.
-    pub(crate) fn focused_target(&self) -> Option<&TextInputTarget> {
+    pub(crate) fn focused_target(&self) -> Option<&TextInputTarget<E>> {
         self.text_input_targets
             .as_slice()
             .get(self.focused_index()?)
@@ -191,10 +190,9 @@ pub struct ActiveTextSelectionDrag {
     pub(crate) focus: usize,
 }
 
-#[derive(Clone)]
-pub struct TextInputTarget {
+pub struct TextInputTarget<E: crate::text::TextEngine> {
     /// The node cell that registered the target.
-    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell<E>>,
     pub(crate) interaction_key: InteractionKey,
     pub(crate) modal: bool,
     pub(crate) bounds: kurbo::Rect,
@@ -209,7 +207,7 @@ pub struct TextInputTarget {
     pub(crate) text_bounds: kurbo::Rect,
     pub(crate) text_clip_bounds: kurbo::Rect,
     pub(crate) content_alpha: f32,
-    pub(crate) layout: SessionTextLayout,
+    pub(crate) layout: E::Layout,
     /// The string the IME-visible layout was typeset from — the committed
     /// text with the live pre-edit spliced in (a text field) or the mask
     /// glyphs (a secure field) — and that layout, in `text_bounds`
@@ -230,7 +228,7 @@ pub struct TextInputTarget {
             reason = "read by the Android editing session and its tests"
         )
     )]
-    pub(crate) display_layout: SessionTextLayout,
+    pub(crate) display_layout: E::Layout,
     pub(crate) purpose: TextInputPurpose,
     pub(crate) depth: usize,
     pub(crate) order: usize,
@@ -330,7 +328,7 @@ pub fn common_key_handler_scope(
         reason = "read by the Android editing session and its tests"
     )
 )]
-pub struct FocusedEditorSnapshot {
+pub struct FocusedEditorSnapshot<E: crate::text::TextEngine> {
     /// The focused field's stable identity; a host editing session tags its
     /// writes with the editor this snapshot minted so a stale connection's
     /// writes never reach a different field.
@@ -361,10 +359,10 @@ pub struct FocusedEditorSnapshot {
     /// The text `display_layout` describes — committed + pre-edit for a
     /// field, the mask glyphs for a secure field.
     pub(crate) display_text: String,
-    pub(crate) display_layout: SessionTextLayout,
+    pub(crate) display_layout: E::Layout,
 }
 
-pub struct TextInputTargetRegistration {
+pub struct TextInputTargetRegistration<E: crate::text::TextEngine> {
     pub interaction_key: InteractionKey,
     pub(crate) modal: bool,
     pub(crate) bounds: kurbo::Rect,
@@ -372,7 +370,7 @@ pub struct TextInputTargetRegistration {
     pub(crate) text_bounds: kurbo::Rect,
     pub(crate) text_clip_bounds: kurbo::Rect,
     pub(crate) content_alpha: f32,
-    pub(crate) layout: SessionTextLayout,
+    pub(crate) layout: E::Layout,
     /// See [`TextInputTarget::display_text`].
     #[cfg_attr(
         not(any(target_os = "android", test)),
@@ -389,7 +387,7 @@ pub struct TextInputTargetRegistration {
             reason = "read by the Android editing session and its tests"
         )
     )]
-    pub(crate) display_layout: SessionTextLayout,
+    pub(crate) display_layout: E::Layout,
     pub(crate) purpose: TextInputPurpose,
     pub(crate) model: TextInputModel,
     pub(crate) selection: Rc<RefCell<TextSelectionSlot>>,
@@ -398,8 +396,8 @@ pub struct TextInputTargetRegistration {
     pub(crate) env: Environment,
 }
 
-pub struct TextInputTargetData {
-    pub target: TextInputTargetRegistration,
+pub struct TextInputTargetData<E: crate::text::TextEngine> {
+    pub target: TextInputTargetRegistration<E>,
     pub(crate) depth: usize,
     pub(crate) focus_binding: Option<Binding<bool>>,
     #[cfg(feature = "accessibility")]
@@ -1012,9 +1010,9 @@ pub fn execute_text_context_menu_action(
     }
 }
 
-fn selection_for_target_layout(
+fn selection_for_target_layout<E: crate::text::TextEngine>(
     model: &TextInputModel,
-    layout: &SessionTextLayout,
+    layout: &E::Layout,
     slot: &TextSelectionSlot,
 ) -> TextSelection {
     assert!(
@@ -1033,16 +1031,18 @@ fn selection_for_target_layout(
     )
 }
 
-fn refreshed_target_selection(target: &TextInputTarget) -> TextSelection {
+fn refreshed_target_selection<E: crate::text::TextEngine>(
+    target: &TextInputTarget<E>,
+) -> TextSelection {
     let slot = target.selection.borrow();
     // The transient overlay may run after the model changes but before the next
     // retained-tree refresh replaces `target.layout`. Project the source
     // selection into that stale layout for this frame without writing the
     // clamped display position back into the model-owned selection slot.
-    selection_for_target_layout(&target.model, &target.layout, &slot)
+    selection_for_target_layout::<E>(&target.model, &target.layout, &slot)
 }
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) const fn set_text_caret_motion(&mut self, motion: TextCaretMotion) {
         self.text_editing.text_caret_motion = Some(motion);
     }
@@ -1076,7 +1076,7 @@ impl SemanticCore {
     }
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn prepare_transient_text_input_overlay(
         &mut self,
         _env: &Environment,
@@ -1145,7 +1145,7 @@ impl HydrolysisRenderer {
     }
 }
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn advance_text_caret_animation(&mut self, now: Instant) -> bool {
         if !self.text_editing.has_focus() {
             return false;
@@ -1226,10 +1226,10 @@ impl SemanticCore {
         &mut self,
         value: &waterui::component::focus::Focused,
         should_focus: bool,
-        scope: &Rc<NodeCell>,
+        scope: &Rc<NodeCell<E>>,
     ) {
         // Whether the entry's owning cell is `scope` or a descendant of it.
-        let in_scope = |owner: &std::rc::Weak<NodeCell>| -> bool {
+        let in_scope = |owner: &std::rc::Weak<NodeCell<E>>| -> bool {
             let mut cell = owner.upgrade();
             while let Some(current) = cell {
                 if Rc::ptr_eq(&current, scope) {
@@ -1465,7 +1465,7 @@ impl SemanticCore {
     }
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn render_active_text_context_menu_overlay(
         &mut self,
         env: &Environment,
@@ -1552,7 +1552,7 @@ impl HydrolysisRenderer {
     }
 }
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn handle_text_context_menu_overlay_pointer_down(
         &mut self,
         point: kurbo::Point,
@@ -1656,7 +1656,7 @@ impl SemanticCore {
             reason = "read by the Android editing session and its tests"
         )
     )]
-    pub(crate) fn focused_editor_snapshot(&self) -> Option<FocusedEditorSnapshot> {
+    pub(crate) fn focused_editor_snapshot(&self) -> Option<FocusedEditorSnapshot<E>> {
         let index = self.text_editing.focused_index()?;
         let target = &self.text_editing.text_input_targets[index];
         let text = target.model.plain_text();
@@ -1795,7 +1795,7 @@ impl SemanticCore {
     }
 
     pub(crate) fn text_selection_index_from_point(
-        target: &TextInputTarget,
+        target: &TextInputTarget<E>,
         point: kurbo::Point,
     ) -> usize {
         let local_x = crate::num_cast::f64_as_f32(point.x - target.text_bounds.x0);
@@ -1805,7 +1805,7 @@ impl SemanticCore {
     }
 
     pub(crate) fn text_selection_range_from_point_with_click_count(
-        target: &TextInputTarget,
+        target: &TextInputTarget<E>,
         point: kurbo::Point,
         click_count: u8,
     ) -> (usize, usize) {
@@ -2041,7 +2041,7 @@ impl SemanticCore {
         };
         let target = &self.text_editing.text_input_targets[index];
         let mut slot = selection.borrow_mut();
-        let current = selection_for_target_layout(&model, &target.layout, &slot);
+        let current = selection_for_target_layout::<E>(&model, &target.layout, &slot);
         let next = if backward {
             target.layout.previous_visual(current, extend)
         } else {
@@ -2081,7 +2081,7 @@ impl SemanticCore {
     /// `owner_closable` is the owning window's `closable`, the enabled state
     /// a Close Window row carries.
     pub(crate) fn build_text_context_menu_nodes(
-        target: &TextInputTarget,
+        target: &TextInputTarget<E>,
         env: &Environment,
         owner_closable: bool,
     ) -> Vec<PopupMenuNode> {
@@ -2176,7 +2176,9 @@ impl waterui_controls::CustomTextSelection for FieldSelectionDriver {
 /// action resolves it as any other environment value. Only a `TextField`
 /// declares `selection_menu` items — a secure field's selection never
 /// reaches a command.
-fn text_selection_for_env(target: &TextInputTarget) -> Option<waterui_controls::TextSelection> {
+fn text_selection_for_env<E: crate::text::TextEngine>(
+    target: &TextInputTarget<E>,
+) -> Option<waterui_controls::TextSelection> {
     if !matches!(target.model, TextInputModel::TextField { .. }) {
         return None;
     }
@@ -2186,7 +2188,7 @@ fn text_selection_for_env(target: &TextInputTarget) -> Option<waterui_controls::
     }))
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn show_text_context_menu(
         &mut self,
         index: usize,
@@ -2293,7 +2295,7 @@ impl HydrolysisRenderer {
     }
 }
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub fn handle_text_input(&mut self, text: &str) -> bool {
         let preedit_cleared = self.text_editing.take_ime_preedit().is_some();
         if text.is_empty() {
@@ -2622,10 +2624,73 @@ impl SemanticCore {
     }
 }
 
+impl<E: crate::text::TextEngine> Clone for TextInputTarget<E> {
+    fn clone(&self) -> Self {
+        Self {
+            owner: self.owner.clone(),
+            interaction_key: self.interaction_key.clone(),
+            modal: self.modal,
+            bounds: self.bounds,
+            frame: self.frame,
+            cursor_area: self.cursor_area,
+            text_bounds: self.text_bounds,
+            text_clip_bounds: self.text_clip_bounds,
+            content_alpha: self.content_alpha,
+            layout: self.layout.clone(),
+            #[cfg_attr(
+                not(any(target_os = "android", test)),
+                allow(
+                    dead_code,
+                    reason = "read by the Android editing session and its tests"
+                )
+            )]
+            display_text: self.display_text.clone(),
+            #[cfg_attr(
+                not(any(target_os = "android", test)),
+                allow(
+                    dead_code,
+                    reason = "read by the Android editing session and its tests"
+                )
+            )]
+            display_layout: self.display_layout.clone(),
+            purpose: self.purpose,
+            depth: self.depth,
+            order: self.order,
+            model: self.model.clone(),
+            selection: self.selection.clone(),
+            env: self.env.clone(),
+            key_handlers: self.key_handlers.clone(),
+            focus_binding: self.focus_binding.clone(),
+            #[cfg(feature = "accessibility")]
+            accessibility_node_id: self.accessibility_node_id,
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> Default for TextEditingState<E> {
+    fn default() -> Self {
+        Self {
+            clearance_surfaces: RefCell::default(),
+            text_input_targets: Vec::default(),
+            active_text_selection_drag: Option::default(),
+            last_text_selection_click: Option::default(),
+            active_text_context_menu: Option::default(),
+            focused_text_input: RefCell::default(),
+            focused_binding: Option::default(),
+            ime_preedit: Option::default(),
+            ime_preedit_caret: Option::default(),
+            text_caret_fade_started_at: Option::default(),
+            text_caret_next_frame_at: Option::default(),
+            text_caret_motion: Option::default(),
+            activations: Default::default(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text::{SessionTextEngine, TextEngine as _};
+    use crate::text::{ParleyEngine, TextEngine as _};
 
     fn empty_selection_menu() -> nami::Computed<Vec<ResolvedMenuItem>> {
         nami::Computed::new(Vec::new())
@@ -2759,14 +2824,15 @@ mod tests {
     #[test]
     fn stale_transient_layout_does_not_rewind_the_model_selection() {
         let model = text_field_model("l", Some(1));
-        let layout = SessionTextEngine::system(FontFamilyResolution::Strict).empty_layout();
+        let layout = ParleyEngine::system(FontFamilyResolution::Strict).empty_layout();
         let slot = TextSelectionSlot {
             anchor: 1,
             focus: 1,
             initialized: true,
         };
 
-        let display_selection = selection_for_target_layout(&model, &layout, &slot);
+        let display_selection =
+            selection_for_target_layout::<crate::text::ParleyEngine>(&model, &layout, &slot);
 
         assert_eq!(display_selection.focus.index, 0);
         assert_eq!((slot.anchor, slot.focus), (1, 1));

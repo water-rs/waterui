@@ -19,6 +19,12 @@
 //! Composed gestures mirror too: `Then` arms the second recognizer once the
 //! first fires, `Simultaneous` fires on either, and `Exclusive` fires at
 //! most once per 50 ms window.
+//!
+//! A composition containing a `Tap` also makes the host operable to
+//! assistive clients — `AXPress` on an `AXGroup` on `AppKit`,
+//! `accessibilityActivate` on a `Button`-trait element whose descendants'
+//! accessibility merges into it on `UIKit` — and runs the same action
+//! the tap recognizer fires.
 
 use alloc::rc::Rc;
 use alloc::vec::Vec;
@@ -42,7 +48,6 @@ use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
 use crate::proposal;
 
-#[cfg(target_os = "macos")]
 use cocoa_ui::accessibility::{self as a11y, Role};
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::gesture::GestureAttachment;
@@ -568,11 +573,11 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
     }
 }
 
-/// Whether a press — an assistive client's `AXPress` — activates the
-/// gesture's action: a `Tap` anywhere in the composition is what makes
-/// the host operable; long-presses, drags and the two-finger gestures
-/// describe activations a press does not stand in for.
-#[cfg(target_os = "macos")]
+/// Whether an assistive client's activation — `AXPress` on `AppKit`,
+/// `accessibilityActivate` on `UIKit` — activates the gesture's action: a
+/// `Tap` anywhere in the composition is what makes the host operable;
+/// long-presses, drags and the two-finger gestures describe activations a
+/// press does not stand in for.
 fn activates_on_press(gesture: &Gesture) -> bool {
     match gesture {
         Gesture::Tap(_) => true,
@@ -637,16 +642,17 @@ pub fn install(dispatcher: &mut Dispatcher) {
             (action.borrow_mut())(&action_env);
         });
 
-        // `AXPress` on the wrapper runs the gesture's action — a `Tap`
-        // anywhere in the composition is what makes the host operable to
-        // assistive clients (water-rs/waterui#1490). The synthesized event
-        // is a primary tap at the host's center, the point an assistive
-        // activation stands for.
-        #[cfg(target_os = "macos")]
+        // An assistive client's activation — `AXPress` on `AppKit`,
+        // `accessibilityActivate` on `UIKit` — on the wrapper runs the
+        // gesture's action: a `Tap` anywhere in the composition is what
+        // makes the host operable (water-rs/waterui#1490,
+        // water-rs/waterui#2975). The synthesized event is a primary tap
+        // at the host's center, the point an assistive activation stands
+        // for.
         if activates_on_press(&metadata.value.gesture) {
             let on_recognized = Rc::clone(&on_recognized);
-            host.set_accessibility_press_handler(move |pressed_host| {
-                let bounds = view::bounds(pressed_host);
+            let activate = move |activated_host: &HostView| {
+                let bounds = view::bounds(activated_host);
                 on_recognized(GesturePayload::Tap(TapEvent::new(
                     gesture_point(
                         bounds.origin.x + bounds.size.width / 2.0,
@@ -656,12 +662,25 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     PointerButton::Primary,
                 )));
                 true
-            });
-            let host_view: &NSView = &host;
-            a11y::set_role(
-                ProtocolObject::<dyn NSAccessibility>::from_ref(host_view),
-                Role::Group,
-            );
+            };
+            #[cfg(target_os = "macos")]
+            {
+                host.set_accessibility_press_handler(activate);
+                let host_view: &NSView = &host;
+                a11y::set_role(
+                    ProtocolObject::<dyn NSAccessibility>::from_ref(host_view),
+                    Role::Group,
+                );
+            }
+            #[cfg(target_os = "ios")]
+            {
+                host.set_accessibility_activate_handler(activate);
+                a11y::set_role(&host, Role::Button);
+                // A `Button` element reads as a leaf to `VoiceOver`, so
+                // the content's labels and nested activatable elements
+                // merge into the host (SwiftUI `children: .combine`).
+                host.set_combines_accessibility_children(true);
+            }
         }
 
         let attachments = attach(&host, &metadata.value.gesture, on_recognized);
@@ -682,9 +701,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui::gesture::PointerButtons;
-    #[cfg(target_os = "macos")]
-    use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
+    use waterui::gesture::{DragGesture, LongPressGesture, PointerButtons, TapGesture};
 
     #[test]
     fn button_mask_carries_pointer_button_bits_verbatim() {
@@ -821,8 +838,8 @@ mod tests {
         assert!(!started.get());
     }
 
-    /// Only a `Tap` in the composition makes the host answer `AXPress`.
-    #[cfg(target_os = "macos")]
+    /// Only a `Tap` in the composition makes the host answer an assistive
+    /// activation.
     #[test]
     fn activates_on_press_searches_the_composition_for_a_tap() {
         let tap: Gesture = TapGesture::new().into();

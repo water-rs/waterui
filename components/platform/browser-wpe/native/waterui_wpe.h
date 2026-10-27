@@ -1,6 +1,7 @@
 #ifndef WATERUI_WPE_H
 #define WATERUI_WPE_H
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -10,6 +11,10 @@ extern "C" {
 #endif
 
 #define WATER_WPE_ABI_VERSION 4
+#ifdef WATER_WPE_EXPECTED_ABI_VERSION
+static_assert(WATER_WPE_ABI_VERSION == WATER_WPE_EXPECTED_ABI_VERSION,
+    "WPE bridge ABI disagrees with the resolved browser package");
+#endif
 #define WATER_WPE_MAX_PLANES 4
 
 typedef struct WaterWpeRuntime WaterWpeRuntime;

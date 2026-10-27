@@ -2,7 +2,10 @@ package dev.waterui.hydrolysis
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Matrix
 import android.graphics.Rect
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -54,6 +57,20 @@ class PlatformViewRegistry internal constructor(
      */
     internal val container: FrameLayout =
         object : FrameLayout(context) {
+            init {
+                // Ordered dispatch visits the gesture's chosen child first
+                // (last in forward drawing order).
+                isChildrenDrawingOrderEnabled = true
+            }
+
+            /**
+             * Whether the gesture in progress belongs to a platform view.
+             * Latched at ACTION_DOWN: the topmost ordered entry under the
+             * pointer keeps the whole gesture even when the order changes
+             * underneath it, matching ViewGroup's single-target dispatch.
+             */
+            private var nativeGesture = true
+
             override fun requestChildFocus(child: View?, focused: View?) {
                 super.requestChildFocus(child, focused)
                 hostView?.requestFrame()
@@ -63,6 +80,76 @@ class PlatformViewRegistry internal constructor(
                 super.clearChildFocus(child)
                 hostView?.requestFrame()
             }
+
+            override fun dispatchDraw(canvas: Canvas) {
+                val content = orderedContent ?: return super.dispatchDraw(canvas)
+                // The painter re-records every bound view's portal before the
+                // root draws — the views themselves draw through their
+                // owning RenderNode's place in the retained tree.
+                content.preparePlatformViews(platformViewRecorder)
+                content.drawBackground(canvas)
+                for (index in 0 until content.entryCount) {
+                    if (content.isPlatformView(index)) {
+                        val id = content.platformViewId(index)
+                        val view =
+                            slots[id]?.view
+                                ?: error(
+                                    "hydrolysis: ordered content names unmounted " +
+                                        "platform view $id",
+                                )
+                        if (view.isVisible) drawChild(canvas, view, drawingTime)
+                    } else {
+                        content.drawEntry(canvas, index)
+                    }
+                }
+            }
+
+            /** The platform view the last DOWN latched — gesture ownership
+             *  stays with it through MOVE/UP even when the order changes. */
+            private var nativeTarget: View? = null
+
+            override fun getChildDrawingOrder(childCount: Int, drawingPosition: Int): Int {
+                val target = nativeTarget
+                val chosen = target?.let { indexOfChild(it) } ?: -1
+                if (chosen < 0) return drawingPosition
+                // The chosen target visits last in forward order, so it is
+                // the first child Android's reversed touch dispatch asks.
+                if (drawingPosition == childCount - 1) return chosen
+                return if (drawingPosition >= chosen) drawingPosition + 1 else drawingPosition
+            }
+
+            override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+                try {
+                    return super.dispatchTouchEvent(event)
+                } finally {
+                    if (event.actionMasked == MotionEvent.ACTION_UP ||
+                        event.actionMasked == MotionEvent.ACTION_CANCEL
+                    ) {
+                        nativeTarget = null
+                    }
+                }
+            }
+
+            override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
+                val content = orderedContent ?: return super.onInterceptTouchEvent(event)
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                    // The retained tree answers who owns the point — alpha,
+                    // transforms, clips and scroll already composed there;
+                    // the slot's own matrix/clip is the visible-geometry check.
+                    val id = content.platformViewAt(event.x, event.y)
+                    nativeGesture = id != null && slotAt(id, event.x, event.y) != null
+                    nativeTarget = if (nativeGesture) slots[id]?.view else null
+                }
+                return !nativeGesture || super.onInterceptTouchEvent(event)
+            }
+
+            @SuppressLint("ClickableViewAccessibility")
+            override fun onTouchEvent(event: MotionEvent): Boolean {
+                if (orderedContent != null && !nativeGesture) {
+                    return hostView?.onTouchEvent(event) ?: false
+                }
+                return super.onTouchEvent(event)
+            }
         }.apply {
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             clipChildren = true
@@ -70,8 +157,104 @@ class PlatformViewRegistry internal constructor(
 
     private val factories = HashMap<String, (Context) -> View>()
     private val slots = LinkedHashMap<Long, Slot>()
+
+    /**
+     * The [OrderedContent] recorder: records the mounted view's own display
+     * list into the painter's portal canvas — the real child's `onDraw`,
+     * no bitmap or readback.
+     */
+    private val platformViewRecorder =
+        PlatformViewRecorder { id, canvas, width, height, transform ->
+            val slot =
+                slots[id]
+                    ?: error(
+                        "hydrolysis: platform view $id is not registered — " +
+                            "the binding names no mounted view",
+                    )
+            slot.nativeGeometry = true
+            if (slot.nativeWidth != width || slot.nativeHeight != height ||
+                slot.nativeTransform != transform
+            ) {
+                slot.nativeWidth = width
+                slot.nativeHeight = height
+                slot.nativeTransform.set(transform)
+            }
+            applyNativeGeometry(slot)
+            slot.view.drawNative(canvas)
+        }
     private var pendingJson: String? = null
     private var appliedJson: String? = null
+    private var orderedContent: OrderedContent? = null
+    private val slotClip = Rect()
+    private val inverse = Matrix()
+    private val point = FloatArray(2)
+    private var savedSplitting = true
+
+    /**
+     * Installs (or, with `null`, removes) the painter whose entries draw in
+     * session order inside [container]'s `dispatchDraw`, interleaved with
+     * the mounted platform views. Without one the slots stack above the GPU
+     * band as always.
+     *
+     * While a painter is installed, motion-event splitting is off: with it
+     * on, ViewGroup would route a second pointer's DOWN to the topmost
+     * *child* under it — a slot that sits behind topmost self-drawn content
+     * — splitting one logical gesture across two owners. The prior value is
+     * restored when the painter is removed.
+     */
+    internal fun setOrderedContent(content: OrderedContent?) {
+        if (content != null && orderedContent == null) {
+            savedSplitting = container.isMotionEventSplittingEnabled
+            container.isMotionEventSplittingEnabled = false
+        } else if (content == null && orderedContent != null) {
+            container.isMotionEventSplittingEnabled = savedSplitting
+        }
+        if (content == null && orderedContent != null) {
+            for (slot in slots.values) {
+                if (slot.nativeGeometry) {
+                    slot.nativeGeometry = false
+                    slot.view.animationMatrix = null
+                    applySlot(slot)
+                }
+            }
+        }
+        orderedContent = content
+        container.invalidate()
+    }
+
+    /**
+     * The mounted slot of placement `id` when it is visible under host pixel
+     * (`x`, `y`): the point mapped through the view's matrix into its local
+     * bounds — `animationMatrix` makes the plain axis-aligned test wrong.
+     * A declared placement with no mounted view is a session bug, never a
+     * silent miss.
+     */
+    private fun slotAt(id: Long, x: Float, y: Float): View? {
+        val view =
+            slots[id]?.view
+                ?: error("hydrolysis: ordered content names unmounted platform view $id")
+        if (!view.isVisible) return null
+        if (!view.matrix.invert(inverse)) return null
+        point[0] = x - view.left
+        point[1] = y - view.top
+        inverse.mapPoints(point)
+        val inside =
+            point[0] >= 0 && point[0] < view.width && point[1] >= 0 && point[1] < view.height
+        if (!inside) return null
+        if (view.getClipBounds(slotClip)) {
+            val clipped =
+                point[0] >= slotClip.left &&
+                    point[0] < slotClip.right &&
+                    point[1] >= slotClip.top &&
+                    point[1] < slotClip.bottom
+            if (!clipped) return null
+        }
+        return view
+    }
+
+    /** Whether the platform view of placement `id` covers (`x`, `y`). */
+    internal fun containsPlatformView(id: Long, x: Float, y: Float): Boolean =
+        slotAt(id, x, y) != null
 
     /**
      * Whether a mounted child inside this container currently holds UI
@@ -119,6 +302,12 @@ class PlatformViewRegistry internal constructor(
      * path and let the a11y provider own everything else.
      */
     internal fun coversPixel(x: Float, y: Float): Boolean {
+        orderedContent?.let { content ->
+            // The retained tree decides: the pixel is a platform hit only
+            // when its topmost entry under it is a platform view.
+            val id = content.platformViewAt(x, y) ?: return false
+            return slotAt(id, x, y) != null
+        }
         val rect = Rect()
         for (slot in slots.values) {
             val view = slot.view
@@ -129,7 +318,7 @@ class PlatformViewRegistry internal constructor(
         return false
     }
 
-    private fun applyJson(json: String) {
+    internal fun applyJson(json: String) {
         pendingJson = json
         val array = JSONArray(json)
         val wanted = ArrayList<Placement>(array.length())
@@ -285,7 +474,7 @@ class PlatformViewRegistry internal constructor(
                     )
             }
         val slotView =
-            FrameLayout(context).apply {
+            NativeSlot(context, mounted).apply {
                 addView(
                     mounted,
                     FrameLayout.LayoutParams(
@@ -303,6 +492,14 @@ class PlatformViewRegistry internal constructor(
     }
 
     private fun applySlot(slot: Slot) {
+        if (slot.nativeGeometry) {
+            // Native geometry owns the slot: the binding's local pixel size
+            // and transform; no window-space margins, no double clip.
+            applyNativeGeometry(slot)
+            slot.view.visibility =
+                if (slot.placement.visible) View.VISIBLE else View.INVISIBLE
+            return
+        }
         val placement = slot.placement
         val view = slot.view
         val density = context.resources.displayMetrics.density
@@ -334,8 +531,93 @@ class PlatformViewRegistry internal constructor(
         view.visibility = if (placement.visible) View.VISIBLE else View.INVISIBLE
     }
 
-    private class Slot(val view: FrameLayout, val mounted: View) {
+    /**
+     * Lays the slot out in the binding's pixel space. A translation-only
+     * world matrix becomes the slot's real position, so `getBoundsOnScreen`
+     * — which ignores `animationMatrix` — reports the drawn rect for
+     * accessibility and focus; other transforms keep the matrix on the
+     * view (Android's documented limit for native children, matching
+     * Compose). Ancestor `RenderNode`s still own clip, alpha and effects,
+     * and the placement's window clip stays on the slot for touch routing.
+     */
+    private fun applyNativeGeometry(slot: Slot) {
+        val view = slot.view
+        val width = slot.nativeWidth
+        val height = slot.nativeHeight
+        val values = FloatArray(9)
+        slot.nativeTransform.getValues(values)
+        val translationOnly =
+            values[0] == 1f && values[1] == 0f && values[3] == 0f && values[4] == 1f &&
+                values[6] == 0f && values[7] == 0f && values[8] == 1f
+        val offsetX = if (translationOnly) values[2].toInt() else 0
+        val offsetY = if (translationOnly) values[5].toInt() else 0
+        val params = view.layoutParams as FrameLayout.LayoutParams
+        if (params.width != width || params.height != height ||
+            params.leftMargin != offsetX || params.topMargin != offsetY
+        ) {
+            params.width = width
+            params.height = height
+            params.leftMargin = offsetX
+            params.topMargin = offsetY
+            view.layoutParams = params
+        }
+        // NativeSlot's override compares and copies — no allocation here.
+        view.animationMatrix = if (translationOnly) null else slot.nativeTransform
+        view.clipBounds =
+            slot.placement.clip?.let { clip ->
+                val density = context.resources.displayMetrics.density
+                Rect(
+                    (clip[0] * density).toInt() - offsetX,
+                    (clip[1] * density).toInt() - offsetY,
+                    ((clip[0] + clip[2]) * density).toInt() - offsetX,
+                    ((clip[1] + clip[3]) * density).toInt() - offsetY,
+                )
+            }
+        if (view.isLayoutRequested || view.width != width ||
+            view.height != height || view.left != offsetX || view.top != offsetY
+        ) {
+            view.measure(
+                View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY),
+            )
+            view.layout(offsetX, offsetY, offsetX + width, offsetY + height)
+        }
+    }
+
+    /** A slot whose mounted child can be recorded into a portal canvas. */
+    private class NativeSlot(context: Context, val mounted: View) : FrameLayout(context) {
+        /** The last transform applied through `animationMatrix` — kept to skip the no-change setter. */
+        private val appliedMatrix = Matrix()
+
+        override fun setAnimationMatrix(matrix: Matrix?) {
+            if (matrix == appliedMatrix) return
+            if (matrix == null) {
+                appliedMatrix.reset()
+            } else {
+                appliedMatrix.set(matrix)
+            }
+            super.setAnimationMatrix(matrix)
+        }
+
+        /**
+         * Draws the mounted child's own display list on the portal canvas —
+         * `drawChild` so the child records under local `(0,0)`, the way its
+         * real parent would draw it.
+         */
+        fun drawNative(canvas: Canvas) {
+            drawChild(canvas, mounted, drawingTime)
+        }
+    }
+
+    private class Slot(val view: NativeSlot, val mounted: View) {
         lateinit var placement: Placement
+        /// A `BindPlatformView` owns this slot's geometry while true: the
+        /// view draws inside its owner's `RenderNode`, so window-space
+        /// margins, clip and size step aside for the binding's local size.
+        var nativeGeometry = false
+        var nativeWidth = 0
+        var nativeHeight = 0
+        val nativeTransform = Matrix()
     }
 
     private class Placement(

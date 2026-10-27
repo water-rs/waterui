@@ -269,7 +269,20 @@ impl SplitController {
         }
     }
 
-    /// Sets a column's width range.
+    /// Sets a column's width range; a non-positive bound leaves that
+    /// bound unchanged.
+    ///
+    /// `UIKit` gives every column its own width properties — the dispatch
+    /// lands each declared bound on the column the caller named. The
+    /// secondary column is the detail pane: it fills the space the other
+    /// columns leave, so `UIKit` declares no maximum for it, and the
+    /// compact column has no width properties at all.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a declared bound has no matching `UIKit` property — a
+    /// maximum for the secondary column, or any bound for the compact
+    /// column — rather than landing on another column's properties.
     pub fn set_column_widths(
         &self,
         column: UISplitViewControllerColumn,
@@ -277,16 +290,42 @@ impl SplitController {
         minimum: f64,
         maximum: f64,
     ) {
-        if preferred > 0.0 {
-            self.setPreferredPrimaryColumnWidth(preferred);
+        type Setter = Option<fn(&UISplitViewController, f64)>;
+        let (set_preferred, set_minimum, set_maximum): (Setter, Setter, Setter) = match column {
+            UISplitViewControllerColumn::Primary => (
+                Some(UISplitViewController::setPreferredPrimaryColumnWidth),
+                Some(UISplitViewController::setMinimumPrimaryColumnWidth),
+                Some(UISplitViewController::setMaximumPrimaryColumnWidth),
+            ),
+            UISplitViewControllerColumn::Supplementary => (
+                Some(UISplitViewController::setPreferredSupplementaryColumnWidth),
+                Some(UISplitViewController::setMinimumSupplementaryColumnWidth),
+                Some(UISplitViewController::setMaximumSupplementaryColumnWidth),
+            ),
+            UISplitViewControllerColumn::Secondary => (
+                Some(UISplitViewController::setPreferredSecondaryColumnWidth),
+                Some(UISplitViewController::setMinimumSecondaryColumnWidth),
+                None,
+            ),
+            UISplitViewControllerColumn::Inspector => (
+                Some(UISplitViewController::setPreferredInspectorColumnWidth),
+                Some(UISplitViewController::setMinimumInspectorColumnWidth),
+                Some(UISplitViewController::setMaximumInspectorColumnWidth),
+            ),
+            _ => (None, None, None),
+        };
+        for (bound, setter, width) in [
+            ("preferred", set_preferred, preferred),
+            ("minimum", set_minimum, minimum),
+            ("maximum", set_maximum, maximum),
+        ] {
+            if width <= 0.0 {
+                continue;
+            }
+            setter.unwrap_or_else(|| {
+                panic!("UIKit declares no {bound} width property for split column {column:?}")
+            })(self, width);
         }
-        if minimum > 0.0 {
-            self.setMinimumPrimaryColumnWidth(minimum);
-        }
-        if maximum > 0.0 {
-            self.setMaximumPrimaryColumnWidth(maximum);
-        }
-        let _ = column;
     }
 
     /// Runs `handler` when a column collapses or expands: `(column,
