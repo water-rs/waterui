@@ -10410,6 +10410,302 @@ mod transition {
                 },
             ),
         ]
+        .into_iter()
+        .chain(overlay_trials())
+        .collect()
+    }
+
+    /// The Stage 6 anchored-overlay trials (§8.2): a dismissal keeps the
+    /// presentation container — the `NSPanel` on `AppKit`, the passthrough
+    /// host on `UIKit` — painting, inert to input, until the removal
+    /// transition completes; a re-present during the exit is a fresh
+    /// instance beside it (§5.6).
+    fn overlay_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "transition::overlay_dismiss_keeps_the_panel_until_the_ghost_completes",
+                || {
+                    overlay_dismiss_keeps_the_panel_until_the_ghost_completes();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::overlay_reopen_during_exit_is_a_fresh_instance",
+                || {
+                    overlay_reopen_during_exit_is_a_fresh_instance();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// An anchor view whose overlay body root declares an opacity
+    /// removal: `shown` drives present/dismiss, and `Manual` dismissal
+    /// keeps outside interaction out of the assertion.
+    fn claimed_overlay() -> (
+        waterui::reactive::Binding<bool>,
+        waterui_apple::contract::NativeLeaf,
+    ) {
+        use waterui::metadata::anchored_overlay::{AnchoredOverlay, Dismissal};
+        let shown = waterui::reactive::binding(false);
+        let leaf = super::resolve::render(
+            text("anchor").anchored_overlay(
+                AnchoredOverlay::new(&shown, move || {
+                    Metadata::new(
+                        text("pop"),
+                        TransitionSpec::new(PropertyTransition::opacity())
+                            .with_animation(Animation::linear(Duration::from_millis(300))),
+                    )
+                })
+                .dismissal(Dismissal::Manual),
+            ),
+        );
+        (shown, leaf)
+    }
+
+    /// The passthrough containers a window currently holds: the
+    /// full-window `HostView`s that are not the anchor's own leaf view —
+    /// `UIKit`'s presentation surface for the overlay (§5.6).
+    #[cfg(target_os = "ios")]
+    fn passthrough_hosts(
+        window: &PlatformView,
+        anchor_view: &PlatformView,
+    ) -> Vec<Retained<PlatformView>> {
+        view::subviews(window)
+            .into_iter()
+            .filter(|sub| {
+                !std::ptr::eq(&raw const **sub, std::ptr::from_ref(anchor_view))
+                    && sub.downcast_ref::<HostView>().is_some()
+            })
+            .collect()
+    }
+
+    /// The child windows a window holds — `AppKit`'s presentation
+    /// surface for the overlay is a borderless `NSPanel`, and a fresh
+    /// harness window's children are all ours (§5.6).
+    #[cfg(target_os = "macos")]
+    fn panels_of(
+        window: &cocoa_ui::objc2_app_kit::NSWindow,
+    ) -> Vec<Retained<cocoa_ui::objc2_app_kit::NSWindow>> {
+        window
+            .childWindows()
+            .map_or_else(Vec::new, |children| children.to_vec())
+    }
+
+    /// A dismissal ghosts the overlay out of the semantic tree while the
+    /// presentation container keeps painting until the removal transition
+    /// completes (§8.2): `AppKit` keeps the panel visible and transparent
+    /// to mouse events; `UIKit` keeps the passthrough host in the window
+    /// but retired, so nothing inside answers a hit test.
+    pub fn overlay_dismiss_keeps_the_panel_until_the_ghost_completes() {
+        let _mtm = mtm();
+        let (shown, leaf) = claimed_overlay();
+        #[cfg(target_os = "ios")]
+        let window = super::mount_and_order_front(leaf.view());
+        #[cfg(target_os = "macos")]
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| shown.set(true));
+        #[cfg(target_os = "ios")]
+        let weak = {
+            let window_view: &PlatformView = &window;
+            assert!(
+                pump_main_until(5.0, || {
+                    autoreleasepool(|_| !passthrough_hosts(window_view, leaf.view()).is_empty())
+                }),
+                "the overlay presents its passthrough host"
+            );
+            autoreleasepool(|_| {
+                let host = passthrough_hosts(window_view, leaf.view())
+                    .into_iter()
+                    .next()
+                    .expect("the passthrough host is in the window");
+                Weak::new(&*host)
+            })
+        };
+        #[cfg(target_os = "macos")]
+        let weak = {
+            let parent = cocoa_ui::appkit::window_of(leaf.view()).expect("anchor in a window");
+            assert!(
+                pump_main_until(5.0, || {
+                    autoreleasepool(|_| !panels_of(&parent).is_empty())
+                }),
+                "the overlay presents its panel"
+            );
+            autoreleasepool(|_| {
+                let panel = panels_of(&parent)
+                    .into_iter()
+                    .next()
+                    .expect("the panel is a child window");
+                Weak::new(&*panel)
+            })
+        };
+        autoreleasepool(|_| shown.set(false));
+        #[cfg(target_os = "ios")]
+        autoreleasepool(|_| {
+            let window_view: &PlatformView = &window;
+            let host = passthrough_hosts(window_view, leaf.view())
+                .into_iter()
+                .next()
+                .expect("the passthrough host stays for the exit");
+            assert!(
+                host.downcast_ref::<HostView>()
+                    .is_some_and(HostView::is_retired),
+                "the exiting container is retired — not hit-testable"
+            );
+            let bounds = view::bounds(&host);
+            let hit = host.hitTest_withEvent(
+                objc2_core_foundation::CGPoint::new(
+                    bounds.size.width / 2.0,
+                    bounds.size.height / 2.0,
+                ),
+                None,
+            );
+            assert!(hit.is_none(), "the exiting container yields no hit");
+        });
+        #[cfg(target_os = "macos")]
+        autoreleasepool(|_| {
+            let parent = cocoa_ui::appkit::window_of(leaf.view()).expect("anchor in a window");
+            let panel = panels_of(&parent)
+                .into_iter()
+                .next()
+                .expect("the panel stays for the exit");
+            assert!(
+                panel.ignoresMouseEvents(),
+                "the exiting panel is transparent to mouse events"
+            );
+            assert!(panel.isVisible(), "the exiting panel keeps painting");
+        });
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| weak.load().is_none())),
+            "the completion closes the container"
+        );
+    }
+
+    /// A re-present while the previous exit is still running is a fresh
+    /// instance beside the ghost: two presentation containers coexist —
+    /// the new one hit-testable, the exiting one inert — until the old
+    /// removal completes and its container leaves (§8.2).
+    pub fn overlay_reopen_during_exit_is_a_fresh_instance() {
+        let _mtm = mtm();
+        let (shown, leaf) = claimed_overlay();
+        #[cfg(target_os = "ios")]
+        {
+            let window = super::mount_and_order_front(leaf.view());
+            let window_view: &PlatformView = &window;
+            reopen_ios(&shown, &leaf, window_view);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _window = super::mount_and_order_front(leaf.view());
+            reopen_macos(&shown, &leaf);
+        }
+    }
+
+    /// The `UIKit` half: two passthrough hosts coexist — the fresh one
+    /// live, the exiting one retired — until the old removal completes.
+    #[cfg(target_os = "ios")]
+    fn reopen_ios(
+        shown: &waterui::reactive::Binding<bool>,
+        leaf: &waterui_apple::contract::NativeLeaf,
+        window: &PlatformView,
+    ) {
+        autoreleasepool(|_| shown.set(true));
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| passthrough_hosts(window, leaf.view()).len() == 1)
+            }),
+            "the first presentation lands"
+        );
+        let old_weak = autoreleasepool(|_| {
+            let host = passthrough_hosts(window, leaf.view())
+                .into_iter()
+                .next()
+                .expect("the first passthrough host");
+            Weak::new(&*host)
+        });
+        autoreleasepool(|_| {
+            shown.set(false);
+            shown.set(true);
+        });
+        let (count, retired) = autoreleasepool(|_| {
+            let hosts = passthrough_hosts(window, leaf.view());
+            (
+                hosts.len(),
+                hosts
+                    .iter()
+                    .filter(|host| {
+                        host.downcast_ref::<HostView>()
+                            .is_some_and(HostView::is_retired)
+                    })
+                    .count(),
+            )
+        });
+        assert_eq!(
+            (count, retired),
+            (2, 1),
+            "the re-present adds a fresh container beside the exiting one"
+        );
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| old_weak.load().is_none())),
+            "the old exit completes on its own clock"
+        );
+        autoreleasepool(|_| {
+            assert_eq!(
+                passthrough_hosts(window, leaf.view()).len(),
+                1,
+                "only the fresh presentation remains"
+            );
+        });
+    }
+
+    /// The `AppKit` half: two child panels coexist — the fresh one
+    /// interactive, the exiting one ignoring mouse events — until the
+    /// old removal completes.
+    #[cfg(target_os = "macos")]
+    fn reopen_macos(
+        shown: &waterui::reactive::Binding<bool>,
+        leaf: &waterui_apple::contract::NativeLeaf,
+    ) {
+        let parent = cocoa_ui::appkit::window_of(leaf.view()).expect("anchor in a window");
+        autoreleasepool(|_| shown.set(true));
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| panels_of(&parent).len() == 1)),
+            "the first presentation lands"
+        );
+        let old_weak = autoreleasepool(|_| {
+            let panel = panels_of(&parent)
+                .into_iter()
+                .next()
+                .expect("the first panel");
+            Weak::new(&*panel)
+        });
+        autoreleasepool(|_| {
+            shown.set(false);
+            shown.set(true);
+        });
+        let (count, ignored) = autoreleasepool(|_| {
+            let panels = panels_of(&parent);
+            (
+                panels.len(),
+                panels.iter().filter(|p| p.ignoresMouseEvents()).count(),
+            )
+        });
+        assert_eq!(
+            (count, ignored),
+            (2, 1),
+            "the re-present adds a fresh panel beside the exiting one"
+        );
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| old_weak.load().is_none())),
+            "the old exit completes on its own clock"
+        );
+        autoreleasepool(|_| {
+            assert_eq!(
+                panels_of(&parent).len(),
+                1,
+                "only the fresh presentation remains"
+            );
+        });
     }
 
     /// The `UINavigationController` owning a view in the subtree,
