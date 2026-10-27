@@ -12867,21 +12867,22 @@ dependencies = [
 
 [[package]]
 name = "waterui-browser-cef"
-version = "0.5.1"
+version = "0.1.0"
+source = "git+https://github.com/water-rs/browsers?branch=dev#acaff8eecef6b80d66a36865d675378c239bc9ef"
 dependencies = [
- "askama",
  "async-channel",
  "base64 0.23.1",
  "cc",
  "cef",
  "cef-dll-sys",
  "cookie",
- "dirs 7.0.0",
+ "dirs 6.0.0",
  "executor-core",
  "futures",
  "futures-lite",
  "futures-timer",
  "keycode",
+ "kurbo",
  "libloading 0.9.0",
  "num-traits",
  "objc2 0.6.5",
@@ -12890,11 +12891,8 @@ dependencies = [
  "serde",
  "serde_json",
  "suiteki",
- "tempfile",
  "thiserror 2.0.21",
- "tiny_http",
  "tracing",
- "tracing-subscriber",
  "waterui-chromium",
  "waterui-core",
  "waterui-graphics",
@@ -12907,23 +12905,23 @@ dependencies = [
 
 [[package]]
 name = "waterui-browser-wpe"
-version = "0.5.1"
+version = "0.1.0"
+source = "git+https://github.com/water-rs/browsers?branch=dev#acaff8eecef6b80d66a36865d675378c239bc9ef"
 dependencies = [
- "base64 0.23.1",
+ "bytemuck",
  "cookie",
  "executor-core",
  "futures",
+ "futures-timer",
  "keycode",
  "kurbo",
  "libloading 0.9.0",
  "nami",
  "num-traits",
- "pollster 1.0.1",
  "serde",
  "serde_json",
  "suiteki",
  "tracing",
- "tracing-subscriber",
  "waterui-core",
  "waterui-graphics",
  "waterui-url",

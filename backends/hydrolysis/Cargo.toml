@@ -22,10 +22,10 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 nami.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
-# `font-collection` for the one `parley` collection this runner builds and
-# installs into the environment; the faces come from the resource loader and
-# the system source `parley/system` provides, so `system-fonts` is not needed.
-waterui-text = { workspace = true, features = ["font-collection"] }
+# `engine` for the `parley` font context this runner builds and installs into
+# the environment; the faces come from the resource loader and the system
+# source `parley/system` provides, so `system-fonts` is not needed.
+waterui-text = { workspace = true, features = ["engine"] }
 waterui-icon.workspace = true
 waterui-shape.workspace = true
 waterui-map.workspace = true

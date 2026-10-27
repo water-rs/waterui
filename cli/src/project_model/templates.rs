@@ -6217,9 +6217,7 @@ pub mod hydrolysis {
                         NativeBackendDependencySpec::new(
                             "waterui-browser-cef",
                             &[],
-                            NativeBackendDependencySource::WorkspaceSubdir(
-                                "components/platform/browser-cef",
-                            ),
+                            NativeBackendDependencySource::WorkspaceDependency,
                         ),
                     )?),
                 );

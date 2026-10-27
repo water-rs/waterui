@@ -137,14 +137,6 @@ version_group = "waterui"
 name = "waterui-chromium"
 version_group = "waterui"
 
-[[package]]
-name = "waterui-browser-cef"
-version_group = "waterui"
-
-[[package]]
-name = "waterui-browser-wpe"
-version_group = "waterui"
-
 # Data components
 
 [[package]]

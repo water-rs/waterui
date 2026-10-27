@@ -2,7 +2,10 @@
 //! content owns. Its sampled alpha goes to the transition host — an object
 //! only the transition writes — and its sampled transform to the host's
 //! single content child, so both compose with the content's own opacity
-//! and transform through the native layer tree.
+//! and transform through the native layer tree. On `AppKit` the transform
+//! is the host layer's `sublayerTransform`: `AppKit` rewrites a
+//! layer-backed child's own `transform` at display (#3504), while the
+//! host's sublayer transform reaches the same single child untouched.
 
 use alloc::rc::Rc;
 use core::cell::RefCell;
@@ -23,8 +26,10 @@ use cocoa_ui::appkit::HostView;
 use cocoa_ui::uikit::HostView;
 
 /// The transform `properties` applies around the centre of a `size` slot:
-/// scale and rotation about the centre, then translation — the documented
-/// `TransitionProperties` compose order, in top-left coordinates.
+/// scale, then rotation, about the centre, then translation — the
+/// documented `TransitionProperties` compose order, in top-left
+/// coordinates. `CATransform3DConcat(a, b)` applies `a` first, so the
+/// chain reads in application order, as `affine_transform` does on `UIKit`.
 #[cfg(target_os = "macos")]
 fn layer_transform(
     properties: &TransitionProperties,
@@ -46,9 +51,10 @@ fn layer_transform(
         1.0,
     );
     let back = CATransform3D::new_translation(-cx, -cy, 0.0);
-    translation
+    back.concat(scale)
+        .concat(rotate)
         .concat(to_centre)
-        .concat(rotate.concat(scale).concat(back))
+        .concat(translation)
 }
 
 /// The `CGAffineTransform` spelling of [`layer_transform`] for `UIKit`:
@@ -73,10 +79,12 @@ fn affine_transform(properties: &TransitionProperties) -> objc2_core_foundation:
 /// the ghost's retired root (§3.1).
 #[derive(Clone)]
 pub struct PropertyTarget {
-    /// The transition host — its alpha composites above the content.
+    /// The transition host — its alpha composites above the content, and
+    /// on `AppKit` its layer's `sublayerTransform` carries the transform.
     host: Retained<HostView>,
-    /// The host's single child — its transform composes with anything the
-    /// content applies inside itself.
+    /// The host's single child — on `UIKit` its own transform carries the
+    /// sample and composes with anything the content applies inside itself.
+    #[cfg(target_os = "ios")]
     child: Retained<PlatformView>,
 }
 
@@ -92,13 +100,22 @@ impl PropertyTarget {
         target_os = "ios",
         expect(
             clippy::missing_const_for_fn,
-            reason = "only macOS layer-backs the child; the iOS body makes no call"
+            reason = "only macOS layer-backs the host; the iOS body makes no call"
         )
     )]
     pub fn new(host: Retained<HostView>, child: Retained<PlatformView>) -> Self {
+        // `AppKit` transforms the single child through the host layer's
+        // `sublayerTransform`, so the child itself is not kept.
         #[cfg(target_os = "macos")]
-        view::ensure_layer_backed(&child);
-        Self { host, child }
+        let () = {
+            view::ensure_layer_backed(&host);
+            drop(child);
+        };
+        Self {
+            host,
+            #[cfg(target_os = "ios")]
+            child,
+        }
     }
 
     /// Writes one sample inside `core_animation::without_animation`.
@@ -124,9 +141,9 @@ impl PropertyTarget {
             view::set_alpha(&self.host, f64::from(sample.opacity));
             #[cfg(target_os = "macos")]
             {
-                let layer = view::layer(&self.child).expect("a layer-backed view");
-                let size = view::bounds(&self.child).size;
-                cocoa_ui::core_animation::set_layer_transform(
+                let layer = view::layer(&self.host).expect("a layer-backed transition host");
+                let size = view::bounds(&self.host).size;
+                cocoa_ui::core_animation::set_sublayer_transform(
                     &layer,
                     layer_transform(sample, size),
                 );

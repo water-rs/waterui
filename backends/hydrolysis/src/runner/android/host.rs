@@ -30,6 +30,7 @@ use ndk::looper::{FdEvent, ForeignLooper, ThreadLooper};
 use waterui::Environment;
 use waterui::cursor::CursorStyle;
 use waterui::window::WindowState;
+use waterui_core::layout::LayoutDirection;
 use waterui_graphics::gpu::RedrawHandle;
 
 use super::accessibility::AccessibilitySnapshot;
@@ -102,15 +103,15 @@ pub struct MetricsSnapshot {
 
 impl MetricsSnapshot {
     /// The metrics value `set_metrics` compares for the container region
-    /// — the pushed pixel edges AND the density the region's logical
-    /// insets derive from, as one value.
-    const fn container_metrics(&self) -> InsetsMetrics {
-        InsetsMetrics::new(self.container_insets_px, self.density)
+    /// — the pushed pixel edges, the density AND the direction the
+    /// region's logical insets derive from, as one value.
+    const fn container_metrics(&self, direction: LayoutDirection) -> InsetsMetrics {
+        InsetsMetrics::new(self.container_insets_px, self.density, direction)
     }
 
     /// The same for the keyboard region.
-    const fn keyboard_metrics(&self) -> InsetsMetrics {
-        InsetsMetrics::new(self.keyboard_insets_px, self.density)
+    const fn keyboard_metrics(&self, direction: LayoutDirection) -> InsetsMetrics {
+        InsetsMetrics::new(self.keyboard_insets_px, self.density, direction)
     }
 }
 
@@ -767,6 +768,11 @@ pub struct AndroidSession {
     /// The live window keyboard-area binding `WindowKeyboardArea` wraps —
     /// written on the same host pushes, IME animation frames included.
     keyboard_area: nami::Binding<waterui_layout::padding::EdgeInsets>,
+    /// The direction the insets' leading and trailing were last resolved
+    /// under — the publish direction `set_metrics` compares so a
+    /// direction-only change re-derives both regions
+    /// (water-rs/waterui#1827).
+    insets_direction: LayoutDirection,
     /// A frame reached the surface at least once; together with an idle
     /// `wants_next_frame` it arms the one-shot readiness log the device's
     /// idle-CPU sampling waits on.
@@ -1145,6 +1151,7 @@ impl AndroidSession {
             frame_deadline_in_nanos: None,
             safe_area,
             keyboard_area,
+            insets_direction: LayoutDirection::default(),
             presented_once: Cell::new(false),
             ready_logged: Cell::new(false),
             back_navigation_available: false,
@@ -1158,19 +1165,28 @@ impl AndroidSession {
     pub(crate) fn set_metrics(&mut self, metrics: MetricsSnapshot) {
         let container_insets_px = metrics.container_insets_px;
         let keyboard_insets_px = metrics.keyboard_insets_px;
-        let container = metrics.container_metrics();
-        let keyboard = metrics.keyboard_metrics();
+        // The physical push edges land on different logical edges under
+        // right-to-left, so the direction is a third input the compared
+        // value carries — a direction-only move re-publishes both
+        // regions (water-rs/waterui#1827).
+        let direction = waterui_core::layout::layout_direction(&self.env).snapshot();
+        let container = metrics.container_metrics(direction);
+        let keyboard = metrics.keyboard_metrics(direction);
         let (size_changed, container_changed, keyboard_changed) = {
             let platform = &mut self.runtime.platform;
             let size_changed = platform.metrics.width_px != metrics.width_px
                 || platform.metrics.height_px != metrics.height_px
                 || platform.metrics.density.to_bits() != metrics.density.to_bits();
             // A region's logical insets derive from the region's pixel
-            // edges AND the density, so the compared value is that whole
-            // pair — a density-only push still re-publishes both regions.
-            let container_changed = platform.metrics.container_metrics() != container;
-            let keyboard_changed = platform.metrics.keyboard_metrics() != keyboard;
+            // edges, the density AND the direction, so the compared value
+            // is that whole triple — a density-only or direction-only
+            // change still re-publishes both regions.
+            let container_changed =
+                platform.metrics.container_metrics(self.insets_direction) != container;
+            let keyboard_changed =
+                platform.metrics.keyboard_metrics(self.insets_direction) != keyboard;
             platform.metrics = metrics;
+            self.insets_direction = direction;
             if size_changed {
                 let (w, h) = platform.content_size();
                 platform.push_event(InputEvent::Resize {

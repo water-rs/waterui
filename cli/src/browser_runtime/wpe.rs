@@ -738,7 +738,7 @@ mod tests {
             native_source_sha256: source.to_owned(),
             sdk_sha256: "sdk".to_owned(),
             target: "aarch64-unknown-linux-gnu".to_owned(),
-            bridge_abi: 4,
+            bridge_abi: 5,
             sdk_pkg_config_sha256: "pc".to_owned(),
             compiler: BTreeMap::new(),
         }
@@ -802,7 +802,7 @@ mod tests {
         sdk.sdk_sha256 = "other-sdk".to_owned();
         assert_ne!(cache_key(&input("a")).unwrap(), cache_key(&sdk).unwrap());
         let mut abi = input("a");
-        abi.bridge_abi = 5;
+        abi.bridge_abi = 6;
         assert_ne!(cache_key(&input("a")).unwrap(), cache_key(&abi).unwrap());
         let mut target = input("a");
         target.target = "x86_64-unknown-linux-gnu".to_owned();
@@ -852,7 +852,7 @@ mod tests {
 
         // Different recorded inputs must fail too.
         let mut other = input("src");
-        other.bridge_abi = 5;
+        other.bridge_abi = 6;
         assert!(smol::block_on(validate_cached(prefix.path(), &other)).is_err());
 
         // And a missing manifest is not a cache hit at all.
@@ -965,7 +965,7 @@ mod tests {
         // The fake saw the exact configure flags, with the SDK's pkgconfig
         // directories ahead of any host tail.
         let log_text = std::fs::read_to_string(&log).unwrap();
-        assert!(log_text.contains("-DWATER_WPE_EXPECTED_ABI_VERSION=4"));
+        assert!(log_text.contains("-DWATER_WPE_EXPECTED_ABI_VERSION=5"));
         assert!(log_text.contains("-DPKG_CONFIG_ARGN=--dont-define-prefix"));
         assert!(log_text.contains(&sdk.join("lib/pkgconfig").display().to_string()));
 

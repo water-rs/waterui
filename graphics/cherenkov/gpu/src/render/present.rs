@@ -1019,6 +1019,7 @@ impl WindowSurface {
 /// Presents retained engine textures into host-owned textures.
 #[derive(Debug)]
 pub struct Presenter {
+    cache: super::PipelineCache,
     #[cfg(any(target_vendor = "apple", target_os = "android"))]
     delivery: ShaderDelivery,
     #[cfg(any(target_vendor = "apple", target_os = "android"))]
@@ -1038,6 +1039,14 @@ impl Presenter {
     /// Creates the shared present state.
     #[must_use]
     pub fn new(device: &wgpu::Device, delivery: ShaderDelivery) -> Self {
+        Self::with_cache(device, delivery, super::PipelineCache::default())
+    }
+
+    pub(super) fn with_cache(
+        device: &wgpu::Device,
+        delivery: ShaderDelivery,
+        cache: super::PipelineCache,
+    ) -> Self {
         let program = delivery.present_program(device);
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("present"),
@@ -1056,6 +1065,7 @@ impl Presenter {
         });
         let uniform = Self::uniform(device);
         Self {
+            cache,
             program,
             #[cfg(any(target_vendor = "apple", target_os = "android"))]
             delivery,
@@ -1075,7 +1085,7 @@ impl Presenter {
         format: wgpu::TextureFormat,
     ) -> &wgpu::RenderPipeline {
         self.pipelines.entry(format).or_insert_with(|| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("present"),
                 layout: Some(&self.pipeline_layout),
                 vertex: wgpu::VertexState {
@@ -1098,8 +1108,10 @@ impl Presenter {
                     })],
                 }),
                 multiview_mask: None,
-                cache: None,
-            })
+                cache: self.cache.handle.as_ref(),
+            });
+            self.cache.persist();
+            pipeline
         })
     }
 
@@ -1185,7 +1197,9 @@ impl Presenter {
         size: (u32, u32),
     ) -> Result<super::headroom::Readback, cherenkov::RenderError> {
         self.headroom
-            .get_or_insert_with(|| super::headroom::Reducer::new(device, self.delivery))
+            .get_or_insert_with(|| {
+                super::headroom::Reducer::new(device, self.delivery, &self.cache)
+            })
             .encode(device, encoder, source, size)
     }
 
@@ -1224,9 +1238,9 @@ impl Presenter {
             &self.uniform.clone(),
             None,
         );
-        let reducer = self
-            .headroom
-            .get_or_insert_with(|| super::headroom::Reducer::new(device, self.delivery));
+        let reducer = self.headroom.get_or_insert_with(|| {
+            super::headroom::Reducer::new(device, self.delivery, &self.cache)
+        });
         let staging = reducer.encode(
             device,
             &mut encoder,

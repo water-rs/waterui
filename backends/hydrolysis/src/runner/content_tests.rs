@@ -98,7 +98,9 @@ struct Capture {
 /// resolves its `Body` slot, and the shared font collection its text engine
 /// shapes from.
 fn capture_environment() -> Environment {
-    capture_environment_with_fonts(waterui_text::FontCollection::new(parley::FontContext::new()))
+    capture_environment_with_fonts(waterui_text::FontCollection::from_parley(
+        parley::FontContext::new(),
+    ))
 }
 
 /// [`capture_environment`] with `collection` installed as the shared font
@@ -126,7 +128,7 @@ fn isolated_collection(blobs: &[&[u8]]) -> waterui_text::FontCollection {
             None,
         );
     }
-    waterui_text::FontCollection::new(font_cx)
+    waterui_text::FontCollection::from_parley(font_cx)
 }
 
 impl Capture {

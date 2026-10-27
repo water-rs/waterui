@@ -954,7 +954,6 @@ mod tests {
     use crate::platform::TargetPlatform;
 
     use crate::project::BrowserRuntimePlan;
-    #[cfg(unix)]
     use std::io::Write as _;
 
     fn sdk_inputs(layout: u32) -> super::SdkCacheInputs {
