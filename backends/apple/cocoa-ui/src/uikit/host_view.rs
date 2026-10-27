@@ -131,6 +131,10 @@ pub struct HostViewIvars {
     /// `SwiftUI` `.accessibilityElement(children: .combine)` semantics for the
     /// `Button` element a tappable host becomes (water-rs/waterui#2975).
     combines_accessibility_children: Cell<bool>,
+    /// One-way ghost mark: a retired host and its subtree are pure visuals —
+    /// outside hit testing, accessibility and focus. Not a handler slot, so
+    /// `clear_handlers` cannot revoke it.
+    retired: Cell<bool>,
 }
 
 impl fmt::Debug for HostViewIvars {
@@ -579,6 +583,17 @@ define_class!(
             })
         }
 
+        // SAFETY: see the module safety note. A retired host refuses first
+        // responder — the ghost keeps no focus membership.
+        #[unsafe(method(canBecomeFirstResponder))]
+        fn can_become_first_responder_override(&self) -> Bool {
+            if self.ivars().retired.get() {
+                return Bool::NO;
+            }
+            // SAFETY: see the module safety note.
+            unsafe { msg_send![super(self), canBecomeFirstResponder] }
+        }
+
         // SAFETY: see the module safety note.
         #[unsafe(method(pressesBegan:withEvent:))]
         fn presses_began_override(
@@ -863,6 +878,24 @@ impl HostView {
         ivars.accessibility_activate.replace(None);
         ivars.menu_commands.borrow_mut().clear();
         ivars.backing_changed.replace(None);
+    }
+
+    /// One-way: from now on this view and its subtree are a ghost —
+    /// pure visuals the transition host keeps on screen after semantics
+    /// end. Survives `clear_handlers`: the mark is an ivar, not a handler
+    /// slot. Retiring disables interaction and hides the subtree from
+    /// accessibility, and `canBecomeFirstResponder` answers `NO`.
+    pub fn retire(&self) {
+        self.ivars().retired.set(true);
+        self.setUserInteractionEnabled(false);
+        self.setAccessibilityElementsHidden(true, self.mtm());
+    }
+
+    /// Whether [`retire`](HostView::retire) ran — the mark descendants
+    /// test to know their visual ownership already transferred.
+    #[must_use]
+    pub fn is_retired(&self) -> bool {
+        self.ivars().retired.get()
     }
 
     /// Whether the intrinsic content size reports the height the current

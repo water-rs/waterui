@@ -932,12 +932,11 @@ impl std::fmt::Debug for NativeFilterOwner {
 }
 
 impl Drop for NativeFilterOwner {
-    /// Clears the layer's filters and shuts the capture down; the
-    /// watchers cancel with the guards.
+    /// Shuts the capture down; the watchers cancel with the guards. The
+    /// layer's filters are not cleared: the layer dies with its view on
+    /// an ordinary removal, and a ghost keeps them until the retired
+    /// tree detaches.
     fn drop(&mut self) {
-        // SAFETY: `filters` accepts nil to clear the list; main-thread use
-        // by the leaf contract.
-        unsafe { self.layer.setFilters(None) };
         self.capture.shutdown();
     }
 }

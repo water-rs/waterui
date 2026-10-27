@@ -309,9 +309,11 @@ fn render_at(state: &ContainerState, index: usize) -> NativeLeaf {
 /// `insertion` is whether this mount is a structural join — a lazily
 /// re-materialized child replays nothing.
 fn materialize(state: &mut ContainerState, index: usize, id: ItemId, insertion: bool) {
-    let mounted = render_at(state, index).mount(&state.host);
+    let mut leaf = render_at(state, index);
+    let claim = leaf.take_transition();
+    let mounted = leaf.mount(&state.host);
     view::set_translates_autoresizing(mounted.view(), true);
-    if insertion && let Some(claim) = mounted.transition_claim() {
+    if insertion && let Some(claim) = claim {
         crate::transition::play_insertion(mounted.view(), &claim);
     }
     state.rendered.insert(id, mounted);
@@ -333,18 +335,19 @@ fn retire_member(
     mounted: Mounted,
     position: usize,
 ) {
-    let Some(claim) = mounted.transition_claim() else {
+    let mut leaf = mounted.unmount();
+    let Some(claim) = leaf.take_transition() else {
         // No declaration: the ordinary drop — detach and release.
-        drop(mounted);
+        drop(leaf);
         return;
     };
     let proposal = state.lazy.as_ref().map_or_else(
         || state.selected.get().unwrap_or(ProposalSize::UNSPECIFIED),
         |lazy| lazy_child_proposal(state.last_cross, lazy),
     );
-    let dimensions = mounted.layout().measure(proposal);
-    let priority = mounted.layout().priority();
-    let (view, _) = crate::transition::retire(mounted);
+    let dimensions = leaf.layout().measure(proposal);
+    let priority = leaf.layout().priority();
+    let (view, _) = crate::transition::retire(leaf);
     let slot = waterui_core::transition::GhostSlot::new(dimensions, priority);
     let (main_extent, cross_extent) = state.lazy.as_ref().map_or((0.0, 0.0), |lazy| {
         let size = slot.size();

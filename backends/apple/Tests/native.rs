@@ -208,6 +208,7 @@ fn trials() -> Vec<Trial> {
         tests.extend(offset::trials());
     }
     tests.extend(migration::trials());
+    tests.extend(transition::trials());
     tests.extend(owner_lifetimes::trials());
     tests.extend(scroll::trials());
     tests.extend(list_scroll::trials());
@@ -10239,7 +10240,35 @@ mod transition {
     use cocoa_ui::objc2::rc::{Weak, autoreleasepool};
     use cocoa_ui::view;
 
-    use super::{PlatformView, mtm};
+    #[cfg(target_os = "macos")]
+    use super::Retained;
+    use super::leaf::TestSubView;
+    use super::{HostView, Label, PlatformView, mtm};
+
+    /// The Stage 1 retirement trials — registered through
+    /// `transition::trials()` like the other suites' registrars.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "transition::retired_host_is_outside_hit_testing_and_accessibility",
+                || {
+                    retired_host_is_outside_hit_testing_and_accessibility();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::mounted_drop_under_retired_host_keeps_views",
+                || {
+                    mounted_drop_under_retired_host_keeps_views();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test("transition::unowned_declaration_panics_at_mount", || {
+                unowned_declaration_panics_at_mount();
+                Ok(())
+            }),
+        ]
+    }
 
     /// A flag whose drop proves the leaf's keepalive ended — the same
     /// lifetime every watcher and subscription shares.
@@ -10441,6 +10470,172 @@ mod transition {
         assert!(
             pump_main_until(1.0, || weak.load().is_none()),
             "the ghost releases the outgoing view"
+        );
+    }
+
+    /// A retired host's subtree is a ghost: hit testing skips it whole,
+    /// it reports no accessibility membership, and the inspector's
+    /// published tree has no node inside it.
+    pub fn retired_host_is_outside_hit_testing_and_accessibility() {
+        use waterui_apple::native_test_support::inspector_tree;
+
+        let mtm = mtm();
+        let site = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        let _window = super::mount_and_order_front(&site);
+        let live = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let ghost = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let label = Label::new(mtm);
+        // The live child covers the bottom half; the ghost, added last,
+        // covers the top half above it.
+        view::add_subview(&site, &live);
+        view::set_frame(&live, cocoa_ui::Rect::new(0.0, 50.0, 200.0, 50.0));
+        view::add_subview(&ghost, &label);
+        view::add_subview(&site, &ghost);
+        view::set_frame(&ghost, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 50.0));
+        view::set_frame(&label, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 50.0));
+        let site_ptr = std::ptr::from_ref(&*site).addr() as u64;
+        let ghost_ptr = std::ptr::from_ref(&*ghost).addr() as u64;
+        let label_ptr = std::ptr::from_ref(&*label).addr() as u64;
+        ghost.retire();
+
+        #[cfg(target_os = "macos")]
+        {
+            // `hitTest:` reads the point in the superview's coordinates.
+            let site_view: &PlatformView = &site;
+            let superview = view::superview(site_view).expect("the site is in a window");
+            let inside_ghost =
+                view::convert_point(site_view, cocoa_ui::Point::new(25.0, 25.0), &superview);
+            let hit = site.hitTest(inside_ghost.into());
+            assert!(
+                hit.as_deref()
+                    .is_some_and(|hit| std::ptr::from_ref(hit).addr() as u64 == site_ptr),
+                "the retired host yields no hit inside its subtree"
+            );
+            let inside_live =
+                view::convert_point(site_view, cocoa_ui::Point::new(25.0, 75.0), &superview);
+            let hit = site.hitTest(inside_live.into());
+            assert!(
+                hit.as_deref()
+                    .is_some_and(|hit| std::ptr::from_ref(hit).addr() as u64 != ghost_ptr),
+                "the live child answers hits beneath the ghost's frame"
+            );
+            autoreleasepool(|_| {
+                use cocoa_ui::objc2::msg_send;
+                use cocoa_ui::objc2_foundation::NSArray;
+                // SAFETY: the query answers an object array.
+                let children: Option<Retained<NSArray>> =
+                    unsafe { msg_send![&site, accessibilityChildren] };
+                if let Some(children) = children {
+                    for index in 0..children.count() {
+                        let child = children.objectAtIndex(index);
+                        let ptr = std::ptr::from_ref(&*child).addr() as u64;
+                        assert!(
+                            ptr != ghost_ptr && ptr != label_ptr,
+                            "the site's accessibility children exclude the ghost"
+                        );
+                    }
+                }
+                // SAFETY: the query answers an object array.
+                let ghost_children: Option<Retained<NSArray>> =
+                    unsafe { msg_send![&ghost, accessibilityChildren] };
+                assert_eq!(
+                    ghost_children.map_or(0, |children| children.count()),
+                    0,
+                    "a retired host reports no accessibility children"
+                );
+                // SAFETY: `isAccessibilityElement` is a plain getter.
+                let is_element: bool = unsafe { msg_send![&ghost, isAccessibilityElement] };
+                assert!(!is_element, "a retired host is no accessibility element");
+            });
+        }
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility;
+            // `hitTest:withEvent:` reads the point in the receiver's
+            // bounds coordinates.
+            let hit = site.hitTest_withEvent(objc2_core_foundation::CGPoint::new(25.0, 25.0), None);
+            assert!(
+                hit.as_deref()
+                    .is_some_and(|hit| std::ptr::from_ref(hit).addr() as u64 == site_ptr),
+                "the retired host yields no hit inside its subtree"
+            );
+            assert!(
+                ghost.accessibilityElementsHidden(mtm),
+                "a retired host hides its subtree from accessibility"
+            );
+            let _ = label_ptr;
+        }
+
+        // The inspector's published tree has no node for the ghost
+        // subtree.
+        for node in inspector_tree(&site) {
+            assert_ne!(node.id.0, ghost_ptr, "the ghost is outside the tree");
+            assert_ne!(
+                node.id.0, label_ptr,
+                "the ghost's content is outside the tree"
+            );
+        }
+    }
+
+    /// Dropping a `Mounted` inside a retired host leaves the child's
+    /// superview untouched — the retired host owns the visuals now. The
+    /// same drop under an unretired parent detaches, as before.
+    pub fn mounted_drop_under_retired_host_keeps_views() {
+        let mtm = mtm();
+        let parent = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        let child = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let mounted = waterui_apple::contract::NativeLeaf::new(&*child, TestSubView).mount(&parent);
+        let child_view = view::retain_base(mounted.view());
+        parent.retire();
+        drop(mounted);
+        assert!(
+            view::superview(&child_view).is_some(),
+            "the retired host keeps the child's view"
+        );
+
+        let live_parent = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        let live_child = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let mounted =
+            waterui_apple::contract::NativeLeaf::new(&*live_child, TestSubView).mount(&live_parent);
+        let child_view = view::retain_base(mounted.view());
+        drop(mounted);
+        assert!(
+            view::superview(&child_view).is_none(),
+            "an unretired parent detaches the child's view"
+        );
+    }
+
+    /// A `.transition(...)` beneath another modifier has no structural
+    /// owner: rendering `content.transition(..).padding(..)` and mounting
+    /// it directly panics in a debug build, naming the missing owner.
+    pub fn unowned_declaration_panics_at_mount() {
+        use waterui::ViewExt as _;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let leaf = super::resolve::render(
+                Metadata::new(
+                    label("unowned"),
+                    TransitionSpec::new(PropertyTransition::opacity()),
+                )
+                .padding(),
+            );
+            let parent = HostView::new(mtm(), cocoa_ui::Rect::ZERO);
+            let _mounted = leaf.mount(&parent);
+        }));
+        let Err(payload) = outcome else {
+            panic!("an unowned `.transition(...)` declaration mounted");
+        };
+        let message = payload.downcast_ref::<String>().map_or_else(
+            || {
+                payload
+                    .downcast_ref::<&'static str>()
+                    .copied()
+                    .unwrap_or_default()
+            },
+            String::as_str,
+        );
+        assert!(
+            message.contains("no structural transition owner"),
+            "unexpected panic message: {message}"
         );
     }
 }

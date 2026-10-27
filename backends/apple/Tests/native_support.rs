@@ -838,3 +838,11 @@ pub mod menus {
             .collect()
     }
 }
+
+/// The inspector tree `walk` produces over `root` — a trial's read of
+/// the published hierarchy without driving the inspect gesture.
+pub fn inspector_tree(
+    root: &cocoa_ui::PlatformView,
+) -> Vec<waterui::inspector::protocol::TreeNode> {
+    crate::inspector::recordable_tree(root)
+}

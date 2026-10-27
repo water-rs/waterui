@@ -131,25 +131,27 @@ impl NativeLeaf {
     /// Stores the leaf's `.transition(...)` declaration — the
     /// `Metadata<TransitionSpec>` handler's only write.
     ///
-    /// # Panics
-    ///
-    /// On a second nested declaration: a `.transition(...)` beneath another
-    /// `.transition(...)` has no site that can own it (docs/layout-spec.md
-    /// §4.5).
+    /// A second nested declaration — a `.transition(...)` beneath another
+    /// `.transition(...)` — is never owned (docs/layout-spec.md §4.5):
+    /// a debug build panics; a release build logs the violation and the
+    /// outer declaration wins, the inner one dropping unowned.
     pub fn set_transition(&mut self, claim: crate::transition::TransitionClaim) {
-        assert!(
-            self.transition.is_none(),
-            "waterui-apple: a `.transition(...)` declaration beneath another `.transition(...)` \
-             is never owned — remove the inner declaration (docs/layout-spec.md §4.5)"
-        );
+        if self.transition.is_some() {
+            crate::transition::transition_violation!(
+                "waterui-apple: a `.transition(...)` declaration beneath another `.transition(...)` \
+                 is never owned — remove the inner declaration (docs/layout-spec.md §4.5)"
+            );
+        }
         self.transition = Some(claim);
     }
 
-    /// The leaf's `.transition(...)` declaration, for the structural site
-    /// claiming it. `None` when the root carries no declaration.
+    /// The leaf's `.transition(...)` declaration, taken by the structural
+    /// site claiming it. `None` when the root carries no declaration.
+    /// Claims are owned, never cloned: a site calls this before mounting
+    /// and is then the declaration's only owner.
     #[must_use]
-    pub fn transition_claim(&self) -> Option<crate::transition::TransitionClaim> {
-        self.transition.clone()
+    pub const fn take_transition(&mut self) -> Option<crate::transition::TransitionClaim> {
+        self.transition.take()
     }
 
     /// The platform view. Borrowed: the leaf owns it.
@@ -208,12 +210,25 @@ impl NativeLeaf {
 
     /// Adds this leaf's view to `parent` and returns the handle that owns
     /// both; dropping the handle removes the view and releases the leaf.
+    ///
+    /// A leaf still carrying a `.transition(...)` declaration reached
+    /// mount unclaimed — no structural site owns it — which a debug build
+    /// rejects with a panic and a release build logs, dropping the claim
+    /// so the leaf mounts with no transition.
     #[must_use]
-    #[cfg_attr(
-        not(target_os = "ios"),
-        expect(unused_mut, reason = "mount mutates only on iOS")
-    )]
     pub fn mount(mut self, parent: &PlatformView) -> Mounted {
+        if self.transition.take().is_some() {
+            crate::transition::transition_violation!(
+                "waterui-apple: `.transition(...)` reached a view with no structural transition \
+                 owner. A transition declares how a view is inserted and removed, so it must be \
+                 the outermost modifier of the content a structural site swaps — of a \
+                 `when`/`watch` branch or the conditional itself, a `ForEach`/`List` row, a \
+                 navigation page's content, or an anchored-overlay body. A declaration beneath \
+                 another modifier (`.padding`, `.frame`, `.background`, `.alignment_guide`, …), a \
+                 stack, a scroll or a widget is never claimed: move `.transition(...)` outward so \
+                 it is the outermost modifier of that content (docs/layout-spec.md §4.5)"
+            );
+        }
         Self::install_intrinsic_measure(&self.view, &self.layout);
         cocoa_ui::view::add_subview(parent, &self.view);
         #[cfg(target_os = "ios")]
@@ -228,6 +243,21 @@ impl NativeLeaf {
 
     /// Detaches the view — ending `UIKit` containment first when `mount`
     /// established it — and hands the leaf back, for moving it elsewhere.
+    fn detach(&mut self) {
+        // The inverse of `mount`, and nothing more: a detached leaf may be
+        // mounted again (the iOS context-menu panel moves its preview and
+        // accessory in and out on every presentation), so the handlers its
+        // component installed at render time stay. Only the intrinsic
+        // measure `mount` installed goes, and `mount` installs it again.
+        self.unwind();
+        cocoa_ui::view::remove_from_superview(&self.view);
+    }
+
+    /// Ends the leaf's containment membership — the intrinsic measure
+    /// `mount` installed and, on `UIKit`, the adopted controller chain —
+    /// without touching the view's place in its superview. `detach` and
+    /// the retirement hand-off share it: a view inside a retired
+    /// `HostView` keeps its place when the leaf's semantics end.
     #[cfg_attr(
         not(target_os = "ios"),
         expect(
@@ -235,12 +265,7 @@ impl NativeLeaf {
             reason = "the contained-controller take is iOS-only"
         )
     )]
-    fn detach(&mut self) {
-        // The inverse of `mount`, and nothing more: a detached leaf may be
-        // mounted again (the iOS context-menu panel moves its preview and
-        // accessory in and out on every presentation), so the handlers its
-        // component installed at render time stay. Only the intrinsic
-        // measure `mount` installed goes, and `mount` installs it again.
+    fn unwind(&mut self) {
         if let Some(host) = self.view.downcast_ref::<HostView>() {
             host.clear_measure_handler();
         }
@@ -250,7 +275,6 @@ impl NativeLeaf {
         for controller in &controllers {
             cocoa_ui::uikit::view_controller::will_move_to_parent(controller);
         }
-        cocoa_ui::view::remove_from_superview(&self.view);
         #[cfg(target_os = "ios")]
         for controller in controllers.iter().rev() {
             cocoa_ui::uikit::view_controller::remove_from_parent(controller);
@@ -348,17 +372,6 @@ impl Mounted {
         self.0.as_ref().expect("a live Mounted").layout()
     }
 
-    /// The child's `.transition(...)` declaration, for the structural site
-    /// claiming it — `None` when the mounted root carries none.
-    ///
-    /// # Panics
-    ///
-    /// When called on a `Mounted` that is already unmounting.
-    #[must_use]
-    pub fn transition_claim(&self) -> Option<crate::transition::TransitionClaim> {
-        self.0.as_ref().expect("a live Mounted").transition_claim()
-    }
-
     /// Detaches the view and hands the leaf back, for moving it elsewhere.
     ///
     /// # Panics
@@ -370,12 +383,43 @@ impl Mounted {
         leaf.detach();
         leaf
     }
+
+    /// Ends containment but leaves the view where it is. The caller has
+    /// retired an ancestor `HostView`, so the subtree is already a ghost —
+    /// the retirement hand-off the transition path makes before dropping
+    /// the leaf's semantics.
+    ///
+    /// # Panics
+    ///
+    /// When no strict ancestor is a retired `HostView` — the internal
+    /// invariant of the hand-off.
+    #[must_use]
+    #[expect(
+        dead_code,
+        reason = "the retirement hand-off's caller lands with the transition host"
+    )]
+    pub(crate) fn into_retired_leaf(mut self) -> NativeLeaf {
+        let mut leaf = self.0.take().expect("a live Mounted");
+        assert!(
+            cocoa_ui::view::has_retired_ancestor(&leaf.view),
+            "waterui-apple: `into_retired_leaf` needs a retired ancestor `HostView` — \
+             retire the transition host before ending the mount"
+        );
+        leaf.unwind();
+        leaf
+    }
 }
 
 impl Drop for Mounted {
+    /// Ends containment, then drops the leaf. The view detaches unless a
+    /// retired `HostView` ancestor already owns it — a ghost's visuals
+    /// survive the semantic drop.
     fn drop(&mut self) {
         if let Some(mut leaf) = self.0.take() {
-            leaf.detach();
+            leaf.unwind();
+            if !cocoa_ui::view::has_retired_ancestor(&leaf.view) {
+                cocoa_ui::view::remove_from_superview(&leaf.view);
+            }
             drop(leaf);
         }
     }

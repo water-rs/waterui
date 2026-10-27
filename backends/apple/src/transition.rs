@@ -26,6 +26,25 @@
 //! every tick, so `source` follows the slot through scroll and resize.
 //! A capture that fails is an error — never a property fallback.
 
+/// The panic policy for transition contract violations — states user
+/// code can trigger, like an unowned `.transition(...)` declaration or a
+/// failed pixel capture. A debug build panics with the message; a
+/// release build logs it and the caller continues to the violation's
+/// defined end state (a dropped claim, a completed instance), since a
+/// GUI framework must not crash a shipped app. Internal invariants —
+/// states that cannot occur — keep `unreachable!`/`expect`.
+macro_rules! transition_violation {
+    ($($arg:tt)*) => {
+        if cfg!(debug_assertions) {
+            panic!($($arg)*);
+        } else {
+            tracing::error!($($arg)*);
+        }
+    };
+}
+
+pub(crate) use transition_violation;
+
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
 use std::time::Instant;
@@ -134,18 +153,17 @@ fn deactivate(view: &PlatformView) {
     });
 }
 
-/// Splits a removed mount into its live platform view and its transition
-/// claim. The `Mounted`'s `unmount` detaches the view and hands the leaf
-/// back; dropping the leaf here is the semantic boundary — every watcher,
+/// Splits a removed leaf into its live platform view and its transition
+/// claim. Dropping the leaf here is the semantic boundary — every watcher,
 /// subscription and kept object ends now — while the retained view keeps
 /// the visual resources a ghost needs. The view is deactivated before the
 /// caller reparents it anywhere.
 pub fn retire(
-    mounted: crate::contract::Mounted,
+    leaf: crate::contract::NativeLeaf,
 ) -> (Retained<PlatformView>, Option<TransitionClaim>) {
-    let view = view::retain_base(mounted.view());
-    let claim = mounted.transition_claim();
-    let leaf = mounted.unmount();
+    let view = view::retain_base(leaf.view());
+    let mut leaf = leaf;
+    let claim = leaf.take_transition();
     drop(leaf);
     deactivate(&view);
     (view, claim)

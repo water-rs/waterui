@@ -138,7 +138,7 @@ fn update_child(state: &Rc<RefCell<DynamicState>>, view: AnyView) {
         // beneath the incoming child (§4.5). No slot is held; the layout
         // sees the live child alone.
         if let Some(previous) = state.child.take() {
-            let (outgoing, claim) = crate::transition::retire(previous);
+            let (outgoing, claim) = crate::transition::retire(previous.unmount());
             if let Some(claim) = claim {
                 view::add_subview_at_bottom(&state.host, &outgoing);
                 let weak = Rc::downgrade(&state_rc);
@@ -161,10 +161,15 @@ fn update_child(state: &Rc<RefCell<DynamicState>>, view: AnyView) {
                 state.ghosts.push(ghost);
             }
         }
-        let mounted = leaf.mount(&state.host);
-        if let Some(claim) = mounted.transition_claim() {
-            crate::transition::play_insertion(mounted.view(), &claim);
-        }
+        let mounted = {
+            let mut leaf = leaf;
+            let claim = leaf.take_transition();
+            let mounted = leaf.mount(&state.host);
+            if let Some(claim) = claim {
+                crate::transition::play_insertion(mounted.view(), &claim);
+            }
+            mounted
+        };
         view::set_translates_autoresizing(mounted.view(), true);
         // The replacement inherits the last negotiated proposal until the
         // parent re-places us.
