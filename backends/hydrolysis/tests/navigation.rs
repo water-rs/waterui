@@ -285,6 +285,43 @@ fn navigation_content_relayouts_when_a_measure_read_text_grows() {
     );
 }
 
+/// water-rs/waterui#1939: a pushed page's back button owns the bar's
+/// leading edge, so its leading toolbar group must start at the button's
+/// trailing edge — the issue had a `Cancellation` item drawing under the
+/// button, "the arrow covers the first letters of Cancel".
+#[test]
+fn a_pushed_pages_cancellation_item_clears_the_back_button() {
+    let path = waterui::navigation::NavigationPath::<u8>::new();
+    path.push(1);
+    let mut app = mount_rendered(
+        Environment::new(),
+        move || {
+            NavigationStack::with_path(path.clone(), NavigationView::new("Root", text("root")))
+                .destination(|_| {
+                    NavigationView::new("Detail", text("detail")).navigation_toolbar(
+                        waterui::navigation::NavigationToolbar::default().item(
+                            waterui::navigation::NavigationToolbarItem::new(
+                                waterui::navigation::NavigationToolbarPlacement::Cancellation,
+                                waterui::component::button("Cancel").action(|| {}),
+                            ),
+                        ),
+                    )
+                })
+        },
+        320,
+        240,
+    );
+    app.settle();
+
+    let back = node_bounds_with_role(app.tree(), accesskit::Role::Button, "Back");
+    let cancel = node_bounds_with_role(app.tree(), accesskit::Role::Button, "Cancel");
+    assert!(
+        cancel.x0 >= back.x1 - 1.0,
+        "the cancellation item must start at the back button's trailing edge: \
+         back {back:?}, cancel {cancel:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Reactive-collection `Tabs` — water-rs/waterui#1194
 //
