@@ -1603,20 +1603,16 @@ impl Engine for Cherenkov {
                 // the comparison — the same interchange the GPU adapter
                 // uses on its presented texture.
                 Some(PresentKind::SrgbHw | PresentKind::SrgbShader) => {
-                    cherenkov_cpu::present_srgb8(
-                        cherenkov_cpu::detect(),
-                        self.headroom,
-                        &rb.pixels,
-                    )
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .map(|texel| {
-                        let encoded = texel.map(|v| f64::from(v) / 255.0);
-                        let p3 = presented_srgb_to_working(encoded);
-                        [p3[0] as f32, p3[1] as f32, p3[2] as f32, p3[3] as f32]
-                    })
-                    .collect()
+                    cherenkov_cpu::present_srgb8(cherenkov_cpu::detect(), self.headroom, &rb.pixels)
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|texel| {
+                            let encoded = texel.map(|v| f64::from(v) / 255.0);
+                            let p3 = presented_srgb_to_working(encoded);
+                            [p3[0] as f32, p3[1] as f32, p3[2] as f32, p3[3] as f32]
+                        })
+                        .collect()
                 }
                 // Extended linear Display P3 tone-maps to the display
                 // headroom, like the GPU's `LinearP3` destination.
