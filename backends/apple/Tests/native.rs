@@ -3308,15 +3308,26 @@ mod filtered {
     use super::mtm;
 
     fn an_owed_first_frame_pauses_when_hidden() -> Result<(), libtest_mimic::Failed> {
-        let mounted = pollster::block_on(MountedFilteredSurface::mount(mtm()))
+        // The gated setup keeps the link paused while the window orders in,
+        // so the real display link cannot take the owed first frame before
+        // the trial samples it.
+        let (mounted, gate) = pollster::block_on(MountedFilteredSurface::mount_gated(mtm()))
             .map_err(|error| format!("mount: {error}"))?;
         mounted.ensure_attached();
         let _ready = mounted.readiness_probe();
-        assert!(!mounted.frame_presented(), "the first frame is still owed");
         assert!(
-            !mounted.link_paused(),
-            "the visible first frame is scheduled"
+            mounted.link_paused(),
+            "the pending effect setup holds the link"
         );
+        gate.release();
+        // The setup's main-queue landing opens the link; the link's first
+        // update is a later run-loop source, so the pump samples the open
+        // link before any delivery.
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !mounted.link_paused()),
+            "the visible first frame is scheduled once the setup lands"
+        );
+        assert!(!mounted.frame_presented(), "the first frame is still owed");
         cocoa_ui::view::set_hidden(mounted.leaf.view(), true);
         assert!(mounted.link_paused(), "hiding pauses an owed first frame");
         assert!(mounted.deliver_frame(1.0), "a queued drawable is available");
