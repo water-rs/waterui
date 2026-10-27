@@ -537,7 +537,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
             Spec {
                 name: format!("engine{variant}"),
                 source: format!(
-                    "const VARIANT: u32 = {paint_variant}u;\n{cap}{shared}\n{shader}\n{union}{}",
+                    "enable f16;\nconst VARIANT: u32 = {paint_variant}u;\n{cap}{shared}\n{shader}\n{union}{}",
                     m.blend
                 ),
                 groups: bindings::ENGINE_GROUPS,
@@ -581,7 +581,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
     });
     specs.push(Spec {
         name: "projective".into(),
-        source: format!("{}\n{}\n{}", m.shared, m.blend, m.projective),
+        source: format!("enable f16;\n{}\n{}\n{}", m.shared, m.blend, m.projective),
         groups: bindings::PROJECTIVE_GROUPS,
         programs: programs::PROJECTIVE,
         metal: true,

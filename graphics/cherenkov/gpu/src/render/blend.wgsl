@@ -19,8 +19,11 @@ fn composite_space(mode: u32, s: u32, cb: vec4<f32>, cs: vec4<f32>) -> vec4<f32>
 // extended-range and negative channels blend through the same formulas
 // rather than clamping. See blend_color.
 
+// Non-separable inputs have already been normalized to [0, 1]. Keep
+// branch selection and divisors in f32; bounded colour arithmetic uses f16.
 fn lum(c: vec3<f32>) -> f32 {
-    return 0.3 * c.x + 0.59 * c.y + 0.11 * c.z;
+    let h = vec3<f16>(c);
+    return f32(0.3h * h.x + 0.59h * h.y + 0.11h * h.z);
 }
 
 fn sat(c: vec3<f32>) -> f32 {
@@ -28,22 +31,22 @@ fn sat(c: vec3<f32>) -> f32 {
 }
 
 fn clip_color(c_in: vec3<f32>) -> vec3<f32> {
-    var c = c_in;
-    let l = lum(c);
-    let n = min(c.x, min(c.y, c.z));
-    let x = max(c.x, max(c.y, c.z));
+    var c = vec3<f16>(c_in);
+    let l = lum(c_in);
+    let n = min(c_in.x, min(c_in.y, c_in.z));
+    let x = max(c_in.x, max(c_in.y, c_in.z));
     if n < 0.0 {
-        c = l + (c - l) * l / (l - n);
+        c = f16(l) + (c - f16(l)) * f16(l / (l - n));
     }
     if x > 1.0 {
-        c = l + (c - l) * (1.0 - l) / (x - l);
+        c = f16(l) + (c - f16(l)) * f16((1.0 - l) / (x - l));
     }
-    return c;
+    return vec3<f32>(c);
 }
 
 fn set_lum(c: vec3<f32>, l: f32) -> vec3<f32> {
-    let d = l - lum(c);
-    return clip_color(c + d);
+    let d = f16(l) - f16(lum(c));
+    return clip_color(vec3<f32>(vec3<f16>(c) + d));
 }
 
 fn set_sat(c: vec3<f32>, s: f32) -> vec3<f32> {
@@ -58,12 +61,12 @@ fn set_sat(c: vec3<f32>, s: f32) -> vec3<f32> {
         }
     }
     let imid = 3 - mn - mx;
-    var out = vec3<f32>(0.0);
+    var out = vec3<f16>(0.0h);
     if c[mx] > c[mn] {
-        out[imid] = (c[imid] - c[mn]) * s / (c[mx] - c[mn]);
-        out[mx] = s;
+        out[imid] = f16((c[imid] - c[mn]) / (c[mx] - c[mn])) * f16(s);
+        out[mx] = f16(s);
     }
-    return out;
+    return vec3<f32>(out);
 }
 
 // The Porter-Duff operators whose transparent source replaces the
