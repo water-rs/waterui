@@ -164,7 +164,7 @@ pub enum BandPixels<'a> {
     F16(&'a [[half::f16; 4]]),
 }
 
-pub use fearless_simd::Level;
+pub use cherenkov_simd::{Level, detect};
 pub use render::present::{present_linear_p3, present_srgb8};
 
 /// The CPU raster backend: renders the shared front end's layer trees

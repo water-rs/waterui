@@ -81,7 +81,7 @@ fn opaque_store(b: Bencher, len: usize) {
 
 fn conversion(b: Bencher, len: usize, encoded: bool) {
     let pixels = cases::conversion_pixels(len, encoded);
-    let level = cherenkov_cpu::Level::new();
+    let level = cherenkov_cpu::detect();
     let (from, to) = if encoded {
         (
             kernels::BlendSpace::SrgbEncoded,

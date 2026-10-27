@@ -56,7 +56,9 @@ fn font() -> cherenkov::FontSource {
 
 /// `count` distinct glyph-cache entries at `size` px, tiled on a grid: the
 /// glyph ids cycle through the subset, and each cycle steps the size so no
-/// two entries share an atlas cell.
+/// two entries share an atlas cell. Rows wrap after six so every run stays
+/// inside a 512 px target: the lowering culls runs outside it before they
+/// reach the atlas.
 #[expect(clippy::cast_precision_loss)]
 fn text_runs(font: cherenkov::FontId, count: u32, size: f32) -> Vec<GlyphRun> {
     (0..count.div_ceil(FONT_GLYPHS))
@@ -67,7 +69,7 @@ fn text_runs(font: cherenkov::FontId, count: u32, size: f32) -> Vec<GlyphRun> {
                 .map(|i| cherenkov::Glyph {
                     id: 1 + i % FONT_GLYPHS,
                     x: (i % 32) as f32 * (size * 0.8),
-                    y: (1 + i / 32) as f32 * size,
+                    y: (1 + (i / 32) % 6) as f32 * size,
                     transform: None,
                 })
                 .collect();

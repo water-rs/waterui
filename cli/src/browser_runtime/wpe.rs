@@ -5,13 +5,14 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use askama::Template as _;
 use eyre::Context as _;
 use futures_util::future::try_join;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::project::ResolvedWpeRuntime;
-use crate::toolchain::Host;
+use crate::toolchain::{Host, Toolchain as _};
 
 /// The freshly built native outputs, installed into an immutable prefix.
 pub(super) struct NativeBridge {
@@ -58,6 +59,174 @@ const COMPILER_CONFIG: [&str; 6] = [
 /// The whole three-step `CMake` build shares one budget — a wedged toolchain
 /// cannot stretch it per invocation.
 const BUILD_BUDGET: Duration = Duration::from_secs(60);
+
+/// The pkg-config descriptors a relocated SDK can answer for — normalized
+/// to `${pcfiledir}`-relative prefixes inside the candidate, never the
+/// ready cache or host files.
+const SDK_PKGCONFIG_DIRS: [&str; 2] = ["lib/pkgconfig", "share/pkgconfig"];
+
+/// Renders a normalized `.pc` descriptor: `prefix=${pcfiledir}/<parents>`
+/// first, then the original text with its own `prefix` line removed and
+/// old-root references rebased to `${prefix}` fragments. The prefix leads
+/// because it depends on no variable, so every later line may use `${prefix}`.
+#[derive(askama::Template)]
+#[template(path = "browser_runtime/wpe_pc_descriptor.tpl", escape = "none")]
+struct PcDescriptorTemplate<'a> {
+    parents: &'a str,
+    segments: &'a [String],
+    tail: &'a [String],
+}
+
+/// All `.pc` files under the SDK's descriptor directories — errors on
+/// symlinks (a hostile `.pc` could reach outside the candidate) and on any
+/// I/O other than a missing directory.
+fn sdk_pc_files(sdk_root: &Path) -> eyre::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for directory in SDK_PKGCONFIG_DIRS {
+        let directory = sdk_root.join(directory);
+        match std::fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => eyre::bail!("{} is not a directory", directory.display()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        }
+        for entry in walkdir::WalkDir::new(&directory) {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type().is_dir() {
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "pc") {
+                continue;
+            }
+            if entry.file_type().is_symlink() {
+                eyre::bail!(
+                    "{} is a symlink; SDK descriptors must be regular files",
+                    path.display()
+                );
+            }
+            files.push(path.to_path_buf());
+        }
+    }
+    Ok(files)
+}
+
+/// Normalizes every `.pc` inside the SDK extraction candidate so the staged
+/// runtime's descriptors resolve relative to wherever the SDK lands —
+/// `${pcfiledir}` is pkg-config's own variable for the descriptor's
+/// directory, so no `--define-prefix` is needed and host descriptors are
+/// never touched.
+pub(super) async fn normalize_sdk_descriptors(sdk_candidate: PathBuf) -> eyre::Result<()> {
+    smol::unblock(move || {
+        for descriptor in sdk_pc_files(&sdk_candidate)? {
+            let body = std::fs::read_to_string(&descriptor)?;
+            std::fs::write(
+                &descriptor,
+                normalize_pc_source(&sdk_candidate, &descriptor, &body)?,
+            )?;
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// Rebases absolute `old_root` references on `${prefix}` — only at a whole
+/// path: preceded by start, `=`, whitespace or a quote (or a `-I`/`-L`
+/// flag), and followed by `/`, whitespace, a quote or end. `/another/old`
+/// and `/old-sibling` stay literal. Returns the fragments joined on
+/// `${prefix}` by the template.
+fn rebase_root_references(text: &str, old_root: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut pending = 0usize;
+    let mut offset = 0usize;
+    while let Some(index) = text[offset..].find(old_root) {
+        let at = offset + index;
+        let before_ok = at == 0
+            || matches!(
+                text.as_bytes()[at - 1],
+                b'=' | b' ' | b'\t' | b'\n' | b'"' | b'\''
+            )
+            || (at >= 2
+                && matches!(text.as_bytes()[at - 2], b' ' | b'\t' | b'\n' | b'"' | b'\'')
+                && matches!(text.as_bytes()[at - 1], b'I' | b'L'));
+        let after = &text[at + old_root.len()..];
+        let after_ok = after.is_empty()
+            || after.starts_with('/')
+            || after.starts_with(char::is_whitespace)
+            || after.starts_with('"')
+            || after.starts_with('\'');
+        if before_ok && after_ok {
+            segments.push(text[pending..at].to_owned());
+            pending = at + old_root.len();
+        }
+        offset = at + old_root.len();
+    }
+    segments.push(text[pending..].to_owned());
+    segments
+}
+
+/// Normalizes one descriptor's text: the `prefix` line (wherever it sits) is
+/// removed and a `${pcfiledir}`-relative declaration is emitted first, since
+/// it depends on no variable and later lines may reference `${prefix}`;
+/// every absolute reference to the old root elsewhere becomes `${prefix}`.
+/// Unknown fields, comments and whitespace are preserved byte-for-byte.
+fn normalize_pc_source(sdk_root: &Path, descriptor: &Path, body: &str) -> eyre::Result<String> {
+    let mut old_prefix = None;
+    let mut line_start = 0usize;
+    let mut line_end = 0usize;
+    for index in body.match_indices('\n').map(|(i, _)| i).chain([body.len()]) {
+        let line = &body[line_start..index];
+        if let Some((key, value)) = line.split_once('=')
+            && key.trim() == "prefix"
+            && old_prefix.is_none()
+        {
+            let value = value.trim();
+            if value.is_empty() {
+                eyre::bail!("{} declares an empty prefix", descriptor.display());
+            }
+            old_prefix = Some(value.to_owned());
+            line_end = if index < body.len() { index + 1 } else { index };
+            break;
+        }
+        line_start = index + 1;
+    }
+    let old_prefix =
+        old_prefix.ok_or_else(|| eyre::eyre!("{} declares no prefix", descriptor.display()))?;
+    let relative_dir = descriptor
+        .parent()
+        .expect("a descriptor path under the SDK root has a parent directory")
+        .strip_prefix(sdk_root)?;
+    let parents = std::iter::repeat_n("..", relative_dir.components().count())
+        .collect::<Vec<_>>()
+        .join("/");
+    // The new `${pcfiledir}` prefix goes first: it has no variable
+    // dependency, so descriptors may reference `${prefix}` anywhere after.
+    let mut rest = String::with_capacity(body.len());
+    rest.push_str(&body[..line_start]);
+    rest.push_str(&body[line_end..]);
+    let segments = rebase_root_references(&rest, &old_prefix);
+    Ok(PcDescriptorTemplate {
+        parents: &parents,
+        segments: &segments,
+        tail: if segments.len() > 1 {
+            &segments[1..]
+        } else {
+            &[]
+        },
+    }
+    .render()?)
+}
+
+/// The framed digest of every `.pc` under the SDK — a normalization or SDK
+/// edit changes it, and the bridge's cache key follows.
+fn sdk_pkg_config_sha256_blocking(sdk_root: &Path) -> eyre::Result<String> {
+    let mut framed: BTreeMap<String, String> = BTreeMap::new();
+    for path in sdk_pc_files(sdk_root)? {
+        let relative = path.strip_prefix(sdk_root)?.to_string_lossy().into_owned();
+        framed.insert(relative, hex::encode(Sha256::digest(std::fs::read(path)?)));
+    }
+    Ok(hex::encode(Sha256::digest(serde_json::to_vec(&framed)?)))
+}
 
 const MANIFEST: &str = "native_bridge.json";
 
@@ -123,6 +292,7 @@ struct BuildInput {
     sdk_sha256: String,
     target: String,
     bridge_abi: u32,
+    sdk_pkg_config_sha256: String,
     compiler: BTreeMap<String, String>,
 }
 
@@ -172,13 +342,19 @@ pub(super) async fn build(
     sdk_sha256: &str,
 ) -> eyre::Result<NativeBridge> {
     let source_directory = source.native_source().to_path_buf();
-    let snapshot = smol::unblock(move || Snapshot::read(&source_directory)).await?;
+    let sdk_directory = sdk_root.to_path_buf();
+    let (snapshot, sdk_pkg_config_sha256) = futures_util::future::try_join(
+        smol::unblock(move || Snapshot::read(&source_directory)),
+        smol::unblock(move || sdk_pkg_config_sha256_blocking(&sdk_directory)),
+    )
+    .await?;
     let native_source_sha256 = snapshot.sha256();
     let input = BuildInput {
         native_source_sha256: native_source_sha256.clone(),
         sdk_sha256: sdk_sha256.to_owned(),
         target: source.target().to_string(),
         bridge_abi: source.bridge_abi(),
+        sdk_pkg_config_sha256,
         compiler: compiler_environment(host),
     };
     let key = cache_key(&input)?;
@@ -355,18 +531,30 @@ async fn cmake_build(
     build_dir: &Path,
     candidate: &Path,
 ) -> eyre::Result<()> {
+    let cmake = crate::toolchain::cmake::Cmake::default();
+    if let Err(error) = cmake.check(host).await {
+        eyre::bail!(
+            "{}",
+            crate::toolchain_checks::toolchain_check_message("CMake", &error)
+        );
+    }
+    let cmake = cmake
+        .path(host)
+        .await
+        .wrap_err("CMake passed its toolchain check but has no resolvable path")?;
     let host = host.with_env("PKG_CONFIG_PATH", scoped_pkg_config_path(host, sdk_root)?);
     let started = Instant::now();
     let expected_abi = format!("-DWATER_WPE_EXPECTED_ABI_VERSION={}", source.bridge_abi());
     run_cmake(
         &host,
+        &cmake,
         [
             "-S".into(),
             snapshot.as_os_str().to_owned(),
             "-B".into(),
             build_dir.as_os_str().to_owned(),
             "-DCMAKE_BUILD_TYPE=Release".into(),
-            "-DPKG_CONFIG_ARGN=--define-prefix".into(),
+            "-DPKG_CONFIG_ARGN=--dont-define-prefix".into(),
             expected_abi.into(),
         ],
         "configure",
@@ -375,6 +563,7 @@ async fn cmake_build(
     .await?;
     run_cmake(
         &host,
+        &cmake,
         ["--build".into(), build_dir.as_os_str().to_owned()],
         "build",
         started,
@@ -382,6 +571,7 @@ async fn cmake_build(
     .await?;
     run_cmake(
         &host,
+        &cmake,
         [
             "--install".into(),
             build_dir.as_os_str().to_owned(),
@@ -399,6 +589,7 @@ async fn cmake_build(
 /// land in the failure text.
 async fn run_cmake(
     host: &Host,
+    cmake: &Path,
     args: impl IntoIterator<Item = std::ffi::OsString>,
     step: &str,
     started: Instant,
@@ -408,7 +599,7 @@ async fn run_cmake(
         eyre::bail!("the WPE bridge build exceeded its 60 second budget before {step} ran");
     }
     let output = host
-        .output_within("cmake", args, remaining)
+        .output_within(cmake, args, remaining)
         .await
         .map_err(|error| eyre::eyre!("cmake {step} could not run: {error}"))?;
     if !output.status.success() {
@@ -548,6 +739,7 @@ mod tests {
             sdk_sha256: "sdk".to_owned(),
             target: "aarch64-unknown-linux-gnu".to_owned(),
             bridge_abi: 4,
+            sdk_pkg_config_sha256: "pc".to_owned(),
             compiler: BTreeMap::new(),
         }
     }
@@ -774,7 +966,7 @@ mod tests {
         // directories ahead of any host tail.
         let log_text = std::fs::read_to_string(&log).unwrap();
         assert!(log_text.contains("-DWATER_WPE_EXPECTED_ABI_VERSION=4"));
-        assert!(log_text.contains("-DPKG_CONFIG_ARGN=--define-prefix"));
+        assert!(log_text.contains("-DPKG_CONFIG_ARGN=--dont-define-prefix"));
         assert!(log_text.contains(&sdk.join("lib/pkgconfig").display().to_string()));
 
         // An unchanged input set serves the cache without running cmake again.
@@ -791,6 +983,129 @@ mod tests {
         machine.file("package/native/waterui_wpe.c", "int main(void){return 1;}");
         let third = smol::block_on(build(&host, &source, &sdk, "sdksha")).unwrap();
         assert_ne!(first.prefix, third.prefix);
+
+        // Editing a normalized SDK descriptor changes the build inputs and
+        // rebuilds: cmake runs again, into a different entry.
+        let lines = std::fs::read_to_string(&log).unwrap().lines().count();
+        machine.file("sdk/lib/pkgconfig/wpe-webkit-2.0.pc", "edited pc");
+        let fourth = smol::block_on(build(&host, &source, &sdk, "sdksha")).unwrap();
+        assert_ne!(third.prefix, fourth.prefix);
+        assert!(
+            std::fs::read_to_string(&log).unwrap().lines().count() > lines,
+            "an edited descriptor must run cmake again"
+        );
+    }
+
+    #[cfg(unix)]
+    /// The real `pkg-config` end-to-end check the `--define-prefix` breakage
+    /// demanded: a normalized SDK descriptor resolves to the staged root,
+    /// while the host's multiarch descriptor keeps its real `/usr` prefix —
+    /// no mangled `lib/include`, no stale absolute SDK path.
+    #[test]
+    fn normalized_sdk_descriptors_resolve_with_plain_pkg_config() {
+        const BUDGET: Duration = Duration::from_secs(5);
+        let fixture = tempfile::tempdir().expect("the pkg-config fixture");
+        let sdk = fixture.path().join("sdk with spaces");
+        let host_root = fixture.path().join("host");
+        let sdk_pc = sdk.join("lib/pkgconfig");
+        let host_pc = host_root.join("lib/x86_64-linux-gnu/pkgconfig");
+        std::fs::create_dir_all(&sdk_pc).unwrap();
+        std::fs::create_dir_all(&host_pc).unwrap();
+        // The absolute `libdir` sits BEFORE the consumed `prefix` line on
+        // purpose: a `${prefix}` reference must still resolve because the
+        // normalized descriptor emits its intrinsic prefix first.
+        std::fs::write(
+            sdk_pc.join("sdk.pc"),
+            "libdir=/old/wpe-sdk/lib\nprefix=/old/wpe-sdk\nincludedir=${prefix}/include\nName: sdk\nDescription: SDK\nVersion: 1.0\nRequires: host\nLibs: -L${libdir} -lsdk\nCflags: -I${includedir}/sdk\n",
+        )
+        .unwrap();
+        std::fs::write(
+            host_pc.join("host.pc"),
+            "prefix=/usr\nlibdir=${prefix}/lib/x86_64-linux-gnu\nincludedir=${prefix}/include\nName: host\nDescription: Host\nVersion: 1.0\nLibs: -L${libdir} -lhost\nCflags: -I${includedir}/host\n",
+        )
+        .unwrap();
+        smol::block_on(normalize_sdk_descriptors(sdk.clone())).unwrap();
+
+        let path = std::env::join_paths([sdk_pc, host_pc]).unwrap();
+        let host = Host::current()
+            .with_env("PKG_CONFIG_PATH", &path)
+            .with_env("PKG_CONFIG_LIBDIR", "")
+            .with_env("PKG_CONFIG_SYSROOT_DIR", "");
+        let query = |args: &'static [&'static str]| {
+            let host = host.clone();
+            async move {
+                let output = host
+                    .output_within("pkg-config", args, BUDGET)
+                    .await
+                    .expect("pkg-config runs");
+                assert!(
+                    output.status.success(),
+                    "pkg-config {args:?} failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                String::from_utf8(output.stdout).unwrap().trim().to_owned()
+            }
+        };
+        let (prefix_host, prefix_sdk, libdir_sdk, flags) = smol::block_on(async {
+            futures_util::join!(
+                query(&["--dont-define-prefix", "--variable=prefix", "host"]),
+                query(&["--dont-define-prefix", "--variable=prefix", "sdk"]),
+                query(&["--dont-define-prefix", "--variable=libdir", "sdk"]),
+                query(&[
+                    "--dont-define-prefix",
+                    "--keep-system-libs",
+                    "--keep-system-cflags",
+                    "--cflags",
+                    "--libs",
+                    "sdk",
+                ]),
+            )
+        });
+        // `--dont-define-prefix` preserves the host's real prefix; the SDK
+        // resolves its own staged root through `${pcfiledir}`.
+        assert_eq!(prefix_host, "/usr");
+        // `${pcfiledir}` resolves literally — `..` segments and escaped
+        // spaces included — so canonicalize before comparing.
+        let resolved = |raw: &str| {
+            std::path::PathBuf::from(raw.replace("\\ ", " "))
+                .canonicalize()
+                .unwrap()
+        };
+        assert_eq!(resolved(&prefix_sdk), sdk.canonicalize().unwrap());
+        assert_eq!(
+            resolved(&libdir_sdk),
+            sdk.canonicalize().unwrap().join("lib")
+        );
+        assert!(flags.contains("/usr/include/host"), "{flags}");
+        assert!(flags.contains("/usr/lib/x86_64-linux-gnu"), "{flags}");
+        assert!(!flags.contains("/old/wpe-sdk"), "{flags}");
+        assert!(!flags.contains("lib/include"), "{flags}");
+    }
+
+    #[test]
+    fn a_descriptor_without_prefix_is_rejected() {
+        let sdk = tempfile::tempdir().expect("sdk candidate");
+        let dir = sdk.path().join("lib/pkgconfig");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.pc"), "Name: a\nVersion: 1\n").unwrap();
+        std::fs::write(dir.join("b.pc"), "prefix=\nVersion: 1\n").unwrap();
+        for file in ["a.pc", "b.pc"] {
+            let body = std::fs::read_to_string(dir.join(file)).unwrap();
+            assert!(
+                normalize_pc_source(sdk.path(), &dir.join(file), &body).is_err(),
+                "{file} must be rejected"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_descriptor_is_rejected() {
+        let sdk = tempfile::tempdir().expect("sdk candidate");
+        let dir = sdk.path().join("lib/pkgconfig");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink("/etc/hosts", dir.join("hostile.pc")).unwrap();
+        assert!(smol::block_on(normalize_sdk_descriptors(sdk.path().to_path_buf())).is_err());
     }
 
     #[cfg(unix)]
@@ -876,6 +1191,52 @@ mod tests {
         .unwrap();
         std::fs::write(prefix.path().join(MANIFEST), bridge_only).unwrap();
         assert!(smol::block_on(validate_cached(prefix.path(), &base)).is_err());
+    }
+
+    #[test]
+    fn sdk_descriptors_normalize_to_pcfiledir_relative() {
+        let sdk = tempfile::tempdir().expect("sdk candidate");
+        let dir = sdk.path().join("lib/pkgconfig");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("wpe-webkit-2.0.pc"),
+            "prefix=/old/wpe-sdk\nlibdir=/old/wpe-sdk/lib\nincludedir=${prefix}/include\nRequires: other\nLibs: -L${libdir} -lwpe\n# keep me\n",
+        )
+        .unwrap();
+        smol::block_on(normalize_sdk_descriptors(sdk.path().to_path_buf())).unwrap();
+        let text = std::fs::read_to_string(dir.join("wpe-webkit-2.0.pc")).unwrap();
+        assert!(text.starts_with("prefix=${pcfiledir}/../..\n"), "{text}");
+        assert!(text.contains("libdir=${prefix}/lib\n"), "{text}");
+        assert!(text.contains("includedir=${prefix}/include"), "{text}");
+        assert!(text.contains("Requires: other"), "{text}");
+        assert!(text.contains("# keep me"), "{text}");
+        // Idempotent: a second pass changes nothing.
+        smol::block_on(normalize_sdk_descriptors(sdk.path().to_path_buf())).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("wpe-webkit-2.0.pc")).unwrap(),
+            text
+        );
+    }
+
+    #[test]
+    fn sdk_descriptor_edges_and_errors() {
+        let sdk = tempfile::tempdir().expect("sdk candidate");
+        let dir = sdk.path().join("share/pkgconfig/deeper");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Root-sibling path is not rebased; deeper nesting gets more parents.
+        std::fs::write(
+            dir.join("deep.pc"),
+            "Name: deep\nprefix=/old/sdk\nfoo=/old/sdk-sibling/x /old/sdk/y\nVersion: 1\n",
+        )
+        .unwrap();
+        smol::block_on(normalize_sdk_descriptors(sdk.path().to_path_buf())).unwrap();
+        let text = std::fs::read_to_string(dir.join("deep.pc")).unwrap();
+        assert!(text.starts_with("prefix=${pcfiledir}/../../..\n"), "{text}");
+        assert!(text.contains("/old/sdk-sibling/x"), "{text}");
+        assert!(text.contains("${prefix}/y"), "{text}");
+        // No prefix -> named error.
+        std::fs::write(dir.join("bad.pc"), "Name: bad\nVersion: 1\n").unwrap();
+        assert!(smol::block_on(normalize_sdk_descriptors(sdk.path().to_path_buf())).is_err());
     }
 
     #[test]

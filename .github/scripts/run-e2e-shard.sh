@@ -59,7 +59,6 @@ baselines_dir="${BASELINES_DIR:-${workspace}/backends/apple/Tests/E2EBaselines}"
 record_dir="${RECORD_DIR:-${workspace}/e2e-baselines}"
 record="${RECORD:-0}"
 prebuilt_dir="${PREBUILT_DIR:-}"
-flip_tolerances="${FLIP_TOLERANCES:-${baselines_dir}/parity-budgets.json}"
 reference_dir="${workspace}/backends/apple/Tests/E2EReference"
 command_deadline="${workspace}/.github/scripts/run-with-deadline.py"
 receipts_file="${logs_dir}/command-receipts-${platform}-${shard_index}.jsonl"
@@ -211,6 +210,11 @@ if [[ "${platform}" == "macos" ]]; then
   if ! swiftc -O -o "${swift_tools_dir}/launch-app" \
        "${workspace}/.github/scripts/launch-app.swift"; then
     echo "::error::Failed to compile launch-app.swift."
+    exit 1
+  fi
+  if ! swiftc -O -o "${swift_tools_dir}/display-scale" \
+       "${workspace}/.github/scripts/display-scale.swift"; then
+    echo "::error::Failed to compile display-scale.swift."
     exit 1
   fi
 fi
@@ -700,6 +704,29 @@ if [[ -z "${comparison_os_major}" ]]; then
   exit 1
 fi
 
+# Pixels per point of every capture this job takes, which sizes the twin
+# comparison's block in points: the simulated device's screen scale on iOS,
+# the runner's single display on macOS.
+if [[ "${platform}" == "ios" ]]; then
+  device_type_bundle="$(python3 -c '
+import json, subprocess, sys
+devices = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "--json"]))
+kind = next(d["deviceTypeIdentifier"] for group in devices["devices"].values()
+            for d in group if d.get("udid") == sys.argv[1])
+types = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devicetypes", "--json"]))
+print(next(t["bundlePath"] for t in types["devicetypes"] if t["identifier"] == kind))
+' "${SIMULATOR_UDID}")" || device_type_bundle=""
+  capture_scale="$(plutil -extract capabilities.ScreenDimensionsCapability.main-screen-scale raw \
+    "${device_type_bundle}/Contents/Resources/capabilities.plist")" || capture_scale=""
+  capture_scale="${capture_scale%.000000}"
+else
+  capture_scale="$("${swift_tools_dir}/display-scale")" || capture_scale=""
+fi
+if [[ ! "${capture_scale}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "::error::Cannot derive the ${platform} capture scale for twin comparison (got '${capture_scale}')." >&2
+  exit 1
+fi
+
 # Final checks have the same per-command bound and receipt trail as capture.
 run_comparison() {
   local label="$1" output="$2"
@@ -717,7 +744,7 @@ comparison_summary() {
 import json, sys
 with open(sys.argv[1]) as stream:
     comparison = json.load(stream)
-json.dump({key: comparison[key] for key in ("metric", "flip_mean", "flip_max", "max_local_error", "limits")},
+json.dump({key: comparison[key] for key in ("metric", "flip_mean", "flip_max", "max_local_error", "max_block_flip_mean", "limits")},
           sys.stdout)
 ' "$1"
 }
@@ -1118,10 +1145,14 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       # artifacts; a human reviews the whole images.
       report+=("| \`${example}\` (parity) | VISUAL REVIEW REQUIRED | pair in e2e-shots artifacts | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     else
+      # A twin is a second implementation, not a second route to the same
+      # pixels: it is gated by the comparer's twin FLIP limits, which accept
+      # edge offsets of up to 2 px and reject missing, extra or misplaced
+      # elements, judged over 8 pt blocks at the capture scale.
       parity_rc=0
       run_comparison "${example}:parity" "${parity_json}" \
         compare "${ref_shot}" "${shot}" "${parity_diff}" "${comparison_args[@]}" \
-        --tolerances "${flip_tolerances}" ${parity_record_flag:+"${parity_record_flag}"} || parity_rc=$?
+        --limits twin --scale "${capture_scale}" ${parity_record_flag:+"${parity_record_flag}"} || parity_rc=$?
       parity_out=""
       if (( parity_rc == 0 || parity_rc == 1 )); then
         parity_out="$(comparison_summary "${parity_json}")"
