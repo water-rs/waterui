@@ -468,6 +468,20 @@ define_class!(
             true
         }
 
+        /// Keeps `AppKit`'s resize, counted as the flight's own writes: it
+        /// re-tiles the clip and resizes the table with it, and the clip's
+        /// re-clamp to the new document frame is `AppKit`'s correction,
+        /// never the user's scroll.
+        #[unsafe(method(setFrameSize:))]
+        fn set_frame_size_override(&self, new_size: NSSize) {
+            guarded("TableView setFrameSize", || {
+                self.ivars().flight.own_writes(|| {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), setFrameSize: new_size] };
+                });
+            });
+        }
+
         /// Keeps `AppKit`'s layout — its clip corrections counted as the
         /// flight's own writes — then reports it so the consumer can
         /// track the content width onto the column.
@@ -1131,6 +1145,15 @@ impl TableView {
     #[must_use]
     pub fn scroll_animation_in_flight(&self) -> bool {
         self.ivars().flight.in_flight()
+    }
+
+    /// Installs a stepped clock on this surface's scroll flights and
+    /// returns it — the native test suite's hand on flight time. Call it
+    /// before the surface's first flight.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn install_manual_scroll_clock(&self) -> Rc<crate::native_test::ManualScrollClock> {
+        self.ivars().flight.install_manual_clock()
     }
 
     /// Whether the scroll view is in a window.

@@ -436,50 +436,81 @@ fn trial_each(named: Vec<(String, Box<dyn FnOnce() + Send>)>) -> Vec<Trial> {
 mod appkit_input {
     use std::cell::Cell;
     use std::rc::Rc;
+    use std::time::Duration;
 
     use cocoa_ui::display_link::FrameClock;
+    use cocoa_ui::native_test::ManualScrollClock;
     use cocoa_ui::notification::{NotificationName, NotificationObserver, observe_object};
     use cocoa_ui::objc2_app_kit::{
-        NSEvent, NSScrollView, NSScrollViewDidLiveScrollNotification,
-        NSStandardKeyBindingResponding, NSView, NSWindow,
+        NSEvent, NSEventModifierFlags, NSEventType, NSScrollView,
+        NSScrollViewDidLiveScrollNotification, NSView, NSWindow,
     };
-    use cocoa_ui::objc2_foundation::{NSRect, NSSize};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
     use cocoa_ui::{MainThreadMarker, Retained};
     use objc2::runtime::AnyObject;
     use objc2::{MainThreadOnly, define_class, msg_send};
     use objc2_core_graphics::{CGEvent, CGScrollEventUnit};
-    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, drain_main_queue, pump_main_until,
+    };
 
-    /// Sends `action` down `window`'s responder chain the way a resolved
-    /// key binding does: `doCommandBySelector:` is the delivery
-    /// `interpretKeyEvents` performs once the key resolves. A harness
-    /// window never becomes key, so a raw `sendEvent` key-down cannot
-    /// rely on that machinery running — the binding's `scrollPageDown:`
-    /// resolves to no implementor on recent `AppKit` besides — while the
-    /// command send is deterministic on every host.
-    pub fn command(window: &NSWindow, action: objc2::runtime::Sel) {
-        let responder = window
-            .firstResponder()
-            .expect("the window has a first responder");
-        // SAFETY: `action` is a no-argument binding action; the chain's
-        // `doCommandBySelector` forwarding is the mechanism
-        // `interpretKeyEvents` uses for resolved bindings.
-        unsafe { responder.doCommandBySelector(action) };
+    /// A function key: its virtual key code and the `NS…FunctionKey`
+    /// character `AppKit` reports for it.
+    #[derive(Clone, Copy, Debug)]
+    pub struct FunctionKey {
+        key_code: u16,
+        character: u32,
     }
 
-    /// The scroll request a keyboard page scroll funnels into:
-    /// `-[NSScrollView scrollClipView:toPoint:]` is where `pageDown:` and
-    /// the bindings' `scrollPageDown:`/`scrollToEndOfDocument:` all
-    /// converge before the clip's `scrollToPoint:` write. Sending a
-    /// viewport's worth directly exercises that interception without
-    /// `AppKit`'s animated page scroll — `pageDown:` moves the clip on
-    /// the context clock, so the scroll a press starts keeps rewriting
-    /// the offset past every assertion the case could make.
-    pub fn page_scroll(scroll_view: &NSScrollView) {
-        let clip = scroll_view.contentView();
-        let mut point = clip.bounds().origin;
-        point.y += clip.bounds().size.height;
-        scroll_view.scrollClipView_toPoint(&clip, point);
+    /// `kVK_PageDown` / `NSPageDownFunctionKey`.
+    pub const PAGE_DOWN: FunctionKey = FunctionKey {
+        key_code: 0x79,
+        character: 0xF72D,
+    };
+
+    /// `kVK_End` / `NSEndFunctionKey`.
+    pub const END: FunctionKey = FunctionKey {
+        key_code: 0x77,
+        character: 0xF72B,
+    };
+
+    /// Keyboard events require the application and its target window to
+    /// participate in `AppKit`'s key-window lifecycle before a flight starts.
+    pub fn prepare_keyboard(window: &NSWindow) {
+        cocoa_ui::appkit::Application::shared(super::mtm()).activate();
+        window.makeKeyAndOrderFront(None);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || window.isKeyWindow()),
+            "the keyboard fixture must become the key window"
+        );
+    }
+
+    /// Presses `key` in `window`: a key-down `window.sendEvent` routes to
+    /// the first responder, the way the window server's event does.
+    pub fn press(window: &NSWindow, key: FunctionKey) {
+        assert!(
+            window.isKeyWindow(),
+            "keyboard events target the key window"
+        );
+        let characters = NSString::from_str(
+            &char::from_u32(key.character)
+                .expect("function-key characters are valid code points")
+                .to_string(),
+        );
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown,
+            NSPoint::ZERO,
+            NSEventModifierFlags::Function,
+            0.0,
+            window.windowNumber(),
+            None,
+            &characters,
+            &characters,
+            false,
+            key.key_code,
+        )
+        .expect("AppKit builds a key-down event");
+        window.sendEvent(&event);
     }
 
     /// Scrolls `scroll_view` by `pixels` with a legacy mouse wheel: a
@@ -521,6 +552,22 @@ mod appkit_input {
         // SAFETY: every `NSView` class answers the class property.
         unsafe { msg_send![view.class(), isCompatibleWithResponsiveScrolling] }
     }
+
+    define_class!(
+        #[unsafe(super(NSView))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "WaterUiNativeTestFocusTarget"]
+        /// A focusable view: the key responder a document needs before
+        /// the keyboard can scroll it.
+        pub struct FocusTarget;
+
+        impl FocusTarget {
+            #[unsafe(method(acceptsFirstResponder))]
+            fn accepts_first_responder(&self) -> bool {
+                true
+            }
+        }
+    );
 
     define_class!(
         #[unsafe(super(NSScrollView))]
@@ -567,59 +614,82 @@ mod appkit_input {
 
     /// Mid-flight, `AppKit` corrects the clip for a document growing by
     /// 500pt (`grow_document`), then for `window` growing and shrinking —
-    /// none of which is user scrolling, so the flight must keep writing
-    /// through each. The flight's own writes pace the corrections — each
-    /// `advance` waits for the next write, never for a wall-clock mark —
-    /// and removing the surface from `window` lands the flight, the
-    /// surface's own landing path, so the caller checks the offset it
-    /// settled on.
+    /// none of which is user scrolling, so the flight to `target` must
+    /// keep running through each. Each correction follows a stepped frame
+    /// of the surface's manual clock, and the final frame reaches the
+    /// schedule's end and lands the flight.
     pub fn assert_flight_survives_corrections(
         window: &NSWindow,
+        clock: &ManualScrollClock,
+        target: f64,
         in_flight: impl Fn() -> bool,
         offset: impl Fn() -> f64,
         grow_document: impl FnOnce(),
     ) {
+        // The 2 s linear flight, stepped a frame at a time: a quarter-second
+        // frame before each of the three corrections and one after the last,
+        // all mid-schedule; the final frame reaches the schedule's end and
+        // lands. Every instant is a dyadic fraction, so the elapsed time is
+        // exact and the landing frame is the last one by construction.
+        const STEP: Duration = Duration::from_millis(250);
         let content = window.contentView().expect("the window has a content view");
         let size = content.frame().size;
-        let advance = |what: &str| {
-            let last = offset().to_bits();
-            assert!(
-                pump_main_until(MAIN_QUEUE_DEADLINE, || {
-                    offset().to_bits() != last || !in_flight()
-                }),
-                "the flight must keep writing before {what}"
-            );
+        let step = |when: &str| {
+            let previous = offset().to_bits();
+            clock.advance(STEP);
             assert!(
                 in_flight(),
-                "the flight must still be running before {what}: offset {}",
+                "the flight must still be running {when}: offset {}",
+                offset()
+            );
+            assert!(
+                offset().to_bits() != previous,
+                "the frame {when} must move the flight toward {target}: offset {}",
                 offset()
             );
         };
         let settle = |what: &str| {
             content.layoutSubtreeIfNeeded();
             assert!(
+                drain_main_queue(super::mtm()),
+                "the main queue must drain after {what}"
+            );
+            assert!(
                 in_flight(),
                 "{what} must not cancel the flight: offset {}",
                 offset()
             );
         };
-        advance("the document growing");
+        step("before the document grows");
         grow_document();
         settle("the document growing");
-        advance("a larger window");
+        step("before a larger window");
         window.setContentSize(NSSize::new(size.width + 120.0, size.height + 160.0));
         settle("a larger window");
-        advance("a smaller window");
+        step("before a smaller window");
         window.setContentSize(NSSize::new(size.width - 120.0, size.height - 160.0));
         settle("a smaller window");
-        // Landing is the surface's own path: a view leaving its window
-        // lands the flight it was running — on its target.
-        content.removeFromSuperview();
+        step("after the last correction");
+        clock.advance(Duration::from_secs(1));
         assert!(
             !in_flight(),
-            "leaving the window must land the flight: offset {}",
+            "the frame at the schedule's end must land the flight: offset {}",
             offset()
         );
+        assert!(!clock.is_running(), "the landed flight must stop its clock");
+    }
+
+    impl FocusTarget {
+        /// A small focusable view.
+        pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+            // SAFETY: standard `NSView` init on a main-thread class.
+            unsafe {
+                msg_send![
+                    Self::alloc(mtm),
+                    initWithFrame: NSRect::new(NSPoint::ZERO, NSSize::new(10.0, 10.0))
+                ]
+            }
+        }
     }
 }
 
@@ -6760,25 +6830,26 @@ mod scroll {
     /// The user's own wheel scroll wins mid-flight: a phase-less legacy
     /// wheel event sent through the surface's `scrollWheel:` makes
     /// `AppKit` post `NSScrollViewDidLiveScrollNotification`, the
-    /// animation retires, and the offset the wheel produced stands past
-    /// the flight's original end.
+    /// animation retires, and stepping the flight's clock past its
+    /// original schedule proves the retired flight silent — the offset
+    /// the wheel produced stands.
     #[cfg(target_os = "macos")]
     fn a_users_wheel_scroll_takes_over_an_in_flight_animation() {
-        use cocoa_ui::objc2_quartz_core::CACurrentMediaTime;
         use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
         let fixture = mounted();
+        let clock = fixture.surface.install_manual_scroll_clock();
         let (_observer, live_scrolls) =
             super::appkit_input::count_live_scrolls(super::mtm(), &fixture.surface);
         fixture.controller.animate_to(
             Point::new(0.0, 1000.0),
             Animation::linear(Duration::from_secs(2)),
         );
+        clock.advance(Duration::from_millis(500));
         assert!(
             fixture.surface.scroll_animation_in_flight(),
             "the flight must be in progress when the user's scroll starts"
         );
-        let flight_end = CACurrentMediaTime() + 2.0;
         let before = fixture.surface.content_offset().y;
         super::appkit_input::wheel(&fixture.surface, -40);
         assert!(
@@ -6789,12 +6860,16 @@ mod scroll {
             !fixture.surface.scroll_animation_in_flight(),
             "the user's wheel scroll must retire the flight"
         );
-        // Outlast the flight's original schedule: had it survived, its
-        // ticks would still be writing toward 1000 — the user's offset
-        // stands.
         assert!(
-            pump_main_until(MAIN_QUEUE_DEADLINE, || CACurrentMediaTime() >= flight_end),
-            "the flight's original schedule must elapse"
+            !clock.is_running(),
+            "the retired flight must stop its clock"
+        );
+        let wheeled = fixture.surface.content_offset().y;
+        clock.advance(Duration::from_secs(2));
+        assert_offset_eq(
+            fixture.surface.content_offset().y,
+            wheeled,
+            "the retired flight writes nothing past its original schedule",
         );
         let settled = fixture.surface.content_offset().y;
         assert!(
@@ -6804,42 +6879,70 @@ mod scroll {
         );
     }
 
-    /// The keyboard wins mid-flight: a page-down's scroll request —
-    /// `scrollClipView:toPoint:`, the funnel `pageDown:` and the
-    /// `scrollPageDown:` binding action reach the clip through — writes
-    /// the clip directly, not through the flight's own write — the
-    /// animation retires synchronously and the paged offset stands past
-    /// the flight's original end.
+    /// The keyboard wins mid-flight: a page-down sent through the window
+    /// to a focused view in the document reaches the scroll view's
+    /// `pageDown:`, whose clip write is not the flight's own — the
+    /// animation retires synchronously, and stepping the flight's clock
+    /// past its original schedule proves the retired flight silent.
     #[cfg(target_os = "macos")]
     fn a_page_down_takes_over_an_in_flight_animation() {
-        use cocoa_ui::objc2_quartz_core::CACurrentMediaTime;
+        use cocoa_ui::objc2_app_kit::NSResponder;
         use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
         let fixture = mounted();
+        let clock = fixture.surface.install_manual_scroll_clock();
+        let window = fixture
+            .surface
+            .window()
+            .expect("the mounted surface is in a window");
+        let focus = super::appkit_input::FocusTarget::new(super::mtm());
+        fixture
+            .surface
+            .document_view()
+            .expect("a laid-out scroll surface has a document")
+            .addSubview(&focus);
+        let responder: &NSResponder = &focus;
+        assert!(
+            window.makeFirstResponder(Some(responder)),
+            "the focus target must take first responder"
+        );
+        super::appkit_input::prepare_keyboard(&window);
         fixture.controller.animate_to(
             Point::new(0.0, 1000.0),
             Animation::linear(Duration::from_secs(2)),
         );
-        let flight_end = CACurrentMediaTime() + 2.0;
+        clock.advance(Duration::from_millis(500));
         let before = fixture.surface.content_offset().y;
-        super::appkit_input::page_scroll(&fixture.surface);
+        assert!(
+            fixture.surface.scroll_animation_in_flight() && before > 0.0,
+            "the flight must be mid-way when page-down is pressed: offset {before}"
+        );
+        super::appkit_input::press(&window, super::appkit_input::PAGE_DOWN);
         assert!(
             !fixture.surface.scroll_animation_in_flight(),
             "the keyboard's page-down must retire the flight"
         );
-        let paged = fixture.surface.content_offset().y;
         assert!(
-            paged > before,
-            "page-down scrolls the document: before {before}, after {paged}"
+            !clock.is_running(),
+            "the retired flight must stop its clock"
         );
-        assert!(
-            pump_main_until(MAIN_QUEUE_DEADLINE, || CACurrentMediaTime() >= flight_end),
-            "the flight's original schedule must elapse"
-        );
+        let pressed = fixture.surface.content_offset().y;
+        clock.advance(Duration::from_secs(2));
         assert_offset_eq(
             fixture.surface.content_offset().y,
-            paged,
-            "the paged offset stands — the retired flight never rewrites the model",
+            pressed,
+            "the retired flight writes nothing past its original schedule",
+        );
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                fixture.surface.content_offset().y > before
+            }),
+            "AppKit's animated page scroll must move the document past {before}"
+        );
+        let paged = fixture.surface.content_offset().y;
+        assert!(
+            (paged - 1000.0).abs() > 1.0,
+            "the retired flight never landed: {paged}"
         );
     }
 
@@ -6886,24 +6989,25 @@ mod scroll {
     /// window resizing — leave a flight running, and it lands on its
     /// target. The 1000pt target stays inside the travel throughout (the
     /// end offset never drops below it), so the landing checks the
-    /// flight, not a clamp. The flight's horizon is deliberately far —
-    /// the case must pass at any machine speed, so the corrections run
-    /// against a flight that cannot complete on its own clock.
+    /// flight, not a clamp.
     #[cfg(target_os = "macos")]
     fn appkit_corrections_keep_an_in_flight_animation() {
         use cocoa_ui::objc2_foundation::NSSize;
 
         let fixture = mounted();
+        let clock = fixture.surface.install_manual_scroll_clock();
         let window = fixture
             .surface
             .window()
             .expect("the mounted surface is in a window");
         fixture.controller.animate_to(
             Point::new(0.0, 1000.0),
-            Animation::linear(Duration::from_secs(60)),
+            Animation::linear(Duration::from_secs(2)),
         );
         super::appkit_input::assert_flight_survives_corrections(
             &window,
+            &clock,
+            1000.0,
             || fixture.surface.scroll_animation_in_flight(),
             || fixture.surface.content_offset().y,
             || {
@@ -7401,22 +7505,22 @@ mod list_scroll {
         );
     }
 
-    /// The keyboard wins mid-flight: `press` scrolls the clip through a
-    /// write that is not the flight's own — the `scrollClipView:toPoint:`
-    /// funnel a page-down reaches, or the focused table's own
-    /// `scrollToEndOfDocument:` binding action, which posts no live-scroll
-    /// notification — and the flight retires synchronously; the keyed
-    /// offset stands past the flight's original end.
+    /// The keyboard wins mid-flight: `key`, sent through the window to the
+    /// focused table, scrolls the clip through a write that is not the
+    /// flight's own — `pageDown:` on the scroll view, or the table's own
+    /// `scrollToEndOfDocument:`, which posts no live-scroll notification —
+    /// and the flight retires synchronously; stepping the flight's clock
+    /// past its original schedule proves the retired flight silent.
     #[cfg(target_os = "macos")]
     fn the_keyboard_takes_over_an_in_flight_animation(
         name: &'static str,
-        press: impl FnOnce(&Fixture, &cocoa_ui::objc2_app_kit::NSWindow),
+        key: super::appkit_input::FunctionKey,
     ) {
         use cocoa_ui::objc2_app_kit::NSResponder;
-        use cocoa_ui::objc2_quartz_core::CACurrentMediaTime;
         use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
         let fixture = mounted();
+        let clock = fixture.table.install_manual_scroll_clock();
         let table = fixture.table.table_view();
         let window = table.window().expect("the mounted list is in a window");
         let responder: &NSResponder = &table;
@@ -7424,29 +7528,37 @@ mod list_scroll {
             window.makeFirstResponder(Some(responder)),
             "the table must take first responder"
         );
+        super::appkit_input::prepare_keyboard(&window);
         fixture
             .controller
             .animate_to(150, Animation::linear(Duration::from_secs(2)));
+        clock.advance(Duration::from_millis(500));
         assert!(
             fixture.table.scroll_animation_in_flight(),
             "the row flight must be in progress when {name} is pressed"
         );
-        let flight_end = CACurrentMediaTime() + 2.0;
-        press(&fixture, &window);
+        let before = offset_y(&fixture);
+        super::appkit_input::press(&window, key);
         assert!(
             !fixture.table.scroll_animation_in_flight(),
             "{name} must retire the flight"
         );
-        let keyed = offset_y(&fixture);
         assert!(
-            pump_main_until(MAIN_QUEUE_DEADLINE, || CACurrentMediaTime() >= flight_end),
-            "the flight's original schedule must elapse"
+            !clock.is_running(),
+            "the retired flight must stop its clock"
         );
+        let pressed = offset_y(&fixture);
+        clock.advance(Duration::from_secs(2));
         assert_offset_eq(
             offset_y(&fixture),
-            keyed,
-            "the keyed offset stands — the retired flight never rewrites the model",
+            pressed,
+            "the retired flight writes nothing past its original schedule",
         );
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || offset_y(&fixture) > before),
+            "{name} must scroll the list past {before}"
+        );
+        let keyed = offset_y(&fixture);
         assert!(
             (keyed - row_top_offset(&fixture, 150)).abs() > 1.0,
             "the superseded flight never landed: {keyed}"
@@ -7487,21 +7599,23 @@ mod list_scroll {
     /// `AppKit`'s own clip corrections — the table growing, the window
     /// resizing — leave a row flight running, and it lands on the row's
     /// top as the final geometry places it. Row 40 sits far from the end,
-    /// so no clamp is involved. The flight's horizon is deliberately
-    /// far — the case must pass at any machine speed, so the corrections
-    /// run against a flight that cannot complete on its own clock.
+    /// so no clamp is involved.
     #[cfg(target_os = "macos")]
     fn appkit_corrections_keep_an_in_flight_animation() {
         let fixture = mounted();
+        let clock = fixture.table.install_manual_scroll_clock();
         let window = fixture
             .table
             .window()
             .expect("the mounted list is in a window");
+        let target = row_top_offset(&fixture, TARGET);
         fixture
             .controller
-            .animate_to(TARGET, Animation::linear(Duration::from_secs(60)));
+            .animate_to(TARGET, Animation::linear(Duration::from_secs(2)));
         super::appkit_input::assert_flight_survives_corrections(
             &window,
+            &clock,
+            target,
             || fixture.table.scroll_animation_in_flight(),
             || offset_y(&fixture),
             || {
@@ -7575,17 +7689,16 @@ mod list_scroll {
             (
                 "list_scroll::a_page_down_takes_over_an_in_flight_animation".to_owned(),
                 Box::new(|| {
-                    the_keyboard_takes_over_an_in_flight_animation("page-down", |fixture, _| {
-                        super::appkit_input::page_scroll(&fixture.table);
-                    });
+                    the_keyboard_takes_over_an_in_flight_animation(
+                        "page-down",
+                        super::appkit_input::PAGE_DOWN,
+                    );
                 }) as Box<dyn FnOnce() + Send>,
             ),
             (
                 "list_scroll::the_end_key_takes_over_an_in_flight_animation".to_owned(),
                 Box::new(|| {
-                    the_keyboard_takes_over_an_in_flight_animation("End", |_, window| {
-                        super::appkit_input::command(window, objc2::sel!(scrollToEndOfDocument:));
-                    });
+                    the_keyboard_takes_over_an_in_flight_animation("End", super::appkit_input::END);
                 }),
             ),
             (
