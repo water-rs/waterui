@@ -196,7 +196,7 @@ fn fit_image_to_limits(
     image: &peniko::ImageData,
     limits: waterui_graphics::draw::ImageLimits,
 ) -> (u32, u32, Arc<[u8]>) {
-    let (width, height) = limits.fit(image.width, image.height);
+    let (width, height) = limits.fit::<waterui_graphics::draw::Rgba8>(image.width, image.height);
     assert!(
         (width, height) != (0, 0),
         "hydrolysis renderer: engine image limits admit no image at all"
@@ -1701,7 +1701,8 @@ mod tests {
         let (events, _events) = std::sync::mpsc::channel();
         let limits = waterui_graphics::draw::ImageLimits {
             max_dimension: 8,
-            max_texels: 64,
+            max_bytes: 64 * 4,
+            ..waterui_graphics::draw::ImageLimits::UNLIMITED
         };
         let engine = std::rc::Rc::new(
             cherenkov::Engine::<cherenkov::testing::Null>::new(cherenkov::testing::NullConfig {
@@ -1764,7 +1765,8 @@ mod tests {
         };
         let limits = waterui_graphics::draw::ImageLimits {
             max_dimension: 8,
-            max_texels: 64,
+            max_bytes: 64 * 4,
+            ..waterui_graphics::draw::ImageLimits::UNLIMITED
         };
         let (width, height, bytes) = fit_image_to_limits(&source, limits);
         assert_eq!((width, height), (8, 2));

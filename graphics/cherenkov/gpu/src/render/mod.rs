@@ -3974,11 +3974,8 @@ impl Renderer for GpuRenderer {
     fn image_limits(&self) -> cherenkov::ImageLimits {
         cherenkov::ImageLimits {
             max_dimension: self.max_texture,
-            // The image budget: every registered image together holds at
-            // most the GPU budget at eight bytes a texel, the largest
-            // storage an image takes (`Rgba16F`); natively stored formats
-            // take less. The engine admits registrations against it.
-            max_texels: self.config.budget.gpu.0 / 8,
+            max_bytes: self.config.budget.gpu.0,
+            storage: image_storage::limits(self.device.features()),
         }
     }
 

@@ -163,7 +163,9 @@ impl HwuiResources {
         premultiplied: bool,
         pixels: &[u8],
     ) -> Result<Handle<ImageId>, ResourceError> {
-        self.platform.image_limits().check(width, height)?;
+        self.platform
+            .image_limits()
+            .check::<cherenkov::Rgba8>(width, height)?;
         let upload = BitmapUpload {
             width,
             height,
@@ -427,7 +429,8 @@ pub(in crate::hwui) mod tests {
         fn image_limits(&self) -> ImageLimits {
             ImageLimits {
                 max_dimension: 64,
-                max_texels: 64 * 64,
+                max_bytes: 64 * 64 * 4,
+                ..ImageLimits::UNLIMITED
             }
         }
 

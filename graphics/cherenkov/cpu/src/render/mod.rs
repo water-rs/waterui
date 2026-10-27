@@ -504,9 +504,10 @@ impl Renderer for RasterRenderer {
             max_dimension: u32::MAX,
             // The image budget: every registered image together holds at
             // most the CPU budget, decoded as f32 RGBA at sixteen bytes a
-            // texel. The engine admits registrations against it, and the
+            // pixel. The engine admits registrations against it, and the
             // glyph caches take what the images leave.
-            max_texels: self.image_budget / 16,
+            max_bytes: self.image_budget,
+            storage: cherenkov::ImageStorage::CPU,
         }
     }
 
