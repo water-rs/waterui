@@ -355,26 +355,36 @@ fn edge_point(
 
 /// The per-pixel FLIP error between two images' features.
 fn flip_error(reference: &Features, test: &Features, filters: &Filters) -> Vec<f64> {
-    let (cmax, pccmax) = (filters.cmax, filters.pccmax);
     reference
         .hunt
         .par_iter()
         .zip(&test.hunt)
         .zip(reference.edge_point.par_iter().zip(&test.edge_point))
-        .map(|((hr, ht), (fr, ft))| {
-            let mut cd = hyab(*hr, *ht).powf(GQC);
-            cd = if cd < pccmax {
-                cd * (GPT / pccmax)
-            } else {
-                ((cd - pccmax) / (cmax - pccmax)).mul_add(1.0 - GPT, GPT)
-            };
-            let edge_diff = (fr[0] - ft[0]).abs();
-            let point_diff = (fr[1] - ft[1]).abs();
-            // pow(featureDiff, gqf) with gqf = 0.5 — a square root.
-            let fd = (edge_diff.max(point_diff) * core::f64::consts::FRAC_1_SQRT_2).sqrt();
-            cd.powf(1.0 - fd)
-        })
+        .map(|((hr, ht), (fr, ft))| pixel_error(*hr, *ht, *fr, *ft, filters))
         .collect()
+}
+
+/// FLIP's error at one pixel from both images' filtered colour and features
+/// there.
+fn pixel_error(
+    reference_hunt: [f64; 3],
+    test_hunt: [f64; 3],
+    reference_features: [f64; 2],
+    test_features: [f64; 2],
+    filters: &Filters,
+) -> f64 {
+    let (cmax, pccmax) = (filters.cmax, filters.pccmax);
+    let mut cd = hyab(reference_hunt, test_hunt).powf(GQC);
+    cd = if cd < pccmax {
+        cd * (GPT / pccmax)
+    } else {
+        ((cd - pccmax) / (cmax - pccmax)).mul_add(1.0 - GPT, GPT)
+    };
+    let edge_diff = (reference_features[0] - test_features[0]).abs();
+    let point_diff = (reference_features[1] - test_features[1]).abs();
+    // pow(featureDiff, gqf) with gqf = 0.5 — a square root.
+    let fd = (edge_diff.max(point_diff) * core::f64::consts::FRAC_1_SQRT_2).sqrt();
+    cd.powf(1.0 - fd)
 }
 
 /// ACES tone map (HDR-FLIP's default tone mapper).
@@ -411,32 +421,107 @@ fn unit_range(rgb: &[[f64; 3]], exposure: Option<f64>) -> Vec<[f64; 3]> {
     )
 }
 
-/// A reference image prepared for FLIP: its features at every exposure the
-/// comparison measures — one for LDR-FLIP, one per [`HDR_EXPOSURES`] stop
-/// for HDR-FLIP.
+/// The rectangle, in a first image's pixels, where it overlaps a second
+/// image of the same size displaced by an offset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Overlap {
+    /// Left edge, in the first image's columns.
+    pub x: usize,
+    /// Top edge, in the first image's rows.
+    pub y: usize,
+    /// Width in pixels.
+    pub width: usize,
+    /// Height in pixels.
+    pub height: usize,
+}
+
+/// One image prepared for FLIP comparison.
+///
+/// It holds the image's features at every exposure a comparison measures —
+/// one for LDR-FLIP, one per [`HDR_EXPOSURES`] stop for HDR-FLIP. The
+/// features depend on the image alone, so one preparation serves every
+/// comparison and every offset it is compared at.
 #[derive(Debug)]
-struct FlipReference {
+pub struct FlipFeatures {
     width: usize,
     height: usize,
+    ppd: f64,
     hdr: bool,
     filters: Filters,
     features: Vec<Features>,
 }
 
-impl FlipReference {
-    fn new(reference: &[[f64; 3]], width: usize, height: usize, ppd: f64, hdr: bool) -> Self {
+impl FlipFeatures {
+    /// Prepare a linear-P3 image of `width`×`height` pixels for LDR-FLIP,
+    /// or for HDR-FLIP when `hdr` is set. Images compared with each other
+    /// are prepared with the same `ppd` and `hdr`, which HDR-FLIP selects
+    /// when either of them has values above `1.0`.
+    #[must_use]
+    pub fn new(rgb: &[[f64; 3]], width: usize, height: usize, ppd: f64, hdr: bool) -> Self {
         let filters = Filters::new(ppd);
         let features = Self::exposures(hdr)
-            .map(|exposure| {
-                Features::new(&unit_range(reference, exposure), width, height, &filters)
-            })
+            .map(|exposure| Features::new(&unit_range(rgb, exposure), width, height, &filters))
             .collect();
         Self {
             width,
             height,
+            ppd,
             hdr,
             filters,
             features,
+        }
+    }
+
+    /// The per-pixel FLIP error (HDR-FLIP's per-exposure maximum) of `test`
+    /// displaced by `offset` against this image: pixel `(x, y)` here against
+    /// pixel `(x + offset[0], y + offset[1])` of `test`, over the rectangle
+    /// where both exist, written row-major into `error`. Nothing outside
+    /// either frame is compared; each image was filtered over its own whole
+    /// frame, so a displaced edge is measured as it was rendered.
+    ///
+    /// # Panics
+    /// When the images were prepared with different dimensions, pixels per
+    /// degree or FLIP variant, or `offset` leaves no overlap.
+    pub fn offset_error(&self, test: &Self, offset: [isize; 2], error: &mut Vec<f64>) -> Overlap {
+        assert!(
+            (self.width, self.height, self.hdr, self.ppd.to_bits())
+                == (test.width, test.height, test.hdr, test.ppd.to_bits()),
+            "FLIP features prepared for different comparisons"
+        );
+        let (x, test_x, width) = span(self.width, offset[0]);
+        let (y, test_y, height) = span(self.height, offset[1]);
+        error.clear();
+        error.resize(width * height, 0.0);
+        error
+            .par_chunks_mut(width)
+            .enumerate()
+            .for_each(|(row, out)| {
+                let reference_start = (y + row) * self.width + x;
+                let test_start = (test_y + row) * self.width + test_x;
+                for (column, out) in out.iter_mut().enumerate() {
+                    let (r, t) = (reference_start + column, test_start + column);
+                    *out = self
+                        .features
+                        .iter()
+                        .zip(&test.features)
+                        .map(|(reference, test)| {
+                            pixel_error(
+                                reference.hunt[r],
+                                test.hunt[t],
+                                reference.edge_point[r],
+                                test.edge_point[t],
+                                &self.filters,
+                            )
+                        })
+                        .reduce(f64::max)
+                        .expect("FLIP measures at least one exposure");
+                }
+            });
+        Overlap {
+            x,
+            y,
+            width,
+            height,
         }
     }
 
@@ -477,6 +562,22 @@ impl FlipReference {
     }
 }
 
+/// Along one axis of `len` pixels displaced by `offset`: where the overlap
+/// starts in the first frame, where it starts in the displaced frame, and
+/// its length.
+fn span(len: usize, offset: isize) -> (usize, usize, usize) {
+    let shift = offset.unsigned_abs();
+    assert!(
+        shift < len,
+        "offset {offset} leaves no overlap in {len} pixels"
+    );
+    if offset < 0 {
+        (shift, 0, len - shift)
+    } else {
+        (0, shift, len - shift)
+    }
+}
+
 /// LDR FLIP error map between two linear-P3 images (`w*h` RGB pixels,
 /// values in the P3 gamut `[0,1]`). Returns per-pixel error in `[0,1]`.
 #[must_use]
@@ -487,7 +588,7 @@ pub fn ldr_flip(
     height: usize,
     ppd: f64,
 ) -> Vec<f64> {
-    FlipReference::new(reference, width, height, ppd, false).error(test)
+    FlipFeatures::new(reference, width, height, ppd, false).error(test)
 }
 
 /// HDR-FLIP error map: per-exposure LDR-FLIP max over the fixed
@@ -500,7 +601,7 @@ pub fn hdr_flip(
     height: usize,
     ppd: f64,
 ) -> Vec<f64> {
-    FlipReference::new(reference, width, height, ppd, true).error(test)
+    FlipFeatures::new(reference, width, height, ppd, true).error(test)
 }
 
 /// An image's 3×3 box filter, per premultiplied RGBA channel, over the
@@ -623,7 +724,7 @@ pub struct Metrics {
 /// once.
 #[derive(Debug)]
 pub struct Reference {
-    flip: FlipReference,
+    flip: FlipFeatures,
     local: Vec<[f64; 4]>,
 }
 
@@ -635,7 +736,7 @@ impl Reference {
         let rgb = to_linear_p3(reference);
         let hdr = is_hdr(&rgb);
         Self {
-            flip: FlipReference::new(
+            flip: FlipFeatures::new(
                 &rgb,
                 reference.width as usize,
                 reference.height as usize,
