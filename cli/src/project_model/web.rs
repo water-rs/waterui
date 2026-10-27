@@ -470,12 +470,10 @@ impl WebDevServer {
             command.args(["--host", "0.0.0.0"]);
         }
         command.stdout(Stdio::piped()).stderr(Stdio::inherit());
-        ProcessTree::lead(&mut command);
-        let mut child = command.spawn().wrap_err_with(|| {
-            format!("failed to spawn `{pm} run {script}` in {}", root.display())
-        })?;
-        let tree = ProcessTree::adopt(child.id())
-            .wrap_err_with(|| format!("failed to group the `{pm} run {script}` process tree"))?;
+        let (mut child, tree) = ProcessTree::spawn(command, |mut command| command.spawn())
+            .wrap_err_with(|| {
+                format!("failed to spawn `{pm} run {script}` in {}", root.display())
+            })?;
         let stdout = child.stdout.take().expect("stdout is piped");
         let mut lines = BufReader::new(smol::Unblock::new(stdout)).lines();
 
@@ -1648,40 +1646,22 @@ mod tests {
     }
 
     /// The tree handle reaches the grandchild the direct child re-execs —
-    /// the shape `bun run dev` → `node vite` has — and refuses a child that
-    /// does not lead its own group, since signalling that group would hit
-    /// `water` itself.
+    /// the shape `bun run dev` → `node vite` has.
     #[test]
     #[cfg(unix)]
-    fn process_tree_signals_the_grandchild_and_refuses_a_shared_group() -> std::io::Result<()> {
-        use std::os::unix::process::CommandExt as _;
-
-        let mut leader = crate::toolchain::Host::current()
-            .std_command("sh")?
+    fn process_tree_signals_the_grandchild() -> std::io::Result<()> {
+        let mut command = crate::toolchain::Host::current().std_command("sh")?;
+        command
             .args(["-c", "sleep 30 & wait"])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-            .expect("sh spawns");
-        let tree = ProcessTree::adopt(leader.id()).expect("the child leads its group");
+            .stderr(Stdio::null());
+        let (mut leader, tree) = ProcessTree::spawn(command, |mut command| command.spawn())?;
         tree.signal(false);
         let status = leader.wait().expect("the leader is reaped");
         assert!(
             !status.success(),
             "SIGKILL to the group ends the leader: {status}"
         );
-
-        let mut shared = crate::toolchain::Host::current()
-            .std_command("sh")?
-            .args(["-c", "exit 0"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("sh spawns");
-        let refused = ProcessTree::adopt(shared.id());
-        let _ = shared.wait();
-        assert!(refused.is_err(), "a child in our own group must be refused");
         Ok(())
     }
 

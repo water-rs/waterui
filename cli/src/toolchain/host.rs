@@ -707,22 +707,24 @@ impl Host {
         };
         let mut command = self.std_command(program).map_err(spawn_error)?;
         command.args(&args);
-        if deadline.is_some() {
-            ProcessTree::lead(&mut command);
+        let pipe_stdin = input.is_some();
+        let pipe_and_spawn = |command: std::process::Command| {
+            let mut command = Command::from(command);
+            command
+                .kill_on_drop(true)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            if pipe_stdin {
+                command.stdin(Stdio::piped());
+            }
+            command.spawn()
+        };
+        let (mut child, tree) = if deadline.is_some() {
+            ProcessTree::spawn(command, pipe_and_spawn).map(|(child, tree)| (child, Some(tree)))
+        } else {
+            pipe_and_spawn(command).map(|child| (child, None))
         }
-        let mut command = Command::from(command);
-        command
-            .kill_on_drop(true)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if input.is_some() {
-            command.stdin(Stdio::piped());
-        }
-        let mut child = command.spawn().map_err(spawn_error)?;
-        let tree = deadline
-            .map(|_| ProcessTree::adopt(child.id()))
-            .transpose()
-            .map_err(spawn_error)?;
+        .map_err(spawn_error)?;
         let feed = feed_child_stdin(input.zip(child.stdin.take()));
 
         let echo = self.std_output;
