@@ -238,54 +238,37 @@ fn materialize(state: &mut ContainerState, index: usize, id: ItemId) {
     state.rendered.insert(id, mounted);
 }
 
-/// `measureLazyChild`: the child's intrinsic size for the virtualized
-/// proposal, cross-clamped when the child claims the axis or measures
-/// unbounded.
+/// `measureLazyChild`: the child's size for the virtualized proposal.
+/// The main axis keeps the ideal extent the child reports under an
+/// unspecified main proposal — a main-axis stretcher included — while
+/// the cross fills `cross` when the child claims that axis or measures
+/// unbounded, and a non-stretching child's cross extent is clamped to
+/// `cross`.
 fn measure_lazy_child(child: &dyn SubView, cross: f64, lazy: &LazyConfig) -> cocoa_ui::Size {
     let axis = child.stretch_axis();
     let proposal = lazy_child_proposal(cross, lazy);
     let intrinsic = child.measure(proposal).size;
+    let (intrinsic_main, intrinsic_cross) = main_cross(
+        cocoa_ui::Size::new(f64::from(intrinsic.width), f64::from(intrinsic.height)),
+        lazy,
+    );
+    let claims_cross = intrinsic_cross.is_infinite()
+        || axis == StretchAxis::CrossAxis
+        || match lazy.main_axis() {
+            Axis::Vertical => axis.stretches_horizontal(),
+            Axis::Horizontal => axis.stretches_vertical(),
+            _ => unreachable!("lazy stack axis is vertical or horizontal"),
+        };
+    let final_cross = if claims_cross {
+        if cross > 0.0 { cross } else { intrinsic_cross }
+    } else if cross > 0.0 {
+        intrinsic_cross.min(cross)
+    } else {
+        intrinsic_cross
+    };
     match lazy.main_axis() {
-        Axis::Vertical => {
-            assert!(
-                axis != StretchAxis::Vertical
-                    && axis != StretchAxis::Both
-                    && axis != StretchAxis::MainAxis,
-                "lazy vertical stack does not support children stretching on the main axis"
-            );
-            let intrinsic_w = f64::from(intrinsic.width);
-            let final_width = if axis == StretchAxis::Horizontal
-                || axis == StretchAxis::CrossAxis
-                || intrinsic_w.is_infinite()
-            {
-                if cross > 0.0 { cross } else { intrinsic_w }
-            } else if cross > 0.0 {
-                intrinsic_w.min(cross)
-            } else {
-                intrinsic_w
-            };
-            cocoa_ui::Size::new(final_width, f64::from(intrinsic.height))
-        }
-        Axis::Horizontal => {
-            assert!(
-                axis != StretchAxis::Horizontal
-                    && axis != StretchAxis::Both
-                    && axis != StretchAxis::MainAxis,
-                "lazy horizontal stack does not support children stretching on the main axis"
-            );
-            let intrinsic_h = f64::from(intrinsic.height);
-            let final_height = if axis == StretchAxis::Vertical
-                || axis == StretchAxis::CrossAxis
-                || intrinsic_h.is_infinite()
-            {
-                if cross > 0.0 { cross } else { intrinsic_h }
-            } else if cross > 0.0 {
-                intrinsic_h.min(cross)
-            } else {
-                intrinsic_h
-            };
-            cocoa_ui::Size::new(f64::from(intrinsic.width), final_height)
-        }
+        Axis::Vertical => cocoa_ui::Size::new(final_cross, intrinsic_main),
+        Axis::Horizontal => cocoa_ui::Size::new(intrinsic_main, final_cross),
         _ => unreachable!("lazy stack axis is vertical or horizontal"),
     }
 }
@@ -1039,5 +1022,121 @@ mod tests {
     fn visible_window_past_the_end_is_empty() {
         let window = resolve_visible_window(2, 100.0, 200.0, |_| 10.0);
         assert_eq!((window.start, window.end), (2, 2));
+    }
+
+    /// A leaf answering a fixed size and stretch axis, recording the
+    /// proposal `measure_lazy_child` negotiated with it.
+    struct FixedChild {
+        size: Size,
+        axis: StretchAxis,
+        last_proposal: Cell<Option<ProposalSize>>,
+    }
+
+    impl FixedChild {
+        fn new(size: Size, axis: StretchAxis) -> Self {
+            Self {
+                size,
+                axis,
+                last_proposal: Cell::new(None),
+            }
+        }
+    }
+
+    impl SubView for FixedChild {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+            self.last_proposal.set(Some(proposal));
+            ViewDimensions::new(self.size)
+        }
+
+        fn stretch_axis(&self) -> StretchAxis {
+            self.axis
+        }
+
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    /// `measure_lazy_child` resolves every stretch axis against the
+    /// stack's axes: a child claiming the cross — directly or through
+    /// `CrossAxis`/`Both` — fills `cross`, a non-stretching child's cross
+    /// extent is clamped to `cross`, and the main axis always keeps the
+    /// ideal extent the child reports under an unspecified main proposal
+    /// (water-rs/waterui#3448). Expressed in main/cross terms, the
+    /// expectations hold for both stack orientations.
+    #[test]
+    fn lazy_child_measurement_resolves_stretch_axes() {
+        for (lazy, proposal) in [
+            (
+                LazyConfig {
+                    axis: LazyStackAxis::Vertical {
+                        spacing: Computed::constant(0.0),
+                        alignment: HorizontalAlignment::Center,
+                    },
+                    spacing: 0.0,
+                },
+                ProposalSize::new(Some(200.0), None),
+            ),
+            (
+                LazyConfig {
+                    axis: LazyStackAxis::Horizontal {
+                        spacing: Computed::constant(0.0),
+                        alignment: VerticalAlignment::Top,
+                    },
+                    spacing: 0.0,
+                },
+                ProposalSize::new(None, Some(200.0)),
+            ),
+        ] {
+            // The absolute axis a plain cross stretcher declares, and the
+            // one a main-axis-only stretcher declares, this orientation.
+            let (cross_stretcher, main_stretcher) = match lazy.main_axis() {
+                Axis::Vertical => (StretchAxis::Horizontal, StretchAxis::Vertical),
+                Axis::Horizontal => (StretchAxis::Vertical, StretchAxis::Horizontal),
+                _ => unreachable!("lazy stack axis is vertical or horizontal"),
+            };
+            // (axis, intrinsic (main, cross), expected (main, cross)).
+            let cases = [
+                // A non-stretching child keeps a cross that fits and is
+                // clamped to the offered cross when it does not.
+                (StretchAxis::None, (40.0, 30.0), (40.0, 30.0)),
+                (StretchAxis::None, (40.0, 300.0), (40.0, 200.0)),
+                // An unbounded cross answer fills the offered cross.
+                (StretchAxis::None, (40.0, f32::INFINITY), (40.0, 200.0)),
+                // Main-axis stretchers keep their ideal main extent and
+                // claim no cross.
+                (StretchAxis::MainAxis, (40.0, 30.0), (40.0, 30.0)),
+                (main_stretcher, (40.0, 30.0), (40.0, 30.0)),
+                // Cross claimants fill the cross and keep the ideal main.
+                (cross_stretcher, (40.0, 30.0), (40.0, 200.0)),
+                (StretchAxis::CrossAxis, (40.0, 30.0), (40.0, 200.0)),
+                (StretchAxis::Both, (40.0, 30.0), (40.0, 200.0)),
+            ];
+            for (axis, (intrinsic_main, intrinsic_cross), (expected_main, expected_cross)) in cases
+            {
+                let (intrinsic, expected) = match lazy.main_axis() {
+                    Axis::Vertical => (
+                        Size::new(intrinsic_cross, intrinsic_main),
+                        cocoa_ui::Size::new(expected_cross, expected_main),
+                    ),
+                    Axis::Horizontal => (
+                        Size::new(intrinsic_main, intrinsic_cross),
+                        cocoa_ui::Size::new(expected_main, expected_cross),
+                    ),
+                    _ => unreachable!("lazy stack axis is vertical or horizontal"),
+                };
+                let child = FixedChild::new(intrinsic, axis);
+                assert_eq!(
+                    measure_lazy_child(&child, 200.0, &lazy),
+                    expected,
+                    "{axis:?} under {lazy:?}"
+                );
+                assert_eq!(
+                    child.last_proposal.get(),
+                    Some(proposal),
+                    "the probe leaves the main axis unspecified"
+                );
+            }
+        }
     }
 }
