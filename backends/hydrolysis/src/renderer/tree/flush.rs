@@ -7,7 +7,7 @@ use super::layout::kurbo_rect;
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-impl RenderNode {
+impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Records this subtree into the nodes' programs using the cached
     /// placements. Runs every frame.
     // `_focus_node` is bound only for the accessibility surface-input path; on
@@ -21,7 +21,7 @@ impl RenderNode {
     /// before recording.
     pub(crate) fn flush(
         &self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
         env: &Environment,
         placement_delta: kurbo::Affine,
@@ -35,7 +35,7 @@ impl RenderNode {
     /// node into the enclosing node's program at `ctx`.
     fn record_linked(
         &self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
         env: &Environment,
     ) {
@@ -108,7 +108,7 @@ impl RenderNode {
     /// stack slot.
     pub(crate) fn flush_anchored(
         &self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
         env: &Environment,
         anchor: Option<std::rc::Rc<crate::renderer::Placement>>,
@@ -132,19 +132,20 @@ impl RenderNode {
     )]
     fn flush_inner(
         &self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
         env: &Environment,
     ) {
         match self {
             Self::Color(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
-                let color = waterui_graphics::draw::Paint::Solid(renderer.read_signal(&node.color));
-                renderer.scene_mut().fill_paint(
-                    peniko::Fill::NonZero,
+                if nami::Signal::snapshot(&node.bounds) != ctx.bounds {
+                    node.bounds.set(ctx.bounds);
+                }
+                renderer.scene_mut().live_rect(
                     ctx.local,
-                    color,
-                    &ctx.bounds,
+                    node.bounds.clone().into(),
+                    node.color.clone(),
                 );
             }
             // §7.1's fill rule, paint side: the extension layout recorded
@@ -168,10 +169,7 @@ impl RenderNode {
                 let alignment = renderer.read_signal(&text.alignment);
                 TextNode::emit_accessibility(renderer, Some(ctx), &styled, env);
                 renderer.pop_render_owner();
-                let (state, scene) = renderer.state_and_run_mut();
-                HydrolysisRenderer::render_styled_text_limited(
-                    state,
-                    scene,
+                renderer.render_styled_text_limited(
                     ctx,
                     styled,
                     alignment,
@@ -232,6 +230,7 @@ impl RenderNode {
                     &node.value.value,
                     &node.core.cell,
                     OPACITY_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_SLOW,
                 );
                 let program = renderer.program().program_mut();
                 program.opacity = alpha;
@@ -250,11 +249,13 @@ impl RenderNode {
                     &node.value.x,
                     &node.core.cell,
                     SCALE_X_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 );
                 let scale_y = renderer.resolve_owned_scalar(
                     &node.value.y,
                     &node.core.cell,
                     SCALE_Y_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 );
                 let transform = kurbo::Affine::translate((center.x, center.y))
                     * kurbo::Affine::scale_non_uniform(f64::from(scale_x), f64::from(scale_y))
@@ -268,6 +269,7 @@ impl RenderNode {
                     &node.value.angle,
                     &node.core.cell,
                     ROTATION_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 ))
                 .to_radians();
                 let transform = kurbo::Affine::translate((center.x, center.y))
@@ -281,11 +283,13 @@ impl RenderNode {
                     &node.value.x,
                     &node.core.cell,
                     OFFSET_X_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 );
                 let offset_y = renderer.resolve_owned_scalar(
                     &node.value.y,
                     &node.core.cell,
                     OFFSET_Y_ANIMATION_KEY,
+                    cherenkov_record::tree::RATE_FAST,
                 );
                 let transform =
                     kurbo::Affine::translate((f64::from(offset_x), f64::from(offset_y)));
@@ -839,7 +843,7 @@ impl RenderNode {
     }
 }
 
-impl RenderNode {
+impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Emits this subtree's accessibility nodes for the semantic walk — the
     /// same tree `flush` produces under a `RenderContext`, with no bounds, no
     /// scene writes, no layers, and no pointer/hit targets. This is the
@@ -848,7 +852,7 @@ impl RenderNode {
     /// produce, and every registration goes through the no-bounds semantic
     /// path.
     #[cfg(feature = "accessibility")]
-    pub(crate) fn emit_accessibility(&self, renderer: &mut SemanticCore, env: &Environment) {
+    pub(crate) fn emit_accessibility(&self, renderer: &mut SemanticCore<E>, env: &Environment) {
         renderer.with_reader(self.core(), ReaderPhase::Record, |renderer| {
             self.emit_accessibility_inner(renderer, env);
         });
@@ -863,7 +867,7 @@ impl RenderNode {
         clippy::option_if_let_else,
         reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
     )]
-    fn emit_accessibility_inner(&self, renderer: &mut SemanticCore, env: &Environment) {
+    fn emit_accessibility_inner(&self, renderer: &mut SemanticCore<E>, env: &Environment) {
         match self {
             // A color fill carries no semantics.
             Self::Color(_) => {}
@@ -910,17 +914,32 @@ impl RenderNode {
                 let child_env = &node.env;
                 match &node.effect {
                     WrapperEffect::GestureObserver(effect) => {
-                        let claimed_node = HydrolysisRenderer::emit_gesture_observer_accessibility(
+                        let claim = HydrolysisRenderer::emit_gesture_observer_accessibility(
                             renderer, child_env, effect,
                         );
                         // The gesture's node claimed the naming scope: the
                         // content walks under the same shielded environment a
                         // naming container hands its children, so a leaf cannot
                         // repeat the claim's role and label as a second node.
+                        // A *synthesized* claim (a bare `.on_tap` with no
+                        // naming scope of its own) drops the
+                        // name-from-contents marker instead: the wrapped
+                        // content keeps its own nodes and the claim collapses
+                        // onto a lone one below, so the action lands on the
+                        // node the gesture wraps rather than on a swallowed
+                        // composite (water-rs/waterui#1070).
                         let content_env;
-                        let walk_env = if claimed_node.is_some() {
-                            content_env = accessibility_container_child_environment(child_env)
-                                .unwrap_or_else(|| child_env.clone());
+                        let walk_env = if let Some(claim) = &claim {
+                            content_env = accessibility_container_child_environment(&claim.env)
+                                .map_or_else(
+                                    || claim.env.clone(),
+                                    |mut walk_env| {
+                                        if claim.synthesized {
+                                            walk_env.remove::<AccessibilityNameFromContents>();
+                                        }
+                                        walk_env
+                                    },
+                                );
                             &content_env
                         } else {
                             child_env
@@ -929,8 +948,14 @@ impl RenderNode {
                         // claims this naming scope — an observer that registers
                         // no node (a long-press, or a silenced tap) must not
                         // consume the flag, or it suppresses the inner element
-                        // the flag names (water-rs/hydrolysis#266).
-                        if claimed_node.is_some()
+                        // the flag names (water-rs/hydrolysis#266). The claim
+                        // parents the content's nodes for the walk — without it
+                        // they register beside the claim and the synthesized
+                        // claim's single-child collapse has nothing to merge.
+                        if let Some(claim) = &claim {
+                            renderer.push_accessibility_parent(claim.node_id);
+                        }
+                        if claim.is_some()
                             && child_env
                                 .get::<AccessibilityChildren>()
                                 .is_some_and(AccessibilityChildren::excludes_descendants)
@@ -941,8 +966,14 @@ impl RenderNode {
                         } else {
                             node.child.emit_accessibility(renderer, walk_env);
                         }
-                        if let Some(node_id) = claimed_node {
-                            renderer.drain_claim_scope(node_id, child_env);
+                        if claim.is_some() {
+                            renderer.pop_accessibility_parent();
+                        }
+                        if let Some(claim) = claim {
+                            renderer.drain_claim_scope(claim.node_id, &claim.env);
+                            if claim.synthesized {
+                                renderer.collapse_synthesized_claim(claim.node_id);
+                            }
                         }
                     }
                     WrapperEffect::Focused(value) => {
@@ -1092,6 +1123,10 @@ impl RenderNode {
                             f64::INFINITY,
                             f64::INFINITY,
                             (0.0, 0.0),
+                            // The semantic domain is not real geometry: the
+                            // painted pass's position report stays attached
+                            // and is reported against its own extents.
+                            None,
                         )
                     } else {
                         ScrollHandle::new(
@@ -1151,11 +1186,11 @@ impl RenderNode {
     }
 }
 
-fn flush_navigation_transition_element(
-    renderer: &mut HydrolysisRenderer,
+fn flush_navigation_transition_element<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     ctx: RenderContext,
     env: &Environment,
-    child: &RenderNode,
+    child: &RenderNode<E>,
     source: bool,
     id: RawId,
 ) {

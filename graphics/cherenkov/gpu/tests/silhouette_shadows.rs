@@ -5,6 +5,7 @@ mod common;
 split_test! {
 fn live_shadows_keep_offscreen_contributors_and_outer_clips() {
     for scratch_format in [
+        cherenkov_gpu::ScratchFormat::Content,
         cherenkov_gpu::ScratchFormat::LinearF16,
         cherenkov_gpu::ScratchFormat::Rgba8Unorm,
     ] {

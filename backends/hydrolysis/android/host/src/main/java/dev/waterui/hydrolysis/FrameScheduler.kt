@@ -17,10 +17,9 @@ import android.view.Choreographer
  * device can attribute its jiffies: a frame nobody posted shows as
  * `cause=external`, anything else names the post that scheduled it.
  *
- * Refresh-rate demand is separate: while the scheduler is running continuous
- * frames or a touch is held, the session asks the surface for its display's
- * peak refresh; the demand releases only once both have ended, so a touch
- * lifting mid-animation (a fling) keeps the rate the animation needs.
+ * Refresh-rate demand is separate: continuous work and held-touch demand
+ * go to native independently. Native combines them with the engine's content
+ * range; a delayed wake alone does not hold a peak-rate request.
  *
  * The session owns the scheduler and [stop]s it when it is destroyed; a
  * stopped scheduler is inert for the rest of its life.
@@ -63,7 +62,7 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
     /** The host reports a touch going down (`true`) or ending (`false`). */
     fun setInteractionActive(active: Boolean) {
         touching = active
-        publishHighRefresh()
+        publishFrameDemand()
     }
 
     /**
@@ -82,11 +81,29 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
         }
     }
 
-    /** Sends the combined demand; the native side ignores a repeat. */
-    private fun publishHighRefresh() {
-        session.withNativePtr(NativeBridge::nativeSetHighRefresh.name) { ptr ->
-            NativeBridge.nativeSetHighRefresh(ptr, touching || pumping)
-        }
+    /**
+     * Sends host demand; the session routes it — the GPU path reports to
+     * native, which combines content rates and ignores repeats, while a
+     * session painter applies it on the bound host.
+     */
+    private fun publishFrameDemand() {
+        session.setFrameDemand(pumping, touching)
+    }
+
+    /**
+     * Runs a frame transaction immediately rather than waiting for the next
+     * vsync. An IME insets `onProgress` fires inside the frame's own
+     * traversal — before the draw that moves the IME window commits — so a
+     * buffer rendered now is composited in *that* frame alongside the
+     * keyboard's synced position. Posting instead would render at the next
+     * vsync and leave content one frame behind the keyboard (§7.1's
+     * frame-by-frame keyboard-motion rule, water-rs/waterui#1913). A
+     * pending vsync callback stays queued: its transaction runs then and
+     * reports its own outcome.
+     */
+    fun pumpNow(cause: String) {
+        if (stopped) return
+        pump(cause)
     }
 
     override fun doFrame(vsyncNanos: Long) {
@@ -94,9 +111,19 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
         deadlinePosted = false
         val cause = wakeCause ?: "external"
         wakeCause = null
+        pump(cause)
+    }
+
+    /**
+     * One frame transaction and its outcome handling — the path both the
+     * vsync callback ([doFrame]) and an in-traversal pump ([pumpNow])
+     * share. `vsyncNanos` is advisory only; the native side clocks the
+     * transaction itself.
+     */
+    private fun pump(cause: String) {
         val outcome =
             session.withNativePtr(NativeBridge::nativeOnFrame.name) { ptr ->
-                NativeBridge.nativeOnFrame(ptr, vsyncNanos)
+                NativeBridge.nativeOnFrame(ptr, System.nanoTime())
             }
         // The frame can end the session: a teardown requested inside it ran
         // as the frame returned and stopped this scheduler.
@@ -133,14 +160,11 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
             posted = true
         }
 
-        val nowPumping = wantsNext || posted
-        if (nowPumping != pumping) {
-            pumping = nowPumping
-            // Continuous pumping asks for high refresh; an idle pump with no
-            // touch held releases the request so the panel can drop to its
-            // base rate.
-            publishHighRefresh()
-        }
+        val nowPumping = wantsNext || (posted && !deadlinePosted)
+        pumping = nowPumping
+        // The native frame may change the content rate even when the pump's
+        // continuous-work flag stays the same. Native demand is deduplicated.
+        publishFrameDemand()
     }
 
     private companion object {

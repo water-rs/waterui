@@ -74,10 +74,14 @@ pub mod map;
 pub mod material_background;
 #[cfg(feature = "menu")]
 pub mod menu;
-#[cfg(any(feature = "menu", feature = "context_menu"))]
+#[cfg(any(feature = "menu", feature = "context_menu", feature = "text_field"))]
 mod menu_items;
 #[cfg(feature = "multi_date_picker")]
 pub mod multi_date_picker;
+/// The AppKit-native `CIFilter` realization of portable chains — the
+/// filtered leaf's macOS fast path (#1748).
+#[cfg(all(target_os = "macos", feature = "applied_filter"))]
+pub mod native_filter;
 #[cfg(feature = "navigation")]
 pub mod navigation;
 #[cfg(feature = "offset")]
@@ -130,6 +134,9 @@ pub mod text;
 pub mod text_field;
 #[cfg(feature = "toggle")]
 pub mod toggle;
+// Unconditional — like `empty`: `Metadata<TransitionSpec>` can be produced by
+// any view tree (`.transition(...)` lives on `View`), so no feature gates it.
+pub mod transition;
 #[cfg(any(feature = "video", feature = "video_player"))]
 pub mod video;
 #[cfg(feature = "view_renderer")]

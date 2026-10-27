@@ -15,6 +15,7 @@ use core::cell::RefCell;
 use core::fmt;
 use core::hash::Hash;
 use kurbo::{Affine, Rect, Shape, Vec2};
+use nami::{Computed, Signal as _};
 use peniko::{BlendMode, Fill, FontData};
 use rustc_hash::FxHashMap;
 use std::rc::{Rc, Weak};
@@ -86,8 +87,12 @@ impl fmt::Debug for Recording {
 
 #[derive(Clone)]
 enum Op {
+    LiveRect {
+        transform: Affine,
+        rect: Computed<Rect>,
+        color: Computed<WorkingColor>,
+    },
     Fill {
-        rule: Fill,
         transform: Affine,
         brush: peniko::Brush,
         brush_transform: Option<Affine>,
@@ -134,7 +139,6 @@ enum Op {
         sigma: f64,
     },
     PushGroup {
-        rule: Fill,
         blend: BlendMode,
         opacity: f32,
         transform: Affine,
@@ -143,6 +147,14 @@ enum Op {
     Picture {
         transform: Affine,
         picture: waterui_graphics::draw::Picture,
+    },
+    /// A platform text layout, drawn through the retained lease the painter
+    /// handed over — the HWUI seam (water-rs/waterui#1811).
+    #[cfg(any(test, hydrolysis_hwui))]
+    Text {
+        resource: Arc<crate::hwui::text::TextLayoutResource>,
+        transform: Affine,
+        clip: Option<Rect>,
     },
     PopLayer,
 }
@@ -184,7 +196,7 @@ fn fit_image_to_limits(
     image: &peniko::ImageData,
     limits: waterui_graphics::draw::ImageLimits,
 ) -> (u32, u32, Arc<[u8]>) {
-    let (width, height) = limits.fit(image.width, image.height);
+    let (width, height) = limits.fit::<waterui_graphics::draw::Rgba8>(image.width, image.height);
     assert!(
         (width, height) != (0, 0),
         "hydrolysis renderer: engine image limits admit no image at all"
@@ -303,6 +315,10 @@ pub struct LoweringNames<'a> {
     table: RecordingResources<'a>,
     fonts: FxHashMap<FontKey, Rc<Cached<FontKey, FontId>>>,
     images: FxHashMap<ImageKey, Rc<Cached<ImageKey, ImageId>>>,
+    /// Text-layout leases this recording's `Text` ops name.
+    #[cfg(any(test, hydrolysis_hwui))]
+    text_layouts:
+        FxHashMap<waterui_graphics::draw::TextLayoutId, Arc<crate::hwui::text::TextLayoutResource>>,
 }
 
 impl LoweringNames<'_> {
@@ -312,6 +328,8 @@ impl LoweringNames<'_> {
             held: self.table.finish(),
             fonts: self.fonts.into_values().collect(),
             images: self.images.into_values().collect(),
+            #[cfg(any(test, hydrolysis_hwui))]
+            text_layouts: self.text_layouts.into_values().collect(),
         }
     }
 }
@@ -326,15 +344,21 @@ pub struct LoweredResources {
     held: HeldResources,
     fonts: Box<[Rc<Cached<FontKey, FontId>>]>,
     images: Box<[Rc<Cached<ImageKey, ImageId>>]>,
+    /// The text-layout leases installed content still names: the layout
+    /// lives until the last installed recording holding it is replaced.
+    #[cfg(any(test, hydrolysis_hwui))]
+    text_layouts: Box<[Arc<crate::hwui::text::TextLayoutResource>]>,
 }
 
 impl fmt::Debug for LoweredResources {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LoweredResources")
-            .field("held", &self.held)
+        let mut d = f.debug_struct("LoweredResources");
+        d.field("held", &self.held)
             .field("fonts", &self.fonts.len())
-            .field("images", &self.images.len())
-            .finish()
+            .field("images", &self.images.len());
+        #[cfg(any(test, hydrolysis_hwui))]
+        d.field("text_layouts", &self.text_layouts.len());
+        d.finish()
     }
 }
 
@@ -372,7 +396,7 @@ impl SceneResources {
     }
 
     /// Creates caches over the registration table `inner`.
-    fn over(inner: waterui_graphics::SceneResources) -> Self {
+    pub(crate) fn over(inner: waterui_graphics::SceneResources) -> Self {
         Self {
             inner,
             fonts: IdentityCache::new(),
@@ -386,6 +410,8 @@ impl SceneResources {
     fn recording(&self) -> LoweringNames<'_> {
         LoweringNames {
             table: self.inner.recording(),
+            #[cfg(any(test, hydrolysis_hwui))]
+            text_layouts: FxHashMap::default(),
             fonts: FxHashMap::default(),
             images: FxHashMap::default(),
         }
@@ -570,11 +596,24 @@ impl Recording {
         shape: &S,
     ) {
         self.ops.push(Op::Fill {
-            rule,
             transform,
             brush: brush.clone(),
             brush_transform,
             shape: shape_data(rule, shape),
+        });
+    }
+
+    /// Records a rectangle whose geometry and colour remain live engine operands.
+    pub(crate) fn live_rect(
+        &mut self,
+        transform: Affine,
+        rect: Computed<Rect>,
+        color: Computed<WorkingColor>,
+    ) {
+        self.ops.push(Op::LiveRect {
+            transform,
+            rect,
+            color,
         });
     }
 
@@ -654,6 +693,22 @@ impl Recording {
         self.ops.push(Op::Picture { transform, picture });
     }
 
+    /// Draws the platform text layout `resource` leases, under `transform`
+    /// and clipped to `clip` in layout-local coordinates.
+    #[cfg(any(test, hydrolysis_hwui))]
+    pub(crate) fn draw_platform_text(
+        &mut self,
+        resource: Arc<crate::hwui::text::TextLayoutResource>,
+        transform: Affine,
+        clip: Option<Rect>,
+    ) {
+        self.ops.push(Op::Text {
+            resource,
+            transform,
+            clip,
+        });
+    }
+
     /// Draws `shape`'s Gaussian-blurred silhouette in `color` under
     /// `transform` — `sigma` in the shape's units.
     pub(crate) fn shadow<S: Shape + 'static>(
@@ -682,7 +737,6 @@ impl Recording {
     ) {
         self.open_layers += 1;
         self.ops.push(Op::PushGroup {
-            rule,
             blend,
             opacity,
             transform: clip_transform,
@@ -719,103 +773,23 @@ impl Recording {
 
     /// Appends `other` under `placement`.
     pub(crate) fn append(&mut self, other: &Self, placement: Affine) {
-        self.ops
-            .extend(other.ops.iter().cloned().map(|op| match op {
-                Op::Fill {
-                    rule,
-                    transform,
-                    brush,
-                    brush_transform,
-                    shape,
-                } => Op::Fill {
-                    rule,
-                    transform: placement * transform,
-                    brush,
-                    brush_transform,
-                    shape,
-                },
-                Op::FillPaint {
-                    transform,
-                    paint,
-                    shape,
-                } => Op::FillPaint {
-                    transform: placement * transform,
-                    paint,
-                    shape,
-                },
-                Op::StrokePaint {
-                    stroke,
-                    transform,
-                    paint,
-                    shape,
-                } => Op::StrokePaint {
-                    stroke,
-                    transform: placement * transform,
-                    paint,
-                    shape,
-                },
-                Op::Glyphs {
-                    font,
-                    font_size,
-                    coords,
-                    transform,
-                    brush,
-                    brush_alpha,
-                    style,
-                    glyphs,
-                } => Op::Glyphs {
-                    font,
-                    font_size,
-                    coords,
-                    transform: placement * transform,
-                    brush,
-                    brush_alpha,
-                    style,
-                    glyphs,
-                },
-                Op::BlurredRoundedRect {
-                    transform,
-                    rect,
-                    color,
-                    radius,
-                    sigma,
-                } => Op::BlurredRoundedRect {
-                    transform: placement * transform,
-                    rect,
-                    color,
-                    radius,
-                    sigma,
-                },
-                Op::Shadow {
-                    transform,
-                    shape,
-                    color,
-                    sigma,
-                } => Op::Shadow {
-                    transform: placement * transform,
-                    shape,
-                    color,
-                    sigma,
-                },
-                Op::PushGroup {
-                    rule,
-                    blend,
-                    opacity,
-                    transform,
-                    clip,
-                } => Op::PushGroup {
-                    rule,
-                    blend,
-                    opacity,
-                    transform: placement * transform,
-                    clip,
-                },
-                Op::Picture { transform, picture } => Op::Picture {
-                    transform: placement * transform,
-                    picture,
-                },
-                Op::PopLayer => Op::PopLayer,
-            }));
+        self.ops.extend(other.ops.iter().cloned().map(|mut op| {
+            match &mut op {
+                Op::LiveRect { transform, .. }
+                | Op::Fill { transform, .. }
+                | Op::FillPaint { transform, .. }
+                | Op::StrokePaint { transform, .. }
+                | Op::Glyphs { transform, .. }
+                | Op::BlurredRoundedRect { transform, .. }
+                | Op::Shadow { transform, .. }
+                | Op::PushGroup { transform, .. }
+                | Op::Picture { transform, .. } => *transform = placement * *transform,
+                #[cfg(any(test, hydrolysis_hwui))]
+                Op::Text { transform, .. } => *transform = placement * *transform,
+                Op::PopLayer => {}
+            }
+            op
+        }));
     }
 
     /// Each clip/opacity scope's clip rect with the transform it was pushed
@@ -838,7 +812,6 @@ impl Recording {
     pub(crate) fn push_clip_data(&mut self, transform: Affine, clip: ShapeData) {
         self.open_layers += 1;
         self.ops.push(Op::PushGroup {
-            rule: Fill::NonZero,
             blend: BlendMode::default(),
             opacity: 1.0,
             transform,
@@ -852,6 +825,9 @@ impl Recording {
     #[cfg(test)]
     pub(crate) fn fill_bounds(&self) -> impl Iterator<Item = (Affine, Rect)> {
         self.ops.iter().filter_map(|op| match op {
+            Op::LiveRect {
+                transform, rect, ..
+            } => Some((*transform, rect.snapshot())),
             Op::Fill {
                 transform, shape, ..
             }
@@ -939,18 +915,31 @@ impl Recording {
         let mut scopes: Vec<Scope> = Vec::new();
         let mut rects = Vec::new();
         for op in &self.ops {
-            let (transform, color, shape) = match op {
+            let (transform, color, rect) = match op {
                 Op::Fill {
                     transform,
                     brush: peniko::Brush::Solid(color),
-                    shape,
+                    shape: ShapeData::Rect(rect),
                     ..
-                } => (transform, working_color(*color), shape),
+                } => (
+                    transform,
+                    Computed::constant(working_color(*color)),
+                    Computed::constant(*rect),
+                ),
                 Op::FillPaint {
                     transform,
                     paint: Paint::Solid(color),
-                    shape,
-                } => (transform, *color, shape),
+                    shape: ShapeData::Rect(rect),
+                } => (
+                    transform,
+                    Computed::constant(*color),
+                    Computed::constant(*rect),
+                ),
+                Op::LiveRect {
+                    transform,
+                    rect,
+                    color,
+                } => (transform, color.clone(), rect.clone()),
                 Op::PushGroup {
                     blend,
                     opacity,
@@ -977,9 +966,6 @@ impl Recording {
                 }
                 _ => continue,
             };
-            let ShapeData::Rect(rect) = shape else {
-                continue;
-            };
             let Some((bounds, alpha)) = scopes.last().copied().unwrap_or(Some((UNBOUNDED, 1.0)))
             else {
                 continue;
@@ -987,10 +973,12 @@ impl Recording {
             if !axis_aligned(*transform) {
                 continue;
             }
-            let [r, g, b, a] = color.components;
             rects.push(SolidRect {
-                rect: bounds.intersect(transform.transform_rect_bbox(*rect)),
-                color: WorkingColor::new([r, g, b, a * alpha]),
+                rect,
+                color,
+                transform: *transform,
+                clip: bounds,
+                alpha,
             });
         }
         rects.into_boxed_slice()
@@ -1000,12 +988,25 @@ impl Recording {
 /// A rectangle a recording fills with one colour: its bounds in the space
 /// the recording was made in, and the colour that reaches the target there,
 /// straight alpha folded with every enclosing opacity scope.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct SolidRect {
-    /// The filled area, cut to the clips around the fill.
-    pub rect: Rect,
-    /// The colour painted over it.
-    pub color: WorkingColor,
+    rect: Computed<Rect>,
+    color: Computed<WorkingColor>,
+    transform: Affine,
+    clip: Rect,
+    alpha: f32,
+}
+
+impl SolidRect {
+    /// Samples the current clipped rectangle and its opacity-adjusted colour.
+    #[must_use]
+    pub fn current(&self) -> (Rect, WorkingColor) {
+        let rect = self
+            .clip
+            .intersect(self.transform.transform_rect_bbox(self.rect.snapshot()));
+        let [r, g, b, a] = self.color.snapshot().components;
+        (rect, WorkingColor::new([r, g, b, a * self.alpha]))
+    }
 }
 
 /// The bounds of a fill no clip narrows.
@@ -1051,6 +1052,13 @@ fn lower(
         let op = &ops[*index];
         *index += 1;
         match op {
+            Op::LiveRect {
+                transform,
+                rect,
+                color,
+            } => {
+                recorder.transform(*transform, |r| r.fill(rect.clone(), color.clone()));
+            }
             Op::Fill {
                 transform,
                 brush,
@@ -1183,6 +1191,25 @@ fn lower(
                 });
             }
             Op::Picture { transform, picture } => recorder.picture(picture, *transform),
+            #[cfg(any(test, hydrolysis_hwui))]
+            Op::Text {
+                resource,
+                transform,
+                clip,
+            } => {
+                let id = resource.id();
+                names
+                    .text_layouts
+                    .entry(id)
+                    .or_insert_with(|| Arc::clone(resource));
+                if let Some(clip) = clip {
+                    recorder.transform(*transform, |r| {
+                        r.clip(*clip, |r| r.text(id, Affine::IDENTITY));
+                    });
+                } else {
+                    recorder.text(id, *transform);
+                }
+            }
             Op::PopLayer => return,
         }
     }
@@ -1405,6 +1432,20 @@ impl Recording {
     }
 }
 
+impl crate::renderer::chrome::LiveSource for Recording {
+    fn record(
+        &self,
+        recorder: &mut Recorder,
+        resources: &SceneResources,
+    ) -> Option<LoweredResources> {
+        Some(self.record_on(recorder, resources))
+    }
+
+    fn recording(&self) -> Option<&Recording> {
+        Some(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use kurbo::Point;
@@ -1502,6 +1543,50 @@ mod tests {
                 .expect("render");
             self.probe.try_iter().collect()
         }
+    }
+
+    /// The HWUI text seam: a recording's `Text` op names the layout by
+    /// lease, and the lowered resources keep it live until the installed
+    /// content is replaced (water-rs/waterui#1811).
+    #[test]
+    fn a_platform_text_op_installs_its_layout_lease() {
+        let ids = crate::hwui::text::TextLayoutIds::new();
+        let wire = ids.acquire().expect("a fresh table has ids");
+        let resource = Arc::new(crate::hwui::text::TextLayoutResource::new(wire, ids));
+        let weak = Arc::downgrade(&resource);
+        let layout_id = waterui_graphics::draw::TextLayoutId::new(u64::from(wire));
+
+        let mut recording = Recording::new();
+        recording.draw_platform_text(
+            Arc::clone(&resource),
+            Affine::translate((3.0, 4.0)),
+            Some(Rect::new(0.0, 0.0, 30.0, 20.0)),
+        );
+
+        // The resource also survives a clone through `append` into a placed
+        // recording — the same lease, under a composed transform.
+        let mut placed = Recording::new();
+        placed.append(&recording, Affine::translate((7.0, 9.0)));
+        drop(recording);
+
+        let mount = NullMount::new();
+        let mut lowered = None;
+        let content = mount.surface.record(|recorder| {
+            lowered = Some(placed.record_on(recorder, &mount.resources));
+        });
+        assert!(content.references(waterui_graphics::draw::ResourceId::TextLayout(layout_id)));
+
+        drop(placed);
+        drop(resource);
+        assert!(
+            weak.upgrade().is_some(),
+            "installed content keeps the layout lease live"
+        );
+        drop(lowered);
+        assert!(
+            weak.upgrade().is_none(),
+            "the last installed set releases the lease"
+        );
     }
 
     /// A recording of one text run in `font`, over a fill painted with
@@ -1616,7 +1701,8 @@ mod tests {
         let (events, _events) = std::sync::mpsc::channel();
         let limits = waterui_graphics::draw::ImageLimits {
             max_dimension: 8,
-            max_texels: 64,
+            max_bytes: 64 * 4,
+            ..waterui_graphics::draw::ImageLimits::UNLIMITED
         };
         let engine = std::rc::Rc::new(
             cherenkov::Engine::<cherenkov::testing::Null>::new(cherenkov::testing::NullConfig {
@@ -1636,7 +1722,7 @@ mod tests {
             height: side,
         };
 
-        // 36 texels, then 36 more beside them: 28 are left.
+        // 144 bytes, then 144 more beside them: 112 are left.
         resources
             .image(&mut names, &square(6, 1))
             .expect("the first image fits");
@@ -1647,7 +1733,7 @@ mod tests {
                 height,
                 available,
                 limits: reported,
-            }) => assert_eq!((width, height, available, reported), (6, 6, 28, limits)),
+            }) => assert_eq!((width, height, available, reported), (6, 6, 112, limits)),
             other => panic!("an image past the budget was registered: {other:?}"),
         }
 
@@ -1679,7 +1765,8 @@ mod tests {
         };
         let limits = waterui_graphics::draw::ImageLimits {
             max_dimension: 8,
-            max_texels: 64,
+            max_bytes: 64 * 4,
+            ..waterui_graphics::draw::ImageLimits::UNLIMITED
         };
         let (width, height, bytes) = fit_image_to_limits(&source, limits);
         assert_eq!((width, height), (8, 2));

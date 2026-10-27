@@ -53,6 +53,9 @@ env:
   RUSTC_WRAPPER: ""
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # e2e lanes build fully cold: some of what they measure is cold compile
+  # time, so no job here restores or saves any Actions cache and none runs
+  # a compile wrapper (sccache, stow). Caching is for the everyday gates.
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   # `cargo install --path` otherwise builds in a tempdir; framework builds
@@ -108,13 +111,6 @@ jobs:
           toolchain: stable
           cache: "false"
 
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes (source packages are toolchain-independent). No save and no
-      # `target` cache in this lane.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
-
       - name: Build the water CLI
         env:
           # The CLI's own target directory lives with its checkout in the
@@ -123,11 +119,29 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
         run: cargo install --path "${WATER_CLI_DIR:?WATER_CLI_DIR is required; run .github/scripts/setup-e2e.sh first}" --locked --root "${{ github.workspace }}/cli-bin"
 
+      - name: Build the screenshot comparer
+        timeout-minutes: 10
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
+        run: |
+          export PATH="${{ github.workspace }}/cli-bin/bin:${PATH}"
+          cargo install --path "${WATERUI_DIR}/graphics/cherenkov/oracle" --locked \
+            --features apple-screenshots --bin compare-screenshots --debug \
+            --root "${{ github.workspace }}/cli-bin"
+
       - name: Upload the water CLI
         uses: actions/upload-artifact@v4
         with:
           name: water-cli
           path: cli-bin/bin/water
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload the screenshot comparer
+        uses: actions/upload-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin/compare-screenshots
           retention-days: 1
           if-no-files-found: error
 
@@ -146,7 +160,7 @@ jobs:
       # This job builds under the dated stable pinned below (apple-e2e.yml's
       # header explains why), and rustup ranks this variable above the
       # project's file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
     steps:
       - uses: actions/checkout@v4
 
@@ -158,7 +172,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           targets: aarch64-apple-ios-sim
           # run-ios-device-tests.sh verifies the packaged archive's exports
           # with the llvm-nm shipped by this toolchain.
@@ -168,13 +182,6 @@ jobs:
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
 
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache (the old per-leg `target`
-      # writer is gone).
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
-
       - name: Install the water CLI
         uses: actions/download-artifact@v4
         with:
@@ -183,6 +190,13 @@ jobs:
       - run: |
           chmod +x cli-bin/bin/water
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
+
+      - name: Install the screenshot comparer
+        uses: actions/download-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin
+      - run: chmod +x cli-bin/bin/compare-screenshots
 
       - name: Boot iOS simulator
         run: |
@@ -215,6 +229,10 @@ jobs:
       # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
       - name: Set up modern bash
         uses: ./.github/actions/setup-bash
+
+      - name: Prepare comparison tools
+        uses: ./.github/actions/setup-e2e-tools
+        timeout-minutes: 1
 
       - name: Run iOS e2e examples
         env:
@@ -279,7 +297,7 @@ jobs:
       # This job builds under the dated stable pinned below (apple-e2e.yml's
       # header explains why), and rustup ranks this variable above the
       # project's file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
     steps:
       - uses: actions/checkout@v4
 
@@ -291,17 +309,11 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           cache: "false"
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
-
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
@@ -315,6 +327,17 @@ jobs:
       # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
       - name: Set up modern bash
         uses: ./.github/actions/setup-bash
+
+      - name: Prepare comparison tools
+        uses: ./.github/actions/setup-e2e-tools
+        timeout-minutes: 1
+
+      - name: Install the screenshot comparer
+        uses: actions/download-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin
+      - run: chmod +x cli-bin/bin/compare-screenshots
 
       - name: Run macOS e2e examples
         env:

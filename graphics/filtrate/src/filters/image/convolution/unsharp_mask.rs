@@ -11,6 +11,7 @@ use crate::{
 /// pass's input against it.
 const SHARPEN: SpatialStage = SpatialStage {
     name: "unsharp_mask",
+    source_f16: None,
     source: include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/shaders/image/convolution/unsharp_mask.wgsl"

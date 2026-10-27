@@ -2,11 +2,13 @@
 # Nightly e2e shard. For every example assigned to this shard: package it in
 # release mode, record the .app and executable sizes, launch the packaged app
 # directly, capture the self-reported first-paint marker, sample peak RSS, and
-# verify a settled screenshot — a capture must carry real content (not a
-# uniform fill), and when a recorded baseline exists under backends/apple/Tests/E2EBaselines
-# it must match within the compare budget. A `.skip` marker next to a baseline
-# opts an example out of pixel comparison only; launch and content are still
-# verified. With RECORD=1, captures are written to ${RECORD_DIR} for the
+# capture a settled screenshot. Full-frame FLIP supplies perceptual diagnostics
+# and tolerances, never a claim that the UI is correct: captures and heatmaps
+# require visual review. A `.skip` marker next to a baseline
+# declares a first screen that cannot be made deterministic — it opts the
+# example out of comparison and out of the settle window itself: one
+# supervised capture after the first-paint marker, with launch and decoding
+# still verified. With RECORD=1, captures are written to ${RECORD_DIR} for the
 # baseline-publish job instead of being compared. Failures are collected so one
 # broken example does not hide the state of the rest; the script exits nonzero
 # if any example failed.
@@ -25,9 +27,15 @@
 # package; when PREBUILT_DIR is unset the script still packages inline and
 # records sizes itself (the targeted e2e workflow runs that way).
 #
+# PREBUILT_REFERENCE_APP supplies an already-built E2EReference.app instead
+# of compiling the SwiftUI twin on the capture host. Its platform executable
+# must exist; invalid explicit input fails rather than building another host.
+#
 # The shard measures the release package, never a debug `water run`: the
-# packaged artifact is what users ship, so size, startup, memory, and pixel
-# parity all describe the production binary.
+# packaged artifact is what users ship, so size, startup, memory, and visual
+# comparison all describe the production binary.
+#
+# Requires compare-screenshots on PATH, built once by the workflows' prepare job.
 #
 # Requires bash >= 4.2, asserted below (#2683): the shard keeps background
 # children alive by design — the marker/reference log streams and `water
@@ -51,7 +59,6 @@ baselines_dir="${BASELINES_DIR:-${workspace}/backends/apple/Tests/E2EBaselines}"
 record_dir="${RECORD_DIR:-${workspace}/e2e-baselines}"
 record="${RECORD:-0}"
 prebuilt_dir="${PREBUILT_DIR:-}"
-parity_budgets="${PARITY_BUDGETS:-${baselines_dir}/parity-budgets.json}"
 reference_dir="${workspace}/backends/apple/Tests/E2EReference"
 command_deadline="${workspace}/.github/scripts/run-with-deadline.py"
 receipts_file="${logs_dir}/command-receipts-${platform}-${shard_index}.jsonl"
@@ -151,6 +158,11 @@ fi
 
 echo "Running ${#shard_examples[@]} examples on ${platform}: ${shard_examples[*]}"
 
+if ! compare_tool="$(command -v compare-screenshots)" || [[ ! -x "${compare_tool}" ]]; then
+  echo "::error::Missing prepared compare-screenshots executable; download its prepare-job artifact and add it to PATH."
+  exit 1
+fi
+
 if [[ "${platform}" == "ios" ]]; then
   # A `simctl launch` opens the app over whatever is currently frontmost, and
   # iOS answers with the status-bar "back to <app>" breadcrumb — pixels the
@@ -182,27 +194,12 @@ if [[ "${platform}" == "ios" ]]; then
   trap 'xcrun simctl status_bar "${SIMULATOR_UDID}" clear >/dev/null 2>&1 || true' EXIT
 fi
 
-# The capture helpers below re-invoke the checker sources constantly: the
-# settle loop runs a pixel compare once per poll (up to the 90 s deadline,
-# per example and per reference capture), content/compare run again per
-# example and twin, and every macOS frame first asks window-id for the
-# window number. `swift <file>` re-parses and type-checks the source on
-# every call — measured here at ~1.5 s for `content` on a real capture
-# vs ~0.02 s for the compiled binary — and the pixel loop itself runs
-# interpreted. The sources stay unchanged; they are compiled once per job
-# into scratch space and the binaries are reused for every call. Nothing
-# persists between jobs — the directory lives under TMPDIR and the EXIT
-# trap removes it.
+# Compile the macOS launch/window helpers once per job, not per capture poll.
 swift_tools_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-swift-tools.XXXXXX")"
 if [[ "${platform}" == "ios" ]]; then
   trap 'rm -rf "${swift_tools_dir}"; xcrun simctl status_bar "${SIMULATOR_UDID}" clear >/dev/null 2>&1 || true' EXIT
 else
   trap 'rm -rf "${swift_tools_dir}"' EXIT
-fi
-if ! swiftc -O -o "${swift_tools_dir}/compare-screenshots" \
-     "${workspace}/.github/scripts/compare-screenshots.swift"; then
-  echo "::error::Failed to compile compare-screenshots.swift."
-  exit 1
 fi
 if [[ "${platform}" == "macos" ]]; then
   if ! swiftc -O -o "${swift_tools_dir}/window-id" \
@@ -215,6 +212,11 @@ if [[ "${platform}" == "macos" ]]; then
     echo "::error::Failed to compile launch-app.swift."
     exit 1
   fi
+  if ! swiftc -O -o "${swift_tools_dir}/display-scale" \
+       "${workspace}/.github/scripts/display-scale.swift"; then
+    echo "::error::Failed to compile display-scale.swift."
+    exit 1
+  fi
 fi
 
 # One frame from the current platform target. macOS captures need the pid that
@@ -223,7 +225,12 @@ fi
 # shared deadline ($2): a hung simctl/screenshot/screencapture used to block
 # the settle loop unbounded between deadline checks — measured at 451 s for a
 # single screenshot in the Actions run behind #1539 — and a failed command
-# used to be silently retried or replaced by an earlier frame.
+# used to be silently retried or replaced by an earlier frame. Each command
+# also carries COMMAND_BOUND_S of its own: a healthy capture answers in
+# seconds, so a command still running at the bound is hung — killed there,
+# while shared budget remains, which is what separates a hung command from
+# ordinary settle-budget exhaustion in capture_settled below.
+COMMAND_BOUND_S=30
 capture_frame() {
   local target="$1"
   local deadline_at="$2"
@@ -234,15 +241,18 @@ capture_frame() {
     rm -f "${target}"
     "${command_deadline}" run --label "capture:simctl-io-screenshot" \
       --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
+      --max-seconds "${COMMAND_BOUND_S}" \
       -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${target}" >/dev/null || return
   else
     local window_id
     window_id="$("${command_deadline}" run --label "capture:window-id" \
       --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
+      --max-seconds "${COMMAND_BOUND_S}" \
       -- "${swift_tools_dir}/window-id" "${pid}")" || return
     rm -f "${target}"
     "${command_deadline}" run --label "capture:screencapture" \
       --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
+      --max-seconds "${COMMAND_BOUND_S}" \
       -- screencapture -x -o "-l${window_id}" "${target}" || return
   fi
   if [[ ! -f "${target}" ]]; then
@@ -252,7 +262,7 @@ capture_frame() {
 }
 
 # Captures until every frame across SETTLE_WINDOW_S seconds agrees with the
-# window's first frame within DIFF_BUDGET=0.01 — the app has settled once its
+# window's first frame within the oracle's default FLIP limits — the app has settled once its
 # output stops changing — or the deadline passes, in which case the last
 # frame is kept. Fails when no frame could be captured.
 #
@@ -272,6 +282,19 @@ SETTLE_WINDOW_S=10
 # in the loop draws down — screenshots, window-id/screencapture, and the
 # compare/sleep overhead between them — not a fresh 90 s per attempt.
 CAPTURE_DEADLINE_S=90
+# An iteration starts only while the budget can still pay for the capture and
+# compare it runs. `remaining` reports success down to the last fraction of a
+# second, and a command begun on those crumbs is guaranteed to be killed
+# mid-flight — iOS starfield in run 38811188166 started a screenshot with
+# 0.48 s left, and macOS stress in run 38677209793 a settle compare, each
+# reported as a hard capture failure instead of the never-settled outcome
+# the same deadline produced everywhere else (#2714). The floor covers one
+# measured iteration — simctl screenshot ~0.5 s, window-id+screencapture
+# ~1 s, compare ~0.02 s — with an order of magnitude of headroom, the same
+# scale as the deadline constants below. A command that starts above it and
+# still reaches the deadline ran far past its healthy cost, which stays the
+# #1539 stuck-pathology failure.
+CAPTURE_ITERATION_FLOOR_S=10
 # Native cleanup (terminate/uninstall of the shard-owned app) gets its own
 # scoped deadline per call: a healthy simctl answers in under a second but a
 # loaded CoreSimulator has answered a benign call in ~30 s, while the stuck
@@ -288,27 +311,47 @@ capture_settled() {
   local window_start=0
   local deadline_at frame_rc compare_rc remaining_s
   deadline_at="$("${command_deadline}" deadline --seconds "${CAPTURE_DEADLINE_S}")"
+  if [[ -f "${baselines_dir}/${platform}/${example}.skip" ]]; then
+    # A `.skip` first screen cannot be made deterministic by construction —
+    # continuous animation, live media — so the gate asks for exactly one
+    # supervised capture after the first-paint marker rather than stability
+    # the example declares it cannot produce. Launch and image decoding
+    # check downstream still gate; a wedged command still fails on its own
+    # bound. The marker applies to the reference twin's capture here too.
+    capture_frame "${target}" "${deadline_at}" ${pid:+"${pid}"}
+    return
+  fi
   rm -f "${anchor}"
   # The sole loop bound is the shared CLOCK_MONOTONIC budget, which the
   # supervised commands themselves draw down; SECONDS is used only for the
-  # SETTLE_WINDOW_S agreement duration, as before.
-  while remaining_s="$("${command_deadline}" remaining --deadline-at "${deadline_at}")"; do
+  # SETTLE_WINDOW_S agreement duration, as before. The --at-least floor keeps
+  # the loop from opening an iteration the budget can no longer pay for —
+  # under it the loop takes the deterministic never-settled exit below
+  # instead of starting a capture the deadline will kill mid-command.
+  while remaining_s="$("${command_deadline}" remaining --deadline-at "${deadline_at}" \
+      --at-least "${CAPTURE_ITERATION_FLOOR_S}")"; do
     if capture_frame "${target}" "${deadline_at}" ${pid:+"${pid}"}; then
       if [[ -f "${anchor}" ]]; then
         compare_rc=0
         # Only compare's stdout is noise here; stderr stays — it carries the
         # supervisor's command_started/final receipt JSON and the child's own
         # diagnostics, which is what attributes a hang if the run dies mid-way.
-        DIFF_BUDGET=0.01 "${command_deadline}" run --label "capture:compare-screenshots" \
+        "${command_deadline}" run --label "capture:compare-screenshots" \
           --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
-          -- "${swift_tools_dir}/compare-screenshots" \
+          --max-seconds "${COMMAND_BOUND_S}" \
+          -- "${compare_tool}" \
              compare "${anchor}" "${target}" "${shots_dir}/.settle-diff.png" \
+             "${comparison_args[@]}" \
              >/dev/null || compare_rc=$?
         # Only a comparison that ran to completion may steer the anchors:
-        # exit 0 = frames agree within budget, exit 1 = a real over-budget
-        # diff restarts the window. Exit 2 (decode/write error), 124
-        # (deadline kill), or any other status is a command failure — no
-        # anchor update, no earlier-frame substitution.
+        # exit 0 = frames agree within FLIP tolerance, exit 1 = a completed
+        # over-tolerance comparison restarts the window. Exit 2 (decode/write
+        # error) or any other status is a command failure — no anchor
+        # update, no earlier-frame substitution. A 124 carries two cases:
+        # killed at the scoped bound while shared budget remains is a hung
+        # compare — the failure itself; killed at the shared deadline is
+        # ordinary budget exhaustion mid-command, which lands on the same
+        # never-settled outcome as expiring between polls.
         if (( compare_rc == 0 )); then
           if (( SECONDS - window_start >= SETTLE_WINDOW_S )); then
             rm -f "${anchor}"
@@ -318,10 +361,15 @@ capture_settled() {
           # The screen changed: the window restarts here.
           cp "${target}" "${anchor}"
           window_start=${SECONDS}
+        elif (( compare_rc == 124 )) && \
+             ! "${command_deadline}" remaining --deadline-at "${deadline_at}" >/dev/null; then
+          # The shared deadline spent itself inside the compare — the
+          # loop's ordinary exhausted-budget outcome, not a command fault.
+          break
         else
           rm -f "${anchor}"
           if (( compare_rc == 124 )); then
-            echo "::error::${example}: the settle compare was killed at the shared ${CAPTURE_DEADLINE_S}s capture deadline; last receipt in ${receipts_file}."
+            echo "::error::${example}: the settle compare exceeded its ${COMMAND_BOUND_S}s command bound with shared budget remaining — a hung command, not settle progress; last receipt in ${receipts_file}."
           else
             echo "::error::${example}: the settle compare command failed (exit ${compare_rc}); last receipt in ${receipts_file}."
           fi
@@ -333,15 +381,20 @@ capture_settled() {
         window_start=${SECONDS}
       fi
     else
-      # A native capture command that fails or is killed at the deadline is
-      # the failure itself: retrying it or falling back to an earlier frame
-      # would substitute a state the harness never verified (#1539). Only a
-      # loop that ran out of budget with every command still succeeding may
-      # keep the last frame below.
+      # A native capture command that fails is the failure itself:
+      # retrying it or falling back to an earlier frame would substitute a
+      # state the harness never verified (#1539). The same two 124 cases
+      # as the compare apply — a kill at the scoped bound while budget
+      # remains is a hung command; a kill at the shared deadline is the
+      # loop's ordinary exhaustion, settled below.
       frame_rc=$?
+      if (( frame_rc == 124 )) && \
+         ! "${command_deadline}" remaining --deadline-at "${deadline_at}" >/dev/null; then
+        break
+      fi
       rm -f "${anchor}"
       if (( frame_rc == 124 )); then
-        echo "::error::${example}: a capture command was killed at the shared ${CAPTURE_DEADLINE_S}s capture deadline; last receipt in ${receipts_file}."
+        echo "::error::${example}: a capture command exceeded its ${COMMAND_BOUND_S}s command bound with shared budget remaining — a hung command, not settle progress; last receipt in ${receipts_file}."
       else
         echo "::error::${example}: a capture command failed (exit ${frame_rc}); last receipt in ${receipts_file}."
       fi
@@ -360,7 +413,7 @@ capture_settled() {
   if [[ ! -f "${target}" ]]; then
     return 1
   fi
-  echo "::warning::${example} never settled to a stable frame; using the last capture."
+  echo "::warning::${example} never settled to a stable frame; using the last capture. A first screen that cannot be made deterministic declares a .skip marker."
 }
 
 # One supervised `simctl terminate|uninstall <udid> <bundle>` of a shard-owned
@@ -401,6 +454,7 @@ simctl_cleanup() {
   fi
   if (( rc == 124 )); then
     echo "::error::${example}: 'simctl ${what} ${bundle}' was killed at the ${CLEANUP_DEADLINE_S}s cleanup deadline; last receipt in ${receipts_file}."
+    collect_simulator_stall_diagnostics "'simctl ${what} ${bundle}' killed at the cleanup deadline"
     rm -f "${child_err}"
     return 1
   fi
@@ -414,6 +468,56 @@ simctl_cleanup() {
   echo "::error::${example}: 'simctl ${what} ${bundle}' failed (exit ${rc}); stderr retained above."
   rm -f "${child_err}"
   return 1
+}
+
+# When a supervised iOS command is killed at its deadline the receipts say
+# WHICH command and how long it ran — they cannot say WHY the simulator
+# channel wedged. The runs behind #1539 showed the app's first paint, then
+# screenshot, terminate and uninstall all timing out: the evidence needed is
+# the app's own stack, the host simulator services' state, and the device's
+# recent log, collected while the wedge still stands rather than after a
+# clean retry. The samples self-limit at 3 s and both `log show` reads run
+# under DIAG_DEADLINE_S — a wedged channel must not stall the collection —
+# and the output lands in logs_dir, which the e2e-logs artifact bundle
+# already ships.
+DIAG_DEADLINE_S=30
+collect_simulator_stall_diagnostics() {
+  local reason="$1"
+  local diag="${logs_dir}/${platform}-${example}-stall-diagnostics.log"
+  local diag_deadline_at
+  diag_deadline_at="$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")"
+  {
+    echo "=== simulator stall diagnostics: ${reason} ($(date -u '+%Y-%m-%dT%H:%M:%SZ')) ==="
+    echo "--- shard app process (pid ${app_pid:-unset}) ---"
+    if [[ -n "${app_pid:-}" ]] && kill -0 "${app_pid}" 2>/dev/null; then
+      sample "${app_pid}" 3 1 2>&1 | head -60
+    else
+      echo "app pid ${app_pid:-unset} is not running"
+    fi
+    echo "--- host simulator service state ---"
+    local svc_pids
+    svc_pids="$(pgrep -f "CoreSimulator|SimulatorTrampoline|simctl" 2>/dev/null | tr '\n' ',' | sed 's/,$//')"
+    [[ -n "${svc_pids}" ]] && ps -o pid,stat,etime,command -p "${svc_pids}" || true
+    echo "--- host simulator service stacks (sample 3s each) ---"
+    local svc
+    for svc in $(pgrep -f "CoreSimulatorService|SimulatorTrampoline" 2>/dev/null); do
+      sample "${svc}" 3 1 2>&1 | sed -n '1,40p'
+    done
+    echo "--- host log, simulator domain, last 5m ---"
+    # `log show` can take tens of seconds on a loaded host — supervised so
+    # the collection keeps its own bound even when the log is slow.
+    "${command_deadline}" run --label "diag:host-log-show" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- log show --last 5m --style compact \
+      --predicate 'process CONTAINS[c] "simulator" OR subsystem CONTAINS[c] "CoreSimulator"' \
+      2>/dev/null | tail -80 || true
+    echo "--- device log, last 3m ---"
+    "${command_deadline}" run --label "diag:simctl-log-show" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- xcrun simctl spawn "${SIMULATOR_UDID}" log show --last 3m --style compact \
+      2>/dev/null | tail -60 || true
+  } >> "${diag}" 2>&1
+  echo "::notice::${example}: simulator stall diagnostics written to ${diag} (uploaded with e2e-logs)."
 }
 
 # Sends SIGTERM to a LaunchServices-launched pid and waits for it to actually
@@ -461,6 +565,17 @@ has_twin() {
 reference_app=""
 build_reference_host() {
   [[ -n "${reference_app}" ]] && return 0
+  if [[ -n "${PREBUILT_REFERENCE_APP:-}" ]]; then
+    local binary="${PREBUILT_REFERENCE_APP}/E2EReference"
+    [[ "${platform}" == "macos" ]] && \
+      binary="${PREBUILT_REFERENCE_APP}/Contents/MacOS/E2EReference"
+    if [[ ! -x "${binary}" ]]; then
+      echo "::error::PREBUILT_REFERENCE_APP '${PREBUILT_REFERENCE_APP}' carries no executable ${binary} for platform '${platform}'."
+      return 1
+    fi
+    reference_app="${PREBUILT_REFERENCE_APP}"
+    return 0
+  fi
   local out_dir="${shots_dir}/.reference-host"
   if "${reference_dir}/build-reference-host.sh" "${platform}" "${out_dir}" \
       >"${logs_dir}/${platform}-reference-build.log" 2>&1; then
@@ -570,19 +685,9 @@ capture_reference() {
   fi
 }
 
-# The allowed diff fraction for this twin on this platform. A "<platform>@<os
-# major>" section wins over the plain platform key, which wins over the strict
-# default: "ios@27" records the navigation exception — SwiftUI's private bar
-# collapses the large title for a stacked search bar on iOS 27 while stock
-# UINavigationBar keeps it for identical public inputs, so the twin's extra
-# diff there is a platform behavior change, not a backend regression.
-parity_os_major=""
-parity_budget() {
-  local budget=""
-  if [[ -f "${parity_budgets}" ]]; then
-    if [[ -z "${parity_os_major}" ]]; then
-      if [[ "${platform}" == "ios" ]]; then
-        parity_os_major="$(xcrun simctl list devices --json | python3 -c '
+# Comparison identity comes from the running OS, not the build SDK.
+if [[ "${platform}" == "ios" ]]; then
+  comparison_os_major="$(xcrun simctl list devices --json | python3 -c '
 import json, re, sys
 for runtime, group in json.load(sys.stdin)["devices"].items():
     if any(d.get("udid") == sys.argv[1] for d in group):
@@ -590,32 +695,58 @@ for runtime, group in json.load(sys.stdin)["devices"].items():
         if m:
             print(m.group(1))
         break
-' "${SIMULATOR_UDID}")" || return 1
-        if [[ -z "${parity_os_major}" ]]; then
-          echo "::error::parity_budget: cannot derive iOS major: SIMULATOR_UDID=${SIMULATOR_UDID} not found in 'xcrun simctl list devices', or its runtime name has no iOS-<major> match." >&2
-          return 1
-        fi
-      else
-        parity_os_major="$(sw_vers -productVersion | cut -d. -f1)" || return 1
-        if [[ -z "${parity_os_major}" ]]; then
-          echo "::error::parity_budget: cannot derive macOS major: 'sw_vers -productVersion' returned no version." >&2
-          return 1
-        fi
-      fi
-    fi
-    budget="$(python3 -c '
+' "${SIMULATOR_UDID}")"
+else
+  comparison_os_major="$(sw_vers -productVersion | cut -d. -f1)"
+fi
+if [[ -z "${comparison_os_major}" ]]; then
+  echo "::error::Cannot derive the running ${platform} major version for screenshot comparison." >&2
+  exit 1
+fi
+
+# Pixels per point of every capture this job takes, which sizes the twin
+# comparison's block in points: the simulated device's screen scale on iOS,
+# the runner's single display on macOS.
+if [[ "${platform}" == "ios" ]]; then
+  device_type_bundle="$(python3 -c '
+import json, subprocess, sys
+devices = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "--json"]))
+kind = next(d["deviceTypeIdentifier"] for group in devices["devices"].values()
+            for d in group if d.get("udid") == sys.argv[1])
+types = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devicetypes", "--json"]))
+print(next(t["bundlePath"] for t in types["devicetypes"] if t["identifier"] == kind))
+' "${SIMULATOR_UDID}")" || device_type_bundle=""
+  capture_scale="$(plutil -extract capabilities.ScreenDimensionsCapability.main-screen-scale raw \
+    "${device_type_bundle}/Contents/Resources/capabilities.plist")" || capture_scale=""
+  capture_scale="${capture_scale%.000000}"
+else
+  capture_scale="$("${swift_tools_dir}/display-scale")" || capture_scale=""
+fi
+if [[ ! "${capture_scale}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "::error::Cannot derive the ${platform} capture scale for twin comparison (got '${capture_scale}')." >&2
+  exit 1
+fi
+
+# Final checks have the same per-command bound and receipt trail as capture.
+run_comparison() {
+  local label="$1" output="$2"
+  shift 2
+  local deadline_at
+  deadline_at="$("${command_deadline}" deadline --seconds "${COMMAND_BOUND_S}")" || return
+  "${command_deadline}" run --label "${label}" --deadline-at "${deadline_at}" \
+    --receipt "${receipts_file}" --max-seconds "${COMMAND_BOUND_S}" \
+    --child-stderr-file "${output%.json}.log" \
+    -- "${compare_tool}" "$@" > "${output}"
+}
+
+comparison_summary() {
+  python3 -c '
 import json, sys
-budgets = json.load(open(sys.argv[1]))
-platform, major, example = sys.argv[2], sys.argv[3], sys.argv[4]
-value = ""
-if major:
-  value = budgets.get(f"{platform}@{major}", {}).get(example, "")
-if value == "":
-  value = budgets.get(platform, {}).get(example, "")
-print(value)
-' "${parity_budgets}" "${platform}" "${parity_os_major}" "$1")" || return 1
-  fi
-  echo "${budget:-${DIFF_BUDGET:-0.02}}"
+with open(sys.argv[1]) as stream:
+    comparison = json.load(stream)
+json.dump({key: comparison[key] for key in ("metric", "flip_mean", "flip_max", "max_local_error", "max_block_flip_mean", "limits")},
+          sys.stdout)
+' "$1"
 }
 
 # `water package` emits `Packaged at <path>` on success; resolve the bundle it
@@ -632,6 +763,7 @@ declare -a failures=()
 declare -a report=()
 
 for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
+  comparison_args=(--platform "${platform}" --os-major "${comparison_os_major}" --example "${example}")
   mem_cell="—"
   fp_cell="—"
   size_cell="—"
@@ -866,6 +998,10 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     kill "${stream_pid}" 2>/dev/null || true
     failures+=("${example}: capture")
     if [[ "${platform}" == "ios" ]]; then
+      # A capture that never landed on iOS is the channel-stall class #1539
+      # tracks: collect app/service stacks and the device log while the
+      # wedge still stands, then run the usual bounded cleanup.
+      collect_simulator_stall_diagnostics "capture_settled failed for ${example}"
       simctl_cleanup terminate "${bundle_id}" || failures+=("${example}: cleanup terminate")
       simctl_cleanup uninstall "${bundle_id}" || failures+=("${example}: cleanup uninstall")
     else
@@ -928,10 +1064,11 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     }
   fi
 
-  if ! "${swift_tools_dir}/compare-screenshots" content "${shot}"; then
-    echo "::error::Captured screenshot for ${example} is blank."
-    failures+=("${example}: blank")
-    report+=("| \`${example}\` | blank capture | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+  if ! run_comparison "${example}:decode" "${shots_dir}/${platform}-${example}-capture.json" \
+      check "${shot}"; then
+    echo "::error::Cannot decode the captured screenshot for ${example}; see capture log and command receipts."
+    failures+=("${example}: screenshot decode")
+    report+=("| \`${example}\` | screenshot decode failed | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     echo "::endgroup::"
     continue
   fi
@@ -939,25 +1076,36 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
   baseline="${baselines_dir}/${platform}/${example}.png"
   if [[ "${record}" == "1" ]]; then
     cp "${shot}" "${record_dir}/${platform}/${example}.png"
-    report+=("| \`${example}\` | recorded | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+    report+=("| \`${example}\` | recorded — VISUAL REVIEW REQUIRED | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
   elif [[ -f "${baselines_dir}/${platform}/${example}.skip" ]]; then
-    report+=("| \`${example}\` | launched (compare skipped) | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+    report+=("| \`${example}\` | captured (.skip) — VISUAL REVIEW REQUIRED | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
   elif [[ -f "${baselines_dir}/${platform}/${example}.visual" ]]; then
-    # `.visual` — the semantic class for output that is not pixel-stable by
-    # construction (GPU-rendered). Never pixel-compared; the capture pair
+    # `.visual` — output that is not deterministic by construction
+    # (GPU-rendered). The capture pair
     # (WaterUI + SwiftUI twin below) ships as artifacts for human review.
     report+=("| \`${example}\` | launched — VISUAL REVIEW REQUIRED | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
   elif [[ ! -f "${baseline}" ]]; then
-    report+=("| \`${example}\` | launched (no baseline yet) | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+    report+=("| \`${example}\` | no baseline — VISUAL REVIEW REQUIRED | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
   else
     diff_image="${shots_dir}/${platform}-${example}-diff.png"
-    if compare_out="$("${swift_tools_dir}/compare-screenshots" \
-        compare "${baseline}" "${shot}" "${diff_image}")"; then
-      report+=("| \`${example}\` | baseline match | ${compare_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+    baseline_json="${shots_dir}/${platform}-${example}-baseline.json"
+    compare_rc=0
+    run_comparison "${example}:baseline" "${baseline_json}" \
+      compare "${baseline}" "${shot}" "${diff_image}" "${comparison_args[@]}" || compare_rc=$?
+    compare_out=""
+    if (( compare_rc == 0 || compare_rc == 1 )); then
+      compare_out="$(comparison_summary "${baseline_json}")"
+    fi
+    if (( compare_rc == 0 )); then
+      report+=("| \`${example}\` | baseline within FLIP tolerance — REVIEW REQUIRED | ${compare_out} | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+    elif (( compare_rc == 1 )); then
+      echo "::error::Baseline FLIP tolerance exceeded for ${example}: ${compare_out}; inspect the full capture and heatmap."
+      failures+=("${example}: baseline FLIP tolerance")
+      report+=("| \`${example}\` | baseline exceeds FLIP tolerance — REVIEW REQUIRED | ${compare_out} | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     else
-      echo "::error::Screenshot regression for ${example}: ${compare_out}"
-      failures+=("${example}: regression")
-      report+=("| \`${example}\` | regression | ${compare_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+      echo "::error::Baseline comparison command failed for ${example} (exit ${compare_rc}); see its log and command receipts."
+      failures+=("${example}: baseline comparison command")
+      report+=("| \`${example}\` | baseline comparison failed (${compare_rc}) | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     fi
   fi
 
@@ -980,41 +1128,52 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     fi
     ref_shot="${shots_dir}/${platform}-${example}-ref.png"
     parity_diff="${shots_dir}/${platform}-${example}-parity-diff.png"
-    budget="$(parity_budget "${example}")"
-    # Record runs measure rather than gate: an unbounded budget keeps the
-    # compare green so the true fraction lands in the report and the artifact.
-    [[ "${record}" == "1" ]] && budget="1.0"
+    parity_json="${shots_dir}/${platform}-${example}-parity.json"
+    parity_record_flag=""
+    [[ "${record}" == "1" ]] && parity_record_flag="--record"
     if ! capture_reference "${ref_shot}" "${example}" "${product}"; then
       echo "::error::Could not capture the SwiftUI reference for ${example}."
       failures+=("${example}: reference capture")
       report+=("| \`${example}\` (parity) | reference failed | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
-    elif ! "${swift_tools_dir}/compare-screenshots" \
-        content "${ref_shot}" >/dev/null 2>&1; then
-      echo "::error::SwiftUI reference for ${example} captured blank."
-      failures+=("${example}: reference blank")
-      report+=("| \`${example}\` (parity) | reference blank | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+    elif ! run_comparison "${example}:reference-decode" \
+        "${shots_dir}/${platform}-${example}-reference.json" check "${ref_shot}"; then
+      echo "::error::Cannot decode the SwiftUI reference for ${example}; see reference log and command receipts."
+      failures+=("${example}: reference decode")
+      report+=("| \`${example}\` (parity) | reference decode failed | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     elif [[ -f "${baselines_dir}/${platform}/${example}.visual" ]]; then
       # `.visual`: both halves of the pair are captured and shipped as
-      # artifacts; a human reviews them — GPU-rendered output is never
-      # pixel-compared.
+      # artifacts; a human reviews the whole images.
       report+=("| \`${example}\` (parity) | VISUAL REVIEW REQUIRED | pair in e2e-shots artifacts | ${fp_cell} | ${size_cell} | ${mem_cell} |")
-    elif parity_out="$(DIFF_BUDGET="${budget}" \
-        "${swift_tools_dir}/compare-screenshots" \
-        compare "${ref_shot}" "${shot}" "${parity_diff}" 2>&1)"; then
-      parity_fraction="${parity_out#compare: }"
-      parity_fraction="${parity_fraction%% *}"
-      if [[ "${record}" == "1" ]]; then
-        mkdir -p "${record_dir}/parity"
-        printf '%s\n' "${parity_fraction}" \
-          > "${record_dir}/parity/${platform}-${example}.txt"
-        report+=("| \`${example}\` (parity) | recorded ${parity_fraction} | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
-      else
-        report+=("| \`${example}\` (parity) | within budget ${budget} | ${parity_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
-      fi
     else
-      echo "::error::SwiftUI parity regression for ${example}: ${parity_out} (budget ${budget})"
-      failures+=("${example}: parity regression")
-      report+=("| \`${example}\` (parity) | drift over budget ${budget} | ${parity_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+      # A twin is a second implementation, not a second route to the same
+      # pixels: it is gated by the comparer's twin FLIP limits, which accept
+      # edge offsets of up to 2 px and reject missing, extra or misplaced
+      # elements, judged over 8 pt blocks at the capture scale.
+      parity_rc=0
+      run_comparison "${example}:parity" "${parity_json}" \
+        compare "${ref_shot}" "${shot}" "${parity_diff}" "${comparison_args[@]}" \
+        --limits twin --scale "${capture_scale}" ${parity_record_flag:+"${parity_record_flag}"} || parity_rc=$?
+      parity_out=""
+      if (( parity_rc == 0 || parity_rc == 1 )); then
+        parity_out="$(comparison_summary "${parity_json}")"
+      fi
+      if (( parity_rc == 0 )); then
+        if [[ "${record}" == "1" ]]; then
+          mkdir -p "${record_dir}/parity"
+          cp "${parity_json}" "${record_dir}/parity/${platform}-${example}.json"
+          report+=("| \`${example}\` (parity) | recorded — VISUAL REVIEW REQUIRED | ${parity_out} | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+        else
+          report+=("| \`${example}\` (parity) | within FLIP tolerance — REVIEW REQUIRED | ${parity_out} | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+        fi
+      elif (( parity_rc == 1 )); then
+        echo "::error::SwiftUI parity FLIP tolerance exceeded for ${example}: ${parity_out}; inspect the full pair and heatmap."
+        failures+=("${example}: parity FLIP tolerance")
+        report+=("| \`${example}\` (parity) | exceeds FLIP tolerance — REVIEW REQUIRED | ${parity_out} | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+      else
+        echo "::error::SwiftUI parity comparison command failed for ${example} (exit ${parity_rc}); see its log and command receipts."
+        failures+=("${example}: parity comparison command")
+        report+=("| \`${example}\` (parity) | comparison failed (${parity_rc}) | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+      fi
     fi
   fi
 

@@ -19,6 +19,8 @@ bitflags = { workspace = true, features = ["serde"] }
 thiserror.workspace = true
 futures-lite = "2.6"
 serde_json.workspace = true
+dirs.workspace = true
+tempfile = "3.27"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -31,9 +33,6 @@ windows-sys = { version = "0.61", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Threading",
 ] }
-
-[dev-dependencies]
-tempfile = "3.27"
 
 [lints]
 workspace = true

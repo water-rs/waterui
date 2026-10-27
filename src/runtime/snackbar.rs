@@ -45,7 +45,10 @@ use suiteki::Str;
 use waterui_controls::{Button, ButtonStyle, button, label};
 use waterui_core::animation::Animation;
 use waterui_core::extract::State;
-use waterui_core::handler::{AnyViewBuilder, Handler, SharedAction, shared_action};
+use waterui_core::handler::{
+    AnyViewBuilder, BoxedEventAction, EventHandler, Handler, SharedAction, boxed_event_handler,
+    shared_action,
+};
 use waterui_core::id::Identifiable;
 use waterui_core::plugin::Plugin;
 use waterui_core::views::ForEach;
@@ -350,6 +353,42 @@ impl core::fmt::Debug for SnackbarAction {
     }
 }
 
+/// Why a snackbar presentation was dismissed, reported to
+/// [`Snackbar::on_dismiss`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SnackbarDismissReason {
+    /// The snackbar's action button was pressed.
+    Action,
+    /// The auto-dismiss duration elapsed.
+    Timeout,
+    /// The trailing close button was pressed.
+    Closed,
+    /// The presentation was evicted to make room for a newer snackbar at the
+    /// same placement.
+    Replaced,
+    /// The presentation was dismissed programmatically through
+    /// [`SnackbarManager::dismiss`].
+    Programmatic,
+}
+
+/// The snackbar's dismissal callback, shared by reference across every
+/// presentation of a cloned [`Snackbar`].
+#[derive(Clone)]
+struct DismissalCallback(Rc<RefCell<BoxedEventAction<SnackbarDismissReason>>>);
+
+impl DismissalCallback {
+    fn call(&self, reason: SnackbarDismissReason, env: &waterui_core::Environment) {
+        (self.0.borrow_mut())(reason, env);
+    }
+}
+
+impl core::fmt::Debug for DismissalCallback {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DismissalCallback").finish_non_exhaustive()
+    }
+}
+
 /// Configuration for a snackbar notification.
 ///
 /// Use the builder pattern to configure the snackbar before showing it.
@@ -378,6 +417,8 @@ pub struct Snackbar {
     position: SnackbarPosition,
     /// Whether to show a trailing close button (M3 `closeable`).
     closeable: bool,
+    /// Callback reporting each presentation's dismissal and its reason.
+    dismissal: Option<DismissalCallback>,
     /// State injected into the action button environment.
     captured_env: waterui_core::Environment,
 }
@@ -391,6 +432,7 @@ impl core::fmt::Debug for Snackbar {
             .field("duration", &self.duration)
             .field("position", &self.position)
             .field("closeable", &self.closeable)
+            .field("dismissal", &self.dismissal)
             .field("captured_env", &self.captured_env)
             .finish()
     }
@@ -423,6 +465,7 @@ impl Snackbar {
             duration: Duration::from_secs(3),
             position: SnackbarPosition::default(),
             closeable: false,
+            dismissal: None,
             captured_env: waterui_core::Environment::new(),
         }
     }
@@ -476,6 +519,49 @@ impl Snackbar {
         self
     }
 
+    /// Registers a handler called when a presentation of this snackbar is
+    /// dismissed, with the [`SnackbarDismissReason`] it went away.
+    ///
+    /// The handler runs exactly once per presentation, after the exit
+    /// animation completes and the snackbar has been removed from the stack.
+    /// Every dismissal reports through it: `Action` when the action button is
+    /// pressed, `Timeout` when the duration elapses, `Closed` from the close
+    /// button, `Replaced` when a newer snackbar at the same placement evicts
+    /// it, and `Programmatic` for [`SnackbarManager::dismiss`]. Each `show` of
+    /// a cloned snackbar is an independent presentation and reports its own
+    /// dismissal.
+    ///
+    /// The reason arrives as the handler's first parameter; values injected
+    /// with `.state()` extract as further parameters, exactly like `action`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::snackbar::{Snackbar, SnackbarDismissReason};
+    ///
+    /// let items = binding::<Vec<String>>(Vec::new());
+    /// let snackbar = Snackbar::new("Item deleted")
+    ///     .state(&items)
+    ///     .on_dismiss(
+    ///         |reason: SnackbarDismissReason, State(items): State<Binding<Vec<String>>>| {
+    ///             if reason != SnackbarDismissReason::Action {
+    ///                 items.get_mut().clear();
+    ///             }
+    ///         },
+    ///     );
+    /// ```
+    #[must_use]
+    pub fn on_dismiss<Args>(
+        mut self,
+        handler: impl EventHandler<SnackbarDismissReason, Args> + 'static,
+    ) -> Self {
+        self.dismissal = Some(DismissalCallback(Rc::new(RefCell::new(
+            boxed_event_handler(handler),
+        ))));
+        self
+    }
+
     /// Sets the auto-dismiss duration.
     ///
     /// Default is 3 seconds.
@@ -503,7 +589,8 @@ impl Snackbar {
         self
     }
 
-    /// Injects cloneable state into this snackbar's action environment.
+    /// Injects cloneable state into this snackbar's handler environment,
+    /// where both `action` and `on_dismiss` handlers can extract it.
     #[must_use]
     pub fn state<T: Clone + 'static>(mut self, state: &T) -> Self {
         self.captured_env = self.captured_env.extending(State(state.clone()));
@@ -660,7 +747,7 @@ impl SnackbarManager {
                 .find(|item| !item.dismissing.get() && item.snackbar.position == position)
                 .map(|item| item.id);
             if let Some(oldest) = oldest {
-                self.dismiss_presentation(oldest);
+                self.dismiss_presentation(oldest, SnackbarDismissReason::Replaced);
             }
         }
         drop(snapshot);
@@ -677,7 +764,7 @@ impl SnackbarManager {
         spawn_local(async move {
             native_executor::sleep(duration).await;
             tracing::debug!("snackbar auto-dismiss timer fired for {id}");
-            manager.dismiss_presentation(id);
+            manager.dismiss_presentation(id, SnackbarDismissReason::Timeout);
         })
         .detach();
     }
@@ -694,13 +781,15 @@ impl SnackbarManager {
             .find(|item| !item.dismissing.get())
             .map(|item| item.id);
         if let Some(id) = newest {
-            self.dismiss_presentation(id);
+            self.dismiss_presentation(id, SnackbarDismissReason::Programmatic);
         }
     }
 
     /// Begins the dismissal fade for one snackbar, then removes it from the
-    /// stack and reflows the remainder once the fade completes.
-    fn dismiss_presentation(&self, id: u64) {
+    /// stack and reflows the remainder once the fade completes. The `reason`
+    /// of the first dismissal wins: later requests for a presentation already
+    /// fading out return here without recording anything.
+    fn dismiss_presentation(&self, id: u64, reason: SnackbarDismissReason) {
         let item = self
             .state
             .borrow()
@@ -726,17 +815,24 @@ impl SnackbarManager {
         let exit = SnackbarTheme::default().exit_animation.duration();
         spawn_local(async move {
             native_executor::sleep(exit).await;
-            manager.finish_dismissal(id);
+            manager.finish_dismissal(id, reason);
         })
         .detach();
     }
 
-    fn finish_dismissal(&self, id: u64) {
+    fn finish_dismissal(&self, id: u64, reason: SnackbarDismissReason) {
         let mut active = self.state.borrow().active.clone();
         let index = active.snapshot().iter().position(|item| item.id == id);
-        if let Some(index) = index {
-            let _removed = active.remove(index);
-            self.reflow();
+        let Some(index) = index else {
+            return;
+        };
+        let removed = active.remove(index);
+        self.reflow();
+
+        // The presentation is off the stack and no manager state is borrowed:
+        // the callback may itself show or dismiss snackbars.
+        if let Some(dismissal) = &removed.snackbar.dismissal {
+            dismissal.call(reason, &removed.snackbar.captured_env);
         }
     }
 
@@ -862,7 +958,7 @@ impl StackedSnackbarView {
             .style(ButtonStyle::Borderless)
             .action(move |env: waterui_core::Environment| {
                 let () = action.handler.call(&captured_env.layered_on(&env));
-                manager.dismiss_presentation(id);
+                manager.dismiss_presentation(id, SnackbarDismissReason::Action);
             })
         });
 
@@ -882,7 +978,7 @@ impl StackedSnackbarView {
             )
             .style(ButtonStyle::Borderless)
             .action(move |_env: waterui_core::Environment| {
-                manager.dismiss_presentation(id);
+                manager.dismiss_presentation(id, SnackbarDismissReason::Closed);
             })
         });
 
@@ -1033,5 +1129,162 @@ impl View for StackedSnackbarView {
 impl Default for SnackbarManager {
     fn default() -> Self {
         Self::new().0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use nami::Signal as _;
+    use waterui_core::binding;
+
+    use super::super::parked_executor::install as install_executor;
+    use super::*;
+
+    /// A presentation row built directly, so tests drive `finish_dismissal`
+    /// without a show timer or a running executor.
+    fn presentation(id: u64, snackbar: Snackbar) -> ActiveSnackbar {
+        ActiveSnackbar {
+            id,
+            opacity: Binding::f32(0.0),
+            entrance_offset: Binding::f32(snackbar.position.initial_offset_y()),
+            stack_offset: Binding::f32(0.0),
+            dismissing: Rc::new(Cell::new(false)),
+            snackbar,
+        }
+    }
+
+    fn present(manager: &SnackbarManager, item: ActiveSnackbar) {
+        manager.state.borrow().active.clone().push(item);
+    }
+
+    fn live_ids(manager: &SnackbarManager) -> Vec<u64> {
+        manager
+            .state
+            .borrow()
+            .active
+            .snapshot()
+            .iter()
+            .map(|item| item.id)
+            .collect()
+    }
+
+    /// A snackbar recording every reported reason.
+    fn recording(snackbar: Snackbar) -> (Snackbar, Rc<RefCell<Vec<SnackbarDismissReason>>>) {
+        let reasons = Rc::new(RefCell::new(Vec::new()));
+        let log = Rc::clone(&reasons);
+        (
+            snackbar.on_dismiss(move |reason: SnackbarDismissReason| {
+                log.borrow_mut().push(reason);
+            }),
+            reasons,
+        )
+    }
+
+    #[test]
+    fn building_or_showing_a_snackbar_reports_nothing() {
+        let (manager, _overlay) = SnackbarManager::new();
+        let (snackbar, reasons) = recording(Snackbar::new("hello"));
+        present(&manager, presentation(1, snackbar.clone()));
+        present(&manager, presentation(2, snackbar));
+        assert!(reasons.borrow().is_empty());
+
+        // A finish for an id that was never presented reports nothing either.
+        manager.finish_dismissal(42, SnackbarDismissReason::Programmatic);
+        assert!(reasons.borrow().is_empty());
+    }
+
+    #[test]
+    fn removal_reports_the_reason_once() {
+        let (manager, _overlay) = SnackbarManager::new();
+        let (snackbar, reasons) = recording(Snackbar::new("bye"));
+        present(&manager, presentation(1, snackbar));
+
+        manager.finish_dismissal(1, SnackbarDismissReason::Timeout);
+        assert_eq!(live_ids(&manager), Vec::<u64>::new());
+        assert_eq!(*reasons.borrow(), [SnackbarDismissReason::Timeout]);
+
+        // A stale finish for the same presentation reports nothing more.
+        manager.finish_dismissal(1, SnackbarDismissReason::Programmatic);
+        assert_eq!(*reasons.borrow(), [SnackbarDismissReason::Timeout]);
+    }
+
+    #[test]
+    fn removal_without_a_callback_is_harmless() {
+        let (manager, _overlay) = SnackbarManager::new();
+        present(&manager, presentation(1, Snackbar::new("plain")));
+        manager.finish_dismissal(1, SnackbarDismissReason::Timeout);
+        assert_eq!(live_ids(&manager), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn the_callback_observes_removal_and_may_reenter_the_manager() {
+        let (manager, _overlay) = SnackbarManager::new();
+        let seen = Rc::new(Cell::new(false));
+        let snackbar = Snackbar::new("going").on_dismiss({
+            let manager = manager.clone();
+            let seen = Rc::clone(&seen);
+            move |_reason: SnackbarDismissReason| {
+                // The presentation is already off the stack, and reentering
+                // the manager does not panic on a held borrow.
+                assert!(manager.state.borrow().active.snapshot().is_empty());
+                manager.dismiss();
+                seen.set(true);
+            }
+        });
+        present(&manager, presentation(1, snackbar));
+
+        manager.finish_dismissal(1, SnackbarDismissReason::Programmatic);
+        assert!(seen.get());
+    }
+
+    #[test]
+    fn each_presentation_of_a_cloned_snackbar_reports_its_own_reason() {
+        let (manager, _overlay) = SnackbarManager::new();
+        let (snackbar, reasons) = recording(Snackbar::new("twice"));
+        present(&manager, presentation(1, snackbar.clone()));
+        present(&manager, presentation(2, snackbar));
+
+        manager.finish_dismissal(1, SnackbarDismissReason::Replaced);
+        manager.finish_dismissal(2, SnackbarDismissReason::Closed);
+        assert_eq!(
+            *reasons.borrow(),
+            [
+                SnackbarDismissReason::Replaced,
+                SnackbarDismissReason::Closed
+            ]
+        );
+    }
+
+    #[test]
+    fn the_first_dismissal_reason_wins() {
+        install_executor();
+        let (manager, _overlay) = SnackbarManager::new();
+        let (snackbar, reasons) = recording(Snackbar::new("raced"));
+        present(&manager, presentation(1, snackbar));
+
+        // A timeout already started the fade; the later programmatic dismiss
+        // must not overwrite the reason the exit timer carries.
+        manager.dismiss_presentation(1, SnackbarDismissReason::Timeout);
+        manager.dismiss_presentation(1, SnackbarDismissReason::Programmatic);
+        manager.finish_dismissal(1, SnackbarDismissReason::Timeout);
+        assert_eq!(*reasons.borrow(), [SnackbarDismissReason::Timeout]);
+    }
+
+    #[test]
+    fn the_handler_extracts_injected_state() {
+        let (manager, _overlay) = SnackbarManager::new();
+        let count = binding::<i32>(0);
+        let snackbar = Snackbar::new("stateful").state(&count).on_dismiss(
+            |reason: SnackbarDismissReason, State(count): State<Binding<i32>>| {
+                assert_eq!(reason, SnackbarDismissReason::Action);
+                count.set(count.snapshot() + 1);
+            },
+        );
+        present(&manager, presentation(1, snackbar));
+
+        manager.finish_dismissal(1, SnackbarDismissReason::Action);
+        assert_eq!(count.snapshot(), 1);
     }
 }

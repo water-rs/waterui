@@ -8,7 +8,7 @@
 //! therefore carries its respelled spans, and no effective-input plumbing
 //! survives.
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
 mod android_fonts;
 pub mod fonts;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
@@ -37,11 +37,11 @@ use super::engine::{
 };
 use super::input::{ResolvedTextLayoutInput, ResolvedTextStyleSpec};
 
-/// The [`TextEngine`] built on the parley stack.
+/// The `TextEngine` built on the parley stack.
 ///
 /// `fonts` is the collection the engine was born with — the session's
-/// installed fonts via [`Self::from_collection`], or the enumerated system
-/// collection via [`Self::system`]. An engine's fonts never change after
+/// installed fonts via `Self::from_collection`, or the enumerated system
+/// collection via `Self::system`. An engine's fonts never change after
 /// construction, so no shape cache keyed on its inputs can go stale.
 pub struct ParleyEngine {
     /// Fonts registered at construction; the clone source for shaping scratch.
@@ -107,7 +107,7 @@ impl ParleyEngine {
         fonts: &FontCollection,
         family_resolution: FontFamilyResolution,
     ) -> Self {
-        Self::new(fonts.use_fonts(|fonts| fonts.clone()), family_resolution)
+        Self::new(fonts.with_parley(|fonts| fonts.clone()), family_resolution)
     }
 
     /// An engine shaping against the enumerated system collection — exactly
@@ -194,16 +194,15 @@ impl TextEngine for ParleyEngine {
         }))
     }
 
-    fn truncate_tail(
+    fn shape_limited(
         &self,
-        layout: Self::Layout,
         input: &ResolvedTextLayoutInput,
         max_width: Option<f32>,
         max_lines: NonZeroUsize,
         mut shape: impl FnMut(&ResolvedTextLayoutInput, Option<f32>) -> Self::Layout,
     ) -> Self::Layout {
         let limit = max_lines.get();
-        let mut layout = layout;
+        let mut layout = shape(input, max_width);
         if !needs_tail_truncation(&layout.0.layout, limit) {
             return layout;
         }
@@ -282,13 +281,17 @@ impl ParleyEngine {
                 // (gvar, CFF/CFF2); built once per run so that choice — and the
                 // scaled, instance-aware metrics it wraps — is shared by every
                 // glyph on the run.
-                let coords: Vec<NormalizedCoord> = run
+                let coords: Vec<i16> = run
                     .normalized_coords()
+                    .iter()
+                    .map(|coord| coord.to_bits())
+                    .collect();
+                let location: Vec<NormalizedCoord> = coords
                     .iter()
                     .map(|coord| NormalizedCoord::from_bits(*coord))
                     .collect();
                 let metrics =
-                    font_ref.glyph_metrics(Size::new(run.font_size()), LocationRef::new(&coords));
+                    font_ref.glyph_metrics(Size::new(run.font_size()), LocationRef::new(&location));
                 let mut ink_bounds = self
                     .ink_bounds
                     .lock()
@@ -305,7 +308,7 @@ impl ParleyEngine {
                         &metrics,
                         font,
                         run.font_size(),
-                        run.normalized_coords(),
+                        &coords,
                         glyph.id,
                     ) {
                         ink_min = ink_min.min(x + x_min);
@@ -710,7 +713,11 @@ fn encode_text_layout(
                 let run = glyph_run.run();
                 let style = glyph_run.style();
                 let brush = rgba8_to_peniko(style.brush);
-                let normalized_coords = run.normalized_coords();
+                let normalized_coords: Vec<i16> = run
+                    .normalized_coords()
+                    .iter()
+                    .map(|coord| coord.to_bits())
+                    .collect();
 
                 // `positioned_glyphs` already folds each cluster advance into
                 // `x` and the run baseline into `y`; only the fragment shift
@@ -728,7 +735,7 @@ fn encode_text_layout(
                 scene.glyphs(&GlyphRun {
                     font: run.font(),
                     font_size: run.font_size(),
-                    normalized_coords,
+                    normalized_coords: &normalized_coords,
                     transform: kurbo::Affine::IDENTITY,
                     brush: &peniko::Brush::Solid(brush),
                     brush_alpha: 1.0,
@@ -1108,3 +1115,20 @@ fn parley_alignment(alignment: HorizontalAlignment, right_to_left: bool) -> parl
 
 #[cfg(test)]
 mod tests;
+
+impl core::fmt::Debug for ParleyEngine {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ParleyEngine")
+            .field("family_resolution", &self.family_resolution)
+            .finish_non_exhaustive()
+    }
+}
+
+impl core::fmt::Debug for ParleyLayout {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ParleyLayout")
+            .field("lines", &self.line_count())
+            .field("height", &self.height())
+            .finish_non_exhaustive()
+    }
+}

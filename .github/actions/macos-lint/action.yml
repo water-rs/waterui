@@ -2,7 +2,7 @@ name: macOS clippy (Apple-target crates)
 
 description: >
   The Apple-target clippy legs, shared so the fast gate's `macos` jobs and
-  the nightly's `cef` job run the identical commands and cannot drift.
+  the nightly's `macos-lint` job run the identical commands and cannot drift.
   The Linux lint compiles `cfg(target_os = "macos")` and
   `cfg(target_os = "ios")` code away, so these legs are the only lint
   coverage of it (#2476): hydrolysis under the feature combination its own
@@ -65,7 +65,10 @@ runs:
     - name: Clippy (hydrolysis, checked feature set)
       if: inputs.target == '' && inputs.hydrolysis == 'true'
       shell: bash
-      run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+      # `webview-system` is the WKWebView bridge, which compiles on the macOS
+      # host alone — no other leg can lint it (water-rs/waterui#1795), and
+      # `--all-targets` with it on also lints the `real_engine_macos` target.
+      run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit,webview-system -- -D warnings
     - name: Clippy (hydrolysis, checked feature set, iOS simulator)
       if: inputs.target != '' && inputs.hydrolysis == 'true'
       shell: bash

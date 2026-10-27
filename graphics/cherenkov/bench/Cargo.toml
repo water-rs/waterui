@@ -12,24 +12,30 @@ workspace = true
 
 [features]
 default = []
-vello-classic = ["dep:vello", "dep:vello_common", "dep:wgpu29", "dep:pollster", "dep:ash"]
-vello-hybrid = ["dep:vello_hybrid", "dep:vello_common", "dep:wgpu29", "dep:pollster", "dep:glifo", "dep:ash"]
+vello-classic = ["dep:vello", "dep:vello_common", "dep:wgpu", "dep:pollster", "dep:ash", "dep:objc2", "dep:objc2-metal"]
+vello-hybrid = ["dep:vello_gpu", "dep:vello_common", "dep:wgpu", "dep:pollster", "dep:glifo", "dep:ash", "dep:objc2", "dep:objc2-metal"]
 vello-cpu = ["dep:vello_cpu", "dep:vello_common", "vello_cpu/multithreading"]
-# `skia-safe` backend features stay in the feature lists, not on the
-# dependency: `skia-bindings` downloads a prebuilt Skia keyed on the whole
-# enabled set, and only the published combos (e.g. `metal,graphite`) have
-# binaries — an ad-hoc `vulkan,ganesh,metal,graphite` set falls back to a
-# full Skia source build. `skia-bindings/no-compile` turns that fallback
-# into a panic so every bench build linking Skia must use the prebuilt
-# binaries.
-skia = ["dep:skia-safe", "dep:ash", "dep:skia-bindings", "skia-safe/vulkan", "skia-safe/ganesh"]
-skia-metal = ["dep:skia-safe", "dep:objc2", "dep:objc2-metal", "dep:skia-bindings", "skia-safe/metal", "skia-safe/graphite"]
+# The `skia`/`skia-metal` features select the adapters; `skia-safe`'s GPU
+# backend features come from same-name declarations under the target tables
+# below, never from `skia-safe/*` entries here: `skia-bindings` downloads a
+# prebuilt Skia keyed on the whole enabled feature set and publishes
+# per-platform combos only — `ganesh,vulkan` for Linux/Android,
+# `graphite,metal` for Apple, and no union of the two anywhere. With the
+# backends target-gated the same way the adapters' code already is,
+# `--all-features` resolves to the published key on every platform instead
+# of asking for `ganesh-graphite-metal-vulkan`, which has no binary
+# (#2691). `skia-bindings/no-compile` turns the source-build fallback into
+# a panic so every bench build linking Skia must use the prebuilt binaries.
+skia = ["dep:skia-safe", "dep:ash", "dep:skia-bindings"]
+skia-metal = ["dep:skia-safe", "dep:objc2", "dep:objc2-metal", "dep:skia-bindings"]
 # The platform-buffer producers `external-cost` uses are target-gated
 # below; their `dep:` entries resolve only on the matching target.
 cherenkov = [
     "dep:cherenkov", "dep:cherenkov-gpu", "cherenkov-gpu/bench", "dep:wgpu", "dep:ash",
     "dep:half", "dep:filtrate", "cherenkov-scene/text",
     "dep:objc2", "dep:objc2-metal", "dep:objc2-core-video",
+    # `external-cost`'s IOSurface plane textures (#168).
+    "objc2-metal/objc2-io-surface",
     "dep:objc2-core-foundation", "dep:ndk-sys",
 ]
 cherenkov-cpu = ["dep:cherenkov", "dep:cherenkov-cpu", "dep:filtrate", "cherenkov-scene/text"]
@@ -46,34 +52,29 @@ nami = { version = "0.13", default-features = false, features = ["std", "kurbo"]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Decodes `powermetrics --format plist` output for `measure --energy`.
-plist = "1.7"
+plist = "1.10"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
-# The fork pinned in the workspace `[patch.crates-io]` declares 0.9.0 — the
-# requirement Hydrolysis itself uses.
-vello = { version = "0.9", optional = true, features = ["wgpu-profiler"] }
-vello_hybrid = { version = "0.2", optional = true }
-vello_cpu = { version = "0.2", optional = true, features = ["f32_pipeline"] }
-vello_common = { version = "0.2", optional = true }
+# The fork pinned in the workspace `[patch.crates-io]` declares 0.11.0.
+vello = { version = "0.11", default-features = false, optional = true, features = ["wgpu", "wgpu-profiler"] }
+vello_gpu = { version = "0.3", default-features = false, optional = true, features = ["wgpu", "text"] }
+vello_cpu = { version = "0.3", default-features = false, optional = true, features = ["std", "text", "u8_pipeline"] }
+vello_common = { version = "0.3", default-features = false, optional = true, features = ["std"] }
 skia-safe = { version = "0.153", optional = true }
 # `no-compile` unifies onto skia-safe's transitive skia-bindings.
 skia-bindings = { version = "0.153", optional = true, default-features = false, features = ["no-compile"] }
 ash = { version = "0.38", optional = true }
 
 wgpu = { version = "30.0.1", optional = true }
-# The `vello-classic`/`vello-hybrid` baselines stay on wgpu 29: the pinned
-# lexoliu/vello forks require `wgpu ^29`. Both majors link into the bench;
-# each engine keeps its own device.
-wgpu29 = { package = "wgpu", version = "29", optional = true }
-pollster = { version = "0.4", optional = true }
+pollster = { version = "1.0", optional = true }
 peniko = "0.6"
-skrifa = "0.44"
-read-fonts = "0.41"
+skrifa = "0.48"
+read-fonts = "0.45"
 bytemuck = "1"
 half = { version = "2", optional = true }
-glifo = { version = "0.3", optional = true }
+glifo = { version = "0.4", optional = true, features = ["png"] }
 # Minimal surface: CPU list + brand string for `cpu_model`.
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 
@@ -86,16 +87,26 @@ libc = "0.2"
 [target.'cfg(target_os = "android")'.dependencies]
 ndk-sys = { version = "0.6", optional = true }
 
+# The Skia GPU backend set for this target, declared on a second `skia-safe`
+# entry under the platform table: Cargo merges same-name declarations, so
+# whichever adapter feature enabled `dep:skia-safe` gets the prebuilt combo
+# that exists here — Ganesh/Vulkan for `skia-vulkan`'s platforms and
+# Graphite/Metal where `skia-metal` compiles. The backends deliberately stay
+# off the feature lists above: the union is what `--all-features` asks for.
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+skia-safe = { version = "0.153", optional = true, features = ["vulkan", "ganesh"] }
+
 # `external-cost`'s `CVPixelBuffer`/`IOSurface` producer (#168) and
 # skia-metal's Metal handle plumbing.
 [target.'cfg(target_vendor = "apple")'.dependencies]
+skia-safe = { version = "0.153", optional = true, features = ["metal", "graphite"] }
 objc2 = { version = "0.6.3", optional = true, default-features = false }
 objc2-metal = { version = "0.3.2", optional = true, default-features = false, features = [
     "MTLDevice", "MTLCommandQueue", "MTLCommandBuffer",
     # `CFTimeInterval` for `MTLCommandBuffer::GPUStartTime`/`GPUEndTime`.
     "objc2-core-foundation",
     # `external-cost`'s IOSurface plane textures (#168).
-    "MTLTexture", "MTLPixelFormat", "MTLResource", "MTLAllocation", "objc2-io-surface",
+    "MTLTexture", "MTLPixelFormat", "MTLResource", "MTLAllocation",
 ] }
 objc2-core-video = { version = "0.3", optional = true, default-features = false, features = [
     "std", "objc2-io-surface", "CVBase", "CVBuffer", "CVImageBuffer",

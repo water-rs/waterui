@@ -30,12 +30,12 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_clas
 use objc2_foundation::{NSArray, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
     UIBarButtonItem, UIBarButtonItemStyle, UIBarPosition, UIBarPositioning,
-    UIBarPositioningDelegate, UIButton, UIControl, UIGestureRecognizer,
-    UIGestureRecognizerDelegate, UINavigationBar, UINavigationBarDelegate, UINavigationController,
-    UINavigationControllerDelegate, UINavigationItem, UINavigationItemLargeTitleDisplayMode,
-    UISearchController, UISearchResultsUpdating, UITransitionContextFromViewControllerKey,
-    UIViewController, UIViewControllerTransitionCoordinator,
-    UIViewControllerTransitionCoordinatorContext,
+    UIBarPositioningDelegate, UIButton, UIContentSizeCategoryAdjusting, UIControl, UIFont,
+    UIFontTextStyleBody, UIGestureRecognizer, UIGestureRecognizerDelegate, UINavigationBar,
+    UINavigationBarDelegate, UINavigationController, UINavigationControllerDelegate,
+    UINavigationItem, UINavigationItemLargeTitleDisplayMode, UISearchController,
+    UISearchResultsUpdating, UITransitionContextFromViewControllerKey, UIViewController,
+    UIViewControllerTransitionCoordinator, UIViewControllerTransitionCoordinatorContext,
 };
 
 /// `viewWillAppear:` listener, called with `UIKit`'s `animated` flag.
@@ -103,6 +103,16 @@ define_class!(
         fn view_did_appear(&self, animated: bool) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), viewDidAppear: animated] };
+            if let Some(search) = self.ivars().search_controller.borrow().as_ref() {
+                // UIKit configures the attached search field during presentation.
+                // Apply its semantic font after that configuration completes.
+                let field = search.searchBar().searchTextField();
+                // SAFETY: this immutable text-style constant is provided by UIKit.
+                field.setFont(Some(&UIFont::preferredFontForTextStyle(unsafe {
+                    UIFontTextStyleBody
+                })));
+                field.setAdjustsFontForContentSizeCategory(true);
+            }
             let handler = self.ivars().appear.borrow().clone();
             if let Some(handler) = handler {
                 handler();

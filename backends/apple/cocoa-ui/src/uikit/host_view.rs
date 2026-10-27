@@ -12,22 +12,28 @@ use std::fmt;
 use std::ptr;
 use std::rc::Rc;
 
+use block2::RcBlock;
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, Bool, Sel};
 use objc2::sel;
 use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_foundation::{NSArray, NSMutableSet, NSObject, NSObjectProtocol};
+use objc2_foundation::{NSArray, NSMutableSet, NSObject, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    UIEdgeInsets, UIEvent, UIGestureRecognizerState, UIHoverGestureRecognizer, UIPress,
+    NSObjectUIAccessibility, NSObjectUIAccessibilityAction,
+    UIAccessibilityConvertFrameToScreenCoordinates, UIAccessibilityCustomAction,
+    UIAccessibilityTraitButton, UIAccessibilityTraitLink, UICommand, UIEdgeInsets, UIEvent,
+    UIGestureRecognizerState, UIHoverGestureRecognizer, UIKeyCommand, UIMenu, UIPress,
     UIPressesEvent, UITraitDisplayScale, UITraitEnvironment, UIView,
 };
 
+use super::key_commands::{KeyCommandRegistry, KeyCommands};
 use super::trait_change::{TraitChangeObservation, register_trait_change};
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Edges, MeasureProposal, Point, Rect, Size};
 use crate::keys::{self, KeyEvent};
 use crate::pointer::{PointerEvent, PointerEvents};
+use crate::visibility::VisibilityEmitter;
 
 /// What a [`HostView`]'s hit-test handler decides for a point.
 #[derive(Debug, Clone)]
@@ -53,10 +59,15 @@ type PrimaryContentHandler = Rc<dyn Fn(&HostView) -> Option<Retained<UIView>>>;
 type ScrollSurfaceHandler = Rc<dyn Fn(&HostView) -> Vec<Retained<UIView>>>;
 type PointerHandler = Rc<dyn Fn(&HostView, PointerEvent) -> bool>;
 type KeyHandler = Rc<dyn Fn(&HostView, &KeyEvent) -> bool>;
+/// The handler `accessibilityActivate` calls; its answer is whether the
+/// activation was handled.
+type AccessibilityActivateHandler = Rc<dyn Fn(&HostView) -> bool>;
 
 /// The handlers a [`HostView`] calls, and the state it keeps for them.
 #[derive(Default)]
 pub struct HostViewIvars {
+    key_commands: RefCell<Option<Rc<KeyCommandRegistry>>>,
+    menu_commands: RefCell<Vec<Retained<UIKeyCommand>>>,
     layout: RefCell<Option<LayoutHandler>>,
     resize: RefCell<Option<ResizeHandler>>,
     hit_test: RefCell<Option<HitTestHandler>>,
@@ -101,10 +112,25 @@ pub struct HostViewIvars {
     /// target stays alive and a replacement can detach it.
     hover_recognizer: RefCell<Option<Retained<UIHoverGestureRecognizer>>>,
     key: RefCell<Option<KeyHandler>>,
+    /// `accessibilityActivate` — installed when the mounted content is
+    /// operable through an assistive client's activate action.
+    accessibility_activate: RefCell<Option<AccessibilityActivateHandler>>,
+    /// The instance-owned visibility event: fires when this view's hidden,
+    /// alpha, frame, bounds, window or superview state changes so
+    /// subscribed descendants re-check presentation visibility.
+    emitter: VisibilityEmitter,
     /// The capturable surface the mounted leaf stored on this view.
     capturable: crate::capture::CapturableSlot,
     /// The display-scale registration serving backing-scale subscribers.
     backing_changed: RefCell<Option<TraitChangeObservation>>,
+    /// Whether `accessibilityFrame` reports the union of the direct
+    /// children's frames — the extent a labelled layout container resolves
+    /// to — instead of the view's own frame (water-rs/waterui#1482).
+    reports_content_extent: Cell<bool>,
+    /// Whether the host merges its descendants' accessibility into itself —
+    /// `SwiftUI` `.accessibilityElement(children: .combine)` semantics for the
+    /// `Button` element a tappable host becomes (water-rs/waterui#2975).
+    combines_accessibility_children: Cell<bool>,
 }
 
 impl fmt::Debug for HostViewIvars {
@@ -138,7 +164,16 @@ impl fmt::Debug for HostViewIvars {
                 &self.hover_recognizer.borrow().is_some(),
             )
             .field("key", &self.key.borrow().is_some())
+            .field(
+                "accessibility_activate",
+                &self.accessibility_activate.borrow().is_some(),
+            )
             .field("backing_changed", &self.backing_changed.borrow().is_some())
+            .field("reports_content_extent", &self.reports_content_extent.get())
+            .field(
+                "combines_accessibility_children",
+                &self.combines_accessibility_children.get(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -220,6 +255,49 @@ define_class!(
     unsafe impl NSObjectProtocol for HostView {}
 
     impl HostView {
+        // SAFETY: armed commands send this selector with themselves as sender.
+        #[unsafe(method(cocoaUiContextMenuCommandFired:))]
+        fn menu_command_fired(&self, command: &UICommand) {
+            guarded("HostView cocoaUiContextMenuCommandFired:", || {
+                let registry = self.ivars().key_commands.borrow().clone()
+                    .expect("a context-menu command fired before its host armed commands");
+                registry.fire(command);
+            });
+        }
+
+        // SAFETY: UIResponder's declared signature, forwarding other selectors to super.
+        #[unsafe(method(canPerformAction:withSender:))]
+        fn can_perform_action_with_sender(&self, action: Sel, sender: Option<&AnyObject>) -> Bool {
+            if action != sel!(cocoaUiContextMenuCommandFired:) {
+                // SAFETY: the inherited responder query has this signature.
+                return unsafe { msg_send![super(self), canPerformAction: action, withSender: sender] };
+            }
+            Bool::from(self.ivars().key_commands.borrow().as_ref().is_some_and(|registry| {
+                sender.and_then(|sender| sender.downcast_ref::<UICommand>()).map_or_else(
+                    || registry.any_armed(),
+                    |command| registry.owns(command),
+                )
+            }))
+        }
+
+        // SAFETY: the responder property returns the menu's retained commands.
+        #[unsafe(method_id(keyCommands))]
+        fn key_commands_override(&self) -> Option<Retained<NSArray<UIKeyCommand>>> {
+            guarded("HostView keyCommands", || {
+                // SAFETY: `UIResponder.keyCommands`' declared signature.
+                let inherited: Option<Retained<NSArray<UIKeyCommand>>> =
+                    unsafe { msg_send![super(self), keyCommands] };
+                match self.ivars().key_commands.borrow().as_ref() {
+                    Some(registry) => registry.commands(
+                        &self.ivars().menu_commands.borrow(),
+                        inherited,
+                        sel!(cocoaUiContextMenuCommandFired:),
+                    ),
+                    None => inherited,
+                }
+            })
+        }
+
         // SAFETY: see the module safety note.
         #[unsafe(method(layoutSubviews))]
         fn layout_subviews_override(&self) {
@@ -261,6 +339,7 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self);
                 }
+                self.ivars().emitter.emit();
             });
         }
 
@@ -274,6 +353,27 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self);
                 }
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setHidden:))]
+        fn set_hidden_override(&self, hidden: bool) {
+            guarded("HostView setHidden:", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), setHidden: hidden] };
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setAlpha:))]
+        fn set_alpha_override(&self, alpha: f64) {
+            guarded("HostView setAlpha:", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), setAlpha: alpha] };
+                self.ivars().emitter.emit();
             });
         }
 
@@ -377,6 +477,7 @@ define_class!(
                 {
                     crate::uikit::keyboard::mark_region_readers(self);
                 }
+                self.ivars().emitter.emit();
             });
         }
 
@@ -387,7 +488,73 @@ define_class!(
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), setBounds: bounds] };
                 self.report_size();
+                self.ivars().emitter.emit();
             });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> CGRect {
+            guarded("HostView accessibilityFrame", || {
+                if !self.ivars().reports_content_extent.get() {
+                    // SAFETY: see the module safety note.
+                    return unsafe { msg_send![super(self), accessibilityFrame] };
+                }
+                UIAccessibilityConvertFrameToScreenCoordinates(
+                    self.content_extent(),
+                    self,
+                )
+            })
+        }
+
+        // SAFETY: see the module safety note. `NSObject`'s
+        // `UIAccessibility` implementation answers `NO`, so a host with no
+        // handler claims no activation.
+        #[unsafe(method(accessibilityActivate))]
+        fn accessibility_activate_override(&self) -> bool {
+            guarded("HostView accessibilityActivate", || {
+                let handler = self.ivars().accessibility_activate.borrow().clone();
+                if let Some(handler) = handler {
+                    return handler(self);
+                }
+                // SAFETY: see the module safety note.
+                unsafe { msg_send![super(self), accessibilityActivate] }
+            })
+        }
+
+        // SAFETY: see the module safety note. A label written onto the
+        // host — `accessibility_metadata`'s `a11y_label` stores it here —
+        // wins; a combining host otherwise announces its descendants'
+        // labels merged.
+        #[unsafe(method_id(accessibilityLabel))]
+        fn accessibility_label_override(&self) -> Option<Retained<NSString>> {
+            guarded("HostView accessibilityLabel", || {
+                // SAFETY: see the module safety note.
+                let inherited: Option<Retained<NSString>> =
+                    unsafe { msg_send![super(self), accessibilityLabel] };
+                if !self.ivars().combines_accessibility_children.get()
+                    || inherited.as_ref().is_some_and(|label| !label.is_empty())
+                {
+                    return inherited;
+                }
+                self.combined_accessibility_label()
+            })
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(accessibilityCustomActions))]
+        fn accessibility_custom_actions_override(
+            &self,
+        ) -> Option<Retained<NSArray<UIAccessibilityCustomAction>>> {
+            guarded("HostView accessibilityCustomActions", || {
+                // SAFETY: see the module safety note.
+                let inherited: Option<Retained<NSArray<UIAccessibilityCustomAction>>> =
+                    unsafe { msg_send![super(self), accessibilityCustomActions] };
+                if !self.ivars().combines_accessibility_children.get() {
+                    return inherited;
+                }
+                Some(self.merged_accessibility_custom_actions(inherited.as_deref()))
+            })
         }
 
         // SAFETY: see the module safety note.
@@ -447,6 +614,36 @@ define_class!(
 );
 
 impl HostView {
+    /// A scope routing context-menu commands through this host's own registry.
+    #[must_use]
+    pub fn menu_commands(&self) -> KeyCommands {
+        let registry = self
+            .ivars()
+            .key_commands
+            .borrow_mut()
+            .get_or_insert_with(|| Rc::new(KeyCommandRegistry::default()))
+            .clone();
+        KeyCommands::in_registry_with_action(registry, sel!(cocoaUiContextMenuCommandFired:))
+    }
+
+    /// Replaces the menu commands this host vends to its responder chain.
+    pub fn set_menu_commands(&self, menu: Option<&UIMenu>) {
+        self.ivars()
+            .menu_commands
+            .replace(menu.map_or_else(Vec::new, super::menu::key_commands));
+    }
+
+    /// How many commands this host's menu has armed.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn armed_command_count(&self) -> usize {
+        self.ivars()
+            .key_commands
+            .borrow()
+            .as_ref()
+            .map_or(0, |registry| registry.armed())
+    }
+
     /// A host view occupying `frame` in its future superview's coordinates.
     #[must_use]
     pub fn new(mtm: MainThreadMarker, frame: Rect) -> Retained<Self> {
@@ -602,6 +799,28 @@ impl HostView {
         self.ivars().superview.replace(Some(Rc::new(handler)));
     }
 
+    /// Calls `handler` on `accessibilityActivate` — an assistive client's
+    /// activation of this element, `VoiceOver`'s double-tap — and reports its
+    /// answer as whether the activation was handled, replacing any handler
+    /// set before.
+    ///
+    /// `UIKit` lists no activate action the way `AppKit` lists `AXPress` for
+    /// an `accessibilityPerformPress` override — the activation gesture is
+    /// always offered, so a host that is an element for another reason, such
+    /// as a label set through accessibility metadata, keeps `NSObject`'s `NO`
+    /// answer and advertises no activation it cannot perform.
+    pub fn set_accessibility_activate_handler(&self, handler: impl Fn(&Self) -> bool + 'static) {
+        self.ivars()
+            .accessibility_activate
+            .replace(Some(Rc::new(handler)));
+    }
+
+    /// The visibility event this view fires — see
+    /// [`VisibilityEmitter`](crate::visibility::VisibilityEmitter).
+    pub fn visibility_emitter(&self) -> &VisibilityEmitter {
+        &self.ivars().emitter
+    }
+
     /// Lets `handler` answer the view's intrinsic measurements,
     /// `sizeThatFits` and `intrinsicContentSize`, for a layout container.
     pub fn set_measure_handler(&self, handler: impl Fn(&Self, MeasureProposal) -> Size + 'static) {
@@ -621,9 +840,9 @@ impl HostView {
     /// `UIKit` delivers to this view does nothing by construction rather
     /// than reaching state the owner released, and the handlers no longer
     /// keep that state alive: layout, resize, hit-test, backing-changed,
-    /// window, superview, measure, primary content, scroll surface, pointer
-    /// and key. The hover recognizer is removed as well, since it exists
-    /// only to serve the pointer handler.
+    /// window, superview, measure, primary content, scroll surface, pointer,
+    /// key and accessibility-activate. The hover recognizer is removed as
+    /// well, since it exists only to serve the pointer handler.
     pub fn clear_handlers(&self) {
         let ivars = self.ivars();
         ivars.layout.replace(None);
@@ -641,6 +860,8 @@ impl HostView {
             self.removeGestureRecognizer(&recognizer);
         }
         ivars.key.replace(None);
+        ivars.accessibility_activate.replace(None);
+        ivars.menu_commands.borrow_mut().clear();
         ivars.backing_changed.replace(None);
     }
 
@@ -745,6 +966,136 @@ impl HostView {
     }
 
     /// Moves and resizes the view to `frame`, in its superview's coordinates.
+    /// Whether `accessibilityFrame` reports the union of the direct
+    /// children's frames — the extent this container resolved its content
+    /// to — instead of the view's own frame. A labelled layout container
+    /// (`Frame`, `vstack`, …) is assigned the whole region but places its
+    /// content in the resolved box, so a label on it announces the
+    /// children's extent, not the assignment (water-rs/waterui#1482).
+    /// Computed live on every read; nothing is stored.
+    pub fn set_reports_content_extent(&self, reports: bool) {
+        self.ivars().reports_content_extent.set(reports);
+    }
+
+    /// Whether the host merges its descendants' accessibility into itself —
+    /// `SwiftUI` `.accessibilityElement(children: .combine)` semantics for
+    /// the `Button`-trait element a tappable host becomes
+    /// (water-rs/waterui#2975).
+    ///
+    /// `VoiceOver` treats a `Button` element as a leaf, so while set an
+    /// empty `accessibilityLabel` reads the descendants' labels joined
+    /// and `accessibilityCustomActions` re-publishes the descendants'
+    /// activatable elements, keeping nested controls reachable through
+    /// the `VoiceOver` actions rotor.
+    ///
+    /// Adjustable and text-input descendants cannot be merged — `UIKit`
+    /// exposes no action that stands in for their interactions, so they
+    /// keep needing elements of their own.
+    pub fn set_combines_accessibility_children(&self, combines: bool) {
+        self.ivars().combines_accessibility_children.set(combines);
+    }
+
+    /// The union of the direct, non-hidden subviews' frames — in this
+    /// view's coordinate space — or the view's own bounds when it has
+    /// none.
+    fn content_extent(&self) -> CGRect {
+        let mut extent: Option<CGRect> = None;
+        for subview in &self.subviews() {
+            if subview.isHidden() {
+                continue;
+            }
+            let frame = subview.frame();
+            extent = Some(extent.map_or(frame, |u| union(u, frame)));
+        }
+        extent.unwrap_or_else(|| self.bounds())
+    }
+
+    /// The accessibility elements `view` flattens to for a combining
+    /// host, in `VoiceOver` order: subviews are walked in order, an
+    /// `accessibilityElementsHidden` subtree is skipped, an accessibility
+    /// element is a leaf, and any other view is descended into.
+    fn accessible_descendants(&self) -> Vec<Retained<UIView>> {
+        fn collect(view: &UIView, mtm: MainThreadMarker, out: &mut Vec<Retained<UIView>>) {
+            for subview in &view.subviews() {
+                if subview.accessibilityElementsHidden(mtm) {
+                    continue;
+                }
+                if subview.isAccessibilityElement(mtm) {
+                    out.push(subview);
+                } else {
+                    collect(&subview, mtm, out);
+                }
+            }
+        }
+        let mut elements = Vec::new();
+        collect(self, self.mtm(), &mut elements);
+        elements
+    }
+
+    /// The descendants' labels joined — what a combining host announces
+    /// when it carries no label of its own.
+    fn combined_accessibility_label(&self) -> Option<Retained<NSString>> {
+        let mtm = self.mtm();
+        let labels: Vec<String> = self
+            .accessible_descendants()
+            .iter()
+            .filter_map(|element| element.accessibilityLabel(mtm))
+            .filter(|label| !label.is_empty())
+            .map(|label| label.to_string())
+            .collect();
+        (!labels.is_empty()).then(|| NSString::from_str(&labels.join(", ")))
+    }
+
+    /// The custom actions a combining host publishes: each descendant
+    /// element carrying the `Button` or `Link` trait becomes a
+    /// `UIAccessibilityCustomAction` named by its label that fires that
+    /// element's `accessibilityActivate` — nested controls stay reachable
+    /// through the `VoiceOver` actions rotor while the host reads as a
+    /// leaf. A descendant's own custom actions pass through after it; the
+    /// host's inherited ones come last.
+    fn merged_accessibility_custom_actions(
+        &self,
+        inherited: Option<&NSArray<UIAccessibilityCustomAction>>,
+    ) -> Retained<NSArray<UIAccessibilityCustomAction>> {
+        let mtm = self.mtm();
+        // SAFETY: the trait constants are immutable `u64`s published by
+        // `UIKit`.
+        let activatable = unsafe { UIAccessibilityTraitButton | UIAccessibilityTraitLink };
+        let mut actions: Vec<Retained<UIAccessibilityCustomAction>> = Vec::new();
+        for element in self.accessible_descendants() {
+            if element.accessibilityTraits(mtm) & activatable != 0
+                && let Some(name) = element
+                    .accessibilityLabel(mtm)
+                    .filter(|label| !label.is_empty())
+            {
+                let element = element.clone();
+                let block = RcBlock::new(
+                    move |_action: ptr::NonNull<UIAccessibilityCustomAction>| -> Bool {
+                        Bool::new(element.accessibilityActivate(mtm))
+                    },
+                );
+                // SAFETY: the action copies the handler block, whose copy
+                // owns the element for the action's life; `name` and the
+                // block pointer are valid arguments.
+                actions.push(unsafe {
+                    UIAccessibilityCustomAction::initWithName_actionHandler(
+                        UIAccessibilityCustomAction::alloc(mtm),
+                        &name,
+                        RcBlock::as_ptr(&block),
+                    )
+                });
+            }
+            if let Some(own) = element.accessibilityCustomActions(mtm) {
+                actions.extend(own.to_vec());
+            }
+        }
+        if let Some(inherited) = inherited {
+            actions.extend(inherited.to_vec());
+        }
+        NSArray::from_retained_slice(&actions)
+    }
+
+    /// Moves the view to `frame`, in its superview's coordinates.
     pub fn set_frame(&self, frame: Rect) {
         self.setFrame(frame.into());
     }
@@ -860,4 +1211,11 @@ pub fn window_root(mtm: MainThreadMarker) -> Retained<HostView> {
             ..HostViewIvars::default()
         },
     )
+}
+
+/// The smallest rect containing `a` and `b`.
+fn union(a: CGRect, b: CGRect) -> CGRect {
+    let min = CGPoint::new(a.min().x.min(b.min().x), a.min().y.min(b.min().y));
+    let max = CGPoint::new(a.max().x.max(b.max().x), a.max().y.max(b.max().y));
+    CGRect::new(min, CGSize::new(max.x - min.x, max.y - min.y))
 }

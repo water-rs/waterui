@@ -81,7 +81,7 @@ default = [
 ]
 anchored_overlay = []
 accessibility_identifier = []
-applied_filter = ["gpu_surface"]
+applied_filter = ["gpu_surface", "dep:objc2-core-image"]
 accessibility_metadata = []
 badge = []
 border = []
@@ -159,6 +159,11 @@ env = []
 # on macOS (`AppKit`) and Mac Catalyst (`UIKit`).
 preview = ["dep:waterui-preview-protocol"]
 
+# The `SwiftUI` embedding bridge: compiles `Sources/WaterUI/Embedding.swift`
+# header-free into `WaterUIBridge` and carries its `.swiftmodule` path in a
+# `__wmeta` record for the packager.
+swiftui = ["dep:waterkit-build", "dep:waterui-meta"]
+
 # Harness-only reach for `Tests/native.rs`: compiles the doc(hidden)
 # `native_test_support` module (private windows + embedding internals),
 # never part of a production build. Forwards cocoa-ui's gate so one
@@ -183,6 +188,7 @@ waterui-backend-core = { workspace = true, default-features = true, features = [
 ] }
 waterui-locale = { workspace = true }
 waterui-map = { workspace = true, optional = true }
+waterui-meta = { workspace = true, optional = true }
 # The GPU components the backend owns (`gpu_surface`, `view_effect`,
 # `picture`, `resolved_gradient`) are Rust semantic types here, not FFI
 # pointers: `cpu` is what `picture`'s rasteriser needs beyond `gpu`.
@@ -257,14 +263,29 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
 
 [build-dependencies]
 cfg_aliases = "0.2.2"
+waterkit-build = { workspace = true, default-features = false, optional = true }
 
-# cargo-machete: `cfg_aliases` is named only in `build.rs`, which the
-# analysis does not read; the `objc2-app-kit` dev-dependency only enables
-# features on cocoa-ui's edge and is reached as `cocoa_ui::objc2_app_kit`.
+# Core Image bindings for the AppKit-native filter realization (#1748) —
+# macOS-only, gated by `applied_filter` so no-filter artifacts link none
+# of it.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-image = { version = "0.3", default-features = false, features = [
+    "CIContext",
+    "CIFilter",
+    "CIImage",
+    "CIVector",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+    "objc2-metal",
+], optional = true }
+
+# cargo-machete: `cfg_aliases` and `waterkit-build` are named only in
+# `build.rs`, which the analysis does not read.
 [package.metadata.cargo-machete]
-ignored = ["cfg_aliases", "objc2-app-kit"]
+ignored = ["cfg_aliases", "waterkit-build"]
 
 [dev-dependencies]
+block2 = { workspace = true }
 criterion = "0.8.2"
 pollster = { workspace = true }
 libtest-mimic = "0.8"

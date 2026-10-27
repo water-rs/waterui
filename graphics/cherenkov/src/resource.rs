@@ -70,11 +70,11 @@ impl FontSource {
 /// message the engine sends.
 pub type ReplaceImage = Rc<dyn Fn(ImageId, ImageUpload) -> Result<(), ResourceError>>;
 
-/// One engine's image budget: the texels its live registered images hold
+/// One engine's image budget: the bytes its live registered images hold
 /// together, admitted against [`ImageLimits`] on the calling thread. It is
 /// the only place the budget is decided, so a set of images that together
 /// overrun it fails at the registration or replacement that would overrun
-/// it, never on the render thread. An image holds its texels from its
+/// it, never on the render thread. An image holds its bytes from its
 /// registration until its last handle drops.
 #[derive(Debug)]
 pub struct ImageBudget {
@@ -94,22 +94,27 @@ impl ImageBudget {
         self.limits
     }
 
-    /// The texels of a `width` × `height` image in place of the `held`
-    /// texels the same image holds now (`0` for a registration). Admits
+    /// The bytes of a `width` × `height` image in place of the `held`
+    /// bytes the same image holds now (`0` for a registration). Admits
     /// without taking: [`settle`](Self::settle) takes them once the
     /// operation is queued.
     ///
     /// # Errors
     /// [`ResourceError::TooLarge`] or [`ResourceError::OverBudget`], from
     /// [`ImageLimits::check_beside`].
-    pub(crate) fn admit(&self, width: u32, height: u32, held: u64) -> Result<u64, ResourceError> {
+    pub(crate) fn admit<F: Format>(
+        &self,
+        width: u32,
+        height: u32,
+        held: u64,
+    ) -> Result<u64, ResourceError> {
         self.limits
-            .check_beside(width, height, self.resident.get() - held)
+            .check_beside::<F>(width, height, self.resident.get() - held)
     }
 
-    /// Moves an image from holding `held` texels to holding `texels`.
-    pub(crate) fn settle(&self, held: u64, texels: u64) {
-        self.resident.set(self.resident.get() - held + texels);
+    /// Moves an image from holding `held` bytes to holding `bytes`.
+    pub(crate) fn settle(&self, held: u64, bytes: u64) {
+        self.resident.set(self.resident.get() - held + bytes);
     }
 }
 
@@ -118,12 +123,12 @@ impl ImageBudget {
 struct ImageOps {
     replace: ReplaceImage,
     budget: Rc<ImageBudget>,
-    texels: Cell<u64>,
+    bytes: Cell<u64>,
 }
 
 impl Drop for ImageOps {
     fn drop(&mut self) {
-        self.budget.settle(self.texels.get(), 0);
+        self.budget.settle(self.bytes.get(), 0);
     }
 }
 
@@ -218,18 +223,18 @@ impl<F: Format> Clone for Image<F> {
 
 impl<F: Format> Image<F> {
     /// The handle of a registration already queued and settled in
-    /// `budget` at `texels`.
+    /// `budget` at `bytes`.
     pub(crate) fn new(
         id: ImageId,
         replace: ReplaceImage,
         budget: Rc<ImageBudget>,
-        texels: u64,
+        bytes: u64,
         on_drop: impl FnOnce() + 'static,
     ) -> Self {
         let ops = ImageOps {
             replace,
             budget,
-            texels: Cell::new(texels),
+            bytes: Cell::new(bytes),
         };
         Self {
             inner: handle_with(id, ops, on_drop),
@@ -276,11 +281,11 @@ impl<F: Format> Image<F> {
     /// [`RenderError::Rejected`]: crate::RenderError::Rejected
     pub fn replace(&self, image: ImageData<F>) -> Result<(), ResourceError> {
         let ops = &self.inner.ops;
-        let held = ops.texels.get();
-        let texels = ops.budget.admit(image.width(), image.height(), held)?;
+        let held = ops.bytes.get();
+        let bytes = ops.budget.admit::<F>(image.width(), image.height(), held)?;
         (ops.replace)(self.inner.id, image.into_upload())?;
-        ops.budget.settle(held, texels);
-        ops.texels.set(texels);
+        ops.budget.settle(held, bytes);
+        ops.bytes.set(bytes);
         Ok(())
     }
 }

@@ -14,6 +14,7 @@ use cherenkov::{
     Engine, EngineError, Image, ImageColorSpace, ImageData, Offscreen, OffscreenFormat, Rgba8,
 };
 use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::metrics::assert_close;
 
 split_fn! {
 /// An engine, or `None` when no adapter exists.
@@ -102,6 +103,30 @@ fn two_by_two(engine: &Engine<Gpu>) -> Image<Rgba8> {
             .color_space(ImageColorSpace::Srgb),
         )
         .unwrap()
+}
+
+split_test! {
+/// Source-encoded images must select their full fragment entry in a tile epoch.
+fn an_image_in_an_isolated_layer_selects_its_native_entry() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let image = two_by_two(&engine);
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.group(cherenkov::Group::new().opacity(0.5), |c| {
+                c.fill(Rect::new(0., 0., 64., 64.), cherenkov::WorkingColor::WHITE);
+                c.image(image.id(), Rect::new(8., 8., 56., 56.), Sampling::Nearest);
+            });
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    if cfg!(any(target_vendor = "apple", target_os = "android")) {
+        assert!(wait!(engine.memory()).tile_reserved.0 > 0, "image uses a native tile epoch");
+    }
+    Ok(())
+}
 }
 
 split_test! {
@@ -219,11 +244,8 @@ fn an_image_pattern_with_extend_none_is_transparent() -> Result<(), Box<dyn std:
     let rb = wait!(surface.readback())?;
     let px = |x: u32, y: u32| rb.pixels[(y * rb.width + x) as usize];
     close_px(px(0, 0), premul_p3([255, 0, 0, 255]));
-    assert_eq!(
-        px(8, 8).map(f32::to_bits),
-        [0.0_f32; 4].map(f32::to_bits),
-        "outside the image must be clear"
-    );
+    // Outside the image the surface stays clear.
+    assert_close(&px(8, 8), &[0.0_f32; 4]);
     Ok(())
 }
 }
@@ -387,7 +409,7 @@ fn an_image_beyond_the_texture_limit_fails_registration()
 
 split_test! {
 /// An image inside the dimension limit but over the whole image budget —
-/// the GPU budget at eight bytes a texel — is rejected at registration
+/// the GPU byte budget — is rejected at registration
 /// too.
 fn an_image_beyond_the_per_image_budget_fails_registration()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -404,18 +426,17 @@ fn an_image_beyond_the_per_image_budget_fails_registration()
         Err(e) => panic!("engine init failed: {e}"),
     };
     let limits = engine.image_limits();
-    assert_eq!(limits.max_texels, budget.0 / 8);
-    // 512×512 = 262144 texels > 131072, each side well under the
-    // dimension limit: only the texel budget binds.
+    assert_eq!(limits.max_bytes, budget.0);
+    // RGBA8 at 512×512 fills one MiB exactly; one more column exceeds it.
     assert!(limits.max_dimension >= 512);
-    match engine.image(ImageData::<Rgba8>::new(512, 512, vec![255; 512 * 512 * 4])?) {
+    match engine.image(ImageData::<Rgba8>::new(513, 512, vec![255; 513 * 512 * 4])?) {
         Err(cherenkov::ResourceError::TooLarge { limits: rejected, .. }) => {
             assert_eq!(rejected, limits);
         }
         other => panic!("an over-budget image registered: {other:?}"),
     }
     // An admitted image of the same format registers.
-    engine.image(ImageData::<Rgba8>::new(256, 256, vec![255; 256 * 256 * 4])?)?;
+    engine.image(ImageData::<Rgba8>::new(512, 512, vec![255; 512 * 512 * 4])?)?;
     Ok(())
 }
 }
@@ -443,7 +464,7 @@ fn registered_images_count_against_the_gpu_budget() -> Result<(), Box<dyn std::e
     // Two images that each take three quarters of the image budget:
     // either fits alone, both together do not.
     let limits = engine.image_limits();
-    let side = u32::try_from((limits.max_texels * 3 / 4).isqrt())?;
+    let side = u32::try_from((limits.max_bytes * 3 / 16).isqrt())?;
     let pixels = || {
         ImageData::<Rgba8>::new(side, side, vec![255; side as usize * side as usize * 4])
     };
@@ -467,14 +488,14 @@ fn registered_images_count_against_the_gpu_budget() -> Result<(), Box<dyn std::e
             limits: rejected,
         }) => {
             assert_eq!((width, height, rejected), (side, side, limits));
-            assert_eq!(available, limits.max_texels - u64::from(side) * u64::from(side));
+            assert_eq!(available, limits.max_bytes - u64::from(side) * u64::from(side) * 4);
         }
         other => panic!("an image past the GPU budget registered: {other:?}"),
     }
     // The rejection queued nothing: the frame renders.
     wait!(engine.render(cherenkov::FrameTime::now()))?;
 
-    // The first image's last handle returns its texels; the content that
+    // The first image's last handle returns its bytes; the content that
     // replaces it draws the second image.
     drop(first);
     let second = engine.image(pixels()?)?;
@@ -694,6 +715,10 @@ where
             engine.surface(Offscreen::new((33, 33), OffscreenFormat::LinearF16), || {})?;
         let baseline = engine.memory().gpu.0;
         let image = engine.image(ImageData::<F>::new(3, 2, block)?)?;
+        assert_eq!(
+            engine.image_limits().check_beside::<F>(3, 2, 0)?,
+            if native { 16 } else { 24 }
+        );
         assert_eq!(
             engine.memory().gpu.0 - baseline,
             if native { 16 } else { 24 }

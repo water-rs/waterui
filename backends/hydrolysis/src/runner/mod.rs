@@ -167,7 +167,7 @@ use crate::renderer::{
     SemanticCore,
 };
 use crate::renderer::{HydrolysisTextContextMenuMode, MenuShortcutRegistry, PopupWindowManager};
-use crate::text::SessionTextEngine;
+use crate::text::ParleyEngine;
 use crate::time::Instant;
 
 /// Subscribes every reactive input of a window declaration once, for the
@@ -192,7 +192,10 @@ use crate::time::Instant;
 /// The runtime's own writes land on the same flag — a resize writes
 /// `frame`, so that write is one bounded extra frame, not a loop: the
 /// frame the flag arms performs no further write to the declaration.
-fn subscribe_window_declaration_signals(window: &Window, core: &SemanticCore) -> Vec<Retain> {
+fn subscribe_window_declaration_signals<E: crate::text::TextEngine>(
+    window: &Window,
+    core: &SemanticCore<E>,
+) -> Vec<Retain> {
     let mut watches = vec![
         core.refresh_watch(&window.title),
         core.refresh_watch(&window.frame),
@@ -284,7 +287,7 @@ fn install_native_component_hooks(env: &mut Environment) {
     }));
 }
 
-fn install_headless_window_managers(
+fn install_headless_window_managers<E: crate::text::TextEngine>(
     env: &mut Environment,
     pending_windows: Rc<RefCell<Vec<Window>>>,
 ) {
@@ -297,7 +300,7 @@ fn install_headless_window_managers(
     env.insert(PopupWindowManager::new(move |window| {
         pending_windows.borrow_mut().push(window);
     }));
-    let _ = env.get_or_insert_with::<MenuShortcutRegistry, _>(MenuShortcutRegistry::default);
+    let _ = env.get_or_insert_with::<MenuShortcutRegistry<E>, _>(MenuShortcutRegistry::default);
 }
 
 // The headless offscreen `run` never exists on Android: `hydrolysis::run`
@@ -313,10 +316,16 @@ fn install_headless_window_managers(
 /// Runs `app` once offscreen and returns — the headless one-shot `run` that
 /// exists only where no platform runner can claim the entry point.
 ///
+/// `app` is a factory, not a built value: the subscriber and executors are
+/// installed before it runs, so events the application emits while building
+/// its `App` reach the log (water-rs/waterui#2513).
+///
 /// # Panics
 /// Panics when the seeded environment lost its `MenuShortcutRegistry`.
-pub fn run(app: App, style: impl crate::Style) {
+pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl crate::Style) {
+    init_tracing();
     let inspector = init_main_thread_executors();
+    let app = app(env);
     let inspector_probe = inspector
         .as_ref()
         .map(waterui::inspector::InspectorRuntime::runtime_probe);
@@ -358,24 +367,35 @@ pub fn run(app: App, style: impl crate::Style) {
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     install_native_component_hooks(&mut env);
-    install_headless_window_managers(&mut env, Rc::clone(&pending_window_queue));
+    install_headless_window_managers::<crate::text::ParleyEngine>(
+        &mut env,
+        Rc::clone(&pending_window_queue),
+    );
     // App-level menu bar: arms its chords on the shared registry. The
     // headless host renders no chrome, so there is no surface to draw.
-    menu_bar::register_menu_bar(&menu_bar, &env);
+    menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     crate::theme::install_theme_tokens(&mut env, Some(&style));
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
-    env.insert(waterui_core::ViewRenderer::new(
-        crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
-    ));
     // The application's fonts, discovered once. Every window's renderer is
     // seeded from this collection, and a self-drawn component that typesets
     // text itself reads it out of the environment instead of enumerating the
     // system's fonts for itself.
     let fonts = crate::text::fonts::native_collection(&env);
     fonts.clone().install(&mut env);
+    // The capture service mounts its subtree under a snapshot of the
+    // assembled environment — the theme tokens, hooks and font collection a
+    // window's subtree resolves — so it must be installed last
+    // (water-rs/waterui#2703).
+    env.insert(waterui_core::ViewRenderer::new(
+        crate::view_renderer::HydrolysisViewRenderer::new(
+            Rc::clone(&theme),
+            env.clone(),
+            FontFamilyResolution::Lenient,
+        ),
+    ));
     let shortcuts = env
-        .get::<MenuShortcutRegistry>()
+        .get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
         .expect("install_headless_window_managers seeds MenuShortcutRegistry")
         .clone();
     let mut pending_windows = VecDeque::from(windows);
@@ -388,11 +408,12 @@ pub fn run(app: App, style: impl crate::Style) {
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
             Rc::clone(&theme),
-            SessionTextEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
+            ParleyEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
         );
         renderer.set_window_id(shortcuts.mint_window_id());
         renderer.set_window_closable(window.closable);
-        let mut runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
+        let mut runtime =
+            RuntimeWindow::new_gpu(window, platform, renderer, render_diagnostics_config);
         render_window(&mut runtime, &env, &mut || local_executor.drain());
         pending_windows.extend(pending_window_queue.borrow_mut().drain(..));
     }
@@ -404,9 +425,13 @@ pub fn run(app: App, style: impl crate::Style) {
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 /// Runs `app` on the web runner for this wasm build.
 ///
+/// `app` is a factory, not a built value: the panic hook and executor are
+/// installed before it runs, matching every other `run` (see
+/// water-rs/waterui#2513).
+///
 /// # Panics
 /// Propagates panics from `web_runner::run`.
-pub fn run(app: App, style: impl crate::Style) {
+pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl crate::Style) {
     // The page has no stderr, so the default hook's report goes nowhere;
     // this one sends the message and location to `console.error`, and shows
     // it on the page: a panic traps the wasm instance, so the app is gone and
@@ -416,6 +441,7 @@ pub fn run(app: App, style: impl crate::Style) {
         crate::platform::report_fatal_error(&info.to_string());
     }));
     init_global_executor();
+    let app = app(env);
     web_runner::run(app, style);
 }
 
@@ -425,20 +451,36 @@ pub fn run(app: App, style: impl crate::Style) {
 // silently dispatch to a windowing model the host does not have.
 /// Runs `app` on the winit runner.
 ///
+/// `app` is a factory, not a built value: the tracing subscriber is
+/// installed before it runs, so events the application emits while building
+/// its `App` reach the log (water-rs/waterui#2513).
+///
 /// # Panics
 /// Propagates panics from `winit_runner::run` and tracing initialization.
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_winit))]
-pub fn run(app: App, style: impl crate::Style) {
-    initialize_tracing_from_env();
-    winit_runner::run(app, style, init_main_thread_executors());
+pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl crate::Style) {
+    init_tracing();
+    let executors = init_main_thread_executors();
+    let app = app(env);
+    winit_runner::run(app, style, executors);
 }
 
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_winit))]
-fn initialize_tracing_from_env() {
+/// Installs the process-wide tracing subscriber when `RUST_LOG` is set:
+/// its directives, to stderr.
+///
+/// Entry points that run application code outside [`run`] — preview,
+/// preview-test and MCP runtimes mount the app through `waterui-testing`
+/// hosts — call it before that code executes. Idempotent: the first install
+/// wins, so a caller that already set a subscriber (or a `run` that follows
+/// an earlier `init_tracing`) is not disturbed. Android installs its logcat
+/// writer at `nativeInit` instead, so this function does not exist there.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub fn init_tracing() {
     if std::env::var_os("RUST_LOG").is_none() {
         return;
     }
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
         .try_init();
 }

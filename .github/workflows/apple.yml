@@ -310,11 +310,11 @@ jobs:
       # linted. Production paths are unchanged — the feature only makes
       # the suite's support module exist.
       - name: Clippy (macOS)
-        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test,swiftui --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       - name: Clippy (iOS)
-        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test --target aarch64-apple-ios --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test,swiftui --target aarch64-apple-ios --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       - name: Clippy (iOS simulator)
-        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test --target aarch64-apple-ios-sim --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test,swiftui --target aarch64-apple-ios-sim --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # `cocoa-ui` compiles inside the backend's graph, but a dependency is
       # never linted — its own `-D warnings` legs kept their standalone
       # coverage shape: `--all-targets` on the same three ARM64 targets.
@@ -336,7 +336,7 @@ jobs:
       # The `.cargo/config.toml` `[env]` table supplies the 26.0 deployment
       # floor cherenkov-gpu's build script asserts.
       - name: Clippy (Mac Catalyst)
-        run: cargo clippy -p waterui-apple -p cocoa-ui --all-targets --locked --target aarch64-apple-ios-macabi --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+        run: cargo clippy -p waterui-apple -p cocoa-ui --all-targets --locked --features swiftui --target aarch64-apple-ios-macabi --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # The component shapes the Swift `WATERUI_MAP`/`WATERUI_NO_GPU` legs
       # used to cover are Cargo features now (waterui#343 reasoned the same
       # way), so they lint under -D warnings like the production legs —
@@ -379,6 +379,20 @@ jobs:
         run: cargo clippy -p cherenkov-gpu --all-targets --locked --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       - name: Clippy (cherenkov-gpu, iOS simulator)
         run: cargo clippy -p cherenkov-gpu --all-targets --locked --target aarch64-apple-ios-sim --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      # Default-feature passes skip this binary, including its Image I/O tests.
+      - name: Clippy (screenshot comparer)
+        timeout-minutes: 2
+        run: cargo clippy -p cherenkov-oracle --bin compare-screenshots --features apple-screenshots --locked --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      - name: Compile screenshot comparer tests
+        timeout-minutes: 2
+        run: cargo test -p cherenkov-oracle --bin compare-screenshots --features apple-screenshots --locked --no-run --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
+      - name: Test screenshot comparer
+        timeout-minutes: 1
+        run: cargo test -p cherenkov-oracle --bin compare-screenshots --features apple-screenshots --locked -- --nocapture
+      # The apple_planes harness's UIKit/CoreVideo half is
+      # `cfg(target_vendor = "apple")` and no other leg compiles it for iOS.
+      - name: Clippy (apple-planes, iOS)
+        run: cargo clippy -p apple-planes --all-targets --locked --target aarch64-apple-ios --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # The `apple-target` cache holds this directory for the next run; the
       # number is evidence for the repository's 10 GB budget review, not a
       # gate.
@@ -421,6 +435,7 @@ jobs:
       # release-line target cache remains explicitly cold unless a cache
       # written on `main` or the default branch exists.
       - name: Save Cargo sources
+        id: save-sources
         if: (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.cargo-sources.outputs.cache-hit != 'true'
         uses: ./.github/actions/cargo-sources
         with:
@@ -429,6 +444,7 @@ jobs:
           limit-bytes: ${{ vars.ACTIONS_CACHE_LIMIT_BYTES }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Compiled target cache headroom
+        id: target-headroom
         if: github.ref == 'refs/heads/dev' && steps.apple-target.outputs.cache-hit != 'true'
         uses: ./.github/actions/cache-headroom
         with:
@@ -437,7 +453,7 @@ jobs:
           limit-bytes: ${{ vars.ACTIONS_CACHE_LIMIT_BYTES }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Save compiled target cache
-        if: github.ref == 'refs/heads/dev' && steps.apple-target.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/dev' && steps.apple-target.outputs.cache-hit != 'true' && steps.target-headroom.outputs.fits == 'true'
         uses: actions/cache/save@v4
         with:
           path: target
@@ -446,9 +462,10 @@ jobs:
       # families, and other refs are never touched. `apple-target` is a
       # family of this ref only on `dev`, where it is written. Nothing is
       # retired unless every primary key exists, so a save that did not
-      # land can never leave pull requests without an archive.
+      # land can never leave pull requests without an archive. A save the
+      # headroom check skipped (no room) keeps the old generations too.
       - name: Retire superseded cache generations
-        if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main'
+        if: (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.save-sources.outputs.saved != 'false' && steps.target-headroom.outputs.fits != 'false'
         uses: ./.github/actions/retire-cargo-caches
         with:
           families: cargo-sources-${{ runner.os }}-${{ github.ref == 'refs/heads/dev' && format(',apple-target-{0}-{1}-', runner.os, runner.arch) || '' }}

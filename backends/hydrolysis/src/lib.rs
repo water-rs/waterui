@@ -9,6 +9,10 @@ mod env;
 mod gpu_view;
 #[cfg(hydrolysis_hosted)]
 mod hosted;
+// The HWUI render target compiles for tests everywhere and for the Android
+// runtime under its feature.
+#[cfg(any(test, hydrolysis_hwui))]
+pub mod hwui;
 mod localization;
 mod num_cast;
 #[cfg(hydrolysis_pipeline_cache)]
@@ -41,7 +45,7 @@ use waterui_core::Environment;
 pub const TARGET_FRAME_INTERVAL: Duration = Duration::from_nanos(8_333_333);
 
 /// A presentation style for the rendered Hydrolysis runtime: the type a style
-/// package implements, and what `run(app, style)` accepts.
+/// package implements, and what `run(app, env, style)` accepts.
 ///
 /// A `Style` is the runtime's widget theme plus the package's token set:
 /// the runtime assembles the environment's theme tokens with framework
@@ -93,14 +97,18 @@ pub use renderer::{FrameStageTimes, GpuIdentity};
 pub use renderer::{HydroState, HydrolysisRenderTarget, HydrolysisRenderer, RenderContext};
 #[cfg(target_os = "android")]
 pub use runner::android;
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub use runner::init_tracing;
 #[cfg(hydrolysis_run)]
 pub use runner::run;
 pub use runner::{FrameCounters, FramePhases, FrameProfile, SemanticPumpResult, SemanticRuntime};
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
+#[cfg(any(test, hydrolysis_hwui))]
+pub use text::HwuiTextEngine;
 #[cfg(not(target_arch = "wasm32"))]
 pub use text::fonts::native_collection;
-pub use text::{DeclaredFonts, FontFamilyResolution};
+pub use text::{DeclaredFonts, FontFamilyResolution, ParleyEngine};
 pub use view_renderer::HydrolysisViewRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;

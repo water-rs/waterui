@@ -70,7 +70,10 @@ fn main() {
         },
         // The persistent pipeline cache serialises through `std::fs` into a
         // platform cache directory; targets without that filesystem contract
-        // (wasm, espidf, redox) compile the renderer without it.
+        // (wasm, redox) compile the renderer without it.
         hydrolysis_pipeline_cache: { any(unix, windows) },
+        // The Android HWUI render target: the retained layer tree recorded
+        // into `RenderNode` display lists, on Android only.
+        hydrolysis_hwui: { all(feature = "hwui", android_platform) },
     }
 }

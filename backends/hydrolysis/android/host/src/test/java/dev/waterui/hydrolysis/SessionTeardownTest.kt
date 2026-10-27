@@ -58,6 +58,28 @@ class SessionTeardownTest {
     }
 
     @Test
+    fun aDelayedWakeReleasesHighRefreshUnlessTouchIsHeld() {
+        val session = HydrolysisSession(context, onCloseRequested = {})
+        val scheduler = FrameScheduler(session)
+        ShadowNativeBridge.onFrame = { WANTS_NEXT_FRAME }
+        scheduler.pumpNow("test")
+        assertEquals(listOf(true), ShadowNativeBridge.highRefreshDemands)
+
+        ShadowNativeBridge.onFrame = { HAS_DEADLINE }
+        ShadowNativeBridge.deadlineNanos = Duration.ofSeconds(10).toNanos()
+        shadowOf(Looper.getMainLooper()).idleFor(FRAME_WINDOW)
+        assertEquals(listOf(true, false), ShadowNativeBridge.highRefreshDemands)
+
+        scheduler.setInteractionActive(true)
+        shadowOf(Looper.getMainLooper()).idleFor(FRAME_WINDOW)
+        assertEquals(listOf(true, false, true), ShadowNativeBridge.highRefreshDemands)
+        scheduler.setInteractionActive(false)
+        assertEquals(listOf(true, false, true, false), ShadowNativeBridge.highRefreshDemands)
+        scheduler.stop()
+        session.destroy()
+    }
+
+    @Test
     fun aFrameRequestedDuringTeardownNeverReachesNative() {
         val session = HydrolysisSession(context, onCloseRequested = {})
         HydrolysisHostView(context, session)
@@ -405,6 +427,25 @@ class SessionTeardownTest {
     }
 
     @Test
+    fun anInTraversalPumpRendersWithoutAVsyncPost() {
+        val session = HydrolysisSession(context, onCloseRequested = {})
+        // The IME progress pump runs the transaction inside the traversal
+        // that reported it — no Choreographer post, no idle looper step —
+        // so the buffer lands in the frame that moves the keyboard
+        // (water-rs/waterui#1913).
+        session.frameScheduler.pumpNow("ime-progress")
+        assertEquals(1, ShadowNativeBridge.frames)
+    }
+
+    @Test
+    fun anInTraversalPumpAfterTeardownReachesNothing() {
+        val session = HydrolysisSession(context, onCloseRequested = {})
+        session.destroy()
+        session.frameScheduler.pumpNow("ime-progress")
+        assertEquals(0, ShadowNativeBridge.frames)
+    }
+
+    @Test
     fun aVisibilityCallAfterDestroyIsIgnored() {
         val session = HydrolysisSession(context, onCloseRequested = {})
         session.destroy()
@@ -412,6 +453,52 @@ class SessionTeardownTest {
         val visibilityCalls = ShadowNativeBridge.visibilities.size
         session.setVisible(true)
         assertEquals(visibilityCalls, ShadowNativeBridge.visibilities.size)
+    }
+
+    @Test
+    fun aSessionPainterOutlivesItsHostViewsAndDiesAtTeardown() {
+        val events = mutableListOf<String>()
+        val painter = object : SessionPainter {
+            override fun attach(host: HydrolysisHostView) { events += "attach:${System.identityHashCode(host)}" }
+            override fun detach(host: HydrolysisHostView) { events += "detach:${System.identityHashCode(host)}" }
+            override fun destroy() { events += "destroy(nativedestroyed=${ShadowNativeBridge.destroyed})" }
+            override fun setHighRefresh(active: Boolean) { events += "refresh:$active" }
+        }
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(activity, onCloseRequested = {}, painter = painter)
+
+        // The window lifecycle drives bind/unbind — no manual calls.
+        val first = HydrolysisHostView(activity, session)
+        activity.setContentView(first)
+        assertTrue(first.isAttachedToWindow)
+        (first.parent as ViewGroup).removeView(first)
+
+        val second = HydrolysisHostView(activity, session)
+        activity.setContentView(second)
+        assertTrue(second.isAttachedToWindow)
+
+        session.setFrameDemand(continuous = true, touching = false)
+        assertEquals("refresh:true", events.last())
+
+        // A live attached host defers teardown until it detaches.
+        session.destroy()
+        assertFalse(ShadowNativeBridge.destroyed)
+        assertFalse(events.any { it.startsWith("destroy") })
+
+        (second.parent as ViewGroup).removeView(second)
+        assertTrue(ShadowNativeBridge.destroyed)
+        assertEquals(1, ShadowNativeBridge.sessions)
+        assertEquals(
+            listOf(
+                "attach:${System.identityHashCode(first)}",
+                "detach:${System.identityHashCode(first)}",
+                "attach:${System.identityHashCode(second)}",
+                "refresh:true",
+                "detach:${System.identityHashCode(second)}",
+                "destroy(nativedestroyed=true)",
+            ),
+            events,
+        )
     }
 
     private companion object {
@@ -425,6 +512,8 @@ class SessionTeardownTest {
 }
 
 /** A host view that counts its frame requests and still schedules them. */
+
+
 class RecordingHostView(context: Context, session: HydrolysisSession) :
     HydrolysisHostView(context, session) {
     var frameRequests = 0
@@ -486,6 +575,9 @@ class ShadowNativeBridge {
         var deadlineQueries = 0
             private set
 
+        var deadlineNanos = 0L
+        val highRefreshDemands = mutableListOf<Boolean>()
+
         /** Every `nativeSetVisible` call, in order. */
         val visibilities = mutableListOf<Boolean>()
 
@@ -516,6 +608,8 @@ class ShadowNativeBridge {
             loads = 0
             destroyed = false
             deadlineQueries = 0
+            deadlineNanos = 0L
+            highRefreshDemands.clear()
             visibilities.clear()
             backEvents.clear()
             onDestroy = {}
@@ -548,10 +642,20 @@ class ShadowNativeBridge {
         fun nativeCreateSession(
             @Suppress("UNUSED_PARAMETER") session: HydrolysisSession,
             @Suppress("UNUSED_PARAMETER") context: Context,
+            @Suppress("UNUSED_PARAMETER") painter: SessionPainter?,
             @Suppress("UNUSED_PARAMETER") uiThreadServices: Long,
         ): Long {
             sessions += 1
             return SESSION_PTR
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativeSetHostAttached(
+            sessionPtr: Long,
+            @Suppress("UNUSED_PARAMETER") attached: Boolean,
+        ) {
+            assertLive(sessionPtr)
         }
 
         @JvmStatic
@@ -575,7 +679,7 @@ class ShadowNativeBridge {
         fun nativeFrameDeadlineInNanos(sessionPtr: Long): Long {
             assertLive(sessionPtr)
             deadlineQueries += 1
-            return 0L
+            return deadlineNanos
         }
 
         @JvmStatic
@@ -606,8 +710,9 @@ class ShadowNativeBridge {
 
         @JvmStatic
         @Implementation
-        fun nativeSetHighRefresh(sessionPtr: Long, @Suppress("UNUSED_PARAMETER") active: Boolean) {
+        fun nativeSetFrameDemand(sessionPtr: Long, continuous: Boolean, touching: Boolean) {
             assertLive(sessionPtr)
+            highRefreshDemands += continuous || touching
         }
 
         @JvmStatic
@@ -617,4 +722,6 @@ class ShadowNativeBridge {
             return treeJson
         }
     }
+
+
 }

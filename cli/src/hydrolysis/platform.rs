@@ -146,6 +146,13 @@ pub async fn build_hydrolysis_with_envs_and_features(
     // checkout, whose own `Cargo.lock` is the canonical pin.
     assets::seed_managed_crate_lock(project, &cargo_toml).await?;
 
+    // The target owns the linkage decision: a Windows build links
+    // statically, and a project that resolved `waterui/dynamic_linking`
+    // anyway is rejected before anything compiles.
+    let options = options.with_supported_linkage(&platform.triple());
+    crate::build::reject_unsupported_dynamic_linking(project, &cargo_toml, &platform.triple())
+        .await?;
+
     // The generated `build.rs` embeds `app-icon.ico` into the executable when
     // targeting Windows, so there it has to exist before the backend
     // compiles; no other target reads it. Assets and fonts stage after the
@@ -255,7 +262,14 @@ pub(crate) async fn stage_hydrolysis_shared_runtime(
     if !is_hydrolysis_native_platform(platform) {
         bail!("Hydrolysis shared runtime can only be staged for macOS, Linux, and Windows");
     }
-    let libraries = RustDynamicLibraries::resolve(built, &platform.triple(), project).await?;
+    // A platform without shared-runtime linkage — Windows — resolves no
+    // libraries; `None` prunes whatever an earlier linkage left beside the
+    // binary.
+    let libraries = if RustLinkage::supports_shared_runtime(&platform.triple()) {
+        Some(RustDynamicLibraries::resolve(built, &platform.triple(), project).await?)
+    } else {
+        None
+    };
     // The staged runtime lands beside the `<profile>/<name>` uplift the
     // launch path executes — the profile directory itself, never `deps/`:
     // `built.artifact` lives there and pruning staged names would delete
@@ -263,7 +277,7 @@ pub(crate) async fn stage_hydrolysis_shared_runtime(
     synchronize_shared_runtime(
         project.host(),
         &built.profile_dir,
-        Some(&libraries),
+        libraries.as_ref(),
         &platform.triple(),
     )
     .await
@@ -297,9 +311,10 @@ pub async fn clean_hydrolysis(project: &Project) -> eyre::Result<()> {
 
     // The target directories are shared with every other generated backend, so only
     // this backend's own package is cleaned — its dependency artifacts stay for
-    // the other backends that resolve them identically.
-    for linkage in [RustLinkage::SharedRuntime, RustLinkage::Static] {
-        let shared_target_dir = project.water_target_dir(linkage).await?;
+    // the other backends that resolve them identically. Hydrolysis builds for
+    // the host triple only, so it cleans the linkages that triple supports.
+    for linkage in RustLinkage::supported_on(&Triple::host()) {
+        let shared_target_dir = project.water_target_dir(*linkage).await?;
         if !shared_target_dir.exists() {
             continue;
         }
@@ -383,7 +398,7 @@ pub async fn package_hydrolysis(
             &platform.triple(),
         )
         .await?;
-    let shared_libraries = if options.uses_shared_rust_runtime() {
+    let shared_libraries = if options.uses_shared_rust_runtime(&platform.triple()) {
         Some(RustDynamicLibraries::resolve(built, &platform.triple(), project).await?)
     } else {
         None
@@ -601,16 +616,18 @@ async fn synchronize_shared_runtime(
 ) -> eyre::Result<()> {
     if let Some(libraries) = libraries {
         libraries.stage(destination).await?;
-        // A shared-runtime hydrolysis binary renders through wgpu, whose
-        // DirectX 12 backend `LoadLibrary`s `dxcompiler.dll` and `dxil.dll`
-        // by name at run time; the pair has to sit beside the executable.
-        if triple.operating_system == OperatingSystem::Windows {
-            stage_dxc_runtime(host, destination).await?;
-        }
-        Ok(())
     } else {
-        RustDynamicLibraries::remove_staged(destination, triple).await
+        RustDynamicLibraries::remove_staged(destination, triple).await?;
     }
+    // A hydrolysis binary renders through wgpu, whose DirectX 12 backend
+    // `LoadLibrary`s `dxcompiler.dll` and `dxil.dll` by name at run time.
+    // That holds under either linkage, so the pair sits beside the
+    // executable on every Windows staging — the shared runtime is not what
+    // brings it.
+    if triple.operating_system == OperatingSystem::Windows {
+        stage_dxc_runtime(host, destination).await?;
+    }
+    Ok(())
 }
 
 /// Check if a platform is supported by the hydrolysis backend.
@@ -651,7 +668,7 @@ async fn copy_assets_and_fonts(
     let font_declarations = assets::scan_fonts(
         project,
         &backend_path.join("Cargo.toml"),
-        &[platform.font_platform()?],
+        &[platform.font_platform()],
     )
     .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
@@ -827,7 +844,7 @@ async fn build_hydrolysis_web_bundle(
     )
     .await?;
 
-    let mut wasm_pack_cmd = host.command(wasm_pack);
+    let mut wasm_pack_cmd = host.command(wasm_pack)?;
     let wasm_pack_cmd = command(&mut wasm_pack_cmd, host.std_output());
     wasm_pack_cmd
         .current_dir(backend_path)

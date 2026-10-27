@@ -54,7 +54,7 @@ impl Session {
         ))
     }
 
-    /// The GPU and shader-core count the session reads.
+    /// The GPU, shader-core count and L2 slice count the session reads.
     #[must_use]
     #[cfg_attr(
         not(target_os = "android"),
@@ -153,6 +153,7 @@ mod kbase {
     // `prfcnt_block_type`.
     const BLOCK_FE: u8 = 0;
     const BLOCK_TILER: u8 = 1;
+    const BLOCK_MEMORY: u8 = 2;
     const BLOCK_SHADER_CORE: u8 = 3;
     /// `PRFCNT_SET_PRIMARY`: the counter set the indices below name.
     const SET_PRIMARY: u8 = 0;
@@ -169,6 +170,9 @@ mod kbase {
     const G715: (u64, u64) = (11, 2);
 
     // Mali-G715 primary-set counter indices within each block.
+    // Arm libGPUCounters 378c7b59, valhall.cpp g615_data (also G715).
+    const L2_EXT_READ_BEATS: usize = 32;
+    const L2_EXT_WRITE_BEATS: usize = 47;
     const FE_GPU_ACTIVE: usize = 4;
     const TILER_ACTIVE: usize = 4;
     const SC_FRAGMENT_ACTIVE: usize = 4;
@@ -334,6 +338,7 @@ mod kbase {
     #[derive(Debug)]
     struct Layout {
         shader_cores: u16,
+        l2_slices: u16,
         metadata_item_size: usize,
     }
 
@@ -363,7 +368,7 @@ mod kbase {
             // SAFETY: SET_FLAGS takes a `u32`.
             unsafe { ioctl(fd, SET_FLAGS, &raw mut flags, "set context flags")? };
             check_product(fd)?;
-            let shader_cores = enumerate(fd)?;
+            let (shader_cores, l2_slices) = enumerate(fd)?;
             let mut requests = [
                 RequestItem {
                     header: ItemHeader {
@@ -378,6 +383,7 @@ mod kbase {
                 },
                 enable(BLOCK_FE),
                 enable(BLOCK_TILER),
+                enable(BLOCK_MEMORY),
                 enable(BLOCK_SHADER_CORE),
                 RequestItem {
                     header: ItemHeader {
@@ -393,7 +399,7 @@ mod kbase {
             ];
             let mut setup = Setup {
                 input: SetupIn {
-                    count: u32::try_from(requests.len()).expect("five request items"),
+                    count: u32::try_from(requests.len()).expect("six request items"),
                     size: u32::try_from(size_of::<RequestItem>()).expect("a 32-byte item"),
                     requests: requests.as_mut_ptr() as u64,
                 },
@@ -430,6 +436,7 @@ mod kbase {
                 _device: device,
                 layout: Layout {
                     shader_cores,
+                    l2_slices,
                     metadata_item_size: usize::try_from(out.metadata_item_size)
                         .expect("u32 fits usize"),
                 },
@@ -442,6 +449,7 @@ mod kbase {
             GpuCountersInfo {
                 gpu: "Mali-G715",
                 shader_cores: u32::from(self.layout.shader_cores),
+                l2_slices: u32::from(self.layout.l2_slices),
             }
         }
 
@@ -509,6 +517,7 @@ mod kbase {
             let mut offset = usize::try_from(metadata_offset).expect("an offset in the mapping");
             let mut sample = GpuCounterSample::default();
             let mut cores = 0u16;
+            let mut l2_slices = 0u16;
             let mut saw_sample = false;
             loop {
                 let header: ItemHeader = self.read(offset)?;
@@ -537,6 +546,11 @@ mod kbase {
                         match block.block {
                             BLOCK_FE => sample.gpu_active_cycles += value(FE_GPU_ACTIVE)?,
                             BLOCK_TILER => sample.tiler_active_cycles += value(TILER_ACTIVE)?,
+                            BLOCK_MEMORY => {
+                                l2_slices += 1;
+                                sample.external_read_beats += value(L2_EXT_READ_BEATS)?;
+                                sample.external_write_beats += value(L2_EXT_WRITE_BEATS)?;
+                            }
                             BLOCK_SHADER_CORE => {
                                 cores += 1;
                                 sample.shader_core_active_cycles += value(SC_CORE_ACTIVE)?;
@@ -552,10 +566,15 @@ mod kbase {
                 }
                 offset += self.layout.metadata_item_size;
             }
-            if !saw_sample || cores != self.layout.shader_cores {
+            if !saw_sample
+                || cores != self.layout.shader_cores
+                || l2_slices != self.layout.l2_slices
+            {
                 return Err(BenchError::Gpu(format!(
-                    "gpu counters: a sample carried {cores} of {} shader-core blocks{}",
+                    "gpu counters: a sample carried {cores} of {} shader-core blocks and \
+                     {l2_slices} of {} L2 blocks{}",
                     self.layout.shader_cores,
+                    self.layout.l2_slices,
                     if saw_sample {
                         ""
                     } else {
@@ -635,9 +654,9 @@ mod kbase {
         ))
     }
 
-    /// The primary set's shader-core block count, once the driver shows
+    /// The primary set's shader-core and L2 block counts, once the driver shows
     /// every block carries the indices read here.
-    fn enumerate(fd: i32) -> Result<u16, BenchError> {
+    fn enumerate(fd: i32) -> Result<(u16, u16), BenchError> {
         let mut info = EnumInfo {
             item_size: 0,
             item_count: 0,
@@ -656,8 +675,8 @@ mod kbase {
         info.list = list.as_mut_ptr() as u64;
         // SAFETY: the list holds `item_count` items of `item_size` bytes.
         unsafe { ioctl(fd, ENUM_INFO, &raw mut info, "enumerate counters")? };
-        let mut values = None;
         let mut shader_cores = None;
+        let mut l2_slices = None;
         for item in list.chunks_exact(stride) {
             // SAFETY: each chunk is at least one `EnumBlock`, checked above.
             let block = unsafe { item.as_ptr().cast::<EnumBlock>().read_unaligned() };
@@ -665,18 +684,23 @@ mod kbase {
                 continue;
             }
             if block.set == SET_PRIMARY {
-                values = Some(block.values);
-                if block.block == BLOCK_SHADER_CORE {
-                    shader_cores = Some(block.instances);
+                match block.block {
+                    BLOCK_SHADER_CORE if usize::from(block.values) > SC_CORE_ACTIVE => {
+                        shader_cores = Some(block.instances);
+                    }
+                    BLOCK_MEMORY if usize::from(block.values) > L2_EXT_WRITE_BEATS => {
+                        l2_slices = Some(block.instances);
+                    }
+                    _ => {}
                 }
             }
         }
-        match (values, shader_cores) {
-            (Some(values), Some(cores)) if usize::from(values) > SC_CORE_ACTIVE => Ok(cores),
-            _ => Err(BenchError::Gpu(format!(
-                "gpu counters: the driver enumerates no primary shader-core block with more \
-                 than {SC_CORE_ACTIVE} values"
-            ))),
-        }
+        shader_cores.zip(l2_slices).ok_or_else(|| {
+            BenchError::Gpu(
+                "gpu counters: the driver must enumerate primary shader-core and L2 blocks \
+             with the requested counter indices"
+                    .into(),
+            )
+        })
     }
 }

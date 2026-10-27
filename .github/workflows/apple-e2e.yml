@@ -90,9 +90,9 @@ permissions:
 # value is the complete report. The group is keyed by ref because a group
 # holds one running and one pending run — with a single global group a
 # dispatch on a topic branch queued behind the dev nightly, and the next
-# dispatch cancelled it (run 35281834319). Branch runs share the
-# `cargo-sources` registry archive read-only — no job here saves a cache,
-# so ref runs can never race a writer.
+# dispatch cancelled it (run 35281834319). No job here restores or saves
+# an Actions cache (see the cold-build note under `env`), so ref runs can
+# never race a writer.
 concurrency:
   group: apple-e2e-${{ github.ref }}
   cancel-in-progress: false
@@ -104,6 +104,10 @@ env:
   RUSTC_WRAPPER: ""
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # e2e lanes build fully cold: some of what they measure is cold compile
+  # time, so no job in this suite restores or saves any Actions cache (no
+  # rust-cache, `cargo-sources`, install-tool or apt archive) and none runs
+  # a compile wrapper (sccache, stow). Caching is for the everyday gates.
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   SHARD_TOTAL: 8
@@ -153,14 +157,6 @@ jobs:
           toolchain: stable
           cache: "false"
 
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes (source packages are toolchain-independent). No save and no
-      # `target` cache in this suite: a nightly compile must never evict
-      # the PR gate's compile cache from the shared 10 GB quota.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
-
       - name: Build the water CLI
         env:
           # The CLI's own target directory lives with its checkout in the
@@ -168,6 +164,17 @@ jobs:
           # nothing with the framework builds the shards perform.
           CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
         run: cargo install --path "${WATER_CLI_DIR:?WATER_CLI_DIR is required; run .github/scripts/setup-e2e.sh first}" --locked --root "${{ github.workspace }}/cli-bin"
+
+      - name: Build the screenshot comparer
+        if: github.event_name != 'schedule' || inputs.full_suite
+        timeout-minutes: 10
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
+        run: |
+          export PATH="${{ github.workspace }}/cli-bin/bin:${PATH}"
+          cargo install --path "${WATERUI_DIR}/graphics/cherenkov/oracle" --locked \
+            --features apple-screenshots --bin compare-screenshots --debug \
+            --root "${{ github.workspace }}/cli-bin"
 
       - name: Upload the water CLI
         uses: actions/upload-artifact@v4
@@ -177,14 +184,22 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      - name: Upload the screenshot comparer
+        if: github.event_name != 'schedule' || inputs.full_suite
+        uses: actions/upload-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin/compare-screenshots
+          retention-days: 1
+          if-no-files-found: error
+
   # One build matrix per platform packages every example once and hands the
   # capture shards the bundles as one tarball per group — the shards used to
   # each pay the same ~32-minute cold release build, sixteen times a night
   # for identical artifacts (#218), and the serial leg still packaged for
-  # ~90 of the run's ~102 minutes (#252). The legs share the
-  # `cargo-sources` archive read-only, so every leg still saves its source
-  # downloads and the matrix keeps its independent shard parallelism — no
-  # leg is a cache writer. A package failure fails here with the
+  # ~90 of the run's ~102 minutes (#252). Every leg builds cold (no
+  # Actions cache, see `env`) and the matrix keeps its independent shard
+  # parallelism. A package failure fails here with the
   # example's log tail, and the shards never start.
   build-ios:
     name: build-ios-${{ matrix.group.i }}
@@ -205,7 +220,7 @@ jobs:
       # This job builds under the dated stable pinned below (the header
       # explains why), and rustup ranks this variable above the project's
       # file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
@@ -218,20 +233,12 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           targets: aarch64-apple-ios-sim
           cache: "false"
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
-
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache (the old per-leg
-      # `~/.water/build_cache/target` writer is gone): a heavy leg must
-      # never evict the gate's compile cache.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
@@ -309,7 +316,7 @@ jobs:
       # This job builds under the dated stable pinned below (the header
       # explains why), and rustup ranks this variable above the project's
       # file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
@@ -322,19 +329,11 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           cache: "false"
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
-
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache (the old per-leg
-      # `~/.water/build_cache/target` writer is gone): a heavy leg must
-      # never evict the gate's compile cache.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
@@ -423,6 +422,13 @@ jobs:
           chmod +x cli-bin/bin/water
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
 
+      - name: Install the screenshot comparer
+        uses: actions/download-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin
+      - run: chmod +x cli-bin/bin/compare-screenshots
+
       - name: Download packaged iOS apps
         uses: actions/download-artifact@v4
         with:
@@ -467,6 +473,10 @@ jobs:
       # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
       - name: Set up modern bash
         uses: ./.github/actions/setup-bash
+
+      - name: Prepare comparison tools
+        uses: ./.github/actions/setup-e2e-tools
+        timeout-minutes: 1
 
       - name: Run iOS e2e shard
         env:
@@ -549,6 +559,13 @@ jobs:
           chmod +x cli-bin/bin/water
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
 
+      - name: Install the screenshot comparer
+        uses: actions/download-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin
+      - run: chmod +x cli-bin/bin/compare-screenshots
+
       - name: Download packaged macOS apps
         uses: actions/download-artifact@v4
         with:
@@ -565,6 +582,10 @@ jobs:
       # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
       - name: Set up modern bash
         uses: ./.github/actions/setup-bash
+
+      - name: Prepare comparison tools
+        uses: ./.github/actions/setup-e2e-tools
+        timeout-minutes: 1
 
       - name: Run macOS e2e shard
         env:
@@ -633,15 +654,11 @@ jobs:
           toolchain: stable
           targets: aarch64-apple-darwin
           cache: "false"
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache in this suite.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
-      - uses: ./.github/actions/install-tool
+      # install-action directly, not the cached install-tool wrapper: this
+      # suite keeps no Actions cache.
+      - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.145
-          path: ~/.cargo/bin/cargo-nextest*
       # cocoa-ui joins this same invocation: standalone Cocoa host
       # nextest/doc coverage transfers 1:1 onto the backend's graph.
       # `native-test` is waterui-apple's feature and forwards to
@@ -681,7 +698,7 @@ jobs:
       # This job builds under the dated stable pinned below (the header
       # explains why), and rustup ranks this variable above the project's
       # file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
       # Packages the repository's own ios_test_host fixture in dev profile —
       # not one of the release examples build-ios packages — so it keeps its
       # own toolchain and target dir.
@@ -697,7 +714,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           targets: aarch64-apple-ios-sim
           # run-ios-device-tests.sh verifies the packaged archive's exports
           # with the llvm-nm shipped by this toolchain.
@@ -706,13 +723,6 @@ jobs:
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
-
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache (the old per-leg
-      # `~/.water/build_cache/target` writer is gone).
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
@@ -724,9 +734,14 @@ jobs:
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
           echo "WATER_BIN=${{ github.workspace }}/cli-bin/bin/water" >> "$GITHUB_ENV"
 
+      # Pinned to the same nextest the test lanes install: an unpinned spec
+      # made the version the run got depend on when the CDN answered, and a
+      # transient 5xx during the resolution was fatal (#1116). install-action
+      # directly, not the cached install-tool wrapper: this suite keeps no
+      # Actions cache.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest@0.9.145
 
       # The lane owns its simulator end to end: it resolves a concrete
       # device type and the newest iOS runtime out of the runner image's
@@ -915,7 +930,7 @@ jobs:
       # This job builds under the dated stable pinned below (the header
       # explains why), and rustup ranks this variable above the project's
       # file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
       # Packages a generated hello-world playground rather than a discovered
       # example, so it keeps its own toolchain and target dir.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -930,18 +945,12 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           targets: aarch64-apple-ios-sim
           cache: "false"
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
-
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
@@ -1053,7 +1062,7 @@ jobs:
   # Baselines are recorded on CI, not locally: window metrics, scale factors,
   # and OS rendering all differ across machines. A record run uploads its
   # captures; this job files them under backends/apple/Tests/E2EBaselines and opens a PR so a
-  # human reviews every changed pixel.
+  # human reviews the captured output for visual equivalence.
   publish-baselines:
     name: publish-baselines
     if: always() && inputs.record_baselines == true
@@ -1072,8 +1081,8 @@ jobs:
           pattern: e2e-baselines-*
           path: recorded/
 
-      # Baselines here are text manifests only — parity budgets and the
-      # package-size measurement — never committed captures. The recorded
+      # Baselines here are text manifests only — the package-size
+      # measurement, never committed captures. The recorded
       # PNGs stay on the run's e2e-baselines-* artifacts for review; how a
       # reviewed capture becomes a committed, generator-pinned reference is
       # under design (issue pending).
@@ -1095,30 +1104,8 @@ jobs:
               f.write("\n")
           PY
 
-      # Recorded parity fractions become the new allowed budgets, with headroom
-      # for ordinary render jitter (25% + 0.2pt of a percentage point) so the
-      # gate trips on real drift, not noise.
-      - name: Merge recorded parity budgets
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import glob, json, os
-          budgets_path = "backends/apple/Tests/E2EBaselines/parity-budgets.json"
-          budgets = {}
-          if os.path.exists(budgets_path):
-              with open(budgets_path) as f:
-                  budgets = json.load(f)
-          for path in glob.glob("recorded/*/parity/*.txt"):
-              stem = os.path.basename(path)[:-4]
-              platform, _, example = stem.partition("-")
-              with open(path) as f:
-                  fraction = float(f.read().strip())
-              budgets.setdefault(platform, {})[example] = \
-                  min(1.0, round(fraction * 1.25 + 0.002, 4))
-          with open(budgets_path, "w") as f:
-              json.dump(budgets, f, indent=2, sort_keys=True)
-              f.write("\n")
-          PY
+      # FLIP reports remain review artifacts. Recording a difference must
+      # not automatically raise the tolerance that would accept it.
 
       - name: Open baseline pull request
         env:
@@ -1134,11 +1121,11 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           branch="e2e/baselines-${GITHUB_RUN_ID}"
           git checkout -b "${branch}"
-          git commit -m "test: refresh e2e screenshot baselines"
+          git commit -m "test: refresh e2e release measurements"
           git push -u origin "${branch}"
           gh pr create --base dev \
-            --title "test: refresh e2e screenshot baselines" \
-            --body "Baselines recorded by nightly run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. The captures themselves are on the run's e2e-baselines-* artifacts — review them; a changed budget or measurement without an expected visual change is a regression report, not a rubber stamp."
+            --title "test: refresh e2e release measurements" \
+            --body "Measurements recorded by nightly run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Captures and FLIP reports remain on the run artifacts for whole-image visual review; recorded differences do not automatically change comparison tolerances."
 
   # One issue per broken nightly, updated in place while it stays red, so a
   # failure that nobody was watching is on the board by morning. Record runs

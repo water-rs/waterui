@@ -1,18 +1,17 @@
 //! Native adaptive tab navigation.
 
-use alloc::vec::Vec;
-
 use core::fmt::Debug;
 
-use nami::{Binding, Computed, SignalExt as _};
+use nami::{Binding, Computed, Signal as _, SignalExt as _};
 use waterui_controls::IntoLabel;
 use waterui_core::{
-    AnyView, Environment, IntoSignal, Str, View,
+    AnyView, Environment, IntoSignal, NativeView, Str, View,
     handler::{AnyViewBuilder, ViewBuilder},
     id::{Id, Mapping},
     impl_debug,
     layout::StretchAxis,
     raw_view,
+    views::{AnyViews, SharedAnyViews, Views},
 };
 use waterui_icon::SystemIcon;
 
@@ -114,6 +113,7 @@ pub mod tab_style {
 /// interchangeable: a platform that recognizes the symbol renders it at whatever
 /// size and weight its chrome calls for, while a view has to be rasterized at a
 /// chosen size.
+#[derive(Clone)]
 #[expect(
     clippy::exhaustive_enums,
     reason = "backends realize each tab icon source variant by variant; a new tab icon source must fail their build instead of falling into a wildcard arm"
@@ -173,13 +173,17 @@ pub enum TabBarMinimizeBehavior {
     OnScrollUp,
 }
 
-/// One stable native tab.
+/// One stable native tab. The collection it lives in supplies its identity.
+///
+/// `Clone` shares a tab's lazily built content and signals — a `Vec<Tab>`
+/// collection clones on snapshot, which is what makes `vec![tab, ...]` a
+/// valid [`Views`] set for a fixed tab bar.
+#[derive(Clone)]
 #[non_exhaustive]
-pub struct Tab<T> {
-    /// Stable tab identifier.
-    pub id: T,
-    /// Semantic tab label.
-    pub label: AnyView,
+pub struct Tab {
+    /// Semantic tab label, kept as a builder so a tab in a `Vec` stays
+    /// cloneable — the collection materializes one label per mount.
+    pub label: AnyViewBuilder<AnyView>,
     /// The label's icon, lifted out so native chrome can place it itself.
     pub icon: Option<TabIcon>,
     /// Stable lazily built tab root.
@@ -192,15 +196,15 @@ pub struct Tab<T> {
     pub role: TabRole,
 }
 
-impl_debug!(Tab<Id>);
+impl_debug!(Tab);
 
-impl<T> Tab<T> {
+impl Tab {
     /// Creates a stable tab with a semantic label and navigation root.
-    pub fn new(
-        id: T,
-        label: impl IntoLabel,
-        content: impl ViewBuilder<Output = NavigationView>,
-    ) -> Self {
+    ///
+    /// The tab's identity comes from the collection handed to [`Tabs`]: a
+    /// tab in a `Vec` is keyed by its index, one built through `ForEach` by
+    /// the item it was built from.
+    pub fn new(label: impl IntoLabel, content: impl ViewBuilder<Output = NavigationView>) -> Self {
         let label = label.into_label();
         // Lift the icon out before the label is erased: a tab bar item wants it
         // separately, and once this is an `AnyView` nothing can tell which part
@@ -210,8 +214,7 @@ impl<T> Tab<T> {
             |icon| Some(TabIcon::System(icon)),
         );
         Self {
-            id,
-            label: AnyView::new(label),
+            label: AnyViewBuilder::new(move || AnyView::new(label.clone())),
             icon,
             content: AnyViewBuilder::new(content),
             badge: None,
@@ -230,11 +233,11 @@ impl<T> Tab<T> {
     ///
     /// [`NavigationStack`]: crate::NavigationStack
     /// [`NavigationSplitView`]: crate::NavigationSplitView
-    pub fn container<B>(id: T, label: impl IntoLabel, content: B) -> Self
+    pub fn container<B>(label: impl IntoLabel, content: B) -> Self
     where
         B: ViewBuilder,
     {
-        Self::new(id, label, move || {
+        Self::new(label, move || {
             NavigationView::new(Str::default(), content.build()).navigation_bar_visibility(false)
         })
     }
@@ -261,18 +264,15 @@ impl<T> Tab<T> {
         self.role = role;
         self
     }
+}
 
-    /// Rewrites the tab identity, keeping every other field.
-    fn with_id<U>(self, id: U) -> Tab<U> {
-        Tab {
-            id,
-            label: self.label,
-            icon: self.icon,
-            content: self.content,
-            badge: self.badge,
-            enabled: self.enabled,
-            role: self.role,
-        }
+impl NativeView for Tab {}
+
+/// A bare tab shows its label — outside a [`Tabs`] container there is no
+/// chrome to hang the content on.
+impl View for Tab {
+    fn body(self, _env: &Environment) -> impl View {
+        self.label.build()
     }
 }
 
@@ -280,13 +280,16 @@ impl<T> Tab<T> {
 ///
 /// The C ABI cannot carry generics, so tab identity is erased to [`Id`] here.
 /// Application code uses [`Tabs`], which keeps the app's own identifier type.
+/// `tabs` is a reactive collection: a backend mounts its snapshot once and
+/// then watches it, applying inserts, removals and moves by tab id so a tab
+/// that survives a change keeps its retained state.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct TabsLayout {
     /// Currently selected tab identifier.
     pub selection: Binding<Id>,
-    /// Stable tabs.
-    pub tabs: Vec<Tab<Id>>,
+    /// The tab collection, keyed by erased tab identity.
+    pub tabs: SharedAnyViews<Tab>,
     /// Native adaptive style.
     pub style: NativeTabStyle,
     /// How the bar behaves while content scrolls.
@@ -298,7 +301,7 @@ pub struct TabsLayout {
 impl TabsLayout {
     /// Creates an erased tab container.
     #[must_use]
-    pub const fn new(selection: Binding<Id>, tabs: Vec<Tab<Id>>) -> Self {
+    pub const fn new(selection: Binding<Id>, tabs: SharedAnyViews<Tab>) -> Self {
         Self {
             selection,
             tabs,
@@ -334,13 +337,16 @@ raw_view!(TabsLayout, StretchAxis::Both);
 
 /// Adaptive native tab container keyed by the application's own tab type.
 ///
-/// Selection is a caller-owned `Binding<T>`; each [`Tab`] carries a value of the
-/// same type. Identity is erased to [`Id`] only when projecting into
-/// [`TabsLayout`] for the native backends.
+/// Selection is a caller-owned `Binding<T>`; each [`Tab`] is identified by the
+/// id of the element of `tabs` it was built from — a `Vec`'s index, a
+/// `ForEach` item's `Id`. Identity is erased to [`Id`] only when projecting
+/// into [`TabsLayout`] for the native backends. The collection may be empty:
+/// the container mounts with no tab content or bar items.
 #[must_use]
 pub struct Tabs<T: 'static> {
     selection: Binding<T>,
-    items: Vec<Tab<T>>,
+    items: SharedAnyViews<Tab>,
+    ids: Mapping<T>,
     style: NativeTabStyle,
     minimize_behavior: TabBarMinimizeBehavior,
     bottom_accessory: Option<AnyView>,
@@ -349,7 +355,7 @@ pub struct Tabs<T: 'static> {
 impl<T> core::fmt::Debug for Tabs<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Tabs")
-            .field("tabs", &self.items.len())
+            .field("tabs", &self.items.len().snapshot())
             .field("style", &self.style)
             .field("minimize_behavior", &self.minimize_behavior)
             .field("bottom_accessory", &self.bottom_accessory.is_some())
@@ -359,10 +365,17 @@ impl<T> core::fmt::Debug for Tabs<T> {
 
 impl<T: Ord + Clone + 'static> Tabs<T> {
     /// Creates a tab container driven by a caller-owned selection.
-    pub fn new(selection: &Binding<T>, tabs: Vec<Tab<T>>) -> Self {
+    ///
+    /// `tabs` is any [`Views`] collection whose elements are [`Tab`]s: a `Vec`
+    /// for a fixed set, `ForEach` over a reactive [`nami::List`] for a set
+    /// that changes at runtime. The collection's element id is the tab's
+    /// identity — it is also the type `selection` binds.
+    pub fn new(selection: &Binding<T>, tabs: impl Views<View = Tab, Id = T> + 'static) -> Self {
+        let (items, ids) = AnyViews::new_with_ids(tabs);
         Self {
             selection: selection.clone(),
-            items: tabs,
+            items: SharedAnyViews::from(items),
+            ids,
             style: NativeTabStyle::Automatic,
             minimize_behavior: TabBarMinimizeBehavior::Automatic,
             bottom_accessory: None,
@@ -403,18 +416,9 @@ impl<T: Ord + Clone + 'static> Tabs<T> {
     #[doc(hidden)]
     #[must_use]
     pub fn into_layout(self) -> TabsLayout {
-        let mapping = Mapping::new();
-        let tabs = self
-            .items
-            .into_iter()
-            .map(|tab| {
-                let id = mapping.to_id(tab.id.clone());
-                tab.with_id(id)
-            })
-            .collect();
         TabsLayout {
-            selection: mapping.binding(&self.selection),
-            tabs,
+            selection: self.ids.binding(&self.selection),
+            tabs: self.items,
             style: self.style,
             minimize_behavior: self.minimize_behavior,
             bottom_accessory: self.bottom_accessory,
@@ -429,5 +433,86 @@ impl<T: Ord + Clone + 'static> View for Tabs<T> {
 
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Both
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use nami::collection::List as SignalList;
+    use nami::id::SelfId;
+    use waterui_core::views::{ForEach, ViewSnapshot as _};
+
+    /// The label-only `Tab` fixture — content is irrelevant to id erasure.
+    fn tab(label: &'static str) -> Tab {
+        Tab::new(label, move || NavigationView::new(label, ()))
+    }
+
+    #[test]
+    fn app_ids_erase_into_the_layout_collection() {
+        let selection = Binding::container(1i32);
+        let panes = [1, 2, 3].map(SelfId::new);
+        let tabs = Tabs::new(
+            &selection,
+            ForEach::new(SignalList::from(panes.to_vec()), |pane: SelfId<i32>| {
+                tab(match *pane {
+                    1 => "One",
+                    2 => "Two",
+                    _ => "Three",
+                })
+            }),
+        );
+
+        // Erasure projects every app id into the erased `Id` namespace and
+        // keeps it consistent between the collection and the selection
+        // binding a backend reads.
+        let layout = tabs.into_layout();
+        let snapshot = layout.tabs.snapshot();
+        assert_eq!(snapshot.len(), 3);
+        assert_eq!(
+            layout.selection.snapshot(),
+            snapshot.get_id(0).expect("a non-empty set reports an id"),
+        );
+    }
+
+    #[test]
+    fn the_erased_selection_binding_maps_both_ways() {
+        let selection = Binding::container(1i32);
+        let panes = [1, 2].map(SelfId::new);
+        let tabs = Tabs::new(
+            &selection,
+            ForEach::new(SignalList::from(panes.to_vec()), |pane: SelfId<i32>| {
+                tab(if *pane == 1 { "One" } else { "Two" })
+            }),
+        );
+        let layout = tabs.into_layout();
+        let snapshot = layout.tabs.snapshot();
+
+        // An app write reaches the erased binding; an erased write — a
+        // backend's tap — reaches the app binding.
+        selection.set(2);
+        assert_eq!(layout.selection.snapshot(), snapshot.get_id(1).expect("id"),);
+        layout.selection.set(snapshot.get_id(0).expect("id"));
+        assert_eq!(selection.snapshot(), 1);
+    }
+
+    #[test]
+    fn a_fixed_vec_keys_tabs_by_index() {
+        let selection = Binding::container(0usize);
+        let tabs = Tabs::new(&selection, vec![tab("One"), tab("Two")]);
+        let layout = tabs.into_layout();
+        let snapshot = layout.tabs.snapshot();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(layout.selection.snapshot(), snapshot.get_id(0).expect("id"),);
+    }
+
+    #[test]
+    fn an_empty_collection_is_a_valid_layout() {
+        let selection = Binding::container(0usize);
+        let tabs = Tabs::new(&selection, Vec::<Tab>::new());
+        let layout = tabs.into_layout();
+        assert_eq!(layout.tabs.snapshot().len(), 0);
     }
 }

@@ -69,3 +69,26 @@ fn content_that_does_not_span_the_edge_leaves_the_clear_colour() {
     )));
     assert_eq!(partial, [0, 0, 0, 255]);
 }
+
+#[test]
+fn live_colour_changes_the_committed_top_edge_without_recording() {
+    let color = Binding::container(Color::srgb(200, 40, 10));
+    let env = test_environment();
+    let mut renderer = test_renderer_with_theme(MinimalTestTheme::default());
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.capture_window_tree(
+        AnyView::new(waterui_graphics::color::signal_color(color.clone())),
+        &env,
+        WINDOW,
+        Affine::IDENTITY,
+        Affine::IDENTITY,
+    );
+    renderer.finish_rebuild_frame();
+    renderer.commit_mirror();
+    let before = working_color_to_rgba8(renderer.top_edge_color(WINDOW.width(), base()));
+    color.set(Color::srgb(10, 40, 200));
+    let after = working_color_to_rgba8(renderer.top_edge_color(WINDOW.width(), base()));
+    assert_eq!(before, [200, 40, 10, 255]);
+    assert_eq!(after, [10, 40, 200, 255]);
+}

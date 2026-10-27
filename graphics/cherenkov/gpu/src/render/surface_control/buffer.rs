@@ -60,6 +60,10 @@ pub struct Buffer {
     pub bytes: u64,
     /// Its round-trip state.
     pub state: State,
+    /// Whether a submitted render initialized the attachment contents.
+    pub initialized: bool,
+    /// Changes since this buffer last received a submitted image.
+    pub repair: cherenkov::damage::Region,
 }
 
 /// The format the engine's planes carry: 8-bit sRGB-encoded RGBA with
@@ -124,6 +128,8 @@ pub fn allocate_format(
     };
     let texture = wrap(shared, ahb, image, memory, size, format);
     crate::diag::create(&shared.wgpu, "plane buffer", bytes);
+    let mut repair = cherenkov::damage::Region::new(size);
+    repair.mark_full();
     Ok(Buffer {
         id,
         ahb,
@@ -131,6 +137,8 @@ pub fn allocate_format(
         texture,
         bytes,
         state: State::Free(None),
+        initialized: false,
+        repair,
     })
 }
 
@@ -301,7 +309,7 @@ fn wrap(
 pub unsafe fn ownership(
     shared: &Shared,
     cb: vk::CommandBuffer,
-    images: &[vk::Image],
+    images: &[(vk::Image, bool)],
     acquire: bool,
 ) {
     let range = vk::ImageSubresourceRange {
@@ -314,21 +322,31 @@ pub unsafe fn ownership(
     let engine = shared.vk.queue_family;
     let barriers: Vec<_> = images
         .iter()
-        .map(|&image| {
+        .map(|&(image, initialized)| {
             let barrier = vk::ImageMemoryBarrier::default()
                 .image(image)
                 .subresource_range(range);
             if acquire {
                 barrier
                     .src_access_mask(vk::AccessFlags::empty())
-                    .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .dst_access_mask(
+                        vk::AccessFlags::COLOR_ATTACHMENT_READ
+                            | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    )
+                    .old_layout(if initialized {
+                        vk::ImageLayout::GENERAL
+                    } else {
+                        vk::ImageLayout::UNDEFINED
+                    })
                     .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                     .src_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
                     .dst_queue_family_index(engine)
             } else {
                 barrier
-                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                    .src_access_mask(
+                        vk::AccessFlags::COLOR_ATTACHMENT_READ
+                            | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    )
                     .dst_access_mask(vk::AccessFlags::empty())
                     .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                     .new_layout(vk::ImageLayout::GENERAL)

@@ -8,7 +8,7 @@ use std::ops::Range;
 use kurbo::Affine;
 use smallvec::SmallVec;
 
-use crate::{BlendMode, Command, Dirty, DisplayList, FillRule, Group, ShapeData};
+use crate::{BlendMode, Command, Dirty, DisplayList, FillRule, Group, RenderError, ShapeData};
 
 mod disjoint;
 pub mod projective;
@@ -36,6 +36,29 @@ pub fn shape_outline(shape: &ShapeData, tolerance: f64) -> Option<(kurbo::BezPat
             Some((kurbo::BezPath::from_vec(elements.to_vec()), *rule))
         }
     }
+}
+
+/// Reject a `stroke` whose dash state is not a meaningful pattern.
+///
+/// A negative or non-finite pattern entry, a pattern whose entries sum to
+/// zero, and a non-finite dash offset are invalid input. `kurbo::stroke`
+/// feeds every non-empty pattern to `dash_iter` unchecked, so each
+/// backend validates before lowering selects a route.
+///
+/// # Errors
+/// Returns [`RenderError::Render`] for an invalid dash pattern or a
+/// non-finite dash offset.
+pub fn check_dashes(stroke: &kurbo::Stroke) -> Result<(), RenderError> {
+    let pattern = &stroke.dash_pattern;
+    if pattern.iter().any(|dash| !dash.is_finite() || *dash < 0.0)
+        || (!pattern.is_empty() && pattern.iter().sum::<f64>() <= 0.0)
+    {
+        return Err(RenderError::Render("invalid dash pattern".into()));
+    }
+    if !stroke.dash_offset.is_finite() {
+        return Err(RenderError::Render("non-finite dash offset".into()));
+    }
+    Ok(())
 }
 
 /// A backend operation whose scope indices can be relocated during a patch.
@@ -2070,7 +2093,7 @@ impl Winding {
 /// inside/outside boundary edges, so every covered region carries
 /// winding `1` and the accumulator becomes exact under `NonZero`.
 ///
-/// An exact, conservative test runs first (see `disjoint`): when it proves
+/// An exact, conservative test runs first ([`proves_disjoint`]): when it proves
 /// that no overlapping region can exist the sweep is skipped and the result
 /// is [`Winding::Disjoint`], which the sweep would have answered with an
 /// unchanged input. Either way an input without overlap keeps its original
@@ -2084,6 +2107,19 @@ pub fn resolve_winding<S: Copy + Into<(f32, f32, f32, f32)>>(
         return Winding::Disjoint;
     }
     sweep(prepared, rule).map_or(Winding::Unchanged, Winding::Resolved)
+}
+
+/// The exact pre-sweep test of [`resolve_winding`], for callers that need
+/// the disjointness decision without the resolution.
+///
+/// `true` proves no overlapping region can exist, so signed-area
+/// accumulation of `segments` is exact under either fill rule: it is
+/// precisely the condition under which [`resolve_winding`] skips the
+/// sweep and reports [`Winding::Disjoint`]. `false` is "in doubt", not
+/// "overlapping" — only the sweep decides, so call [`resolve_winding`].
+#[must_use]
+pub fn proves_disjoint<S: Copy + Into<(f32, f32, f32, f32)>>(segments: &[S]) -> bool {
+    disjoint::prepare(segments).0
 }
 
 /// The band sweep over `prepared` segments, normalized top to bottom in
@@ -2432,6 +2468,76 @@ mod tests {
         ]
     }
 
+    /// `[0,3]²` and `[1.5,4.5]²`, same winding.
+    fn overlapping_squares() -> Vec<(f32, f32, f32, f32)> {
+        let mut segs = square(0.0, 0.0, 3.0, 3.0);
+        segs.extend(square(1.5, 1.5, 4.5, 4.5));
+        segs
+    }
+
+    /// 40 rectangles `[0,10]×[0.5i, 0.5i+5]`, all same winding.
+    fn stacked_rectangles() -> Vec<(f32, f32, f32, f32)> {
+        let mut segs = Vec::new();
+        for i in 0..40u8 {
+            let y = 0.5 * f32::from(i);
+            segs.extend(square(0.0, y, 10.0, y + 5.0));
+        }
+        segs
+    }
+
+    /// Left slopes of about `-1e-25` and `1e-9` around a small inner
+    /// rectangle.
+    fn collinear_join() -> Vec<(f32, f32, f32, f32)> {
+        vec![
+            (0.0, 0.0, -1e-16, 1e9),
+            (10.0, 1e9, 10.0, 0.0),
+            (-1e-16, 1e9, 1.0, 2e9),
+            (10.0, 2e9, 10.0, 1e9),
+            (5.0, 5.0, 5.0, 6.0),
+            (6.0, 6.0, 6.0, 5.0),
+        ]
+    }
+
+    /// A self-crossing quad.
+    fn bow_tie() -> Vec<(f32, f32, f32, f32)> {
+        vec![
+            (0.0, 0.0, 4.0, 4.0),
+            (4.0, 4.0, 4.0, 0.0),
+            (4.0, 0.0, 0.0, 4.0),
+            (0.0, 4.0, 0.0, 0.0),
+        ]
+    }
+
+    /// `[0,4]²` around `[1,3]²`, same winding.
+    fn nested_squares() -> Vec<(f32, f32, f32, f32)> {
+        let mut segs = square(0.0, 0.0, 4.0, 4.0);
+        segs.extend(square(1.0, 1.0, 3.0, 3.0));
+        segs
+    }
+
+    /// Two pairs crossing inside the band, the first at its top boundary.
+    fn later_crossing() -> Vec<(f32, f32, f32, f32)> {
+        vec![
+            (0.0, 0.0, 4.0, 4.0),
+            (1e-10, 0.0, -4.0, 4.0),
+            (5.0, 0.0, 4.0, 4.0),
+            (6.0, 0.0, 3.0, 4.0),
+        ]
+    }
+
+    /// Verbatim segments from a stroked glyph, with a crossing that is
+    /// non-adjacent at the band top.
+    fn nonadjacent_crossing() -> Vec<(f32, f32, f32, f32)> {
+        vec![
+            (110.472_26, 43.915_257, 108.866_936, 27.915_59),
+            (110.856_94, 27.715_923, 112.462_265, 43.715_59),
+            (113.483_76, 27.452_364, 115.089_07, 43.452_03),
+            (113.099_07, 43.651_7, 111.493_744, 27.652_03),
+            (111.367_424, 42.820_42, 113.994_24, 42.55686),
+            (113.994_24, 42.55686, 113.099_07, 43.651_7),
+        ]
+    }
+
     #[test]
     fn a_single_square_needs_no_resolution() {
         let segs = square(0.0, 0.0, 9.0, 9.0);
@@ -2450,8 +2556,7 @@ mod tests {
     #[test]
     fn overlapping_squares_emit_their_union_boundary() {
         // [0,3]² and [1.5,4.5]², same winding: union 9 + 9 − 1.5² = 15.75.
-        let mut segs = square(0.0, 0.0, 3.0, 3.0);
-        segs.extend(square(1.5, 1.5, 4.5, 4.5));
+        let segs = overlapping_squares();
         let resolved = resolve_winding(&segs, FillRule::NonZero)
             .into_resolved()
             .expect("overlap present");
@@ -2478,11 +2583,7 @@ mod tests {
         // 40 rectangles [0,10]×[0.5i, 0.5i+5], all same winding: many
         // bands and heavy overlap, but the union is one rectangle
         // [0,10]×[0,24.5] — two merged boundary edges, area 245.
-        let mut segs = Vec::new();
-        for i in 0..40u8 {
-            let y = 0.5 * f32::from(i);
-            segs.extend(square(0.0, y, 10.0, y + 5.0));
-        }
+        let segs = stacked_rectangles();
         let resolved = resolve_winding(&segs, FillRule::NonZero)
             .into_resolved()
             .expect("overlap present");
@@ -2499,14 +2600,7 @@ mod tests {
         // The left slopes are about -1e-25 and 1e-9. Their rounded
         // difference equals EPS, although the former lies below
         // `1e-9 - EPS`. The small inner rectangle establishes overlap.
-        let segs = [
-            (0.0, 0.0, -1e-16, 1e9),
-            (10.0, 1e9, 10.0, 0.0),
-            (-1e-16, 1e9, 1.0, 2e9),
-            (10.0, 2e9, 10.0, 1e9),
-            (5.0, 5.0, 5.0, 6.0),
-            (6.0, 6.0, 6.0, 5.0),
-        ];
+        let segs = collinear_join();
         assert_eq!(
             resolve_winding(&segs, FillRule::NonZero)
                 .into_resolved()
@@ -2520,12 +2614,7 @@ mod tests {
         // Self-crossing quad: mixed-sign windings cancel in the raw
         // accumulator; resolved coverage is the two-triangle union,
         // area 8.0.
-        let segs = vec![
-            (0.0, 0.0, 4.0, 4.0),
-            (4.0, 4.0, 4.0, 0.0),
-            (4.0, 0.0, 0.0, 4.0),
-            (0.0, 4.0, 0.0, 0.0),
-        ];
+        let segs = bow_tie();
         let resolved = resolve_winding(&segs, FillRule::NonZero)
             .into_resolved()
             .expect("mixed signs overlap");
@@ -2538,8 +2627,7 @@ mod tests {
 
     #[test]
     fn even_odd_nested_squares_open_the_hole() {
-        let mut segs = square(0.0, 0.0, 4.0, 4.0);
-        segs.extend(square(1.0, 1.0, 3.0, 3.0));
+        let segs = nested_squares();
         let resolved = resolve_winding(&segs, FillRule::EvenOdd)
             .into_resolved()
             .expect("winding reaches 2");
@@ -2584,12 +2672,7 @@ mod tests {
         // at y≈5e-11 — on the band's top boundary, a tie, no valid split.
         // A scan that stops at that pair would walk (5,0)-(4,4) and
         // (6,0)-(3,4) while they cross inside at y=2.
-        let segs = vec![
-            (0.0f32, 0.0, 4.0, 4.0),
-            (1e-10, 0.0, -4.0, 4.0),
-            (5.0, 0.0, 4.0, 4.0),
-            (6.0, 0.0, 3.0, 4.0),
-        ];
+        let segs = later_crossing();
         let resolved = resolve_winding(&segs, FillRule::NonZero)
             .into_resolved()
             .expect("crossing present");
@@ -2615,14 +2698,7 @@ mod tests {
         // scan misses it and emits edges that cross inside the band.
         // Verbatim segments from a stroked glyph (the +1 edge, the two
         // diagonals, and the long contour edge sharing its top vertex).
-        let segs = vec![
-            (110.472_26f32, 43.915_257, 108.866_936, 27.915_59),
-            (110.856_94, 27.715_923, 112.462_265, 43.715_59),
-            (113.483_76, 27.452_364, 115.089_07, 43.452_03),
-            (113.099_07, 43.651_7, 111.493_744, 27.652_03),
-            (111.367_424, 42.820_42, 113.994_24, 42.55686),
-            (113.994_24, 42.55686, 113.099_07, 43.651_7),
-        ];
+        let segs = nonadjacent_crossing();
         let resolved = resolve_winding(&segs, FillRule::NonZero)
             .into_resolved()
             .expect("crossing present");
@@ -2632,6 +2708,36 @@ mod tests {
                 .any(|e| (e.1 - 42.7206).abs() < 1e-3 || (e.3 - 42.7206).abs() < 1e-3),
             "no edge boundary at the y≈42.72 crossing: {resolved:?}"
         );
+    }
+
+    /// `proves_disjoint` is the pre-sweep proof `resolve_winding` gates
+    /// on: over every fixture above it answers `true` exactly when
+    /// `resolve_winding` reports [`Winding::Disjoint`] — the sweep
+    /// skipped — under either fill rule. The expected column pins the
+    /// direction: only the single square is provable; every fixture the
+    /// sweep rewrites must be left to it.
+    #[test]
+    fn proves_disjoint_is_the_pre_sweep_decision() {
+        let fixtures = [
+            ("a single square", square(0.0, 0.0, 9.0, 9.0), true),
+            ("overlapping squares", overlapping_squares(), false),
+            ("stacked rectangles", stacked_rectangles(), false),
+            ("a collinear join", collinear_join(), false),
+            ("a bow tie", bow_tie(), false),
+            ("nested squares", nested_squares(), false),
+            ("a later crossing", later_crossing(), false),
+            ("a nonadjacent crossing", nonadjacent_crossing(), false),
+        ];
+        for (name, segs, expected) in fixtures {
+            assert_eq!(proves_disjoint(&segs), expected, "{name}");
+            for rule in [FillRule::NonZero, FillRule::EvenOdd] {
+                assert_eq!(
+                    proves_disjoint(&segs),
+                    resolve_winding(&segs, rule) == Winding::Disjoint,
+                    "{name}"
+                );
+            }
+        }
     }
 }
 

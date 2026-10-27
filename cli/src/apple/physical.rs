@@ -341,11 +341,11 @@ fn physical_device_launch_command(
     selector: &str,
     bundle_id: &str,
     options: &crate::device::RunOptions,
-) -> smol::process::Command {
+) -> std::io::Result<smol::process::Command> {
     #[cfg(unix)]
-    let mut command = host.command_in_own_process_group("xcrun");
+    let mut command = host.command_in_own_process_group("xcrun")?;
     #[cfg(not(unix))]
-    let mut command = host.command("xcrun");
+    let mut command = host.command("xcrun")?;
     command.args([
         "devicectl",
         "device",
@@ -370,7 +370,7 @@ fn physical_device_launch_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    command
+    Ok(command)
 }
 
 async fn install_device_app(
@@ -380,6 +380,7 @@ async fn install_device_app(
 ) -> Result<(), FailToRun> {
     let output = host
         .command("xcrun")
+        .map_err(|error| FailToRun::Install(eyre!("Failed to install app: {error}")))?
         .args([
             "devicectl",
             "device",
@@ -434,6 +435,7 @@ async fn find_remote_pid(
 
     let output = host
         .command("xcrun")
+        .wrap_err("Could not run devicectl device info processes")?
         .args([
             "devicectl",
             "device",
@@ -466,26 +468,14 @@ async fn find_remote_pid(
         .map(|process| process.process_identifier))
 }
 
-/// Send a signal to the process owned by this monitor.
+/// Send a signal to the `devicectl` process this monitor owns.
 #[cfg(unix)]
 fn signal_child(
     child: &smol::process::Child,
     signal: nix::sys::signal::Signal,
     sender: &Sender<DeviceEvent>,
 ) {
-    let Ok(raw_pid) = i32::try_from(child.id()) else {
-        report_monitor_error(
-            sender,
-            "devicectl PID does not fit in nix::unistd::Pid".to_string(),
-        );
-        return;
-    };
-    if let Err(error) = nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw_pid), signal) {
-        report_monitor_error(
-            sender,
-            format!("Could not signal devicectl process: {error}"),
-        );
-    }
+    crate::device::signal_child(child, signal, sender, "devicectl");
 }
 
 /// Bounds finding the app's remote PID and killing it with
@@ -516,22 +506,25 @@ async fn kill_console_session(
                 return;
             }
         };
-        let terminate = host
-            .command("xcrun")
-            .args([
-                "devicectl",
-                "device",
-                "process",
-                "terminate",
-                "--device",
-                selector,
-                "--kill",
-                "--pid",
-                &pid.to_string(),
-            ])
-            .kill_on_drop(true)
-            .output()
-            .await;
+        let terminate = match host.command("xcrun") {
+            Ok(mut command) => {
+                command
+                    .args([
+                        "devicectl",
+                        "device",
+                        "process",
+                        "terminate",
+                        "--device",
+                        selector,
+                        "--kill",
+                        "--pid",
+                        &pid.to_string(),
+                    ])
+                    .kill_on_drop(true);
+                command.output().await
+            }
+            Err(error) => Err(error),
+        };
         match terminate {
             Ok(output) if output.status.success() => {}
             Ok(output) => report_monitor_error(
@@ -736,7 +729,7 @@ impl Device for ApplePhysicalDevice {
         // exit detection, and signal forwarding (a signal to devicectl is
         // delivered to the app) in a single process.
         let mut child = physical_device_launch_command(host, self.selector(), &bundle_id, &options)
-            .spawn()
+            .and_then(|mut command| command.spawn())
             .map_err(|error| FailToRun::Launch(eyre!("Failed to launch app: {error}")))?;
 
         let stdout = child
@@ -952,11 +945,10 @@ mod tests {
     /// RED for water-rs/waterui#2600: `RunOptions` values must ride the
     /// caller-side `DEVICECTL_CHILD_*` channel — argv must never see them.
     #[test]
-    fn the_launch_environment_never_enters_the_device_argv() {
-        let host = crate::toolchain::Host::new(
-            Vec::<std::path::PathBuf>::new(),
-            Vec::<(String, String)>::new(),
-        );
+    fn the_launch_environment_never_enters_the_device_argv() -> std::io::Result<()> {
+        let machine = crate::toolchain::testing::TestMachine::new();
+        machine.install("xcrun");
+        let host = machine.host(Vec::<(String, String)>::new());
         let mut options = crate::device::RunOptions::new();
         options.insert_env_var(
             String::from("WATERUI_DUMMY_KEY"),
@@ -968,7 +960,7 @@ mod tests {
         );
 
         let command =
-            physical_device_launch_command(&host, "ABC123-SELECTOR", "com.example.app", &options);
+            physical_device_launch_command(&host, "ABC123-SELECTOR", "com.example.app", &options)?;
         let args: Vec<String> = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -1002,16 +994,16 @@ mod tests {
             .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
         );
+        Ok(())
     }
 
     /// Every `RunOptions` pair lands as an exact `DEVICECTL_CHILD_<key>`
     /// value — spaces, newlines, `=`, non-ASCII and empty survive verbatim.
     #[test]
-    fn declared_values_ride_the_child_prefixed_channel_verbatim() {
-        let host = crate::toolchain::Host::new(
-            Vec::<std::path::PathBuf>::new(),
-            Vec::<(String, String)>::new(),
-        );
+    fn declared_values_ride_the_child_prefixed_channel_verbatim() -> std::io::Result<()> {
+        let machine = crate::toolchain::testing::TestMachine::new();
+        machine.install("xcrun");
+        let host = machine.host(Vec::<(String, String)>::new());
         let mut options = crate::device::RunOptions::new();
         for (key, value) in [
             ("SPACED", "a  b\nc"),
@@ -1023,7 +1015,7 @@ mod tests {
             options.insert_env_var(String::from(key), String::from(value));
         }
 
-        let command = physical_device_launch_command(&host, "S", "com.example.app", &options);
+        let command = physical_device_launch_command(&host, "S", "com.example.app", &options)?;
         let env = command_env(&command);
         for (key, value) in [
             ("SPACED", "a  b\nc"),
@@ -1039,38 +1031,42 @@ mod tests {
                 "{key}"
             );
         }
+        Ok(())
     }
 
     /// A `DEVICECTL_CHILD_*` the host already carries is cleared from the
     /// child — `RunOptions` owns the namespace — while the host itself and
     /// its unrelated variables stay untouched.
     #[test]
-    fn run_options_own_the_child_prefixed_namespace() {
-        let host = crate::toolchain::Host::new(
-            Vec::<std::path::PathBuf>::new(),
-            [
-                (
-                    String::from("DEVICECTL_CHILD_STALE"),
-                    String::from("host-stale"),
-                ),
-                (
-                    String::from("DEVICECTL_CHILD_OVERRIDDEN"),
-                    String::from("host-value"),
-                ),
-                (String::from("PATH"), String::from("/usr/bin:/bin")),
-            ],
-        );
+    fn run_options_own_the_child_prefixed_namespace() -> std::io::Result<()> {
+        let machine = crate::toolchain::testing::TestMachine::new();
+        machine.install("xcrun");
+        let host = machine.host([
+            (
+                String::from("DEVICECTL_CHILD_STALE"),
+                String::from("host-stale"),
+            ),
+            (
+                String::from("DEVICECTL_CHILD_OVERRIDDEN"),
+                String::from("host-value"),
+            ),
+        ]);
         let mut options = crate::device::RunOptions::new();
         options.insert_env_var(String::from("OVERRIDDEN"), String::from("run-value"));
 
-        let command = physical_device_launch_command(&host, "S", "com.example.app", &options);
+        let command = physical_device_launch_command(&host, "S", "com.example.app", &options)?;
         let env = command_env(&command);
         assert!(!env.contains_key("DEVICECTL_CHILD_STALE"), "{env:?}");
         assert_eq!(
             env.get("DEVICECTL_CHILD_OVERRIDDEN").map(String::as_str),
             Some("run-value")
         );
-        assert_eq!(env.get("PATH").map(String::as_str), Some("/usr/bin:/bin"));
+        assert_eq!(
+            env.get("PATH").map(String::as_str),
+            host.env("PATH")
+                .map(|value| value.to_string_lossy().into_owned())
+                .as_deref()
+        );
 
         // The host is immutable: its own env map never observed the purge.
         assert_eq!(
@@ -1078,18 +1074,19 @@ mod tests {
                 .map(|value| value.to_string_lossy().into_owned()),
             Some(String::from("host-stale"))
         );
+        Ok(())
     }
 
     #[cfg(unix)]
     fn console_run(
         machine: &crate::toolchain::testing::TestMachine,
         termination_grace: std::time::Duration,
-    ) -> (
+    ) -> std::io::Result<(
         crate::device::Running,
         async_channel::Sender<()>,
         async_channel::Receiver<()>,
         ProcessGroupGuard,
-    ) {
+    )> {
         use std::process::Stdio;
 
         use crate::device::Running;
@@ -1102,7 +1099,7 @@ mod tests {
         let script = term_ignoring_fixture(machine);
         let host = machine.host(Vec::<(String, String)>::new());
         let mut child = host
-            .command_in_own_process_group(&script)
+            .command_in_own_process_group(&script)?
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1131,12 +1128,12 @@ mod tests {
         ))
         .detach();
         let (interrupt_tx, interrupt_rx) = async_channel::unbounded();
-        (running, interrupt_tx, interrupt_rx, group_guard)
+        Ok((running, interrupt_tx, interrupt_rx, group_guard))
     }
 
     #[cfg(unix)]
     #[test]
-    fn console_grace_overrun_reports_an_error_then_kills() {
+    fn console_grace_overrun_reports_an_error_then_kills() -> std::io::Result<()> {
         use futures_util::future::{Either, select};
         use smol::stream::StreamExt as _;
         use std::time::Duration;
@@ -1145,7 +1142,7 @@ mod tests {
 
         let machine = crate::toolchain::testing::TestMachine::new();
         let (running, interrupt_tx, interrupt_rx, group_guard) =
-            console_run(&machine, Duration::from_millis(200));
+            console_run(&machine, Duration::from_millis(200))?;
         let exercise = async move {
             let _group_guard = group_guard;
             let mut events = std::pin::pin!(running.supervise(interrupt_rx));
@@ -1198,11 +1195,12 @@ mod tests {
             Err(nix::errno::Errno::ESRCH),
             "Stopped follows the confirmed child exit and reap"
         );
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn console_second_interrupt_kills_without_an_error() {
+    fn console_second_interrupt_kills_without_an_error() -> std::io::Result<()> {
         use futures_util::future::{Either, select};
         use smol::stream::StreamExt as _;
         use std::time::Duration;
@@ -1211,7 +1209,7 @@ mod tests {
 
         let machine = crate::toolchain::testing::TestMachine::new();
         let (running, interrupt_tx, interrupt_rx, group_guard) =
-            console_run(&machine, Duration::from_secs(3600));
+            console_run(&machine, Duration::from_secs(3600))?;
         let exercise = async move {
             let _group_guard = group_guard;
             let mut events = std::pin::pin!(running.supervise(interrupt_rx));
@@ -1269,5 +1267,6 @@ mod tests {
             Err(nix::errno::Errno::ESRCH),
             "Stopped follows the confirmed child exit and reap"
         );
+        Ok(())
     }
 }

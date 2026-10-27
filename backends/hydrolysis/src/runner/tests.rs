@@ -11,7 +11,7 @@ use crate::platform::{
 };
 use crate::renderer::tests::MinimalTestTheme;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, InteractionKey};
-use crate::text::SessionTextEngine;
+use crate::text::ParleyEngine;
 use crate::theme::TextCaretMotion;
 use core::time::Duration;
 use std::cell::RefCell;
@@ -996,7 +996,9 @@ fn a_behind_window_material_asks_the_platform_to_blur_behind() {
     }
 }
 
-fn runtime_window_for(window: Window) -> RuntimeWindow<HeadlessPlatformWindow> {
+fn runtime_window_for(
+    window: Window,
+) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
     runtime_window_sized(window, 16, 16)
 }
 
@@ -1004,7 +1006,7 @@ fn runtime_window_sized(
     window: Window,
     width: u32,
     height: u32,
-) -> RuntimeWindow<HeadlessPlatformWindow> {
+) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
     let platform =
         HeadlessPlatformWindow::new_for_tests(width, height, wgpu::TextureFormat::Rgba8Unorm);
     runtime_window_with_platform(window, platform)
@@ -1013,13 +1015,13 @@ fn runtime_window_sized(
 fn runtime_window_with_platform(
     window: Window,
     mut platform: HeadlessPlatformWindow,
-) -> RuntimeWindow<HeadlessPlatformWindow> {
+) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
     platform.apply_properties(&window);
     let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
-        SessionTextEngine::system(FontFamilyResolution::Strict),
+        ParleyEngine::system(FontFamilyResolution::Strict),
     );
-    RuntimeWindow::new(
+    RuntimeWindow::new_gpu(
         window,
         platform,
         renderer,
@@ -1029,6 +1031,57 @@ fn runtime_window_with_platform(
             slow_frame_threshold_override: None,
         },
     )
+}
+
+/// The host-side construction, input pump and scene pump need only
+/// `PlatformWindow`: these helpers are deliberately generic over it, so an
+/// accidental `GpuSurfaceWindow` bound fails this test's compilation.
+#[test]
+fn host_window_pipeline_requires_no_gpu_surface_trait() {
+    fn construct<P: crate::platform::PlatformWindow, E: crate::text::TextEngine>(
+        window: Window,
+        platform: P,
+        renderer: HydrolysisRenderer<E>,
+    ) -> RuntimeWindow<P, E> {
+        RuntimeWindow::new(
+            window,
+            platform,
+            renderer,
+            RenderDiagnosticsConfig {
+                enabled: false,
+                interval: Duration::from_secs(1),
+                slow_frame_threshold_override: None,
+            },
+        )
+    }
+    fn pump<P: crate::platform::PlatformWindow, E: crate::text::TextEngine>(
+        runtime: &mut RuntimeWindow<P, E>,
+        env: &Environment,
+    ) {
+        assert!(
+            !handle_input_events(runtime, env),
+            "an idle window stays open"
+        );
+        assert!(
+            super::window::pump_window_scene(runtime, env, &mut || false).built,
+            "the first pump builds the tree"
+        );
+    }
+
+    let platform = HeadlessPlatformWindow::new_for_tests(320, 200, wgpu::TextureFormat::Rgba8Unorm);
+    let mut runtime = construct(
+        Window::new(
+            "",
+            waterui::Binding::container(waterui::window::WindowState::Normal),
+            || (),
+        ),
+        platform,
+        HydrolysisRenderer::with_engine(
+            Rc::new(MinimalTestTheme::default()),
+            ParleyEngine::system(FontFamilyResolution::Strict),
+        ),
+    );
+    pump(&mut runtime, &crate::renderer::tests::test_environment());
 }
 
 /// An animated `List` scroll must keep the window awake until it settles.
@@ -1102,7 +1155,7 @@ fn an_animated_list_scroll_keeps_the_window_awake_until_it_settles() {
 /// Runs frames while the runtime is still asking to be woken, returning how many
 /// it took to go idle. This is the winit loop's rule: no wake request, no frame.
 fn drive_until_idle(
-    runtime: &mut RuntimeWindow<HeadlessPlatformWindow>,
+    runtime: &mut RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine>,
     env: &Environment,
     now: &mut Instant,
     max_frames: usize,
@@ -1112,11 +1165,11 @@ fn drive_until_idle(
 
 /// [`drive_until_idle`], running `check` on the window after every frame.
 fn drive_until_idle_checking(
-    runtime: &mut RuntimeWindow<HeadlessPlatformWindow>,
+    runtime: &mut RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine>,
     env: &Environment,
     now: &mut Instant,
     max_frames: usize,
-    mut check: impl FnMut(&RuntimeWindow<HeadlessPlatformWindow>),
+    mut check: impl FnMut(&RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine>),
 ) -> usize {
     for frame in 0..max_frames {
         let wake = runtime.mode.is_pending()
@@ -1201,20 +1254,23 @@ fn an_open_context_menu_presentation_builds_once_through_the_build_path() {
     );
 }
 
-fn test_runtime_window() -> RuntimeWindow<HeadlessPlatformWindow> {
+fn test_runtime_window() -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
     sized_test_runtime_window(16, 16)
 }
 
-fn sized_test_runtime_window(width: u32, height: u32) -> RuntimeWindow<HeadlessPlatformWindow> {
+fn sized_test_runtime_window(
+    width: u32,
+    height: u32,
+) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
     let window = Window::new("", binding(WindowState::Normal), || ());
     let mut platform =
         HeadlessPlatformWindow::new_for_tests(width, height, wgpu::TextureFormat::Rgba8Unorm);
     platform.apply_properties(&window);
     let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
-        SessionTextEngine::system(FontFamilyResolution::Strict),
+        ParleyEngine::system(FontFamilyResolution::Strict),
     );
-    RuntimeWindow::new(
+    RuntimeWindow::new_gpu(
         window,
         platform,
         renderer,
@@ -1650,7 +1706,7 @@ fn a_frame_transaction_serves_redraws_raised_before_its_render() {
 }
 
 fn pump_frame_transaction(
-    runtime: &mut RuntimeWindow<HeadlessPlatformWindow>,
+    runtime: &mut RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine>,
     transaction: &super::window::FrameTransaction,
     env: &Environment,
     now: Instant,
@@ -1678,4 +1734,38 @@ fn pump_frame_transaction(
             signals_pending: runtime.renderer.has_pending_frame_request(),
         },
     )
+}
+
+/// The run entry installs its tracing subscriber before it invokes the app
+/// factory: events the application emits while building its `App` reach the
+/// log instead of being dropped (water-rs/waterui#2513). The headless
+/// one-shot `run` is the only `hydrolysis::run` that returns — the winit
+/// `run` never does, so this test exists only under that cfg — and only
+/// where the headless one-shot `run` itself exists: not on Android, whose
+/// host mounts `runner::android` instead.
+#[cfg(all(not(hydrolysis_winit), not(target_os = "android")))]
+#[test]
+fn a_run_installs_tracing_before_the_app_factory_runs() {
+    // SAFETY: nextest gives each test its own process, so mutating the
+    // environment races with nothing.
+    unsafe { std::env::set_var("RUST_LOG", "trace") };
+    let mut factory_saw_subscriber = false;
+    super::run(
+        |env| {
+            // `set_global_default` succeeds only where no subscriber exists:
+            // an Err means `run` installed the subscriber first, an Ok means
+            // the factory ran against none — the #2513 order.
+            factory_saw_subscriber = tracing::subscriber::set_global_default(
+                tracing::subscriber::NoSubscriber::default(),
+            )
+            .is_err();
+            waterui::app::App::new_with_windows(Vec::new(), env)
+        },
+        Environment::new(),
+        crate::testing::TestStyle::new(),
+    );
+    assert!(
+        factory_saw_subscriber,
+        "the app factory ran before the tracing subscriber was installed"
+    );
 }

@@ -23,15 +23,15 @@
 //! re-dispatching the same screen from the `View` tree costs ~15ms.
 
 macro_rules! impl_widget_behavior {
-    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)? $(; surface: $surface:ident)? $(; page: $page:path)?) => {
-        impl WidgetBehavior for RefCell<$state> {
+    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; dirty: $dirty:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)? $(; surface: $surface:ident)? $(; page: $page:path)?) => {
+        impl<E: crate::text::TextEngine> WidgetBehavior<E> for RefCell<$state> {
             $(fn priority(&self) -> i32 { $priority })?
 
             $(fn renders_nothing(&self) -> bool { $renders_nothing })?
 
             fn render(
                 self: Rc<Self>,
-                renderer: &mut HydrolysisRenderer,
+                renderer: &mut HydrolysisRenderer<E>,
                 ctx: RenderContext,
                 env: &Environment,
                 safe_area: Option<safe_area::SafeAreaLayout>,
@@ -42,7 +42,7 @@ macro_rules! impl_widget_behavior {
 
             fn measure(
                 &self,
-                state: &mut HydroState,
+                state: &mut HydroState<E>,
                 proposal: ProposalSize,
                 env: &Environment,
                 theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -50,7 +50,11 @@ macro_rules! impl_widget_behavior {
                 ($measure)(&self.borrow(), proposal, state, env, theme)
             }
 
-            $(fn prepare(&self, renderer: &mut HydrolysisRenderer, env: &Environment) {
+            $(fn take_layout_dirty(&self) -> bool {
+                self.borrow_mut().$dirty()
+            })?
+
+            $(fn prepare(&self, renderer: &mut HydrolysisRenderer<E>, env: &Environment) {
                 self.borrow_mut().$prepare(renderer, env);
             })?
 
@@ -72,7 +76,7 @@ macro_rules! impl_widget_behavior {
                 #[cfg(feature = "accessibility")]
                 fn emit_accessibility(
                     self: Rc<Self>,
-                    renderer: &mut SemanticCore,
+                    renderer: &mut SemanticCore<E>,
                     env: &Environment,
                 ) {
                     $a11y(renderer, &self, env);
@@ -125,82 +129,82 @@ type CollectionItemId = RawId;
 /// A node in the persistent retained render tree. The render-primitive set is
 /// closed by the nature of a self-drawn renderer; the open `HydroDispatcher` maps
 /// the open universe of `View` types onto this closed set.
-pub enum RenderNode {
+pub enum RenderNode<E: crate::text::TextEngine> {
     /// A solid fill of the node's bounds.
-    Color(ColorNode),
+    Color(ColorNode<E>),
     /// A styled-text leaf holding its reactive content/alignment.
-    Text(Box<TextNode>),
+    Text(Box<TextNode<E>>),
     /// A layout container owning child nodes and their cached frames.
-    Container(Box<ContainerNode>),
+    Container(Box<ContainerNode<E>>),
     /// An animated-opacity layer wrapping a child (layout-transparent).
-    Opacity(Box<OpacityNode>),
+    Opacity(Box<OpacityNode<E>>),
     /// An animated scale transform wrapping a child (layout-transparent).
-    Scale(Box<ScaleNode>),
+    Scale(Box<ScaleNode<E>>),
     /// An animated rotation transform wrapping a child (layout-transparent).
-    Rotation(Box<RotationNode>),
+    Rotation(Box<RotationNode<E>>),
     /// An animated offset transform wrapping a child (layout-transparent).
-    Offset(Box<OffsetNode>),
+    Offset(Box<OffsetNode<E>>),
     /// Holds a retained guard (e.g. a signal-watcher subscription) alive for its
     /// subtree's lifetime; layout-transparent. Recursing through it (instead of
     /// capturing) lets reactive/effect descendants like `SceneView` reach their
     /// dedicated nodes.
-    Retain(Box<RetainNode>),
+    Retain(Box<RetainNode<E>>),
     /// A scoped-environment wrapper: carries the environment a subtree was built
     /// under so it is also the environment used at `measure`/`layout`/`flush`.
     /// Env scoping (`.font()` / `.foreground()` / locale / theme) is read every
     /// frame by text shaping and accessibility resolution, so it cannot be
     /// flattened away at build time — it must travel with the node. Layout-transparent.
-    Env(Box<EnvNode>),
+    Env(Box<EnvNode<E>>),
     /// A scroll view: owns its content as a persistent child, lays it out at the
     /// full content size, and applies the scroll offset as a per-frame transform
     /// (viewport clip + translate). No content cache — the child IS the retained
     /// content, so scrolling re-flushes at the new offset without re-dispatch.
-    Scroll(Box<ScrollNode>),
+    Scroll(Box<ScrollNode<E>>),
     /// A retained, reactive, non-virtualized collection (an `AbsoluteLayout`/
     /// `ZStack` overlay or a transition collection): renders every item, reconciles
     /// membership changes by id (unchanged items keep their node and state, new ids
     /// are built, removed ids are dropped), and relays out — no whole-window rebuild.
-    Collection(Box<CollectionNode>),
+    Collection(Box<CollectionNode<E>>),
     /// A viewport-virtualized lazy stack (a `VStack`/`HStack` `LazyContainer`,
     /// typically inside a scroll): builds, measures, and encodes only the items in
     /// the current visible window, so cost is bounded by visible rows regardless of
     /// total count. Re-resolves the window each flush from the enclosing scroll's
     /// pushed viewport, so scrolling reveals new rows without re-dispatch.
-    LazyStack(Box<LazyStackNode>),
+    LazyStack(Box<LazyStackNode<E>>),
     /// A self-drawn scene (`Canvas`/SVG/chart): owns its `SceneContent` directly
     /// rather than through a frame-ordered effect slot, so a `Dynamic` swap to a
     /// different scene renders the new content instead of the previous scene's.
-    SceneView(Box<SceneViewNode>),
+    SceneView(Box<SceneViewNode<E>>),
     /// An embedded `GpuContentView` leaf owning its `GpuContentRuntime`
     /// directly (no cursor-bound slot), composited through an `Rc`-carrying layer.
-    GpuContent(Box<GpuContentNode>),
+    GpuContent(Box<GpuContentNode<E>>),
     /// An `ExternalFrameView` leaf owning its `ExternalFrameRuntime`,
     /// composited through a keyed engine layer that presents the frames its
     /// source publishes.
-    ExternalFrame(Box<ExternalFrameNode>),
+    ExternalFrame(Box<ExternalFrameNode<E>>),
     /// A `FilteredView` wrapper owning its `FilteredRuntime` (the engine
     /// `Filter`) and recursing into its child node — the child mounts inside
     /// the filtered group so the filter covers the whole subtree.
-    Filtered(Box<FilteredNode>),
+    Filtered(Box<FilteredNode<E>>),
     /// A reactive `Dynamic` host: holds the live `Dynamic` and rebuilds only its
     /// own child subtree when the content changes (incremental patch + relayout).
     /// This is the structural seam that keeps a content swap from resetting the
     /// scene and re-dispatching the whole window, which is visible as a flicker.
     /// Layout-transparent around its child.
-    Dynamic(Box<DynamicHostNode>),
+    Dynamic(Box<DynamicHostNode<E>>),
     /// A transparent metadata wrapper that applies a visual/interaction effect
     /// every flush and *recurses into* its child node (instead of capturing the
     /// subtree once). This is what keeps reactive descendants inside `.clip()` /
     /// `.border()` / `.shadow()` / `.cursor()` / `.draggable()` / drop-destination
     /// / context-menu live: they reach their own dedicated nodes and keep updating.
     /// Layout-transparent (the effect is pure setup + render child).
-    Wrapper(Box<WrapperNode>),
+    Wrapper(Box<WrapperNode<E>>),
     /// The fill occupying a [`BackgroundLayout`]'s background slot (§7.1):
     /// wraps the slot's paint fill — a `Color` or the gradient leaf, inside
     /// any layout-transparent wrappers — and carries the paint extension
     /// layout records and flush applies. Layout-transparent: it is a paint
     /// marker, not a frame.
-    Fill(Box<FillNode>),
+    Fill(Box<FillNode<E>>),
     /// A native widget leaf (button, toggle, slider, picker, text field, …) rendered
     /// by its `HydroNativeView` handler **every flush** from a retained,
     /// signal-holding config — never baked. Its `builder` reconstructs the leaf view
@@ -209,15 +213,15 @@ pub enum RenderNode {
     /// label, a bound value) stays live. Re-dispatching a *leaf* is cheap: no body
     /// expansion and no structural rebuild, so the leaf never has to be captured
     /// and replayed to stay affordable.
-    Widget(WidgetNode),
+    Widget(WidgetNode<E>),
 }
 
-impl RenderNode {
+impl<E: crate::text::TextEngine> RenderNode<E> {
     /// The node's mount core: its cell (marks, parent link), placement
     /// mirror and signal-guard stores. Every node owns one for its whole
     /// lifetime — layer-owning or pass-through alike — so a mark or a
     /// structural edit always has a live owner to attach to.
-    pub(crate) fn core(&self) -> &NodeCore {
+    pub(crate) fn core(&self) -> &NodeCore<E> {
         match self {
             Self::Color(node) => &node.core,
             Self::Text(node) => &node.core,
@@ -248,7 +252,7 @@ impl RenderNode {
     /// `ensure_built`). `f` receives `(attach_parent, child)` — the core the
     /// child's cell parents to: `self`'s own core for ordinary children, a
     /// [`CollectionEntry`]'s core for an entry's node.
-    fn for_each_child(&self, f: &mut impl FnMut(&NodeCore, &Self)) {
+    fn for_each_child(&self, f: &mut impl FnMut(&NodeCore<E>, &Self)) {
         let own = self.core();
         match self {
             Self::Color(_)
@@ -328,7 +332,7 @@ impl RenderNode {
     /// Test-only: the acceptance probes compare the whole sequence across
     /// an update (unchanged nodes keep their position and cell).
     #[cfg(test)]
-    pub(crate) fn collect_cells(&self, out: &mut Vec<Rc<NodeCell>>) {
+    pub(crate) fn collect_cells(&self, out: &mut Vec<Rc<NodeCell<E>>>) {
         out.push(Rc::clone(&self.core().cell));
         self.for_each_child(&mut |parent, child| {
             if !Rc::ptr_eq(&parent.cell, &self.core().cell) {

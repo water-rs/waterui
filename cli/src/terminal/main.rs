@@ -212,7 +212,7 @@ fn main() -> Result<()> {
                 until_interrupt(device::run(&shell, args), &interrupt_rx).await
             }
             Commands::Devices(args) => {
-                until_interrupt(devices::run(&shell, args), &interrupt_rx).await
+                until_interrupt(Box::pin(devices::run(&shell, args)), &interrupt_rx).await
             }
             Commands::Gc(args) => until_interrupt(gc::run(&shell, args), &interrupt_rx).await,
             Commands::Fetch(args) => {
@@ -221,9 +221,9 @@ fn main() -> Result<()> {
             Commands::Preview(args) => {
                 until_interrupt(Box::pin(preview::run(&shell, args)), &interrupt_rx).await
             }
-            Commands::Inspector(args) => {
-                Box::pin(until_interrupt(inspector::run(&shell, args), &interrupt_rx)).await
-            }
+            Commands::Inspector(args) => Box::pin(inspector::run(&shell, args, interrupt_rx))
+                .await
+                .map(Some),
             Commands::Mcp(args) => until_interrupt(mcp::run(&shell, args), &interrupt_rx).await,
             Commands::Update(args) => {
                 until_interrupt(update::run(&shell, args), &interrupt_rx).await

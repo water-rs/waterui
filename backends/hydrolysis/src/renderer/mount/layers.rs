@@ -15,7 +15,7 @@ use std::num::NonZeroU64;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cherenkov::{FilterId, Layer, LayerId, ShapeData, Shared, Transaction};
+use cherenkov_record::{FilterId, Layer, LayerId, ShapeData, Shared, Transaction};
 
 use waterui_graphics::HeldResources;
 
@@ -38,35 +38,34 @@ use crate::renderer::recording::{LoweredResources, SolidRect};
 /// The liveness token of one node's layers: parents list children by
 /// `(LayerId, Weak<LayerToken>)`, so a dropped child is told apart from a
 /// live one without a back-pointer.
-pub struct LayerToken {
-    owner: Weak<NodeCell>,
+pub struct LayerToken<E: crate::text::TextEngine> {
+    owner: Weak<NodeCell<E>>,
 }
 
 /// A node's retained state, owned by its `NodeCore`.
-#[derive(Default)]
-pub struct NodeRetained {
-    pub(crate) layers: RefCell<Option<NodeLayers>>,
+pub struct NodeRetained<E: crate::text::TextEngine> {
+    pub(crate) layers: RefCell<Option<NodeLayers<E>>>,
     /// The finished record the next commit lowers.
-    pub(crate) pending: RefCell<Option<Program>>,
+    pub(crate) pending: RefCell<Option<Program<E>>>,
     /// The program the layers were last lowered from, lowered again when
     /// the node remounts on a new mount (device or context replacement).
-    pub(crate) lowered: RefCell<Option<Program>>,
+    pub(crate) lowered: RefCell<Option<Program<E>>>,
     /// The placement whose layer this node's frame is a child of (`None`
     /// for frames attached directly to the window layer).
     pub(crate) anchor: RefCell<Option<Rc<Placement>>>,
 }
 
-impl NodeRetained {
+impl<E: crate::text::TextEngine> NodeRetained<E> {
     /// Stages a freshly recorded program for the next commit. The program
     /// last lowered is dropped with it, so the cells it listed live only as
     /// long as the tree keeps them.
-    pub(crate) fn stage(&self, program: Program) {
+    pub(crate) fn stage(&self, program: Program<E>) {
         *self.pending.borrow_mut() = Some(program);
         self.lowered.borrow_mut().take();
     }
 }
 
-type Committed = Vec<(LayerId, Weak<LayerToken>)>;
+type Committed<E> = Vec<(LayerId, Weak<LayerToken<E>>)>;
 
 /// The props last written to one layer.
 #[derive(Clone, PartialEq)]
@@ -88,7 +87,7 @@ impl LayerProps {
     };
 }
 
-fn write_props<T: LayerTarget>(
+fn write_props<T: LayerTarget<E>, E: crate::text::TextEngine>(
     tx: &mut Transaction<'_, T>,
     layer: &Layer,
     written: &mut LayerProps,
@@ -137,8 +136,8 @@ pub struct InnerStretchProbe {
 
 /// One run of recorded content. The run at the head of a layer's list
 /// with no leading child is that layer's own content (`layer: None`).
-pub struct RunLayer {
-    key: RunKey,
+pub struct RunLayer<E: crate::text::TextEngine> {
+    key: RunKey<E>,
     layer: Option<Layer>,
     held: Option<LoweredResources>,
     /// The single-colour rectangles the run's recording fills, in the
@@ -150,26 +149,26 @@ pub struct RunLayer {
 }
 
 /// A widget-internal scope's layer.
-pub struct ScopeLayer {
+pub struct ScopeLayer<E: crate::text::TextEngine> {
     key: ScopeKey,
     layer: Layer,
     placement: Rc<Placement>,
     props: LayerProps,
-    runs: Vec<RunLayer>,
+    runs: Vec<RunLayer<E>>,
     /// The `ChromeMaterial` member layers inside the scope, in program
     /// order.
-    members: Vec<MemberLayer>,
+    members: Vec<MemberLayer<E>>,
     /// The live layers inside the scope, in program order.
     lives: Vec<LiveLayer>,
     /// The anchor layers the scope's items lower — the same retention
     /// and registration contract the node's own list has. The `Rc`
     /// pins the scope's cell, so its `BackdropScope::Scoped` address
     /// can never be reused while an anchor layer stands.
-    anchors: Vec<(Rc<NodeCell>, Layer)>,
+    anchors: Vec<(Rc<NodeCell<E>>, Layer)>,
     /// The `(scope, canvas, layer)` keys the scope's items' anchors
     /// registered; each entry compare-removes on the layer it installed.
     anchor_keys: Vec<(NonZeroU64, Option<LayerId>, LayerId)>,
-    committed: Committed,
+    committed: Committed<E>,
 }
 
 /// A `ChromeMaterial` render layer (water-rs/waterui#1788): one backdrop
@@ -177,7 +176,7 @@ pub struct ScopeLayer {
 /// Its mount key is the node's identity plus `ordinal` — a re-recorded
 /// chrome rebinds shape and effect onto this layer and its group instead
 /// of mounting new ones.
-pub struct MemberLayer {
+pub struct MemberLayer<E: crate::text::TextEngine> {
     ordinal: u32,
     layer: Layer,
     /// The transform last written to the member layer.
@@ -190,7 +189,7 @@ pub struct MemberLayer {
     /// commit re-keys and re-joins by.
     params: Option<cherenkov_record::MaterialCapture>,
     /// The member's group membership, held so its layers' drop ends it.
-    membership: Option<MaterialMembership>,
+    membership: Option<MaterialMembership<E>>,
 }
 
 /// A live item's layer (water-rs/waterui#1433): the content its source
@@ -203,11 +202,13 @@ pub struct LiveLayer {
     transform: kurbo::Affine,
     /// The source the layer's content was recorded from.
     source: Option<Rc<dyn LiveSource>>,
+    held: Option<LoweredResources>,
+    solid: Box<[SolidRect]>,
 }
 
 /// A node's retained layers.
-pub struct NodeLayers {
-    token: Rc<LayerToken>,
+pub struct NodeLayers<E: crate::text::TextEngine> {
+    token: Rc<LayerToken<E>>,
     /// The mount generation the layers belong to: a remount drops them.
     mount: u64,
     frame: Layer,
@@ -222,19 +223,19 @@ pub struct NodeLayers {
     install: Option<(Layer, LayerProps)>,
     /// Whether `install` holds a GPU producer (the census counts them).
     install_gpu: bool,
-    runs: Vec<RunLayer>,
-    inner_runs: Vec<RunLayer>,
+    runs: Vec<RunLayer<E>>,
+    inner_runs: Vec<RunLayer<E>>,
     /// The `ChromeMaterial` member layers of the node's own item list.
-    members: Vec<MemberLayer>,
+    members: Vec<MemberLayer<E>>,
     /// The member layers of the scroll node's inner list.
-    inner_members: Vec<MemberLayer>,
+    inner_members: Vec<MemberLayer<E>>,
     /// The live layers of the node's own item list.
     lives: Vec<LiveLayer>,
     /// The live layers of the scroll node's inner list.
     inner_lives: Vec<LiveLayer>,
-    scopes: Vec<ScopeLayer>,
-    committed: Committed,
-    inner_committed: Committed,
+    scopes: Vec<ScopeLayer<E>>,
+    committed: Committed<E>,
+    inner_committed: Committed<E>,
     content_held: Option<HeldResources>,
     /// The frame's material request as last lowered — the terms a
     /// no-program commit re-keys its membership by (the mount's display
@@ -244,13 +245,13 @@ pub struct NodeLayers {
     /// The frame's backdrop-group membership (water-rs/waterui#1999):
     /// the mount's table keeps it weakly, so an unmount's `layers.take()`
     /// ends the membership at the next sweep.
-    material: Option<MaterialMembership>,
+    material: Option<MaterialMembership<E>>,
     /// The `.material_group()` anchor layers this node's items lower:
     /// one plain, empty child of the frame per anchor item. The `Rc`
     /// pins the scope's cell, so its `BackdropScope::Scoped` address
     /// can never be reused while an anchor layer stands
     /// (water-rs/waterui#2097).
-    anchors: Vec<(Rc<NodeCell>, Layer)>,
+    anchors: Vec<(Rc<NodeCell<E>>, Layer)>,
     /// The `(scope, install canvas, layer)` keys this node's items'
     /// anchors registered in the group table — each entry
     /// compare-removes on the layer it installed — dropped when the
@@ -261,7 +262,7 @@ pub struct NodeLayers {
     /// inner list alone: sharing the outer list's tables would let the
     /// outer pass retire anchors the inner pass just created
     /// (water-rs/waterui#2097).
-    inner_anchors: Vec<(Rc<NodeCell>, Layer)>,
+    inner_anchors: Vec<(Rc<NodeCell<E>>, Layer)>,
     /// The `(scope, canvas, layer)` keys the inner list's items'
     /// anchors registered.
     inner_anchor_keys: Vec<(NonZeroU64, Option<LayerId>, LayerId)>,
@@ -269,7 +270,7 @@ pub struct NodeLayers {
     attached: Cell<Option<LayerId>>,
 }
 
-impl NodeLayers {
+impl<E: crate::text::TextEngine> NodeLayers<E> {
     /// The node's frame layer — the layer a backdrop-group rebuild
     /// re-points the membership onto.
     pub(crate) const fn frame(&self) -> &Layer {
@@ -405,35 +406,35 @@ static NEXT_MOUNT: AtomicU64 = AtomicU64::new(1);
 
 /// The renderer's one mount on a layer target: the window layer under the
 /// surface root, and the commit that lowers node programs (§A).
-pub struct Mount<T: LayerTarget> {
+pub struct Mount<T: LayerTarget<E>, E: crate::text::TextEngine> {
     id: u64,
     shared: Rc<RefCell<Shared<T>>>,
     root: Layer,
     window: Layer,
     window_props: LayerProps,
-    window_committed: Committed,
-    window_token: Rc<LayerToken>,
+    window_committed: Committed<E>,
+    window_token: Rc<LayerToken<E>>,
     /// The window's backdrop-group table (water-rs/waterui#1999,
     /// re-expressed per mount): the material members' frame layers share
     /// their `(scope, level, scheme, canvas)` group's filtered capture.
-    groups: MaterialBackdropGroups<T::Group>,
+    groups: MaterialBackdropGroups<T::Group, E>,
     /// The window's chrome-group table (water-rs/waterui#1788):
     /// `ChromeMaterial` members join and leave their `(scope, class,
     /// canvas)` groups through it.
-    chrome_groups: ChromeBackdropGroups<T::Group, T::Shader>,
+    chrome_groups: ChromeBackdropGroups<T::Group, T::Shader, E>,
     /// The `.material_group()` scope anchors the material groups capture
     /// beneath (water-rs/waterui#2097): each anchor item's lowering
     /// registers its layer, and the members' group keys resolve it.
-    scope_anchors: ScopeAnchors,
+    scope_anchors: ScopeAnchors<E>,
     /// The window layer's own backdrop membership: the window material
     /// the root mounts over, when the window background names one.
-    window_material: Option<MaterialMembership>,
+    window_material: Option<MaterialMembership<E>>,
     attached: bool,
     stats: MountStats,
 }
 
 /// The state one commit threads through the node walk.
-pub struct CommitCx<'m, 'tx, 's, T: LayerTarget> {
+pub struct CommitCx<'m, 'tx, 's, T: LayerTarget<E>, E: crate::text::TextEngine> {
     pub tx: &'tx mut Transaction<'s, T>,
     pub host: &'m T::Host,
     shared: &'m Rc<RefCell<Shared<T>>>,
@@ -442,17 +443,17 @@ pub struct CommitCx<'m, 'tx, 's, T: LayerTarget> {
     display_scale: f64,
     /// The mount's backdrop-group table: material members join and leave
     /// through it, and the commit's sweep releases emptied groups.
-    groups: &'m mut MaterialBackdropGroups<T::Group>,
-    chrome_groups: &'m mut ChromeBackdropGroups<T::Group, T::Shader>,
+    groups: &'m mut MaterialBackdropGroups<T::Group, E>,
+    chrome_groups: &'m mut ChromeBackdropGroups<T::Group, T::Shader, E>,
     /// The mount's scope-anchor registrations: anchor items register and
     /// release through it, and material members resolve their anchor.
-    scope_anchors: &'m mut ScopeAnchors,
+    scope_anchors: &'m mut ScopeAnchors<E>,
     graveyard: &'m mut Vec<Box<dyn Any>>,
     stats: &'m mut MountStats,
-    wakes: &'m mut dyn FnMut(&Rc<NodeCell>) -> ProducerWake,
+    wakes: &'m mut dyn FnMut(&Rc<NodeCell<E>>) -> ProducerWake,
 }
 
-impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
+impl<T: LayerTarget<E>, E: crate::text::TextEngine> CommitCx<'_, '_, '_, T, E> {
     fn layer(&mut self) -> Layer {
         self.stats.created += 1;
         Shared::layer(self.shared)
@@ -463,14 +464,14 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
         self.graveyard.push(Box::new(layer));
     }
 
-    fn retire_run(&mut self, run: RunLayer) {
+    fn retire_run(&mut self, run: RunLayer<E>) {
         if let Some(layer) = run.layer {
             self.retire_layer(layer);
         }
         self.graveyard.push(Box::new(run.held));
     }
 
-    fn retire_scope(&mut self, scope: ScopeLayer) {
+    fn retire_scope(&mut self, scope: ScopeLayer<E>) {
         for (scope_key, canvas, layer) in scope.anchor_keys {
             self.scope_anchors.remove(scope_key, canvas, layer);
         }
@@ -491,17 +492,17 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
 
     fn retire_live(&mut self, live: LiveLayer) {
         self.retire_layer(live.layer);
-        self.graveyard.push(Box::new(live.source));
+        self.graveyard.push(Box::new((live.source, live.held)));
     }
 
-    fn retire_member(&mut self, member: MemberLayer) {
+    fn retire_member(&mut self, member: MemberLayer<E>) {
         self.chrome_groups.clear(member.layer.id());
         self.retire_layer(member.layer);
         self.graveyard
             .push(Box::new((member.membership, member.chrome, member.params)));
     }
 
-    fn retire_layers(&mut self, layers: NodeLayers) {
+    fn retire_layers(&mut self, layers: NodeLayers<E>) {
         let NodeLayers {
             frame,
             inner,
@@ -549,7 +550,7 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
     }
 }
 
-impl<T: LayerTarget> Mount<T> {
+impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
     /// The mount binds to a target whose engine realizes materials.
     /// `registry` is the theme's `MaterialRegistry`: a target with no
     /// backdrop shaders — a CPU engine — panics on this attach when the
@@ -617,19 +618,19 @@ impl<T: LayerTarget> Mount<T> {
 
     /// The mount's backdrop-group table.
     #[cfg(test)]
-    pub(crate) const fn groups(&self) -> &MaterialBackdropGroups<T::Group> {
+    pub(crate) const fn groups(&self) -> &MaterialBackdropGroups<T::Group, E> {
         &self.groups
     }
 
     /// The mount's `.material_group()` scope-anchor registrations.
     #[cfg(test)]
-    pub(crate) const fn scope_anchors(&self) -> &ScopeAnchors {
+    pub(crate) const fn scope_anchors(&self) -> &ScopeAnchors<E> {
         &self.scope_anchors
     }
 
     /// The mount's chrome-group table.
     #[cfg(test)]
-    pub(crate) const fn chrome_groups(&self) -> &ChromeBackdropGroups<T::Group, T::Shader> {
+    pub(crate) const fn chrome_groups(&self) -> &ChromeBackdropGroups<T::Group, T::Shader, E> {
         &self.chrome_groups
     }
 
@@ -644,8 +645,8 @@ impl<T: LayerTarget> Mount<T> {
         host: &T::Host,
         window_transform: kurbo::Affine,
         display_scale: f64,
-        roots: &[Rc<NodeCell>],
-        wakes: &mut dyn FnMut(&Rc<NodeCell>) -> ProducerWake,
+        roots: &[Rc<NodeCell<E>>],
+        wakes: &mut dyn FnMut(&Rc<NodeCell<E>>) -> ProducerWake,
         window_material: Option<&MaterialRequest>,
     ) {
         let shared = Rc::clone(&self.shared);
@@ -735,7 +736,10 @@ impl<T: LayerTarget> Mount<T> {
 }
 
 /// `stats` with the live mounted counts under `roots` filled in.
-pub fn census(roots: &[Rc<NodeCell>], mut stats: MountStats) -> MountStats {
+pub fn census<E: crate::text::TextEngine>(
+    roots: &[Rc<NodeCell<E>>],
+    mut stats: MountStats,
+) -> MountStats {
     for cell in roots {
         census_node(&cell.retained(), 0, &mut stats);
     }
@@ -751,7 +755,7 @@ fn census_clip(clipped: bool, depth: u32, stats: &mut MountStats) -> u32 {
     depth + 1
 }
 
-fn census_runs(runs: &[RunLayer], stats: &mut MountStats) {
+fn census_runs<E: crate::text::TextEngine>(runs: &[RunLayer<E>], stats: &mut MountStats) {
     for _ in runs.iter().filter(|run| run.held.is_some()) {
         stats.scene_layers += 1;
         stats.scene_segments += 1;
@@ -762,9 +766,9 @@ fn census_lives(lives: &[LiveLayer], stats: &mut MountStats) {
     stats.scene_layers += u32::try_from(lives.len()).expect("live layer count fits u32");
 }
 
-fn census_children(
-    committed: &Committed,
-    own: &Rc<LayerToken>,
+fn census_children<E: crate::text::TextEngine>(
+    committed: &Committed<E>,
+    own: &Rc<LayerToken<E>>,
     depth: u32,
     stats: &mut MountStats,
 ) {
@@ -781,7 +785,11 @@ fn census_children(
     }
 }
 
-fn census_node(retained: &NodeRetained, depth: u32, stats: &mut MountStats) {
+fn census_node<E: crate::text::TextEngine>(
+    retained: &NodeRetained<E>,
+    depth: u32,
+    stats: &mut MountStats,
+) {
     let guard = retained.layers.borrow();
     let Some(layers) = guard.as_ref() else {
         return;
@@ -816,7 +824,9 @@ fn census_node(retained: &NodeRetained, depth: u32, stats: &mut MountStats) {
     }
 }
 
-fn node_want<'a>(guard: &'a std::cell::Ref<'_, Option<NodeLayers>>) -> Want<'a> {
+fn node_want<'a, E: crate::text::TextEngine>(
+    guard: &'a std::cell::Ref<'_, Option<NodeLayers<E>>>,
+) -> Want<'a, E> {
     let layers = guard
         .as_ref()
         .expect("hydrolysis commit: a committed node has no layers");
@@ -828,14 +838,16 @@ fn node_want<'a>(guard: &'a std::cell::Ref<'_, Option<NodeLayers>>) -> Want<'a> 
     }
 }
 
-fn gpu_content_pixels(
-    transform: kurbo::Affine,
-    bounds: kurbo::Rect,
-    display_scale: f64,
-) -> (u32, u32) {
+/// The install's device-pixel size under `transform` — the node's
+/// window-space transform. The root transform already maps layout points
+/// onto the target's pixel grid (`set_window_viewport`'s
+/// `Affine::scale(scale_factor)`), so the display scale lives in
+/// `transform` and must not be multiplied in again
+/// (water-rs/waterui#2935).
+fn gpu_content_pixels(transform: kurbo::Affine, bounds: kurbo::Rect) -> (u32, u32) {
     let [a, b, c, d, _, _] = transform.as_coeffs();
-    let x_scale = a.hypot(b) * display_scale;
-    let y_scale = c.hypot(d) * display_scale;
+    let x_scale = a.hypot(b);
+    let y_scale = c.hypot(d);
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -865,9 +877,9 @@ fn install_transform(bounds: kurbo::Rect, pixels: (u32, u32)) -> kurbo::Affine {
 /// program — only the window's fixed roots may commit before their first
 /// record (the root's own program is still open on the renderer's stack
 /// while the commit runs).
-pub fn commit_cell<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
-    cell: &Rc<NodeCell>,
+pub fn commit_cell<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
+    cell: &Rc<NodeCell<E>>,
     canvas: Option<LayerId>,
     listed: bool,
 ) {
@@ -976,7 +988,7 @@ pub fn commit_cell<T: LayerTarget>(
 /// are the node's own inner, install, run and scope layers, not nodes.
 /// A `committed` entry's dead token or dead owner skips itself: the
 /// child unmounted already.
-fn committed_cells(layers: &NodeLayers) -> Vec<Rc<NodeCell>> {
+fn committed_cells<E: crate::text::TextEngine>(layers: &NodeLayers<E>) -> Vec<Rc<NodeCell<E>>> {
     layers
         .committed
         .iter()
@@ -993,12 +1005,12 @@ fn committed_cells(layers: &NodeLayers) -> Vec<Rc<NodeCell>> {
         .collect()
 }
 
-fn lower_program<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
-    cell: &Rc<NodeCell>,
-    layers: &mut NodeLayers,
+fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
+    cell: &Rc<NodeCell<E>>,
+    layers: &mut NodeLayers<E>,
     transform: kurbo::Affine,
-    program: &Program,
+    program: &Program<E>,
     canvas: Option<LayerId>,
 ) {
     let Program {
@@ -1088,9 +1100,9 @@ fn lower_program<T: LayerTarget>(
 /// group table — the member joins the group its request terms key,
 /// releasing its membership and the group's leftover when the request
 /// turns absent or invisible.
-fn commit_material<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
-    layers: &mut NodeLayers,
+fn commit_material<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
+    layers: &mut NodeLayers<E>,
     material: Option<&MaterialRequest>,
     canvas: Option<LayerId>,
 ) {
@@ -1127,13 +1139,13 @@ fn commit_material<T: LayerTarget>(
 /// Lowers a scroll node's inner layer — clipped to the viewport, offset by
 /// its `ScrollOffset` and, while it stretches, filtered by the overscroll
 /// stretch in the viewport's frame — or retires it when the node has none.
-fn lower_inner<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
-    cell: &Rc<NodeCell>,
-    layers: &mut NodeLayers,
-    inner: Option<&InnerProgram>,
-    scopes_old: &mut Vec<ScopeLayer>,
-    scopes_new: &mut Vec<ScopeLayer>,
+fn lower_inner<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
+    cell: &Rc<NodeCell<E>>,
+    layers: &mut NodeLayers<E>,
+    inner: Option<&InnerProgram<E>>,
+    scopes_old: &mut Vec<ScopeLayer<E>>,
+    scopes_new: &mut Vec<ScopeLayer<E>>,
     canvas: Option<LayerId>,
 ) {
     if let Some(inner) = inner {
@@ -1149,7 +1161,7 @@ fn lower_inner<T: LayerTarget>(
             match &mut layers.inner_stretch {
                 Some(stretch) => stretch.show(shown, world),
                 None => {
-                    layers.inner_stretch = Some(StretchFilter::new::<T>(cx.host, shown, world));
+                    layers.inner_stretch = Some(StretchFilter::new::<T, E>(cx.host, shown, world));
                 }
             }
             layers.inner_stretch.as_ref().map(StretchFilter::id)
@@ -1220,10 +1232,10 @@ fn lower_inner<T: LayerTarget>(
 
 /// Installs or ticks the node's producer; returns the resources a scene
 /// view's recording holds.
-fn commit_producer<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
-    cell: &Rc<NodeCell>,
-    layers: &mut NodeLayers,
+fn commit_producer<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
+    cell: &Rc<NodeCell<E>>,
+    layers: &mut NodeLayers<E>,
     producer: Option<&ProducerContent>,
 ) -> Option<HeldResources> {
     match producer {
@@ -1256,9 +1268,9 @@ fn commit_producer<T: LayerTarget>(
 /// Records a scene view's content into its frame against the target's
 /// resource table, rebuilding it when the table changed since its last
 /// record.
-fn mount_scene<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
-    cell: &Rc<NodeCell>,
+fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
+    cell: &Rc<NodeCell<E>>,
     frame: &Layer,
     source: &SceneContentSource,
 ) -> HeldResources {
@@ -1294,9 +1306,9 @@ fn mount_scene<T: LayerTarget>(
 }
 
 /// Ensures the node's install layer; returns whether it was just created.
-fn ensure_install<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
-    layers: &mut NodeLayers,
+fn ensure_install<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
+    layers: &mut NodeLayers<E>,
     gpu: bool,
 ) -> bool {
     let fresh = layers.install.is_none();
@@ -1310,9 +1322,9 @@ fn ensure_install<T: LayerTarget>(
 /// Binds hosted content to the install layer at the node's extent; the
 /// engine places the platform object from the layer tree's geometry.
 #[cfg(hydrolysis_hosted)]
-fn mount_hosted<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
-    layers: &mut NodeLayers,
+fn mount_hosted<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
+    layers: &mut NodeLayers<E>,
     runtime: &crate::hosted::HostedRuntime,
     bounds: kurbo::Rect,
 ) {
@@ -1335,17 +1347,17 @@ fn mount_hosted<T: LayerTarget>(
 }
 
 /// Binds a GPU producer to the install layer at the node's pixel size.
-fn mount_gpu<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
-    cell: &Rc<NodeCell>,
-    layers: &mut NodeLayers,
+fn mount_gpu<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
+    cell: &Rc<NodeCell<E>>,
+    layers: &mut NodeLayers<E>,
     runtime: &RefCell<crate::gpu_view::GpuContentRuntime>,
     bounds: kurbo::Rect,
     visible: bool,
 ) {
     let fresh = ensure_install(cx, layers, true);
     let world = cx.window_transform * cell.placement().resolved_transform(false);
-    let pixels = gpu_content_pixels(world, bounds, cx.display_scale);
+    let pixels = gpu_content_pixels(world, bounds);
     let (install, props) = layers.install.as_mut().expect("install ensured");
     let mut runtime = runtime.borrow_mut();
     if fresh {
@@ -1370,10 +1382,10 @@ fn mount_gpu<T: LayerTarget>(
 }
 
 /// Starts or ticks an external-frame source on the install layer.
-fn mount_external<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
-    cell: &Rc<NodeCell>,
-    layers: &mut NodeLayers,
+fn mount_external<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
+    cell: &Rc<NodeCell<E>>,
+    layers: &mut NodeLayers<E>,
     runtime: &RefCell<crate::gpu_view::ExternalFrameRuntime>,
     bounds: kurbo::Rect,
     visible: bool,
@@ -1405,21 +1417,21 @@ fn mount_external<T: LayerTarget>(
 }
 
 /// One child a list wants, in order.
-struct Want<'a> {
+struct Want<'a, E: crate::text::TextEngine> {
     id: LayerId,
-    token: Weak<LayerToken>,
+    token: Weak<LayerToken<E>>,
     layer: &'a Layer,
     attached: Option<&'a Cell<Option<LayerId>>>,
 }
 
-enum Slot {
+enum Slot<E: crate::text::TextEngine> {
     Run(usize),
     Scope(usize),
     /// A `ChromeMaterial` member layer: the index into `members`.
     Member(usize),
     /// A live item's layer: the index into `lives`.
     Live(usize),
-    Node(Rc<NodeCell>),
+    Node(Rc<NodeCell<E>>),
     /// A `.material_group()` anchor item's layer, indexing `anchors`.
     Anchor(usize),
 }
@@ -1430,11 +1442,11 @@ enum Slot {
 /// items after it commit (water-rs/waterui#2097). The layer is reused
 /// from the last lowering's `old_anchors` when the same scope re-lowers,
 /// so the registration — and the group key carrying it — stays stable.
-fn anchor_slot<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
-    cell: &Rc<NodeCell>,
-    old_anchors: &mut Vec<(Rc<NodeCell>, Layer)>,
-    anchors: &mut Vec<(Rc<NodeCell>, Layer)>,
+fn anchor_slot<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
+    cell: &Rc<NodeCell<E>>,
+    old_anchors: &mut Vec<(Rc<NodeCell<E>>, Layer)>,
+    anchors: &mut Vec<(Rc<NodeCell<E>>, Layer)>,
 ) -> usize {
     if let Some(at) = old_anchors.iter().position(|(s, _)| Rc::ptr_eq(s, cell)) {
         anchors.push(old_anchors.swap_remove(at));
@@ -1448,20 +1460,20 @@ fn anchor_slot<T: LayerTarget>(
     clippy::too_many_arguments,
     reason = "one list's lowering reads the node's run, scope and committed state together"
 )]
-fn lower_list<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
+fn lower_list<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
     parent: &Layer,
     leading: &[(LayerId, &Layer)],
-    items: &[Item],
-    anchors: &mut Vec<(Rc<NodeCell>, Layer)>,
+    items: &[Item<E>],
+    anchors: &mut Vec<(Rc<NodeCell<E>>, Layer)>,
     anchor_keys: &mut Vec<(NonZeroU64, Option<LayerId>, LayerId)>,
-    runs: &mut Vec<RunLayer>,
-    members: &mut Vec<MemberLayer>,
+    runs: &mut Vec<RunLayer<E>>,
+    members: &mut Vec<MemberLayer<E>>,
     lives: &mut Vec<LiveLayer>,
-    scopes_old: &mut Vec<ScopeLayer>,
-    scopes_new: &mut Vec<ScopeLayer>,
-    committed: &mut Committed,
-    token: &Rc<LayerToken>,
+    scopes_old: &mut Vec<ScopeLayer<E>>,
+    scopes_new: &mut Vec<ScopeLayer<E>>,
+    committed: &mut Committed<E>,
+    token: &Rc<LayerToken<E>>,
     canvas: Option<LayerId>,
 ) {
     // The last lowering's anchor registrations release before the
@@ -1570,18 +1582,18 @@ fn lower_list<T: LayerTarget>(
     clippy::too_many_arguments,
     reason = "the slot kinds each carry their own layer store"
 )]
-fn commit_list_slots<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
+fn commit_list_slots<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
     parent: &Layer,
     leading: &[(LayerId, &Layer)],
-    slots: &[Slot],
-    anchors: &[(Rc<NodeCell>, Layer)],
-    runs: &[RunLayer],
-    members: &[MemberLayer],
+    slots: &[Slot<E>],
+    anchors: &[(Rc<NodeCell<E>>, Layer)],
+    runs: &[RunLayer<E>],
+    members: &[MemberLayer<E>],
     lives: &[LiveLayer],
-    scopes_new: &[ScopeLayer],
-    committed: &mut Committed,
-    token: &Rc<LayerToken>,
+    scopes_new: &[ScopeLayer<E>],
+    committed: &mut Committed<E>,
+    token: &Rc<LayerToken<E>>,
 ) {
     let retained: Vec<_> = slots
         .iter()
@@ -1592,7 +1604,7 @@ fn commit_list_slots<T: LayerTarget>(
         .collect();
     let guards: Vec<_> = retained.iter().map(|r| r.layers.borrow()).collect();
     let own = Rc::downgrade(token);
-    let mut wants: Vec<Want<'_>> = leading
+    let mut wants: Vec<Want<'_, E>> = leading
         .iter()
         .map(|&(id, layer)| Want {
             id,
@@ -1657,14 +1669,14 @@ fn commit_list_slots<T: LayerTarget>(
 
 /// Lowers one run: the list's first item draws into the parent's own
 /// content, any other gets a run layer, kept by `key` across commits.
-fn lower_run<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
+fn lower_run<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
     parent: &Layer,
-    old_runs: &mut Vec<RunLayer>,
-    key: RunKey,
+    old_runs: &mut Vec<RunLayer<E>>,
+    key: RunKey<E>,
     own: bool,
     recording: &crate::renderer::recording::Recording,
-) -> RunLayer {
+) -> RunLayer<E> {
     let mut run = old_runs.iter().position(|run| run.key == key).map_or_else(
         || RunLayer {
             key,
@@ -1705,8 +1717,8 @@ fn lower_run<T: LayerTarget>(
 /// not the source the layer already holds — a node re-recording around an
 /// unchanged source leaves its content, and every live operand bound into
 /// it, untouched.
-fn lower_live<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
+fn lower_live<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
     item: &LiveItem,
     lives_old: &mut Vec<LiveLayer>,
     lives: &mut Vec<LiveLayer>,
@@ -1720,6 +1732,8 @@ fn lower_live<T: LayerTarget>(
                 layer: cx.layer(),
                 transform: kurbo::Affine::IDENTITY,
                 source: None,
+                held: None,
+                solid: Box::default(),
             },
             |at| lives_old.remove(at),
         );
@@ -1732,7 +1746,16 @@ fn lower_live<T: LayerTarget>(
         .as_ref()
         .is_some_and(|source| Rc::ptr_eq(source, &item.source));
     if !recorded {
-        cx.tx[&live.layer].record(|recorder| item.source.record(recorder));
+        live.solid = item.source.recording().map_or_else(
+            Box::default,
+            crate::renderer::recording::Recording::solid_rects,
+        );
+        let resources = T::resources(cx.host);
+        let mut held = None;
+        cx.tx[&live.layer].record(|recorder| held = item.source.record(recorder, resources));
+        if let Some(old) = std::mem::replace(&mut live.held, held) {
+            cx.graveyard.push(Box::new(old));
+        }
         cx.stats.live_records += 1;
         if let Some(old) = live.source.replace(Rc::clone(&item.source)) {
             cx.graveyard.push(Box::new(old));
@@ -1744,12 +1767,12 @@ fn lower_live<T: LayerTarget>(
 
 /// Lowers one scope, kept by its key across commits; returns its index in
 /// `scopes_new`.
-fn lower_scope<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
-    (key, props, placement, items): (ScopeKey, &ScopeProps, &Rc<Placement>, &[Item]),
-    scopes_old: &mut Vec<ScopeLayer>,
-    scopes_new: &mut Vec<ScopeLayer>,
-    token: &Rc<LayerToken>,
+fn lower_scope<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
+    (key, props, placement, items): (ScopeKey, &ScopeProps, &Rc<Placement>, &[Item<E>]),
+    scopes_old: &mut Vec<ScopeLayer<E>>,
+    scopes_new: &mut Vec<ScopeLayer<E>>,
+    token: &Rc<LayerToken<E>>,
     canvas: Option<LayerId>,
 ) -> usize {
     let mut scope = scopes_old
@@ -1822,12 +1845,12 @@ fn lower_scope<T: LayerTarget>(
 /// then and the indices written here match the engine's. A live child
 /// frame no longer wanted is detached here when it is still attached
 /// under `parent` — a reparented frame was already moved by its insert.
-fn reconcile<T: LayerTarget>(
+fn reconcile<T: LayerTarget<E>, E: crate::text::TextEngine>(
     tx: &mut Transaction<'_, T>,
     parent: &Layer,
-    wants: &[Want<'_>],
-    committed: &mut Committed,
-    token: &Rc<LayerToken>,
+    wants: &[Want<'_, E>],
+    committed: &mut Committed<E>,
+    token: &Rc<LayerToken<E>>,
 ) {
     let own = Rc::as_ptr(token);
     let is_wanted = |id: LayerId| wants.iter().any(|want| want.id == id);
@@ -1887,10 +1910,10 @@ fn reconcile<T: LayerTarget>(
 }
 
 /// What [`visit`] reports while walking the mounted layers.
-pub trait LayerVisitor {
+pub trait LayerVisitor<E: crate::text::TextEngine> {
     /// A node's frame: `world` is its content space in window points,
     /// `alphas` the opacities below one on the way down (its own included).
-    fn node(&mut self, _layers: &NodeLayers, _world: kurbo::Affine, _alphas: &[f32]) {}
+    fn node(&mut self, _layers: &NodeLayers<E>, _world: kurbo::Affine, _alphas: &[f32]) {}
     /// A recorded run, painted in `world`.
     #[cfg(test)]
     fn run(&mut self, _world: kurbo::Affine, _recording: &crate::renderer::recording::Recording) {}
@@ -1912,7 +1935,10 @@ pub trait LayerVisitor {
 
 /// Walks the committed layers under `roots` in paint order, composing each
 /// layer's props the way the engine does.
-pub fn visit(roots: &[Rc<NodeCell>], visitor: &mut dyn LayerVisitor) {
+pub fn visit<E: crate::text::TextEngine>(
+    roots: &[Rc<NodeCell<E>>],
+    visitor: &mut dyn LayerVisitor<E>,
+) {
     let mut alphas = Vec::new();
     for cell in roots {
         visit_node(
@@ -1930,12 +1956,12 @@ fn props_world(parent: kurbo::Affine, props: &LayerProps) -> kurbo::Affine {
 
 /// Opens `props`' opacity, clip and filter around `content`, which receives
 /// the layer's content space, and closes them after it.
-fn with_props(
+fn with_props<E: crate::text::TextEngine>(
     parent: kurbo::Affine,
     props: &LayerProps,
     alphas: &mut Vec<f32>,
-    visitor: &mut dyn LayerVisitor,
-    content: impl FnOnce(kurbo::Affine, &mut Vec<f32>, &mut dyn LayerVisitor),
+    visitor: &mut dyn LayerVisitor<E>,
+    content: impl FnOnce(kurbo::Affine, &mut Vec<f32>, &mut dyn LayerVisitor<E>),
 ) {
     let faded = props.opacity < 1.0;
     if faded {
@@ -1959,11 +1985,11 @@ fn with_props(
     }
 }
 
-fn visit_node(
-    retained: &NodeRetained,
+fn visit_node<E: crate::text::TextEngine>(
+    retained: &NodeRetained<E>,
     parent: kurbo::Affine,
     alphas: &mut Vec<f32>,
-    visitor: &mut dyn LayerVisitor,
+    visitor: &mut dyn LayerVisitor<E>,
 ) {
     let guard = retained.layers.borrow();
     let Some(layers) = guard.as_ref() else {
@@ -1979,6 +2005,7 @@ fn visit_node(
             visit_list(
                 layers,
                 &layers.runs,
+                &layers.lives,
                 &layers.committed,
                 world,
                 alphas,
@@ -1988,7 +2015,12 @@ fn visit_node(
     );
 }
 
-fn visit_run(run: &RunLayer, world: kurbo::Affine, alphas: &[f32], visitor: &mut dyn LayerVisitor) {
+fn visit_run<E: crate::text::TextEngine>(
+    run: &RunLayer<E>,
+    world: kurbo::Affine,
+    alphas: &[f32],
+    visitor: &mut dyn LayerVisitor<E>,
+) {
     #[cfg(test)]
     if let Some(recording) = &run.recording {
         visitor.run(world, recording);
@@ -1999,13 +2031,14 @@ fn visit_run(run: &RunLayer, world: kurbo::Affine, alphas: &[f32], visitor: &mut
 /// One list in paint order: the run drawn into the list's own content
 /// first, then each committed layer — a run layer, a child node, the
 /// scroll content or a scope — in its stacking order.
-fn visit_list(
-    layers: &NodeLayers,
-    runs: &[RunLayer],
-    committed: &Committed,
+fn visit_list<E: crate::text::TextEngine>(
+    layers: &NodeLayers<E>,
+    runs: &[RunLayer<E>],
+    lives: &[LiveLayer],
+    committed: &Committed<E>,
     world: kurbo::Affine,
     alphas: &mut Vec<f32>,
-    visitor: &mut dyn LayerVisitor,
+    visitor: &mut dyn LayerVisitor<E>,
 ) {
     for run in runs.iter().filter(|run| run.layer.is_none()) {
         visit_run(run, world, alphas, visitor);
@@ -2025,6 +2058,13 @@ fn visit_list(
             .find(|run| run.layer.as_ref().is_some_and(|layer| layer.id() == *id))
         {
             visit_run(run, world, alphas, visitor);
+        } else if let Some(live) = lives.iter().find(|live| live.layer.id() == *id) {
+            let world = world * live.transform;
+            #[cfg(test)]
+            if let Some(recording) = live.source.as_ref().and_then(|source| source.recording()) {
+                visitor.run(world, recording);
+            }
+            visitor.solid_rects(world, alphas, &live.solid);
         } else if let Some((layer, props)) = &layers.inner
             && layer.id() == *id
         {
@@ -2032,6 +2072,7 @@ fn visit_list(
                 visit_list(
                     layers,
                     &layers.inner_runs,
+                    &layers.inner_lives,
                     &layers.inner_committed,
                     inner,
                     alphas,
@@ -2048,6 +2089,7 @@ fn visit_list(
                     visit_list(
                         layers,
                         &scope.runs,
+                        &scope.lives,
                         &scope.committed,
                         inner,
                         alphas,
@@ -2069,12 +2111,12 @@ fn visit_list(
 ///
 /// An unregistered shader or capture class panics here — at install —
 /// naming the key.
-fn lower_chrome<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
+fn lower_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
     chrome: &ChromeMaterial,
-    members_old: &mut Vec<MemberLayer>,
-    members: &mut Vec<MemberLayer>,
-    token: &Rc<LayerToken>,
+    members_old: &mut Vec<MemberLayer<E>>,
+    members: &mut Vec<MemberLayer<E>>,
+    token: &Rc<LayerToken<E>>,
     canvas: Option<LayerId>,
 ) -> usize {
     let member_at = members_old
@@ -2136,7 +2178,7 @@ fn lower_chrome<T: LayerTarget>(
             params,
             cx.display_scale,
             membership,
-            || chrome_member_payload::<T>(host, chrome),
+            || chrome_member_payload::<T, E>(host, chrome),
             MemberBind::Always,
         );
         member.params = Some(params);
@@ -2154,7 +2196,7 @@ fn lower_chrome<T: LayerTarget>(
 /// shader's engine handle and its live effect — the terms the group table
 /// stores on the member's entry so a group rebuild rebinds each member's
 /// own sample.
-fn chrome_member_payload<T: LayerTarget>(
+fn chrome_member_payload<T: LayerTarget<E>, E: crate::text::TextEngine>(
     host: &T::Host,
     chrome: &ChromeMaterial,
 ) -> super::backdrop::ChromeMemberPayload<T::Shader> {
@@ -2179,9 +2221,9 @@ fn chrome_member_payload<T: LayerTarget>(
 /// the mount's terms — the display scale and the install canvas — may
 /// have changed without a re-flush, so every mounted member re-keys under
 /// the canvas this commit mounts under, like `commit_material` does.
-fn commit_chrome<T: LayerTarget>(
-    cx: &mut CommitCx<'_, '_, '_, T>,
-    layers: &mut NodeLayers,
+fn commit_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
+    layers: &mut NodeLayers<E>,
     canvas: Option<LayerId>,
 ) {
     for member in layers
@@ -2224,8 +2266,19 @@ fn commit_chrome<T: LayerTarget>(
             params,
             cx.display_scale,
             membership,
-            || chrome_member_payload::<T>(host, chrome),
+            || chrome_member_payload::<T, E>(host, chrome),
             MemberBind::OnChange,
         );
+    }
+}
+
+impl<E: crate::text::TextEngine> Default for NodeRetained<E> {
+    fn default() -> Self {
+        Self {
+            layers: RefCell::default(),
+            pending: RefCell::default(),
+            lowered: RefCell::default(),
+            anchor: RefCell::default(),
+        }
     }
 }

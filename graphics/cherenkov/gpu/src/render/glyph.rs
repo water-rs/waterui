@@ -2,6 +2,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{BuildHasher, Hash, Hasher};
+use std::num::NonZeroU64;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -27,6 +28,8 @@ const PAD: u32 = 1;
 pub struct FontData {
     pub data: Arc<[u8]>,
     pub index: u32,
+    pub units_per_em: u16,
+    pub default_bounds: kurbo::Rect,
     /// Validated once at registration; plain runs do not reparse font tables.
     pub has_colr: bool,
     /// Resolved once at registration like `has_colr`: `bitmap` is `Some`.
@@ -38,6 +41,14 @@ pub struct FontData {
     /// the placement. Interior mutability, not shared: parallel lowering
     /// works on a per-thread snapshot.
     pub colr: std::cell::RefCell<FxHashMap<(u32, u64, u64), cherenkov::Picture>>,
+    /// Font-space bounds for glyphs used at non-default variation locations.
+    bounds: std::cell::RefCell<Vec<InstanceBounds>>,
+}
+
+#[derive(Clone)]
+struct InstanceBounds {
+    coords: Arc<[i16]>,
+    glyphs: Vec<(u32, Option<kurbo::Rect>)>,
 }
 
 /// A font validated on the caller thread by `Renderer::prepare_font`:
@@ -46,6 +57,8 @@ pub struct FontData {
 pub struct PreparedFont {
     pub data: Arc<[u8]>,
     pub index: u32,
+    pub units_per_em: u16,
+    pub default_bounds: kurbo::Rect,
     pub has_colr: bool,
     pub bitmap: Option<Arc<super::bitmap::BitmapFont>>,
 }
@@ -55,10 +68,13 @@ impl From<PreparedFont> for FontData {
         Self {
             data: font.data,
             index: font.index,
+            units_per_em: font.units_per_em,
+            default_bounds: font.default_bounds,
             has_colr: font.has_colr,
             has_bitmap: font.bitmap.is_some(),
             bitmap: font.bitmap,
             colr: std::cell::RefCell::new(FxHashMap::default()),
+            bounds: std::cell::RefCell::default(),
         }
     }
 }
@@ -71,10 +87,47 @@ impl FontData {
         Self {
             data: self.data.clone(),
             index: self.index,
+            units_per_em: self.units_per_em,
+            default_bounds: self.default_bounds,
             has_colr: self.has_colr,
             has_bitmap: self.has_bitmap,
             bitmap: self.bitmap.clone(),
             colr: std::cell::RefCell::new(self.colr.borrow().clone()),
+            bounds: std::cell::RefCell::new(self.bounds.borrow().clone()),
+        }
+    }
+
+    pub fn bounds_bytes(&self) -> u64 {
+        let instances = self.bounds.borrow();
+        (size_of_val(&self.units_per_em)
+            + size_of_val(&self.default_bounds)
+            + instances.capacity() * size_of::<InstanceBounds>()
+            + instances
+                .iter()
+                .map(|instance| {
+                    size_of_val(instance.coords.as_ref())
+                        + instance.glyphs.capacity() * size_of::<(u32, Option<kurbo::Rect>)>()
+                })
+                .sum::<usize>()) as u64
+    }
+
+    pub fn clear_bounds(&self) {
+        *self.bounds.borrow_mut() = Vec::new();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn merge_bounds(&self, other: Self) {
+        let mut instances = self.bounds.borrow_mut();
+        for incoming in other.bounds.into_inner() {
+            if let Some(existing) = instances.iter_mut().find(|i| i.coords == incoming.coords) {
+                for (id, bounds) in incoming.glyphs {
+                    if let Err(index) = existing.glyphs.binary_search_by_key(&id, |entry| entry.0) {
+                        existing.glyphs.insert(index, (id, bounds));
+                    }
+                }
+            } else {
+                instances.push(incoming);
+            }
         }
     }
 }
@@ -189,6 +242,13 @@ pub struct PathEmit {
     /// `emit_slots` arena, which outlives this record so a replay pin
     /// stays meaningful after an eviction.
     pub slots: Range<usize>,
+    /// The retained-geometry digest the lowering that emitted this
+    /// record assigned: a coverage hit returns it for the content's
+    /// ownership marks without rebuilding or hashing the key. Identity
+    /// only — geometry reuse still compares the full `GeometryKey`
+    /// (water-rs/waterui#3306). `None` for records built outside the
+    /// retained route.
+    pub geometry: Option<NonZeroU64>,
 }
 
 impl PathEmit {
@@ -222,6 +282,7 @@ impl PathEmit {
                 })
                 .collect(),
             slots: self.slots.clone(),
+            geometry: self.geometry,
         }
     }
 }
@@ -339,6 +400,17 @@ struct Layout {
 /// for the retained structure it needs (#119).
 const LIVE_ENTRY_BYTES: u64 = 120;
 
+/// CPU bytes one cached `PathEmit` costs: its heap lists, the inline
+/// retained-geometry digest, and the shared per-admission bookkeeping
+/// — the one formula admission, eviction and relocation account by.
+fn path_entry_bytes(emit: &PathEmit) -> u64 {
+    (emit.spans.len() * 16
+        + emit.cells.len() * size_of::<PathCell>()
+        + emit.slots.len() * 4
+        + size_of::<Option<NonZeroU64>>()) as u64
+        + LIVE_ENTRY_BYTES
+}
+
 /// A live admission's bookkeeping: which cache map holds the entry and,
 /// for glyphs, the full key needed to remove it.
 struct LiveEntry {
@@ -353,6 +425,76 @@ enum LiveKind {
     Path,
     /// `masks`, keyed by the live key itself.
     Mask,
+}
+
+/// The cache entry a migrated cell belongs to, for rebuilding origins
+/// after [`Atlas::relocate`] moves it.
+#[derive(Clone, Copy)]
+enum CellOwner {
+    /// `map`, by full key.
+    Glyph(GlyphKey),
+    /// `paths`, by key and the cell's index in `PathEmit::cells`.
+    Path(u64, usize),
+    /// `masks`, by key.
+    Mask(u64),
+}
+
+/// A preflighted cell migration: the owner whose record the new
+/// placement patches, old and new exact texel origins, the new shelf
+/// and the copied extent.
+struct CellMove {
+    owner: CellOwner,
+    src: (u32, u32),
+    dst: (u32, u32),
+    dst_slot: u32,
+    w: u32,
+    h: u32,
+}
+
+/// Where a relocated cell's coverage landed: its exact new texel
+/// origin.
+#[derive(Clone, Copy, Debug)]
+pub struct CellLocation {
+    /// New atlas texel origin.
+    pub x: u32,
+    /// New atlas texel origin.
+    pub y: u32,
+}
+
+/// The ephemeral record [`Atlas::relocate`] hands the caller: where each
+/// migrated cell's texels went, plus the old layout's band epochs and
+/// live bits needed to check whether a retained emission's `(slot,
+/// epoch)` references were still valid when the repack ran. New shelves'
+/// epochs continue the old layout's counter, so no old reference can
+/// alias the new layout.
+pub struct Relocation {
+    /// `(old x, old y)` → new placement, one per migrated cell.
+    cells: rustc_hash::FxHashMap<(u32, u32), CellLocation>,
+    /// `(epoch, live)` per old shelf slot.
+    old_shelves: Vec<(u64, bool)>,
+}
+
+impl Relocation {
+    /// The new placement of the cell whose old texel origin was
+    /// `(x, y)`; `None` when the repack dropped it.
+    pub fn cell(&self, x: u32, y: u32) -> Option<CellLocation> {
+        self.cells.get(&(x, y)).copied()
+    }
+
+    /// Whether the old layout's `slot` held a live band at `epoch` when
+    /// the repack ran — the validity check for references recorded
+    /// before it.
+    pub fn old_ref_live(&self, slot: u32, epoch: u64) -> bool {
+        usize::try_from(slot)
+            .ok()
+            .and_then(|i| self.old_shelves.get(i))
+            .is_some_and(|&(ep, live)| live && ep == epoch)
+    }
+
+    /// Cells the repack carried over.
+    pub fn moved(&self) -> usize {
+        self.cells.len()
+    }
 }
 
 /// The `R8Unorm` coverage atlas.
@@ -553,7 +695,11 @@ impl Atlas {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            // COPY_SRC: `relocate` copies live cells texture-to-texture
+            // instead of re-rasterizing them (#3302).
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -657,10 +803,7 @@ impl Atlas {
 
     /// Caches a path emission.
     pub fn insert_path(&mut self, key: u64, emit: PathEmit) {
-        self.cpu_bytes += (emit.spans.len() * 16
-            + emit.cells.len() * size_of::<PathCell>()
-            + emit.slots.len() * 4) as u64
-            + LIVE_ENTRY_BYTES;
+        self.cpu_bytes += path_entry_bytes(&emit);
         self.paths.insert(key, emit);
     }
 
@@ -830,10 +973,10 @@ impl Atlas {
             // once the live coverage packs onto fewer, release the rest
             // — the texture returns to the size the current content
             // needs instead of holding the peak (#211). Live = the
-            // batch's pending cells plus every cached cell on a shelf
-            // this commit touched; untouched cache is dead weight the
-            // resize drops. The probe packs exactly the cells a
-            // re-lowered commit places, so the verdict transfers.
+            // batch's pending cells plus every cached cell the repack
+            // carries; the rest is dead weight it drops. The probe
+            // packs exactly the cells a repacked commit places, so the
+            // verdict transfers.
             if self.pages > 1 {
                 self.live_cells();
                 // Probe smallest texture first — so the released atlas
@@ -875,11 +1018,10 @@ impl Atlas {
                 AtlasPlan::Fits
             };
         }
-        // Placement failed even with every untouchable shelf gone. A
-        // resize drops every cached cell, so the re-lowered batch places
-        // only the live set: the pending cells plus the cached cells
-        // this commit touched. Unreferenced cache would bloat — or
-        // break — the target probe (#211).
+        // Placement failed even with every untouchable shelf gone. The
+        // repack keeps only the live set — the pending cells plus the
+        // surviving cached cells — so the target probe packs exactly
+        // those. Unreferenced cache would bloat — or break — it (#211).
         self.live_cells();
         let shapes = self.grow_shapes();
         for &(size, pages) in &shapes {
@@ -943,9 +1085,9 @@ impl Atlas {
     /// Every `(edge, pages)` shape larger than the live atlas, cheapest
     /// first: edge doublings to the cap, each with every page count the
     /// device and budget allow, plus the extra pages the live edge
-    /// could still grow. A re-lowered batch lands on the smallest
-    /// texture that packs it — a bigger edge before another page only
-    /// when it costs the same capacity or less.
+    /// could still grow. The batch lands on the smallest texture that
+    /// packs it — a bigger edge before another page only when it costs
+    /// the same capacity or less.
     fn grow_shapes(&self) -> Vec<(u32, u32)> {
         let mut shapes = Vec::new();
         let mut size = self.size;
@@ -962,47 +1104,90 @@ impl Atlas {
         shapes
     }
 
-    /// `(w, h)` of every cell a re-lowered commit would place: the
-    /// pending batch's cells (`plan_cells`, already deduped misses)
-    /// plus every cached cell on a shelf touched this commit — the
-    /// cells still referenced by live emissions (#211).
+    /// `(w, h)` of every cell a repacked commit would place, in
+    /// placement order — surviving cached glyphs, paths, then masks, the
+    /// order [`Self::each_surviving_cell`] and [`Self::relocate`] share
+    /// so the accepted plan and the actual placements agree (#3302) —
+    /// then the batch's pending cells (`plan_cells`, deduped misses
+    /// only; pending-referenced cache entries arrive through the
+    /// surviving set instead).
+    fn live_cells(&mut self) {
+        let mut plan_all = std::mem::take(&mut self.plan_all);
+        plan_all.clear();
+        self.each_surviving_cell(|_, _, w, h| plan_all.push((w, h)));
+        plan_all.extend_from_slice(&self.plan_cells);
+        self.plan_all = plan_all;
+    }
+
+    /// Whether `slot`'s shelf was touched this commit — the criterion
+    /// the survival checks and the probe share (#3302). Indexes the
+    /// current layout unchecked, like [`Self::shelf_epoch`]: callers
+    /// hold current slots by construction.
+    fn shelf_touched(&self, slot: u32) -> bool {
+        touched_in(&self.layout, self.tick, slot)
+    }
+
+    /// Whether the glyph survives a repack: it owns no cell, its shelf
+    /// was touched this commit, or the pending batch referenced its key.
+    fn glyph_survives(&self, key: &GlyphKey, cached: &CachedGlyph) -> bool {
+        cached
+            .shelf
+            .is_none_or(|slot| self.shelf_touched(slot) || self.dedupe_glyphs.contains(key))
+    }
+
+    /// Whether the path survives a repack: **every** cell's shelf was
+    /// touched — an entry whose only touched shelves are shared with
+    /// unrelated content drops whole, never in part — or the pending
+    /// batch referenced its key. A span-only emission's `all` holds
+    /// vacuously: it owns no pixels but stays a valid entry.
+    fn path_survives(&self, key: u64, emit: &PathEmit) -> bool {
+        emit.cells.iter().all(|c| self.shelf_touched(c.slot)) || self.dedupe_paths.contains(&key)
+    }
+
+    /// Whether the mask survives a repack: touched shelf or pending key.
+    fn mask_survives(&self, key: u64, mask: &MaskCell) -> bool {
+        self.shelf_touched(mask.slot) || self.dedupe_masks.contains(&key)
+    }
+
+    /// Every surviving cached cell in placement order — glyphs, paths,
+    /// masks — yielding `(owner, old texel origin, w, h)`. Entries
+    /// owning no pixels appear nowhere here but stay valid entries.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "cell rects and mask sizes are small positive floats"
     )]
-    fn live_cells(&mut self) {
-        self.plan_all.clear();
-        self.plan_all.extend_from_slice(&self.plan_cells);
-        let tick = self.tick;
-        let touched = |slot: u32| {
-            let row = &self.layout.shelves[usize::try_from(slot).expect("shelf index")];
-            row.live && row.last_used == tick
-        };
-        for cached in self.map.values() {
-            if let Some(slot) = cached.shelf
-                && touched(slot)
-            {
-                self.plan_all
-                    .push((u32::from(cached.entry.w), u32::from(cached.entry.h)));
+    fn each_surviving_cell(&self, mut f: impl FnMut(CellOwner, (u32, u32), u32, u32)) {
+        for (key, cached) in &self.map {
+            if cached.shelf.is_some() && self.glyph_survives(key, cached) {
+                f(
+                    CellOwner::Glyph(*key),
+                    (u32::from(cached.entry.x), u32::from(cached.entry.y)),
+                    u32::from(cached.entry.w),
+                    u32::from(cached.entry.h),
+                );
             }
         }
-        for emit in self.paths.values() {
-            for cell in &emit.cells {
-                if touched(cell.slot) {
-                    self.plan_all.push((
+        for (&key, emit) in &self.paths {
+            if self.path_survives(key, emit) {
+                for (i, cell) in emit.cells.iter().enumerate() {
+                    f(
+                        CellOwner::Path(key, i),
+                        (u32::from(cell.x), u32::from(cell.y)),
                         (cell.rect[2] - cell.rect[0]).round().max(0.0) as u32,
                         (cell.rect[3] - cell.rect[1]).round().max(0.0) as u32,
-                    ));
+                    );
                 }
             }
         }
-        for mask in self.masks.values() {
-            if touched(mask.slot) {
-                self.plan_all.push((
+        for (&key, mask) in &self.masks {
+            if self.mask_survives(key, mask) {
+                f(
+                    CellOwner::Mask(key),
+                    (mask.atlas[0] as u32, mask.atlas[1] as u32),
                     mask.size[0].ceil().max(0.0) as u32,
                     mask.size[1].ceil().max(0.0) as u32,
-                ));
+                );
             }
         }
     }
@@ -1034,39 +1219,35 @@ impl Atlas {
         for raster in rasters {
             match raster {
                 PendingRaster::Glyph { key, w, h, .. } => {
-                    if self.get(key).is_some() || !self.dedupe_glyphs.insert(*key) {
-                        continue;
-                    }
-                    if *w > 0 {
+                    // Every key is recorded — hits included — so the
+                    // relocation's survival check sees the batch's cache
+                    // references (#3302). Only a unique miss costs a cell.
+                    let new_key = self.dedupe_glyphs.insert(*key);
+                    if self.get(key).is_none() && new_key && *w > 0 {
                         self.plan_cells.push((*w, *h));
                     }
                 }
                 PendingRaster::Path {
                     key, cells: texels, ..
                 } => {
-                    if self.paths.contains_key(key) || !self.dedupe_paths.insert(*key) {
-                        continue;
+                    let new_key = self.dedupe_paths.insert(*key);
+                    if !self.paths.contains_key(key) && new_key {
+                        self.plan_cells
+                            .extend(texels.iter().map(|&(w, h, _)| (w, h)));
                     }
-                    self.plan_cells
-                        .extend(texels.iter().map(|&(w, h, _)| (w, h)));
                 }
                 PendingRaster::Mask { key, w, h, .. } => {
-                    if self.masks.contains_key(key) || !self.dedupe_masks.insert(*key) {
-                        continue;
+                    let new_key = self.dedupe_masks.insert(*key);
+                    if !self.masks.contains_key(key) && new_key {
+                        self.plan_cells.push((*w, *h));
                     }
-                    self.plan_cells.push((*w, *h));
                 }
                 PendingRaster::MaskTexture { .. }
                 | PendingRaster::Colr { .. }
                 | PendingRaster::Bitmap { .. }
-                | PendingRaster::GpuPath { .. } => {}
+                | PendingRaster::GpuPath(_) => {}
             }
         }
-    }
-
-    /// The atlas edge in texels.
-    pub const fn size(&self) -> u32 {
-        self.size
     }
 
     /// Pages the atlas carries — the texture is `size` × `size * pages`.
@@ -1527,6 +1708,7 @@ impl Atlas {
     /// also shrinks back once a batch's cells pack onto fewer pages
     /// (#211). Growing in pages keeps the edge — and every cell's x
     /// bound — unchanged while the texture's y range extends.
+    #[cfg(test)]
     pub fn resize_to(&mut self, device: &wgpu::Device, size: u32, pages: u32) {
         let size = size.min(self.cap);
         let pages = pages.clamp(1, self.max_pages(size));
@@ -1549,6 +1731,292 @@ impl Atlas {
             true,
         );
         self.clear();
+    }
+
+    /// Repacks the atlas at `size` × `pages` pages **without**
+    /// discarding live coverage (#3302): surviving cells migrate into a
+    /// freshly laid out layout of the target shape and their texels are
+    /// copied texture-to-texture inside `encoder` — the caller owns the
+    /// encoder's submission, the submit guard and tracking, and the old
+    /// texture stays alive through the encoded copies. `None` when the
+    /// surviving cells do not fit the target shape.
+    ///
+    /// Survival is the batch's: an entry keeps its pixels when its
+    /// shelf was touched this commit or its key appears in the pending
+    /// reference sets `batch_cells` last populated — call only inside a
+    /// commit after `plan`/`fits_strict` ran. Entries owning no pixels
+    /// (outline-less glyphs, span-only paths) always survive; cold
+    /// entries drop and are reported through [`Self::take_evicted`]
+    /// like reclaimed shelves. Dedicated mask textures are untouched.
+    /// The replacement texture exists only when the old one did: an
+    /// idle atlas stays storage-free and the next commit's
+    /// [`Self::ensure_storage`] allocates at the new shape. `None`
+    /// signals exhaustion to the caller; this method owns no retry.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the repack is one atomic transition: preflight, copy, rebuild"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "atlas cells fit u16, atlas coords fit f32, cell sizes are small positive floats"
+    )]
+    pub fn relocate(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        size: u32,
+        pages: u32,
+    ) -> Option<Relocation> {
+        let size = size.min(self.cap);
+        let pages = pages.clamp(1, self.max_pages(size));
+        let tick = self.tick;
+        let mut layout = Layout {
+            shelves: Vec::new(),
+            vacant: Vec::new(),
+            tops: vec![0; pages as usize],
+            // Continuing the old counter keeps every migrated band's
+            // epoch above any stale `(slot, epoch)` reference, so old
+            // references can never alias the new layout (#3302).
+            next_epoch: self.layout.next_epoch,
+        };
+        // Preflight: place every surviving cached cell into the new
+        // layout, in `live_cells`'s probe order so the accepted plan
+        // and these placements agree. A failure leaves `self`
+        // untouched.
+        let mut moves: Vec<CellMove> = Vec::new();
+        let mut fits = true;
+        self.each_surviving_cell(|owner, src, w, h| {
+            if !fits {
+                return;
+            }
+            let Some((x, y, slot)) = alloc_on(&mut layout, size, tick, w, h) else {
+                fits = false;
+                return;
+            };
+            moves.push(CellMove {
+                owner,
+                src,
+                dst: (x, y),
+                dst_slot: u32::try_from(slot).expect("shelf count fits u32"),
+                w,
+                h,
+            });
+        });
+        if !fits {
+            return None;
+        }
+        debug_assert!(
+            self.texture.is_some() || moves.is_empty(),
+            "cached cells imply committed uploads and thus atlas storage"
+        );
+        let old_bytes = self.gpu_bytes();
+        self.size = size;
+        self.pages = pages;
+        if let Some(old_texture) = self.texture.take() {
+            let (texture, view) = Self::allocate(device, size, pages);
+            for m in &moves {
+                encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &old_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: m.src.0,
+                            y: m.src.1,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: m.dst.0,
+                            y: m.dst.1,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width: m.w,
+                        height: m.h,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+            self.texture = Some(texture);
+            self.view = view;
+            self.generation = self
+                .generation
+                .checked_add(1)
+                .expect("atlas generation overflow");
+            crate::diag::grow(
+                device,
+                "glyph atlas",
+                crate::diag::Class::Atlas,
+                old_bytes,
+                self.gpu_bytes(),
+                moves.iter().map(|m| u64::from(m.w) * u64::from(m.h)).sum(),
+                true,
+            );
+        }
+        let old = std::mem::replace(&mut self.layout, layout);
+        // Pending cells may append to migrated shelves but must never
+        // rewrite migrated texels: each migrated band's upload region
+        // starts at its migrated frontier.
+        for shelf in &mut self.layout.shelves {
+            if shelf.live {
+                shelf.base = shelf.x;
+            }
+        }
+        let dedupe_glyphs = std::mem::take(&mut self.dedupe_glyphs);
+        let dedupe_paths = std::mem::take(&mut self.dedupe_paths);
+        let dedupe_masks = std::mem::take(&mut self.dedupe_masks);
+        // Dropped entries' bytes, paired like `evict_one`'s record with
+        // whether their band served the previous commit.
+        let mut dropped: Vec<(u64, bool)> = Vec::new();
+        let served = |slot: u32| {
+            old.shelves[usize::try_from(slot).expect("shelf index")].last_used + 1 == tick
+        };
+        self.map.retain(|key, cached| {
+            let Some(slot) = cached.shelf else {
+                return true;
+            };
+            if touched_in(&old, tick, slot) || dedupe_glyphs.contains(key) {
+                return true;
+            }
+            dropped.push((
+                u64::from(cached.entry.w) * u64::from(cached.entry.h) + LIVE_ENTRY_BYTES,
+                served(slot),
+            ));
+            false
+        });
+        self.paths.retain(|key, emit| {
+            if emit.cells.iter().all(|c| touched_in(&old, tick, c.slot))
+                || dedupe_paths.contains(key)
+            {
+                return true;
+            }
+            let first = emit.cells.first().expect("a dropped path owns cells");
+            dropped.push((path_entry_bytes(emit), served(first.slot)));
+            false
+        });
+        self.masks.retain(|key, mask| {
+            if touched_in(&old, tick, mask.slot) || dedupe_masks.contains(key) {
+                return true;
+            }
+            dropped.push((
+                (mask.size[0] * mask.size[1]) as u64 + LIVE_ENTRY_BYTES,
+                served(mask.slot),
+            ));
+            false
+        });
+        for m in &moves {
+            match m.owner {
+                CellOwner::Glyph(key) => {
+                    let cached = self.map.get_mut(&key).expect("surviving glyph");
+                    cached.entry.x = m.dst.0 as u16;
+                    cached.entry.y = m.dst.1 as u16;
+                    cached.shelf = Some(m.dst_slot);
+                }
+                CellOwner::Path(key, i) => {
+                    let cell = &mut self.paths.get_mut(&key).expect("surviving path").cells[i];
+                    cell.x = m.dst.0 as u16;
+                    cell.y = m.dst.1 as u16;
+                    cell.slot = m.dst_slot;
+                }
+                CellOwner::Mask(key) => {
+                    let mask = self.masks.get_mut(&key).expect("surviving mask");
+                    mask.atlas = [m.dst.0 as f32, m.dst.1 as f32];
+                    mask.slot = m.dst_slot;
+                }
+            }
+        }
+        // Rebuild `emit_slots`, `slot_keys`, `live` and `cpu_bytes`
+        // against the new layout — the same accounting `place_*` runs.
+        self.emit_slots.clear();
+        self.slot_holes.clear();
+        self.slot_dead.clear();
+        self.slot_keys.clear();
+        self.slot_keys
+            .resize_with(self.layout.shelves.len(), Default::default);
+        self.live.clear();
+        self.cpu_bytes = self.mask_texture_bytes;
+        for (key, cached) in &self.map {
+            if let Some(slot) = cached.shelf {
+                let hk = live_hash(key);
+                self.live.insert(
+                    hk,
+                    LiveEntry {
+                        kind: LiveKind::Glyph(*key),
+                    },
+                );
+                self.slot_keys[usize::try_from(slot).expect("shelf index")].insert(hk);
+                self.cpu_bytes +=
+                    u64::from(cached.entry.w) * u64::from(cached.entry.h) + LIVE_ENTRY_BYTES;
+            }
+        }
+        for (&key, emit) in &mut self.paths {
+            // Migrated slot arena: deduplicated like `place_path`'s,
+            // appended to the fresh arena — holes were cleared above so
+            // this is the range `alloc_emit_slots` would return.
+            let start = self.emit_slots.len();
+            for cell in &emit.cells {
+                self.slot_keys[usize::try_from(cell.slot).expect("shelf index")].insert(key);
+                if !self.emit_slots[start..].contains(&cell.slot) {
+                    self.emit_slots.push(cell.slot);
+                }
+            }
+            emit.slots = start..self.emit_slots.len();
+            self.live.insert(
+                key,
+                LiveEntry {
+                    kind: LiveKind::Path,
+                },
+            );
+            self.cpu_bytes += path_entry_bytes(emit);
+        }
+        for (&key, mask) in &self.masks {
+            self.slot_keys[usize::try_from(mask.slot).expect("shelf index")].insert(key);
+            self.live.insert(
+                key,
+                LiveEntry {
+                    kind: LiveKind::Mask,
+                },
+            );
+            self.cpu_bytes += (mask.size[0] * mask.size[1]) as u64 + LIVE_ENTRY_BYTES;
+        }
+        self.dedupe_glyphs = dedupe_glyphs;
+        self.dedupe_paths = dedupe_paths;
+        self.dedupe_masks = dedupe_masks;
+        self.evicted.extend(dropped);
+        Some(Relocation {
+            cells: moves
+                .iter()
+                .map(|m| {
+                    (
+                        m.src,
+                        CellLocation {
+                            x: m.dst.0,
+                            y: m.dst.1,
+                        },
+                    )
+                })
+                .collect(),
+            old_shelves: old.shelves.iter().map(|s| (s.epoch, s.live)).collect(),
+        })
+    }
+
+    /// Whether `slot` currently holds a live band at `epoch` — the
+    /// bounds-safe stale check for references recorded before a repack
+    /// shrank the shelf vector (#3302). [`Self::shelf_epoch`] stays for
+    /// callers holding known-current slots.
+    pub fn shelf_matches(&self, slot: u32, epoch: u64) -> bool {
+        usize::try_from(slot)
+            .ok()
+            .and_then(|i| self.layout.shelves.get(i))
+            .is_some_and(|s| s.live && s.epoch == epoch)
     }
 
     /// The most pages an atlas of `size` may carry: the device's 2D
@@ -1716,10 +2184,7 @@ impl Atlas {
                 LiveKind::Path => {
                     if let Some(emit) = self.paths.remove(&hk) {
                         self.slot_dead.push(emit.slots.clone());
-                        bytes += (emit.spans.len() * 16
-                            + emit.cells.len() * size_of::<PathCell>()
-                            + emit.slots.len() * 4) as u64
-                            + LIVE_ENTRY_BYTES;
+                        bytes += path_entry_bytes(&emit);
                     }
                 }
                 LiveKind::Mask => {
@@ -1759,6 +2224,14 @@ impl Atlas {
             }
         }
     }
+}
+
+/// Whether `slot`'s shelf in `layout` is live and was used at `tick` —
+/// the touch mark `begin_commit`, cache hits and `alloc_on` leave, and
+/// the survival criterion the repack and the probe share (#3302).
+fn touched_in(layout: &Layout, tick: u64, slot: u32) -> bool {
+    let row = &layout.shelves[usize::try_from(slot).expect("shelf index")];
+    row.live && row.last_used == tick
 }
 
 /// The shelf `tick` may evict, picked the way [`Atlas::evict_one`]
@@ -2109,8 +2582,8 @@ pub enum AtlasPlan {
     FitsEviction,
     /// The batch's own cell set packs to this `(edge, pages)` — larger
     /// when it outgrows the atlas, smaller when it releases pages left
-    /// over from a peak frame — which after re-lowering holds every
-    /// cached and pending cell (#211).
+    /// over from a peak frame — which after repacking holds every
+    /// surviving cached and pending cell (#211).
     Resize(u32, u32),
     /// Even the largest `(edge, pages)` shape cannot hold the batch's
     /// shelf footprint: the commit evicts what it can and reports the
@@ -2128,7 +2601,7 @@ impl PendingRaster {
             Self::MaskTexture { .. }
             | Self::Colr { .. }
             | Self::Bitmap { .. }
-            | Self::GpuPath { .. } => 0,
+            | Self::GpuPath(_) => 0,
         }
     }
 }
@@ -2216,30 +2689,132 @@ pub enum PendingRaster {
         width: u32,
         /// Bitmap height.
         height: u32,
-        /// Premultiplied linear-P3 f16 texels.
-        texels: Vec<u8>,
+        /// The decoded pixels, stored like an image of them.
+        upload: super::image_storage::Upload<'static>,
     },
     /// A path routed to the GPU coverage kernels (issue #2543, decision
-    /// S3): the lowering recorded its curve elements, fill rule, device
-    /// transform and template instance — the CPU never flattened it and
-    /// nothing is rasterized or stored in the atlas. The record joins
-    /// the frame's compute input at apply time.
-    GpuPath {
-        /// `FillRule` as the kernel's `rule` field (0 non-zero,
-        /// 1 even-odd).
+    /// S3): the lowering recorded its curve elements, fill rule and
+    /// placement — the CPU never flattened it and nothing is rasterized
+    /// or stored in the atlas. The record joins the frame's coverage
+    /// state at apply time; the anchor instance in the frame's instance
+    /// array supplies the drawing state the vertex stage joins to each
+    /// emitted geometry record (water-rs/waterui#3081). The record is
+    /// shared with the retained emission that drew it.
+    GpuPath(Arc<GpuDraw>),
+}
+
+/// A GPU-routed path's draw record (water-rs/waterui#3081): the
+/// placement key its coverage entry lives under plus everything a miss
+/// regenerates from. A retained leaf shares it with each frame's
+/// pending list, so a hit re-joins — or regenerates — the entry without
+/// the lowering that produced it, and a re-placement rewrites it in
+/// place.
+pub struct GpuDraw {
+    /// The coverage entry's retention key — exact when the surface clips
+    /// the coverage hull.
+    pub key: crate::render::path::CoverageKey,
+    /// The draw's integer shift: an unclipped entry holds placement-relative
+    /// coverage, so the draw adds its own integer placement offset back; a
+    /// clipped entry holds absolute coverage and shifts by zero.
+    pub shift: [i32; 2],
+    /// `FillRule` as the kernel's `rule` field (0 non-zero, 1 even-odd).
+    pub rule: u32,
+    /// Kernel transform in the generation frame: the 2x2 plus the
+    /// translation's fraction, or the full raster when clipped.
+    pub raster: kurbo::Affine,
+    /// Generation-frame clip rect `(x0, y0, x1, y1)`: `[0, surface]`
+    /// shifted by `−offset` — a no-op for unclipped entries — or the
+    /// surface rect itself when clipped.
+    pub clip: [f32; 4],
+    /// Encoded geometry and its storage bounds in the generation frame.
+    pub path: crate::render::path::GpuPath,
+}
+
+impl GpuDraw {
+    /// The draw of `content` under `raster` on a `surface`-pixel target,
+    /// from its geometry `device` placed under that raster. Unclipped
+    /// coverage is generated placement-relative — the raster keeps its
+    /// translation's fraction and the integer offset moves to the draw's
+    /// shift — so every integer offset shares one entry; coverage the
+    /// surface clips stays exact-offset keyed at its true position.
+    pub fn new(
+        content: u64,
         rule: u32,
-        /// Local → device transform the kernels apply.
-        raster: kurbo::Affine,
-        /// The target surface size the grid bounds clip to.
+        raster: Affine,
+        device: crate::render::path::GpuPath,
         surface: (u32, u32),
-        /// The instance template `classify` copies per emitted span or
-        /// cell — the same bytes `replay` would stamp.
-        template: Box<crate::render::instance::Instance>,
-        /// Curve elements encoded for the compute input buffer.
-        elements: Vec<crate::render::path::GpuElement>,
-        /// Decision R2's bound over those elements.
+    ) -> Self {
+        let placed = DrawPlacement::new(content, raster, device.bound, surface);
+        Self {
+            key: placed.key,
+            shift: placed.shift,
+            rule,
+            raster: placed.raster,
+            clip: placed.clip,
+            path: device.with_bound(placed.bound),
+        }
+    }
+
+    /// Re-places the draw in place under `raster`, whose device-frame
+    /// bound for this geometry is `bound` — the same record
+    /// [`GpuDraw::new`] builds there, without moving it.
+    pub fn place(
+        &mut self,
+        raster: Affine,
         bound: crate::render::path::GpuBound,
-    },
+        surface: (u32, u32),
+    ) {
+        let placed = DrawPlacement::new(self.key.content(), raster, bound, surface);
+        self.key = placed.key;
+        self.shift = placed.shift;
+        self.raster = placed.raster;
+        self.clip = placed.clip;
+        self.path.bound = placed.bound;
+    }
+}
+
+/// Everything about a [`GpuDraw`] its placement decides.
+struct DrawPlacement {
+    key: crate::render::path::CoverageKey,
+    shift: [i32; 2],
+    raster: Affine,
+    clip: [f32; 4],
+    bound: crate::render::path::GpuBound,
+}
+
+impl DrawPlacement {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "device coordinates are f32"
+    )]
+    fn new(
+        content: u64,
+        raster: Affine,
+        bound: crate::render::path::GpuBound,
+        surface: (u32, u32),
+    ) -> Self {
+        let [xx, yx, xy, yy, tx, ty] = raster.as_coeffs();
+        let offset = Vec2::new(tx.floor(), ty.floor());
+        let (width, height) = (surface.0 as f32, surface.1 as f32);
+        if bound.clipped {
+            return Self {
+                key: crate::render::path::CoverageKey::new(content, raster, offset, surface, true),
+                shift: [0, 0],
+                raster,
+                clip: [0.0, 0.0, width, height],
+                bound,
+            };
+        }
+        let (left, top) = (offset.x as f32, offset.y as f32);
+        Self {
+            key: crate::render::path::CoverageKey::new(content, raster, offset, surface, false),
+            shift: [offset.x as i32, offset.y as i32],
+            raster: Affine::new([xx, yx, xy, yy, tx - offset.x, ty - offset.y]),
+            clip: [-left, -top, width - left, height - top],
+            bound: bound.shifted(-offset),
+        }
+    }
 }
 
 /// The glyph's atlas cell. On a cache hit the entry is returned with
@@ -2520,6 +3095,96 @@ pub fn stroke_outlines(
     Ok(paths)
 }
 
+/// Conservative outline bounds in the run's local coordinates, before rasterization.
+pub fn run_bounds(font: &FontData, run: &cherenkov::GlyphRun) -> Result<kurbo::Rect, RenderError> {
+    let scale = f64::from(run.size) / f64::from(font.units_per_em);
+    if run.coords.iter().all(|coord| *coord == 0) {
+        // The head table encloses every glyph at the default location.
+        // Culling needs only a conservative box, not individual outlines.
+        let Some(first) = run.glyphs.first() else {
+            return Ok(kurbo::Rect::ZERO);
+        };
+        let mut origins = kurbo::Rect::new(
+            f64::from(first.x),
+            f64::from(first.y),
+            f64::from(first.x),
+            f64::from(first.y),
+        );
+        for glyph in &run.glyphs[1..] {
+            origins = origins.union_pt((f64::from(glyph.x), f64::from(glyph.y)));
+        }
+        return Ok(kurbo::Rect::new(
+            font.default_bounds.x0.mul_add(scale, origins.x0),
+            font.default_bounds.y1.mul_add(-scale, origins.y0),
+            font.default_bounds.x1.mul_add(scale, origins.x1),
+            font.default_bounds.y0.mul_add(-scale, origins.y1),
+        ));
+    }
+    // A non-default variable-font location can extend outside the head box.
+    let font_ref = std::cell::OnceCell::new();
+    let coords = std::cell::OnceCell::new();
+    let metrics = std::cell::OnceCell::new();
+    let mut instances = font.bounds.borrow_mut();
+    let index = instances
+        .iter()
+        .position(|instance| instance.coords == run.coords)
+        .unwrap_or_else(|| {
+            instances.push(InstanceBounds {
+                coords: run.coords.clone(),
+                glyphs: Vec::new(),
+            });
+            instances.len() - 1
+        });
+    let cached = &mut instances[index].glyphs;
+    let mut bounds = None::<kurbo::Rect>;
+    for glyph in run.glyphs.iter() {
+        let b = match cached.binary_search_by_key(&glyph.id, |entry| entry.0) {
+            Ok(index) => cached[index].1,
+            Err(index) => {
+                let parsed = font_ref
+                    .get_or_init(|| skrifa::FontRef::from_index(&font.data, font.index))
+                    .as_ref()
+                    .map_err(|e| RenderError::Font(format!("{e}")))?;
+                let metrics = metrics.get_or_init(|| {
+                    let coords: &Vec<F2Dot14> = coords.get_or_init(|| {
+                        run.coords.iter().map(|c| F2Dot14::from_bits(*c)).collect()
+                    });
+                    parsed.glyph_metrics(
+                        skrifa::instance::Size::unscaled(),
+                        skrifa::instance::LocationRef::new(coords),
+                    )
+                });
+                let bounds = metrics.bounds(skrifa::GlyphId::new(glyph.id)).map(|b| {
+                    kurbo::Rect::new(
+                        f64::from(b.x_min),
+                        f64::from(b.y_min),
+                        f64::from(b.x_max),
+                        f64::from(b.y_max),
+                    )
+                });
+                cached.insert(index, (glyph.id, bounds));
+                bounds
+            }
+        };
+        let Some(b) = b else {
+            continue;
+        };
+        if b.is_zero_area() {
+            continue;
+        }
+        let x = f64::from(glyph.x);
+        let y = f64::from(glyph.y);
+        let b = kurbo::Rect::new(
+            b.x0.mul_add(scale, x),
+            b.y1.mul_add(-scale, y),
+            b.x1.mul_add(scale, x),
+            b.y0.mul_add(-scale, y),
+        );
+        bounds = Some(bounds.map_or(b, |bounds| bounds.union(b)));
+    }
+    Ok(bounds.unwrap_or(kurbo::Rect::ZERO))
+}
+
 /// The cache key for a glyph at a quantized device position.
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_sign_loss)]
@@ -2666,15 +3331,27 @@ mod tests {
         let Some((device, queue)) = device_and_queue() else {
             return;
         };
+        let parsed =
+            skrifa::FontRef::from_index(include_bytes!("../../../scenes/fonts/NotoSans.ttf"), 0)
+                .expect("test font");
+        let head = parsed.head().expect("test font head");
         let font = FontData {
             data: include_bytes!("../../../scenes/fonts/NotoSans.ttf")
                 .as_slice()
                 .into(),
             index: 0,
+            units_per_em: head.units_per_em(),
+            default_bounds: kurbo::Rect::new(
+                f64::from(head.x_min()),
+                f64::from(head.y_min()),
+                f64::from(head.x_max()),
+                f64::from(head.y_max()),
+            ),
             has_colr: false,
             has_bitmap: false,
             bitmap: None,
             colr: std::cell::RefCell::new(FxHashMap::default()),
+            bounds: std::cell::RefCell::default(),
         };
         let key = |glyph: u32| GlyphKey {
             font: 7,
@@ -3016,7 +3693,7 @@ mod tests {
 
     /// Once a paged atlas's live batch packs onto fewer pages, `plan`
     /// returns the smaller target so the peak texture is released
-    /// (#211): the cells a re-lowered commit places — hits and misses
+    /// (#211): the cells a repacked commit places — hits and misses
     /// alike — probe a fresh layout, while a batch still needing every
     /// page keeps them all.
     #[test]
@@ -3041,13 +3718,14 @@ mod tests {
             ],
             coords_hash: 0,
         };
+        let texels = vec![0x80; 512 * 512];
         let cell = |glyph: u32| PendingRaster::Glyph {
             key: key(glyph),
             left: 0,
             top: 0,
             w: 512,
             h: 512,
-            texels: vec![0x80; 512 * 512],
+            texels: texels.clone(),
         };
         let peak: Vec<PendingRaster> = (0..70u32).map(cell).collect();
         let refs: Vec<&PendingRaster> = peak.iter().collect();
@@ -3057,6 +3735,11 @@ mod tests {
         atlas.resize_to(&device, size, pages);
         assert_eq!(atlas.pages(), 2);
         let bytes_peak = atlas.gpu_bytes();
+        let old_origin = atlas
+            .store_glyph(&device, &queue, key(100), 0, 0, 512, 512, &texels)
+            .expect("cached glyph");
+        // The pending key must preserve this hit even without a touched shelf.
+        atlas.begin_commit(&[]);
 
         // A batch of 40 cells still needs them stored — but packs on
         // one page, so the second page must be released.
@@ -3066,34 +3749,32 @@ mod tests {
             panic!("a smaller batch must shrink the atlas");
         };
         assert_eq!((size, pages), (4096, 1));
-        atlas.resize_to(&device, size, pages);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let relocation = atlas
+            .relocate(&device, &mut encoder, size, pages)
+            .expect("shrink fits");
+        assert_eq!(relocation.moved(), 1);
+        let moved = relocation
+            .cell(old_origin.0, old_origin.1)
+            .expect("cached glyph migrated");
+        let retained = atlas.get(&key(100)).expect("pending hit retained");
+        assert_eq!(
+            (u32::from(retained.x), u32::from(retained.y)),
+            (moved.x, moved.y)
+        );
+        queue.submit([encoder.finish()]);
         assert_eq!(atlas.pages(), 1);
         assert!(atlas.gpu_bytes() < bytes_peak);
-        for raster in &quiet {
-            let PendingRaster::Glyph {
-                key,
-                left,
-                top,
-                w,
-                h,
-                texels,
-            } = raster
-            else {
-                unreachable!("glyph pending only")
-            };
+        for glyph in 100..140 {
             assert!(
                 atlas
-                    .store_glyph(&device, &queue, *key, *left, *top, *w, *h, texels)
+                    .store_glyph(&device, &queue, key(glyph), 0, 0, 512, 512, &texels)
                     .is_some(),
                 "the shrunken atlas still holds the whole batch"
             );
         }
-        let max_y = quiet
-            .iter()
-            .filter_map(|r| match r {
-                PendingRaster::Glyph { key, .. } => atlas.get(key).map(|e| u32::from(e.y)),
-                _ => None,
-            })
+        let max_y = (100..140)
+            .map(|glyph| u32::from(atlas.get(&key(glyph)).expect("stored glyph").y))
             .max();
         assert!(max_y.unwrap_or(0) < 4096, "no cell lands past page one");
 

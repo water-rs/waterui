@@ -470,7 +470,12 @@ impl Dialog {
     pub fn modal_layer(&self) -> impl View + use<> {
         let scrim_dialog = self.clone();
         zstack((
-            Color::new(Scrim).on_tap(move |env: Environment| scrim_dialog.run_cancel(&env)),
+            // The scrim is a pointer target only: the card's own cancel
+            // action and Escape carry dismissal for assistive technology, so
+            // the backdrop must not become a focusable element ahead of them.
+            Color::new(Scrim)
+                .on_tap(move |env: Environment| scrim_dialog.run_cancel(&env))
+                .a11y_hidden(true),
             DialogCard(self.clone()),
         ))
     }

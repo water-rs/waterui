@@ -21,6 +21,7 @@ import androidx.lifecycle.findViewTreeLifecycleOwner
 class HydrolysisSession internal constructor(
     context: Context,
     private val onCloseRequested: () -> Unit,
+    private val painter: SessionPainter? = null,
 ) {
     /**
      * The opaque native pointer, owned on the UI thread only. It is never
@@ -35,6 +36,7 @@ class HydrolysisSession internal constructor(
         NativeBridge.nativeCreateSession(
             this,
             context.applicationContext,
+            painter,
             NativeBridge.uiThreadServices,
         )
 
@@ -43,6 +45,9 @@ class HydrolysisSession internal constructor(
 
     /** The native teardown waits for the outermost native call to return. */
     private var tearDownPending = false
+
+    /** A placement pull requested under a native call; the outermost [exitNative] runs it. */
+    private var placementPullPending = false
 
     /** [tearDown] has handed [livePtr] to `nativeDestroySession`. */
     private var destroyed = false
@@ -100,11 +105,32 @@ class HydrolysisSession internal constructor(
         return livePtr
     }
 
-    /** [withNativePtr]'s exit: the outermost return runs a pending teardown. */
+    /**
+     * [withNativePtr]'s exit: the outermost return runs a pending teardown,
+     * else a pending placement pull. The pull opens its own [withNativePtr]
+     * scope, so this runs again at depth zero with the flag already cleared.
+     */
     @PublishedApi
     internal fun exitNative() {
         nativeDepth -= 1
-        if (nativeDepth == 0 && tearDownPending) tearDown()
+        if (nativeDepth != 0) return
+        if (tearDownPending) {
+            placementPullPending = false
+            tearDown()
+        } else if (placementPullPending) {
+            placementPullPending = false
+            hostView?.platformViewRegistry?.publishIfPending()
+        }
+    }
+
+    /**
+     * Pulls the published placement set into the bound registry, never under a
+     * native call: the native side holds the session borrowed until the
+     * outermost call returns, and `nativePlatformViewFrames` would re-enter it.
+     */
+    internal fun requestPlacementPull() {
+        if (nativeDepth == 0) hostView?.platformViewRegistry?.publishIfPending()
+        else placementPullPending = true
     }
 
     /** The view currently presenting this session, or none between bindings. */
@@ -131,15 +157,17 @@ class HydrolysisSession internal constructor(
     private val platformViewInstances = HashMap<Long, View>()
 
     /**
-     * Registers `view` as the platform-view instance `id`. Public because the
-     * registering code lives in another Gradle module.
+     * Registers `view` as the platform-view instance `id` and requests a
+     * placement pull (deferred while a native call is live, see
+     * [requestPlacementPull]). Public because the registering code lives in
+     * another Gradle module.
      */
     fun registerPlatformViewInstance(id: Long, view: View) {
         check(platformViewInstances.putIfAbsent(id, view) == null) {
             "hydrolysis: a platform-view instance is already registered under id $id"
         }
         // A placement naming this instance may already be waiting.
-        hostView?.platformViewRegistry?.notifyChanged()
+        requestPlacementPull()
     }
 
     /**
@@ -154,12 +182,29 @@ class HydrolysisSession internal constructor(
     /** The instance a placement resolves, or none. Registry-side. */
     internal fun platformViewInstance(id: Long): View? = platformViewInstances[id]
 
+    /**
+     * The retained tree's platform view under host pixel (`x`, `y`) — the
+     * HWUI painter's ordered hit test; `null` means content or nothing
+     * covers the point. GPU sessions never call this.
+     */
+    internal fun platformViewAt(x: Float, y: Float): Long? {
+        val id =
+            withNativePtr(NativeBridge::nativePlatformViewHitTest.name) { ptr ->
+                NativeBridge.nativePlatformViewHitTest(ptr, x, y)
+            }
+        return if (id == 0L) null else id
+    }
+
     internal fun bind(view: HydrolysisHostView) {
         check(!destroyRequested) { "hydrolysis: bind reached a closing HydrolysisSession" }
         check(hostView == null || hostView === view) {
             "a HydrolysisSession is bound to exactly one host view at a time"
         }
         hostView = view
+        painter?.attach(view)
+        withNativePtr(NativeBridge::nativeSetHostAttached.name) { ptr ->
+            NativeBridge.nativeSetHostAttached(ptr, true)
+        }
         // The new binding owns the Activity the instances draw on: each
         // `HostRebindAware` retargets its own context wrapper and re-observes
         // what the old binding's context owned (the WebView's Lifecycle).
@@ -182,11 +227,33 @@ class HydrolysisSession internal constructor(
         // retained session, so they must be free of the old slots before
         // the next binding mounts them.
         view.platformViewRegistry.detachInstances()
+        painter?.detach(view)
+        if (!destroyed) {
+            withNativePtr(NativeBridge::nativeSetHostAttached.name) { ptr ->
+                NativeBridge.nativeSetHostAttached(ptr, false)
+            }
+        }
         hostView = null
         // A detached view is invisible, so park the pump before a pending
         // teardown runs below.
         if (!destroyed) setVisible(false)
         if (destroyRequested) requestTearDown()
+    }
+
+    /**
+     * Routes the scheduler's frame demand: a session-owned painter applies
+     * it on the bound host; the GPU path reports it to native, which
+     * combines it with the engine's content-rate range.
+     */
+    internal fun setFrameDemand(continuous: Boolean, touching: Boolean) {
+        check(!destroyed) { "hydrolysis: frame demand reached a destroyed HydrolysisSession" }
+        if (painter != null) {
+            painter.setHighRefresh(continuous || touching)
+        } else {
+            withNativePtr(NativeBridge::nativeSetFrameDemand.name) { ptr ->
+                NativeBridge.nativeSetFrameDemand(ptr, continuous, touching)
+            }
+        }
     }
 
     /**
@@ -250,8 +317,12 @@ class HydrolysisSession internal constructor(
         try {
             NativeBridge.nativeDestroySession(livePtr)
         } finally {
-            mainHandler.removeCallbacksAndMessages(null)
-            frameScheduler.stop()
+            try {
+                painter?.destroy()
+            } finally {
+                mainHandler.removeCallbacksAndMessages(null)
+                frameScheduler.stop()
+            }
         }
     }
 
@@ -296,9 +367,13 @@ class HydrolysisSession internal constructor(
         hostView?.notifyAccessibilityTreeChanged(diffJson)
     }
 
+    /**
+     * The session published a new placement set. Fired from inside the frame,
+     * so the pull runs once the outermost native call returns.
+     */
     @CalledFromNative
     fun onNativePlatformViewsChanged() {
-        hostView?.notifyPlatformViewsChanged()
+        requestPlacementPull()
     }
 
     /**
@@ -309,17 +384,6 @@ class HydrolysisSession internal constructor(
     @CalledFromNative
     fun onNativePlatformViewFocus(): Boolean =
         hostView?.platformViewRegistry?.focusInside() == true
-
-    /**
-     * A fatal, unrecoverable failure on the native side (GPU device loss, an
-     * explicit GPU error). The host raises it as an exception on the UI
-     * thread — a crash with a named cause is the honest surface for a session
-     * that can no longer present.
-     */
-    @CalledFromNative
-    fun onNativeFatalError(message: String) {
-        throw IllegalStateException(message)
-    }
 
     /**
      * The native side requests a close from inside its frame and keeps

@@ -161,10 +161,10 @@ fn rendered(
 fn chrome_layers(runtime: &HeadlessRuntime) -> Vec<cherenkov::LayerId> {
     use crate::renderer::mount::layers::{LayerVisitor, visit};
     struct Members(Vec<cherenkov::LayerId>);
-    impl LayerVisitor for Members {
+    impl<E: crate::text::TextEngine> LayerVisitor<E> for Members {
         fn node(
             &mut self,
-            layers: &crate::renderer::mount::layers::NodeLayers,
+            layers: &crate::renderer::mount::layers::NodeLayers<E>,
             _world: kurbo::Affine,
             _alphas: &[f32],
         ) {
@@ -178,13 +178,15 @@ fn chrome_layers(runtime: &HeadlessRuntime) -> Vec<cherenkov::LayerId> {
 }
 
 /// The same walk over the mirror mount.
-fn mirror_chrome_layers(renderer: &crate::renderer::HydrolysisRenderer) -> Vec<cherenkov::LayerId> {
+fn mirror_chrome_layers<E: crate::text::TextEngine>(
+    renderer: &crate::renderer::HydrolysisRenderer<E>,
+) -> Vec<cherenkov::LayerId> {
     use crate::renderer::mount::layers::{LayerVisitor, visit};
     struct Members(Vec<cherenkov::LayerId>);
-    impl LayerVisitor for Members {
+    impl<E: crate::text::TextEngine> LayerVisitor<E> for Members {
         fn node(
             &mut self,
-            layers: &crate::renderer::mount::layers::NodeLayers,
+            layers: &crate::renderer::mount::layers::NodeLayers<E>,
             _world: kurbo::Affine,
             _alphas: &[f32],
         ) {
@@ -199,17 +201,22 @@ fn mirror_chrome_layers(renderer: &crate::renderer::HydrolysisRenderer) -> Vec<c
 
 /// The mount's cells whose staged program records chrome members, in
 /// mount order — the cells a partial commit can stage independently.
-fn chrome_cells(
-    renderer: &crate::renderer::HydrolysisRenderer,
-) -> Vec<Rc<crate::renderer::NodeCell>> {
-    fn has_chrome(items: &[crate::renderer::mount::program::Item]) -> bool {
+fn chrome_cells<E: crate::text::TextEngine>(
+    renderer: &crate::renderer::HydrolysisRenderer<E>,
+) -> Vec<Rc<crate::renderer::NodeCell<E>>> {
+    fn has_chrome<E: crate::text::TextEngine>(
+        items: &[crate::renderer::mount::program::Item<E>],
+    ) -> bool {
         items.iter().any(|item| match item {
             crate::renderer::mount::program::Item::Chrome(_) => true,
             crate::renderer::mount::program::Item::Scope { items, .. } => has_chrome(items),
             _ => false,
         })
     }
-    fn walk(cell: &Rc<crate::renderer::NodeCell>, out: &mut Vec<Rc<crate::renderer::NodeCell>>) {
+    fn walk<E: crate::text::TextEngine>(
+        cell: &Rc<crate::renderer::NodeCell<E>>,
+        out: &mut Vec<Rc<crate::renderer::NodeCell<E>>>,
+    ) {
         let retained = cell.retained();
         if retained
             .pending
@@ -238,6 +245,7 @@ fn chrome_mount(
 ) -> &crate::renderer::mount::backdrop::ChromeBackdropGroups<
     cherenkov::BackdropGroup,
     cherenkov::BackdropShader,
+    crate::text::ParleyEngine,
 > {
     super::window_mount(runtime).chrome_groups()
 }
@@ -251,7 +259,10 @@ fn member_group(runtime: &HeadlessRuntime, member: cherenkov::LayerId) -> cheren
 }
 
 /// One frame through the mirror mount — `view` only matters on the first.
-fn mirror_frame(renderer: &mut crate::renderer::HydrolysisRenderer, view: waterui_core::AnyView) {
+fn mirror_frame(
+    renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    view: waterui_core::AnyView,
+) {
     let env = chrome_env();
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
@@ -268,7 +279,7 @@ fn mirror_frame(renderer: &mut crate::renderer::HydrolysisRenderer, view: wateru
 
 /// One frame through the mirror mount at `scale` device pixels per point.
 fn mirror_frame_at(
-    renderer: &mut crate::renderer::HydrolysisRenderer,
+    renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
     view: waterui_core::AnyView,
     scale: f64,
 ) {
@@ -290,7 +301,7 @@ fn mirror_frame_at(
 fn mirrored(
     view: impl waterui_core::View,
     theme: MinimalTestTheme,
-) -> crate::renderer::HydrolysisRenderer {
+) -> crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine> {
     let mut renderer = test_renderer_with_theme(theme);
     mirror_frame(&mut renderer, waterui_core::AnyView::new(view));
     renderer
@@ -298,7 +309,7 @@ fn mirrored(
 
 /// The layer `id`'s committed node in the mirror.
 fn mirrored_node(
-    renderer: &crate::renderer::HydrolysisRenderer,
+    renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
     id: cherenkov::LayerId,
 ) -> std::cell::Ref<'_, cherenkov::LayerNode> {
     renderer
@@ -410,6 +421,185 @@ fn a_member_binds_clip_transform_shader_and_uniforms() {
         effect.shader,
         shader.id(),
         "the effect names the shader's engine handle",
+    );
+}
+
+/// The recorded `GLASS` backdrop material the scope-space tests mount
+/// inside their scopes.
+fn glass_material() -> cherenkov_record::BackdropMaterial {
+    let draw = chrome_draw(GLASS, GLASS_SHADER, Vec::new());
+    cherenkov_record::Content::record_layered(
+        &cherenkov_record::LayoutSize::new(),
+        cherenkov_record::MaterialScope::SOLO,
+        |recorder| {
+            recorder.backdrop_material(
+                draw.shape.clone(),
+                draw.shader,
+                draw.capture,
+                draw.effect.clone(),
+            );
+        },
+    )
+    .runs
+    .into_iter()
+    .next()
+    .expect("the layered record carries the one material")
+    .material
+}
+
+/// A fresh program builder bound to `clock`'s placements.
+fn scope_program_builder(
+    clock: &Rc<crate::renderer::mount::PlacementClock>,
+) -> crate::renderer::mount::ProgramBuilder<crate::text::ParleyEngine> {
+    use crate::renderer::FrameSignals;
+    use crate::renderer::mount::{NodeCell, Placement, ProgramBuilder};
+
+    ProgramBuilder::new(NodeCell::new(
+        FrameSignals::new(std::time::Instant::now()),
+        Placement::new(clock),
+    ))
+}
+
+/// A member recorded inside a transformed scope draws in the scope layer's
+/// space: `close_scope` re-expresses the member's transform through
+/// `origin.inverse()`, the same conversion runs and live items get —
+/// otherwise the member mounts under the scope layer with the node's space
+/// still in its transform and the scope transform reaches it twice
+/// (water-rs/waterui#2894).
+#[test]
+fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
+    use crate::renderer::mount::program::Item;
+    use crate::renderer::mount::{Placement, PlacementClock, ScopeKey, ScopeProps};
+
+    let clock = PlacementClock::new();
+    let mut builder = scope_program_builder(&clock);
+    builder.open_scope(
+        ScopeKey {
+            role: "transition",
+            item: 0,
+        },
+        ScopeProps {
+            transform: Affine::translate((30.0, 40.0)),
+            clip: None,
+            alpha: 1.0,
+        },
+        Placement::new(&clock),
+    );
+    builder.push_chrome(glass_material(), Affine::translate((5.0, 6.0)), true);
+    builder.close_scope();
+    let program = builder.finish();
+    let [Item::Scope { items, .. }] = program.items.as_slice() else {
+        panic!("the record is the one scope")
+    };
+    let [Item::Chrome(chrome)] = items.as_slice() else {
+        panic!("the scope holds the one member")
+    };
+    assert_eq!(
+        chrome.transform,
+        Affine::translate((-25.0, -34.0)),
+        "the member's transform is in the scope layer's space — the scope transform applies once"
+    );
+}
+
+/// A scope nested inside a transformed scope mounts correctly without
+/// `close_scope` touching it. `open_scope` callers supply
+/// `props.transform` in the *enclosing* scope's space (the contract
+/// `open_scope_with` documents — unlike `Run`/`Live`/`Chrome` items,
+/// which record in the node's space), and `props.clip` in the scope's
+/// own space, so the nested `Item::Scope` is already re-expressed at
+/// open time. The assertions mount the way `lower_scope` does — the
+/// inner layer's transform applied under the outer layer — and the
+/// composed result must land the content at its recorded position, each
+/// transform applied once.
+#[test]
+fn a_nested_scope_mounts_with_each_transform_applied_once() {
+    use crate::renderer::mount::program::Item;
+    use crate::renderer::mount::{Placement, PlacementClock, ScopeKey, ScopeProps};
+
+    let outer = Affine::translate((30.0, 40.0));
+    let inner = Affine::translate((5.0, 6.0));
+    let recorded = Affine::translate((2.0, 3.0));
+    // What `open_scope_with` stores: the clip converted into the scope's
+    // own space at open time.
+    let clip = ShapeData::Rect(kurbo::Rect::new(0.0, 0.0, 10.0, 10.0));
+
+    let clock = PlacementClock::new();
+    let mut builder = scope_program_builder(&clock);
+    builder.open_scope(
+        ScopeKey {
+            role: "outer",
+            item: 0,
+        },
+        ScopeProps {
+            transform: outer,
+            clip: None,
+            alpha: 1.0,
+        },
+        Placement::new(&clock),
+    );
+    builder.open_scope(
+        ScopeKey {
+            role: "inner",
+            item: 1,
+        },
+        ScopeProps {
+            transform: inner,
+            clip: Some(clip.clone()),
+            alpha: 1.0,
+        },
+        Placement::new(&clock),
+    );
+    builder.push_chrome(glass_material(), recorded, true);
+    builder.close_scope();
+    builder.close_scope();
+    let program = builder.finish();
+
+    let [
+        Item::Scope {
+            props: outer_props,
+            items,
+            ..
+        },
+    ] = program.items.as_slice()
+    else {
+        panic!("the record is the one outer scope")
+    };
+    assert_eq!(outer_props.transform, outer);
+    let [
+        Item::Scope {
+            props: inner_props,
+            items,
+            ..
+        },
+    ] = items.as_slice()
+    else {
+        panic!("the outer scope holds the one inner scope")
+    };
+    assert_eq!(
+        inner_props.transform, inner,
+        "the nested scope's transform is already in the enclosing scope's space —          converting it through `into_scope` would apply the outer transform twice"
+    );
+    assert_eq!(
+        inner_props.clip.as_ref(),
+        Some(&clip),
+        "the nested scope's clip is already in its own space"
+    );
+    let [Item::Chrome(chrome)] = items.as_slice() else {
+        panic!("the inner scope holds the one member")
+    };
+    // The inner `close_scope` converted the member by the composed
+    // origin's inverse, (outer * inner)^-1.
+    assert_eq!(
+        chrome.transform,
+        (outer * inner).inverse() * recorded,
+        "items inside the nested scope land in the inner layer's space"
+    );
+    // Mounted: the inner layer's transform applies under the outer
+    // layer — every transform applied exactly once.
+    assert_eq!(
+        outer * inner_props.transform * chrome.transform,
+        recorded,
+        "the composed mount lands the member at its recorded position"
     );
 }
 
@@ -810,7 +1000,7 @@ fn a_no_program_commit_keeps_a_filtered_members_canvas() {
         },
     );
     let member = mirror_chrome_layers(&renderer)[0];
-    let group = |renderer: &crate::renderer::HydrolysisRenderer| {
+    let group = |renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>| {
         *renderer
             .mirror()
             .chrome_groups()
@@ -1377,7 +1567,7 @@ fn a_scale_rebuild_rebinds_members_of_other_cells_with_their_own_effect() {
         "one scope, one class, one canvas: one group",
     );
     assert_eq!(renderer.mirror().union_log().len(), 1);
-    let group = |renderer: &crate::renderer::HydrolysisRenderer| {
+    let group = |renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>| {
         *renderer
             .mirror()
             .chrome_groups()
@@ -1443,7 +1633,7 @@ fn a_rebound_member_tracks_the_signals_value_after_recording() {
     });
     mirror_frame(&mut renderer, tap_view());
     let member = mirror_chrome_layers(&renderer)[0];
-    let bound = |renderer: &crate::renderer::HydrolysisRenderer| {
+    let bound = |renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>| {
         let node = mirrored_node(renderer, member);
         let Some(BackdropEffect::Shader(effect)) = node
             .backdrop
@@ -1509,7 +1699,7 @@ fn a_press_rebinds_the_members_new_effect() {
     });
     mirror_frame(&mut renderer, tap_view());
     let member = mirror_chrome_layers(&renderer)[0];
-    let bound = |renderer: &crate::renderer::HydrolysisRenderer| {
+    let bound = |renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>| {
         let node = mirrored_node(renderer, member);
         let Some(BackdropEffect::Shader(effect)) = node
             .backdrop

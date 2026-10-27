@@ -383,6 +383,13 @@ struct SurfaceState {
     /// hidden while nonzero (`beginCaptureSuppression`). The layer is the
     /// view's, not the presentation state's, so this stays a plain field.
     capture_suppression: Cell<u32>,
+    /// External-render scopes the mount's teardown orphaned: a capture's
+    /// `SurfaceRegistration` ends its external rendering on the frame's
+    /// settle or the map's part — on the main queue, possibly after the
+    /// mount is gone and `Presentation::detached` cleared the scope. The
+    /// teardown records how many ends are still owed so a late settle
+    /// closes quietly; an end beyond the count is still unbalanced.
+    orphaned_external_scopes: Cell<u32>,
     /// The explicit HDR preference `resolved_hdr_preference` produced.
     explicit_range: Option<cocoa_ui::dynamic_range::DynamicRange>,
     /// `rendererDynamicRange`'s latch: wgpu keeps the negotiated format
@@ -399,8 +406,10 @@ struct SurfaceState {
     ready_waiters: RefCell<Vec<std::task::Waker>>,
     /// Whether content accessibility republishes after the next frame.
     needs_a11y_refresh: Cell<bool>,
-    /// Window/app observers re-arming presentation edges.
-    observers: RefCell<Vec<cocoa_ui::notification::NotificationObserver>>,
+    /// The surface's visibility observation: ancestor-chain wakes, the
+    /// enclosing scroll viewports and the owning window/scene lifecycle,
+    /// rebound together and fully detached on drop (#1545).
+    visibility_watch: RefCell<Option<cocoa_ui::visibility::VisibilityWatch>>,
     /// The proposal the surface was last measured under.
     last_proposal: Cell<Option<ProposalSize>>,
     /// The last measurement the renderer answered — reused while setup
@@ -606,6 +615,7 @@ impl SurfaceState {
             wants_input_events,
             dirty: Cell::new(false),
             capture_suppression: Cell::new(0),
+            orphaned_external_scopes: Cell::new(0),
             explicit_range,
             latched_renderer_range: Cell::new(None),
             configured_range: Cell::new(None),
@@ -613,7 +623,7 @@ impl SurfaceState {
             current_scale: Cell::new(1.0),
             ready_waiters: RefCell::new(Vec::new()),
             needs_a11y_refresh: Cell::new(true),
-            observers: RefCell::new(Vec::new()),
+            visibility_watch: RefCell::new(None),
             last_proposal: Cell::new(None),
             last_resolved_size: RefCell::new(None),
         }
@@ -971,21 +981,8 @@ fn configure_dynamic_range(
 /// Whether this surface's window can put a frame in front of someone —
 /// `canPresentNow`.
 fn can_present_now(view: &Retained<SurfaceView>) -> bool {
-    let Some(window) = cocoa_ui::view::window(view.as_platform_view()) else {
-        return false;
-    };
-    #[cfg(target_os = "macos")]
-    {
-        if window.isMiniaturized() {
-            return false;
-        }
-        cocoa_ui::appkit::is_visible(&window)
-    }
-    #[cfg(target_os = "ios")]
-    {
-        let _ = window;
-        cocoa_ui::uikit::application_is_active()
-    }
+    cocoa_ui::view::window(view.as_platform_view())
+        .is_some_and(|window| cocoa_ui::visibility::window_presentable(&window))
 }
 
 /// Whether this surface takes part in its window's first-paint readiness —
@@ -1006,32 +1003,13 @@ fn participates_in_first_paint(view: &Retained<SurfaceView>) -> bool {
         && can_present_now(view)
 }
 
-/// Whether the surface draws — `isEffectivelyVisible`: narrower than
-/// `can_present_now` on the states that announce when they clear.
+/// Whether the surface draws — `isEffectivelyVisible`: a frame could land
+/// on screen right now. The window can present, no ancestor hides it or
+/// zeroes its alpha, and an ancestor's clip — a scroll viewport — leaves
+/// some of it uncovered (#1545); `VisibilityWatch` wakes every one of
+/// those edges, so a parked surface resumes when it scrolls back in.
 fn is_effectively_visible(view: &Retained<SurfaceView>) -> bool {
-    let Some(window) = cocoa_ui::view::window(view.as_platform_view()) else {
-        return false;
-    };
-    if !cocoa_ui::view::has_visible_ancestry(&cocoa_ui::view::retain_base(view)) {
-        return false;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // A window that is on no display cannot present; gating here keeps
-        // an offscreen window from rendering frames nobody sees.
-        if window.screen().is_none() {
-            return false;
-        }
-        if window.isMiniaturized() {
-            return false;
-        }
-        cocoa_ui::appkit::is_visible(&window)
-    }
-    #[cfg(target_os = "ios")]
-    {
-        let _ = window;
-        cocoa_ui::uikit::application_is_active()
-    }
+    cocoa_ui::visibility::presentable(view.as_platform_view())
 }
 
 /// Positions the presentation layer and tells Core Animation the frames are
@@ -1688,73 +1666,29 @@ fn complete_ready(state: &SurfaceState) {
     }
 }
 
-// MARK: - Window observers (WuiWindowOcclusion)
+// MARK: - Visibility watch
 
-/// (Re)arms the occlusion / miniaturization / activation observers for the
-/// window `view` now sits in — `updateWindowObservers`.
-fn update_window_observers(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
-    let mut observers = state.observers.borrow_mut();
-    observers.clear();
-    let Some(window) = cocoa_ui::view::window(view.as_platform_view()) else {
+/// (Re)binds the surface's visibility watch to the hierarchy `view` now
+/// sits in — ancestors, scroll viewports and the owning window or scene —
+/// so each edge that can change [`is_effectively_visible`] re-runs the
+/// presentation demand.
+fn refresh_visibility_watch(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
+    let platform = view.as_platform_view();
+    let mut slot = state.visibility_watch.borrow_mut();
+    if let Some(watch) = slot.as_ref() {
+        watch.refresh(platform);
         return;
-    };
-    #[cfg(target_os = "ios")]
-    let _ = &window;
-    let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
-    let fire = {
-        let weak = Rc::downgrade(state);
-        let view = view.clone();
-        move || {
+    }
+    let weak = Rc::downgrade(state);
+    let target = view.clone();
+    *slot = Some(cocoa_ui::visibility::VisibilityWatch::new(
+        platform,
+        Rc::new(move || {
             if let Some(state) = weak.upgrade() {
-                update_presentation_demand(&state, &view);
+                update_presentation_demand(&state, &target);
             }
-        }
-    };
-    #[cfg(target_os = "macos")]
-    {
-        observers.push(cocoa_ui::appkit::watch_occlusion(mtm, &window, {
-            let fire = fire.clone();
-            move || fire()
-        }));
-        for notification in [
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_app_kit::NSWindowDidMiniaturizeNotification },
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_app_kit::NSWindowDidDeminiaturizeNotification },
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_app_kit::NSWindowDidChangeScreenNotification },
-        ] {
-            let name = notification;
-            observers.push(cocoa_ui::notification::observe_object(
-                mtm,
-                &cocoa_ui::notification::NotificationName::framework(name),
-                window.as_ref(),
-                {
-                    let fire = fire.clone();
-                    move || fire()
-                },
-            ));
-        }
-    }
-    #[cfg(target_os = "ios")]
-    {
-        for notification in [
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_ui_kit::UIApplicationDidBecomeActiveNotification },
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_ui_kit::UIApplicationWillResignActiveNotification },
-        ] {
-            let name = notification;
-            observers.push(cocoa_ui::notification::observe(
-                mtm,
-                &cocoa_ui::notification::NotificationName::framework(name),
-                {
-                    let fire = fire.clone();
-                    move || fire()
-                },
-            ));
-        }
-    }
+        }),
+    ));
 }
 
 // MARK: - Input (WuiGpuSurfaceInput)
@@ -1871,6 +1805,10 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         self.view.bounds_in(relative_to)
     }
 
+    fn can_present(&self) -> bool {
+        can_present_now(&self.view)
+    }
+
     fn begin_capture_suppression(&self) {
         let count = self.state.capture_suppression.get() + 1;
         self.state.capture_suppression.set(count);
@@ -1918,14 +1856,26 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
     fn end_external_rendering(&self, resume: bool) {
         {
             let mut slot = self.state.presentation.borrow_mut();
-            let Some(external) = &mut slot.capture else {
-                panic!("GpuSurface external rendering scopes are unbalanced");
-            };
-            if let Some(remaining) = NonZeroU32::new(external.depth.get() - 1) {
-                external.depth = remaining;
+            if let Some(external) = &mut slot.capture {
+                if let Some(remaining) = NonZeroU32::new(external.depth.get() - 1) {
+                    external.depth = remaining;
+                    return;
+                }
+                slot.capture = None;
+            } else {
+                // The mount may be gone while a still-settling capture's
+                // registration still owes this end — teardown recorded the
+                // scopes it orphaned, so the late settle closes quietly.
+                // Nothing resumes on a dead surface, and an end beyond the
+                // recorded count is the unbalance the assert names.
+                let orphaned = self.state.orphaned_external_scopes.get();
+                assert!(
+                    orphaned > 0,
+                    "GpuSurface external rendering scopes are unbalanced"
+                );
+                self.state.orphaned_external_scopes.set(orphaned - 1);
                 return;
             }
-            slot.capture = None;
         }
         if resume {
             owe_and_reschedule(&self.state, &self.view);
@@ -2191,9 +2141,26 @@ impl fmt::Debug for MountGuard {
 
 impl Drop for MountGuard {
     fn drop(&mut self) {
+        // An open external-render scope outlives the mount: the capture's
+        // registration ends it on a later settle or map part, on this same
+        // queue, after the presentation reset below has cleared the scope.
+        // Recording the orphaned depth keeps that late end quiet — and
+        // still counted, so an end nobody is owed stays a panic.
+        let orphaned = self
+            .state
+            .presentation
+            .borrow()
+            .capture
+            .as_ref()
+            .map_or(0, |external| external.depth.get());
+        if orphaned > 0 {
+            self.state
+                .orphaned_external_scopes
+                .set(self.state.orphaned_external_scopes.get() + orphaned);
+        }
         *self.state.presentation.borrow_mut() = Presentation::detached();
         self.state.park.clear();
-        self.state.observers.borrow_mut().clear();
+        self.state.visibility_watch.borrow_mut().take();
         self.state.view.borrow_mut().unmount();
         drop(self.state.bound.borrow_mut().take());
         if let Some(input) = &self.input {
@@ -2371,7 +2338,7 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
                 if let Some(attached) = state.presentation.borrow_mut().attached_mut() {
                     attached.demand.keep_redrawing.set(false);
                 }
-                state.observers.borrow_mut().clear();
+                state.visibility_watch.borrow_mut().take();
                 return;
             };
             if let Some(scale) = view.backing_scale() {
@@ -2379,7 +2346,7 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
             }
             let _ = window;
             update_presentation_frame(&state, &view);
-            update_window_observers(&state, &view);
+            refresh_visibility_watch(&state, &view);
             update_presentation_demand(&state, &view);
         }
     });
@@ -2388,7 +2355,12 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
         platform_view.set_visibility_changed_handler({
             let state = state.clone();
             let view = platform_view.clone();
-            move || update_presentation_demand(&state, &view)
+            move || {
+                // A reparent inside the window moves the ancestor chain
+                // the watch subscribed to.
+                refresh_visibility_watch(&state, &view);
+                update_presentation_demand(&state, &view);
+            }
         });
         platform_view.set_backing_changed_handler({
             let state = state.clone();
@@ -2410,7 +2382,12 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
         platform_view.set_visibility_changed_handler({
             let state = state.clone();
             let view = platform_view.clone();
-            move || update_presentation_demand(&state, &view)
+            move || {
+                // A reparent inside the window moves the ancestor chain
+                // the watch subscribed to.
+                refresh_visibility_watch(&state, &view);
+                update_presentation_demand(&state, &view);
+            }
         });
         platform_view.set_backing_changed_handler({
             let state = state.clone();
@@ -2943,6 +2920,25 @@ pub mod native_test {
         pub fn end_capture(&self, resume: bool) {
             use cocoa_ui::capture::CapturableSurface;
             self.capturable.end_external_rendering(resume);
+        }
+
+        /// Ends the mount — the owner dropping the leaf — while capture
+        /// scopes are still open, then delivers `ends` late ends through
+        /// the capturable the registration itself would still hold: the
+        /// settle ordering a still-in-flight frame produces when the
+        /// mount's owner lets go first.
+        ///
+        /// # Panics
+        ///
+        /// When `ends` exceeds the scopes teardown orphaned — the same
+        /// balance assert a live surface answers.
+        pub fn unmount_then_end_captures(self, ends: u32) {
+            let capturable = self.capturable.clone();
+            drop(self.leaf);
+            for _ in 0..ends {
+                use cocoa_ui::capture::CapturableSurface;
+                capturable.end_external_rendering(false);
+            }
         }
 
         /// Drives the production `park_for_publication` — the settle the

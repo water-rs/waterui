@@ -39,6 +39,9 @@ pub trait RuntimeDriver {
     /// Whether the mounted runtime is quiescent: no queued input, no spawned
     /// work awaiting a drain, and no renderer-scheduled semantic work.
     fn is_settled(&self) -> bool;
+    /// [`Self::is_settled`] except that repeat-forever animations do not
+    /// count: whether any work remains that will finish on its own.
+    fn is_settled_except_perpetual(&self) -> bool;
     /// Whether a state change has been requested but not yet flushed, so the
     /// tree the last pump produced no longer reflects the app's state.
     ///
@@ -100,6 +103,10 @@ impl RuntimeDriver for SemanticRuntime {
         Self::is_settled(self)
     }
 
+    fn is_settled_except_perpetual(&self) -> bool {
+        Self::is_settled_except_perpetual(self)
+    }
+
     fn has_pending_semantic_update(&self) -> bool {
         Self::has_pending_semantic_update(self)
     }
@@ -144,6 +151,10 @@ impl RuntimeDriver for HeadlessRuntime {
 
     fn is_settled(&self) -> bool {
         Self::is_settled(self)
+    }
+
+    fn is_settled_except_perpetual(&self) -> bool {
+        Self::is_settled_except_perpetual(self)
     }
 
     fn has_pending_semantic_update(&self) -> bool {

@@ -36,8 +36,8 @@ pub enum HydrolysisTextContextMenuMode {
     NativeWindow,
 }
 
-pub struct WidgetRenderContext<'a> {
-    renderer: &'a mut HydrolysisRenderer,
+pub struct WidgetRenderContext<'a, E: crate::text::TextEngine> {
+    renderer: &'a mut HydrolysisRenderer<E>,
     pub local: kurbo::Affine,
     pub bounds: kurbo::Rect,
     /// The §7.1 context this widget was laid out against — `None` inside a
@@ -67,9 +67,9 @@ impl RenderContext {
     }
 }
 
-impl<'a> WidgetRenderContext<'a> {
+impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
     pub(crate) const fn new(
-        renderer: &'a mut HydrolysisRenderer,
+        renderer: &'a mut HydrolysisRenderer<E>,
         ctx: RenderContext,
         safe_area: Option<SafeAreaLayout>,
     ) -> Self {
@@ -183,7 +183,7 @@ impl<'a> WidgetRenderContext<'a> {
         self.render_context().child(transform, bounds)
     }
 
-    pub(crate) const fn renderer_mut(&mut self) -> &mut HydrolysisRenderer {
+    pub(crate) const fn renderer_mut(&mut self) -> &mut HydrolysisRenderer<E> {
         self.renderer
     }
 
@@ -205,7 +205,7 @@ impl<'a> WidgetRenderContext<'a> {
         self.renderer.push_live(ctx, source);
     }
 
-    pub(crate) fn state_mut(&mut self) -> &mut HydroState {
+    pub(crate) fn state_mut(&mut self) -> &mut HydroState<E> {
         &mut self.renderer.state
     }
 
@@ -285,10 +285,7 @@ impl<'a> WidgetRenderContext<'a> {
             kurbo::Rect::new(0.0, 0.0, bounds.width(), bounds.height()),
         );
         let renderer = self.renderer_mut();
-        let (state, scene) = renderer.state_and_run_mut();
-        HydrolysisRenderer::render_styled_text_limited(
-            state,
-            scene,
+        renderer.render_styled_text_limited(
             child_ctx,
             styled,
             alignment,
@@ -308,10 +305,7 @@ impl<'a> WidgetRenderContext<'a> {
             kurbo::Rect::new(0.0, 0.0, bounds.width(), bounds.height()),
         );
         let renderer = self.renderer_mut();
-        let (state, scene) = renderer.state_and_run_mut();
-        HydrolysisRenderer::render_styled_text_single_line_centered(
-            state, scene, child_ctx, styled, env,
-        );
+        renderer.render_styled_text_single_line_centered(child_ctx, styled, env);
     }
 }
 

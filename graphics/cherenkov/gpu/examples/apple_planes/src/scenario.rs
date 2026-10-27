@@ -9,6 +9,10 @@ use crate::pattern::{HEIGHT, WIDTH};
 
 /// One launch-time scenario, from the `--scenario` argument.
 #[derive(Clone, Copy, Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the scenario table is a fixed set by design"
+)]
 pub enum Scenario {
     /// Recorded-content policy matrix shared with Android.
     Recorded(crate::recorded::Spec),
@@ -21,7 +25,7 @@ pub enum Scenario {
 }
 
 /// The scenario names `parse` accepts, for its error message.
-pub const NAMES: &str = "overlay|in-engine|static:side:count:lifetime:plane|engine|animated:side:count:lifetime:plane|engine";
+pub const NAMES: &str = "overlay|in-engine|static:side:count:lifetime:plane|engine|static-hdr:side:count:lifetime:plane|engine|animated:side:count:lifetime:plane|engine";
 
 impl Scenario {
     /// Parses the `--scenario` value; unknown names are an error — the
@@ -44,13 +48,7 @@ impl Scenario {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Recorded(spec) => {
-                if spec.animated {
-                    "animated"
-                } else {
-                    "static"
-                }
-            }
+            Self::Recorded(spec) => spec.name(),
             Self::Overlay => "overlay",
             Self::InEngine => "in-engine",
         }
@@ -108,6 +106,11 @@ impl Scenario {
 }
 
 /// A built scenario's live layers.
+#[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the built tree is the harness's own state; closed by design"
+)]
 pub struct Built {
     /// The layer the video installs on.
     pub video: Option<Layer>,

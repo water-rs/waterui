@@ -65,6 +65,8 @@ mod registry;
 #[cfg(any(target_os = "ios", test))]
 mod scene_registry;
 pub(crate) mod startup;
+#[cfg(feature = "swiftui")]
+mod swiftui_meta;
 #[cfg(target_os = "macos")]
 mod termination;
 pub(crate) mod theme;
@@ -101,10 +103,19 @@ macro_rules! export_app {
             host: *mut core::ffi::c_void,
             assets: *const core::ffi::c_char,
             fonts: *const core::ffi::c_char,
+            dark: bool,
+            rtl: bool,
+            locale: *const core::ffi::c_char,
+            host_fonts: *const f64,
         ) -> *mut core::ffi::c_void {
-            // SAFETY: the embedding host supplies the documented runtime, host and paths.
+            // SAFETY: the embedding host supplies the documented runtime, host,
+            // paths, and — when `host_fonts` is non-null — a live locale
+            // string and eighteen readable `f64`s.
+            let host_environment = (!host_fonts.is_null()).then(|| unsafe {
+                $crate::embedding::HostEnvironment::from_abi(dark, rtl, locale, host_fonts)
+            });
             unsafe {
-                $crate::embedding::mount(runtime, host, assets, fonts, |env| {
+                $crate::embedding::mount(runtime, host, assets, fonts, host_environment, |env| {
                     $app(::waterui::configure_environment!(env))
                 })
             }

@@ -20,6 +20,20 @@ const SRGB_PRIMARIES: u32 = 1 << 15;
 /// texel's 8-bit code.
 const TRANSFER_TABLE: u32 = 1 << 16;
 
+/// Range guaranteed by source encoding, without scanning texture contents.
+/// A premultiplied source can carry extended straight values after division
+/// by alpha, even when its stored components are UNORM.
+pub(super) const fn output_range(flags: u32) -> super::present::ColorRange {
+    use super::present::ColorRange;
+    if flags & SOURCE == 0 || flags & PREMULTIPLIED != 0 {
+        ColorRange::HighDynamicRange
+    } else if flags & SRGB_PRIMARIES != 0 {
+        ColorRange::Standard
+    } else {
+        ColorRange::WideGamut
+    }
+}
+
 /// The sRGB transfer decode of every 8-bit code, as the shader's
 /// `image_decode` binding holds it.
 ///
@@ -78,45 +92,62 @@ impl<'a> Upload<'a> {
             tracing::debug!(format = ?image.format, required = ?required, "decoding image because the device lacks its compression feature");
             (rgba8, Cow::Owned(decode(image)?))
         };
-        let nonlinear = matches!(
-            image.color_space,
-            ImageColorSpace::Srgb | ImageColorSpace::DisplayP3
-        );
-        // A table entry is the decode of an 8-bit code. Straight alpha
-        // decodes the stored code itself; premultiplied texels decode
-        // their quotient by alpha, which is no code, and ASTC's UNORM
-        // decode is 16-bit, so both evaluate the transfer function.
-        let codes = format
-            != T::Astc {
-                block: wgpu::AstcBlock::B4x4,
-                channel: wgpu::AstcChannel::Unorm,
-            };
-        let transfer = match (nonlinear, codes && !image.premultiplied) {
-            (false, _) => 0,
-            (true, true) => TRANSFER_TABLE,
-            (true, false) => TRANSFER,
-        };
-        let flags = SOURCE
-            | if image.premultiplied {
-                PREMULTIPLIED
-            } else {
-                0
-            }
-            | transfer
-            | if matches!(
-                image.color_space,
-                ImageColorSpace::Srgb | ImageColorSpace::LinearSrgb
-            ) {
-                SRGB_PRIMARIES
-            } else {
-                0
-            };
         Ok(Self {
             bytes,
             format,
-            flags,
+            flags: source_flags(image.color_space, image.premultiplied, format),
         })
     }
+}
+
+impl Upload<'static> {
+    /// Decoded 8-bit RGBA texels, which every device stores as they are,
+    /// sampled exactly as an `Rgba8` image of the same pixels is.
+    pub fn rgba8(bytes: Vec<u8>, color_space: ImageColorSpace, premultiplied: bool) -> Self {
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        Self {
+            bytes: Cow::Owned(bytes),
+            format,
+            flags: source_flags(color_space, premultiplied, format),
+        }
+    }
+}
+
+/// The per-tap conversion flags of source texels stored in `format`.
+fn source_flags(
+    color_space: ImageColorSpace,
+    premultiplied: bool,
+    format: wgpu::TextureFormat,
+) -> u32 {
+    let nonlinear = matches!(
+        color_space,
+        ImageColorSpace::Srgb | ImageColorSpace::DisplayP3
+    );
+    // A table entry is the decode of an 8-bit code. Straight alpha
+    // decodes the stored code itself; premultiplied texels decode
+    // their quotient by alpha, which is no code, and ASTC's UNORM
+    // decode is 16-bit, so both evaluate the transfer function.
+    let codes = format
+        != wgpu::TextureFormat::Astc {
+            block: wgpu::AstcBlock::B4x4,
+            channel: wgpu::AstcChannel::Unorm,
+        };
+    let transfer = match (nonlinear, codes && !premultiplied) {
+        (false, _) => 0,
+        (true, true) => TRANSFER_TABLE,
+        (true, false) => TRANSFER,
+    };
+    SOURCE
+        | if premultiplied { PREMULTIPLIED } else { 0 }
+        | transfer
+        | if matches!(
+            color_space,
+            ImageColorSpace::Srgb | ImageColorSpace::LinearSrgb
+        ) {
+            SRGB_PRIMARIES
+        } else {
+            0
+        }
 }
 
 /// `Rgba16F` upload bytes -> premultiplied linear-P3 f16 texels, the
@@ -239,6 +270,16 @@ fn decode(image: &ImageUpload) -> Result<Vec<u8>, ResourceError> {
             [r, g, b, a]
         })
         .collect())
+}
+
+/// The same device feature selection used by uploads, reported before registration.
+pub(super) const fn limits(features: wgpu::Features) -> cherenkov::ImageStorage {
+    cherenkov::ImageStorage {
+        astc4x4: features.contains(wgpu::Features::TEXTURE_COMPRESSION_ASTC),
+        etc2: features.contains(wgpu::Features::TEXTURE_COMPRESSION_ETC2),
+        bc7: features.contains(wgpu::Features::TEXTURE_COMPRESSION_BC),
+        ..cherenkov::ImageStorage::GPU
+    }
 }
 
 #[cfg(test)]
@@ -387,6 +428,11 @@ mod tests {
             assert!(!native.format.is_srgb());
             assert_eq!(storage_bytes(native.format, 3, 2), 16);
             assert_eq!(storage_bytes(native.format, 5, 7), 64);
+            assert_eq!(limits(COMPRESSION_FEATURES).bytes(5, 7, format), 64);
+            assert_eq!(
+                limits(wgpu::Features::empty()).bytes(5, 7, format),
+                5 * 7 * 4
+            );
             let decoded = Upload::new(&source, wgpu::Features::empty()).unwrap();
             assert!(matches!(decoded.bytes, Cow::Owned(_)));
             // Every decoded texel is an 8-bit code; natively, ASTC's UNORM

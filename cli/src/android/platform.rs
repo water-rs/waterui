@@ -27,10 +27,10 @@ fn gradle_cmd(
     gradlew: &Path,
     backend_path: &Path,
     tasks: &[&str],
-) -> smol::process::Command {
-    let mut cmd = host.command(gradlew);
+) -> std::io::Result<smol::process::Command> {
+    let mut cmd = host.command(gradlew)?;
     cmd.args(tasks).arg("--project-dir").arg(backend_path);
-    cmd
+    Ok(cmd)
 }
 
 /// Run the Gradle wrapper inside `backend_path` on `tasks`, wiring the JDK
@@ -61,7 +61,7 @@ pub(crate) async fn run_gradle_tasks(
 
     // Set JAVA_HOME to Android Studio's bundled JDK to avoid JDK version conflicts
     // (e.g., Homebrew's JDK 25 is not supported by Android Gradle Plugin)
-    let mut cmd = gradle_cmd(host, &gradlew, backend_path, tasks);
+    let mut cmd = gradle_cmd(host, &gradlew, backend_path, tasks)?;
     if let Some(java_home) = Java::detect_home(host).await {
         cmd.env("JAVA_HOME", java_home);
     }
@@ -82,7 +82,7 @@ pub(crate) async fn run_gradle_tasks(
     let output = cmd.output().await?;
 
     if !output.status.success() {
-        bail!("{}", gradle_failure_report(backend_path, &output));
+        bail!("{}", gradle_failure_report(host, backend_path, &output));
     }
     Ok(())
 }
@@ -110,7 +110,11 @@ fn exit_status_summary(status: ExitStatus) -> String {
     )
 }
 
-fn gradle_failure_report(backend_path: &Path, output: &std::process::Output) -> String {
+fn gradle_failure_report(
+    host: &Host,
+    backend_path: &Path,
+    output: &std::process::Output,
+) -> String {
     let mut message = format!(
         "Gradle build failed in {} ({}):",
         backend_path.display(),
@@ -118,7 +122,72 @@ fn gradle_failure_report(backend_path: &Path, output: &std::process::Output) -> 
     );
     append_block(&mut message, &String::from_utf8_lossy(&output.stdout));
     append_block(&mut message, &String::from_utf8_lossy(&output.stderr));
+    // A daemon-side failure — a configuration crash, or the daemon dying
+    // mid-build — can reach the client as a bare nonzero exit while the
+    // streams hold nothing past the startup banner. Gradle records the real
+    // diagnostic in `daemon-*.out.log` under the Gradle user home; appending
+    // its tail is the difference between a triagable report and the bare
+    // "exit code 1" a CI leg otherwise surfaces.
+    if !message.contains("FAILURE:")
+        && let Some(log) = gradle_daemon_log_tail(host)
+    {
+        message.push_str("\n--- tail of the Gradle daemon log ---\n");
+        message.push_str(log.trim_end());
+        message.push('\n');
+    }
     message
+}
+
+/// Tail of the daemon log the invocation that just failed most likely wrote.
+///
+/// `GRADLE_USER_HOME` wins over `~/.gradle` the same way it does for Gradle
+/// itself. A log untouched for fifteen minutes belongs to an earlier build —
+/// surfacing it would attribute a stale diagnostic to this failure, so it is
+/// ignored. Every miss is `None`, never an error: this lookup is diagnostics
+/// for a build that has already failed.
+fn gradle_daemon_log_tail(host: &Host) -> Option<String> {
+    use std::time::{Duration, SystemTime};
+
+    // The report wants the failure's context, not the daemon's whole life.
+    const TAIL: usize = 16 * 1024;
+    const MAX_AGE: Duration = Duration::from_mins(15);
+
+    let gradle_home = host
+        .env_string("GRADLE_USER_HOME")
+        .map(PathBuf::from)
+        .or_else(|| host.home_dir().map(|home| home.join(".gradle")))?;
+    let daemon_root = gradle_home.join("daemon");
+    let now = SystemTime::now();
+
+    let mut newest: Option<(SystemTime, PathBuf)> = None;
+    for version in std::fs::read_dir(daemon_root).ok()?.flatten() {
+        let Ok(entries) = std::fs::read_dir(version.path()) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !(name.starts_with("daemon-") && name.ends_with(".out.log")) {
+                continue;
+            }
+            let Ok(mtime) = entry.metadata().and_then(|meta| meta.modified()) else {
+                continue;
+            };
+            if now.duration_since(mtime).unwrap_or_default() > MAX_AGE {
+                continue;
+            }
+            if newest.as_ref().is_none_or(|(stamped, _)| mtime > *stamped) {
+                newest = Some((mtime, entry.path()));
+            }
+        }
+    }
+    let (_, path) = newest?;
+
+    let bytes = std::fs::read(path).ok()?;
+    let text = String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(TAIL)..]);
+    (!text.trim().is_empty()).then(|| text.into_owned())
 }
 
 fn apply_gradle_proxy_env(host: &Host, cmd: &mut smol::process::Command) -> eyre::Result<()> {
@@ -850,6 +919,64 @@ exit 3
         assert_mentions(&report, "exit code 3");
         assert_mentions(&report, "Welcome to Gradle 9.7.1!");
         assert_mentions(&report, "from-stderr");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_failure_surfaces_the_daemon_log_when_streams_lack_detail() {
+        // The silent nightly failure: the client printed only the startup
+        // banner and exited 1, while the diagnostic lived in the daemon's
+        // own log under the fresh user's Gradle home.
+        const SCRIPT: &str = "#!/bin/sh\nexit 1\n";
+        let run = GradleRun::new(SCRIPT);
+        let daemon_dir = run.home.join(".gradle/daemon/9.7.1");
+        std::fs::create_dir_all(&daemon_dir).expect("daemon log directory");
+        std::fs::write(
+            daemon_dir.join("daemon-7.out.log"),
+            "startup noise\nerror: something exploded inside the daemon\n",
+        )
+        .expect("daemon log");
+        std::fs::write(
+            daemon_dir.join("daemon-3.out.log"),
+            "error: a stale failure from another run\n",
+        )
+        .expect("stale daemon log");
+        // The newest daemon log is the one read; make the stale file's mtime
+        // older so `daemon-7` wins regardless of directory order.
+        let stale = filetime::FileTime::from_unix_time(1_000_000, 0);
+        filetime::set_file_mtime(daemon_dir.join("daemon-3.out.log"), stale)
+            .expect("backdate the stale log");
+
+        let report = run.failure();
+        assert_mentions(&report, "exit code 1");
+        assert_mentions(&report, "something exploded inside the daemon");
+        assert!(
+            !report.contains("a stale failure"),
+            "stale daemon log must not leak into the report:\n{report}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_failure_ignores_a_stale_daemon_log() {
+        const SCRIPT: &str = "#!/bin/sh\nexit 1\n";
+        let run = GradleRun::new(SCRIPT);
+        let daemon_dir = run.home.join(".gradle/daemon/9.7.1");
+        std::fs::create_dir_all(&daemon_dir).expect("daemon log directory");
+        std::fs::write(
+            daemon_dir.join("daemon-7.out.log"),
+            "error: a failure from a build that ran hours ago\n",
+        )
+        .expect("daemon log");
+        let stale = filetime::FileTime::from_unix_time(1_000_000, 0);
+        filetime::set_file_mtime(daemon_dir.join("daemon-7.out.log"), stale)
+            .expect("backdate the log");
+
+        let report = run.failure();
+        assert!(
+            !report.contains("hours ago"),
+            "a stale daemon log must not be attributed to this failure:\n{report}"
+        );
     }
 
     #[cfg(unix)]

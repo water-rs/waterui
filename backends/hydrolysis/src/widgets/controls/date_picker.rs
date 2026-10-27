@@ -26,12 +26,12 @@ use crate::widgets::util::widget_disabled;
 /// drives the field + accessibility, and its main label is held as a
 /// [`RetainedSubview`] built once and re-flushed each frame so reactive label
 /// content stays live.
-pub struct DatePickerRenderState {
+pub struct DatePickerRenderState<E: crate::text::TextEngine> {
     config: DatePickerConfig,
-    label_view: RetainedSubview,
+    label_view: RetainedSubview<E>,
 }
 
-impl DatePickerRenderState {
+impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
     pub(crate) fn from_config(config: DatePickerConfig) -> Self {
         Self {
             label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
@@ -43,16 +43,23 @@ impl DatePickerRenderState {
     /// `&mut HydroState`, no renderer, so it must be built before then).
     pub(crate) fn prebuild(
         &mut self,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         self.label_view.ensure_built(renderer, env);
     }
+
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the picker's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+    }
 }
 
-impl HydroNativeView for Native<DatePickerConfig> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<DatePickerConfig> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -66,8 +73,8 @@ impl HydroNativeView for Native<DatePickerConfig> {
 /// path so both produce the same a11y tree.
 // empty when the accessibility feature is off
 #[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
-pub fn date_picker_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn date_picker_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
     date_picker: &DatePickerConfig,
     env: &Environment,
@@ -82,11 +89,12 @@ pub fn date_picker_accessibility(
                 .clamp(*date_picker.range.start(), *date_picker.range.end()),
         );
         let default_label = Some(value.clone());
-        let mut node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::ComboBox,
-            ));
+            ),
+        );
         let label = renderer.resolve_accessibility_label(env, default_label);
         if let Some(label) = label {
             node.set_label(label);
@@ -104,11 +112,7 @@ pub fn date_picker_accessibility(
             node.add_action(AccessibilityAction::SetValue);
         }
         let origin = ctx.map(|ctx| {
-            let bounds = ctx.bounds;
-            waterui_core::layout::Point::new(
-                crate::num_cast::f64_as_f32(bounds.x0),
-                crate::num_cast::f64_as_f32(bounds.y1),
-            )
+            crate::widgets::util::popup_anchor(renderer.resolve_window_rect(ctx.bounds))
         });
         if let Some(node_id) = renderer.register_accessibility_leaf(
             ctx,
@@ -138,10 +142,10 @@ pub fn date_picker_accessibility(
 /// Measures a retained date-picker leaf from its [`DatePickerRenderState`],
 /// mirroring [`measure_date_picker_intrinsic`] but reading the label size from its
 /// already-built [`RetainedSubview`] so layout and render agree.
-pub fn measure_date_picker_node(
-    render_state: &DatePickerRenderState,
+pub fn measure_date_picker_node<E: crate::text::TextEngine>(
+    render_state: &DatePickerRenderState<E>,
     _proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -193,9 +197,9 @@ pub fn measure_date_picker_node(
 
 /// Renders a retained date-picker leaf every flush: emits a11y (unless hidden)
 /// then the field chrome + value + tap target, reading the value signal each frame.
-pub fn render_date_picker_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<DatePickerRenderState>>,
+pub fn render_date_picker_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<DatePickerRenderState<E>>>,
     env: &Environment,
 ) {
     let hidden = env
@@ -214,9 +218,9 @@ pub fn render_date_picker_node(
     render_date_picker_parts(ctx, state, env);
 }
 
-pub fn render_date_picker_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<DatePickerRenderState>>,
+pub fn render_date_picker_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<DatePickerRenderState<E>>>,
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
@@ -310,10 +314,9 @@ pub fn render_date_picker_parts(
         text_bounds,
     );
 
-    let origin = waterui_core::layout::Point::new(
-        crate::num_cast::f64_as_f32(hit_bounds.x0),
-        crate::num_cast::f64_as_f32(hit_bounds.y1),
-    );
+    // The popup anchors in window space at the field's bottom edge.
+    let origin =
+        crate::widgets::util::popup_anchor(ctx.renderer_mut().resolve_window_rect(hit_bounds));
     // The popup opens in the picker's environment layered over the
     // dispatch's (water-rs/hydrolysis#140).
     let picker_env = env.clone();
@@ -332,9 +335,9 @@ pub fn render_date_picker_parts(
 /// sub-view — it flushes unsuppressed in the rendered path, so it emits its
 /// own nodes here too.
 #[cfg(feature = "accessibility")]
-pub fn emit_date_picker_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<DatePickerRenderState>>,
+pub fn emit_date_picker_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<DatePickerRenderState<E>>>,
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);

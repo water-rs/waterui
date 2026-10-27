@@ -37,7 +37,7 @@ use crate::runner::web_accessibility::WebAccessibilityBridge;
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events, render_window,
 };
-use crate::text::SessionTextEngine;
+use crate::text::ParleyEngine;
 use crate::time::Instant;
 
 const WEB_FONT_MANIFEST_PATH: &str = "fonts/waterui-fonts.json";
@@ -209,7 +209,7 @@ impl LocalExecutor for BrowserMainThreadExecutor {
 
 struct BrowserRunner {
     env: Environment,
-    runtime: RuntimeWindow<BrowserWindow>,
+    runtime: RuntimeWindow<BrowserWindow, crate::text::ParleyEngine>,
     runnable_queue: Rc<RefCell<VecDeque<Runnable>>>,
     accessibility_actions: Rc<RefCell<VecDeque<AccessibilityActionRequest>>>,
     accessibility_bridge: WebAccessibilityBridge,
@@ -463,16 +463,15 @@ pub fn run(app: App, style: impl crate::Style) {
         super::install_native_component_hooks(&mut env);
         // Every runner seeds the chord table so mounted menus resolve
         // shortcuts through the same path (water-rs/hydrolysis#247).
-        let _ = env.get_or_insert_with::<MenuShortcutRegistry, _>(MenuShortcutRegistry::default);
+        let _ = env.get_or_insert_with::<MenuShortcutRegistry<crate::text::ParleyEngine>, _>(
+            MenuShortcutRegistry::default,
+        );
         // A browser page cannot own the browser's menu bar, so the app menus
         // contribute their chords only — nothing renders.
-        super::menu_bar::register_menu_bar(&menu_bar, &env);
+        super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         crate::theme::install_theme_tokens(&mut env, Some(&style));
         let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
-        ));
 
         // The application's fonts are fetched while the GPU adapter and device
         // are requested; neither waits on the other. The window's renderer is
@@ -507,17 +506,28 @@ pub fn run(app: App, style: impl crate::Style) {
         // backgrounds reach under the browser and system chrome around it.
         env.insert(crate::platform::WindowSafeArea(platform.safe_area()));
         fonts.collection().clone().install(&mut env);
+        // The capture service mounts its subtree under a snapshot of the
+        // assembled environment — the theme tokens, hooks and font
+        // collection a window's subtree resolves — so it must be installed
+        // last (water-rs/waterui#2703).
+        env.insert(waterui_core::ViewRenderer::new(
+            crate::view_renderer::HydrolysisViewRenderer::new(
+                Rc::clone(&theme),
+                env.clone(),
+                FontFamilyResolution::Lenient,
+            ),
+        ));
         let mut renderer = HydrolysisRenderer::with_engine(
             theme,
-            SessionTextEngine::from_collection(fonts.collection(), FontFamilyResolution::Lenient),
+            ParleyEngine::from_collection(fonts.collection(), FontFamilyResolution::Lenient),
         );
         renderer.set_window_id(
-            env.get::<MenuShortcutRegistry>()
+            env.get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
                 .expect("the web runner seeds MenuShortcutRegistry")
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
-        let runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
+        let runtime = RuntimeWindow::new_gpu(window, platform, renderer, render_diagnostics_config);
         let accessibility_actions = Rc::new(RefCell::new(VecDeque::new()));
         let accessibility_bridge = WebAccessibilityBridge::new(
             Rc::clone(&accessibility_actions),

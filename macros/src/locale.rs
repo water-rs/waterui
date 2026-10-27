@@ -994,9 +994,8 @@ fn generate_dual_plural_translation_arm(
 ///
 /// `TranslationCatalog` is defined in `waterui-locale` and re-exported at
 /// `waterui::locale`. Most callers have the `waterui` facade as a dependency;
-/// generated crates that stay slim — the ESP32 firmware harness names only
-/// `waterui-core`, `waterui-dew` and `waterui-locale` — go through the
-/// component crate directly instead.
+/// generated crates that stay slim and do not depend on the facade go
+/// through the component crate directly instead.
 fn translation_catalog_path() -> std::result::Result<TokenStream2, TokenStream2> {
     if let Ok(waterui) = waterui_crate_path() {
         return Ok(quote!(#waterui::locale::TranslationCatalog));

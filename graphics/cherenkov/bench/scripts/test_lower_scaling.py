@@ -13,18 +13,23 @@ lower_scaling = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(lower_scaling)
 
 
-def results(out, tag, costs):
+SIZES = lower_scaling.SERIES['solid']
+
+
+def results(out, tag, costs, series='solid'):
     """Writes one `ir_gate` result per size with `lower` Rust Ir from `costs`."""
-    for (scene, segments), cost in zip(lower_scaling.SIZES, costs):
-        (out / f'{tag}-{scene}.result.json').write_text(json.dumps({
-            'tag': tag, 'scene': scene, 'sha256': '0' * 64,
-            'lower': {'second': {'ir': cost + 1_000, 'rust_ir': cost}},
-        }))
+    for (scene, segments), cost in zip(lower_scaling.SERIES[series], costs):
+        for mode, key, value, pause in [('fresh', 'first', cost, 0), ('retained', 'second', 40, 8)]:
+            (out / f'{tag}-{mode}-{scene}.result.json').write_text(json.dumps({
+                'tag': tag, 'scene': scene, 'sha256': '0' * 64,
+                'sample_mode': mode, 'pause_at': pause,
+                'lower': {key: {'ir': value + 1_000, 'rust_ir': value}},
+            }))
         assert segments > 0
 
 
-def run(out, tag, exponent, gate):
-    args = argparse.Namespace(out=str(out), tag=tag, exponent=exponent, gate=gate)
+def run(out, tag, exponent, gate, series='solid'):
+    args = argparse.Namespace(out=str(out), tag=tag, exponent=exponent, gate=gate, series=series)
     return lower_scaling.report(args)
 
 
@@ -48,34 +53,43 @@ class Report(unittest.TestCase):
     def test_linear_growth_is_within_the_bound_and_gates_pass(self):
         with tempfile.TemporaryDirectory() as dir:
             out = pathlib.Path(dir)
-            results(out, 'gpu', [40 * segments for _, segments in lower_scaling.SIZES])
+            results(out, 'gpu', [40 * segments for _, segments in SIZES])
             self.assertEqual(run(out, 'gpu', lower_scaling.EXPONENT, gate=True), 0)
-            report = (out / 'gpu-lower-scaling.md').read_text()
+            report = (out / 'gpu-solid-lower-scaling.md').read_text()
             self.assertIn('Gate: pass.', report)
             self.assertIn('**1.000**', report)
 
     def test_superlinear_growth_fails_the_gate(self):
         with tempfile.TemporaryDirectory() as dir:
             out = pathlib.Path(dir)
-            results(out, 'cpu', [int(segments ** 1.4) for _, segments in lower_scaling.SIZES])
+            results(out, 'cpu', [int(segments ** 1.4) for _, segments in SIZES])
             self.assertEqual(run(out, 'cpu', lower_scaling.EXPONENT, gate=True), 1)
-            self.assertIn('Gate: FAIL.', (out / 'cpu-lower-scaling.md').read_text())
+            self.assertIn('Gate: FAIL.', (out / 'cpu-solid-lower-scaling.md').read_text())
 
     def test_without_the_gate_a_failing_exponent_still_exits_zero(self):
         with tempfile.TemporaryDirectory() as dir:
             out = pathlib.Path(dir)
-            results(out, 'cpu', [int(segments ** 1.4) for _, segments in lower_scaling.SIZES])
+            results(out, 'cpu', [int(segments ** 1.4) for _, segments in SIZES])
             self.assertEqual(run(out, 'cpu', lower_scaling.EXPONENT, gate=False), 0)
-            report = (out / 'cpu-lower-scaling.md').read_text()
+            report = (out / 'cpu-solid-lower-scaling.md').read_text()
             self.assertIn('above the bound', report)
             self.assertIn('Report only', report)
             self.assertNotIn('Gate:', report)
 
+    def test_the_dash_series_reads_its_own_scenes(self):
+        with tempfile.TemporaryDirectory() as dir:
+            out = pathlib.Path(dir)
+            results(out, 'gpu', [40 * segments for _, segments in SIZES], series='dash')
+            self.assertEqual(run(out, 'gpu', lower_scaling.EXPONENT, gate=True, series='dash'), 0)
+            report = (out / 'gpu-dash-lower-scaling.md').read_text()
+            self.assertIn('| road-network-dash-n10 |', report)
+            self.assertIn('Gate: pass.', report)
+
     def test_a_missing_size_is_an_error_rather_than_a_shorter_fit(self):
         with tempfile.TemporaryDirectory() as dir:
             out = pathlib.Path(dir)
-            results(out, 'cpu', [40 * segments for _, segments in lower_scaling.SIZES])
-            (out / f'cpu-{lower_scaling.SIZES[2][0]}.result.json').unlink()
+            results(out, 'cpu', [40 * segments for _, segments in SIZES])
+            (out / f'cpu-fresh-{SIZES[2][0]}.result.json').unlink()
             with self.assertRaises(FileNotFoundError):
                 run(out, 'cpu', lower_scaling.EXPONENT, gate=False)
 
