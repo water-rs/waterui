@@ -722,6 +722,7 @@ impl Renderer for RasterRenderer {
         MemoryUsage {
             gpu: cherenkov::Bytes(0),
             cpu: cherenkov::Bytes(categories.total()),
+            glyph_cache: cherenkov::Bytes(categories.glyphs + categories.colr + categories.bitmaps),
             // The CPU backend has no tile memory to compose in.
             tile_reserved: cherenkov::Bytes(0),
             tile_committed: None,
