@@ -34,6 +34,10 @@ pub struct GhostRealization {
     /// `blur > 0`, kept when the radius returns to 0.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     blur: Option<Rc<RemovalBlur>>,
+    /// The `captures_content` removal runtime — the window overlay and
+    /// its frozen-input effect (§2.7), built with the run.
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    pixel: Option<Rc<crate::transition::pixel::PixelRemoval>>,
 }
 
 /// The removal's lazy blur runtime (§2.6): the radius binding the
@@ -57,11 +61,11 @@ struct RemovalBlur {
 
 /// The run behind [`Ghost`]: everything the tick and the completion
 /// sequence need.
-struct GhostRun {
+pub struct GhostRun {
     /// The main-thread marker completion tasks enqueue under.
     mtm: MainThreadMarker,
     /// The retired host and root — detaches when the run dies.
-    visual: RetiredVisual,
+    pub(crate) visual: RetiredVisual,
     /// The removal clock.
     state: RefCell<TransitionState>,
     /// The frozen layout slot — collection sites only (§4).
@@ -106,26 +110,37 @@ impl Ghost {
         on_complete: Box<dyn FnOnce()>,
     ) -> Self {
         #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
-        let _ = env; // GPU services land with the pixel removal (stage 9)
+        let _ = env; // no filtered pipeline, no GPU services to keep
         let target = PropertyTarget::new(visual.host.clone(), visual.root.clone());
-        let run = Rc::new_cyclic(|_weak: &Weak<GhostRun>| GhostRun {
-            mtm,
-            visual,
-            state: RefCell::new(state),
-            slot,
-            realization: RefCell::new(Some(GhostRealization {
-                target,
-                #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
-                blur: None,
-            })),
-            driver: RefCell::new(None),
-            keep: RefCell::new(None),
-            on_complete: RefCell::new(Some(on_complete)),
-            completed: Cell::new(false),
+        let run = Rc::new_cyclic(|_weak: &Weak<GhostRun>| {
+            // The `captures_content` realization (§2.7): the retired
+            // window overlay plus the frozen-input effect body — its
+            // first capture issued on the run's first tick.
             #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
-            env: env.clone(),
-            #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
-            blur_warned: Cell::new(false),
+            let pixel = state
+                .captures_content()
+                .then(|| crate::transition::pixel::PixelRemoval::start(&visual, &state, env));
+            GhostRun {
+                mtm,
+                visual,
+                state: RefCell::new(state),
+                slot,
+                realization: RefCell::new(Some(GhostRealization {
+                    target,
+                    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+                    blur: None,
+                    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+                    pixel,
+                })),
+                driver: RefCell::new(None),
+                keep: RefCell::new(None),
+                on_complete: RefCell::new(Some(on_complete)),
+                completed: Cell::new(false),
+                #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+                env: env.clone(),
+                #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
+                blur_warned: Cell::new(false),
+            }
         });
         // The progress-0 sample lands before the first presented frame.
         let sample = run.state.borrow().properties(run.visual.geometry);
@@ -161,6 +176,8 @@ impl Ghost {
                         realization.target.apply(&sample);
                     }
                     run.update_blur(sample.blur);
+                    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+                    run.update_pixel();
                 } else {
                     run.complete();
                 }
@@ -299,11 +316,29 @@ impl GhostRun {
         }
     }
 
+    /// The pixel removal's per-tick work (§2.7): the published
+    /// `TransitionFrame` follows the slot and a `Deferred` capture is
+    /// re-issued.
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    fn update_pixel(self: &Rc<Self>) {
+        let pixel = {
+            let realization = self.realization.borrow();
+            let Some(realization) = realization.as_ref() else {
+                return;
+            };
+            let Some(pixel) = realization.pixel.as_ref().map(Rc::clone) else {
+                return;
+            };
+            pixel
+        };
+        crate::transition::pixel::PixelRemoval::update(&pixel, self);
+    }
+
     /// The completion sequence (§1.5): the site's slot release, the
     /// realization's drop, then the driver's drop off the tick — a
     /// `FrameClock` is never dropped inside its own callback, so the
     /// teardown lands on the main queue.
-    fn complete(&self) {
+    pub(crate) fn complete(&self) {
         if self.completed.replace(true) {
             return;
         }

@@ -10414,6 +10414,7 @@ mod transition {
         .chain(overlay_trials())
         .chain(frozen_trials())
         .chain(blur_trials())
+        .chain(pixel_trials())
         .collect()
     }
 
@@ -12398,6 +12399,37 @@ mod transition {
         ]
     }
 
+    /// The Stage 9 pixel trials (§8.2): `captures_content` transitions
+    /// run through the retired window overlay — a frozen capture for the
+    /// removal, a live capture for the insertion — publishing a
+    /// `TransitionFrame` every tick.
+    #[cfg(feature = "gpu_surface")]
+    fn pixel_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "transition::a_pixel_removal_freezes_into_the_window_overlay",
+                || {
+                    a_pixel_removal_freezes_into_the_window_overlay();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::a_pixel_insertion_captures_live_content_in_the_overlay",
+                || {
+                    a_pixel_insertion_captures_live_content_in_the_overlay();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::pixel_frame_follows_the_slot_while_scrolling",
+                || {
+                    pixel_frame_follows_the_slot_while_scrolling();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
     /// The Stage 7 frozen-frame trials (§8.2): retirement installs a
     /// `FrozenCapturable` into each armed surface's capturable slot.
     fn frozen_trials() -> Vec<libtest_mimic::Trial> {
@@ -13076,6 +13108,432 @@ mod transition {
             leaf.view(),
             "/tmp/1472-stage8",
             "blur_returning_to_zero_keeps_one_effect",
+        );
+    }
+    /// A `captures_content` transition whose body is a tinted shader over
+    /// the content — the PNG review distinguishes the effect output from
+    /// the live pixels — and that stashes the published
+    /// `Computed<TransitionFrame>` for the assertions (§8.2).
+    #[cfg(feature = "gpu_surface")]
+    struct PixelProbe {
+        /// The frame signal the body's `TransitionContext` published.
+        frame: Rc<
+            RefCell<Option<waterui::reactive::Computed<waterui_core::transition::TransitionFrame>>>,
+        >,
+    }
+
+    #[cfg(feature = "gpu_surface")]
+    impl Transition for PixelProbe {
+        fn captures_content(&self, _phase: waterui_core::transition::TransitionPhase) -> bool {
+            true
+        }
+
+        fn body(
+            &self,
+            content: AnyView,
+            transition_context: waterui_core::transition::TransitionContext,
+        ) -> impl waterui_backend_core::View {
+            *self.frame.borrow_mut() = Some(transition_context.frame);
+            let shader =
+                waterui::graphics::filtrate::ShaderEffect::new(include_str!("pixel_probe.wgsl"))
+                    .expect("the probe shader is valid WGSL");
+            waterui::graphics::WithEffect::new(content, shader)
+        }
+    }
+
+    /// A pixel probe's frame cell plus its spec — a 400 ms linear ramp
+    /// keeps the transition observable across several pumps.
+    #[cfg(feature = "gpu_surface")]
+    fn pixel_probe() -> (
+        Rc<RefCell<Option<waterui::reactive::Computed<waterui_core::transition::TransitionFrame>>>>,
+        TransitionSpec,
+    ) {
+        let frame = Rc::new(RefCell::new(None));
+        let spec = TransitionSpec::new(PixelProbe {
+            frame: Rc::clone(&frame),
+        })
+        .with_animation(Animation::linear(Duration::from_millis(400)));
+        (frame, spec)
+    }
+
+    /// The retired overlay host the pixel transition added directly to
+    /// the window — `None` while the effect has not mounted. It is the
+    /// topmost retired host: on `AppKit` the content view is the site
+    /// itself, whose retired ghost sits beneath the live child.
+    #[cfg(feature = "gpu_surface")]
+    fn retired_overlay(window: &super::AttachedWindow) -> Option<Retained<PlatformView>> {
+        #[cfg(target_os = "macos")]
+        let parent = window
+            .native()
+            .contentView()
+            .expect("the window has a content view");
+        #[cfg(target_os = "ios")]
+        let parent = {
+            let view: &PlatformView = window;
+            view::retain_base(view)
+        };
+        view::subviews(&parent).into_iter().rev().find(|sub| {
+            sub.downcast_ref::<HostView>()
+                .is_some_and(HostView::is_retired)
+        })
+    }
+
+    /// The `NSScrollView`/`UIScrollView` a subtree scrolls in — `view`
+    /// itself first, then depth-first: on `AppKit` the scroll view is the
+    /// window's content view.
+    #[cfg(feature = "gpu_surface")]
+    fn scroll_view_in(view: &PlatformView) -> Option<Retained<PlatformView>> {
+        #[cfg(target_os = "macos")]
+        let is_scroll = view
+            .downcast_ref::<cocoa_ui::objc2_app_kit::NSScrollView>()
+            .is_some();
+        #[cfg(target_os = "ios")]
+        let is_scroll = view
+            .downcast_ref::<cocoa_ui::objc2_ui_kit::UIScrollView>()
+            .is_some();
+        if is_scroll {
+            return Some(view::retain_base(view));
+        }
+        view::subviews(view)
+            .iter()
+            .find_map(|sub| scroll_view_in(sub))
+    }
+
+    /// The view the review PNGs capture mid-flight: the retired window
+    /// overlay the pixel effect presents in.
+    #[cfg(feature = "gpu_surface")]
+    fn review_root(window: &super::AttachedWindow) -> Retained<PlatformView> {
+        retired_overlay(window).expect("a pixel transition in flight has its overlay")
+    }
+
+    /// Pumps until a GPU surface under `site` has presented — the frame a
+    /// later removal freezes.
+    #[cfg(feature = "gpu_surface")]
+    fn await_gpu_presented(site: &PlatformView) {
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                capturables_in(site)
+                    .iter()
+                    .any(|(_, surface)| surface.has_presented_frame())
+            })),
+            "the claimed child's GPU surface presents before removal"
+        );
+    }
+
+    /// The retired ghost host under `site`, once the pixel effect's first
+    /// present has hidden its root.
+    #[cfg(feature = "gpu_surface")]
+    fn await_pixel_present(site: &PlatformView) -> Retained<PlatformView> {
+        let ghost = autoreleasepool(|_| {
+            view::subviews(site)
+                .into_iter()
+                .find(|sub| {
+                    sub.downcast_ref::<HostView>()
+                        .is_some_and(HostView::is_retired)
+                })
+                .expect("the retired ghost host stays under the site")
+        });
+        let root = autoreleasepool(|_| {
+            view::subviews(&ghost)
+                .into_iter()
+                .next()
+                .expect("the ghost host keeps its root")
+        });
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| view::is_hidden(&root))),
+            "the pixel effect presents in the overlay and hides the retired root"
+        );
+        ghost
+    }
+
+    /// The published frame's `source` — reads the stashed `Computed`.
+    #[cfg(feature = "gpu_surface")]
+    fn published_source(
+        frame: &RefCell<
+            Option<waterui::reactive::Computed<waterui_core::transition::TransitionFrame>>,
+        >,
+    ) -> waterui_core::layout::Rect {
+        use waterui::reactive::Signal as _;
+        frame
+            .borrow()
+            .as_ref()
+            .expect("the transition body published a frame")
+            .snapshot()
+            .source
+    }
+
+    /// `a_pixel_removal_freezes_into_the_window_overlay` — a
+    /// `captures_content` removal: the window gains a retired overlay
+    /// host, the published `TransitionFrame.source` tracks the ghost
+    /// host's window rect — including a mid-flight move — and completion
+    /// releases the overlay, the effect and the retired root (§8.2).
+    #[cfg(feature = "gpu_surface")]
+    pub fn a_pixel_removal_freezes_into_the_window_overlay() {
+        let _mtm = mtm();
+        let (probe_frame, spec) = pixel_probe();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        let window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(blur_picture(), spec));
+        });
+        await_gpu_presented(leaf.view());
+        autoreleasepool(|_| handler.set(label("gone")));
+        // The frozen capture lands and the effect mounts in the window
+        // overlay — the ghost stays beneath the live child.
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(
+                |_| retired_overlay(&window).is_some()
+            )),
+            "the retired window overlay mounts the effect"
+        );
+        // The published source is the ghost host's window rect, top-left.
+        let ghost = await_pixel_present(leaf.view());
+        let expected = autoreleasepool(|_| view::bounds_in_window(&ghost));
+        let published = published_source(&probe_frame);
+        assert!(
+            (f64::from(published.x()) - expected.origin.x).abs() < 0.5
+                && (f64::from(published.y()) - {
+                    #[cfg(target_os = "macos")]
+                    {
+                        let overlay = retired_overlay(&window).expect("overlay");
+                        view::bounds(&overlay).size.height
+                            - expected.origin.y
+                            - expected.size.height
+                    }
+                    #[cfg(target_os = "ios")]
+                    {
+                        expected.origin.y
+                    }
+                })
+                .abs()
+                    < 0.5,
+            "the published source {published:?} matches the host's window rect {expected:?}"
+        );
+        // The site moving mid-flight republishes `source`: shift the
+        // dynamic's host and the next tick reports the new rect.
+        let moved = autoreleasepool(|_| {
+            let mut frame = view::frame(leaf.view());
+            frame.origin.x += 24.0;
+            frame.origin.y += 12.0;
+            view::set_frame(leaf.view(), frame);
+            frame
+        });
+        let _ = moved;
+        assert!(
+            pump_main_until(3.0, || {
+                let published = published_source(&probe_frame);
+                autoreleasepool(|_| {
+                    let expected = view::bounds_in_window(&ghost);
+                    (f64::from(published.x()) - expected.origin.x).abs() < 0.5
+                })
+            }),
+            "the published frame follows the moved site"
+        );
+        export_window_png(
+            &review_root(&window),
+            "/tmp/1472-stage9",
+            "a_pixel_removal_freezes_into_the_window_overlay",
+        );
+        // Completion releases the overlay and the ghost host.
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| {
+                    retired_overlay(&window).is_none() && view::subviews(leaf.view()).len() == 1
+                })
+            }),
+            "the overlay and ghost release at completion"
+        );
+    }
+
+    /// `a_pixel_insertion_captures_live_content_in_the_overlay` — a
+    /// `captures_content` insertion: the content mounts live inside the
+    /// transition host and is never reparented while the live-capture
+    /// effect presents through the retired window overlay (§8.2).
+    #[cfg(feature = "gpu_surface")]
+    pub fn a_pixel_insertion_captures_live_content_in_the_overlay() {
+        let _mtm = mtm();
+        let (_frame, spec) = pixel_probe();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        let window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| handler.set(label("before")));
+        assert!(
+            pump_main_until(3.0, || {
+                autoreleasepool(|_| !view::subviews(leaf.view()).is_empty())
+            }),
+            "the first child mounts"
+        );
+        let died = Rc::new(Cell::new(false));
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(
+                Metadata::new(blur_picture(), Retain::new(Died(Rc::clone(&died)))),
+                spec,
+            ));
+        });
+        // The claimed child mounts inside the transition host — its
+        // content view keeps that parent while the effect lives in the
+        // window overlay.
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(
+                |_| retired_overlay(&window).is_some()
+            )),
+            "the retired window overlay mounts the live effect"
+        );
+        let content = autoreleasepool(|_| {
+            let host = view::subviews(leaf.view())
+                .into_iter()
+                .next()
+                .expect("the transition host mounts");
+            let content = view::subviews(&host)
+                .into_iter()
+                .next()
+                .expect("the content view stays mounted");
+            let parent = view::superview(&content).expect("the content has a parent");
+            assert!(
+                std::ptr::from_ref(&*parent) == std::ptr::from_ref(&*host),
+                "the content view was never reparented into the overlay"
+            );
+            content
+        });
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| view::is_hidden(&content))),
+            "the presented effect hides the captured content"
+        );
+        autoreleasepool(|_| {
+            let host = view::superview(&content).expect("the content has a parent");
+            let grandparent = view::superview(&host).expect("the host has a parent");
+            assert!(
+                std::ptr::from_ref(&*grandparent) == std::ptr::from_ref(leaf.view()),
+                "the content view was never reparented into the overlay"
+            );
+        });
+        export_window_png(
+            &review_root(&window),
+            "/tmp/1472-stage9",
+            "a_pixel_insertion_captures_live_content_in_the_overlay",
+        );
+        // Completion: the overlay leaves and the content shows again —
+        // its `Retain` never died, since semantics stayed live.
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| {
+                    retired_overlay(&window).is_none() && {
+                        let host = view::subviews(leaf.view()).into_iter().next();
+                        host.is_some_and(|host| {
+                            view::subviews(&host)
+                                .into_iter()
+                                .next()
+                                .is_some_and(|content| !view::is_hidden(&content))
+                        })
+                    }
+                })
+            }),
+            "the overlay releases and the content reveals at completion"
+        );
+        assert!(
+            !died.get(),
+            "the content's semantics stayed live through the insertion"
+        );
+    }
+
+    /// The scroll distance the frame-follow trial applies.
+    #[cfg(feature = "gpu_surface")]
+    const SCROLL_DELTA: f64 = 48.0;
+
+    /// `pixel_frame_follows_the_slot_while_scrolling` — a pixel removal
+    /// inside a scroll view: the claimed child mounts inside a real
+    /// `UIScrollView`/`NSScrollView` document, and scrolling mid-flight
+    /// moves the published `source.origin` by the scroll delta (§8.2).
+    #[cfg(feature = "gpu_surface")]
+    pub fn pixel_frame_follows_the_slot_while_scrolling() {
+        let _mtm = mtm();
+        let (probe_frame, spec) = pixel_probe();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        // The site lives inside a scroll view sized beyond the window:
+        // the claimed child gets a nonzero slot at once and the ghost's
+        // window rect moves with the content offset.
+        #[cfg(target_os = "macos")]
+        let window = {
+            use cocoa_ui::objc2::{MainThreadOnly, msg_send};
+            use cocoa_ui::objc2_app_kit::NSScrollView;
+            // SAFETY: plain `NSScrollView` init on the main thread.
+            let scroll: Retained<NSScrollView> =
+                unsafe { msg_send![NSScrollView::alloc(mtm()), init] };
+            let window = super::mount_and_order_front(&scroll);
+            // A flipped document, as every WaterUI scroll content is: a
+            // larger clip origin scrolls the content up.
+            let document = HostView::new(mtm(), cocoa_ui::Rect::new(0.0, 0.0, 390.0, 1200.0));
+            scroll.setDocumentView(Some(&document));
+            view::add_subview(&document, leaf.view());
+            view::set_frame(leaf.view(), cocoa_ui::Rect::new(0.0, 0.0, 390.0, 1200.0));
+            window
+        };
+        #[cfg(target_os = "ios")]
+        let window = {
+            use cocoa_ui::objc2::{MainThreadOnly, msg_send};
+            use cocoa_ui::objc2_ui_kit::UIScrollView;
+            // SAFETY: plain `UIScrollView` init on the main thread.
+            let scroll: Retained<UIScrollView> =
+                unsafe { msg_send![UIScrollView::alloc(mtm()), init] };
+            let window = super::mount_and_order_front(&scroll);
+            let scroll_view: &PlatformView = &scroll;
+            view::add_subview(scroll_view, leaf.view());
+            view::set_frame(leaf.view(), cocoa_ui::Rect::new(0.0, 0.0, 390.0, 1200.0));
+            scroll.setContentSize(cocoa_ui::objc2_core_foundation::CGSize::new(390.0, 1200.0));
+            window
+        };
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(blur_picture(), spec));
+        });
+        await_gpu_presented(leaf.view());
+        autoreleasepool(|_| handler.set(label("gone")));
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(
+                |_| retired_overlay(&window).is_some()
+            )),
+            "the retired window overlay mounts the effect"
+        );
+        await_pixel_present(leaf.view());
+        let before = published_source(&probe_frame);
+        // Scroll: the ghost's slot moves with the document, and the next
+        // tick republishes it.
+        autoreleasepool(|_| {
+            #[cfg(target_os = "macos")]
+            {
+                use cocoa_ui::objc2_app_kit::NSScrollView;
+                let content = window.native().contentView().expect("content");
+                let scroll_view = scroll_view_in(&content).expect("the NSScrollView");
+                let scroll = scroll_view.downcast_ref::<NSScrollView>().expect("scroll");
+                let clip = scroll.contentView();
+                let mut origin = clip.bounds().origin;
+                origin.y += SCROLL_DELTA;
+                clip.scrollToPoint(origin);
+                scroll.reflectScrolledClipView(&clip);
+            }
+            #[cfg(target_os = "ios")]
+            {
+                use cocoa_ui::objc2_ui_kit::UIScrollView;
+                let window_view: &PlatformView = &window;
+                let scroll_view = scroll_view_in(window_view).expect("the UIScrollView");
+                let scroll = scroll_view.downcast_ref::<UIScrollView>().expect("scroll");
+                let mut offset = scroll.contentOffset();
+                offset.y += SCROLL_DELTA;
+                scroll.setContentOffset_animated(offset, false);
+            }
+        });
+        assert!(
+            pump_main_until(3.0, || {
+                let after = published_source(&probe_frame);
+                (f64::from(before.y() - after.y()) - SCROLL_DELTA).abs() < 1.0
+            }),
+            "the published source.origin moves by the scroll delta"
+        );
+        export_window_png(
+            &review_root(&window),
+            "/tmp/1472-stage9",
+            "pixel_frame_follows_the_slot_while_scrolling",
         );
     }
 }

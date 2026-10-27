@@ -206,12 +206,16 @@ impl LiveChild {
         let state = claim
             .spec
             .start(TransitionPhase::Removal, claim.reduce_motion);
+        // Without the filtered pipeline a `captures_content` transition
+        // has no realization — a user-triggerable failure, reported and
+        // ended at once: the site's `None` answer releases the slot.
+        #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
         if state.captures_content() {
             crate::transition::transition_violation!(
-                "waterui-apple: pixel transitions land in stage 9 — a `captures_content` \
-                 removal has no realization yet; use a property transition (opacity, scale, \
-                 move, rotation) or an asymmetric transition"
+                "waterui-apple: a pixel transition needs the filtered pipeline \
+                 (the view_effect or applied_filter feature)"
             );
+            return None;
         }
         // A zero-duration removal has nothing to sample, and a host with no
         // window never ticks — the insertion run's rule: both complete now,

@@ -2276,6 +2276,43 @@ fn fuse_enclosed_filters(
     }
 }
 
+/// Peels the chain `body` forms into `(effect, guards)` pairs in
+/// presentation order — `fuse_enclosed_filters`'s walk without a
+/// `RenderContext`, for the shape `TransitionState::body(AnyView::new(()),
+/// frame)` produces under a `captures_content` transition: a chain of
+/// `Native<FilteredView>` terminating at the empty `Native<()>` the
+/// backend passed in. Anything else is a user-triggerable violation of
+/// the transition contract; a release build reports it once and answers
+/// `None`, so the caller ends the transition (§10).
+fn effects_from_body(
+    mut body: AnyView,
+    env: &waterui_backend_core::Environment,
+) -> Option<Vec<(AnyEffect, ParamGuards)>> {
+    let mut effects = Vec::new();
+    loop {
+        while !is_native_boundary(&body) {
+            body = AnyView::new(body.body(env));
+        }
+        match body.downcast::<waterui_core::Native<FilteredView>>() {
+            Ok(inner) => {
+                let inner = (*inner).into_inner();
+                body = inner.content;
+                effects.push((inner.effect, inner.guards));
+            }
+            Err(body) => {
+                if body.downcast::<waterui_core::Native<()>>().is_ok() {
+                    return Some(effects);
+                }
+                crate::transition::transition_violation!(
+                    "waterui-apple: a `captures_content` transition's body must expand to a \
+                     `FilteredView` chain over the empty content"
+                );
+                return None;
+            }
+        }
+    }
+}
+
 /// Installs the `filtered` handler — `applied_filter` and `view_effect`
 /// collapse into one leaf under the cutover's `Native<FilteredView>`.
 #[allow(clippy::too_many_lines)]
@@ -2699,6 +2736,24 @@ impl FrozenEffect {
         )
     }
 
+    /// A `captures_content` transition's effect over the frozen `input`
+    /// frame (§2.7): `body` is the `TransitionState::body(AnyView::new(()),
+    /// frame)` product — a `FilteredView` chain over empty content. `None`
+    /// only when the body is no such chain — a user-triggerable violation
+    /// the macro already reported, so the caller ends the transition.
+    pub fn from_body(
+        body: AnyView,
+        env: &waterui_backend_core::Environment,
+        input: Retained<MetalTexture>,
+    ) -> Option<Self> {
+        let effects = effects_from_body(body, env)?;
+        Some(Self::new(
+            effects,
+            FilteredInput::Frozen { texture: input },
+            env,
+        ))
+    }
+
     /// Builds the filtered pipeline over `input` — the construction the
     /// effect and the mounted leaf share, minus the leaf.
     fn new(
@@ -2793,11 +2848,52 @@ impl LiveEffect {
         output_parent: &PlatformView,
         env: &waterui_backend_core::Environment,
     ) -> Self {
+        Self::build(effects, content_view, output_parent, output_parent, env)
+    }
+
+    /// A `captures_content` transition's live-capture effect (§2.7):
+    /// `body` is the `TransitionState::body(AnyView::new(()), frame)`
+    /// product — a `FilteredView` chain over empty content — realized
+    /// over `content_view` captured in place, its output presented in
+    /// the window-level `output_parent`. `None` only when the body is no
+    /// such chain — a user-triggerable violation the macro already
+    /// reported, so the caller ends the transition.
+    pub fn from_body(
+        body: AnyView,
+        content_view: &PlatformView,
+        output_parent: &PlatformView,
+        env: &waterui_backend_core::Environment,
+    ) -> Option<Self> {
+        let effects = effects_from_body(body, env)?;
+        // The output lives in the window overlay, but invalidations from
+        // the captured subtree rise through the content's own ancestors —
+        // the transition host — so that is where the sink must sit.
+        let sink_view = cocoa_ui::view::superview(content_view)
+            .expect("a transition's content view is mounted inside its host");
+        Some(Self::build(
+            effects,
+            content_view,
+            output_parent,
+            &sink_view,
+            env,
+        ))
+    }
+
+    /// The shared `attach` construction: the output fills `output_parent`
+    /// while the invalidation sink registers on `sink_view` — the view
+    /// whose subtree the captured content lives in (`output_parent`
+    /// itself when the output sits beside the content, as a blur does).
+    fn build(
+        effects: Vec<(AnyEffect, ParamGuards)>,
+        content_view: &PlatformView,
+        output_parent: &PlatformView,
+        sink_view: &PlatformView,
+        env: &waterui_backend_core::Environment,
+    ) -> Self {
         let mtm = MainThreadMarker::new().expect("a transition effect attaches on the main thread");
         let output = HostView::new(mtm, cocoa_ui::Rect::ZERO);
         #[cfg(target_os = "macos")]
         cocoa_ui::view::ensure_layer_backed(&output);
-        cocoa_ui::view::add_subview(output_parent, &output);
         cocoa_ui::view::set_frame(&output, cocoa_ui::view::bounds(output_parent));
         cocoa_ui::view::set_autoresizing_flexible_size(&output);
         let content_view = cocoa_ui::view::retain_base(content_view);
@@ -2826,11 +2922,11 @@ impl LiveEffect {
                 cocoa_ui::view::set_hidden(&content_view, true);
             }));
         }
-        // A descendant invalidation reaches the sink on the parent —
-        // the content is its sibling subtree.
+        // A descendant invalidation reaches the sink on the content's
+        // side of the tree — where its invalidations rise.
         let weak = Rc::downgrade(&state);
         crate::invalidation::register_sink(
-            output_parent,
+            sink_view,
             Rc::new(move || {
                 if let Some(state) = weak.upgrade() {
                     state.content_changed_since_capture.set(true);
@@ -2839,11 +2935,13 @@ impl LiveEffect {
                 }
             }),
         );
-        guard.sink = Some(cocoa_ui::view::retain_base(output_parent));
-        // The parent is already windowed — attach and queue the first
-        // frame now rather than waiting for the next layout pass.
-        initialize_gpu(&state);
-        request_render(&state);
+        guard.sink = Some(cocoa_ui::view::retain_base(sink_view));
+        // Added only once the state is wired: entering the windowed
+        // parent runs the window handler — the visibility watch, the
+        // attach and the first frame request the mounted leaf gets — so
+        // an output built while its window cannot present yet attaches
+        // when it can.
+        cocoa_ui::view::add_subview(output_parent, &output);
         Self {
             output,
             state,

@@ -181,6 +181,11 @@ pub struct InsertionRun {
         waterui::reactive::Binding<f32>,
         crate::components::filtered::LiveEffect,
     )>,
+    /// The `captures_content` realization (§2.7): the window overlay and
+    /// its live-capture effect — built when the run arms. The run's drop
+    /// tears it down.
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    pixel: Option<crate::transition::pixel::PixelInsertion>,
     /// Set once a nonzero radius could not be realized — one violation
     /// report per run.
     #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
@@ -222,14 +227,19 @@ impl InsertionRun {
         let state = claim
             .spec
             .start(TransitionPhase::Insertion, claim.reduce_motion);
+        let slot: Rc<RefCell<Option<Self>>> = Rc::new(RefCell::new(None));
+        // Without the filtered pipeline a `captures_content` transition
+        // has no realization — a user-triggerable failure, reported and
+        // ended at once at identity.
+        #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
         if state.captures_content() {
             crate::transition::transition_violation!(
-                "waterui-apple: pixel transitions land in stage 9 — a `captures_content` \
-                 insertion has no realization yet; use a property transition (opacity, scale, \
-                 move, rotation) or an asymmetric transition"
+                "waterui-apple: a pixel transition needs the filtered pipeline \
+                 (the view_effect or applied_filter feature)"
             );
+            host.apply_sample(&TransitionProperties::IDENTITY);
+            return slot;
         }
-        let slot: Rc<RefCell<Option<Self>>> = Rc::new(RefCell::new(None));
         if state.is_complete() {
             host.apply_sample(&TransitionProperties::IDENTITY);
             return slot;
@@ -246,6 +256,8 @@ impl InsertionRun {
             env: env.clone(),
             #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
             blur: None,
+            #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+            pixel: None,
             #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
             blur_warned: core::cell::Cell::new(false),
         });
@@ -301,7 +313,20 @@ impl InsertionRun {
                         let sample = run.state.properties(run.geometry);
                         run.host.apply_sample(&sample);
                         run.update_blur(&sample);
-                        false
+                        // Without the filtered pipeline a pixel insertion
+                        // never reaches the run: `start` reported it.
+                        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+                        let pixel_ok = run.update_pixel();
+                        #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
+                        let pixel_ok = true;
+                        if pixel_ok {
+                            false
+                        } else {
+                            // A body violation already reported — the
+                            // run ends at identity now (§10).
+                            run.host.apply_sample(&TransitionProperties::IDENTITY);
+                            true
+                        }
                     } else {
                         // Completion: restore the identity sample, then the
                         // run drops itself — never inside its own tick.
@@ -360,6 +385,35 @@ impl InsertionRun {
                  (the view_effect or applied_filter feature)"
             );
         }
+    }
+
+    /// The pixel insertion's per-tick work (§2.7): the overlay and its
+    /// live-capture effect build on the first tick — never inside the
+    /// site's borrow, where a synchronous first capture would re-enter
+    /// the site's layout handler — and only once the content has a
+    /// nonzero slot to capture. `true` while the run keeps ticking;
+    /// `false` only on a body violation the macro already reported.
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    fn update_pixel(&mut self) -> bool {
+        if self.pixel.is_none() && self.state.captures_content() {
+            let bounds = cocoa_ui::view::bounds(&self.host.content_view);
+            if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+                return true;
+            }
+            match crate::transition::pixel::PixelInsertion::start(
+                &self.host,
+                &self.state,
+                self.direction,
+                &self.env,
+            ) {
+                Some(pixel) => self.pixel = Some(pixel),
+                None => return false,
+            }
+        }
+        if let Some(pixel) = &self.pixel {
+            pixel.update(&self.host, self.direction);
+        }
+        true
     }
 }
 
