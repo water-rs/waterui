@@ -3780,8 +3780,8 @@ mod safe_area {
         UIBarPosition, UIBarPositioning, UIEdgeInsets, UIKeyboardAnimationCurveUserInfoKey,
         UIKeyboardAnimationDurationUserInfoKey, UIKeyboardFrameEndUserInfoKey,
         UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification,
-        UIKeyboardWillShowNotification, UINavigationBar, UINavigationController, UIScrollView,
-        UITabBar, UITextView, UIView,
+        UIKeyboardWillShowNotification, UILabel, UINavigationBar, UINavigationController,
+        UIScrollView, UITabBar, UITextView, UIView,
     };
     use cocoa_ui::uikit::view_controller::owning_controller;
     use cocoa_ui::uikit::{
@@ -4482,18 +4482,20 @@ mod safe_area {
         None
     }
 
-    /// The first view whose Objective-C class is literally `name` —
-    /// how a `UIToolbar` is found when the vendored `objc2-ui-kit`
-    /// carries no binding for the class.
-    fn find_class(
-        view: &PlatformView,
-        name: &'static std::ffi::CStr,
-    ) -> Option<Retained<PlatformView>> {
+    /// The first `UIKit`-owned label showing `text` — how a title bar
+    /// item is found: the bar draws the item's word itself, in a private
+    /// button inside the floating bar container under the host, so the
+    /// label carrying it is the item's only public surface. `WaterUI`'s own
+    /// `Label`s are skipped so a hosted copy of the word never matches.
+    fn find_bar_title(view: &PlatformView, text: &str) -> Option<Retained<PlatformView>> {
         for sub in view::subviews(view) {
-            if sub.class().name() == name {
+            if sub.downcast_ref::<Label>().is_none()
+                && let Some(label) = sub.downcast_ref::<UILabel>()
+                && label.text().map(|t| t.to_string()).as_deref() == Some(text)
+            {
                 return Some(sub);
             }
-            if let Some(found) = find_class(&sub, name) {
+            if let Some(found) = find_bar_title(&sub, text) {
                 return Some(found);
             }
         }
@@ -5863,9 +5865,9 @@ mod safe_area {
             ])),
         ));
         // iOS 26 draws the page's bottom bar as a floating glass capsule,
-        // not a `UIToolbar` — the item's own control is the bar's proof.
-        let item =
-            find_class(&mount.host, c"CocoaUiBarButton").expect("the page mounts its bar item");
+        // not a `UIToolbar`, and a text action is the bar's own title
+        // item — the word the bar draws is the item's proof.
+        let item = find_bar_title(&mount.host, "New").expect("the page mounts its bar item");
         let docked = window_frame(&item);
         assert!(
             docked.origin.y + docked.size.height > container_bottom(&mount) - 80.0,
@@ -5923,9 +5925,9 @@ mod safe_area {
         let tab_bar = find_view::<UITabBar>(&mount.host).expect("the tabs mount a UITabBar");
         pump_layout(&mount, || window_bottom(&tab_bar) > TOLERANCE);
         // iOS 26 draws the page's bottom bar as a floating glass capsule,
-        // not a `UIToolbar` — the item's own control is the bar's proof.
-        let item =
-            find_class(&mount.host, c"CocoaUiBarButton").expect("the page mounts its bar item");
+        // not a `UIToolbar`, and a text action is the bar's own title
+        // item — the word the bar draws is the item's proof.
+        let item = find_bar_title(&mount.host, "New").expect("the page mounts its bar item");
         let docked = window_frame(&item);
         assert!(
             docked.origin.y + docked.size.height > container_bottom(&mount) - 80.0,
