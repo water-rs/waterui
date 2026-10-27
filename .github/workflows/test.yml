@@ -1184,6 +1184,16 @@ jobs:
             --exclude-features skia-metal --all-targets -- -D warnings
       - name: Bench adapter tests (cherenkov, cherenkov-cpu)
         run: cargo nextest run --locked -p cherenkov-bench --features cherenkov,cherenkov-cpu --no-tests=pass
+      # A failing oracle test leaves its scratch run in the temp dir: the
+      # engine image, heatmap and metrics of every scene it rendered.
+      - name: Upload failing oracle renders
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cherenkov-oracle-renders-lavapipe
+          path: /tmp/cherenkov-bench-*/out/
+          if-no-files-found: ignore
+          retention-days: 14
       - run: cargo build --locked --release -p cherenkov-bench --features vello-cpu,skia
       # The oracle reference depends only on the scene; build it once for
       # both passes below (#218).
