@@ -4,6 +4,7 @@ use alloc::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use alloc::vec::Vec;
 use core::fmt;
+use core::mem::ManuallyDrop;
 #[cfg(not(target_arch = "wasm32"))]
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -171,7 +172,16 @@ type LossWakeup = Box<dyn Fn() + Send + Sync>;
 #[derive(Debug)]
 pub struct SharedGpuContext {
     generation: u64,
-    instance: Instance,
+    /// Never dropped: it lives as long as the process. Dropping a wgpu
+    /// `Instance` drops wgpu-hal's `libloading` handles for `libEGL` /
+    /// `libvulkan`, which `dlclose`s the driver they loaded. Mesa's software
+    /// drivers (llvmpipe, lavapipe — every GPU-less CI runner, container and
+    /// VM) and the LLVM inside them register `atexit` destructors, and once
+    /// the mapping is gone the process dies inside `exit()` after the last
+    /// context has been torn down cleanly. A driver has to outlive the process
+    /// by construction, so this is not a leak; the device is still dropped
+    /// with the context.
+    instance: ManuallyDrop<Instance>,
     adapter: Adapter,
     device: Device,
     queue: Queue,
@@ -248,7 +258,7 @@ impl SharedGpuContext {
         let device_loss = DeviceLoss::observe(&device);
         Ok(Self {
             generation,
-            instance,
+            instance: ManuallyDrop::new(instance),
             adapter,
             device,
             queue,
@@ -268,7 +278,7 @@ impl SharedGpuContext {
 
     /// The instance surfaces are created from.
     #[must_use]
-    pub const fn instance(&self) -> &Instance {
+    pub fn instance(&self) -> &Instance {
         &self.instance
     }
 
