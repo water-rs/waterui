@@ -37,7 +37,8 @@ use waterui_core::{Computed, Metadata};
 
 use crate::contract::{Mounted, NativeLeaf, Renderer};
 use crate::dispatch::Dispatcher;
-use crate::transition::{Ghost, LiveChild, Removal};
+use crate::transition::ghost::Ghost;
+use crate::transition::live::{LiveChild, Removal};
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{HostView, Panel, window_of};

@@ -10412,6 +10412,7 @@ mod transition {
         ]
         .into_iter()
         .chain(overlay_trials())
+        .chain(frozen_trials())
         .collect()
     }
 
@@ -11048,7 +11049,7 @@ mod transition {
     pub fn a_replaced_child_semantics_die_while_its_view_ghosts() {
         let _mtm = mtm();
         let (handler, dynamic) = Dynamic::new();
-        let leaf = super::resolve::render(dynamic);
+        let leaf = gpu_leaf(dynamic);
         let _window = super::mount_and_order_front(leaf.view());
 
         let died = Rc::new(Cell::new(false));
@@ -12363,6 +12364,423 @@ mod transition {
             saw_ramp.get(),
             "the host alpha ramped from the absent sample — the row itself was inserted without animation",
         );
+    }
+
+    /// The Stage 7 frozen-frame trials (§8.2): retirement installs a
+    /// `FrozenCapturable` into each armed surface's capturable slot.
+    fn frozen_trials() -> Vec<libtest_mimic::Trial> {
+        let mut trials = Vec::new();
+        #[cfg(feature = "gpu_surface")]
+        trials.extend(vec![
+            libtest_mimic::Trial::test(
+                "transition::gpu_surface_ghost_keeps_its_last_frame",
+                || {
+                    gpu_surface_ghost_keeps_its_last_frame();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test("transition::filtered_ghost_keeps_its_last_frame", || {
+                filtered_ghost_keeps_its_last_frame();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test(
+                "transition::ghost_inside_a_live_filter_still_resolves",
+                || {
+                    ghost_inside_a_live_filter_still_resolves();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::unarmed_surfaces_stay_framebuffer_only",
+                || {
+                    unarmed_surfaces_stay_framebuffer_only();
+                    Ok(())
+                },
+            ),
+        ]);
+        trials
+    }
+
+    /// Every capturable surface inside `root` — (view pointer, resolved
+    /// surface) pairs in walk order.
+    #[cfg(feature = "gpu_surface")]
+    fn capturables_in(
+        root: &PlatformView,
+    ) -> Vec<(usize, Rc<dyn cocoa_ui::capture::CapturableSurface>)> {
+        let mut entries = Vec::new();
+        cocoa_ui::capture::for_each_capturable(root, &mut |view, surface| {
+            entries.push((std::ptr::from_ref(view).addr(), Rc::clone(surface)));
+        });
+        entries
+    }
+
+    /// Capturable surfaces resolved at every depth of `root`'s subtree —
+    /// the enclosing filter's view: `for_each_capturable` prunes at a
+    /// resolved surface since its own producer composites it, but that
+    /// producer's *content* — the subtree under it — is walked by the
+    /// enclosing capture, so a nested surface still answers its slot.
+    #[cfg(feature = "gpu_surface")]
+    fn capturables_deep(
+        root: &PlatformView,
+    ) -> Vec<(usize, Rc<dyn cocoa_ui::capture::CapturableSurface>)> {
+        fn walk(
+            view: &PlatformView,
+            entries: &mut Vec<(usize, Rc<dyn cocoa_ui::capture::CapturableSurface>)>,
+        ) {
+            if let Some(surface) = cocoa_ui::capture::resolve_capturable(view) {
+                entries.push((std::ptr::from_ref(view).addr(), Rc::clone(&surface)));
+            }
+            for subview in cocoa_ui::view::subviews(view) {
+                walk(&subview, entries);
+            }
+        }
+        let mut entries = Vec::new();
+        walk(root, &mut entries);
+        entries
+    }
+
+    /// The retained view carrying `root`'s first resolved capturable —
+    /// the surface's own view, never the leaf it renders under.
+    #[cfg(feature = "gpu_surface")]
+    fn capturable_view(root: &PlatformView) -> Option<Retained<PlatformView>> {
+        let mut found = None;
+        cocoa_ui::capture::for_each_capturable(root, &mut |view, _| {
+            found.get_or_insert_with(|| view::retain_base(view));
+        });
+        found
+    }
+
+    /// Mounts `view` under a GPU-equipped environment — the runtime,
+    /// scene engine, filter pipelines and `PresentationTime` the
+    /// `gpu_runtime::prepare` production path installs.
+    #[cfg(feature = "gpu_surface")]
+    fn gpu_leaf(view: impl waterui_backend_core::View) -> waterui_apple::contract::NativeLeaf {
+        // The filtered leaf's `AnyEffect::build` binds through the local
+        // executor — `initialize_process` only runs on macOS, so install
+        // the plain main-queue answer here the way the webview trials do.
+        let _ = executor_core::try_init_local_executor(
+            native_executor::NativeMainExecutor::new()
+                .expect("the native suite runs on the process's main thread"),
+        );
+        let mut env = super::resolve::env();
+        let runtime = waterui_apple::native_test_support::block_on_main(
+            30.0,
+            waterui_graphics::gpu::GpuRuntime::new(),
+        )
+        .expect("the harness provides a GPU runtime");
+        waterui_apple::native_test_support::install_gpu(&mut env, runtime);
+        waterui_apple::dispatch::render(waterui_backend_core::AnyView::new(view), &env)
+    }
+
+    /// A `MeshGradient` mounts the `SceneView` GPU surface leaf the
+    /// frozen-frame trials arm.
+    #[cfg(feature = "gpu_surface")]
+    fn gpu_picture() -> impl waterui_backend_core::View {
+        use waterui::graphics::color::WorkingColor;
+        use waterui::graphics::gradient::MeshGradient;
+        use waterui::reactive::constant;
+        // Four distinct corners, so a review PNG tells the frozen frame
+        // from a blank or cleared one.
+        MeshGradient::new(
+            2,
+            2,
+            constant(vec![
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+                WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+                WorkingColor::new([1.0, 1.0, 0.0, 1.0]),
+            ]),
+        )
+    }
+
+    /// A blurred label mounts the `FilteredView` GPU filter chain.
+    #[cfg(feature = "gpu_surface")]
+    fn filtered_label() -> impl waterui_backend_core::View {
+        use waterui::view::FilterViewExt;
+        label("filtered").blur(2.0)
+    }
+
+    /// The exit spec the frozen trials use — long enough to keep the
+    /// ghost live across a capture and several pumps.
+    #[cfg(feature = "gpu_surface")]
+    fn frozen_spec() -> TransitionSpec {
+        TransitionSpec::new(PropertyTransition::opacity())
+            .with_animation(Animation::linear(Duration::from_millis(400)))
+    }
+
+    /// Writes the window's captured pixels to `/tmp/1472-stage7/<name>.png`
+    /// through the harness's own `capture_rgba` — visual review only;
+    /// nothing asserts on pixel values.
+    #[cfg(feature = "gpu_surface")]
+    fn export_window_png(view: &PlatformView, name: &str) {
+        let captured = waterui_apple::native_test_support::capture_view_rgba(view);
+        let image = cocoa_ui::bitmap::image_from_rgba(
+            &captured.pixels,
+            captured.width as usize,
+            captured.height as usize,
+        )
+        .expect("the captured pixels make a CGImage");
+        #[cfg(target_os = "ios")]
+        let data = cocoa_ui::objc2_ui_kit::UIImage::imageWithCGImage(&image)
+            .png_representation()
+            .expect("PNG encoding succeeds")
+            .to_vec();
+        #[cfg(target_os = "macos")]
+        let data = {
+            use cocoa_ui::objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep};
+            use cocoa_ui::objc2_foundation::NSDictionary;
+            let rep = NSBitmapImageRep::initWithCGImage(
+                <NSBitmapImageRep as cocoa_ui::objc2::AllocAnyThread>::alloc(),
+                &image,
+            );
+            // SAFETY: PNG encoding of a live bitmap rep.
+            unsafe {
+                rep.representationUsingType_properties(
+                    NSBitmapImageFileType::PNG,
+                    &NSDictionary::<cocoa_ui::objc2_foundation::NSString>::new(),
+                )
+            }
+            .expect("PNG encoding succeeds")
+            .to_vec()
+        };
+        std::fs::create_dir_all("/tmp/1472-stage7").expect("the review directory creates");
+        std::fs::write(format!("/tmp/1472-stage7/{name}.png"), data)
+            .expect("the review PNG writes");
+    }
+
+    /// `gpu_surface_ghost_keeps_its_last_frame` — a GPU surface under a
+    /// `.transition(opacity)` mounts its last presented frame into a
+    /// `FrozenCapturable` at removal (§8.2): the live capturable's Rc
+    /// dies with the leaf, the slot resolves to a frozen stand-in that
+    /// answers `has_presented_frame` and never `can_present`, and the
+    /// ghost's completion releases it.
+    #[cfg(feature = "gpu_surface")]
+    pub fn gpu_surface_ghost_keeps_its_last_frame() {
+        let _mtm = mtm();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(gpu_picture(), frozen_spec()));
+        });
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                capturables_in(leaf.view())
+                    .iter()
+                    .any(|(_, surface)| surface.has_presented_frame())
+            })),
+            "the GPU surface presents before removal"
+        );
+        let live = autoreleasepool(|_| {
+            let entries = capturables_in(leaf.view());
+            assert_eq!(entries.len(), 1, "one capturable surface in the subtree");
+            Rc::downgrade(&entries[0].1)
+        });
+        autoreleasepool(|_| handler.set(label("gone")));
+        assert!(
+            live.upgrade().is_none(),
+            "the removal dropped the live capturable with the leaf"
+        );
+        autoreleasepool(|_| {
+            let entries = capturables_in(leaf.view());
+            assert_eq!(entries.len(), 1, "the ghost keeps one resolved surface");
+            assert!(
+                entries[0].1.has_presented_frame(),
+                "the frozen surface reports the frame it last presented"
+            );
+            assert!(
+                !entries[0].1.can_present(),
+                "a frozen surface never presents itself"
+            );
+        });
+        export_window_png(leaf.view(), "gpu_surface_ghost_keeps_its_last_frame");
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| capturables_in(leaf.view()).is_empty())
+            }),
+            "the ghost's completion releases the frozen surface"
+        );
+    }
+
+    /// `filtered_ghost_keeps_its_last_frame` — the same hand-off for a
+    /// `FilteredView` GPU surface: retirement installs the frozen
+    /// stand-in and the ghost answers `has_presented_frame` until it
+    /// completes.
+    #[cfg(feature = "gpu_surface")]
+    pub fn filtered_ghost_keeps_its_last_frame() {
+        let _mtm = mtm();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(filtered_label(), frozen_spec()));
+        });
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                capturables_in(leaf.view())
+                    .iter()
+                    .any(|(_, surface)| surface.has_presented_frame())
+            })),
+            "the filtered surface presents before removal"
+        );
+        let live = autoreleasepool(|_| {
+            let entries = capturables_in(leaf.view());
+            assert_eq!(
+                entries.len(),
+                1,
+                "the filtered chain is one capturable surface"
+            );
+            Rc::downgrade(&entries[0].1)
+        });
+        autoreleasepool(|_| handler.set(label("gone")));
+        assert!(
+            live.upgrade().is_none(),
+            "the removal dropped the live capturable with the leaf"
+        );
+        autoreleasepool(|_| {
+            let entries = capturables_in(leaf.view());
+            assert_eq!(entries.len(), 1, "the ghost keeps one resolved surface");
+            assert!(
+                entries[0].1.has_presented_frame(),
+                "the frozen surface reports the frame it last presented"
+            );
+            assert!(
+                !entries[0].1.can_present(),
+                "a frozen surface never presents itself"
+            );
+        });
+        export_window_png(leaf.view(), "filtered_ghost_keeps_its_last_frame");
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| capturables_in(leaf.view()).is_empty())
+            }),
+            "the ghost's completion releases the frozen surface"
+        );
+    }
+
+    /// `ghost_inside_a_live_filter_still_resolves` — a GPU surface ghost
+    /// inside a still-live `FilteredView` chain: the frozen stand-in
+    /// resolves through `for_each_capturable` while the enclosing filter
+    /// keeps presenting — the enclosing capture's resolve keeps finding
+    /// the ghost's surfaces instead of an unresolved Metal layer.
+    #[cfg(feature = "gpu_surface")]
+    pub fn ghost_inside_a_live_filter_still_resolves() {
+        use waterui::view::FilterViewExt;
+        let _mtm = mtm();
+        let (handler, dynamic) = Dynamic::new();
+        let (outer, wrapper) = Dynamic::new();
+        let leaf = gpu_leaf(wrapper);
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| {
+            outer.set(dynamic.blur(2.0));
+            handler.set(Metadata::new(gpu_picture(), frozen_spec()));
+        });
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                capturables_in(leaf.view())
+                    .iter()
+                    .any(|(_, surface)| surface.has_presented_frame())
+            })),
+            "the surface inside the filter presents before removal"
+        );
+        autoreleasepool(|_| handler.set(label("gone")));
+        autoreleasepool(|_| {
+            let entries = capturables_deep(leaf.view());
+            assert_eq!(
+                entries.len(),
+                2,
+                "the live filter and the ghost's frozen surface both resolve"
+            );
+            let mut live: Vec<_> = entries
+                .iter()
+                .filter(|(_, surface)| surface.can_present())
+                .collect();
+            let mut frozen: Vec<_> = entries
+                .iter()
+                .filter(|(_, surface)| !surface.can_present())
+                .collect();
+            assert_eq!(
+                live.len(),
+                1,
+                "the enclosing filter keeps its live producer"
+            );
+            assert_eq!(frozen.len(), 1, "the ghost resolves a frozen surface");
+            assert!(
+                live[0].1.has_presented_frame(),
+                "the filter keeps presenting"
+            );
+            assert!(
+                frozen[0].1.has_presented_frame(),
+                "the ghost surface keeps its last frame"
+            );
+            live.clear();
+            frozen.clear();
+        });
+        export_window_png(leaf.view(), "ghost_inside_a_live_filter_still_resolves");
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                capturables_deep(leaf.view())
+                    .iter()
+                    .all(|(_, surface)| surface.can_present())
+            })),
+            "the ghost's completion leaves only the live filter resolving"
+        );
+    }
+
+    /// `unarmed_surfaces_stay_framebuffer_only` — the arming switch is
+    /// exactly `SnapshotDemand`: outside a declaration the layer stays
+    /// framebuffer-only; inside one it becomes readable.
+    #[cfg(feature = "gpu_surface")]
+    pub fn unarmed_surfaces_stay_framebuffer_only() {
+        #[cfg(target_os = "macos")]
+        use cocoa_ui::appkit::surface_view::SurfaceView;
+        #[cfg(target_os = "ios")]
+        use cocoa_ui::uikit::surface_view::SurfaceView;
+
+        let _mtm = mtm();
+        let leaf = gpu_leaf(gpu_picture());
+        let _window = super::mount_and_order_front(leaf.view());
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                capturables_in(leaf.view())
+                    .iter()
+                    .any(|(_, surface)| surface.has_presented_frame())
+            })),
+            "the unarmed surface presents"
+        );
+        autoreleasepool(|_| {
+            let view = capturable_view(leaf.view()).expect("the surface resolves");
+            let surface = view
+                .downcast_ref::<SurfaceView>()
+                .expect("a GPU surface mounts the kit surface view");
+            assert!(
+                surface.presentation_layer().framebufferOnly(),
+                "an unarmed surface keeps framebuffer-only drawables"
+            );
+        });
+
+        let (handler, dynamic) = Dynamic::new();
+        handler.set(Metadata::new(gpu_picture(), frozen_spec()));
+        let leaf = gpu_leaf(dynamic);
+        let _window = super::mount_and_order_front(leaf.view());
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                capturables_in(leaf.view())
+                    .iter()
+                    .any(|(_, surface)| surface.has_presented_frame())
+            })),
+            "the armed surface presents"
+        );
+        autoreleasepool(|_| {
+            let view = capturable_view(leaf.view()).expect("the surface resolves");
+            let surface = view
+                .downcast_ref::<SurfaceView>()
+                .expect("a GPU surface mounts the kit surface view");
+            assert!(
+                !surface.presentation_layer().framebufferOnly(),
+                "an armed surface's drawables are readable"
+            );
+        });
     }
 }
 

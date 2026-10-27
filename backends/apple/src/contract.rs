@@ -404,6 +404,7 @@ impl Mounted {
     ///
     /// When the view is no retired `HostView` and none of its strict
     /// ancestors is either — the internal invariant of the hand-off.
+    #[cfg(feature = "transition_sites")]
     #[must_use]
     pub(crate) fn into_retired_leaf(mut self) -> NativeLeaf {
         let mut leaf = self.0.take().expect("a live Mounted");

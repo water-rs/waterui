@@ -168,9 +168,13 @@ impl LiveChild {
             Size::new(size.width as f32, size.height as f32),
             claim.direction,
         );
+        // 3. Frozen frames (§2.2): each armed surface hands its last
+        //    presented frame and its presentation layer while it is
+        //    still live — before any semantic teardown.
+        #[cfg(feature = "gpu_surface")]
+        let frozen = retire::collect_frozen_surfaces(&host.content_view);
         // 4. Resign focus inside the outgoing subtree — the only
-        //    per-view walk; the frozen-frame collection of step 3 lands
-        //    with the surfaces in stage 7.
+        //    per-view walk.
         retire::resign_focus_within(&host.content_view);
         // 5. From here the subtree is a ghost.
         host.host.retire();
@@ -185,8 +189,20 @@ impl LiveChild {
             .into_retired_leaf();
         drop(content);
         drop(wrapper);
+        // 7. The live guards cleared the capturable slots in step 6 —
+        //    each armed surface's frozen stand-in takes the slot, so an
+        //    enclosing live filter keeps resolving the ghost's surfaces.
+        #[cfg(feature = "gpu_surface")]
+        let frozen = retire::install_frozen_surfaces(env, frozen);
         // 8. Build the visual and start the run.
-        let visual = RetiredVisual::new(host.host.clone(), host.content_view.clone(), geometry);
+        #[cfg(not(feature = "gpu_surface"))]
+        let frozen = ();
+        let visual = RetiredVisual::new(
+            host.host.clone(),
+            host.content_view.clone(),
+            frozen,
+            geometry,
+        );
         let state = claim
             .spec
             .start(TransitionPhase::Removal, claim.reduce_motion);

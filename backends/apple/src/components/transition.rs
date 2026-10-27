@@ -34,18 +34,24 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // since an asymmetric transition can still resolve to a blur or
         // pixel phase (§2.1).
         let env = ctx.env().extending(SnapshotDemand);
-        match crate::components::dynamic::expand_to_dynamic(metadata.content) {
-            Ok((dynamic, retained)) => crate::components::dynamic::render_adopting(
-                dynamic,
-                retained,
-                claim,
-                &ctx.with_env(&env),
-            ),
-            Err(content) => {
-                let mut leaf = ctx.with_env(&env).render(content);
-                leaf.set_transition(claim);
-                leaf
+        // Conditional content adopts the declaration for each child it
+        // swaps in; without the `dynamic` port nothing conditional renders.
+        #[cfg(feature = "dynamic")]
+        let content = match crate::components::dynamic::expand_to_dynamic(metadata.content) {
+            Ok((dynamic, retained)) => {
+                return crate::components::dynamic::render_adopting(
+                    dynamic,
+                    retained,
+                    claim,
+                    &ctx.with_env(&env),
+                );
             }
-        }
+            Err(content) => content,
+        };
+        #[cfg(not(feature = "dynamic"))]
+        let content = metadata.content;
+        let mut leaf = ctx.with_env(&env).render(content);
+        leaf.set_transition(claim);
+        leaf
     });
 }

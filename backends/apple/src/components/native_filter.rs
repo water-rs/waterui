@@ -1717,6 +1717,20 @@ impl CapturableSurface for NativeFilterCapturable {
         false
     }
 
+    /// Internal invariant: armed filter chains route to the GPU
+    /// realization under `SnapshotDemand`, so a native filter
+    /// realization can never sit inside a retiring transition subtree.
+    fn take_frozen_frame(
+        &self,
+    ) -> (
+        Option<cocoa_ui::capture::FrozenSurface>,
+        Retained<objc2_quartz_core::CAMetalLayer>,
+    ) {
+        // §2.2: native filters never mount under a transition
+        // declaration — `SnapshotDemand` routes them to the GPU
+        // realization — so a retirement walk can never reach this.
+        unreachable!("a NativeFilterCapturable never appears under a transition subtree")
+    }
 }
 
 /// The main-thread half of the external render: builds the `CIImage`

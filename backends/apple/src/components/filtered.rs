@@ -266,6 +266,10 @@ pub struct FilteredState {
     /// The in-flight effect setup. Stored so dropping the state cancels a
     /// setup parked on `context_after` instead of leaking the future.
     setup_task: RefCell<Option<executor_core::AnyLocalExecutorTask<()>>>,
+    /// Armed by `SnapshotDemand` at render: the last presented frame's
+    /// frozen copy for a transition's retirement hand-off (§2.1). `None`
+    /// for an unarmed surface — its drawables stay framebuffer-only.
+    armed: Option<crate::frozen_frame::SharedFrozenFrameSlot>,
 }
 
 impl fmt::Debug for FilteredState {
@@ -467,6 +471,7 @@ fn attach_if_needed(
     let presenter = MetalPresenter::new(
         state.presentation_layer.clone(),
         Rc::clone(&state.frame_sink),
+        state.armed.is_some(),
     );
     presenter.set_device(&crate::gpu_runtime::raw_metal_device(context));
     presenter.set_drawable_size(cocoa_ui::metal_presenter::drawable_size(width, height));
@@ -939,9 +944,11 @@ fn submit_external(
     context: &Arc<SharedGpuContext>,
     encoder: wgpu::CommandEncoder,
     completion: SurfaceCaptureCompletion,
+    frozen: Option<crate::frozen_frame::FrozenFrame>,
 ) {
     let weak = Sendable(Rc::downgrade(state));
     let completion = std::sync::Mutex::new(Some(completion));
+    let mut frozen = frozen.map(Sendable);
     let submitted_context = context.clone();
     crate::gpu_completion::submit_with_completion(
         cocoa_ui::MainThreadMarker::new()
@@ -954,22 +961,32 @@ fn submit_external(
                 let Some(completion) = completion else {
                     return;
                 };
-                match result {
-                    Err(_) => {
-                        // The fence settled on a dead queue: no
-                        // usable pixels to composite — deferred,
-                        // and the publication watch re-arms the
-                        // redraw.
-                        if let Some(state) = weak.get().upgrade() {
-                            park_for_publication(&state, submitted_context.generation());
+                let frozen = frozen.take().map(|Sendable(copy)| copy);
+                if result.is_err() {
+                    // The fence settled on a dead queue: no
+                    // usable pixels to composite — deferred,
+                    // and the publication watch re-arms the
+                    // redraw.
+                    if let Some(state) = weak.get().upgrade() {
+                        if let (Some(armed), Some(copy)) = (state.armed.as_ref(), frozen) {
+                            armed.recycle(copy);
                         }
-                        completion(Err(CaptureError::Deferred));
+                        park_for_publication(&state, submitted_context.generation());
                     }
+                    completion(Err(CaptureError::Deferred));
+                } else {
                     // Offscreen capture completion is not a
                     // `PresentedFrame` receipt —
                     // productive-generation accounting consumes
-                    // on-screen receipts only.
-                    Ok(()) => completion(Ok(())),
+                    // on-screen receipts only. An externally rendered
+                    // surface's screen pixels are what its capture
+                    // composed — the `Ok` arm is the promotion gate.
+                    if let Some(state) = weak.get().upgrade()
+                        && let (Some(armed), Some(copy)) = (state.armed.as_ref(), frozen)
+                    {
+                        armed.promote(copy);
+                    }
+                    completion(Ok(()));
                 }
             });
         },
@@ -1005,7 +1022,7 @@ fn render_transparent(
         })],
         ..Default::default()
     }));
-    submit_external(state, context, encoder, completion);
+    submit_external(state, context, encoder, completion, None);
 }
 
 /// The per-frame effect encode shared by the screen drawable and the
@@ -1195,7 +1212,8 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
     // into, never sampled or copied.
     // SAFETY: `frame.texture()` is the drawable's live texture — the lease
     // inside `work` outlives the import; the format and the drawable's
-    // actual texture dimensions describe it.
+    // actual texture dimensions describe it. An armed surface declares
+    // `COPY_SRC` so its frozen-frame copy reads what the effects wrote.
     let output_wgpu_texture = unsafe {
         cocoa_ui::metal::import_texture(
             context.device(),
@@ -1203,7 +1221,12 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
             PRESENTATION_FORMAT,
             work.width,
             work.height,
-            wgpu::TextureUsages::RENDER_ATTACHMENT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | if state.armed.is_some() {
+                    wgpu::TextureUsages::COPY_SRC
+                } else {
+                    wgpu::TextureUsages::empty()
+                },
             wgpu::TextureUses::COLOR_TARGET,
             "FilteredView Presentation Drawable",
         )
@@ -1218,7 +1241,7 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
         }
         frame_clock.tick()
     };
-    let (needs_redraw, encoder) = encode_effects(
+    let (needs_redraw, mut encoder) = encode_effects(
         state,
         &context,
         &input_texture,
@@ -1227,22 +1250,50 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
         (work.width, work.height),
         timing,
     );
+    // An armed surface copies the just-written drawable into its frozen
+    // slot inside this same submission — GPU→GPU, ordered after the
+    // effects on the shared queue; the settle promotes it only on a
+    // real `PresentedFrame` receipt.
+    let frozen = state.armed.as_ref().map(|armed| {
+        armed.encode_copy(
+            &context,
+            &output_wgpu_texture,
+            (work.width, work.height),
+            &mut encoder,
+        )
+    });
     drop(input_texture);
     drop(output_wgpu_texture);
 
     // `observeGpuCaptureFence`: the frame — and its drawable lease — stay
     // in flight until the fence.
     state.frame_presentation_in_flight.set(true);
+    submit_prepared_frame(state, &context, encoder, work, needs_redraw, frozen);
+}
+
+/// Submits the prepared frame's encoder and registers the fence's
+/// main-queue settle — the armed surface's frozen copy rides the same
+/// submission and the settle promotes it only on a `PresentedFrame`
+/// receipt.
+fn submit_prepared_frame(
+    state: &Rc<FilteredState>,
+    context: &Arc<SharedGpuContext>,
+    encoder: wgpu::CommandEncoder,
+    work: PresentWork,
+    needs_redraw: bool,
+    frozen: Option<crate::frozen_frame::FrozenFrame>,
+) {
     let weak = Sendable(Rc::downgrade(state));
     // The `take` call on the slot captures the `Sendable` as a whole
     // binding — a field projection would unwrap it before the `Send`
     // contract can apply.
     let mut work_slot = Some(Sendable(work));
+    let mut frozen = frozen.map(Sendable);
     let submitted_context = context.clone();
     crate::gpu_completion::submit_with_completion(
         cocoa_ui::MainThreadMarker::new().expect("FilteredView frames render on the main thread"),
         encoder,
-        &context,
+        context,
         move |result| {
             // `on_submitted_work_done` closures can run on any thread that
             // maintains the device — hop to the main queue before touching
@@ -1254,6 +1305,7 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
                     return;
                 };
                 let Sendable(work) = work_slot.take().expect("the fence fires once");
+                let frozen = frozen.take().map(|Sendable(copy)| copy);
                 state.frame_presentation_in_flight.set(false);
                 state.render_in_flight.set(false);
                 match result {
@@ -1262,11 +1314,20 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
                         // fence settled on a dead queue and the drawable
                         // holds no ready pixels. Park until the rebuilt
                         // context publishes instead of revealing it.
+                        if let (Some(armed), Some(copy)) = (state.armed.as_ref(), frozen) {
+                            armed.recycle(copy);
+                        }
                         state.needs_render.set(true);
                         park_for_publication(&state, submitted_context.generation());
                     }
                     Ok(()) => {
-                        finish_presented_frame(&state, work, needs_redraw, &submitted_context);
+                        finish_presented_frame(
+                            &state,
+                            work,
+                            needs_redraw,
+                            &submitted_context,
+                            frozen,
+                        );
                     }
                 }
             });
@@ -1283,14 +1344,24 @@ fn finish_presented_frame(
     work: PresentWork,
     needs_redraw: bool,
     submitted_context: &SharedGpuContext,
+    frozen: Option<crate::frozen_frame::FrozenFrame>,
 ) {
+    // Every arm but the presented one recycles the copy target — the
+    // frame's pixels never reached the screen.
+    let settle_copy = |frozen: Option<crate::frozen_frame::FrozenFrame>| {
+        if let (Some(armed), Some(copy)) = (state.armed.as_ref(), frozen) {
+            armed.recycle(copy);
+        }
+    };
     if state.detach_after_capture.get() {
+        settle_copy(frozen);
         state.detach_after_capture.set(false);
         detach_if_needed(state);
         complete_ready(state);
         return;
     }
     if state.pending_dynamic_range.borrow_mut().take().is_some() {
+        settle_copy(frozen);
         detach_if_needed(state);
         initialize_gpu(state);
         request_render(state);
@@ -1316,6 +1387,7 @@ fn finish_presented_frame(
     let Some(_receipt) = presented else {
         // Stale, resized or unpresentable: the lease settles unpresented
         // and the frame stays owed.
+        settle_copy(frozen);
         state.needs_render.set(true);
         update_link_demand(state);
         return;
@@ -1323,6 +1395,11 @@ fn finish_presented_frame(
     // A presented frame makes this generation productive — the runtime's
     // unproductive-loss detector keys on it.
     submitted_context.note_frame_presented();
+    // The frame's pixels reached the screen — the copy becomes the
+    // surface's frozen frame.
+    if let (Some(armed), Some(copy)) = (state.armed.as_ref(), frozen) {
+        armed.promote(copy);
+    }
     reveal_output(state);
     crate::invalidation::invalidate_rendered_content(&state.view);
     state
@@ -1765,7 +1842,12 @@ impl CapturableSurface for FilteredCapturable {
                 PRESENTATION_FORMAT,
                 width,
                 height,
-                wgpu::TextureUsages::RENDER_ATTACHMENT,
+                wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | if state.armed.is_some() {
+                        wgpu::TextureUsages::COPY_SRC
+                    } else {
+                        wgpu::TextureUsages::empty()
+                    },
                 wgpu::TextureUses::COLOR_TARGET,
                 "FilteredView External Output",
             )
@@ -1847,6 +1929,11 @@ impl CapturableSurface for FilteredCapturable {
             }
             ExternalRender::Effects(target) => target.output,
         };
+        // `armed` crosses the capture callback's thread hop below —
+        // the `Option<Sendable>` slot keeps the whole cell Send where a
+        // field projection inside the closure would capture the raw Rc.
+        let armed = state.armed.clone();
+        let armed_for_copy = armed.clone().map(Sendable);
         if !effects_ready(&state) {
             completion(Err(CaptureError::Deferred));
             return;
@@ -1867,7 +1954,7 @@ impl CapturableSurface for FilteredCapturable {
                 }
                 frame_clock.tick()
             };
-            let (needs_redraw, encoder) = encode_effects(
+            let (needs_redraw, mut encoder) = encode_effects(
                 &state,
                 &context,
                 &input,
@@ -1876,12 +1963,15 @@ impl CapturableSurface for FilteredCapturable {
                 (width, height),
                 timing,
             );
+            let frozen = armed
+                .as_ref()
+                .map(|armed| armed.encode_copy(&context, &output, (width, height), &mut encoder));
             drop(input);
             drop(output);
             if needs_redraw {
                 request_render(&state);
             }
-            submit_external(&state, &context, encoder, completion);
+            submit_external(&state, &context, encoder, completion, frozen);
             return;
         }
         let input_native = ensure_capture_texture(&state, &context, width, height);
@@ -1963,7 +2053,7 @@ impl CapturableSurface for FilteredCapturable {
                     }
                     frame_clock.tick()
                 };
-                let (needs_redraw, encoder) = encode_effects(
+                let (needs_redraw, mut encoder) = encode_effects(
                     &state,
                     &context,
                     &input,
@@ -1972,13 +2062,40 @@ impl CapturableSurface for FilteredCapturable {
                     (width, height),
                     timing,
                 );
+                let frozen = armed_for_copy.as_ref().map(|Sendable(armed)| {
+                    armed.encode_copy(&context, &output, (width, height), &mut encoder)
+                });
                 drop(input);
                 drop(output);
                 if needs_redraw {
                     request_render(&state);
                 }
-                submit_external(&state, &context, encoder, completion);
+                submit_external(&state, &context, encoder, completion, frozen);
             });
+    }
+
+    /// The armed slot's last presented frame plus the presentation
+    /// layer — the retirement hand-off. An unarmed surface mounts no
+    /// frozen stand-in and answers `None`.
+    fn take_frozen_frame(
+        &self,
+    ) -> (
+        Option<cocoa_ui::capture::FrozenSurface>,
+        Retained<CAMetalLayer>,
+    ) {
+        let state = self
+            .state
+            .upgrade()
+            .expect("retirement takes the frozen frame while the filtered view is live");
+        let armed = state.armed.as_ref().expect(
+            "a filtered view inside a retiring transition subtree renders under SnapshotDemand",
+        );
+        (
+            armed
+                .take()
+                .map(crate::frozen_frame::FrozenFrame::into_surface),
+            state.presentation_layer.clone(),
+        )
     }
 
     /// The readiness-participation query the first-frame collect walk
@@ -2016,9 +2133,7 @@ impl CapturableSurface for FilteredCapturable {
             .upgrade()
             .is_none_or(|state| state.park.is_failed())
     }
-
 }
-
 
 /// Dropping clears the filter's registrations and shuts the capture and
 /// render state down — `deinit`.
@@ -2086,9 +2201,17 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // `NativeFilteredView` on AppKit: a complete native `CIFilter`
         // plan mounts the content visibly on `CALayer.filters` — no
         // capture, no GPU setup (#1748). Any unmapped stage, GPU effect or
-        // output-size policy falls through to the capture path.
+        // output-size policy falls through to the capture path. A chain
+        // under a transition declaration always takes the GPU
+        // realization: a `CAFilter`-backed native filter cannot hand off
+        // a frozen GPU frame (§2.2, maintainer decision 10).
         #[cfg(all(target_os = "macos", feature = "applied_filter"))]
-        if let Some(plan) = crate::components::native_filter::plan(&chained) {
+        if ctx
+            .env()
+            .get::<crate::transition::SnapshotDemand>()
+            .is_none()
+            && let Some(plan) = crate::components::native_filter::plan(&chained)
+        {
             return crate::components::native_filter::mount(mtm, ctx, content, chained, &plan);
         }
         let runtime = crate::gpu_runtime::runtime(ctx.env());
@@ -2115,6 +2238,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             Some(mounted),
             effects,
             guard_list,
+            ctx.env(),
         )
         .leaf
     });
@@ -2162,6 +2286,10 @@ struct FilteredParts {
     clippy::too_many_lines,
     reason = "the mount's wiring is one linear construction sequence"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the mount's wiring inputs are each distinct construction inputs"
+)]
 fn build_filtered_parts(
     mtm: MainThreadMarker,
     services: GpuServices,
@@ -2170,6 +2298,7 @@ fn build_filtered_parts(
     mounted: Option<Mounted>,
     effects: Vec<Box<dyn ErasedEffect>>,
     guard_list: Vec<ParamGuards>,
+    env: &waterui_backend_core::Environment,
 ) -> FilteredParts {
     let GpuServices { runtime, pipelines } = services;
     // `setupContentView`/`hideUnfilteredContent`: the unfiltered child
@@ -2284,6 +2413,9 @@ fn build_filtered_parts(
             visibility_watch: RefCell::new(None),
             gpu_generation: Cell::new(Some(gpu_context.generation())),
             setup_task: RefCell::new(None),
+            armed: env
+                .get::<crate::transition::SnapshotDemand>()
+                .map(|_| Rc::new(crate::frozen_frame::FrozenFrameSlot::new())),
         }
     });
     *state.effects.borrow_mut() = Some(effects);
@@ -2647,6 +2779,7 @@ pub mod native_test {
             None,
             effects,
             Vec::new(),
+            &fixture_env(runtime.clone()),
         )
     }
 

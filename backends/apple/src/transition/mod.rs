@@ -41,16 +41,20 @@ macro_rules! transition_violation {
 
 pub(crate) use transition_violation;
 
+#[cfg(feature = "transition_sites")]
 pub mod clock;
+#[cfg(feature = "transition_sites")]
 pub mod ghost;
+#[cfg(feature = "transition_sites")]
 pub mod host;
+#[cfg(feature = "transition_sites")]
 pub mod live;
+#[cfg(feature = "transition_sites")]
 pub mod property;
+#[cfg(feature = "transition_sites")]
 pub mod retire;
+#[cfg(feature = "transition_sites")]
 pub mod slots;
-
-pub use ghost::Ghost;
-pub use live::{LiveChild, Removal};
 
 use waterui::reactive::Signal;
 use waterui_backend_core::Environment;

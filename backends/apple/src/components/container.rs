@@ -37,8 +37,9 @@ use waterui_core::views::AnyViews;
 use crate::contract::{NativeLeaf, Renderer};
 use crate::dispatch::Dispatcher;
 use crate::proposal;
+use crate::transition::ghost::Ghost;
+use crate::transition::live::{LiveChild, Removal};
 use crate::transition::slots::{FrozenPlacement, GhostKey, Slot, SlotSequence};
-use crate::transition::{Ghost, LiveChild, Removal};
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{HitTest, HostView};

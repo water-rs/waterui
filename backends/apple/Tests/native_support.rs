@@ -642,6 +642,23 @@ pub fn render_environment() -> Environment {
     );
     env
 }
+/// The view's current pixels through the production
+/// [`capture_rgba`](crate::capture_image::capture_rgba) path — the same
+/// capture every visual-review export drives.
+#[cfg(feature = "gpu_surface")]
+pub fn capture_view_rgba(view: &cocoa_ui::PlatformView) -> crate::capture_image::CapturedRgba {
+    let mut env = render_environment();
+    let runtime = block_on_main(30.0, waterui_graphics::gpu::GpuRuntime::new())
+        .expect("the harness provides a GPU runtime");
+    install_gpu(&mut env, runtime);
+    let scale = cocoa_ui::view::backing_scale_factor(view).max(1.0);
+    let mtm = MainThreadMarker::new().expect("captures run on the main thread");
+    block_on_main(
+        30.0,
+        crate::capture_image::capture_rgba(view, &env, scale, mtm),
+    )
+    .expect("the window capture completes")
+}
 
 /// Installs the GPU owners onto an existing environment.
 ///
@@ -661,6 +678,11 @@ pub fn install_gpu(
     env.insert(Rc::new(crate::gpu_runtime::SceneEngine::new()));
     env.insert(Rc::new(crate::gpu_runtime::FilterPipelines::new()));
     crate::presentation_time::PresentationTime::install(env);
+    crate::components::view_renderer::install_service(env);
+    // The dispatcher captures the environment at install time — re-run
+    // the install so its root env sees the GPU services just inserted
+    // (`handler.set`-driven remounts render through it).
+    crate::dispatch::install(env);
 }
 
 /// Renders `view` against [`render_environment`] through the typed

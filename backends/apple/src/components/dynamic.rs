@@ -34,7 +34,9 @@ use waterui_core::metadata::Retain;
 use crate::contract::{NativeLeaf, RenderContext, Renderer};
 use crate::dispatch::Dispatcher;
 use crate::proposal;
-use crate::transition::{Ghost, LiveChild, Removal, TransitionClaim};
+use crate::transition::TransitionClaim;
+use crate::transition::ghost::Ghost;
+use crate::transition::live::{LiveChild, Removal};
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;

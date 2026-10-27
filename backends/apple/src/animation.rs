@@ -10,7 +10,9 @@
 #[cfg(frame_progress)]
 use std::rc::Rc;
 
+#[cfg(platform_timing)]
 use cocoa_ui::core_animation::Timing;
+#[cfg(any(platform_timing, frame_progress))]
 use waterui::animation::Animation;
 #[cfg(watcher_animation)]
 use waterui::reactive::watcher::Metadata;
@@ -22,6 +24,7 @@ use waterui::reactive::watcher::Metadata;
 /// control points; `Spring` forwards stiffness and damping to a spring
 /// primitive (`UISpringTimingParameters` on iOS, `CASpringAnimation` on
 /// macOS).
+#[cfg(platform_timing)]
 pub fn timing(animation: &Animation) -> Timing {
     match *animation {
         Animation::Default => Timing::Bezier {
@@ -69,7 +72,7 @@ pub fn progress(animation: &Animation) -> Rc<dyn Fn(f64) -> f64> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, platform_timing))]
 mod tests {
     use core::time::Duration;
 

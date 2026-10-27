@@ -44,8 +44,9 @@ use waterui_core::layout::{Point, ProposalSize, Size, StretchAxis, SubView, View
 
 use crate::contract::{NativeLeaf, RenderContext, Renderer};
 use crate::proposal;
+use crate::transition::ghost::Ghost;
+use crate::transition::live::{LiveChild, Removal};
 use crate::transition::slots::{GhostKey, Slot, SlotSequence};
-use crate::transition::{Ghost, LiveChild, Removal};
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{

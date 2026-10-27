@@ -30,7 +30,8 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensi
 
 use crate::contract::{NativeLeaf, RenderContext};
 use crate::dispatch::Dispatcher;
-use crate::transition::{Ghost, LiveChild, Removal};
+use crate::transition::ghost::Ghost;
+use crate::transition::live::{LiveChild, Removal};
 
 /// Installs the stack's claim on the dispatcher.
 pub fn install(dispatcher: &mut Dispatcher) {
@@ -208,7 +209,7 @@ mod platform {
     use waterui_core::layout::ProposalSize;
 
     use crate::contract::{KeepAlive, NativeLeaf, RenderContext, Renderer};
-    use crate::transition::LiveChild;
+    use crate::transition::live::LiveChild;
 
     use super::super::bar::{BarItem, BarItemIcon, BarState, bar_item_frame, search_prompt};
     use super::{Fill, Ghosts, Mount, Sink, is_claimed, page_transition, retire_page};
@@ -863,7 +864,7 @@ mod platform {
     use waterui_core::layout::ProposalSize;
 
     use crate::contract::{KeepAlive, NativeLeaf, RenderContext, Renderer};
-    use crate::transition::LiveChild;
+    use crate::transition::live::LiveChild;
 
     use super::super::bar::{BarItem, BarItemIcon, BarState, search_prompt};
     use super::{Fill, Ghosts, Mount, Sink, is_claimed, page_transition, retire_page};

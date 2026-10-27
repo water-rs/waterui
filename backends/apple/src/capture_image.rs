@@ -37,6 +37,7 @@ type PlatformImage = cocoa_ui::objc2_ui_kit::UIImage;
 
 /// One owned RGBA8 premultiplied raster — the single readback the API
 /// contract allows.
+#[derive(Debug)]
 pub struct CapturedRgba {
     /// Row-major RGBA8 premultiplied texels, `width * height * 4` bytes.
     pub pixels: Vec<u8>,

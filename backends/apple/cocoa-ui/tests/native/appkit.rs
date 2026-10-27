@@ -267,10 +267,14 @@ fn an_armed_presenter_constructs_pauses_and_invalidates_cleanly() {
     window.native().orderFrontRegardless();
 
     let updates = Rc::new(Cell::new(0u32));
-    let presenter = MetalPresenter::new(layer, {
-        let updates = Rc::clone(&updates);
-        Rc::new(move |_| updates.set(updates.get() + 1))
-    });
+    let presenter = MetalPresenter::new(
+        layer,
+        {
+            let updates = Rc::clone(&updates);
+            Rc::new(move |_| updates.set(updates.get() + 1))
+        },
+        false,
+    );
 
     // The presenter starts paused; arming schedules link updates on the
     // main run loop. Delivery itself cannot be asserted on this runner —
@@ -321,10 +325,14 @@ fn a_presenter_on_a_screenless_window_delivers_nothing() {
     window.native().setContentView(Some(&view));
 
     let updates = Rc::new(Cell::new(0u32));
-    let presenter = MetalPresenter::new(layer, {
-        let updates = Rc::clone(&updates);
-        Rc::new(move |_| updates.set(updates.get() + 1))
-    });
+    let presenter = MetalPresenter::new(
+        layer,
+        {
+            let updates = Rc::clone(&updates);
+            Rc::new(move |_| updates.set(updates.get() + 1))
+        },
+        false,
+    );
 
     presenter.set_paused(false);
     crate::harness::pump_main_until(0.5, || false);
