@@ -11,7 +11,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
-use alloc::rc::Rc;
+use alloc::rc::{Rc, Weak};
 #[cfg(target_os = "macos")]
 use alloc::string::ToString;
 use alloc::vec::Vec;
@@ -42,8 +42,11 @@ use waterui_core::Computed;
 use waterui_core::interaction::Disabled;
 use waterui_core::layout::{Point, ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 
-use crate::contract::{Mounted, NativeLeaf, RenderContext, Renderer};
+use crate::contract::{NativeLeaf, RenderContext, Renderer};
 use crate::proposal;
+use crate::transition::ghost::Ghost;
+use crate::transition::live::{LiveChild, Removal};
+use crate::transition::slots::{GhostKey, Slot, SlotSequence};
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{
@@ -245,34 +248,6 @@ fn positions_snapshot(snapshot: &AnyViewsSnapshot<ListItem>) -> HashMap<ItemId, 
         .collect()
 }
 
-#[cfg(target_os = "ios")]
-/// `indexPath` lookup: the flat item index `section`/`row` covers, or
-/// `None` when the index path lands outside the groups.
-fn flat_index(groups: &[SectionGroup], section: usize, row: usize) -> Option<usize> {
-    let mut flat = 0;
-    for (index, group) in groups.iter().enumerate() {
-        if index == section {
-            return (row < group.count).then_some(flat + row);
-        }
-        flat += group.count;
-    }
-    None
-}
-
-#[cfg(target_os = "ios")]
-/// The `(section, row)` a flat item index sits at, or `None` when `flat`
-/// is past the last item.
-fn index_path_for_flat(groups: &[SectionGroup], flat: usize) -> Option<(usize, usize)> {
-    let mut cursor = flat;
-    for (section, group) in groups.iter().enumerate() {
-        if cursor < group.count {
-            return Some((section, cursor));
-        }
-        cursor -= group.count;
-    }
-    None
-}
-
 #[cfg(all(target_os = "ios", feature = "navigation"))]
 /// `containsNavigationLink`: walk the primary-content chain looking for a
 /// navigation-link wrapper — a matched node gives the row a disclosure
@@ -387,28 +362,143 @@ enum FlatEntry {
     Header(usize),
     /// The item at flat index `index`.
     Row(usize),
+    /// A removal ghost's display slot — the row stays while the
+    /// transition runs; `Shared::ghosts` owns the content.
+    Ghost(GhostKey),
     /// A section footer for `groups[section]`.
     Footer(usize),
 }
 
 /// `rebuildFlatLayout`: the section header → rows → section footer
-/// sequence `flatLayout` holds.
+/// sequence `flatLayout` holds. The display order drives the row band:
+/// ghosts land in their anchor's section, head ghosts in the first.
 #[cfg(target_os = "macos")]
 fn rebuild_flat_layout(state: &mut Shared) {
     state.flat_layout.clear();
-    let mut flat = 0;
-    for (section, group) in state.groups.iter().enumerate() {
-        if group.label.is_some() {
+    let rows = state.display_rows();
+    let sections = state.groups.len().max(usize::from(!rows.is_empty()));
+    for section in 0..sections {
+        if let Some(group) = state.groups.get(section)
+            && group.label.is_some()
+        {
             state.flat_layout.push(FlatEntry::Header(section));
         }
-        for index in 0..group.count {
-            state.flat_layout.push(FlatEntry::Row(flat + index));
+        for (member_section, member) in &rows {
+            if *member_section == section {
+                state.flat_layout.push(match member {
+                    DisplayRow::Live(flat) => FlatEntry::Row(*flat),
+                    DisplayRow::Ghost(key) => FlatEntry::Ghost(*key),
+                });
+            }
         }
-        if group.footer.is_some() {
+        if let Some(group) = state.groups.get(section)
+            && group.footer.is_some()
+        {
             state.flat_layout.push(FlatEntry::Footer(section));
         }
-        flat += group.count;
     }
+}
+
+/// What one display row is: a live row's flat item index, or a removal
+/// ghost's key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DisplayRow {
+    /// The live item at flat index `flat`.
+    Live(usize),
+    /// The removal ghost `key` holds.
+    Ghost(GhostKey),
+}
+
+/// The batch edits over the display order plus what the table calls
+/// need on top: the re-materialized rows and the inserts that play
+/// their own transition with no row animation.
+struct DisplayEdits {
+    edits: RowEdits,
+    /// `(old row, new row)` display positions to re-materialize.
+    reloads: Vec<(usize, usize)>,
+    /// Display positions whose insertion plays its own transition.
+    claimed: HashSet<usize>,
+    /// The keyed display orders — the move replay `AppKit` needs.
+    #[cfg(target_os = "macos")]
+    old_keys: Vec<ItemId>,
+    /// The keyed display orders — the move replay `AppKit` needs.
+    #[cfg(target_os = "macos")]
+    new_keys: Vec<ItemId>,
+}
+
+/// A row inserted by the pending change, rendered at diff time:
+/// `configure_cell`/`viewFor` mounts it through `LiveChild::mount_inserted`.
+/// `claimed` records whether the leaf declared a transition so the batch
+/// inserts it with no row animation.
+struct PendingRow {
+    insets: Option<EdgeInsets>,
+    deletable: Computed<bool>,
+    leaf: NativeLeaf,
+    claimed: bool,
+}
+
+/// A ghost row's cell payload — a marker only: `Shared::ghosts` owns the
+/// `Ghost`, so reusing a cell that showed a ghost drops nothing of the
+/// transition.
+struct GhostPayload(#[allow(dead_code)] GhostKey);
+
+impl fmt::Debug for GhostPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GhostPayload").finish_non_exhaustive()
+    }
+}
+
+/// The row height a ghost freezes at — `measured_heights` when the row's
+/// last measurement stands, else the retired host's grandparent bounds:
+/// the contract the table last applied, read off the cell (the host's
+/// superview is the cell's content view / `RowContainer`).
+fn frozen_row_height(shared: &Shared, id: ItemId, host: &cocoa_ui::PlatformView) -> f64 {
+    shared
+        .measured_heights
+        .get(&id)
+        .copied()
+        .unwrap_or_else(|| {
+            view::superview(host)
+                .and_then(|parent| view::superview(&parent))
+                .map_or(shared.resolved_min_height, |cell| {
+                    view::bounds(&cell).size.height
+                })
+        })
+}
+
+/// The insets `view`'s frame keeps inside its superview — how a ghost
+/// cell reproduces the departed row's content pinning.
+fn pinned_insets(view: &cocoa_ui::PlatformView) -> KitInsets {
+    let Some(parent) = view::superview(view) else {
+        return KitInsets {
+            top: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+            right: 0.0,
+        };
+    };
+    let frame = view::frame(view);
+    let bounds = view::bounds(&parent);
+    KitInsets {
+        top: frame.origin.y,
+        left: frame.origin.x,
+        bottom: bounds.size.height - frame.origin.y - frame.size.height,
+        right: bounds.size.width - frame.origin.x - frame.size.width,
+    }
+}
+
+/// Whether `id`'s configured cell still holds a claimed `LiveChild` —
+/// the gate a departing row must pass to keep a ghost slot.
+fn claimed_and_configured(shared: &Shared, id: ItemId) -> bool {
+    shared
+        .live_rows
+        .get(&id)
+        .and_then(Weak::upgrade)
+        .is_some_and(|slot| {
+            slot.borrow()
+                .as_ref()
+                .is_some_and(|child| child.claim().is_some())
+        })
 }
 
 /// The list's live state, shared between the source, watchers, and the
@@ -433,6 +523,25 @@ struct Shared {
     renderer: Renderer,
     /// The collection's current ids, in order.
     item_ids: Vec<ItemId>,
+    /// What the table displays: the live ids in `item_ids` order
+    /// interleaved with removal ghosts. Every data-source answer reads
+    /// this; `item_ids` stays the semantic order (§5.4).
+    display: SlotSequence<ItemId>,
+    /// Each configured cell's shared child slot, by item id — the `Weak`
+    /// dies when the cell's payload drops, so an entry that no longer
+    /// upgrades names a row with no live cell.
+    live_rows: HashMap<ItemId, Weak<RefCell<Option<LiveChild>>>>,
+    /// Removal ghosts the table still shows, keyed by display slot: the
+    /// ghost run plus the row's frozen height.
+    ghosts: HashMap<GhostKey, (Ghost, f64)>,
+    /// Each ghost's departed id — the display diff keys a ghost by it, so
+    /// a ghosted row stays the same table row (no delete, no reload).
+    ghost_ids: HashMap<GhostKey, ItemId>,
+    /// Rows inserted by the pending change, rendered at diff time:
+    /// `configure_cell`/`viewFor` mounts them through
+    /// `LiveChild::mount_inserted`; an entry left at the batch's end
+    /// belonged to an off-screen row and drops without playing.
+    pending_inserted: HashMap<ItemId, PendingRow>,
     /// The section groups covering `item_ids`, in order.
     groups: Vec<SectionGroup>,
     /// `AppKit`: `flatLayout` — the table's flat entry list.
@@ -473,6 +582,23 @@ impl fmt::Debug for Shared {
 }
 
 impl Shared {
+    /// Every live row's index path in display order (`UIKit`).
+    #[cfg(target_os = "ios")]
+    fn live_index_paths(&self) -> Vec<IndexPath> {
+        let mut counts: Vec<usize> = Vec::new();
+        self.display_rows()
+            .into_iter()
+            .filter_map(|(section, member)| {
+                while counts.len() <= section {
+                    counts.push(0);
+                }
+                let row = counts[section];
+                counts[section] += 1;
+                matches!(member, DisplayRow::Live(_)).then_some(IndexPath { section, row })
+            })
+            .collect()
+    }
+
     /// `updateVirtualIds` + `reloadSectionGroups`: take `snapshot` as
     /// current — ids, positions, groups and the height cache all follow
     /// it.
@@ -545,6 +671,306 @@ impl Shared {
         (insets, deletable, leaf)
     }
 
+    /// The table's display rows: `(section, member)` in display order. A
+    /// ghost lands in its anchor's section — the section of the live row
+    /// it follows — and head ghosts land in the first section.
+    fn display_rows(&self) -> Vec<(usize, DisplayRow)> {
+        let mut rows = Vec::new();
+        let mut flat = 0;
+        let mut section = 0;
+        let mut remaining = self.groups.first().map_or(0, |group| group.count);
+        let mut anchor = 0;
+        for slot in self.display.iter() {
+            match slot {
+                Slot::Live(_) => {
+                    while remaining == 0 {
+                        section += 1;
+                        remaining = self.groups[section].count;
+                    }
+                    remaining -= 1;
+                    anchor = section;
+                    rows.push((section, DisplayRow::Live(flat)));
+                    flat += 1;
+                }
+                Slot::Ghost(key) => rows.push((anchor, DisplayRow::Ghost(key))),
+            }
+        }
+        rows
+    }
+
+    /// The display member `section`/`row` names (`UIKit`).
+    #[cfg(target_os = "ios")]
+    fn display_at(&self, section: usize, row: usize) -> Option<DisplayRow> {
+        self.display_rows()
+            .into_iter()
+            .filter(|(member_section, _)| *member_section == section)
+            .nth(row)
+            .map(|(_, member)| member)
+    }
+
+    /// The `(section, row)` `wanted` displays at — `row` counting within
+    /// `section`'s displayed members (`UIKit`).
+    #[cfg(target_os = "ios")]
+    fn display_index_of(&self, wanted: DisplayRow) -> Option<(usize, usize)> {
+        let mut counts: Vec<usize> = Vec::new();
+        for (section, member) in self.display_rows() {
+            while counts.len() <= section {
+                counts.push(0);
+            }
+            let row = counts[section];
+            counts[section] += 1;
+            if member == wanted {
+                return Some((section, row));
+            }
+        }
+        None
+    }
+
+    /// Each section's displayed member count: its live rows plus the
+    /// ghosts anchored into it. With no live rows at all the ghosts
+    /// still form one section (`UIKit`).
+    #[cfg(target_os = "ios")]
+    fn display_section_counts(&self) -> Vec<usize> {
+        let mut counts: Vec<usize> = self.groups.iter().map(|group| group.count).collect();
+        for (section, member) in self.display_rows() {
+            if matches!(member, DisplayRow::Ghost(_)) {
+                if counts.len() <= section {
+                    counts.resize(section + 1, 0);
+                }
+                counts[section] += 1;
+            }
+        }
+        counts
+    }
+
+    /// Reconciles `display` against `new_ids`: departed rows that pass
+    /// the configured-and-claimed gate keep their slot and retire into
+    /// ghosts now; the rest release. Returns the pre-edit display order
+    /// and the inserted ids — `apply_snapshot` has not run yet, so
+    /// `item_ids` still names the old membership.
+    fn reconcile_display(
+        &mut self,
+        new_ids: &[ItemId],
+        state: &Rc<RefCell<Self>>,
+        table: &TableView,
+    ) -> (Vec<Slot<ItemId>>, Vec<ItemId>) {
+        // The display order before `reconcile` — the batch diff indexes
+        // the table's current rows with it.
+        let old_display: Vec<Slot<ItemId>> = self.display.iter().collect();
+        // A departed row keeps a ghost slot only while its configured
+        // cell still holds a claimed `LiveChild` — an unmounted or
+        // unclaimed row releases normally.
+        let ghostable: HashSet<ItemId> = self
+            .item_ids
+            .iter()
+            .copied()
+            .filter(|id| claimed_and_configured(self, *id))
+            .collect();
+        let reconciled = self
+            .display
+            .reconcile(new_ids, |id| ghostable.contains(&id));
+        // Ghost heights freeze at the row's last measurement, read before
+        // `apply_snapshot` retains the cache down to the surviving ids.
+        let frozen: HashMap<ItemId, f64> = reconciled
+            .departed
+            .iter()
+            .filter(|(_, key)| key.is_some())
+            .filter_map(|(id, _)| {
+                self.measured_heights
+                    .get(id)
+                    .copied()
+                    .map(|height| (*id, height))
+            })
+            .collect();
+        // Retire each departed row that kept a slot; rejects return their
+        // keys so the display diff names only real table edits.
+        for (id, key) in reconciled.departed {
+            if let Some(key) = key {
+                self.retire_row(id, key, state, table, frozen.get(&id).copied());
+            } else {
+                self.pending_inserted.remove(&id);
+                if let Some(slot) = self.live_rows.remove(&id).and_then(|weak| weak.upgrade()) {
+                    drop(slot.borrow_mut().take());
+                }
+            }
+        }
+        (old_display, reconciled.inserted)
+    }
+
+    /// Renders each inserted row into `pending_inserted` — a claimed row
+    /// mounts through `LiveChild::mount_inserted` when its cell
+    /// configures, and the batch inserts it with no row animation.
+    fn render_inserted(&mut self, inserted: &[ItemId]) {
+        for &id in inserted {
+            if let Some(flat) = self.flat_of_id(id) {
+                let (insets, deletable, mut leaf) = self.render_row(flat);
+                let claimed = leaf.take_transition().is_some_and(|claim| {
+                    leaf.set_transition(claim);
+                    !leaf.layout().is_empty()
+                });
+                self.pending_inserted.insert(
+                    id,
+                    PendingRow {
+                        insets,
+                        deletable,
+                        leaf,
+                        claimed,
+                    },
+                );
+            }
+        }
+    }
+
+    /// The batch edits over the display order — `None` for a
+    /// multi-section or duplicate-key shape the batch path cannot name.
+    /// The diff keys a ghost as its departed id: a ghosted row is the
+    /// same table row, so it reports neither a delete nor a reload.
+    fn display_edits(
+        &self,
+        old_display: &[Slot<ItemId>],
+        dirty: &HashSet<ItemId>,
+        old_ids: &HashSet<ItemId>,
+    ) -> Option<DisplayEdits> {
+        if !is_single_plain_section(&self.groups) {
+            return None;
+        }
+        let new_display: Vec<Slot<ItemId>> = self.display.iter().collect();
+        let key_of = |display: &[Slot<ItemId>]| -> Vec<ItemId> {
+            display
+                .iter()
+                .map(|slot| match slot {
+                    Slot::Live(id) => *id,
+                    Slot::Ghost(key) => self.ghost_ids[key],
+                })
+                .collect()
+        };
+        #[cfg(target_os = "macos")]
+        let old_keys = key_of(old_display);
+        #[cfg(target_os = "macos")]
+        let new_keys = key_of(&new_display);
+        let edits = single_section_row_diff(&key_of(old_display), &key_of(&new_display))?;
+        // Display positions of each live id, before and after — the row
+        // indexes the table calls speak in.
+        let live_pos = |display: &[Slot<ItemId>]| -> HashMap<ItemId, usize> {
+            display
+                .iter()
+                .enumerate()
+                .filter_map(|(index, slot)| match slot {
+                    Slot::Live(id) => Some((*id, index)),
+                    Slot::Ghost(_) => None,
+                })
+                .collect()
+        };
+        let old_pos = live_pos(old_display);
+        let new_pos = live_pos(&new_display);
+        // Surviving ids whose content was updated keep their mounted leaf
+        // unless re-materialized; the diff's inserts only name new ids,
+        // which re-materialize through their own path.
+        let reloads = self
+            .item_ids
+            .iter()
+            .filter(|id| dirty.contains(id) && old_ids.contains(id))
+            .map(|id| (old_pos[id], new_pos[id]))
+            .collect();
+        // A display insert names a live row — ghosts are keyed as their
+        // departed id — so only `Slot::Live` positions can be claimed.
+        let claimed = edits
+            .inserts
+            .iter()
+            .filter(|row| match new_display[**row] {
+                Slot::Live(id) => self
+                    .pending_inserted
+                    .get(&id)
+                    .is_some_and(|pending| pending.claimed),
+                Slot::Ghost(_) => false,
+            })
+            .copied()
+            .collect();
+        Some(DisplayEdits {
+            edits,
+            reloads,
+            claimed,
+            #[cfg(target_os = "macos")]
+            old_keys,
+            #[cfg(target_os = "macos")]
+            new_keys,
+        })
+    }
+
+    /// Retires the departed row `id` into its reserved ghost `key`: the
+    /// configured cell's `LiveChild` comes out of the shared slot and
+    /// `LiveChild::remove` retires it — `None` back means the table's own
+    /// row delete carries the removal, so the reserved slot is released.
+    fn retire_row(
+        &mut self,
+        id: ItemId,
+        key: GhostKey,
+        state: &Rc<RefCell<Self>>,
+        table: &TableView,
+        frozen: Option<f64>,
+    ) {
+        self.pending_inserted.remove(&id);
+        let slot = self.live_rows.remove(&id).and_then(|weak| weak.upgrade());
+        let child = slot.and_then(|slot| slot.borrow_mut().take());
+        let Some(child) = child else {
+            // `wants_ghost` required a configured, claimed child — an
+            // absent one only means the cell's payload already dropped.
+            self.display.remove_ghost(key);
+            return;
+        };
+        let weak_state = Rc::downgrade(state);
+        let weak_table = cocoa_ui::objc2::rc::Weak::new(table);
+        let ctx = self.renderer.context();
+        let removal = Removal {
+            env: ctx.env(),
+            // The table sizes the row: a list ghost freezes at its
+            // measured height rather than a layout `GhostSlot`.
+            slot: None,
+            on_complete: Box::new(move || {
+                cocoa_ui::main_queue::enqueue_local(
+                    cocoa_ui::MainThreadMarker::new()
+                        .expect("ghost completion runs on the main thread"),
+                    move |_mtm| {
+                        let (Some(state), Some(table)) = (weak_state.upgrade(), weak_table.load())
+                        else {
+                            return;
+                        };
+                        let index = {
+                            let mut shared = state.borrow_mut();
+                            #[cfg(target_os = "ios")]
+                            let index = shared
+                                .display_index_of(DisplayRow::Ghost(key))
+                                .map(|(section, row)| IndexPath { section, row });
+                            #[cfg(target_os = "macos")]
+                            let index = shared
+                                .flat_layout
+                                .iter()
+                                .position(|entry| *entry == FlatEntry::Ghost(key));
+                            let Some(index) = index else {
+                                return;
+                            };
+                            shared.display.remove_ghost(key);
+                            shared.ghost_ids.remove(&key);
+                            shared.ghosts.remove(&key);
+                            index
+                        };
+                        // The ghost already finished visually — the row
+                        // deletes with no animation so only siblings
+                        // close the gap.
+                        table.apply_row_updates(&[index], &[], &[], &[], false);
+                    },
+                );
+            }),
+        };
+        if let Some(ghost) = child.remove(removal) {
+            self.ghost_ids.insert(key, id);
+            let height = frozen.unwrap_or_else(|| frozen_row_height(self, id, ghost.host()));
+            self.ghosts.insert(key, (ghost, height));
+        } else {
+            self.display.remove_ghost(key);
+        }
+    }
+
     /// The insets the item asks for, or the theme's.
     #[cfg(target_os = "macos")]
     fn insets_for(&self, insets: Option<&EdgeInsets>) -> KitInsets {
@@ -569,12 +995,14 @@ impl Shared {
     }
 }
 
-/// What a mounted row's payload keeps: the mounted leaf plus the guards
-/// its per-item signals return.
+/// What a mounted live row's payload keeps: the shared slot the row's
+/// `LiveChild` occupies — a departure takes it into a ghost — plus the
+/// guards its per-item signals return.
 struct RowPayload {
-    /// The mounted content leaf — kept alive by the payload slot.
+    /// The row's `LiveChild`, shared with `Shared::live_rows` — a
+    /// ghosted departure takes it out of here.
     #[allow(dead_code)]
-    mounted: Rc<Mounted>,
+    row: Rc<RefCell<Option<LiveChild>>>,
     /// Guards for the row's per-item watchers — dropped with the cell.
     #[allow(dead_code)]
     guards: Vec<BoxWatcherGuard>,
@@ -714,62 +1142,54 @@ fn apply_contents_change(
             schedule_contents_flush(&state_inner, &pending_retry, &table_inner);
             return;
         };
+        let new_ids = ids_snapshot(&snapshot);
+        let (old_display, inserted) =
+            borrowed.reconcile_display(&new_ids, &state_inner, &table_inner);
         let old_ids = core::mem::take(&mut borrowed.item_ids);
         borrowed.apply_snapshot(snapshot);
+        let new_set: HashSet<ItemId> = borrowed.item_ids.iter().copied().collect();
+        borrowed.live_rows.retain(|id, _| new_set.contains(id));
         #[cfg(target_os = "macos")]
         rebuild_flat_layout(&mut borrowed);
+        borrowed.render_inserted(&inserted);
         let old_set: HashSet<ItemId> = old_ids.iter().copied().collect();
         // A dirty surviving id re-measures whatever the section shape —
         // evict before choosing the batched or whole-table path.
-        for id in &dirty {
-            if old_set.contains(id) {
-                borrowed.measured_heights.remove(id);
-            }
+        for id in dirty.iter().filter(|id| old_set.contains(id)) {
+            borrowed.measured_heights.remove(id);
         }
-        let single_plain = is_single_plain_section(&borrowed.groups);
-        let diff = single_plain
-            .then(|| single_section_row_diff(&old_ids, &borrowed.item_ids))
-            .flatten();
-        // Surviving ids whose content was updated keep their mounted leaf
-        // unless re-materialized; the diff's inserts only name new ids,
-        // which re-materialize through their own path. The delete index is
-        // the id's previous (old-snapshot) position.
-        let reloads: Vec<(usize, usize)> = if single_plain {
-            borrowed
-                .item_ids
-                .iter()
-                .enumerate()
-                .filter(|(_, id)| dirty.contains(id) && old_set.contains(id))
-                .map(|(index, id)| {
-                    (
-                        old_ids
-                            .iter()
-                            .position(|old| old == id)
-                            .expect("a surviving id has a previous position"),
-                        index,
-                    )
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        #[cfg(target_os = "macos")]
-        let new_ids = borrowed.item_ids.clone();
+        let edits = borrowed.display_edits(&old_display, &dirty, &old_set);
         drop(borrowed);
         if table_inner.in_window()
-            && let Some(edits) = diff
+            && let Some(edits) = edits
         {
             #[cfg(target_os = "ios")]
             {
+                let DisplayEdits {
+                    edits,
+                    reloads,
+                    claimed,
+                    ..
+                } = edits;
+                let claimed_row = |row: usize| claimed.contains(&row);
                 let row = |row| IndexPath { section: 0, row };
                 let delete_paths: Vec<IndexPath> = edits.deletes.into_iter().map(row).collect();
-                let insert_paths: Vec<IndexPath> = edits.inserts.into_iter().map(row).collect();
+                let (claimed, plain): (Vec<usize>, Vec<usize>) =
+                    edits.inserts.into_iter().partition(|row| claimed_row(*row));
+                let insert_paths: Vec<IndexPath> = plain.into_iter().map(row).collect();
+                let claimed_paths: Vec<IndexPath> = claimed.into_iter().map(row).collect();
                 let move_paths: Vec<(IndexPath, IndexPath)> = edits
                     .moves
                     .into_iter()
                     .map(|(from, to)| (row(from), row(to)))
                     .collect();
-                table_inner.apply_row_updates(&delete_paths, &insert_paths, &move_paths, true);
+                table_inner.apply_row_updates(
+                    &delete_paths,
+                    &insert_paths,
+                    &claimed_paths,
+                    &move_paths,
+                    true,
+                );
                 if !reloads.is_empty() {
                     let reload_paths: Vec<IndexPath> = reloads
                         .into_iter()
@@ -780,21 +1200,38 @@ fn apply_contents_change(
             }
             #[cfg(target_os = "macos")]
             {
+                let DisplayEdits {
+                    edits,
+                    reloads,
+                    claimed,
+                    old_keys,
+                    new_keys,
+                } = edits;
+                let claimed_row = |row: usize| claimed.contains(&row);
                 // AppKit re-materializes a row as delete+insert: the
                 // updated rows join the same update block so `viewFor`
                 // rebuilds them, and so take no part in the moves.
                 let mut deletes = edits.deletes;
-                let mut inserts = edits.inserts;
+                let (claimed, mut plain): (Vec<usize>, Vec<usize>) =
+                    edits.inserts.into_iter().partition(|row| claimed_row(*row));
                 deletes.extend(reloads.iter().map(|&(old_row, _)| old_row));
-                inserts.extend(reloads.iter().map(|&(_, new_row)| new_row));
-                let removed: HashSet<ItemId> = deletes.iter().map(|&row| old_ids[row]).collect();
-                let inserted: HashSet<ItemId> = inserts.iter().map(|&row| new_ids[row]).collect();
-                let moves = sequential_moves(&old_ids, &new_ids, &removed, &inserted);
-                table_inner.apply_row_updates(&deletes, &moves, &inserts, true);
+                plain.extend(reloads.iter().map(|&(_, new_row)| new_row));
+                let removed: HashSet<ItemId> = deletes.iter().map(|&row| old_keys[row]).collect();
+                let inserted: HashSet<ItemId> = plain
+                    .iter()
+                    .chain(claimed.iter())
+                    .map(|&row| new_keys[row])
+                    .collect();
+                let moves = sequential_moves(&old_keys, &new_keys, &removed, &inserted);
+                table_inner.apply_row_updates(&deletes, &moves, &plain, &claimed, true);
             }
         } else {
             table_inner.reload_data();
         }
+        // Entries no cell consumed belonged to rows inserted off screen:
+        // they drop without playing, the way an unmaterialized lazy row
+        // plays nothing.
+        state_inner.borrow_mut().pending_inserted.clear();
         apply_binding_selection(&state_inner, &table_inner);
     });
 }
@@ -813,7 +1250,10 @@ fn apply_binding_selection(state: &Rc<RefCell<Shared>>, table: &TableView) {
         let current: HashSet<usize> = table
             .selected_index_paths()
             .iter()
-            .filter_map(|ip| flat_index(&borrowed.groups, ip.section, ip.row))
+            .filter_map(|ip| match borrowed.display_at(ip.section, ip.row) {
+                Some(DisplayRow::Live(flat)) => Some(flat),
+                _ => None,
+            })
             .collect();
         let wanted: HashSet<usize> = selected
             .iter()
@@ -821,14 +1261,14 @@ fn apply_binding_selection(state: &Rc<RefCell<Shared>>, table: &TableView) {
             .collect();
         for flat in &current {
             if !wanted.contains(flat)
-                && let Some((section, row)) = index_path_for_flat(&borrowed.groups, *flat)
+                && let Some((section, row)) = borrowed.display_index_of(DisplayRow::Live(*flat))
             {
                 table.deselect_row(IndexPath { section, row }, false);
             }
         }
         for flat in &wanted {
             if !current.contains(flat)
-                && let Some((section, row)) = index_path_for_flat(&borrowed.groups, *flat)
+                && let Some((section, row)) = borrowed.display_index_of(DisplayRow::Live(*flat))
             {
                 table.select_row(IndexPath { section, row }, false);
             }
@@ -872,7 +1312,7 @@ fn watch_deletable(
         };
         let animated = metadata_animated(ctx.metadata());
         #[cfg(target_os = "ios")]
-        if let Some((section, row)) = index_path_for_flat(&state.borrow().groups, flat) {
+        if let Some((section, row)) = state.borrow().display_index_of(DisplayRow::Live(flat)) {
             table.reload_rows(&[IndexPath { section, row }], animated);
         }
         #[cfg(target_os = "macos")]
@@ -1002,7 +1442,7 @@ mod platform_impl {
 
     /// The same resolved geometry drives the content constraints and row fitting.
     struct RowLayout {
-        mounted: alloc::rc::Weak<Mounted>,
+        mounted: alloc::rc::Weak<RefCell<Option<LiveChild>>>,
         explicit_insets: Option<KitInsets>,
         applied_insets: Cell<KitInsets>,
         height: Retained<NSLayoutConstraint>,
@@ -1019,16 +1459,22 @@ mod platform_impl {
             reason = "native points are f64; proposals are f32"
         )]
         fn update(&self, cell: &TableCell) {
-            let Some(mounted) = self.mounted.upgrade() else {
+            let Some(slot) = self.mounted.upgrade() else {
+                return;
+            };
+            let slot = slot.borrow();
+            let Some(child) = slot.as_ref() else {
+                // The row's `LiveChild` left for a ghost — the retired
+                // host stays pinned; nothing re-measures it.
                 return;
             };
             let insets = self.explicit_insets.unwrap_or_else(|| native_insets(cell));
             if self.applied_insets.replace(insets) != insets {
-                cell.configure(mounted.view(), insets, self.disclosure);
+                cell.configure(child.view(), insets, self.disclosure);
             }
             let width = cell.contentView().bounds().size.width - insets.left - insets.right;
             let proposal = ProposalSize::new((width > 0.0).then_some(width as f32), None);
-            let measured = mounted.layout().measure(proposal).size;
+            let measured = child.layout().measure(proposal).size;
             let contract = row_height(f64::from(measured.height), insets, self.minimum);
             let height = contract - insets.top - insets.bottom;
             if self.height.constant().to_bits() != height.to_bits() {
@@ -1047,10 +1493,10 @@ mod platform_impl {
             if stale && let Some(table) = self.table.load() {
                 cocoa_ui::main_queue::enqueue_local(
                     cocoa_ui::MainThreadMarker::new().expect("row updates run on the main thread"),
-                    move |_mtm| table.apply_row_updates(&[], &[], &[], false),
+                    move |_mtm| table.apply_row_updates(&[], &[], &[], &[], false),
                 );
             }
-            proposal::deliver(mounted.view(), proposal);
+            proposal::deliver(child.view(), proposal);
             update_separator_insets(cell);
         }
     }
@@ -1067,10 +1513,12 @@ mod platform_impl {
             Self { state }
         }
 
-        /// `index`'s flat item index.
-        fn flat(&self, index: IndexPath) -> usize {
-            flat_index(&self.state.borrow().groups, index.section, index.row)
-                .expect("index path lands inside the section groups")
+        /// `index`'s display member — a live flat index or a ghost key.
+        fn slot(&self, index: IndexPath) -> DisplayRow {
+            self.state
+                .borrow()
+                .display_at(index.section, index.row)
+                .expect("index path lands inside the display rows")
         }
     }
 
@@ -1082,10 +1530,14 @@ mod platform_impl {
             table
                 .selected_index_paths()
                 .iter()
-                .filter_map(|ip| flat_index(&borrowed.groups, ip.section, ip.row))
+                .filter_map(|ip| match borrowed.display_at(ip.section, ip.row) {
+                    Some(DisplayRow::Live(flat)) => Some(flat),
+                    _ => None,
+                })
                 .collect()
         };
-        let Some(flat) = flat_index(&state.borrow().groups, index.section, index.row) else {
+        let Some(DisplayRow::Live(flat)) = state.borrow().display_at(index.section, index.row)
+        else {
             return;
         };
         // A `.disabled` row is inert — accessibility activation must not
@@ -1105,26 +1557,52 @@ mod platform_impl {
     /// flats into `Shared::write_selection`.
     fn write_from_table(state: &Rc<RefCell<Shared>>, table: &TableView) {
         let borrowed = state.borrow();
-        borrowed.write_selection(
-            table
-                .selected_index_paths()
-                .iter()
-                .filter_map(|ip| flat_index(&borrowed.groups, ip.section, ip.row)),
-        );
+        borrowed.write_selection(table.selected_index_paths().iter().filter_map(|ip| {
+            match borrowed.display_at(ip.section, ip.row) {
+                Some(DisplayRow::Live(flat)) => Some(flat),
+                _ => None,
+            }
+        }));
     }
 
     impl TableSource for Source {
         fn sections(&self, _table: &TableView) -> usize {
-            self.state.borrow().groups.len()
+            self.state.borrow().display_section_counts().len()
         }
 
         fn rows_in_section(&self, _table: &TableView, section: usize) -> usize {
-            self.state.borrow().groups[section].count
+            self.state.borrow().display_section_counts()[section]
         }
 
         fn configure_cell(&self, table: &TableView, cell: &TableCell, index: IndexPath) {
-            let flat = self.flat(index);
-            let (item_insets, deletable, leaf) = self.state.borrow().render_row(flat);
+            let DisplayRow::Live(flat) = self.slot(index) else {
+                let DisplayRow::Ghost(key) = self.slot(index) else {
+                    return;
+                };
+                {
+                    let state = self.state.borrow();
+                    if let Some((ghost, _)) = state.ghosts.get(&key) {
+                        let insets = pinned_insets(ghost.host());
+                        cell.configure(ghost.host(), insets, false);
+                    }
+                }
+                cell.set_layout_handler(|_| {});
+                cell.set_activate_handler(|_| {});
+                cell.set_payload(Box::new(GhostPayload(key)));
+                return;
+            };
+            let (item_insets, deletable, leaf, insertion) = {
+                let mut state = self.state.borrow_mut();
+                let id = state.item_ids[flat];
+                if let Some(pending) = state.pending_inserted.remove(&id) {
+                    (pending.insets, pending.deletable, pending.leaf, true)
+                } else {
+                    drop(state);
+                    let (insets, deletable, leaf) = self.state.borrow().render_row(flat);
+                    (insets, deletable, leaf, false)
+                }
+            };
+            let id = self.state.borrow().item_ids[flat];
             let explicit_insets = item_insets.as_ref().map(kit_insets);
             let insets = explicit_insets.unwrap_or_else(|| native_insets(cell));
             // Without the `navigation` port nothing tags the wrapper, so no
@@ -1133,20 +1611,29 @@ mod platform_impl {
             let shows_disclosure = contains_navigation_link(leaf.view());
             #[cfg(not(feature = "navigation"))]
             let shows_disclosure = false;
-            let mounted = Rc::new(leaf.mount(cell));
-            cell.configure(mounted.view(), insets, shows_disclosure);
-            let height = mounted.view().heightAnchor().constraintEqualToConstant(0.0);
+            let child = if insertion {
+                LiveChild::mount_inserted(leaf, cell, None, &self.state.borrow().env)
+            } else {
+                LiveChild::mount(leaf, cell, None)
+            };
+            cell.configure(child.view(), insets, shows_disclosure);
+            let height = child.view().heightAnchor().constraintEqualToConstant(0.0);
             // The measured layout is the row contract; keep UIKit from stretching
             // the hosted view while fitting the automatic row height.
             height.setPriority(UILayoutPriorityRequired);
+            let cell_row = Rc::new(RefCell::new(Some(child)));
+            self.state
+                .borrow_mut()
+                .live_rows
+                .insert(id, Rc::downgrade(&cell_row));
             let layout = RowLayout {
-                mounted: Rc::downgrade(&mounted),
+                mounted: Rc::downgrade(&cell_row),
                 explicit_insets,
                 applied_insets: Cell::new(insets),
                 height,
                 minimum: self.state.borrow().resolved_min_height,
                 disclosure: shows_disclosure,
-                id: self.state.borrow().item_ids[flat],
+                id,
                 state: Rc::clone(&self.state),
                 table: cocoa_ui::objc2::rc::Weak::new(table),
             };
@@ -1156,7 +1643,6 @@ mod platform_impl {
             // style, readable width and safe-area margins have been resolved.
             cell.set_layout_handler(move |cell| layout.update(cell));
 
-            let id = self.state.borrow().item_ids[flat];
             let guard = watch_deletable(&deletable, id, &self.state, table);
             cell.set_activate_handler({
                 let state = Rc::clone(&self.state);
@@ -1171,7 +1657,7 @@ mod platform_impl {
                 }
             });
             cell.set_payload(Box::new(RowPayload {
-                mounted,
+                row: cell_row,
                 guards: vec![guard],
             }));
         }
@@ -1214,8 +1700,19 @@ mod platform_impl {
         fn row_height(&self, table: &TableView, index: IndexPath) -> f64 {
             // The row contract is an explicit height: the platform's
             // automatic-dimension fitting prices the separator in, growing
-            // every row by the separator's point over the contract.
-            let flat = self.flat(index);
+            // every row by the separator's point over the contract. A
+            // ghost answers its frozen height.
+            let DisplayRow::Live(flat) = self.slot(index) else {
+                let DisplayRow::Ghost(key) = self.slot(index) else {
+                    return 0.0;
+                };
+                return self
+                    .state
+                    .borrow()
+                    .ghosts
+                    .get(&key)
+                    .map_or(0.0, |(_, height)| *height);
+            };
             let borrowed = self.state.borrow();
             let id = borrowed.item_ids[flat];
             if let Some(height) = borrowed.measured_heights.get(&id) {
@@ -1283,7 +1780,9 @@ mod platform_impl {
             if state.on_delete.is_none() {
                 return false;
             }
-            let flat = self.flat(index);
+            let Some(DisplayRow::Live(flat)) = state.display_at(index.section, index.row) else {
+                return false;
+            };
             state
                 .item_ids
                 .get(flat)
@@ -1293,11 +1792,22 @@ mod platform_impl {
         }
 
         fn delete_row(&self, table: &TableView, index: IndexPath) {
-            let flat = self.flat(index);
+            let Some(DisplayRow::Live(flat)) =
+                self.state.borrow().display_at(index.section, index.row)
+            else {
+                return;
+            };
             {
                 let mut state = self.state.borrow_mut();
-                state.item_ids.remove(flat);
+                let id = state.item_ids.remove(flat);
                 state.regroup();
+                let ids = state.item_ids.clone();
+                // The table's own delete animation carries this row, so
+                // no ghost is reserved for it.
+                state.display.reconcile(&ids, |_| false);
+                if let Some(slot) = state.live_rows.remove(&id).and_then(|weak| weak.upgrade()) {
+                    drop(slot.borrow_mut().take());
+                }
             }
             table.reload_data();
             let state = self.state.borrow();
@@ -1308,16 +1818,28 @@ mod platform_impl {
 
         fn can_move_row(&self, _table: &TableView, index: IndexPath) -> bool {
             let state = self.state.borrow();
-            state.on_move.is_some() && state.groups.len() == 1 && index.section == 0
+            state.on_move.is_some()
+                && state.groups.len() == 1
+                && index.section == 0
+                && matches!(
+                    state.display_at(index.section, index.row),
+                    Some(DisplayRow::Live(_))
+                )
         }
 
         fn move_row(&self, _table: &TableView, from: IndexPath, to: IndexPath) {
-            let source = self.flat(from);
-            let destination = self.flat(to);
+            let (Some(DisplayRow::Live(source)), Some(DisplayRow::Live(destination))) = (
+                self.state.borrow().display_at(from.section, from.row),
+                self.state.borrow().display_at(to.section, to.row),
+            ) else {
+                return;
+            };
             let mut state = self.state.borrow_mut();
             let id = state.item_ids.remove(source);
             state.item_ids.insert(destination, id);
             state.regroup();
+            let ids = state.item_ids.clone();
+            state.display.reconcile(&ids, |_| false);
             let adjusted = if destination > source {
                 destination - 1
             } else {
@@ -1329,11 +1851,19 @@ mod platform_impl {
         }
 
         fn should_select(&self, _table: &TableView, index: IndexPath) -> bool {
-            !self.state.borrow().row_disabled(self.flat(index))
+            let state = self.state.borrow();
+            match state.display_at(index.section, index.row) {
+                Some(DisplayRow::Live(flat)) => !state.row_disabled(flat),
+                _ => false,
+            }
         }
 
         fn did_select_row(&self, table: &TableView, index: IndexPath) {
-            let flat = self.flat(index);
+            let Some(DisplayRow::Live(flat)) =
+                self.state.borrow().display_at(index.section, index.row)
+            else {
+                return;
+            };
             let state = self.state.borrow();
             if let Some(&id) = state.item_ids.get(flat)
                 && state.selection.allows_multiple()
@@ -1403,6 +1933,98 @@ mod platform_impl {
 
         /// Builds a section band view for `signal`, styled muted +
         /// caption/footnote — `WuiListSectionHeaderView`.
+        /// `viewFor` for a live row: consume the pending insertion or
+        /// render fresh, mount through `LiveChild`, and answer the row's
+        /// `RowContainer`.
+        fn live_row_view(
+            &self,
+            table: &TableView,
+            flat: usize,
+        ) -> Retained<cocoa_ui::PlatformView> {
+            let id = self.state.borrow().item_ids[flat];
+            let (item_insets, deletable, leaf, insertion) = {
+                let mut state = self.state.borrow_mut();
+                if let Some(pending) = state.pending_inserted.remove(&id) {
+                    (pending.insets, pending.deletable, pending.leaf, true)
+                } else {
+                    drop(state);
+                    let (insets, deletable, leaf) = self.state.borrow().render_row(flat);
+                    (insets, deletable, leaf, false)
+                }
+            };
+            let insets = self.state.borrow().insets_for(item_insets.as_ref());
+            // `viewFor` is where a row's height lands in
+            // `measuredRowHeights` — measure against the table's
+            // current width.
+            let width = view::bounds(table).size.width - insets.left - insets.right;
+            let measured = self
+                .state
+                .borrow()
+                .measure_row(leaf.layout(), width, insets);
+            self.state
+                .borrow_mut()
+                .measured_heights
+                .insert(id, measured);
+
+            let editing = self.state.borrow().editing.snapshot();
+            let row_deletable = deletable.snapshot();
+            let shows_delete = editing && self.state.borrow().on_delete.is_some() && row_deletable;
+
+            let container = RowContainer::new(self.mtm);
+            let child = if insertion {
+                LiveChild::mount_inserted(leaf, &container, None, &self.state.borrow().env)
+            } else {
+                LiveChild::mount(leaf, &container, None)
+            };
+            let delete = shows_delete.then(|| DeleteButton {
+                title: "Delete".to_string(),
+                handler: Box::new({
+                    let state = Rc::clone(&self.state);
+                    let table = cocoa_ui::objc2::rc::Weak::new(table);
+                    let mtm = self.mtm;
+                    move || {
+                        if let Some(table) = table.load() {
+                            let source = Self::new(Rc::clone(&state), mtm);
+                            source.delete_at(&table, id);
+                        }
+                    }
+                }),
+            });
+            container.configure(self.mtm, child.view(), insets, delete);
+            // The row's slot is constraint-resolved inside `insets`
+            // and, while editing, the inline delete button —
+            // deliver that width, again on every layout pass, so a
+            // proposal-driven child tracks its true slot across
+            // resizes and the button's appearance.
+            container.set_layout_handler(move |container| {
+                let Some(content) = container.content() else {
+                    return;
+                };
+                let width = view::bounds(&content).size.width;
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "kit geometry is f64; layout proposals are f32"
+                )]
+                proposal::deliver(&content, ProposalSize::new(Some(width as f32), None));
+            });
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "kit geometry is f64; layout proposals are f32"
+            )]
+            proposal::deliver(child.view(), ProposalSize::new(Some(width as f32), None));
+            let cell_row = Rc::new(RefCell::new(Some(child)));
+            self.state
+                .borrow_mut()
+                .live_rows
+                .insert(id, Rc::downgrade(&cell_row));
+            let guard = watch_deletable(&deletable, id, &self.state, table);
+            container.set_payload(Box::new(RowPayload {
+                row: cell_row,
+                guards: vec![guard],
+            }));
+            view::retain_base(&*container)
+        }
+
         fn band_view(
             &self,
             kind: SectionKind,
@@ -1457,8 +2079,15 @@ mod platform_impl {
             };
             {
                 let mut state = self.state.borrow_mut();
-                state.item_ids.remove(flat);
+                let id = state.item_ids.remove(flat);
                 state.regroup();
+                let ids = state.item_ids.clone();
+                // The table's own delete animation carries this row, so
+                // no ghost is reserved for it.
+                state.display.reconcile(&ids, |_| false);
+                if let Some(slot) = state.live_rows.remove(&id).and_then(|weak| weak.upgrade()) {
+                    drop(slot.borrow_mut().take());
+                }
                 rebuild_flat_layout(&mut state);
             }
             table.reload_data();
@@ -1499,81 +2128,27 @@ mod platform_impl {
                         .and_then(|group| group.footer.clone());
                     signal.map(|signal| self.band_view(SectionKind::Footer, &signal))
                 }
-                FlatEntry::Row(flat) => {
-                    let (item_insets, deletable, leaf) = self.state.borrow().render_row(flat);
-                    let insets = self.state.borrow().insets_for(item_insets.as_ref());
-                    let id = self.state.borrow().item_ids[flat];
-                    // `viewFor` is where a row's height lands in
-                    // `measuredRowHeights` — measure against the table's
-                    // current width.
-                    let width = view::bounds(table).size.width - insets.left - insets.right;
-                    let measured = self
-                        .state
-                        .borrow()
-                        .measure_row(leaf.layout(), width, insets);
-                    self.state
-                        .borrow_mut()
-                        .measured_heights
-                        .insert(id, measured);
-
-                    let editing = self.state.borrow().editing.snapshot();
-                    let row_deletable = deletable.snapshot();
-                    let shows_delete =
-                        editing && self.state.borrow().on_delete.is_some() && row_deletable;
-
+                FlatEntry::Ghost(key) => {
                     let container = RowContainer::new(self.mtm);
-                    let mounted = leaf.mount(&container);
-                    let delete = shows_delete.then(|| DeleteButton {
-                        title: "Delete".to_string(),
-                        handler: Box::new({
-                            let state = Rc::clone(&self.state);
-                            let table = cocoa_ui::objc2::rc::Weak::new(table);
-                            let mtm = self.mtm;
-                            move || {
-                                if let Some(table) = table.load() {
-                                    let source = Self::new(Rc::clone(&state), mtm);
-                                    source.delete_at(&table, id);
-                                }
-                            }
-                        }),
-                    });
-                    container.configure(self.mtm, mounted.view(), insets, delete);
-                    // The row's slot is constraint-resolved inside `insets`
-                    // and, while editing, the inline delete button —
-                    // deliver that width, again on every layout pass, so a
-                    // proposal-driven child tracks its true slot across
-                    // resizes and the button's appearance.
-                    container.set_layout_handler(move |container| {
-                        let Some(content) = container.content() else {
-                            return;
-                        };
-                        let width = view::bounds(&content).size.width;
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "kit geometry is f64; layout proposals are f32"
-                        )]
-                        proposal::deliver(&content, ProposalSize::new(Some(width as f32), None));
-                    });
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "kit geometry is f64; layout proposals are f32"
-                    )]
-                    proposal::deliver(mounted.view(), ProposalSize::new(Some(width as f32), None));
-                    let guard = watch_deletable(&deletable, id, &self.state, table);
-                    container.set_payload(Box::new(RowPayload {
-                        mounted: Rc::new(mounted),
-                        guards: vec![guard],
-                    }));
+                    {
+                        let state = self.state.borrow();
+                        if let Some((ghost, _)) = state.ghosts.get(&key) {
+                            let insets = pinned_insets(ghost.host());
+                            container.configure(self.mtm, ghost.host(), insets, None);
+                        }
+                    }
+                    container.set_payload(Box::new(GhostPayload(key)));
                     Some(view::retain_base(&*container))
                 }
+                FlatEntry::Row(flat) => Some(self.live_row_view(table, flat)),
             }
         }
 
         fn row_view(&self, table: &TableView, row: usize) -> Option<Retained<TableRowView>> {
             let entry = *self.state.borrow().flat_layout.get(row)?;
-            let FlatEntry::Row(_) = entry else {
+            if !matches!(entry, FlatEntry::Row(_) | FlatEntry::Ghost(_)) {
                 return None;
-            };
+            }
             let row_view = TableRowView::new(self.mtm);
             let table_width = view::bounds(table).size.width;
             let _ = table_width;
@@ -1591,11 +2166,14 @@ mod platform_impl {
         }
 
         fn row_height(&self, table: &TableView, row: usize) -> f64 {
-            let (_flat, id, insets) = {
+            let (flat, id, insets) = {
                 let state = self.state.borrow();
                 match state.flat_layout.get(row) {
                     Some(FlatEntry::Header(_)) => return 38.0,
                     Some(FlatEntry::Footer(_)) => return 32.0,
+                    Some(FlatEntry::Ghost(key)) => {
+                        return state.ghosts.get(key).map_or(30.0, |(_, height)| *height);
+                    }
                     Some(FlatEntry::Row(flat)) => {
                         let flat = *flat;
                         let Some(id) = state.item_ids.get(flat).copied() else {
@@ -1618,15 +2196,11 @@ mod platform_impl {
             // `tableView:heightOfRow:` fires before `viewFor:` for a row,
             // so the measurement cache `viewFor` fills cannot be the only
             // source — measure the rendered content on demand, the same
-            // arithmetic `viewFor` stores back.
-            let leaf = self.state.borrow().renderer.render(
-                self.state
-                    .borrow()
-                    .snapshot
-                    .get_view(self.state.borrow().positions[&id])
-                    .expect("list item index is in bounds")
-                    .content,
-            );
+            // arithmetic `viewFor` stores back. The row renders through
+            // `render_row`, as every other row path does: it resolves the
+            // row's environment wrapper (the selection theming) so the
+            // row's own `.transition(...)` stays at the leaf root, unmounted.
+            let (_insets, _deletable, leaf) = self.state.borrow().render_row(flat);
             let width = view::bounds(table).size.width - insets.left - insets.right;
             let mut state = self.state.borrow_mut();
             let measured = state.measure_row(leaf.layout(), width, insets);
@@ -1637,7 +2211,7 @@ mod platform_impl {
         fn is_group_row(&self, _table: &TableView, row: usize) -> bool {
             !matches!(
                 self.state.borrow().flat_layout.get(row),
-                Some(FlatEntry::Row(_))
+                Some(FlatEntry::Row(_) | FlatEntry::Ghost(_))
             )
         }
 
@@ -1698,6 +2272,8 @@ mod platform_impl {
             };
             state.item_ids.insert(destination, id);
             state.regroup();
+            let ids = state.item_ids.clone();
+            state.display.reconcile(&ids, |_| false);
             rebuild_flat_layout(&mut state);
             drop(state);
             table.reload_data();
@@ -1761,13 +2337,7 @@ fn approach(state: &Rc<RefCell<Shared>>, table: &TableView, target: usize) {
     // and jumping — both can measure rows, which borrows `state` mutably.
     // Each item's row, indexed by flat item.
     #[cfg(target_os = "ios")]
-    let rows: Vec<IndexPath> = state
-        .borrow()
-        .groups
-        .iter()
-        .enumerate()
-        .flat_map(|(section, group)| (0..group.count).map(move |row| IndexPath { section, row }))
-        .collect();
+    let rows: Vec<IndexPath> = state.borrow().live_index_paths();
     #[cfg(target_os = "macos")]
     let rows: Vec<usize> = state
         .borrow()
@@ -1811,7 +2381,9 @@ fn wire_controller(
         // scroll call: driving the table can run `layoutSubviews` → row
         // measuring, which borrows `state` again — mutably.
         #[cfg(target_os = "ios")]
-        let target = index_path_for_flat(&state.borrow().groups, request.target)
+        let target = state
+            .borrow()
+            .display_index_of(DisplayRow::Live(request.target))
             .map(|(section, row)| IndexPath { section, row });
         #[cfg(target_os = "macos")]
         let target = state
@@ -1914,6 +2486,11 @@ fn render(config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
         env: ctx.env().clone(),
         renderer: ctx.renderer(),
         item_ids: Vec::new(),
+        display: SlotSequence::new(Vec::new()),
+        live_rows: HashMap::new(),
+        ghosts: HashMap::new(),
+        ghost_ids: HashMap::new(),
+        pending_inserted: HashMap::new(),
         groups: Vec::new(),
         #[cfg(target_os = "macos")]
         flat_layout: Vec::new(),
@@ -1952,11 +2529,15 @@ fn render(config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     let source = platform_impl::Source::new(Rc::clone(&state), mtm);
     table.set_source(Rc::new(source));
 
-    // Initial load — `reloadChildrenFromRust`.
+    // Initial load — `reloadChildrenFromRust`. The display order seeds
+    // from the initial membership: nothing plays on the first build, so
+    // every row mounts plain.
     {
         let snapshot = state.borrow().snapshot.clone();
         let mut borrowed = state.borrow_mut();
         borrowed.apply_snapshot(snapshot);
+        let initial_ids = borrowed.item_ids.clone();
+        borrowed.display.reconcile(&initial_ids, |_| false);
         #[cfg(target_os = "macos")]
         rebuild_flat_layout(&mut borrowed);
         drop(borrowed);

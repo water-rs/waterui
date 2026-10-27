@@ -642,6 +642,48 @@ pub fn render_environment() -> Environment {
     );
     env
 }
+/// The view's current pixels through the production
+/// [`capture_rgba`](crate::capture_image::capture_rgba) path — the same
+/// capture every visual-review export drives.
+#[cfg(feature = "gpu_surface")]
+pub fn capture_view_rgba(view: &cocoa_ui::PlatformView) -> crate::capture_image::CapturedRgba {
+    let mut env = render_environment();
+    let runtime = block_on_main(30.0, waterui_graphics::gpu::GpuRuntime::new())
+        .expect("the harness provides a GPU runtime");
+    install_gpu(&mut env, runtime);
+    let scale = cocoa_ui::view::backing_scale_factor(view).max(1.0);
+    let mtm = MainThreadMarker::new().expect("captures run on the main thread");
+    block_on_main(
+        30.0,
+        crate::capture_image::capture_rgba(view, &env, scale, mtm),
+    )
+    .expect("the window capture completes")
+}
+
+/// Installs the GPU owners onto an existing environment.
+///
+/// Runtime, scene engine, filter-pipeline cache and the
+/// `PresentationTime` anchor — the set a `captures_content` transition
+/// and the filtered handler resolve. `gpu_runtime::prepare` installs
+/// the same beside the runtime in production; trials that render
+/// `FilteredView` through the dispatcher need it on the env they hand
+/// `dispatch::render`.
+#[cfg(feature = "gpu_surface")]
+pub fn install_gpu(
+    env: &mut waterui_backend_core::Environment,
+    runtime: waterui_graphics::gpu::GpuRuntime,
+) {
+    use std::rc::Rc;
+    env.insert(runtime);
+    env.insert(Rc::new(crate::gpu_runtime::SceneEngine::new()));
+    env.insert(Rc::new(crate::gpu_runtime::FilterPipelines::new()));
+    crate::presentation_time::PresentationTime::install(env);
+    crate::components::view_renderer::install_service(env);
+    // The dispatcher captures the environment at install time — re-run
+    // the install so its root env sees the GPU services just inserted
+    // (`handler.set`-driven remounts render through it).
+    crate::dispatch::install(env);
+}
 
 /// Renders `view` against [`render_environment`] through the typed
 /// dispatch entry point.
@@ -817,4 +859,12 @@ pub mod menus {
             })
             .collect()
     }
+}
+
+/// The inspector tree `walk` produces over `root` — a trial's read of
+/// the published hierarchy without driving the inspect gesture.
+pub fn inspector_tree(
+    root: &cocoa_ui::PlatformView,
+) -> Vec<waterui::inspector::protocol::TreeNode> {
+    crate::inspector::recordable_tree(root)
 }

@@ -232,6 +232,28 @@ pub fn remove_from_superview(view: &PlatformView) {
     view.removeFromSuperview();
 }
 
+/// True when a strict ancestor of `view` is a retired `HostView`.
+/// Walks `superview` to the root, so the cost is O(depth).
+#[must_use]
+pub fn has_retired_ancestor(view: &PlatformView) -> bool {
+    #[cfg(target_os = "macos")]
+    use crate::appkit::HostView;
+    #[cfg(target_os = "ios")]
+    use crate::uikit::HostView;
+
+    let mut ancestor = superview(view);
+    while let Some(current) = ancestor {
+        if current
+            .downcast_ref::<HostView>()
+            .is_some_and(HostView::is_retired)
+        {
+            return true;
+        }
+        ancestor = superview(&current);
+    }
+    false
+}
+
 /// Shows or hides `view` without detaching it.
 pub fn set_hidden(view: &PlatformView, hidden: bool) {
     view.setHidden(hidden);

@@ -1255,7 +1255,6 @@ impl State {
     /// session cleared, pump stopped.
     fn teardown(&mut self) {
         self.player.pause();
-        self.player.set_item(None);
         self.item = None;
         self.guards.clear();
         self.session.shutdown();

@@ -1031,6 +1031,19 @@ impl NavigationController {
         self.navigationBar().setPrefersLargeTitles(prefers);
     }
 
+    /// Inserts `child` into the controller's view above its pages and
+    /// beneath the navigation bar and toolbar.
+    ///
+    /// # Panics
+    ///
+    /// When the controller's view is not loaded.
+    pub fn insert_beneath_bars(&self, child: &objc2_ui_kit::UIView) {
+        let view = self
+            .view()
+            .expect("a navigation controller's view is loaded");
+        view.insertSubview_belowSubview(child, &self.navigationBar());
+    }
+
     /// The pages currently on the stack, root first.
     #[must_use]
     pub fn pages(&self) -> Vec<Retained<NavContentController>> {

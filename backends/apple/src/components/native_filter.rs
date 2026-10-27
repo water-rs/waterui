@@ -932,12 +932,11 @@ impl std::fmt::Debug for NativeFilterOwner {
 }
 
 impl Drop for NativeFilterOwner {
-    /// Clears the layer's filters and shuts the capture down; the
-    /// watchers cancel with the guards.
+    /// Shuts the capture down; the watchers cancel with the guards. The
+    /// layer's filters are not cleared: the layer dies with its view on
+    /// an ordinary removal, and a ghost keeps them until the retired
+    /// tree detaches.
     fn drop(&mut self) {
-        // SAFETY: `filters` accepts nil to clear the list; main-thread use
-        // by the leaf contract.
-        unsafe { self.layer.setFilters(None) };
         self.capture.shutdown();
     }
 }
@@ -1716,6 +1715,21 @@ impl CapturableSurface for NativeFilterCapturable {
     /// never land.
     fn presentation_failed(&self) -> bool {
         false
+    }
+
+    /// Internal invariant: armed filter chains route to the GPU
+    /// realization under `SnapshotDemand`, so a native filter
+    /// realization can never sit inside a retiring transition subtree.
+    fn take_frozen_frame(
+        &self,
+    ) -> (
+        Option<cocoa_ui::capture::FrozenSurface>,
+        Retained<objc2_quartz_core::CAMetalLayer>,
+    ) {
+        // §2.2: native filters never mount under a transition
+        // declaration — `SnapshotDemand` routes them to the GPU
+        // realization — so a retirement walk can never reach this.
+        unreachable!("a NativeFilterCapturable never appears under a transition subtree")
     }
 }
 

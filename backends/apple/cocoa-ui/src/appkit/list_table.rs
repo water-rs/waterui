@@ -976,6 +976,7 @@ impl TableView {
         deletes: &[usize],
         moves: &[(usize, usize)],
         inserts: &[usize],
+        claimed_inserts: &[usize],
         animated: bool,
     ) {
         let animation = if animated {
@@ -994,6 +995,12 @@ impl TableView {
             );
         }
         table.insertRowsAtIndexes_withAnimation(&index_set(inserts), animation);
+        // Rows whose own structural transition replaces the row animation
+        // insert with no effect.
+        table.insertRowsAtIndexes_withAnimation(
+            &index_set(claimed_inserts),
+            NSTableViewAnimationOptions::EffectNone,
+        );
         table.endUpdates();
     }
 
