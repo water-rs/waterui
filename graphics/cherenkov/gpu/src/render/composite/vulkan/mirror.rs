@@ -1435,15 +1435,7 @@ impl Built {
             )
         }
         .map_err(|e| MirrorError::Vulkan("vkCreatePipelineLayout", e))?;
-        // SAFETY: the bytes came from our cache file and their Vulkan
-        // header matches this device; the slice outlives creation.
-        self.cache = unsafe {
-            device.create_pipeline_cache(
-                &vk::PipelineCacheCreateInfo::default().initial_data(data.unwrap_or_default()),
-                None,
-            )
-        }
-        .map_err(|e| MirrorError::Vulkan("vkCreatePipelineCache", e))?;
+        self.cache = create_cache(device, data)?;
         Ok(())
     }
 
@@ -1483,4 +1475,19 @@ fn compatible_cache(data: &[u8], properties: &vk::PhysicalDeviceProperties) -> b
         && word(8) == properties.vendor_id
         && word(12) == properties.device_id
         && header[16..32] == properties.pipeline_cache_uuid
+}
+
+fn create_cache(
+    device: &ash::Device,
+    data: Option<&[u8]>,
+) -> Result<vk::PipelineCache, MirrorError> {
+    // SAFETY: the bytes came from our cache file and their Vulkan
+    // header matches this device; the slice outlives creation.
+    unsafe {
+        device.create_pipeline_cache(
+            &vk::PipelineCacheCreateInfo::default().initial_data(data.unwrap_or_default()),
+            None,
+        )
+    }
+    .map_err(|e| MirrorError::Vulkan("vkCreatePipelineCache", e))
 }
