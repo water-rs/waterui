@@ -2,7 +2,7 @@ name: macOS clippy (Apple-target crates)
 
 description: >
   The Apple-target clippy legs, shared so the fast gate's `macos` jobs and
-  the nightly's `cef` job run the identical commands and cannot drift.
+  the nightly's `macos-lint` job run the identical commands and cannot drift.
   The Linux lint compiles `cfg(target_os = "macos")` and
   `cfg(target_os = "ios")` code away, so these legs are the only lint
   coverage of it (#2476): hydrolysis under the feature combination its own
