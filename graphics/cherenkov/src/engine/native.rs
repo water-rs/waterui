@@ -156,7 +156,7 @@ impl<B: Backend> Engine<B> {
 
     /// The images the backend admits: the largest image in each
     /// dimension (the device's texture limit) and the image budget, the
-    /// texels every registered image holds together (the backend's memory
+    /// bytes every registered image holds together (the backend's memory
     /// budget). Read once off the live device and budget when the engine
     /// is created; it never changes.
     ///
@@ -282,7 +282,7 @@ impl<B: Backend> Engine<B> {
     where
         B: Uploads<F>,
     {
-        let texels = self.images.admit(image.width(), image.height(), 0)?;
+        let bytes = self.images.admit::<F>(image.width(), image.height(), 0)?;
         let id = ImageId::new(Self::alloc(&self.next_image));
         let upload = image.into_upload();
         let resource = ResourceId::Image(id);
@@ -290,12 +290,12 @@ impl<B: Backend> Engine<B> {
             resource,
             Box::new(move |r: &mut B::Renderer| r.add_image(id, upload)),
         )?;
-        self.images.settle(0, texels);
+        self.images.settle(0, bytes);
         Ok(Image::new(
             id,
             Rc::clone(&self.replace_image),
             Rc::clone(&self.images),
-            texels,
+            bytes,
             self.on_release(resource, move |r| r.remove_image(id)),
         ))
     }

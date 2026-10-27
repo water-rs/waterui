@@ -73,10 +73,9 @@ pub trait EmbeddedInputSink {
     fn ime_caret(&self) -> Option<kurbo::Rect>;
 }
 
-#[derive(Clone)]
-pub struct EmbeddedInputTarget {
+pub struct EmbeddedInputTarget<E: crate::text::TextEngine> {
     /// The node cell that registered the target.
-    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell<E>>,
     /// The surface owner's interaction identity — what keyboard focus and a
     /// `.focused(binding)` write address the surface by.
     pub(crate) interaction_key: InteractionKey,
@@ -102,7 +101,7 @@ pub struct EmbeddedInputTarget {
     pub(crate) accessibility_node_id: Option<AccessibilityNodeId>,
 }
 
-impl EmbeddedInputTarget {
+impl<E: crate::text::TextEngine> EmbeddedInputTarget<E> {
     pub(crate) fn local_position(&self, point: kurbo::Point) -> Option<kurbo::Point> {
         if self.hit_clip.is_some_and(|clip| !clip.contains(point)) {
             return None;
@@ -299,7 +298,7 @@ impl<R: SurfaceInputReceiver> EmbeddedInputSink for SurfaceInputSink<R> {
     clippy::needless_pass_by_ref_mut,
     reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
 )]
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Registers an embedded input target at a laid-out surface's bounds.
     ///
     /// The retained record resolves `local_bounds` through the registering
@@ -388,7 +387,7 @@ impl SemanticCore {
         point: kurbo::Point,
         pointer_priority: Option<(usize, usize, usize)>,
         text_priority: Option<(usize, usize, usize)>,
-    ) -> Option<(usize, EmbeddedInputTarget, kurbo::Point)> {
+    ) -> Option<(usize, EmbeddedInputTarget<E>, kurbo::Point)> {
         let (index, position) = self.topmost_embedded_target_at(point)?;
         let target = &self.hit_test.embedded_input_targets[index];
         let embedded_priority = Self::target_hit_priority(target.depth, target.order, index);
@@ -663,5 +662,24 @@ impl SemanticCore {
             .iter()
             .find(|target| target.sink.identity() == sink.identity())?;
         Some(target.to_window_rect(caret))
+    }
+}
+
+impl<E: crate::text::TextEngine> Clone for EmbeddedInputTarget<E> {
+    fn clone(&self) -> Self {
+        Self {
+            owner: self.owner.clone(),
+            interaction_key: self.interaction_key.clone(),
+            local_bounds: self.local_bounds,
+            hit_clip: self.hit_clip,
+            inverse_transform: self.inverse_transform,
+            depth: self.depth,
+            order: self.order,
+            sink: self.sink.clone(),
+            key_handlers: self.key_handlers.clone(),
+            focus_binding: self.focus_binding.clone(),
+            #[cfg(feature = "accessibility")]
+            accessibility_node_id: self.accessibility_node_id,
+        }
     }
 }

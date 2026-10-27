@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""`pixel_compare.py analyze`'s pinned-mode verdict, on the intervals of real
-Pixel collections and on synthetic GPU-engine and CPU-engine collections."""
+"""`pixel_compare.py analyze`: the GPU engine's pinned-mode verdict on the
+intervals of real Pixel collections, and synthetic GPU-engine and CPU-engine
+collections — a CPU collection is reported, never decided."""
 import hashlib
 import importlib.util
 import json
@@ -167,32 +168,39 @@ class Analyze(unittest.TestCase):
         self.assertEqual(entry['verdict'], 'fail')
         self.assertEqual(self.analyze(time)['tiny']['verdict'], 'pass')
 
-    def test_a_cpu_collection_is_judged_on_frame_and_shade(self):
+    def test_a_cpu_collection_reports_frame_and_shade_without_a_verdict(self):
         # Shade grows from 50% to 55% of a frame that grows 5%: shade +15.5%.
         entry = self.analyze({'map': [(40.0, 42.0)] * 4},
                              cpu={'map': [(0.5, 0.55)] * 4})['map']
         self.assertEqual(list(entry['metrics']), ['frame', 'shade'])
+        self.assertNotIn('verdict', entry)
         frame, shade = self.metric(entry, 'frame'), self.metric(entry, 'shade')
+        for judged in (frame, shade):
+            self.assertNotIn('verdict', judged)
+            self.assertNotIn('interval_percent', judged)
+        self.assertAlmostEqual(frame['p50']['base'], 40.0, delta=0.5)
+        self.assertAlmostEqual(frame['p50']['head'], 42.0, delta=0.5)
         self.assertAlmostEqual(frame['change_percent'], 5.0, delta=0.5)
         self.assertAlmostEqual(shade['change_percent'], 15.5, delta=0.5)
-        self.assertEqual((frame['verdict'], shade['verdict'], entry['verdict']),
-                         ('fail', 'fail', 'fail'))
 
-    def test_a_cost_outside_shade_fails_the_frame_alone(self):
+    def test_a_cost_outside_shade_shows_in_the_frame_alone(self):
         entry = self.analyze({'chart': [(20.0, 21.0)] * 4},
                              cpu={'chart': [(0.5, 0.5 * 20 / 21)] * 4})['chart']
-        self.assertEqual(self.metric(entry, 'frame')['verdict'], 'fail')
-        self.assertEqual(self.metric(entry, 'shade')['verdict'], 'pass')
+        self.assertAlmostEqual(self.metric(entry, 'frame')['change_percent'],
+                               5.0, delta=0.5)
+        self.assertAlmostEqual(self.metric(entry, 'shade')['change_percent'],
+                               0.0, delta=0.5)
 
-    def test_identical_cpu_arms_pass_with_their_p99_reported(self):
+    def test_identical_cpu_arms_report_a_zero_change_with_their_p99(self):
         entry = self.analyze({'text-page': [(5.0, 5.0)] * 4},
                              cpu={'text-page': [(0.8, 0.8)] * 4})['text-page']
-        self.assertEqual(entry['verdict'], 'pass')
-        for judged in entry['metrics'].values():
-            self.assertEqual(judged['verdict'], 'pass')
-            low, high = judged['p99_interval_percent']
-            self.assertLessEqual(low, 0.0)
-            self.assertGreaterEqual(high, 0.0)
+        for metric, judged in entry['metrics'].items():
+            expected = 5.0 if metric == 'frame' else 4.0
+            self.assertAlmostEqual(judged['change_percent'], 0.0, delta=0.5)
+            self.assertAlmostEqual(judged['p99_change_percent'], 0.0, delta=0.5)
+            for side in ('base', 'head'):
+                self.assertAlmostEqual(judged['p50'][side], expected, delta=0.1)
+                self.assertGreater(judged['p99'][side], judged['p50'][side])
 
     def test_the_phase_gap_is_what_submit_holds_beyond_the_phases(self):
         entry = self.analyze({'ui-list': [(10.0, 10.0)] * 4},
@@ -207,13 +215,6 @@ class Analyze(unittest.TestCase):
         sample['phases'] = sample['phases'][:2]
         with self.assertRaises(SystemExit):
             pixel_compare.METRICS['shade'][1](sample)
-
-
-class CpuList(unittest.TestCase):
-    def test_ranges_and_single_cpus_expand_sorted(self):
-        self.assertEqual(pixel_compare.cpu_list('7'), [7])
-        self.assertEqual(pixel_compare.cpu_list('4-6,0'), [0, 4, 5, 6])
-        self.assertEqual(pixel_compare.cpu_list('0-7'), list(range(8)))
 
 
 class CpuEngines(unittest.TestCase):

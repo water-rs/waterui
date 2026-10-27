@@ -21,13 +21,19 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::any::Any;
 use core::cell::RefCell;
+use core::ops::Range;
 
 use cocoa_ui::{PlatformView, Rect, Retained, focus, view};
+use objc2::rc::Weak;
+use objc2_foundation::{NSRange, NSString};
 use waterui::Str;
+use waterui::component::menu::ResolvedMenuItem;
 #[cfg(target_os = "ios")]
 use waterui::component::text_field::KeyboardType;
 use waterui::component::text_field::{ContentType, ResolvedTextFieldConfig};
+use waterui::component::text_selection::{CustomTextSelection, TextSelection};
 use waterui::graphics::color::WorkingColor;
+use waterui::reactive::Computed;
 use waterui::reactive::{Binding, Signal};
 use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
@@ -423,7 +429,26 @@ fn wire_value(
     field: &TextField,
     value_state: &Rc<RefCell<StyledPush>>,
 ) {
-    leaf.watch(value, restyle(value_state));
+    // An edit's `binding.set` re-runs the `value` watchers, which would push
+    // the rebuilt attributed string right back onto the control — resetting
+    // the live edit's caret and undo. `write_back` holds the exact value that
+    // set propagates so the watcher can skip only that echo's push.
+    let write_back = Rc::new(RefCell::new(Option::<Str>::None));
+    leaf.watch(value, {
+        let value_state = Rc::clone(value_state);
+        let write_back = Rc::clone(&write_back);
+        move |ctx| {
+            apply_styled(&value_state, ctx.value());
+            // Only the plain-text value the field's own edit just wrote is
+            // the echo — a `set` propagating a different text or a styled
+            // value inside the same window still pushes.
+            let is_echo = ctx.value().is_plain()
+                && write_back.borrow().as_ref() == Some(&ctx.value().to_plain());
+            if !is_echo {
+                push(&value_state.borrow());
+            }
+        }
+    });
     // The theme default re-renders chunks without their own foreground.
     let default_foreground = Foreground.resolve(ctx.env());
     leaf.watch(&default_foreground, {
@@ -439,13 +464,53 @@ fn wire_value(
     #[cfg(target_os = "ios")]
     leaf.keep(field.install_change_handler({
         let binding = value.clone();
-        move |field| binding.set(StyledStr::plain(field.string()))
+        move |field| {
+            let echo = Str::from(field.string());
+            *write_back.borrow_mut() = Some(echo.clone());
+            binding.set(StyledStr::plain(echo));
+            write_back.borrow_mut().take();
+        }
     }));
     #[cfg(target_os = "macos")]
     field.on_change({
         let binding = value.clone();
-        move |field| binding.set(StyledStr::plain(field.string()))
+        move |field| {
+            let echo = Str::from(field.string());
+            *write_back.borrow_mut() = Some(echo.clone());
+            binding.set(StyledStr::plain(echo));
+            write_back.borrow_mut().take();
+        }
     });
+}
+
+/// The prompt's share of the leaf: the styled placeholder and its
+/// alignment binding.
+fn wire_prompt(
+    mtm: cocoa_ui::MainThreadMarker,
+    leaf: &mut NativeLeaf,
+    ctx: &crate::contract::RenderContext<'_>,
+    field: &Retained<TextField>,
+    prompt: &waterui::component::text::TextConfig,
+) {
+    let state = styled_push(
+        mtm,
+        ctx.env(),
+        platform::colors::placeholder_text(),
+        &prompt.content.snapshot(),
+        {
+            let field = field.clone();
+            move |state| {
+                crate::measure_memo::invalidate();
+                field.set_placeholder(&render_attributed(state));
+            }
+        },
+    );
+    leaf.watch(&prompt.content, restyle(&state));
+    leaf.bind(&prompt.paragraph_alignment, {
+        let field = field.clone();
+        move |alignment| apply_alignment(&field, alignment)
+    });
+    leaf.keep(state);
 }
 
 /// The leaf's live state: the platform field and the mounted label child.
@@ -645,24 +710,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The prompt renders into the placeholder under the placeholder
         // color — `WuiStyledStrRenderer`'s `defaultForegroundColor`.
-        let prompt_state = styled_push(
-            mtm,
-            ctx.env(),
-            platform::colors::placeholder_text(),
-            &config.prompt.content.snapshot(),
-            {
-                let field = field.clone();
-                move |state| {
-                    crate::measure_memo::invalidate();
-                    field.set_placeholder(&render_attributed(state));
-                }
-            },
-        );
-        leaf.watch(&config.prompt.content, restyle(&prompt_state));
-        leaf.bind(&config.prompt.paragraph_alignment, {
-            let field = field.clone();
-            move |alignment| apply_alignment(&field, alignment)
-        });
+        wire_prompt(mtm, &mut leaf, ctx, &field, &config.prompt);
 
         // Announce the label's semantic text on the field.
         leaf.bind(&accessibility_label, {
@@ -684,10 +732,193 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // `installWuiFocusTarget` marked it in Swift.
         leaf.keep(focus::install(mtm, field_view));
 
+        // `selection_menu` rows ride the platform edit menu, on an
+        // environment carrying the field's live `TextSelection`.
+        install_selection_menu(
+            mtm,
+            ctx.env(),
+            &config.selection_menu,
+            &field,
+            &config.value,
+        );
+
         leaf.keep(state);
         leaf.keep(value_state);
-        leaf.keep(prompt_state);
         leaf
+    });
+}
+
+/// A `TextSelection`'s byte range as the UTF-16 units the kit's selection
+/// APIs count. An edge off a char boundary is a contract violation.
+fn utf16_range(text: &str, range: &Range<usize>) -> NSRange {
+    let edge = |byte: usize| {
+        cocoa_ui::text::utf16_offset_at_byte(text, byte).unwrap_or_else(|| {
+            panic!("selection edge {byte} is not a UTF-8 boundary of the field's text")
+        })
+    };
+    let location = edge(range.start);
+    NSRange::new(location, edge(range.end) - location)
+}
+
+/// The field editor's UTF-16 range as `TextSelection`'s byte range.
+fn utf16_byte_range(text: &str, range: NSRange) -> Range<usize> {
+    let edge = |unit: usize| {
+        cocoa_ui::text::byte_offset_at_utf16(text, unit).expect(
+            "the platform reported a selection edge inside a surrogate pair or past the text",
+        )
+    };
+    edge(range.location)..edge(range.location + range.length)
+}
+
+/// The [`CustomTextSelection`] a `selection_menu` command's `TextSelection`
+/// delegates to: the field, reached weakly so the
+/// handler the kit retains never keeps the leaf alive, plus the `value`
+/// binding `styled_value` hands out. Every read answers at call time.
+struct FieldSelection {
+    field: Weak<TextField>,
+    value: Binding<StyledStr>,
+}
+
+impl Clone for FieldSelection {
+    fn clone(&self) -> Self {
+        Self {
+            field: self.field.clone(),
+            value: self.value.clone(),
+        }
+    }
+}
+
+impl FieldSelection {
+    /// The field with a live editing session, beginning one through the
+    /// platform's own first-responder path when the selection is written
+    /// outside an open session.
+    fn editable_field(&self) -> Retained<TextField> {
+        let field = self
+            .field
+            .load()
+            .expect("a selection command fired after its field was released");
+        assert!(
+            field.selected_range().is_some() || field.begin_editing(),
+            "the field cannot begin an editing session for the selection command"
+        );
+        field
+    }
+}
+
+impl CustomTextSelection for FieldSelection {
+    fn text(&self) -> Str {
+        Str::from(
+            self.field
+                .load()
+                .expect("a selection command fired after its field was released")
+                .string(),
+        )
+    }
+
+    fn range(&self) -> Range<usize> {
+        let field = self
+            .field
+            .load()
+            .expect("a selection command fired after its field was released");
+        let text = field.string();
+        let utf16 = field
+            .selected_range()
+            .expect("a selection command fired on a field with no editing session");
+        utf16_byte_range(&text, utf16)
+    }
+
+    fn replace_range(&self, range: Range<usize>, inserted: &str) {
+        let field = self.editable_field();
+        let utf16 = utf16_range(&field.string(), &range);
+        field.replace_range(utf16, &NSString::from_str(inserted));
+    }
+
+    fn select(&self, range: Range<usize>) {
+        let field = self.editable_field();
+        let utf16 = utf16_range(&field.string(), &range);
+        field.set_selected_range(utf16);
+    }
+
+    fn styled_value(&self) -> Option<Binding<StyledStr>> {
+        Some(self.value.clone())
+    }
+}
+
+/// Rebuilds the `selection_menu` rows each time the field asks for its
+/// edit menu: the item signal is snapshotted only then, and the
+/// environment the rows resolve against carries the field's live
+/// `TextSelection`, the same seat Hydrolysis installs it in.
+fn install_selection_menu(
+    #[cfg_attr(
+        target_os = "macos",
+        expect(unused_variables, reason = "only the UIKit path arms key commands")
+    )]
+    mtm: cocoa_ui::MainThreadMarker,
+    env: &Environment,
+    selection_menu: &Computed<Vec<ResolvedMenuItem>>,
+    field: &TextField,
+    value: &Binding<StyledStr>,
+) {
+    let driver = FieldSelection {
+        field: Weak::new(field),
+        value: value.clone(),
+    };
+    #[cfg(target_os = "macos")]
+    appkit_edit_menu(field, driver, env.clone(), selection_menu.clone());
+    #[cfg(target_os = "ios")]
+    uikit_edit_menu(mtm, field, driver, env.clone(), selection_menu.clone());
+}
+
+/// The environment a selection menu resolves on: the render environment
+/// plus the live `TextSelection`, so `Command` extraction and validation
+/// see the selection.
+fn menu_env(env: &Environment, driver: &FieldSelection) -> Environment {
+    env.extending(TextSelection::new(driver.clone()))
+}
+
+/// `AppKit`: the handler appends the resolved rows to the field editor's
+/// standard `NSMenu`, separated from the platform's own.
+#[cfg(target_os = "macos")]
+fn appkit_edit_menu(
+    field: &TextField,
+    driver: FieldSelection,
+    env: Environment,
+    items: Computed<Vec<ResolvedMenuItem>>,
+) {
+    field.install_edit_menu_handler(move |_, _, menu| {
+        let nodes =
+            crate::components::menu_items::tree_nodes(&items.snapshot(), &menu_env(&env, &driver));
+        cocoa_ui::appkit::append_edit_menu(menu, &nodes);
+    });
+}
+
+/// `UIKit`: the handler answers `textField:editMenuForCharactersInRanges:`
+/// with the suggested system actions plus the resolved rows as an inline
+/// group — `None` leaves the platform's default menu alone.
+#[cfg(target_os = "ios")]
+fn uikit_edit_menu(
+    mtm: cocoa_ui::MainThreadMarker,
+    field: &TextField,
+    driver: FieldSelection,
+    env: Environment,
+    items: Computed<Vec<ResolvedMenuItem>>,
+) {
+    // The scope arming the current menu's shortcut commands, retired with
+    // the next presentation — the lifespan `KeyCommands` documents.
+    let scopes = Rc::new(RefCell::new(Option::<cocoa_ui::uikit::KeyCommands>::None));
+    field.install_edit_menu_handler(move |field, suggested| {
+        let nodes =
+            crate::components::menu_items::tree_nodes(&items.snapshot(), &menu_env(&env, &driver));
+        if nodes.is_empty() {
+            // Retire the previous presentation's scope too — an empty
+            // menu arms nothing, not the last menu's commands.
+            scopes.borrow_mut().take();
+            return None;
+        }
+        let scope = field.edit_menu_commands();
+        let menu = cocoa_ui::uikit::edit_menu(mtm, &scope, suggested, &nodes);
+        scopes.borrow_mut().replace(scope);
+        Some(menu)
     });
 }
 

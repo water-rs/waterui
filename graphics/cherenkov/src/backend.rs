@@ -153,7 +153,7 @@ pub trait Renderer: 'static {
 
     /// The images this renderer admits: the largest image in each
     /// dimension (the device's texture limit), and the image budget, the
-    /// texels every registered image holds together (the backend's memory
+    /// stored bytes every registered image holds together (the backend's memory
     /// budget). The engine reads it once, right after [`Backend::init`]
     /// returns the renderer, and it must not change afterwards:
     /// [`Engine::image`](crate::Engine::image) and

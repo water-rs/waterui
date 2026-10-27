@@ -25,10 +25,10 @@ use rspirv::spirv::{Capability, Decoration, Dim, ImageFormat, Op, StorageClass, 
 /// the input attachment index order this pass assigns them.
 const READS: [&str; 2] = ["attachment_backdrop", "attachment_source"];
 
-/// Rewrites both corresponding-pixel reads of `words` into input
+/// Rewrites the required corresponding-pixel reads of `words` into input
 /// attachment reads, the source read at `source_index`.
 ///
-/// Panics on anything it does not precisely model: a missing read global,
+/// Panics on anything it does not precisely model: a missing required read global,
 /// a read whose type is not the emitted colour type, or a use of a read
 /// global other than the load this pass replaces. A tile shader that
 /// reaches the device must read the attachments it was planned around, so
@@ -43,15 +43,34 @@ pub fn attachment_reads(
     set: u32,
     bindings: [u32; 2],
     source_index: u32,
+    used: [bool; 2],
 ) -> Vec<u32> {
     let mut module = rspirv::dr::load_words(words).expect("naga emitted parseable SPIR-V");
-    let globals = READS.map(|name| read_global(&module, name));
-    let colour = pointee(&module, globals[0]);
-    assert_eq!(
-        colour,
-        pointee(&module, globals[1]),
-        "the two attachment reads disagree on the colour type"
-    );
+    let globals: Vec<_> = READS
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, name)| {
+            let global = read_global(&module, name);
+            assert_eq!(
+                global.is_some(),
+                used[index],
+                "unexpected attachment usage for {name}"
+            );
+            global.map(|global| (index, global))
+        })
+        .collect();
+    if globals.is_empty() {
+        module.debug_names.clear();
+        return module.assemble();
+    }
+    let colour = pointee(&module, globals[0].1);
+    for &(_, global) in &globals {
+        assert_eq!(
+            colour,
+            pointee(&module, global),
+            "attachment colour types disagree"
+        );
+    }
 
     let mut next = module.header.as_mut().expect("SPIR-V header").bound;
     module.capabilities.push(Instruction::new(
@@ -117,19 +136,22 @@ pub fn attachment_reads(
         Some(coordinate_ty),
         vec![Operand::IdRef(zero), Operand::IdRef(zero)],
     );
-    let images = [0, 1].map(|_| {
-        let image = next;
-        next += 1;
-        module.types_global_values.push(Instruction::new(
-            Op::Variable,
-            Some(pointer_ty),
-            Some(image),
-            vec![Operand::StorageClass(StorageClass::UniformConstant)],
-        ));
-        image
-    });
+    let images: Vec<_> = globals
+        .iter()
+        .map(|&(index, global)| {
+            let image = next;
+            next += 1;
+            module.types_global_values.push(Instruction::new(
+                Op::Variable,
+                Some(pointer_ty),
+                Some(image),
+                vec![Operand::StorageClass(StorageClass::UniformConstant)],
+            ));
+            (index, global, image)
+        })
+        .collect();
 
-    for (index, image) in images.into_iter().enumerate() {
+    for &(index, _, image) in &images {
         let input_index = if index == 0 { 0 } else { source_index };
         for (decoration, value) in [
             (Decoration::DescriptorSet, set),
@@ -149,7 +171,7 @@ pub fn attachment_reads(
         }
     }
 
-    for (global, image) in globals.into_iter().zip(images) {
+    for (_, global, image) in images {
         let replaced = replace_loads(
             &mut module,
             global,
@@ -169,15 +191,15 @@ pub fn attachment_reads(
     // without them.
     module.debug_names.clear();
     let words = module.assemble();
-    verify(&words, set, bindings, source_index);
+    verify(&words, set, bindings, source_index, used);
     words
 }
 
-/// Re-reads the written module: it must parse, and it must declare both
-/// input attachment reads where the executor binds them. The pass edits
+/// Re-reads the written module: it must parse, and declare exactly the
+/// required input attachment reads where the executor binds them. The pass edits
 /// a binary interface that nothing else in the build would notice going
 /// wrong.
-fn verify(words: &[u32], set: u32, bindings: [u32; 2], source_index: u32) {
+fn verify(words: &[u32], set: u32, bindings: [u32; 2], source_index: u32, used: [bool; 2]) {
     let module = rspirv::dr::load_words(words).expect("the rewritten module parses");
     assert!(
         module
@@ -234,8 +256,17 @@ fn verify(words: &[u32], set: u32, bindings: [u32; 2], source_index: u32) {
             found.push((id, read));
         }
     }
-    assert_eq!(found.len(), 2, "the two attachment reads are not declared");
-    for (index, (_, read)) in found.iter().enumerate() {
+    let expected_indices: Vec<_> = used
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, used)| used.then_some(i))
+        .collect();
+    assert_eq!(
+        found.len(),
+        expected_indices.len(),
+        "attachment read count differs"
+    );
+    for (index, (_, read)) in expected_indices.into_iter().zip(&found) {
         let expected = [
             (Decoration::DescriptorSet, set),
             (Decoration::Binding, bindings[index]),
@@ -254,7 +285,7 @@ fn verify(words: &[u32], set: u32, bindings: [u32; 2], source_index: u32) {
 }
 
 /// The id of the private global `name`.
-fn read_global(module: &Module, name: &str) -> Word {
+fn read_global(module: &Module, name: &str) -> Option<Word> {
     let named: Vec<Word> = module
         .debug_names
         .iter()
@@ -267,12 +298,8 @@ fn read_global(module: &Module, name: &str) -> Word {
             _ => None,
         })
         .collect();
-    assert_eq!(
-        named.len(),
-        1,
-        "exactly one global is named {name} in the emission"
-    );
-    let id = named[0];
+    assert!(named.len() <= 1, "duplicate attachment global {name}");
+    let &id = named.first()?;
     let variable = module
         .types_global_values
         .iter()
@@ -283,7 +310,7 @@ fn read_global(module: &Module, name: &str) -> Word {
         Op::Variable,
         "{name} is not a variable"
     );
-    id
+    Some(id)
 }
 
 /// The type a variable's pointer type points to, which must be private

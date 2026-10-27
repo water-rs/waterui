@@ -21,13 +21,21 @@ use waterui::text::font::{self, FontWeight, ResolvedFont};
 use waterui::theme::{self, color};
 use waterui_backend_core::Environment;
 
+/// One font slot: the platform text style it follows and the setter that
+/// writes a resolved [`cocoa_ui::system_font::FontMetrics`] into its
+/// signal.
+struct FontSlot {
+    style: cocoa_ui::system_font::TextStyle,
+    apply: Box<dyn Fn(cocoa_ui::system_font::FontMetrics)>,
+}
+
 /// The signals the platform theme is fed through. Keep the returned value
 /// alive; every slot's `Computed` also holds its `Binding`, so nothing but
 /// [`refresh`] needs to reach it.
 pub struct ThemeSignals {
     scheme: Binding<waterui::graphics::color::ColorScheme>,
     colors: Vec<Box<dyn Fn(ColorScheme)>>,
-    fonts: Vec<Box<dyn Fn()>>,
+    fonts: Vec<FontSlot>,
 }
 
 impl core::fmt::Debug for ThemeSignals {
@@ -154,12 +162,32 @@ pub fn install(env: &mut Environment, scheme: ColorScheme) -> ThemeSignals {
 /// Re-reads the platform for `scheme` and pushes every changed slot value.
 /// Call it from each surface whose platform reports an appearance change.
 pub fn refresh(signals: &ThemeSignals, scheme: ColorScheme) {
+    refresh_colors(signals, scheme);
+    for slot in &signals.fonts {
+        (slot.apply)(cocoa_ui::system_font::preferred_font(slot.style));
+    }
+}
+
+/// Feeds a host-supplied snapshot: colors for `scheme` and the six resolved
+/// font metrics in `HOST_FONT_STYLES` order — no ambient platform font is
+/// read a second time and no content-size multiplier is applied.
+pub fn refresh_host(
+    signals: &ThemeSignals,
+    scheme: ColorScheme,
+    metrics: &[cocoa_ui::system_font::FontMetrics; 6],
+) {
+    refresh_colors(signals, scheme);
+    for (slot, metrics) in signals.fonts.iter().zip(metrics.iter()) {
+        (slot.apply)(*metrics);
+    }
+}
+
+/// The scheme signal and every color slot for `scheme` — shared by the
+/// ambient and host-driven refreshes.
+fn refresh_colors(signals: &ThemeSignals, scheme: ColorScheme) {
     signals.scheme.set(color_scheme(scheme));
     for set in &signals.colors {
         set(scheme);
-    }
-    for set in &signals.fonts {
-        set();
     }
 }
 
@@ -185,16 +213,18 @@ impl ThemeSignals {
     ) {
         let binding = waterui::reactive::binding(ResolvedFont::new(0.0, FontWeight::Normal));
         theme::install_font_signal::<F>(env, binding.computed());
-        self.fonts.push(Box::new(move || {
-            let metrics = cocoa_ui::system_font::preferred_font(style);
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "platform metrics are f64; ResolvedFont is f32"
-            )]
-            let font = ResolvedFont::new(metrics.size as f32, font_weight(metrics.weight))
-                .with_typography_metrics(metrics.line_height as f32, 0.0);
-            binding.set(font);
-        }));
+        self.fonts.push(FontSlot {
+            style,
+            apply: Box::new(move |metrics| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "platform metrics are f64; ResolvedFont is f32"
+                )]
+                let font = ResolvedFont::new(metrics.size as f32, font_weight(metrics.weight))
+                    .with_typography_metrics(metrics.line_height as f32, 0.0);
+                binding.set(font);
+            }),
+        });
     }
 }
 

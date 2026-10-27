@@ -7,7 +7,7 @@
 //! built effect is not, so the adapter is a cell that holds the recipe while
 //! it crosses to the render thread, builds it inside `setup` (which the engine
 //! drives there), and delegates every later call to the built
-//! [`ErasedEffect`].
+//! [`waterui_graphics::filter_view::ErasedEffect`].
 //!
 //! [`FilteredRuntime`] is what a mount keeps on the UI side: the unbuilt
 //! source until registration, the engine `Filter` handle once registered (its
@@ -15,20 +15,11 @@
 //! reactive parameter subscriptions alive exactly as long as the filter can
 //! write them.
 
-use std::future::Future;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
-use cherenkov::Filter;
-use waterui_graphics::filter_view::ErasedEffect;
-use waterui_graphics::filtrate::{
-    Effect, EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderResult,
-    EffectSetupResult, RetainedMemory,
-};
+use super::mount::target::FilterHandle;
 use waterui_graphics::{AnyEffect, ParamGuards};
-
-use crate::time::Instant;
 
 /// Per-frame applied-filter telemetry shared between the UI side and the
 /// engine's render thread.
@@ -74,113 +65,9 @@ impl AppliedFilterMetrics {
     }
 }
 
-/// A `filtrate::Effect` that builds itself from an [`AnyEffect`] inside
-/// `setup`, on the engine's render thread.
-///
-/// # `Send` invariant
-///
-/// The value crosses threads exactly once, when [`crate::engine::GpuEngine`]'s
-/// effect registration ships it to the render thread. At that moment `built`
-/// is still `None` — the only fields set are `source` (an `AnyEffect`, which
-/// is `Send`), `redraw` (an `Arc` callback, also `Send`) and `metrics` (atomics).
-/// `built` is populated inside `setup`, which the engine only calls on its
-/// render thread, and the value never crosses back.
-pub struct EngineEffect {
-    /// The unbuilt declarative effect, taken when `setup` runs.
-    source: Option<AnyEffect>,
-    /// The built render-side effect — populated by `setup`, only ever touched
-    /// on the render thread.
-    built: Option<Box<dyn ErasedEffect>>,
-    /// A redraw callback that arrived before the effect was built, forwarded
-    /// at setup.
-    redraw: Option<EffectRedrawCallback>,
-    /// The frame telemetry every `encode_render` contributes to.
-    metrics: Arc<AppliedFilterMetrics>,
-}
+mod gpu;
 
-// SAFETY: `built` is `None` for the whole window in which the value may move
-// across threads; every field set before that is `Send`. The `non_send_fields`
-// allow acknowledges what this block states: `built` is the `!Send` field the
-// safety argument covers.
-#[allow(clippy::non_send_fields_in_send_ty)]
-unsafe impl Send for EngineEffect {}
-
-impl EngineEffect {
-    /// Wraps a declarative effect source for engine registration, feeding
-    /// `metrics` on every encode.
-    pub(crate) fn new(source: AnyEffect, metrics: Arc<AppliedFilterMetrics>) -> Self {
-        Self {
-            source: Some(source),
-            built: None,
-            redraw: None,
-            metrics,
-        }
-    }
-}
-
-impl Effect for EngineEffect {
-    fn set_redraw_callback(&mut self, callback: EffectRedrawCallback) {
-        match &mut self.built {
-            Some(built) => built.set_redraw_callback(callback),
-            None => self.redraw = Some(callback),
-        }
-    }
-
-    // The returned future is `!Send` because the built effect itself is
-    // `!Send` — effect setup runs on the render executor, which is
-    // single-threaded by design.
-    #[allow(clippy::future_not_send)]
-    fn setup(&mut self, ctx: &EffectContext) -> impl Future<Output = EffectSetupResult> {
-        let mut built = self
-            .source
-            .take()
-            .expect("hydrolysis filter effect set up without a source")
-            .build();
-        if let Some(callback) = self.redraw.take() {
-            built.set_redraw_callback(callback);
-        }
-        self.built = Some(built);
-        async move {
-            self.built
-                .as_mut()
-                .expect("hydrolysis filter effect lost during setup")
-                .setup(ctx)
-                .await
-        }
-    }
-
-    fn encode_render(
-        &mut self,
-        input: &EffectInput,
-        output: &EffectOutput,
-        encoder: &mut wgpu::CommandEncoder,
-    ) -> EffectRenderResult {
-        let started_at = Instant::now();
-        let result = self
-            .built
-            .as_mut()
-            .expect("hydrolysis filter effect rendered before setup")
-            .encode_render(input, output, encoder);
-        self.metrics.record(started_at.elapsed());
-        result
-    }
-
-    fn redraw_hint(&self) -> bool {
-        self.built.as_ref().is_some_and(|built| built.redraw_hint())
-    }
-
-    fn retained_memory(&self) -> RetainedMemory {
-        self.built
-            .as_ref()
-            .map_or_else(RetainedMemory::default, |built| built.retained_memory())
-    }
-
-    fn trim(&mut self) {
-        if let Some(built) = &mut self.built {
-            built.trim();
-        }
-    }
-}
+pub use gpu::EngineEffect;
 
 /// UI-side state of one mounted `FilteredView`: owns the effect source until
 /// the engine registers it, then the `Filter` handle for the mount's life.
@@ -190,7 +77,7 @@ impl Effect for EngineEffect {
 /// long as the layer can draw, and tears them down when the node is dropped.
 pub struct FilteredRuntime {
     source: Option<AnyEffect>,
-    filter: Option<Filter>,
+    filter: Option<FilterHandle>,
     _guards: ParamGuards,
 }
 
@@ -210,30 +97,29 @@ impl FilteredRuntime {
         }
     }
 
-    /// The engine filter this mount installs on its wrapper layer.
+    /// The filter handle this mount installs on its wrapper layer.
     ///
-    /// Registers the effect on first call; the returned reference borrows the
-    /// stored handle, so the caller installs `tx[layer].filter(&filter)`
-    /// inside the surface edit this call participates in.
+    /// Registers the effect on first call and returns its id — the runtime
+    /// retains the registration until the mount drops it.
     pub(crate) fn filter(
         &mut self,
-        engine: &crate::engine::GpuEngine,
-        metrics: &Arc<AppliedFilterMetrics>,
-    ) -> &Filter {
+        register: impl FnOnce(AnyEffect) -> FilterHandle,
+    ) -> cherenkov_record::FilterId {
         if self.filter.is_none() {
             let source = self
                 .source
                 .take()
                 .expect("hydrolysis filtered mount without an effect source");
-            self.filter = Some(engine.effect(EngineEffect::new(source, Arc::clone(metrics))));
+            self.filter = Some(register(source));
         }
         self.filter
             .as_ref()
             .expect("hydrolysis filtered mount lost its filter handle")
+            .id()
     }
 }
 
-impl crate::renderer::HydrolysisRenderer {
+impl<E: crate::text::TextEngine> crate::renderer::HydrolysisRenderer<E> {
     /// Applied filters dispatched in the last rendered frame, as
     /// `(filters encoded, capture µs, effect encode µs)`.
     ///

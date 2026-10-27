@@ -7,9 +7,12 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use cocoa_ui::menu::Command as KitCommand;
-#[cfg(feature = "context_menu")]
+#[cfg(any(feature = "context_menu", feature = "text_field"))]
 use cocoa_ui::menu::MenuTreeNode;
-#[cfg(all(target_os = "macos", any(feature = "menu", feature = "context_menu")))]
+#[cfg(all(
+    target_os = "macos",
+    any(feature = "menu", feature = "context_menu", feature = "text_field")
+))]
 use waterui::component::menu::CloseWindowChord;
 use waterui::component::menu::{CommandRole, ResolvedCommand, ResolvedMenuItem, Shortcut};
 use waterui::reactive::Signal;
@@ -121,7 +124,7 @@ fn kit_command(command: &ResolvedCommand) -> KitCommand {
 /// nested menus — the input both platform menu builders take. A declared
 /// Quit or Close Window is the standard item on macOS and is omitted on iOS,
 /// which has no application quit and whose windows the system owns.
-#[cfg(feature = "context_menu")]
+#[cfg(any(feature = "context_menu", feature = "text_field"))]
 pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<MenuTreeNode> {
     let mut nodes = Vec::with_capacity(items.len());
     for item in items {

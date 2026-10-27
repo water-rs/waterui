@@ -7,9 +7,10 @@
 /// The conversion module's layout and its pipelines by target format,
 /// built on the first frame that filters an sRGB-encoded scope.
 pub struct Pipelines {
+    cache: super::PipelineCache,
     layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
-    module: wgpu::ShaderModule,
+    programs: [super::shaders::RenderProgram; 2],
     /// `(format, [decode, encode])`: the filter targets share their
     /// scope's format, the surface's or the scratch format.
     by_format: Vec<(wgpu::TextureFormat, [wgpu::RenderPipeline; 2])>,
@@ -17,7 +18,11 @@ pub struct Pipelines {
 
 impl Pipelines {
     /// The layout and module; pipelines are built per format on demand.
-    pub fn new(device: &wgpu::Device, delivery: super::shaders::ShaderDelivery) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        delivery: super::shaders::ShaderDelivery,
+        cache: super::PipelineCache,
+    ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("cherenkov space conversion"),
             entries: &super::layout_entries(super::bindings::SPACE_CONVERT_GROUP0),
@@ -28,9 +33,10 @@ impl Pipelines {
             immediate_size: 0,
         });
         Self {
+            cache,
             layout,
             pipeline_layout,
-            module: delivery.space_convert_module(device),
+            programs: delivery.space_convert_programs(device),
             by_format: Vec::new(),
         }
     }
@@ -91,14 +97,14 @@ impl Pipelines {
         let index = if let Some(index) = self.by_format.iter().position(|(f, _)| *f == format) {
             index
         } else {
-            let pipelines = ["fs_decode", "fs_encode"].map(|fragment| {
+            let pipelines = self.programs.each_ref().map(|program| {
                 super::projective::quad_pipeline(
                     device,
                     &self.pipeline_layout,
-                    &self.module,
-                    fragment,
+                    program,
                     format,
                     None,
+                    &self.cache,
                 )
             });
             self.by_format.push((format, pipelines));

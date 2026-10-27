@@ -4,8 +4,8 @@
 //! `ndk-sys` 0.6 carries the types this uses (`ARect`, `ADataSpace`,
 //! `AHdrMetadata_*`, `AHardwareBuffer`, `ANativeWindow`) but not
 //! `surface_control.h`, and the `ndk` crate has no surface-control module,
-//! so the functions are declared here. Every one is API 29, the level the
-//! realization needs.
+//! so the functions are declared here. Required imports are API 29; the
+//! extended-brightness capability is resolved separately on API 34 and later.
 
 use std::ffi::{CStr, c_void};
 use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
@@ -60,6 +60,48 @@ impl std::fmt::Debug for ASurfaceTransactionStats {
     }
 }
 
+/// Android 14's linear HDR brightness contract, resolved once per surface.
+/// libandroid is already retained by the required API 29 imports below.
+pub struct ExtendedRangeBrightness(
+    unsafe extern "C" fn(*mut ASurfaceTransaction, *mut ASurfaceControl, f32, f32),
+);
+
+impl ExtendedRangeBrightness {
+    pub fn load() -> Option<Self> {
+        // SAFETY: a static nul-terminated symbol name and the process symbol scope.
+        let symbol = unsafe {
+            libc::dlsym(
+                libc::RTLD_DEFAULT,
+                c"ASurfaceTransaction_setExtendedRangeBrightness".as_ptr(),
+            )
+        };
+        if symbol.is_null() {
+            None
+        } else {
+            // SAFETY: this NDK symbol has exactly the signature declared above;
+            // libandroid remains loaded for the process lifetime.
+            Some(Self(unsafe {
+                std::mem::transmute::<
+                    *mut c_void,
+                    unsafe extern "C" fn(*mut ASurfaceTransaction, *mut ASurfaceControl, f32, f32),
+                >(symbol)
+            }))
+        }
+    }
+
+    pub fn set(
+        &self,
+        transaction: &mut Transaction,
+        surface: &SurfaceControl,
+        current: f32,
+        desired: f32,
+    ) {
+        // SAFETY: both wrappers own live NDK objects. The presentation contract
+        // supplies finite current and desired ratios >= 1.
+        unsafe { (self.0)(transaction.0.as_ptr(), surface.as_ptr(), current, desired) };
+    }
+}
+
 type OnComplete = unsafe extern "C" fn(context: *mut c_void, stats: *mut ASurfaceTransactionStats);
 
 const VISIBILITY_HIDE: i8 = 0;
@@ -107,6 +149,12 @@ unsafe extern "C" {
         surface_control: *mut ASurfaceControl,
         buffer: *mut AHardwareBuffer,
         acquire_fence_fd: i32,
+    );
+    fn ASurfaceTransaction_setDamageRegion(
+        transaction: *mut ASurfaceTransaction,
+        surface_control: *mut ASurfaceControl,
+        rects: *const ARect,
+        count: u32,
     );
     // `const ARect&` in the C++ header: a pointer at the ABI.
     fn ASurfaceTransaction_setGeometry(
@@ -256,6 +304,21 @@ impl Drop for SurfaceControl {
 pub struct Transaction(NonNull<ASurfaceTransaction>);
 
 impl Transaction {
+    /// Describes the buffer pixels changed by this transaction.
+    pub fn set_damage_region(&mut self, surface: &SurfaceControl, rects: &[ARect]) {
+        let count = u32::try_from(rects.len()).expect("damage rectangle count fits the NDK ABI");
+        // SAFETY: both wrappers own live NDK objects and the rectangle slice
+        // remains valid for this call, which copies the region into the transaction.
+        unsafe {
+            ASurfaceTransaction_setDamageRegion(
+                self.0.as_ptr(),
+                surface.as_ptr(),
+                rects.as_ptr(),
+                count,
+            );
+        }
+    }
+
     /// An empty transaction.
     ///
     /// # Panics

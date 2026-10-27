@@ -164,7 +164,10 @@ CPU_ADAPTER = f'cherenkov-cpu ({CPU_THREADS} threads)'
 CPU_SAMPLES = 3
 # The build every profiled binary comes from. The profile overrides apply to
 # any revision, so a baseline that predates the gate builds the same way.
-BUILD_ENV = {'CARGO_PROFILE_RELEASE_DEBUG': '1', 'CARGO_PROFILE_RELEASE_STRIP': 'false'}
+# Use the system GNU linker for both arms so the profiler sees a consistent
+# executable mapping layout alongside the unstripped function symbols.
+BUILD_ENV = {'CARGO_PROFILE_RELEASE_DEBUG': '1', 'CARGO_PROFILE_RELEASE_STRIP': 'false',
+             'RUSTFLAGS': '-C linker-features=-lld'}
 # Callgrind name patterns (`*` matches any run) of the functions a sample
 # subtracts, with the call count each one adds to; Callgrind separates these
 # by caller chain and the gate classifies them, from this one table. Names
@@ -506,8 +509,8 @@ def check_separated(command, out, prefix, sync=()):
                            'its pattern trie never reaches them from the options; reshape the patterns')
 
 
-def call_samples(out, prefix, symbol, after):
-    """The root's first three calls, each merged over the dumps of its span.
+def call_samples(out, prefix, symbol, after, count=3, allow_inflight=True):
+    """The root's first `count` calls, each merged over the dumps of its span.
 
     One call is the span after the root's previous --dump-after up to its
     next one, holding exactly one incoming call of it. Nested roots and the
@@ -520,7 +523,7 @@ def call_samples(out, prefix, symbol, after):
         prev = number
         found = [m for m in (measure(p, symbol) for p in span) if m]
         ncalls = sum(m['ncalls'] for m in found)
-        if index == 0 and ncalls == 0:
+        if allow_inflight and index == 0 and ncalls == 0:
             # The call in flight when instrumentation switched on was
             # entered unseen and has no incoming edge: not a sample. Only
             # the first span can be one; skipping a later one would shift
@@ -531,7 +534,7 @@ def call_samples(out, prefix, symbol, after):
                   for k in ('ir', 'ncalls', 'alloc_ir', 'mem_ir', 'mem_calls', 'rust_ir', *KINDS)}
         merged['path'] = str(span[-1])
         samples.append(merged)
-        if len(samples) == 3:
+        if len(samples) == count:
             break
     return samples
 
@@ -690,9 +693,9 @@ def layer_env(layer_dir, icd):
                 VK_INSTANCE_LAYERS=LAYER_NAME, NODEVICE_SELECT='1')
 
 
-def sampled(after, phases, label):
-    """Whether every root in `phases` has returned four times: the call in
-    flight when instrumentation switched on, then three samples.
+def sampled(after, phases, label, returns=4):
+    """Whether every root has returned `returns` times. Steady profiles allow
+    one in-flight call before three samples; fresh profiles require one return.
 
     `after` holds every root's dump numbers. A root outside `phases` that
     returns, or a declared root still short after STALL_FRAMES frames, fails.
@@ -700,7 +703,7 @@ def sampled(after, phases, label):
     if undeclared := [phase for phase, dumps in after.items() if dumps and phase not in phases]:
         raise RuntimeError(f'{label}: {undeclared} run in steady state but are not among the scene\'s roots '
                            f'{phases}; declare them in SCENES.')
-    done = all(len(after[phase]) > 3 for phase in phases)
+    done = all(len(after[phase]) >= returns for phase in phases)
     if not done and len(after[FRAME_ROOT]) > STALL_FRAMES:
         raise RuntimeError(f'{label}: after {len(after[FRAME_ROOT])} frames the roots returned '
                            f'{ {phase: len(after[phase]) for phase in phases} } times; a declared root does not '
@@ -808,8 +811,10 @@ def run_callgrind(command, env, repo, out, prefix, pause_at, label, done, deadli
     return triggers
 
 
-def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None, phases=None, deadline=900, leg=LEGS['gpu']):
+def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None, phases=None, deadline=900, leg=LEGS['gpu'], fresh=False):
     """Profiles `scene` and samples each root in `phases` (the scene's declared roots by default)."""
+    if fresh:
+        assert leg.name == 'gpu' and pause_at == 0, 'fresh preparation starts before GPU frame zero'
     if leg.name == 'cpu':
         return profile_cpu(binary, tag, scene, repo, out, pause_at, warmup)
     phases = SCENES[scene] if phases is None else phases
@@ -842,16 +847,23 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None, phases=No
     def after_of(triggers):
         return {phase: triggered(triggers, 'after', symbol) for phase, symbol in roots.items()}
     triggers = run_callgrind(command, env, repo, out, prefix, pause_at, f'{tag} {scene}',
-                             lambda triggers: sampled(after_of(triggers), phases, f'{tag} {scene}'), deadline)
+                             lambda triggers: sampled(after_of(triggers), phases, f'{tag} {scene}',
+                                                      returns=1 if fresh else 4), deadline)
     after = after_of(triggers)
     check_separated(command, out, prefix.name)
     result = {'tag': tag, 'scene': scene, 'leg': leg.name, 'binary': str(binary),
               'sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
               'icd': str(icd), 'icd_sha256': hashlib.sha256(icd.read_bytes()).hexdigest(),
-              'pause_at': pause_at, 'command': command}
+              'pause_at': pause_at, 'command': command, 'sample_mode': 'fresh' if fresh else 'retained'}
     for phase in phases:
         symbol = roots[phase]
-        samples = call_samples(out, prefix.name, symbol, after[phase])
+        samples = call_samples(out, prefix.name, symbol, after[phase],
+                               count=1 if fresh else 3, allow_inflight=not fresh)
+        if fresh:
+            assert len(samples) == 1, (tag, scene, phase, len(samples))
+            result[phase] = {'root': symbol, 'first': samples[0]}
+            print(tag, scene, phase, 'FIRST', samples[0], flush=True)
+            continue
         assert len(samples) == 3, (tag, scene, phase, len(samples))
         second, third = samples[1], samples[2]
         result[phase] = {'root': symbol, 'first': samples[0], 'second': second, 'third': third,

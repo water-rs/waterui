@@ -38,6 +38,7 @@ impl Blur {
         device: &wgpu::Device,
         delivery: super::shaders::ShaderDelivery,
         format: wgpu::TextureFormat,
+        cache: &super::PipelineCache,
     ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("silhouette blur"),
@@ -48,7 +49,7 @@ impl Blur {
         // size, which is within the scratch texture, and the
         // uploaded count equals the following tap array's length, capped to
         // the storage binding limit.
-        let shader = delivery.shadow_module(device);
+        let program = delivery.shadow_program(device);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("silhouette blur"),
             bind_group_layouts: &[Some(&layout)],
@@ -58,8 +59,8 @@ impl Blur {
             label: Some("silhouette blur"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs"),
+                module: &program.vertex,
+                entry_point: Some(program.vertex_entry),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 buffers: &[],
             },
@@ -67,8 +68,8 @@ impl Blur {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs"),
+                module: &program.fragment,
+                entry_point: Some(program.fragment_entry),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
@@ -77,8 +78,9 @@ impl Blur {
                 })],
             }),
             multiview_mask: None,
-            cache: None,
+            cache: cache.handle.as_ref(),
         });
+        cache.persist();
         Self {
             pipeline,
             layout,

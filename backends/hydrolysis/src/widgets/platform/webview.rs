@@ -59,9 +59,9 @@ pub use web::WebSystemWebViewController;
 use crate::renderer::{HydroNativeView, HydroState};
 
 #[cfg(not(hydrolysis_android_system_webview))]
-impl HydroNativeView for WebView {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for WebView {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &std::rc::Rc<dyn crate::theme::WidgetTheme>,
@@ -78,9 +78,9 @@ impl HydroNativeView for WebView {
 /// The Android system bridge measures like `Native<PlatformView>`: the mounted
 /// `WebView` has no intrinsic size and fills the proposal its slot assigns.
 #[cfg(hydrolysis_android_system_webview)]
-impl HydroNativeView for WebView {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for WebView {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &std::rc::Rc<dyn crate::theme::WidgetTheme>,
@@ -89,7 +89,7 @@ impl HydroNativeView for WebView {
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &std::rc::Rc<dyn crate::theme::WidgetTheme>,
@@ -136,7 +136,8 @@ pub fn install_controller(env: &mut Environment) {
 /// `jni_env` is `nativeCreateSession`'s environment: resolving
 /// `dev.waterui.hydrolysis.webview.HydrolysisWebView` needs a thread that
 /// entered from Java, and `session` is the `HydrolysisSession` object the
-/// wrapper registers its instance on.
+/// wrapper registers its instance on — the session's own global, shared
+/// rather than duplicated.
 ///
 /// # Errors
 ///
@@ -146,8 +147,8 @@ pub fn install_controller(env: &mut Environment) {
 #[cfg(hydrolysis_android_system_webview)]
 pub fn install_controller(
     env: &mut Environment,
-    jni_env: &mut jni::JNIEnv<'_>,
-    session: jni::objects::GlobalRef,
+    jni_env: &mut jni::Env<'_>,
+    session: std::sync::Arc<jni::objects::Global<jni::objects::JObject<'static>>>,
 ) -> Result<(), crate::runner::android::jni::JniError> {
     use waterui_webview::WebViewController;
 

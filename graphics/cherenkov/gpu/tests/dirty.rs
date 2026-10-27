@@ -2,6 +2,12 @@
 
 use cherenkov::Backend;
 use cherenkov::{__engine_test as split_test, __engine_wait as wait};
+use cherenkov_oracle::F32Image;
+use cherenkov_oracle::metrics::assert_images_match;
+
+#[path = "support/visual.rs"]
+mod visual;
+use visual::crop;
 
 split_test! {
 fn randomized_incremental_matches_full_lowering() {
@@ -73,17 +79,22 @@ fn a_glyph_keeps_its_path_clip_mask_when_composed() {
     assert!(masked.pixels.iter().any(|p| p[3] > 0.5), "glyph is visible");
     // An integer-edged path mask has exact 0/1 coverage. Crop the unmasked
     // glyph to obtain its reference without involving the analytic SDF's AA.
-    for (index, (a, b)) in unclipped.pixels.iter().zip(masked.pixels).enumerate() {
-        let expected = if (14..24).contains(&(index % 64)) {
-            *a
-        } else {
-            [0.0; 4]
-        };
-        assert_eq!(
-            expected.map(f32::to_bits),
-            b.map(f32::to_bits),
-            "pixel {index}"
-        );
-    }
+    let expected = F32Image {
+        width: masked.width,
+        height: masked.height,
+        pixels: unclipped
+            .pixels
+            .iter()
+            .enumerate()
+            .map(|(index, a)| {
+                if (14..24).contains(&(index % 64)) {
+                    *a
+                } else {
+                    [0.0; 4]
+                }
+            })
+            .collect(),
+    };
+    assert_images_match(&expected, &crop(&masked, 0..masked.width as usize, 0..masked.height as usize));
 }
 }

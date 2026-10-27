@@ -12,8 +12,8 @@ workspace = true
 
 [features]
 default = []
-vello-classic = ["dep:vello", "dep:vello_common", "dep:wgpu29", "dep:pollster", "dep:ash"]
-vello-hybrid = ["dep:vello_hybrid", "dep:vello_common", "dep:wgpu29", "dep:pollster", "dep:glifo", "dep:ash"]
+vello-classic = ["dep:vello", "dep:vello_common", "dep:wgpu", "dep:pollster", "dep:ash", "dep:objc2", "dep:objc2-metal"]
+vello-hybrid = ["dep:vello_gpu", "dep:vello_common", "dep:wgpu", "dep:pollster", "dep:glifo", "dep:ash", "dep:objc2", "dep:objc2-metal"]
 vello-cpu = ["dep:vello_cpu", "dep:vello_common", "vello_cpu/multithreading"]
 # The `skia`/`skia-metal` features select the adapters; `skia-safe`'s GPU
 # backend features come from same-name declarations under the target tables
@@ -34,6 +34,8 @@ cherenkov = [
     "dep:cherenkov", "dep:cherenkov-gpu", "cherenkov-gpu/bench", "dep:wgpu", "dep:ash",
     "dep:half", "dep:filtrate", "cherenkov-scene/text",
     "dep:objc2", "dep:objc2-metal", "dep:objc2-core-video",
+    # `external-cost`'s IOSurface plane textures (#168).
+    "objc2-metal/objc2-io-surface",
     "dep:objc2-core-foundation", "dep:ndk-sys",
 ]
 cherenkov-cpu = ["dep:cherenkov", "dep:cherenkov-cpu", "dep:filtrate", "cherenkov-scene/text"]
@@ -50,34 +52,29 @@ nami = { version = "0.13", default-features = false, features = ["std", "kurbo"]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Decodes `powermetrics --format plist` output for `measure --energy`.
-plist = "1.7"
+plist = "1.10"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
-# The fork pinned in the workspace `[patch.crates-io]` declares 0.9.0 — the
-# requirement Hydrolysis itself uses.
-vello = { version = "0.9", optional = true, features = ["wgpu-profiler"] }
-vello_hybrid = { version = "0.2", optional = true }
-vello_cpu = { version = "0.2", optional = true, features = ["f32_pipeline"] }
-vello_common = { version = "0.2", optional = true }
+# The fork pinned in the workspace `[patch.crates-io]` declares 0.11.0.
+vello = { version = "0.11", default-features = false, optional = true, features = ["wgpu", "wgpu-profiler"] }
+vello_gpu = { version = "0.3", default-features = false, optional = true, features = ["wgpu", "text"] }
+vello_cpu = { version = "0.3", default-features = false, optional = true, features = ["std", "text", "u8_pipeline"] }
+vello_common = { version = "0.3", default-features = false, optional = true, features = ["std"] }
 skia-safe = { version = "0.153", optional = true }
 # `no-compile` unifies onto skia-safe's transitive skia-bindings.
 skia-bindings = { version = "0.153", optional = true, default-features = false, features = ["no-compile"] }
 ash = { version = "0.38", optional = true }
 
 wgpu = { version = "30.0.1", optional = true }
-# The `vello-classic`/`vello-hybrid` baselines stay on wgpu 29: the pinned
-# lexoliu/vello forks require `wgpu ^29`. Both majors link into the bench;
-# each engine keeps its own device.
-wgpu29 = { package = "wgpu", version = "29", optional = true }
-pollster = { version = "0.4", optional = true }
+pollster = { version = "1.0", optional = true }
 peniko = "0.6"
-skrifa = "0.44"
-read-fonts = "0.41"
+skrifa = "0.48"
+read-fonts = "0.45"
 bytemuck = "1"
 half = { version = "2", optional = true }
-glifo = { version = "0.3", optional = true }
+glifo = { version = "0.4", optional = true, features = ["png"] }
 # Minimal surface: CPU list + brand string for `cpu_model`.
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 
@@ -109,7 +106,7 @@ objc2-metal = { version = "0.3.2", optional = true, default-features = false, fe
     # `CFTimeInterval` for `MTLCommandBuffer::GPUStartTime`/`GPUEndTime`.
     "objc2-core-foundation",
     # `external-cost`'s IOSurface plane textures (#168).
-    "MTLTexture", "MTLPixelFormat", "MTLResource", "MTLAllocation", "objc2-io-surface",
+    "MTLTexture", "MTLPixelFormat", "MTLResource", "MTLAllocation",
 ] }
 objc2-core-video = { version = "0.3", optional = true, default-features = false, features = [
     "std", "objc2-io-surface", "CVBase", "CVBuffer", "CVImageBuffer",

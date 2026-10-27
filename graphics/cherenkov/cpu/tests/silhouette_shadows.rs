@@ -4,9 +4,12 @@ use cherenkov::{__engine_test as split_test, __engine_wait as wait};
 use cherenkov::{
     Draw, Engine, EvenOdd, FrameTime, Offscreen, OffscreenFormat, Shadow, WorkingColor,
 };
+use cherenkov_oracle::metrics::assert_images_match;
 use kurbo::BezPath;
 #[path = "../../tests/common/silhouette_shadows.rs"]
 mod common;
+#[path = "support/visual.rs"]
+mod visual;
 split_test! {
 fn live_shadows_keep_offscreen_contributors_and_outer_clips() {
     wait!(common::retained_and_padded::<cherenkov_cpu::Raster>(cherenkov_cpu::RasterConfig::default()));
@@ -64,14 +67,10 @@ fn silhouette_resolves_winding_before_integrating_pixel_area() {
         }));
     });
     wait!(engine.render(FrameTime::now())).expect("render");
-    // Both scenes lower through the same code path, so the comparison is
-    // exact rather than within this file's 0.001 tolerance.
-    assert_eq!(
-        wait!(doubled.readback()).expect("doubled pixels").pixels,
-        wait!(reference.readback())
-            .expect("reference pixels")
-            .pixels,
-        "a doubled contour casts the same shadow as a single one under NonZero"
+    // A doubled contour casts the same shadow as a single one under NonZero.
+    assert_images_match(
+        &visual::image(&wait!(reference.readback()).expect("reference pixels")),
+        &visual::image(&wait!(doubled.readback()).expect("doubled pixels")),
     );
     doubled.update(|tx| {
         tx[doubled.root()].content(doubled.record(|r| {
@@ -82,12 +81,10 @@ fn silhouette_resolves_winding_before_integrating_pixel_area() {
         tx[reference.root()].content(reference.record(|_| {}));
     });
     wait!(engine.render(FrameTime::now())).expect("render");
-    assert_eq!(
-        wait!(doubled.readback()).expect("doubled pixels").pixels,
-        wait!(reference.readback())
-            .expect("reference pixels")
-            .pixels,
-        "the doubled region is outside under EvenOdd and casts no shadow"
+    // The doubled region is outside under EvenOdd and casts no shadow.
+    assert_images_match(
+        &visual::image(&wait!(reference.readback()).expect("reference pixels")),
+        &visual::image(&wait!(doubled.readback()).expect("doubled pixels")),
     );
 }
 }

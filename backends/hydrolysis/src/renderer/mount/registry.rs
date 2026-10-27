@@ -86,7 +86,7 @@ impl PaintOrder {
 /// One retained registration: today's flat payload plus the fields the
 /// per-node model needs — the node-local [`Region`], the owning cell and
 /// the paint-order key.
-pub struct RetainedEntry<T> {
+pub struct RetainedEntry<T, E: crate::text::TextEngine> {
     /// The registration's data, unchanged from the flat-list type; the
     /// fields holding a resolved window rect are rewritten at
     /// materialization.
@@ -95,7 +95,7 @@ pub struct RetainedEntry<T> {
     pub region: Region,
     /// The node that emitted it; a dead owner drops the entry at the
     /// next materialization.
-    pub owner: Weak<NodeCell>,
+    pub owner: Weak<NodeCell<E>>,
     /// Its paint-order key — materialization sorts by it.
     pub order: PaintOrder,
 }
@@ -103,49 +103,48 @@ pub struct RetainedEntry<T> {
 /// The per-owner buckets: one `Vec` per registration kind, appended in
 /// emission order during the owner's record. Owned by the cell, taken as
 /// a unit on re-record or retire.
-#[derive(Default)]
-pub struct OwnerRegistrations {
+pub struct OwnerRegistrations<E: crate::text::TextEngine> {
     /// Pointer targets, in emission order.
-    pub pointer_targets: Vec<RetainedEntry<crate::renderer::PointerTarget>>,
+    pub pointer_targets: Vec<RetainedEntry<crate::renderer::PointerTarget<E>, E>>,
     /// System-back targets, frontmost last after materialization.
-    pub back_targets: Vec<RetainedEntry<crate::renderer::NavigationBackTarget>>,
+    pub back_targets: Vec<RetainedEntry<crate::renderer::NavigationBackTarget<E>, E>>,
     /// Gesture-recognizer regions, parallel to `pointer_targets`.
-    pub gesture_regions: Vec<RetainedEntry<RegisteredGesture>>,
+    pub gesture_regions: Vec<RetainedEntry<RegisteredGesture<E>, E>>,
     /// Overlay occluders: `(bounds, order)` in the flat list — the
     /// retained form needs no payload beyond the region.
-    pub gesture_occluders: Vec<RetainedEntry<()>>,
+    pub gesture_occluders: Vec<RetainedEntry<(), E>>,
     /// Cursor-style targets.
-    pub cursor_targets: Vec<RetainedEntry<crate::renderer::CursorTarget>>,
+    pub cursor_targets: Vec<RetainedEntry<crate::renderer::CursorTarget<E>, E>>,
     /// Hover targets.
-    pub hover_targets: Vec<RetainedEntry<crate::renderer::HoverTarget>>,
+    pub hover_targets: Vec<RetainedEntry<crate::renderer::HoverTarget<E>, E>>,
     /// Drop destinations.
-    pub drop_targets: Vec<RetainedEntry<crate::renderer::DropTarget>>,
+    pub drop_targets: Vec<RetainedEntry<crate::renderer::DropTarget<E>, E>>,
     /// Context-menu targets.
-    pub context_menu_targets: Vec<RetainedEntry<crate::renderer::ContextMenuTarget>>,
+    pub context_menu_targets: Vec<RetainedEntry<crate::renderer::ContextMenuTarget<E>, E>>,
     /// Scroll targets.
-    pub scroll_targets: Vec<RetainedEntry<crate::renderer::ScrollTarget>>,
+    pub scroll_targets: Vec<RetainedEntry<crate::renderer::ScrollTarget<E>, E>>,
     /// Text-input targets: the payload keeps its rects in the node's
     /// local space; materialization resolves them through the region.
-    pub text_input_targets: Vec<RetainedEntry<crate::renderer::TextInputTarget>>,
+    pub text_input_targets: Vec<RetainedEntry<crate::renderer::TextInputTarget<E>, E>>,
     /// Embedded-surface input targets.
-    pub embedded_input_targets: Vec<RetainedEntry<crate::renderer::EmbeddedInputTarget>>,
+    pub embedded_input_targets: Vec<RetainedEntry<crate::renderer::EmbeddedInputTarget<E>, E>>,
     /// Native-subview occlusions.
-    pub native_view_occlusions: Vec<RetainedEntry<crate::renderer::NativeViewOcclusion>>,
+    pub native_view_occlusions: Vec<RetainedEntry<crate::renderer::NativeViewOcclusion, E>>,
     /// Embedded platform-view placements.
-    pub platform_view_placements: Vec<RetainedEntry<PlatformViewRegistration>>,
+    pub platform_view_placements: Vec<RetainedEntry<PlatformViewRegistration, E>>,
     /// Modal scopes — the single flat `modal_interaction` slot keeps
     /// only the frontmost live registration.
-    pub modal_scope: Vec<RetainedEntry<crate::theme::ModalInteraction>>,
+    pub modal_scope: Vec<RetainedEntry<crate::theme::ModalInteraction, E>>,
 }
 
 /// The window-side half of the retained model: which cells have ever
 /// registered (the materialization walks them), whether anything changed
 /// since the last materialization, and the registration sequence that
 /// gives every entry a distinct paint-order tail.
-pub struct RetainedRegistry {
+pub struct RetainedRegistry<E: crate::text::TextEngine> {
     /// Cells that hold registrations, in first-registration order.
     /// Dead cells are pruned where the enumeration is walked.
-    owners: Vec<Weak<NodeCell>>,
+    owners: Vec<Weak<NodeCell<E>>>,
     /// Set whenever any bucket mutates; the next materialization rebuilds
     /// the flat lists.
     pub stale: Cell<bool>,
@@ -155,10 +154,10 @@ pub struct RetainedRegistry {
     /// The owner of the `ScrollTarget` holding each scroll handle, keyed
     /// by the handle's cache key — handle-driven scrolls mark it without
     /// walking every owner's bucket.
-    scroll_owners: RefCell<HashMap<usize, Weak<NodeCell>>>,
+    scroll_owners: RefCell<HashMap<usize, Weak<NodeCell<E>>>>,
 }
 
-impl RetainedRegistry {
+impl<E: crate::text::TextEngine> RetainedRegistry<E> {
     /// An empty registry.
     pub fn new() -> Self {
         Self {
@@ -182,7 +181,7 @@ impl RetainedRegistry {
 
     /// Records `cell` as the owner of the scroll target holding the handle
     /// keyed `key`.
-    pub(crate) fn bind_scroll_owner(&self, key: usize, cell: &Rc<NodeCell>) {
+    pub(crate) fn bind_scroll_owner(&self, key: usize, cell: &Rc<NodeCell<E>>) {
         self.scroll_owners
             .borrow_mut()
             .insert(key, Rc::downgrade(cell));
@@ -191,7 +190,7 @@ impl RetainedRegistry {
     /// Forgets `cell` as the owner of the handle keyed `key` — run when
     /// its bucket is purged. A handle another owner has since claimed
     /// keeps that owner.
-    pub(crate) fn release_scroll_owner(&self, key: usize, cell: &Rc<NodeCell>) {
+    pub(crate) fn release_scroll_owner(&self, key: usize, cell: &Rc<NodeCell<E>>) {
         let mut owners = self.scroll_owners.borrow_mut();
         if owners
             .get(&key)
@@ -202,7 +201,7 @@ impl RetainedRegistry {
     }
 
     /// The live owner of the scroll target holding the handle keyed `key`.
-    pub(crate) fn scroll_owner(&self, key: usize) -> Option<Weak<NodeCell>> {
+    pub(crate) fn scroll_owner(&self, key: usize) -> Option<Weak<NodeCell<E>>> {
         self.scroll_owners
             .borrow()
             .get(&key)
@@ -211,7 +210,7 @@ impl RetainedRegistry {
     }
 
     /// Lists `cell` among the registering owners; no-op once listed.
-    pub(crate) fn enlist(&mut self, cell: &Rc<NodeCell>) {
+    pub(crate) fn enlist(&mut self, cell: &Rc<NodeCell<E>>) {
         if cell.registered.replace(true) {
             return;
         }
@@ -220,13 +219,13 @@ impl RetainedRegistry {
 
     /// The live owners without pruning — the lookup paths that run with
     /// the registry shared (`&self`) walk it through here.
-    pub(crate) fn live_owners(&self) -> impl Iterator<Item = Rc<NodeCell>> + '_ {
+    pub(crate) fn live_owners(&self) -> impl Iterator<Item = Rc<NodeCell<E>>> + '_ {
         self.owners.iter().filter_map(Weak::upgrade)
     }
 
     /// The live registering owners — dead cells are pruned from the list
     /// as it is handed out.
-    pub(crate) fn owners(&mut self) -> Vec<Rc<NodeCell>> {
+    pub(crate) fn owners(&mut self) -> Vec<Rc<NodeCell<E>>> {
         let mut live = Vec::with_capacity(self.owners.len());
         self.owners.retain(|weak| {
             weak.upgrade().is_some_and(|cell| {
@@ -238,18 +237,18 @@ impl RetainedRegistry {
     }
 }
 
-impl<T> RetainedEntry<T> {
+impl<T, E: crate::text::TextEngine> RetainedEntry<T, E> {
     /// A registration anchored at `placement`, recorded by `owner` at
     /// registration sequence `reg`. `local` is in the anchor's own space.
     pub fn at(
         mut payload: T,
         local: kurbo::Rect,
         placement: &Rc<Placement>,
-        owner: &Rc<NodeCell>,
+        owner: &Rc<NodeCell<E>>,
         reg: u64,
     ) -> Self
     where
-        T: SetRegistrationOwner,
+        T: SetRegistrationOwner<E>,
     {
         payload.set_registration_owner(&Rc::downgrade(owner));
         Self {
@@ -267,9 +266,9 @@ impl<T> RetainedEntry<T> {
 /// A gesture registration's retained payload: the engine-side target
 /// (sharing the recognizer created at registration) plus the owner chain
 /// the press path's ancestry check reads.
-pub struct RegisteredGesture {
+pub struct RegisteredGesture<E: crate::text::TextEngine> {
     /// The node cell that registered the gesture.
-    pub owner: Weak<NodeCell>,
+    pub owner: Weak<NodeCell<E>>,
     /// The engine-side target; bounds and order are rewritten at
     /// materialization.
     pub target: crate::gesture::GestureTarget,
@@ -292,10 +291,10 @@ pub struct PlatformViewRegistration {
 /// Tags a retained payload with its registering node so dispatch can mark
 /// exactly the cell whose record emitted it. Payloads no dispatch path
 /// marks (occlusions, placements, the modal scope) get the no-op impl.
-pub trait SetRegistrationOwner {
+pub trait SetRegistrationOwner<E: crate::text::TextEngine> {
     /// Stores `owner` on the payload; the no-op impl is for payloads no
     /// dispatch path marks.
-    fn set_registration_owner(&mut self, owner: &Weak<NodeCell>) {
+    fn set_registration_owner(&mut self, owner: &Weak<NodeCell<E>>) {
         let _ = owner;
     }
 }
@@ -303,8 +302,8 @@ pub trait SetRegistrationOwner {
 macro_rules! owner_tagged {
     ($($ty:ty),+ $(,)?) => {
         $(
-            impl SetRegistrationOwner for $ty {
-                fn set_registration_owner(&mut self, owner: &Weak<NodeCell>) {
+            impl<E: crate::text::TextEngine> SetRegistrationOwner<E> for $ty {
+                fn set_registration_owner(&mut self, owner: &Weak<NodeCell<E>>) {
                     self.owner = owner.clone();
                 }
             }
@@ -313,19 +312,43 @@ macro_rules! owner_tagged {
 }
 
 owner_tagged!(
-    crate::renderer::input::PointerTarget,
-    crate::renderer::input::CursorTarget,
-    crate::renderer::input::HoverTarget,
-    crate::renderer::input::DropTarget,
-    crate::renderer::input::ScrollTarget,
-    crate::renderer::input::ContextMenuTarget,
-    crate::renderer::NavigationBackTarget,
-    crate::renderer::input::TextInputTarget,
-    crate::renderer::input::EmbeddedInputTarget,
-    RegisteredGesture,
+    crate::renderer::input::PointerTarget<E>,
+    crate::renderer::input::CursorTarget<E>,
+    crate::renderer::input::HoverTarget<E>,
+    crate::renderer::input::DropTarget<E>,
+    crate::renderer::input::ScrollTarget<E>,
+    crate::renderer::input::ContextMenuTarget<E>,
+    crate::renderer::NavigationBackTarget<E>,
+    crate::renderer::input::TextInputTarget<E>,
+    crate::renderer::input::EmbeddedInputTarget<E>,
+    RegisteredGesture<E>,
 );
 
-impl SetRegistrationOwner for () {}
-impl SetRegistrationOwner for crate::renderer::input::NativeViewOcclusion {}
-impl SetRegistrationOwner for crate::theme::ModalInteraction {}
-impl SetRegistrationOwner for PlatformViewRegistration {}
+impl<E: crate::text::TextEngine> SetRegistrationOwner<E> for () {}
+impl<E: crate::text::TextEngine> SetRegistrationOwner<E>
+    for crate::renderer::input::NativeViewOcclusion
+{
+}
+impl<E: crate::text::TextEngine> SetRegistrationOwner<E> for crate::theme::ModalInteraction {}
+impl<E: crate::text::TextEngine> SetRegistrationOwner<E> for PlatformViewRegistration {}
+
+impl<E: crate::text::TextEngine> Default for OwnerRegistrations<E> {
+    fn default() -> Self {
+        Self {
+            pointer_targets: Vec::default(),
+            back_targets: Vec::default(),
+            gesture_regions: Vec::default(),
+            gesture_occluders: Vec::default(),
+            cursor_targets: Vec::default(),
+            hover_targets: Vec::default(),
+            drop_targets: Vec::default(),
+            context_menu_targets: Vec::default(),
+            scroll_targets: Vec::default(),
+            text_input_targets: Vec::default(),
+            embedded_input_targets: Vec::default(),
+            native_view_occlusions: Vec::default(),
+            platform_view_placements: Vec::default(),
+            modal_scope: Vec::default(),
+        }
+    }
+}

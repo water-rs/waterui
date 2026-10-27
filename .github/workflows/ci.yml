@@ -105,7 +105,7 @@ jobs:
       code: ${{ steps.prose.outputs.code == 'true' || steps.filter.outputs.workflows == 'true' }}
       deps: ${{ steps.filter.outputs.deps == 'true' || steps.filter.outputs.workflows == 'true' }}
       scripts: ${{ steps.filter.outputs.scripts == 'true' || steps.filter.outputs.workflows == 'true' }}
-      android: ${{ steps.filter.outputs.android == 'true' || steps.filter.outputs.workflows == 'true' }}
+      android: ${{ steps.filter.outputs.android == 'true' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'push'
@@ -122,6 +122,7 @@ jobs:
               - "deny.toml"
             scripts:
               - ".github/scripts/**"
+              - ".github/tools/affected/**"
               - "Cargo.toml"
             android:
               - "cli/src/android/**"
@@ -133,6 +134,16 @@ jobs:
               - "backends/hydrolysis/android/**"
               # `[package.metadata.waterui]`'s Android keys drive the scaffold.
               - "Cargo.toml"
+              # The packaging job's workflow and transitive local action inputs.
+              # Keep these with the android-package job's setup below.
+              - ".github/workflows/ci.yml"
+              - ".github/actions/setup-rust/action.yml"
+              - ".github/actions/cargo-sources/action.yml"
+              - ".github/actions/cache-headroom/action.yml"
+              - ".github/actions/setup-android-ndk/action.yml"
+              - ".github/actions/install-android-platform/action.yml"
+              - ".github/actions/setup-linux-deps/action.yml"
+              - ".github/actions/refresh-apt-index/refresh.sh"
             workflows:
               - ".github/workflows/**"
               - ".github/actions/**"
@@ -200,7 +211,7 @@ jobs:
     needs: changes
     if: always() && ((github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - name: Require successful scope discovery
         env:
@@ -210,6 +221,24 @@ jobs:
         if: needs.changes.outputs.scripts == 'true'
       - uses: astral-sh/setup-uv@v6
         if: needs.changes.outputs.scripts == 'true'
+      # The determinator-backed tests skip when the built binary is absent,
+      # so build it exactly as affected.yml does, under the same cache key.
+      - uses: ./.github/actions/setup-rust
+        if: needs.changes.outputs.scripts == 'true'
+        with:
+          cache: "false"
+      - name: Restore Cargo sources
+        if: needs.changes.outputs.scripts == 'true'
+        uses: ./.github/actions/cargo-sources
+      - uses: actions/cache@v4
+        id: affected-tool
+        if: needs.changes.outputs.scripts == 'true'
+        with:
+          path: .github/tools/affected/target/release/affected
+          key: affected-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/tools/affected/Cargo.lock', '.github/tools/affected/Cargo.toml', '.github/tools/affected/src/**', '.github/tools/affected/rules.toml') }}
+      - name: Build the determinator tool
+        if: needs.changes.outputs.scripts == 'true' && steps.affected-tool.outputs.cache-hit != 'true'
+        run: cargo build --locked --release --manifest-path .github/tools/affected/Cargo.toml
       - name: Manifest derivation tests
         if: needs.changes.outputs.scripts == 'true'
         run: >
@@ -423,7 +452,8 @@ jobs:
     with:
       full: false
       affected: ${{ needs.scope.outputs.packages }}
-      package-args: ${{ needs.scope.outputs.package-args }}
+      linux-package-args: ${{ needs.scope.outputs.linux-package-args }}
+      workspace-wide: ${{ needs.scope.outputs.workspace-wide == 'true' }}
       comment-only: ${{ needs.scope.outputs.comment-only == 'true' }}
       scene-assets: ${{ needs.scope.outputs.scene-assets == 'true' }}
       apple-legs: ${{ needs.scope.outputs.apple-legs }}

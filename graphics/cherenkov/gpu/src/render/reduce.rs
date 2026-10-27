@@ -43,9 +43,10 @@ pub struct Bind {
 /// The reduce pipeline's layout and its pipelines by target format,
 /// built on the first frame that reduces a levelled capture.
 pub struct Pipelines {
+    cache: super::PipelineCache,
     layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
-    module: wgpu::ShaderModule,
+    program: super::shaders::RenderProgram,
     /// `(format, pipeline)`: a level stores its capture's format, the
     /// surface's or the scratch format.
     by_format: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
@@ -53,7 +54,11 @@ pub struct Pipelines {
 
 impl Pipelines {
     /// The layout and module; pipelines are built per format on demand.
-    pub fn new(device: &wgpu::Device, delivery: super::shaders::ShaderDelivery) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        delivery: super::shaders::ShaderDelivery,
+        cache: super::PipelineCache,
+    ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("cherenkov reduce"),
             entries: &super::layout_entries(super::bindings::REDUCE_GROUP0),
@@ -64,9 +69,10 @@ impl Pipelines {
             immediate_size: 0,
         });
         Self {
+            cache,
             layout,
             pipeline_layout,
-            module: delivery.reduce_module(device),
+            program: delivery.reduce_program(device),
             by_format: Vec::new(),
         }
     }
@@ -83,10 +89,10 @@ impl Pipelines {
             let pipeline = super::projective::quad_pipeline(
                 device,
                 &self.pipeline_layout,
-                &self.module,
-                "fs_main",
+                &self.program,
                 format,
                 None,
+                &self.cache,
             );
             self.by_format.push((format, pipeline));
             self.by_format.len() - 1

@@ -96,7 +96,7 @@ impl View for ProbeContent {
 }
 
 struct Fixture {
-    node: RenderNode,
+    node: RenderNode<crate::text::ParleyEngine>,
     trace: Trace,
     builds: Rc<Cell<usize>>,
 }
@@ -105,7 +105,7 @@ impl Fixture {
     fn new<V: View>(
         vertical: bool,
         wrap: impl FnOnce(ProbeContent) -> V,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         env: &Environment,
     ) -> Self {
         let trace = Rc::new(RefCell::new(Vec::new()));
@@ -197,9 +197,9 @@ fn equal_bounds_keep_the_selected_proposal_after_other_probes() {
 
 /// Runs `f` inside the root's record: a sub-view flush always runs under a
 /// recording reader, which owns what it registers and anchors its placement.
-fn under_root_record<R>(
-    renderer: &mut HydrolysisRenderer,
-    f: impl FnOnce(&mut HydrolysisRenderer) -> R,
+fn under_root_record<R, E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    f: impl FnOnce(&mut HydrolysisRenderer<E>) -> R,
 ) -> R {
     let root = renderer.core.root_core.clone();
     renderer

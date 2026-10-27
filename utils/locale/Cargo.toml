@@ -40,7 +40,7 @@ jiff = { workspace = true, optional = true }
 num-traits = { version = "0.2", default-features = false }
 serde = { workspace = true, features = ["derive"] }
 # Translation catalogs are parsed, never written.
-toml = { version = "1.1", default-features = false, features = ["std", "serde", "parse"] }
+toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }
 tracing.workspace = true
 sys-locale.workspace = true
 iana-time-zone.workspace = true

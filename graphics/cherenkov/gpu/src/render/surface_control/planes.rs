@@ -13,8 +13,8 @@
 //! part's pool behind that fence, and a promoted frame's fence joins the
 //! producer's release fence before the plane's lease on the frame ends.
 
-use std::os::fd::OwnedFd;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::os::fd::{AsFd, OwnedFd};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -24,7 +24,7 @@ use cherenkov::{LayerId, RenderError, ShapeData, SurfaceError};
 use rustc_hash::FxHashMap;
 
 use super::buffer::{self, Buffer, State};
-use super::ffi::{SurfaceControl, Transaction};
+use super::ffi::{ExtendedRangeBrightness, SurfaceControl, Transaction};
 use super::plan::{
     self, BufferTransform, Dataspace, Encoding, Geometry, HostedProperties, IRect, Inexpressible,
     Op, Placement, Properties, Slot,
@@ -34,6 +34,7 @@ use crate::interop::{
     ExternalFrame, FramePlanes, HdrMetadata, OutputAlpha, OutputColor, TextureOutput,
 };
 use crate::render::external::vulkan::{self, NativeError, PlaneAcquire, ReleaseSync, Repr, Shared};
+use crate::render::planes::Presentation;
 use crate::render::planes::{Composition, Compositor, PlaneContent, SystemPlanes};
 use crate::render::present::Presenter;
 
@@ -135,7 +136,10 @@ enum Entry<'a> {
         view: Option<&'a wgpu::TextureView>,
         size: (u32, u32),
         raster: Option<(LayerId, u64)>,
+        format: wgpu::TextureFormat,
+        color: OutputColor,
         properties: Properties,
+        damage: std::borrow::Cow<'a, cherenkov::damage::Region>,
     },
     /// A frame shown on its own plane.
     Frame(Promotion<'a>),
@@ -236,6 +240,73 @@ fn dup_fence(fd: &OwnedFd) -> Result<OwnedFd, RenderError> {
         .map_err(|e| RenderError::Render(format!("duplicate a fence: {e}")))
 }
 
+fn engine_encoding(
+    range: crate::render::present::ColorRange,
+) -> Result<(wgpu::TextureFormat, OutputColor, Dataspace), RenderError> {
+    if range == crate::render::present::ColorRange::Standard {
+        return Ok((buffer::FORMAT, OutputColor::Srgb, Dataspace::SRGB));
+    }
+    let hdr = range == crate::render::present::ColorRange::HighDynamicRange;
+    let color = crate::interop::FrameColor {
+        transfer: if hdr {
+            crate::interop::Transfer::Linear
+        } else {
+            crate::interop::Transfer::Srgb
+        },
+        ..crate::interop::FrameColor::LINEAR_P3
+    };
+    let dataspace = plan::dataspace(
+        &color,
+        Encoding::Rgb {
+            float: hdr,
+            alpha: crate::interop::RgbAlpha::Premultiplied,
+        },
+    )
+    .map_err(|error| RenderError::Render(error.to_string()))?;
+    Ok((
+        if hdr {
+            wgpu::TextureFormat::Rgba16Float
+        } else {
+            buffer::FORMAT
+        },
+        if hdr {
+            OutputColor::LinearDisplayP3
+        } else {
+            OutputColor::DisplayP3
+        },
+        dataspace,
+    ))
+}
+
+fn raster_entry<'a>(
+    view: Option<&'a wgpu::TextureView>,
+    generation: u64,
+    range: crate::render::present::ColorRange,
+    placement: &crate::render::planes::Placement,
+    size: (u32, u32),
+) -> Result<Entry<'a>, RenderError> {
+    let layer = placement.layer;
+    let (format, output_color, dataspace) = engine_encoding(range)?;
+    let mut damage = cherenkov::damage::Region::new(placement.size);
+    damage.mark_full();
+    Ok(Entry::Engine {
+        damage: std::borrow::Cow::Owned(damage),
+        view,
+        size: placement.size,
+        raster: Some((layer, generation)),
+        format,
+        color: output_color,
+        properties: Properties {
+            z: 0,
+            placement: plan::promoted(placement, size).map_err(|e| cannot_show(layer, &e))?,
+            alpha: placement.opacity,
+            opaque: false,
+            dataspace,
+            hdr: HdrMetadata::default(),
+        },
+    })
+}
+
 /// The stack `composition` describes, bottom first, with each promoted
 /// frame's plane properties.
 ///
@@ -247,16 +318,20 @@ fn stack<'a>(composition: &Composition<'a>) -> Result<Vec<Entry<'a>>, RenderErro
     for slot in plan::stack_order(composition.parts.len(), composition.planes.len()) {
         let plane = match slot {
             Slot::Part(n) => {
+                let (format, color, dataspace) = engine_encoding(composition.parts[n].range)?;
                 entries.push(Entry::Engine {
+                    damage: std::borrow::Cow::Borrowed(composition.parts[n].damage),
                     view: Some(composition.parts[n].view),
                     size: composition.size,
                     raster: None,
+                    format,
+                    color,
                     properties: Properties {
                         z: 0,
                         placement: full(composition.size),
                         alpha: 1.0,
                         opaque: false,
-                        dataspace: Dataspace::SRGB,
+                        dataspace,
                         hdr: HdrMetadata::default(),
                     },
                 });
@@ -279,28 +354,18 @@ fn stack<'a>(composition: &Composition<'a>) -> Result<Vec<Entry<'a>>, RenderErro
                 });
                 continue;
             }
-            PlaneContent::Raster { view, generation } => {
-                entries.push(Entry::Engine {
-                    view: *view,
-                    size: plane.placement.size,
-                    raster: Some((layer, *generation)),
-                    properties: Properties {
-                        z: 0,
-                        placement: plan::promoted(plane.placement, composition.size)
-                            .map_err(|e| cannot_show(layer, &e))?,
-                        alpha: plane.placement.opacity,
-                        opaque: false,
-                        dataspace: plan::dataspace(
-                            &crate::interop::FrameColor::LINEAR_P3,
-                            Encoding::Rgb {
-                                float: true,
-                                alpha: crate::interop::RgbAlpha::Premultiplied,
-                            },
-                        )
-                        .map_err(|e| cannot_show(layer, &e))?,
-                        hdr: HdrMetadata::default(),
-                    },
-                });
+            PlaneContent::Raster {
+                view,
+                generation,
+                range,
+            } => {
+                entries.push(raster_entry(
+                    *view,
+                    *generation,
+                    *range,
+                    plane.placement,
+                    composition.size,
+                )?);
                 continue;
             }
         };
@@ -381,6 +446,14 @@ struct Pending {
 // Every other field is `Send`.
 unsafe impl Send for Pending {}
 
+const fn output_alpha(part: usize, transparent: bool) -> OutputAlpha {
+    if part == 0 && !transparent {
+        OutputAlpha::Opaque
+    } else {
+        OutputAlpha::Premultiplied
+    }
+}
+
 /// One engine part's surface control and buffers.
 struct Part {
     surface: SurfaceControl,
@@ -393,6 +466,38 @@ struct Part {
     raster: Option<(LayerId, u64)>,
     headroom: f32,
     format: wgpu::TextureFormat,
+    damage: cherenkov::damage::Region,
+    damage_generation: Option<u64>,
+    mapping: Option<(OutputColor, OutputAlpha)>,
+    damage_rects: Vec<ndk_sys::ARect>,
+}
+
+impl Part {
+    fn retains_raster(&self, raster: Option<(LayerId, u64)>) -> bool {
+        raster.is_some()
+            && self.raster == raster
+            && self.current.is_some_and(|id| {
+                self.buffers
+                    .iter()
+                    .find(|buffer| buffer.id == id)
+                    .expect("the current buffer belongs to this part")
+                    .repair
+                    .is_empty()
+            })
+    }
+
+    fn publish_damage(&mut self, transaction: &mut Transaction) {
+        self.damage_rects.clear();
+        self.damage_rects
+            .extend(self.damage.rectangles().iter().map(|rect| ndk_sys::ARect {
+                left: i32::try_from(rect.x0()).expect("buffer extent fits i32"),
+                top: i32::try_from(rect.y0()).expect("buffer extent fits i32"),
+                right: i32::try_from(rect.x1()).expect("buffer extent fits i32"),
+                bottom: i32::try_from(rect.y1()).expect("buffer extent fits i32"),
+            }));
+        transaction.set_damage_region(&self.surface, &self.damage_rects);
+        self.damage.clear();
+    }
 }
 
 /// One promoted frame's surface control.
@@ -417,13 +522,26 @@ struct Update {
     properties: Properties,
 }
 
-/// An engine surface realized as child surface controls of the host's
-/// parent.
+/// A complete frame whose source brightness is still being read by the GPU.
+struct PendingPresentation {
+    ready: Arc<AtomicBool>,
+    transaction: Transaction,
+    replaced: Vec<Pending>,
+    headrooms: Vec<(usize, crate::render::headroom::Readback)>,
+    generation: u64,
+    display: cherenkov::Display,
+}
+
+/// An engine surface realized under the host's parent surface control.
 pub struct Planes {
+    looper: ndk::looper::ForeignLooper,
+    waker: cherenkov::CompletionWaker,
+    presenting: Option<PendingPresentation>,
     /// The engine's container under the host's parent: every part and plane
     /// is its child, so their z-orders never interleave with the host's.
     root: SurfaceControl,
     root_shown: bool,
+    extended_range: Option<ExtendedRangeBrightness>,
     size: (u32, u32),
     transparent: bool,
     shared: Arc<Shared>,
@@ -463,6 +581,7 @@ impl Planes {
         shared: Arc<Shared>,
         submit_lock: Arc<Mutex<()>>,
         target: &SurfaceControlTarget,
+        waker: cherenkov::CompletionWaker,
     ) -> Result<Self, SurfaceError> {
         let unsupported =
             |why: &str| SurfaceError::UnsupportedTarget(format!("surface control: {why}"));
@@ -491,8 +610,12 @@ impl Planes {
         .map_err(|e| unsupported(&format!("sync-fence semaphore: {e}")))?;
         let (release, released) = mpsc::channel();
         Ok(Self {
+            looper: target.looper.clone(),
+            waker,
+            presenting: None,
             root,
             root_shown: false,
+            extended_range: ExtendedRangeBrightness::load(),
             size: target.size(),
             transparent: target.transparent,
             shared,
@@ -588,9 +711,57 @@ impl Planes {
         clippy::too_many_lines,
         reason = "one frame's buffers, submission and transaction belong together"
     )]
-    fn present(&mut self, composition: Composition<'_>) -> Result<bool, RenderError> {
+    fn present(&mut self, composition: Composition<'_>) -> Result<Presentation, RenderError> {
+        if let Some(pending) = &self.presenting {
+            if !pending.ready.load(Ordering::Acquire) {
+                return Ok(Presentation::Pending);
+            }
+            let mut pending = self.presenting.take().expect("pending presentation");
+            for (part, readback) in pending.headrooms {
+                // SAFETY: the native completion event precedes the Acquire load;
+                // this buffer holds only this submitted frame's reduction result.
+                let peak = unsafe { readback.read() };
+                let part = &mut self.parts[part];
+                if part.headroom.to_bits() != peak.to_bits() {
+                    part.damage.mark_full();
+                    part.publish_damage(&mut pending.transaction);
+                }
+                part.headroom = peak;
+                self.extended_range
+                    .as_ref()
+                    .expect("HDR support checked")
+                    .set(
+                        &mut pending.transaction,
+                        &part.surface,
+                        peak,
+                        pending.display.headroom.max(1.0).min(peak),
+                    );
+            }
+            Self::apply(pending.transaction, &self.release, pending.replaced);
+            if pending.generation == composition.generation
+                && pending.display == composition.display
+            {
+                return Ok(Presentation::Presented);
+            }
+        }
         let native = |e: NativeError| RenderError::Render(format!("surface control: {e}"));
         let stack = stack(&composition)?;
+        if self.extended_range.is_none()
+            && stack.iter().any(|entry| {
+                matches!(
+                    entry,
+                    Entry::Engine {
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        ..
+                    }
+                )
+            })
+        {
+            return Err(RenderError::Render(
+                "linear HDR system planes require Android 14 extended-range brightness support"
+                    .into(),
+            ));
+        }
         let Composition {
             device,
             queue,
@@ -618,6 +789,10 @@ impl Planes {
                 raster: None,
                 headroom: display.headroom,
                 format: buffer::FORMAT,
+                damage: cherenkov::damage::Region::new(self.size),
+                damage_generation: None,
+                mapping: None,
+                damage_rects: Vec::new(),
             });
         }
         // Immutable captures follow layer identity, not their current slot
@@ -645,14 +820,18 @@ impl Planes {
             .filter(|entry| matches!(entry, Entry::Engine { .. }))
             .enumerate()
         {
-            let Entry::Engine { size, raster, .. } = entry else {
+            let Entry::Engine {
+                size,
+                raster,
+                format,
+                color,
+                damage,
+                ..
+            } = entry
+            else {
                 unreachable!("filtered engine entries");
             };
-            let format = if raster.is_some() {
-                wgpu::TextureFormat::Rgba16Float
-            } else {
-                buffer::FORMAT
-            };
+            let format = *format;
             let this = &mut self.parts[part];
             if this.size != *size || this.format != format {
                 for buffer in this.buffers.drain(..) {
@@ -663,17 +842,49 @@ impl Planes {
                 this.size = *size;
                 this.format = format;
                 this.raster = None;
+                this.damage = cherenkov::damage::Region::new(*size);
+                this.damage_generation = None;
+                this.mapping = None;
             }
-            if raster.is_some()
-                && this.raster == *raster
-                && this.current.is_some()
-                && this.headroom.to_bits() == display.headroom.to_bits()
+            // HDR is scene-referred; SDR content never enters the tone
+            // shoulder. Display headroom therefore does not alter stored pixels.
+            let mapping = (*color, output_alpha(part, self.transparent));
+            let invalidated = this.mapping != Some(mapping) || this.raster != *raster;
+            if invalidated {
+                this.damage.mark_full();
+                for buffer in &mut this.buffers {
+                    buffer.repair.mark_full();
+                }
+                this.mapping = Some(mapping);
+            }
+            if this.damage_generation != Some(composition.generation)
+                && !this.retains_raster(*raster)
             {
+                for rect in damage.rectangles() {
+                    let (x, y, width, height) = rect.xywh();
+                    this.damage.add(x, y, width, height);
+                    for buffer in &mut this.buffers {
+                        buffer.repair.add(x, y, width, height);
+                    }
+                }
+                this.damage_generation = Some(composition.generation);
+            }
+        }
+        for (part, entry) in stack
+            .iter()
+            .filter(|entry| matches!(entry, Entry::Engine { .. }))
+            .enumerate()
+        {
+            let Entry::Engine { raster, .. } = entry else {
+                unreachable!("engine entry")
+            };
+            let this = &self.parts[part];
+            if this.retains_raster(*raster) {
                 chosen.push(None);
             } else {
                 match self.free_buffer(part).map_err(native)? {
                     Some(at) => chosen.push(Some(at)),
-                    None => return Ok(false),
+                    None => return Ok(Presentation::Retry),
                 }
             }
         }
@@ -698,10 +909,15 @@ impl Planes {
 
         // One submission: acquire every chosen buffer, blit each part,
         // hand the buffers back, signal the exported fence.
-        let images: Vec<vk::Image> = chosen
+        let images: Vec<(vk::Image, bool)> = chosen
             .iter()
             .enumerate()
-            .filter_map(|(part, &at)| at.map(|at| self.parts[part].buffers[at].image))
+            .filter_map(|(part, &at)| {
+                at.map(|at| {
+                    let buffer = &self.parts[part].buffers[at];
+                    (buffer.image, buffer.initialized)
+                })
+            })
             .collect();
         let mut waits = Vec::new();
         for (part, &at) in chosen.iter().enumerate() {
@@ -714,7 +930,7 @@ impl Planes {
                 waits.push(vulkan::import_sync_fd(&self.shared, fence).map_err(native)?);
             }
         }
-        let barrier = |acquire: bool| {
+        let barrier = |acquire: bool, readback: bool| {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("plane ownership"),
             });
@@ -726,53 +942,73 @@ impl Planes {
                 encoder.as_hal_mut::<wgpu::hal::vulkan::Api, _, _>(|hal| {
                     let cb = hal.expect("the engine encoder is Vulkan").raw_handle();
                     buffer::ownership(&self.shared, cb, &images, acquire);
+                    if readback {
+                        // This raw encoder follows the wgpu copy commands on the
+                        // same queue. Publish their writes to the host domain;
+                        // the exported sync fence orders the later CPU read.
+                        self.shared.vk.device.cmd_pipeline_barrier(
+                            cb,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::PipelineStageFlags::HOST,
+                            vk::DependencyFlags::empty(),
+                            &[vk::MemoryBarrier::default()
+                                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                                .dst_access_mask(vk::AccessFlags::HOST_READ)],
+                            &[],
+                            &[],
+                        );
+                    }
                 });
             }
             encoder.finish()
         };
-        let acquire = barrier(true);
+        let acquire = barrier(true, false);
         let mut blits = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("plane present"),
         });
+        let mut headrooms = Vec::new();
         let mut sources = stack.iter().filter_map(|entry| match entry {
-            Entry::Engine { view, raster, .. } => Some((*view, raster)),
+            Entry::Engine { view, color, .. } => Some((*view, *color)),
             Entry::Frame(_) | Entry::Hosted { .. } => None,
         });
         for (part, &at) in chosen.iter().enumerate() {
-            let (source, raster) = sources.next().expect("one source per part");
+            let (source, color) = sources.next().expect("one source per part");
             let Some(at) = at else {
                 continue;
             };
             let output = TextureOutput {
                 texture: &self.parts[part].buffers[at].texture,
-                color: if raster.is_some() {
-                    OutputColor::LinearDisplayP3
-                } else {
-                    OutputColor::Srgb
-                },
-                alpha: if part == 0 && !self.transparent {
-                    OutputAlpha::Opaque
-                } else {
-                    OutputAlpha::Premultiplied
-                },
+                color,
+                alpha: output_alpha(part, self.transparent),
                 headroom: display.headroom,
             };
-            queue.write_buffer(
-                &self.parts[part].uniform,
-                0,
-                &Presenter::uniform_bytes(&output),
-            );
+            let source = source.expect("a new native buffer has engine pixels");
+            let mut uniform = Presenter::uniform_bytes(&output);
+            if self.parts[part].format == wgpu::TextureFormat::Rgba16Float {
+                // Scene-referred linear P3; SurfaceFlinger maps it to the display.
+                uniform[..4].copy_from_slice(&10_u32.to_ne_bytes());
+                headrooms.push((
+                    part,
+                    presenter.source_headroom(device, &mut blits, source, self.parts[part].size)?,
+                ));
+            }
+            queue.write_buffer(&self.parts[part].uniform, 0, &uniform);
             presenter.encode(
                 device,
                 &mut blits,
-                source.expect("a new native buffer has engine pixels"),
-                output,
+                source,
+                &crate::render::present::Presentation {
+                    texture: output,
+                    coverage: crate::render::present::RetainedRegion(
+                        &self.parts[part].buffers[at].repair,
+                    ),
+                },
                 &self.parts[part].uniform,
                 None,
             );
         }
         let blits = blits.finish();
-        let hand_back = barrier(false);
+        let hand_back = barrier(false, !headrooms.is_empty());
         {
             let _submit = self.submit_lock.lock().expect("submit guard");
             // SAFETY: `queue` is the engine's Vulkan queue, and the waits
@@ -789,6 +1025,12 @@ impl Planes {
             }
             hal_queue.add_signal_semaphore(self.signal, None);
             queue.submit([acquire, blits, hand_back]);
+        }
+        for (part, &at) in chosen.iter().enumerate() {
+            if let Some(at) = at {
+                self.parts[part].buffers[at].initialized = true;
+                self.parts[part].buffers[at].repair.clear();
+            }
         }
         crate::diag::submit(device, queue, "plane present");
         // SAFETY: `self.signal` is a live semaphore created with `SYNC_FD`
@@ -810,15 +1052,45 @@ impl Planes {
         // SAFETY: `get_semaphore_fd` returned a new descriptor we own.
         let acquire_fence =
             unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(acquire_fence) };
-        if !waits.is_empty() {
-            let owner = self.shared.vk.device.clone();
-            queue.on_submitted_work_done(move || {
-                for wait in waits {
-                    // SAFETY: the callback runs after the submission
-                    // completed, so no queue still waits on `wait`.
-                    unsafe { owner.destroy_semaphore(wait, None) };
-                }
-            });
+        let ready = Arc::new(AtomicBool::new(false));
+        // Reclaim completed wgpu resources even when this is the last frame
+        // before idle and no HDR readback or imported wait needs a callback.
+        {
+            let device = device.clone();
+            let completed = Arc::clone(&ready);
+            let waker = self.waker.clone();
+            let wake = !headrooms.is_empty();
+            let owner = Arc::clone(&self.shared);
+            let completion = Arc::new(dup_fence(&acquire_fence)?);
+            let retained = Arc::clone(&completion);
+            self.looper
+                .add_fd_with_callback(
+                    completion.as_fd(),
+                    ndk::looper::FdEvent::INPUT,
+                    move |_, events| {
+                        assert!(
+                            events.contains(ndk::looper::FdEvent::INPUT),
+                            "GPU completion fence reported {events:?}"
+                        );
+                        for wait in std::mem::take(&mut waits) {
+                            // SAFETY: the submission's sync fence has signalled,
+                            // so no queue still waits on these semaphores.
+                            unsafe { owner.vk.device.destroy_semaphore(wait, None) };
+                        }
+                        if let Err(error) = device.poll(wgpu::PollType::Poll) {
+                            tracing::error!(%error, "GPU completion resource reclamation failed");
+                        }
+                        completed.store(true, Ordering::Release);
+                        if wake {
+                            waker.wake();
+                        }
+                        let _ = &retained;
+                        false
+                    },
+                )
+                .map_err(|error| {
+                    RenderError::Render(format!("register GPU completion with looper: {error}"))
+                })?;
         }
 
         // The transaction: the stack's buffers and changed properties.
@@ -875,6 +1147,7 @@ impl Planes {
                             });
                         }
                     }
+                    this.publish_damage(&mut transaction);
                     let properties = Properties {
                         z,
                         opaque: raster.is_none() && part == 0 && !self.transparent,
@@ -885,9 +1158,20 @@ impl Planes {
                     for &op in &self.ops {
                         transaction.set(&this.surface, op);
                     }
+                    if let Some(extended_range) = &self.extended_range {
+                        let hdr = this.format == wgpu::TextureFormat::Rgba16Float;
+                        if !hdr || chosen[part].is_none() {
+                            let peak = if hdr { this.headroom } else { 1.0 };
+                            extended_range.set(
+                                &mut transaction,
+                                &this.surface,
+                                peak,
+                                display.headroom.max(1.0).min(peak),
+                            );
+                        }
+                    }
                     this.shown = Some(properties);
                     this.raster = *raster;
-                    this.headroom = display.headroom;
                     part += 1;
                 }
                 Entry::Frame(promotion) => {
@@ -972,8 +1256,20 @@ impl Planes {
             });
         }
 
-        Self::apply(transaction, &self.release, pending);
-        Ok(true)
+        if headrooms.is_empty() {
+            Self::apply(transaction, &self.release, pending);
+            Ok(Presentation::Presented)
+        } else {
+            self.presenting = Some(PendingPresentation {
+                ready,
+                transaction,
+                replaced: pending,
+                headrooms,
+                generation: composition.generation,
+                display,
+            });
+            Ok(Presentation::Pending)
+        }
     }
 
     /// Applies `transaction`, delivering each `Pending` its release fence
@@ -1173,34 +1469,36 @@ impl Planes {
     /// delivered by the transaction's completion.
     fn clear(&mut self) {
         let mut transaction = Transaction::new();
-        let mut frames = Vec::new();
+        let mut pending = self
+            .presenting
+            .take()
+            .map_or_else(Vec::new, |frame| frame.replaced);
+        for previous in &pending {
+            if let Some(surface) = &previous.removed {
+                transaction.reparent(surface, None);
+            }
+        }
         for (_, plane) in self.promoted.drain() {
             transaction.reparent(&plane.surface, None);
-            frames.push((plane.surface, plane.frame));
+            pending.push(Pending {
+                surface: plane.surface.as_ptr(),
+                what: Replaced::Frame(plane.frame),
+                removed: Some(plane.surface),
+            });
         }
-        let mut surfaces = Vec::new();
         for part in self.parts.drain(..) {
             transaction.reparent(&part.surface, None);
-            surfaces.push(part.surface);
+            pending.push(Pending {
+                surface: part.surface.as_ptr(),
+                what: Replaced::Nothing,
+                removed: Some(part.surface),
+            });
         }
-        // The host's surfaces leave the display with the engine's; the
-        // host keeps its references.
         for (_, plane) in self.hosted.drain() {
             plane.object.detach(&mut transaction, &self.root);
         }
         transaction.reparent(&self.root, None);
-        transaction.apply(move |completion| {
-            for (surface, frame) in frames {
-                let raw = surface.as_ptr();
-                if completion.surfaces().contains(&raw)
-                    && let Some(fence) = completion.previous_release(raw)
-                {
-                    frame.generation.add_plane_release(fence);
-                }
-                frame.unlease();
-            }
-            drop(surfaces);
-        });
+        Self::apply(transaction, &self.release, pending);
     }
 }
 
@@ -1231,26 +1529,53 @@ impl SystemPlanes for Planes {
     // thread; nothing travels to a platform compositor thread.
     type Commit = ();
 
-    fn captured_bytes(&self) -> u64 {
+    fn cpu_bytes(&self) -> u64 {
+        (self.parts.capacity() * std::mem::size_of::<Part>()
+            + self.retiring.capacity() * std::mem::size_of::<Buffer>()) as u64
+            + self
+                .parts
+                .iter()
+                .map(|part| {
+                    (part.buffers.capacity() * std::mem::size_of::<Buffer>()
+                        + part.damage_rects.capacity() * std::mem::size_of::<ndk_sys::ARect>())
+                        as u64
+                        + part.damage.heap_bytes().0
+                        + part
+                            .buffers
+                            .iter()
+                            .map(|buffer| buffer.repair.heap_bytes().0)
+                            .sum::<u64>()
+                })
+                .sum::<u64>()
+            + self
+                .retiring
+                .iter()
+                .map(|buffer| buffer.repair.heap_bytes().0)
+                .sum::<u64>()
+    }
+
+    fn native_bytes(&self) -> u64 {
         self.parts
             .iter()
-            .filter(|part| part.raster.is_some())
             .flat_map(|part| &part.buffers)
+            .chain(&self.retiring)
             .map(|buffer| buffer.bytes)
-            .sum()
+            .sum::<u64>()
+            + self.presenting.as_ref().map_or(0, |pending| {
+                pending
+                    .headrooms
+                    .iter()
+                    .map(|(_, readback)| readback.bytes())
+                    .sum()
+            })
     }
 
     fn compose(
         &mut self,
         composition: Composition<'_>,
     ) -> Result<(crate::render::planes::Presentation, ()), RenderError> {
-        self.present(composition).map(|shown| {
-            if shown {
-                (crate::render::planes::Presentation::Presented, ())
-            } else {
-                (crate::render::planes::Presentation::Retry, ())
-            }
-        })
+        self.present(composition)
+            .map(|presentation| (presentation, ()))
     }
 
     fn refresh<'a>(
@@ -1265,9 +1590,9 @@ impl SystemPlanes for Planes {
     }
 
     fn reselect(&mut self, _: &wgpu::Adapter, _: &wgpu::Device) -> Result<(), SurfaceError> {
-        // Engine parts are RGBA8 `AHardwareBuffer`s in the sRGB dataspace.
-        // That contract is not a swapchain negotiation, and a frame's
-        // headroom is read when the part is presented.
+        // Content selects each part's storage and dataspace. Display changes
+        // update the requested brightness in the next transaction; they do not
+        // negotiate a swapchain or invalidate scene-referred capture pixels.
         Ok(())
     }
 }

@@ -7,17 +7,47 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+testing = []
+apple-screenshots = [
+    "dep:clap",
+    "dep:serde_json",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:objc2-core-foundation",
+    "dep:objc2-core-graphics",
+    "dep:objc2-image-io",
+]
+
+[[bin]]
+name = "compare-screenshots"
+path = "src/bin/compare-screenshots/main.rs"
+required-features = ["apple-screenshots"]
+
 [lints]
 workspace = true
 
 [dependencies]
 cherenkov-scene = { path = "../scene" }
+cherenkov-stroke = { version = "0.0.0", path = "../stroke" }
 half = "2"
 kurbo = "0.13"
 libm = "0.2"
-skrifa = "0.44"
-read-fonts = "0.41"
+skrifa = "0.48"
+read-fonts = "0.45"
 png = "0.18"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 texture2ddecoder = "0.1.2"
+clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"], optional = true }
+serde_json = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"], optional = true }
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFData", "CFDictionary", "CFString", "CFNumber", "CFCGTypes"], optional = true }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGGeometry"], optional = true }
+objc2-image-io = { version = "0.3", default-features = false, features = ["std", "CGImageSource", "objc2-core-graphics"], optional = true }
+
+[dev-dependencies]
+tempfile = { version = "3", default-features = false }

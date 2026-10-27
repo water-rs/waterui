@@ -49,6 +49,7 @@ impl ResolvedTextLayoutInput {
 
     pub(in crate::text) fn cache_key(&self, max_width: Option<f32>) -> TextLayoutCacheKey {
         TextLayoutCacheKey {
+            max_lines: None,
             identity: Arc::clone(&self.identity),
             max_width: max_width.map(f32::to_bits),
         }
@@ -234,14 +235,14 @@ pub(in crate::text) fn text_layout_locale(env: &Environment) -> String {
 fn text_layout_font_cache_key(font: &ResolvedFontSpec) -> TextLayoutFontCacheKey {
     TextLayoutFontCacheKey {
         size: font.size.to_bits(),
-        weight: text_font_weight_cache_key(font.weight),
+        weight: font_weight(font.weight),
         line_height: font.line_height.map(f32::to_bits),
         letter_spacing: font.letter_spacing.to_bits(),
         family: font.family.clone(),
     }
 }
 
-const fn text_font_weight_cache_key(weight: TextFontWeight) -> u16 {
+pub(in crate::text) const fn font_weight(weight: TextFontWeight) -> u16 {
     match weight {
         TextFontWeight::Thin => 100,
         TextFontWeight::UltraLight => 200,
@@ -334,6 +335,10 @@ impl Hash for TextLayoutIdentity {
 pub(in crate::text) struct TextLayoutCacheKey {
     pub(in crate::text) identity: Arc<TextLayoutIdentity>,
     pub(in crate::text) max_width: Option<u32>,
+    /// The line limit the layout was shaped to; `None` for an unbounded
+    /// layout. A platform-ellipsized layout is not interchangeable with
+    /// the unbounded one, so the limit is part of the key.
+    pub(in crate::text) max_lines: Option<core::num::NonZeroUsize>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -355,6 +360,17 @@ pub(in crate::text) struct TextLayoutFontCacheKey {
     pub(in crate::text) line_height: Option<u32>,
     pub(in crate::text) letter_spacing: u32,
     pub(in crate::text) family: Option<String>,
+}
+
+impl core::fmt::Debug for ResolvedTextLayoutInput {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ResolvedTextLayoutInput")
+            .field("text", &self.plain)
+            .field("spans", &self.spans.len())
+            .field("locale", &self.locale)
+            .field("right_to_left", &self.right_to_left)
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(test)]

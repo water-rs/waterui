@@ -52,9 +52,9 @@ pub fn table_data_cell_rect(
     )
 }
 
-fn navigation_bar_height(
+fn navigation_bar_height<E: crate::text::TextEngine>(
     view: &NavigationView,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     theme: &Rc<dyn WidgetTheme>,
 ) -> f64 {
     if state.measure_signal(&view.bar.hidden) {
@@ -107,9 +107,9 @@ pub fn split_compact_threshold(sidebar_width: f64) -> f64 {
     sidebar_width + 360.0
 }
 
-pub fn measure_view_intrinsic(
+pub fn measure_view_intrinsic<E: crate::text::TextEngine>(
     view: &AnyView,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -125,9 +125,9 @@ pub fn measure_view_intrinsic(
 /// materialized in the same frame is handed its address and reads its size back
 /// as its own. Use this at every site that measures a view it just built. See
 /// [`begin_transient_measurement`](MeasurementCaches::begin_transient_measurement).
-pub fn measure_transient_view_intrinsic(
+pub fn measure_transient_view_intrinsic<E: crate::text::TextEngine>(
     view: &AnyView,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -138,10 +138,10 @@ pub fn measure_transient_view_intrinsic(
 /// tree owns, under `proposal`. Same contract as
 /// [`measure_transient_view_intrinsic`]; the proposal is the rect the layout
 /// hands the content, so bounded axes answer the proposal.
-pub fn measure_transient_view_with_proposal(
+pub fn measure_transient_view_with_proposal<E: crate::text::TextEngine>(
     view: &AnyView,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -157,28 +157,28 @@ pub fn measure_transient_view_with_proposal(
 /// site. The `AnyView` exists only for the measurement, so this goes through
 /// [`measure_transient_view_intrinsic`]. The semantic identity of the label
 /// remains typed inside the control's config.
-pub fn measure_label_intrinsic(
+pub fn measure_label_intrinsic<E: crate::text::TextEngine>(
     label: &waterui_controls::label::Label,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
     measure_transient_view_intrinsic(&AnyView::new(label.clone()), state, env, theme)
 }
 
-pub fn measure_view_dimensions(
+pub fn measure_view_dimensions<E: crate::text::TextEngine>(
     view: &AnyView,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> ViewDimensions {
     measure_view_dimensions_with_proposal(view, ProposalSize::UNSPECIFIED, state, env, theme)
 }
 
-pub fn measure_view_dimensions_with_proposal(
+pub fn measure_view_dimensions_with_proposal<E: crate::text::TextEngine>(
     view: &AnyView,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> ViewDimensions {
@@ -203,10 +203,10 @@ pub fn measure_view_dimensions_with_proposal(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-fn measure_view_dimensions_with_proposal_with_budget(
+fn measure_view_dimensions_with_proposal_with_budget<E: crate::text::TextEngine>(
     view: &AnyView,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
     remaining: usize,
@@ -344,11 +344,11 @@ fn measure_view_dimensions_with_proposal_with_budget(
     );
 }
 
-pub fn measure_layout_dimensions<'a>(
+pub fn measure_layout_dimensions<'a, E: crate::text::TextEngine>(
     layout: &dyn Layout,
     children: impl IntoIterator<Item = &'a AnyView>,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> ViewDimensions {
@@ -360,11 +360,11 @@ pub fn measure_layout_dimensions<'a>(
 /// `FixedContainer` normalization keeps) must still resolve its explicit
 /// horizontal guides against the frames the built tree sees, which
 /// `DirectionalLayout` mirrors under RTL.
-fn measure_layout_dimensions_mirrored<'a>(
+fn measure_layout_dimensions_mirrored<'a, E: crate::text::TextEngine>(
     layout: &dyn Layout,
     children: impl IntoIterator<Item = &'a AnyView>,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
     mirror_placements: bool,
@@ -454,9 +454,9 @@ fn measure_layout_dimensions_mirrored<'a>(
     dimensions
 }
 
-fn can_skip_layout_alignment_measurement(
+fn can_skip_layout_alignment_measurement<E: crate::text::TextEngine>(
     layout: &dyn Layout,
-    children: &[HydroSubview<'_>],
+    children: &[HydroSubview<'_, E>],
 ) -> bool {
     layout.explicit_horizontal_alignments().is_empty()
         && layout.explicit_vertical_alignments().is_empty()
@@ -491,16 +491,15 @@ fn view_has_plain_alignment_dimensions(view: &AnyView) -> bool {
         || view.downcast_ref::<Divider>().is_some()
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn render_styled_text(
-        state: &mut HydroState,
-        scene: &mut Recording,
+        &mut self,
         ctx: RenderContext,
         styled: StyledStr,
         alignment: HorizontalAlignment,
         env: &Environment,
     ) {
-        Self::render_styled_text_limited(state, scene, ctx, styled, alignment, env, TailMark::None);
+        self.render_styled_text_limited(ctx, styled, alignment, env, TailMark::None);
     }
 
     #[expect(
@@ -508,24 +507,29 @@ impl HydrolysisRenderer {
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
     )]
     pub(crate) fn render_styled_text_limited(
-        state: &mut HydroState,
-        scene: &mut Recording,
+        &mut self,
         ctx: RenderContext,
         styled: StyledStr,
         alignment: HorizontalAlignment,
         env: &Environment,
         tail: TailMark,
     ) {
+        let state = &mut self.state;
         let input = resolve_text_layout_input(&styled, alignment, env);
         let fragment = state.text.record(
             &input,
             Some(crate::num_cast::f64_as_f32(ctx.bounds.width())),
             tail,
             &mut state.counters,
+            &mut state.text_scenes,
         );
-        scene.append(
-            &fragment,
-            ctx.local * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0)),
+        let source: Rc<dyn crate::renderer::chrome::LiveSource> = fragment;
+        self.push_live(
+            RenderContext {
+                local: ctx.local * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0)),
+                ..ctx
+            },
+            &source,
         );
     }
 
@@ -534,12 +538,12 @@ impl HydrolysisRenderer {
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
     )]
     pub(crate) fn render_styled_text_single_line_centered(
-        state: &mut HydroState,
-        scene: &mut Recording,
+        &mut self,
         ctx: RenderContext,
         styled: StyledStr,
         env: &Environment,
     ) {
+        let state = &mut self.state;
         let input = resolve_text_layout_input(&styled, HorizontalAlignment::Leading, env);
         let layout = state.measuring_text().shape(&input, None);
         if layout.line_count() == 0 {
@@ -555,10 +559,21 @@ impl HydrolysisRenderer {
         let height = f64::from(metrics.line_height);
         let x = ((ctx.bounds.width() - width) * 0.5).max(0.0);
         let y = ((ctx.bounds.height() - height) * 0.5).max(0.0);
-        let fragment = state
-            .text
-            .record(&input, None, TailMark::Clip(1), &mut state.counters);
-        scene.append(&fragment, ctx.local * kurbo::Affine::translate((x, y)));
+        let fragment = state.text.record(
+            &input,
+            None,
+            TailMark::Clip(1),
+            &mut state.counters,
+            &mut state.text_scenes,
+        );
+        let source: Rc<dyn crate::renderer::chrome::LiveSource> = fragment;
+        self.push_live(
+            RenderContext {
+                local: ctx.local * kurbo::Affine::translate((x, y)),
+                ..ctx
+            },
+            &source,
+        );
     }
 
     #[expect(
@@ -566,12 +581,12 @@ impl HydrolysisRenderer {
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
     )]
     pub(crate) fn build_text_layout(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         styled: StyledStr,
         alignment: HorizontalAlignment,
         env: &Environment,
         max_width: Option<f32>,
-    ) -> SessionTextLayout {
+    ) -> E::Layout {
         let input = resolve_text_layout_input(&styled, alignment, env);
         state.measuring_text().shape(&input, max_width)
     }
@@ -581,7 +596,7 @@ impl HydrolysisRenderer {
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
     )]
     pub(crate) fn measure_text_dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         styled: StyledStr,
         alignment: HorizontalAlignment,
         env: &Environment,
@@ -595,7 +610,7 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn measure_text_intrinsic_size(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         styled: StyledStr,
         env: &Environment,
     ) -> LayoutSize {
@@ -604,7 +619,7 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn measure_text_intrinsic_size_with_line_limit(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         styled: StyledStr,
         env: &Environment,
         max_lines: Option<usize>,
@@ -624,7 +639,7 @@ impl HydrolysisRenderer {
     /// Empty text still measures the one line a caret occupies, so a field
     /// keeps its height as text is entered.
     pub(crate) fn measure_editable_text_size(
-        state: &HydroState,
+        state: &HydroState<E>,
         styled: &StyledStr,
         env: &Environment,
         max_lines: Option<usize>,
@@ -639,9 +654,9 @@ impl HydrolysisRenderer {
     clippy::option_if_let_else,
     reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
 )]
-pub fn measure_navigation_view_intrinsic(
+pub fn measure_navigation_view_intrinsic<E: crate::text::TextEngine>(
     navigation: &NavigationView,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -747,10 +762,10 @@ pub fn measure_navigation_view_intrinsic(
 /// rect the container hands the column. The whole view dies with the call, so
 /// it is normalized and measured as transient: none of its parts may leave an
 /// entry under an address the next build is handed.
-pub fn measure_owned_navigation_view_with_proposal(
+pub fn measure_owned_navigation_view_with_proposal<E: crate::text::TextEngine>(
     navigation: NavigationView,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -761,26 +776,28 @@ pub fn measure_owned_navigation_view_with_proposal(
 /// Measures a `TabsLayout` under `proposal`: each tab's content answers the
 /// proposal its rendered content rect hands it — the pane minus the tab bar —
 /// and the layout echoes bounded axes. `intrinsic` is the `UNSPECIFIED` call.
-pub fn measure_tabs_layout(
+pub fn measure_tabs_layout<E: crate::text::TextEngine>(
     tabs: &TabsLayout,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    assert!(
-        !(tabs.tabs.is_empty()),
-        "hydrolysis Tabs requires at least one tab"
-    );
+    // An empty set mounts: nothing answers but the bar's own metrics.
+    let snapshot = tabs.tabs.snapshot();
+    let tab_at = |index: usize| {
+        snapshot
+            .get_view(index)
+            .expect("a collection snapshot reports a view for every index")
+    };
 
     // Labels measure title-only: the bar places the icon itself, so the label
     // must not count it a second time.
     let label_env = env.extending(waterui_controls::label::LabelDisplayMode::TitleOnly);
-    let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = tabs
-        .tabs
-        .iter()
-        .map(|tab| {
-            let label_size = measure_view_intrinsic(&tab.label, state, &label_env, theme);
+    let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = (0..snapshot.len())
+        .map(|index| {
+            let tab = tab_at(index);
+            let label_size = measure_view_intrinsic(&tab.label.build(), state, &label_env, theme);
             let icon_size = tab.icon.as_ref().map(|icon| {
                 let icon_view = match icon {
                     TabIcon::System(icon) => AnyView::new(icon.clone()),
@@ -809,7 +826,8 @@ pub fn measure_tabs_layout(
     let mut max_content_width: f64 = 0.0;
     let mut max_content_height: f64 = 0.0;
     let mut bar_width = 0.0;
-    for (tab, (label_size, icon_size)) in tabs.tabs.iter().zip(item_sizes.iter()) {
+    for (index, (label_size, icon_size)) in item_sizes.iter().enumerate() {
+        let tab = tab_at(index);
         bar_width += tabs_item_natural_width(*label_size, *icon_size, &metrics, layout);
 
         let content = normalize_layout_view(AnyView::new(tab.content.build()), env);
@@ -827,7 +845,7 @@ pub fn measure_tabs_layout(
         NativeTabStyle::Sidebar => (
             max_content_width + metrics.bar_height,
             max_content_height
-                .max(metrics.button_min_width * crate::num_cast::usize_as_f64(tabs.tabs.len())),
+                .max(metrics.button_min_width * crate::num_cast::usize_as_f64(snapshot.len())),
         ),
     };
     LayoutSize::new(
@@ -901,9 +919,9 @@ pub fn navigation_back_button_rect(
     )
 }
 
-pub fn measure_list_intrinsic(
+pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
     list: &ListConfig,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -998,9 +1016,9 @@ pub fn list_row_height_for_content(
     (content_height + vertical_insets).max(floor)
 }
 
-pub fn measure_progress_intrinsic(
+pub fn measure_progress_intrinsic<E: crate::text::TextEngine>(
     progress: &ProgressConfig,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -1040,9 +1058,9 @@ pub fn measure_progress_intrinsic(
     }
 }
 
-pub fn measure_text_field_intrinsic(
+pub fn measure_text_field_intrinsic<E: crate::text::TextEngine>(
     text_field: &ResolvedTextFieldConfig,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -1054,10 +1072,10 @@ pub fn measure_text_field_intrinsic(
 /// dispatch path passes the label measured via `measure_label_intrinsic`; the
 /// retained-node path passes the label measured from its built `RetainedSubview`,
 /// so layout and the floating-label render agree on the label height.
-pub fn measure_text_field_intrinsic_with_label_size(
+pub fn measure_text_field_intrinsic_with_label_size<E: crate::text::TextEngine>(
     text_field: &ResolvedTextFieldConfig,
     label_size: LayoutSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -1077,10 +1095,10 @@ pub fn measure_text_field_intrinsic_with_label_size(
 /// on the field's text — text scrolls inside the dealt width. `None` answers
 /// the ideal, the theme's `min_width` floored at the label. Height is the
 /// intrinsic height, whose text line an empty field measures too.
-pub fn measure_text_field_size_with_label_size(
+pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine>(
     text_field: &ResolvedTextFieldConfig,
     label_size: LayoutSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
     proposal: ProposalSize,
@@ -1119,9 +1137,9 @@ fn input_field_width(proposal: Option<f32>, ideal: f64, minimum: f64) -> f64 {
     proposal.map_or(ideal, |width| f64::from(width).max(minimum))
 }
 
-pub fn measure_secure_field_intrinsic(
+pub fn measure_secure_field_intrinsic<E: crate::text::TextEngine>(
     secure_field: &SecureFieldConfig,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -1133,10 +1151,10 @@ pub fn measure_secure_field_intrinsic(
 /// dispatch path passes the label measured via `measure_label_intrinsic`; the
 /// retained-node path passes the label measured from its built `RetainedSubview`,
 /// so layout and the floating-label render agree on the label height.
-pub fn measure_secure_field_intrinsic_with_label_size(
+pub fn measure_secure_field_intrinsic_with_label_size<E: crate::text::TextEngine>(
     secure_field: &SecureFieldConfig,
     label_size: LayoutSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -1154,10 +1172,10 @@ pub fn measure_secure_field_intrinsic_with_label_size(
 /// precomputed label size. Same `Horizontal`-leaf contract as the text field:
 /// the width answers the proposal floored at the label's extent and never
 /// the masked text; `None` answers the theme's `min_width` ideal.
-pub fn measure_secure_field_size_with_label_size(
+pub fn measure_secure_field_size_with_label_size<E: crate::text::TextEngine>(
     secure_field: &SecureFieldConfig,
     label_size: LayoutSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
     proposal: ProposalSize,
@@ -1212,9 +1230,9 @@ fn measured_input_field_height(
     measured_height.max(metrics.min_height)
 }
 
-pub fn measure_table_metrics(
+pub fn measure_table_metrics<E: crate::text::TextEngine>(
     columns: &[TableColumn],
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> MeasuredTableMetrics {
@@ -1244,10 +1262,10 @@ pub fn measure_table_metrics(
     }
 }
 
-pub fn refresh_table_slot_baseline(
+pub fn refresh_table_slot_baseline<E: crate::text::TextEngine>(
     columns: &[TableColumn],
     slot: &mut LazyTableSlot,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) {
@@ -1266,12 +1284,12 @@ pub fn refresh_table_slot_baseline(
     }
 }
 
-pub fn update_table_slot_visible_cell_widths(
+pub fn update_table_slot_visible_cell_widths<E: crate::text::TextEngine>(
     columns: &[TableColumn],
     slot: &mut LazyTableSlot,
     row_window: VisibleIndexWindow,
     col_window: VisibleColumnWindow,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) {
@@ -1297,9 +1315,9 @@ pub fn update_table_slot_visible_cell_widths(
     }
 }
 
-pub fn measure_slider_intrinsic(
+pub fn measure_slider_intrinsic<E: crate::text::TextEngine>(
     slider: &SliderConfig,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -1333,14 +1351,18 @@ pub fn measure_slider_intrinsic(
     )
 }
 
-fn resolved_text_styled(text: &Text, env: &Environment, state: &mut HydroState) -> StyledStr {
+fn resolved_text_styled<E: crate::text::TextEngine>(
+    text: &Text,
+    env: &Environment,
+    state: &mut HydroState<E>,
+) -> StyledStr {
     let resolved = text.resolve(env);
     state.measure_signal(&resolved.content)
 }
 
-pub fn measure_date_picker_intrinsic(
+pub fn measure_date_picker_intrinsic<E: crate::text::TextEngine>(
     date_picker: &DatePickerConfig,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -1389,9 +1411,9 @@ pub fn measure_date_picker_intrinsic(
     )
 }
 
-pub fn measure_button_view_intrinsic(
+pub fn measure_button_view_intrinsic<E: crate::text::TextEngine>(
     button: &Button<BoxedAction<()>>,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -1410,9 +1432,9 @@ pub fn measure_button_view_intrinsic(
     )
 }
 
-pub fn measure_picker_intrinsic(
+pub fn measure_picker_intrinsic<E: crate::text::TextEngine>(
     picker: &PickerConfig,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -1437,10 +1459,10 @@ pub fn measure_picker_intrinsic(
     clippy::too_many_lines,
     reason = "the measurement walks each picker's structure end to end; the length is the enumeration, not logic"
 )]
-pub fn measure_picker_intrinsic_with_label_size(
+pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine>(
     picker: &PickerConfig,
     label_size: LayoutSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -1537,7 +1559,7 @@ pub fn measure_picker_intrinsic_with_label_size(
         PickerStyle::Segmented => {
             let metrics = theme.picker_metrics(PickerStyle::Segmented);
             let mut total_width: f64 = 0.0;
-            let mut max_item_height: f64 = 0.0;
+            let mut item_heights = Vec::with_capacity(items.len());
             for item in &items {
                 let styled = resolved_text_styled(&item.content, env, state);
                 let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
@@ -1545,7 +1567,7 @@ pub fn measure_picker_intrinsic_with_label_size(
                     .horizontal_inset
                     .mul_add(2.0, f64::from(size.width))
                     .max(metrics.segment_min_width);
-                max_item_height = max_item_height.max(f64::from(size.height));
+                item_heights.push(size.height);
             }
             // A visible group label heads the segment row edge to edge: its
             // width competes with the row's total width with no inset term,
@@ -1557,10 +1579,8 @@ pub fn measure_picker_intrinsic_with_label_size(
                 .max(metrics.min_width);
             // The minimum height floors the row alone: the heading adds on
             // top of it so the row keeps its unlabelled height.
-            let row_height = metrics
-                .vertical_inset
-                .mul_add(2.0, max_item_height)
-                .max(metrics.min_height);
+            let row_height =
+                crate::widgets::controls::picker::segmented_row_height(metrics, item_heights);
             let height = row_height
                 + if label_size.height > 0.0 {
                     f64::from(label_size.height) + metrics.label_spacing
@@ -1581,7 +1601,7 @@ mod tests {
     use super::{measure_view_dimensions, measured_input_field_height};
     use crate::renderer::tests::{MinimalTestTheme, test_environment};
     use crate::renderer::{HydroState, normalize_layout_view};
-    use crate::text::{FontFamilyResolution, SessionTextEngine};
+    use crate::text::{FontFamilyResolution, ParleyEngine};
     use crate::theme::InputFieldMetrics;
     use crate::theme::WidgetTheme;
     use std::rc::Rc;
@@ -1620,7 +1640,7 @@ mod tests {
             MinimalTestTheme::default()
                 .with_input_metrics(InputFieldMetrics::new(16.0, 280.0, 40.0, 16.0, 8.0)),
         );
-        let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+        let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
 
         let value = Binding::container(Str::from("x"));
         let view = normalize_layout_view(AnyView::new(field("Label", &value)), &env);
@@ -1657,22 +1677,16 @@ mod background_tests {
         scene.solid_fill_colours()
     }
 
-    fn rendered_fill_colours(styled: StyledStr, width: f64) -> Vec<u32> {
+    fn rendered_fill_colours(styled: &StyledStr, width: f64) -> Vec<u32> {
         let env = test_environment();
-        let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
-        let mut scene = Recording::new();
-        let ctx = RenderContext {
-            local: kurbo::Affine::IDENTITY,
-            bounds: kurbo::Rect::new(0.0, 0.0, width, 200.0),
-        };
-        HydrolysisRenderer::render_styled_text_limited(
-            &mut state,
-            &mut scene,
-            ctx,
-            styled,
-            HorizontalAlignment::Leading,
-            &env,
+        let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
+        let input = resolve_text_layout_input(styled, HorizontalAlignment::Leading, &env);
+        let scene = state.text.record(
+            &input,
+            Some(crate::num_cast::f64_as_f32(width)),
             TailMark::None,
+            &mut state.counters,
+            &mut state.text_scenes,
         );
         solid_fill_colours(&scene)
     }
@@ -1690,7 +1704,7 @@ mod background_tests {
             TextStyle::new().background(Color::srgb(0, 128, 0)),
         );
         single.push(" after", TextStyle::new());
-        let colours = rendered_fill_colours(single, 300.0);
+        let colours = rendered_fill_colours(&single, 300.0);
         assert!(
             colours.contains(&expected),
             "a mid-line span paints its background fill"
@@ -1706,7 +1720,7 @@ mod background_tests {
             TextStyle::new().background(Color::srgb(0, 128, 0)),
         );
         wrapped.push(" and out", TextStyle::new());
-        let colours = rendered_fill_colours(wrapped, 120.0);
+        let colours = rendered_fill_colours(&wrapped, 120.0);
         assert!(
             colours.iter().filter(|colour| **colour == expected).count() >= 2,
             "a span wrapped over two lines paints one fill per line"

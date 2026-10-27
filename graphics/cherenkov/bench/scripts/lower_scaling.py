@@ -4,8 +4,7 @@
 `ir_gate.py` answers "did this change cost more on these scenes"; this answers
 "how does the cost grow with the size of one path". The `road-network` perf
 scenes are the same geometry, canvas, pan and stroke at five grid sizes, so
-the only thing that changes between them is the number of line segments the
-coverage sweep sorts:
+the only thing that changes between them is the number of input line segments:
 
   road-network-n10    4,720 segments
   road-network-n14    9,400
@@ -13,37 +12,24 @@ coverage sweep sorts:
   road-network-n28   37,840
   road-network       76,480
 
-`measure` profiles each size exactly as the Ir gate does — `ir_gate.profile`,
-instrumentation switched on at a fixed frame, the second steady call of
-`lower` as the sample, Rust Ir excluding the allocator and the libc memory
-primitives — and `report` fits `rust_ir ~ segments ** e` by least squares on
-the logarithms, prints the per-size numbers, the local exponent of each
-consecutive pair, and the fitted exponent over the whole range.
+A second series, `--series dash`, is the same five paths stroked with the
+dash pattern `[4, 2]` at offset 1 (`road-network-dash-n10` ...
+`road-network-dash`), whose segment axis is the same centreline count. It is
+not part of the Ir or memory gates.
 
-Why an exponent is the right shape of measurement: the CPU route's cost is
-`O((n + k) log n)` in `n` segments and `k` crossings (#2536, section 3), and
-`k` on a road network grows faster than `n`, so `lower` is superlinear in `n`
-by construction. water-rs/waterui#2536's GPU coverage route replaces the
-crossing sort with per-segment binning whose work is `O(n)` in the same
-segment-bound pass that sizes its buffers, so the route's claim is exactly a
-statement about this exponent.
+`measure` runs each size twice: before frame zero to capture fresh geometry
+preparation, and after warmup to capture retained reuse. The report fits fresh
+`lower` Rust Ir against segment count and reports retained costs separately.
+Allocator and libc memory instructions are excluded in both intervals.
 
-**This is a report, not a gate, until the GPU coverage route exists.** The CPU
-route cannot pass it today and is not expected to: `report` prints the
-verdict and exits 0, saying so. #2543 lands the GPU route and turns it into a
-gate by passing `--gate`, which exits non-zero when the fitted exponent
-exceeds `--exponent`. Nothing here gates CI in the meantime.
+The GPU coverage route is implemented. This measures its CPU preparation, not
+GPU execution or an end-to-end frame budget. Dense overlap can increase local
+intersection work; no universal linear bound follows from using compute.
+`--gate` applies the selected exponent bound to fresh preparation only.
+Callgrind runs on Linux; the fit tests use synthetic data, not measurements.
 
-Callgrind runs on Linux only (and `ir_gate`'s dump watcher is built on
-`inotify` and `timerfd`), so `measure` refuses to run anywhere else instead of
-reporting a number it did not measure. No measurement of this series exists
-yet for the same reason: it is taken on Linux, on the lane that already runs
-`ir_gate.py`, and the first real exponent for the CPU sweep comes from there.
-The figures in `test_lower_scaling.py` are synthetic inputs chosen to exercise
-the fit (`segments ** 1.4` and `40 * segments`), not measurements of anything.
-
-  lower_scaling.py measure --binary B --tag T --repo R --out O [--jobs N]
-  lower_scaling.py report  --out O --tag T [--exponent 1.1] [--gate]
+  lower_scaling.py measure --binary B --tag T --repo R --out O [--series S] [--jobs N]
+  lower_scaling.py report  --out O --tag T [--series S] [--exponent 1.1] [--gate]
 """
 import argparse
 import concurrent.futures
@@ -57,15 +43,15 @@ SPEC = importlib.util.spec_from_file_location('ir_gate', pathlib.Path(__file__).
 ir_gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ir_gate)
 
-# Scene name and its line segment count: `n * n * 40` horizontal roads plus
+# Grid size suffix and line segment count: `n * n * 40` horizontal roads plus
 # `ceil(n / 5) * (n - 1) * 40` verticals, as `generate-corpus` builds them.
-SIZES = [('road-network-n10', 4_720), ('road-network-n14', 9_400), ('road-network-n20', 19_040),
-         ('road-network-n28', 37_840), ('road-network', 76_480)]
+GRIDS = [('-n10', 4_720), ('-n14', 9_400), ('-n20', 19_040), ('-n28', 37_840), ('', 76_480)]
+# Each series' scene stem: the solid stroke and the dashed one.
+STEMS = {'solid': 'road-network', 'dash': 'road-network-dash'}
+SERIES = {series: [(f'{stem}{suffix}', segments) for suffix, segments in GRIDS]
+          for series, stem in STEMS.items()}
 PHASE = 'lower'
-# The exponent the GPU coverage route is claimed to reach: its coverage work
-# is `O(n)` per segment plus a per-cell pass, so `lower` may grow a little
-# faster than the segment count through the parts it does not move to the
-# GPU (flattening, stroke expansion, cell emission), and no faster.
+# Acceptance bound for this road-network series, not arbitrary geometry.
 EXPONENT = 1.1
 
 
@@ -96,35 +82,46 @@ def measure(args):
     icd = ir_gate.lavapipe_icd(args.icd)
 
     def task(scene):
-        path = out / f'{args.tag}-{scene}.result.json'
-        if path.is_file():
-            ir_gate.verify_reused_profile(json.loads(path.read_text()), args.binary, icd)
-            return f'{args.tag} {scene} reused completed profile'
-        # Every size is the road-network scene, with its roots.
-        ir_gate.profile(args.binary, args.tag, scene, args.repo, args.out, args.pause_at, args.warmup, icd,
-                        ir_gate.SCENES['road-network'])
-        return f'{args.tag} {scene} done'
+        for mode in ('fresh', 'retained'):
+            tag = f'{args.tag}-{mode}'
+            path = out / f'{tag}-{scene}.result.json'
+            pause = 0 if mode == 'fresh' else args.pause_at
+            if path.is_file():
+                result = json.loads(path.read_text())
+                ir_gate.verify_reused_profile(result, args.binary, icd)
+                assert result['sample_mode'] == mode and result['pause_at'] == pause
+                continue
+            ir_gate.profile(args.binary, tag, scene, args.repo, args.out, pause, args.warmup, icd,
+                            ir_gate.EVERY_FRAME if mode == 'fresh' else ir_gate.RECORDED_ONCE,
+                            fresh=mode == 'fresh')
+        return f'{args.tag} {scene} fresh and retained done'
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        for line in pool.map(task, [scene for scene, _ in SIZES]):
+        for line in pool.map(task, [scene for scene, _ in SERIES[args.series]]):
             print(line, flush=True)
 
 
 def report(args):
     points = []
     rows = []
-    for scene, segments in SIZES:
-        sample = ir_gate.load(args.out, args.tag, scene)[PHASE]['second']
+    for scene, segments in SERIES[args.series]:
+        fresh = ir_gate.load(args.out, f'{args.tag}-fresh', scene)
+        retained = ir_gate.load(args.out, f'{args.tag}-retained', scene)
+        assert fresh['sample_mode'] == 'fresh' and fresh['pause_at'] == 0
+        assert retained['sample_mode'] == 'retained' and retained['pause_at'] > 0
+        assert fresh['sha256'] == retained['sha256'], 'fresh and retained must use the same binary'
+        sample = fresh[PHASE]['first']
         points.append((segments, sample['rust_ir']))
-        rows.append((scene, segments, sample))
+        rows.append((scene, segments, sample, retained[PHASE]['second']))
     exponent = fit(points)
-    lines = [f'# `{PHASE}` Ir against path segment count: `{args.tag}`', '',
-             'Second steady call of `lower`, Rust Ir (allocator and libc memory primitives excluded), '
+    lines = [f'# `{PHASE}` Ir against path segment count: `{args.tag}`, {args.series} series', '',
+             'First complete call of `lower` before any geometry reuse, Rust Ir (allocator and libc memory primitives excluded), '
              'one path per scene on the same canvas and pan.', '',
-             '| Scene | Segments | Ir | Rust Ir | Rust Ir / segment |', '|---|---:|---:|---:|---:|']
-    for scene, segments, sample in rows:
+             '| Scene | Segments | Fresh Ir | Fresh Rust Ir | Fresh Rust Ir / segment | Retained Rust Ir |',
+             '|---|---:|---:|---:|---:|---:|']
+    for scene, segments, sample, retained in rows:
         lines.append(f"| {scene} | {segments:,} | {sample['ir']:,} | {sample['rust_ir']:,} | "
-                     f"{sample['rust_ir'] / segments:,.1f} |")
+                     f"{sample['rust_ir'] / segments:,.1f} | {retained['rust_ir']:,} |")
     lines += ['', '| From | To | Local exponent |', '|---|---|---:|']
     for a, b, e in local(points):
         lines.append(f'| {a:,} | {b:,} | {e:.3f} |')
@@ -136,13 +133,12 @@ def report(args):
         lines.append('')
         lines.append(f"Gate: {'pass' if ok else 'FAIL'}.")
     else:
-        lines += ['',
-                  'Report only: the CPU coverage sweep is `O((n + k) log n)` in segments and crossings, so it '
-                  'is expected to exceed the bound, and no result here gates anything. '
-                  'water-rs/waterui#2543 turns this into a gate by passing `--gate` once the GPU coverage '
-                  'route selects these scenes.']
+        lines += ['', 'Report only: pass --gate to enforce the fresh-preparation exponent bound.']
+    lines += ['', 'Retained Rust Ir is the second steady call from a separate run of the same binary. '
+              'It is reported for comparison and does not decide the fresh-preparation gate. '
+              'Neither interval measures GPU execution.']
     print('\n'.join(lines))
-    pathlib.Path(args.out, f'{args.tag}-lower-scaling.md').write_text('\n'.join(lines) + '\n')
+    pathlib.Path(args.out, f'{args.tag}-{args.series}-lower-scaling.md').write_text('\n'.join(lines) + '\n')
     return 1 if args.gate and not ok else 0
 
 
@@ -156,11 +152,13 @@ def main():
     p.add_argument('--out', required=True)
     p.add_argument('--pause-at', type=int, default=8)
     p.add_argument('--warmup', type=int, default=30)
+    p.add_argument('--series', choices=sorted(SERIES), default='solid')
     p.add_argument('--jobs', type=int, default=2)
     p.add_argument('--icd', type=pathlib.Path, help='explicit Lavapipe ICD manifest')
     p = sub.add_parser('report')
     p.add_argument('--out', required=True)
     p.add_argument('--tag', required=True)
+    p.add_argument('--series', choices=sorted(SERIES), default='solid')
     p.add_argument('--exponent', type=float, default=EXPONENT)
     p.add_argument('--gate', action='store_true', help='exit non-zero when the fitted exponent exceeds the bound')
     args = parser.parse_args()

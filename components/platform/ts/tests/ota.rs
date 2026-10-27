@@ -82,26 +82,22 @@ fn manifest_for(
     contract: u64,
 ) -> BundleManifest {
     use sha2::Digest as _;
-    BundleManifest {
+    BundleManifest::new(
         version,
         runtime,
-        bundle: BundleFile {
-            url: format!("bundle-{version}.js"),
-            size: u64::try_from(source.len()).expect("a bundle's length fits in u64"),
-            sha256: Sha256Digest::new(sha2::Sha256::digest(source.as_bytes()).into()),
-        },
-        modules: BTreeMap::from([(String::from(MODULE), ContractHash(contract))]),
-        translations: BTreeMap::new(),
-    }
+        BundleFile::new(
+            format!("bundle-{version}.js"),
+            u64::try_from(source.len()).expect("a bundle's length fits in u64"),
+            Sha256Digest::new(sha2::Sha256::digest(source.as_bytes()).into()),
+        ),
+        BTreeMap::from([(String::from(MODULE), ContractHash(contract))]),
+    )
 }
 
 /// Signs `manifest` with `key`, the way `water ota publish` does.
 fn sign(manifest: BundleManifest, key: &SigningKey) -> SignedManifest {
     let signature = key.sign(&manifest.signed_bytes());
-    SignedManifest {
-        manifest,
-        signature: HexBytes::new(signature.to_bytes()),
-    }
+    SignedManifest::new(manifest, HexBytes::new(signature.to_bytes()))
 }
 
 /// A fresh ed25519 key pair from the operating system's entropy.

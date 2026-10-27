@@ -1,16 +1,16 @@
 //! `AppKit` cases — real `AppKit` objects built through the public API on
 //! the real main thread.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use cocoa_ui::appkit::input_view::InputView;
-use cocoa_ui::appkit::{HostView, Label, Window, WindowLevel, WindowStyle};
+use cocoa_ui::appkit::{HostView, Label, TextField, Window, WindowLevel, WindowStyle};
 use cocoa_ui::objc2::rc::Retained;
 use cocoa_ui::objc2::runtime::Bool;
 use cocoa_ui::objc2::{msg_send, sel};
-use cocoa_ui::objc2_app_kit::NSView;
-use cocoa_ui::objc2_foundation::{NSArray, NSNotFound, NSRange, NSRect, NSString};
+use cocoa_ui::objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSMenuItem, NSView};
+use cocoa_ui::objc2_foundation::{NSArray, NSNotFound, NSPoint, NSRange, NSRect, NSString};
 use cocoa_ui::{Point, Rect, Size};
 use libtest_mimic::Trial;
 
@@ -58,6 +58,10 @@ pub fn trials() -> Vec<Trial> {
         ),
         case!("appkit::label", a_factory_label_survives_debug_ivar_checks),
         case!(
+            "appkit::label",
+            a_label_draws_its_text_at_the_top_of_an_oversized_frame
+        ),
+        case!(
             "appkit::visibility",
             a_windowed_view_is_presentable_until_clipped_or_hidden
         ),
@@ -83,6 +87,22 @@ pub fn trials() -> Vec<Trial> {
             a_detached_capture_renders_and_teardown_stays_clean
         ),
         case!("capture", a_hidden_capture_renders_without_revealing),
+        case!(
+            "appkit::text_field",
+            a_fields_edit_path_carries_selection_undo_and_change
+        ),
+        case!(
+            "appkit::text_field",
+            a_single_line_fields_replacement_keeps_its_line_invariant
+        ),
+        case!(
+            "appkit::text_field",
+            the_edit_menu_handler_appends_to_the_field_editors_menu
+        ),
+        case!(
+            "appkit::text_field",
+            a_fields_history_observation_retires_when_editing_moves
+        ),
     ])
 }
 
@@ -329,6 +349,48 @@ fn a_factory_label_survives_debug_ivar_checks() {
     label.set_text("world");
     assert!(label.source_text().is_some());
     label.set_line_limit(1);
+}
+
+/// The `AppKit` anchor the `UIKit` label now matches — the parity check for
+/// water-rs/waterui#2718: inside a frame taller than the text, the ink a
+/// label draws anchors at the top of its bounds, never vertically
+/// centred. `cacheDisplay` is the view's offscreen raster, so the ink
+/// rows it leaves name where the text went.
+fn a_label_draws_its_text_at_the_top_of_an_oversized_frame() {
+    let mtm = marker();
+    let label = Label::label_with_string(mtm, "Hello 0");
+    label.setTextColor(Some(&cocoa_ui::objc2_app_kit::NSColor::blackColor()));
+    label.setFrame(cocoa_ui::objc2_foundation::NSRect::new(
+        cocoa_ui::objc2_foundation::NSPoint::new(0.0, 0.0),
+        cocoa_ui::objc2_foundation::NSSize::new(320.0, 240.0),
+    ));
+    let rep = label
+        .bitmapImageRepForCachingDisplayInRect(label.bounds())
+        .expect("a bitmap rep");
+    label.cacheDisplayInRect_toBitmapImageRep(label.bounds(), &rep);
+    // SAFETY: `bitmapData` answers `pixelsHigh * bytesPerRow` readable
+    // bytes, RGBA8 premultiplied.
+    let ink_rows = unsafe {
+        let bytes = rep.bitmapData().cast::<u8>();
+        let stride = usize::try_from(rep.bytesPerRow()).unwrap();
+        let wide = usize::try_from(rep.pixelsWide()).unwrap();
+        (0..usize::try_from(rep.pixelsHigh()).unwrap())
+            .filter(|row| {
+                (0..wide).any(|col| {
+                    let px = bytes.add(row * stride + col * 4);
+                    *px.add(3) > 100 && *px < 200 && *px.add(1) < 200 && *px.add(2) < 200
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(!ink_rows.is_empty(), "the label drew no ink");
+    let height = usize::try_from(rep.pixelsHigh()).unwrap();
+    // The rep's row 0 is the frame's top edge in screen order.
+    let last_ink_row = *ink_rows.last().unwrap();
+    assert!(
+        last_ink_row < height / 4,
+        "the text's last ink row must sit in the frame's top quarter, saw row {last_ink_row} of {height}"
+    );
 }
 
 /// Whether two rects share any area — the same positive-intersection test
@@ -996,4 +1058,219 @@ fn a_hidden_capture_renders_without_revealing() {
     drop(capture);
     crate::harness::pump_main_turn();
     label.removeFromSuperview();
+}
+
+/// A text field in a never-ordered window: `begin_editing` brings up the
+/// shared field editor, `set_selected_range`/`replace_range` act on it
+/// through the native edit path — the change handler observes each splice,
+/// the caret lands after inserted text and the editor's undo manager
+/// restores the pre-edit text through the same notification.
+fn a_fields_edit_path_carries_selection_undo_and_change() {
+    let mtm = marker();
+    let window = Window::new(mtm, Rect::new(0.0, 0.0, 400.0, 300.0), WindowStyle::TITLED);
+    let host = HostView::new(mtm, window.content_rect());
+    window.set_content_view(&host);
+    let field = TextField::new(mtm, None);
+    cocoa_ui::view::set_frame(&field, Rect::new(10.0, 10.0, 200.0, 24.0));
+    host.add_subview(&field);
+    field.setStringValue(&NSString::from_str("hé😀b"));
+
+    assert!(
+        field.selected_range().is_none(),
+        "an unedited field reports no selection"
+    );
+    assert!(
+        field.begin_editing(),
+        "selectText: produced no field editor"
+    );
+    let editor = field.field_editor().expect("the field editor is live");
+
+    let changes = Rc::new(RefCell::new(Vec::<String>::new()));
+    field.on_change({
+        let changes = Rc::clone(&changes);
+        move |field| changes.borrow_mut().push(field.string())
+    });
+
+    // UTF-16 units: h=1 é=1 =1 😀=2 b=1 — 😀 spans units 2..4.
+    field.set_selected_range(NSRange::new(2, 2));
+    assert_eq!(field.selected_range(), Some(NSRange::new(2, 2)));
+
+    field.replace_range(NSRange::new(2, 2), &NSString::from_str("X"));
+    assert_eq!(field.string(), "héXb");
+    assert_eq!(changes.borrow().as_slice(), ["héXb"]);
+    assert_eq!(
+        field.selected_range(),
+        Some(NSRange::new(3, 0)),
+        "the caret lands after the inserted text"
+    );
+
+    // Undo of the surrogate-pair replacement restores the exact original
+    // text through the same change notification.
+    let undo = editor
+        .undoManager()
+        .expect("the field editor carries an undo manager");
+    undo.undo();
+    crate::harness::pump_main_turn();
+    assert_eq!(
+        field.string(),
+        "hé😀b",
+        "undo restores the pre-replacement text"
+    );
+    assert_eq!(
+        changes.borrow().as_slice(),
+        ["héXb", "hé😀b"],
+        "the editor's DidUndo notification reports the restored text once"
+    );
+    undo.redo();
+    crate::harness::pump_main_turn();
+    assert_eq!(field.string(), "héXb", "redo replays the replacement");
+    assert_eq!(
+        changes.borrow().as_slice(),
+        ["héXb", "hé😀b", "héXb"],
+        "DidRedo reports the replayed text once"
+    );
+    undo.undo();
+    crate::harness::pump_main_turn();
+
+    // A caret insertion is an empty-range replacement.
+    field.replace_range(NSRange::new(0, 0), &NSString::from_str(">"));
+    assert_eq!(field.string(), ">hé😀b");
+
+    window.close();
+}
+
+/// A single-line field's `replace_range` is the same entry a pasted
+/// insertion takes, so embedded newlines never survive into it.
+fn a_single_line_fields_replacement_keeps_its_line_invariant() {
+    let mtm = marker();
+    let window = Window::new(mtm, Rect::new(0.0, 0.0, 400.0, 300.0), WindowStyle::TITLED);
+    let host = HostView::new(mtm, window.content_rect());
+    window.set_content_view(&host);
+    let field = TextField::new(mtm, Some(1));
+    cocoa_ui::view::set_frame(&field, Rect::new(10.0, 10.0, 200.0, 24.0));
+    host.add_subview(&field);
+
+    assert!(field.begin_editing());
+    field.replace_range(NSRange::new(0, 0), &NSString::from_str("a\nb\nc"));
+    assert!(
+        !field.string().contains('\n'),
+        "a single-line field admitted a newline: {:?}",
+        field.string()
+    );
+    window.close();
+}
+
+/// `textView:menu:forEvent:atIndex:` is the field editor's context-menu
+/// hook and the field is its delegate: a right-click menu request reaches
+/// the installed handler with the standard menu, whose items stay and
+/// whose appended rows the method returns.
+fn the_edit_menu_handler_appends_to_the_field_editors_menu() {
+    let mtm = marker();
+    let window = Window::new(mtm, Rect::new(0.0, 0.0, 400.0, 300.0), WindowStyle::TITLED);
+    let host = HostView::new(mtm, window.content_rect());
+    window.set_content_view(&host);
+    let field = TextField::new(mtm, None);
+    cocoa_ui::view::set_frame(&field, Rect::new(10.0, 10.0, 200.0, 24.0));
+    host.add_subview(&field);
+    assert!(field.begin_editing());
+    let editor = field.field_editor().unwrap();
+
+    let asked = Rc::new(Cell::new(0u32));
+    field.install_edit_menu_handler({
+        let asked = Rc::clone(&asked);
+        move |_field, _editor, menu| {
+            asked.set(asked.get() + 1);
+            menu.addItem(&NSMenuItem::new(mtm));
+            if let Some(item) = menu.itemAtIndex(menu.numberOfItems() - 1) {
+                item.setTitle(&NSString::from_str("Custom Row"));
+            }
+        }
+    });
+
+    let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+        NSEventType::RightMouseDown,
+        NSPoint::new(5.0, 5.0),
+        NSEventModifierFlags::empty(),
+        0.0,
+        window.native().windowNumber(),
+        None,
+        1,
+        1,
+        0.0,
+    )
+    .expect("a right-mouse-down event constructs");
+    let menu = editor
+        .menuForEvent(&event)
+        .expect("the field editor produced a menu");
+
+    assert!(asked.get() > 0, "the delegate hook never ran");
+    assert!(
+        menu.itemWithTitle(&NSString::from_str("Custom Row"))
+            .is_some(),
+        "the appended row is missing from the editor's menu"
+    );
+    assert!(
+        menu.numberOfItems() > 1,
+        "the platform's standard rows were replaced rather than kept"
+    );
+    window.close();
+}
+
+/// Two fields share the window's field editor: editing `A`, then moving
+/// editing to `B` ends `A`'s session — its undo observers retire and its
+/// `on_change` stays silent while `B`'s own undo reports once.
+fn a_fields_history_observation_retires_when_editing_moves() {
+    let mtm = marker();
+    let window = Window::new(mtm, Rect::new(0.0, 0.0, 400.0, 300.0), WindowStyle::TITLED);
+    let host = HostView::new(mtm, window.content_rect());
+    window.set_content_view(&host);
+    let field_a = TextField::new(mtm, None);
+    cocoa_ui::view::set_frame(&field_a, Rect::new(10.0, 10.0, 200.0, 24.0));
+    host.add_subview(&field_a);
+    let field_b = TextField::new(mtm, None);
+    cocoa_ui::view::set_frame(&field_b, Rect::new(10.0, 44.0, 200.0, 24.0));
+    host.add_subview(&field_b);
+    field_a.setStringValue(&NSString::from_str("a"));
+    field_b.setStringValue(&NSString::from_str("b"));
+
+    let a_changes = Rc::new(RefCell::new(Vec::<String>::new()));
+    field_a.on_change({
+        let a_changes = Rc::clone(&a_changes);
+        move |field| a_changes.borrow_mut().push(field.string())
+    });
+    let b_changes = Rc::new(RefCell::new(Vec::<String>::new()));
+    field_b.on_change({
+        let b_changes = Rc::clone(&b_changes);
+        move |field| b_changes.borrow_mut().push(field.string())
+    });
+
+    assert!(field_a.begin_editing(), "A never began editing");
+    field_a.replace_range(NSRange::new(0, 1), &NSString::from_str("A"));
+    assert_eq!(a_changes.borrow().as_slice(), ["A"]);
+
+    // Editing moves to B: the shared editor transfers and A's
+    // `controlTextDidEndEditing` retires its session observers.
+    assert!(field_b.begin_editing(), "B never began editing");
+    field_b.replace_range(NSRange::new(0, 1), &NSString::from_str("B"));
+    assert_eq!(b_changes.borrow().as_slice(), ["B"]);
+
+    let undo = field_b
+        .field_editor()
+        .expect("B has the shared editor")
+        .undoManager()
+        .expect("the field editor carries an undo manager");
+    undo.undo();
+    crate::harness::pump_main_turn();
+    assert_eq!(
+        b_changes.borrow().as_slice(),
+        ["B", "b"],
+        "B's session reports its undo"
+    );
+    assert_eq!(
+        a_changes.borrow().as_slice(),
+        ["A"],
+        "A's retired session reports nothing"
+    );
+
+    window.close();
 }
