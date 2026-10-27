@@ -1722,7 +1722,7 @@ mod tests {
             height: side,
         };
 
-        // 36 texels, then 36 more beside them: 28 are left.
+        // 144 bytes, then 144 more beside them: 112 are left.
         resources
             .image(&mut names, &square(6, 1))
             .expect("the first image fits");
@@ -1733,7 +1733,7 @@ mod tests {
                 height,
                 available,
                 limits: reported,
-            }) => assert_eq!((width, height, available, reported), (6, 6, 28, limits)),
+            }) => assert_eq!((width, height, available, reported), (6, 6, 112, limits)),
             other => panic!("an image past the budget was registered: {other:?}"),
         }
 
