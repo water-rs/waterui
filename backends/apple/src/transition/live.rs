@@ -197,7 +197,10 @@ impl LiveChild {
                  move, rotation) or an asymmetric transition"
             );
         }
-        if state.is_complete() {
+        // A zero-duration removal has nothing to sample, and a host with no
+        // window never ticks — the insertion run's rule: both complete now,
+        // and dropping `visual` performs the detachment.
+        if state.is_complete() || !view::has_window(&host.host) {
             return None;
         }
         let mtm = cocoa_ui::MainThreadMarker::new().expect("a ghost starts on the main thread");

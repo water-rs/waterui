@@ -10211,17 +10211,22 @@ mod text_selection {
 /// leaf — while a declared removal keeps the outgoing view alive as a
 /// non-interactive ghost beneath the new child until the clock ends.
 mod transition {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::time::Duration;
 
+    use waterui::Identifiable;
     use waterui::ViewExt;
     use waterui::animation::Animation;
     use waterui::component::Dynamic;
     use waterui::component::label::label;
-    use waterui::prelude::vstack;
+    use waterui::component::lazy::Lazy;
+    use waterui::prelude::{VStack, hstack, spacer, text, vstack};
+    use waterui::reactive::collection::List as ReactiveList;
+    use waterui::views::ForEach;
     use waterui_apple::contract::Mounted;
     use waterui_apple::native_test_support::pump_main_until;
+    use waterui_backend_core::AnyView;
     use waterui_core::Metadata;
     use waterui_core::metadata::Retain;
     use waterui_core::transition::{PropertyTransition, Transition, TransitionSpec};
@@ -10290,13 +10295,10 @@ mod transition {
                     Ok(())
                 },
             ),
-            libtest_mimic::Trial::test(
-                "transition::adopted_conditional_claims_each_child",
-                || {
-                    adopted_conditional_claims_each_child();
-                    Ok(())
-                },
-            ),
+            libtest_mimic::Trial::test("transition::adopted_conditional_claims_each_child", || {
+                adopted_conditional_claims_each_child();
+                Ok(())
+            }),
             libtest_mimic::Trial::test(
                 "transition::the_contents_own_claim_beats_the_adopted_one",
                 || {
@@ -10322,6 +10324,44 @@ mod transition {
                     Ok(())
                 },
             ),
+        ]
+        .into_iter()
+        .chain(collection_trials())
+        .collect()
+    }
+
+    /// The Stage 3 collection trials (§8.2).
+    fn collection_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "transition::collection_ghost_keeps_its_last_placement",
+                || {
+                    collection_ghost_keeps_its_last_placement();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test("transition::ghosts_rebase_across_later_edits", || {
+                ghosts_rebase_across_later_edits();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test(
+                "transition::reinsertion_creates_a_fresh_instance_beside_the_ghost",
+                || {
+                    reinsertion_creates_a_fresh_instance_beside_the_ghost();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::unplaced_lazy_row_releases_immediately",
+                || {
+                    unplaced_lazy_row_releases_immediately();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test("transition::siblings_close_the_gap_at_completion", || {
+                siblings_close_the_gap_at_completion();
+                Ok(())
+            }),
         ]
     }
 
@@ -10698,9 +10738,7 @@ mod transition {
                 (view::alpha(&content) - 0.5).abs() < 1e-6,
                 "the content's own opacity is untouched"
             );
-            let settled = pump_main_until(2.0, || {
-                (view::alpha(&host) - 1.0).abs() < 1e-6
-            });
+            let settled = pump_main_until(2.0, || (view::alpha(&host) - 1.0).abs() < 1e-6);
             assert!(settled, "the insertion completes to full alpha");
             assert!((view::alpha(&content) - 0.5).abs() < 1e-6);
         });
@@ -10809,7 +10847,10 @@ mod transition {
         handler.set(label("a"));
         handler.set(label("b"));
         autoreleasepool(|_| {
-            let host = mounted.view().downcast_ref::<HostView>().expect("a HostView");
+            let host = mounted
+                .view()
+                .downcast_ref::<HostView>()
+                .expect("a HostView");
             assert!(
                 !host.is_retired(),
                 "the conditional's own mount never transitions"
@@ -10819,9 +10860,7 @@ mod transition {
                 2,
                 "the adopted claim ghosts the outgoing child"
             );
-            let completed = pump_main_until(2.0, || {
-                view::subviews(mounted.view()).len() == 1
-            });
+            let completed = pump_main_until(2.0, || view::subviews(mounted.view()).len() == 1);
             assert!(completed, "the adopted ghost completes");
         });
         drop(window);
@@ -10850,9 +10889,7 @@ mod transition {
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
             let transition_child = content_of(&host);
-            let mid = pump_main_until(2.0, || {
-                transform_scale(&transition_child) < 1.0
-            });
+            let mid = pump_main_until(2.0, || transform_scale(&transition_child) < 1.0);
             assert!(mid, "the child's own claim drives the ghost");
             assert!(
                 (view::alpha(&host) - 1.0).abs() < 1e-6,
@@ -10955,12 +10992,381 @@ mod transition {
         let window2 = super::mount_and_order_front(mounted2.view());
         handler2.set(label("b"));
         autoreleasepool(|_| {
-            let completed = pump_main_until(2.0, || {
-                view::subviews(mounted2.view()).len() == 1
-            });
+            let completed = pump_main_until(2.0, || view::subviews(mounted2.view()).len() == 1);
             assert!(completed, "the ghost completes through on_complete");
         });
         drop(window2);
         drop(window);
+    }
+
+    /// A stable-id row for the `ForEach` memberships the collection
+    /// trials edit.
+    #[derive(Clone, Copy, Identifiable)]
+    struct Row {
+        #[id]
+        id: u64,
+    }
+
+    /// The `Died` flags a row generator records, in render order, keyed
+    /// by the row's collection id — reinsertion shows as a second entry.
+    type DiedFlags = Rc<RefCell<Vec<(u64, Rc<Cell<bool>>)>>>;
+
+    /// A 200 ms linear opacity declaration — long enough for a
+    /// mid-flight membership edit.
+    fn row_spec() -> TransitionSpec {
+        TransitionSpec::new(PropertyTransition::opacity())
+            .with_animation(Animation::linear(Duration::from_millis(200)))
+    }
+
+    /// The container's members as (is ghost, pointer, frame) triples in
+    /// subview order — ghost hosts paint beneath the live members.
+    fn member_frames(container: &PlatformView) -> Vec<(bool, usize, cocoa_ui::Rect)> {
+        autoreleasepool(|_| {
+            view::subviews(container)
+                .iter()
+                .map(|member| {
+                    (
+                        member
+                            .downcast_ref::<HostView>()
+                            .is_some_and(HostView::is_retired),
+                        Retained::as_ptr(member) as usize,
+                        view::frame(member),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    /// The members sorted by frame origin — the member order layout
+    /// produced, independent of subview z-order.
+    fn members_by_origin(container: &PlatformView) -> Vec<(bool, usize, cocoa_ui::Rect)> {
+        let mut members = member_frames(container);
+        members.sort_by(|a, b| a.2.origin.y.total_cmp(&b.2.origin.y));
+        members
+    }
+
+    /// True while any descendant of `view` is a retired host — the sign
+    /// a ghost exists.
+    fn has_retired_descendant(view: &PlatformView) -> bool {
+        autoreleasepool(|_| {
+            view::subviews(view).iter().any(|subview| {
+                subview
+                    .downcast_ref::<HostView>()
+                    .is_some_and(HostView::is_retired)
+                    || has_retired_descendant(subview)
+            })
+        })
+    }
+
+    /// The host that directly owns the member views: `VStack::for_each`
+    /// wraps its container in an environment host and `Lazy::vstack`
+    /// nests it in scroll chrome, so in both cases the container is the
+    /// first descendant with more than two direct subviews.
+    fn member_container(view: &PlatformView) -> Option<Retained<PlatformView>> {
+        autoreleasepool(|_| {
+            let subviews = view::subviews(view);
+            if subviews.len() > 2 {
+                return Some(view::retain_base(view));
+            }
+            subviews
+                .iter()
+                .find_map(|subview| member_container(subview))
+        })
+    }
+
+    /// The ghost slot reports exactly the member's last placed frame —
+    /// bit-equal, since it is copied — and a mid-flight width change
+    /// re-measures live members but never the ghost.
+    pub fn collection_ghost_keeps_its_last_placement() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
+            let height = match row.id % 3 {
+                0 => 20.0,
+                1 => 4.0,
+                _ => 12.0,
+            };
+            Metadata::new(
+                // The spacer stretches the row across the container's
+                // width, so a wider container re-measures it.
+                hstack((text(format!("row {}", row.id)), spacer())).padding_vertical(height),
+                row_spec(),
+            )
+        }));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let container = member_container(leaf.view()).expect("the container holds the members");
+        let (b_size, c_origin) = {
+            let members = member_frames(&container);
+            assert_eq!(members.len(), 3, "three members mounted");
+            (members[1].2.size, members[2].2.origin)
+        };
+        autoreleasepool(|_| {
+            let _ = items.remove(1);
+        });
+        assert!(
+            pump_main_until(2.0, || member_frames(&container).iter().any(|m| m.0)),
+            "the removed member ghosts"
+        );
+        let members = member_frames(&container);
+        assert_eq!(members.len(), 3);
+        let (ghost, _, frame) = members[0];
+        assert!(ghost, "the ghost leads the subviews at the bottom");
+        assert_eq!(
+            (frame.size.width.to_bits(), frame.size.height.to_bits()),
+            (b_size.width.to_bits(), b_size.height.to_bits()),
+            "the ghost's frame is the member's last placement, bit-equal"
+        );
+        assert_eq!(
+            members[2].2.origin.y.to_bits(),
+            c_origin.y.to_bits(),
+            "the surviving member's origin is unchanged while the slot holds"
+        );
+        // A mid-flight width change re-measures live members; the ghost
+        // keeps its frozen size. The container takes the new bounds
+        // directly — its `with` wrapper would only forward them anyway.
+        let live_width = members[2].2.size.width;
+        autoreleasepool(|_| {
+            let mut frame = view::frame(&container);
+            frame.size.width += 80.0;
+            view::set_frame(&container, frame);
+            view::layout_immediately(&container);
+        });
+        let resized = member_frames(&container);
+        assert!(
+            resized[2].2.size.width > live_width,
+            "the live member re-measured at the new width"
+        );
+        let (ghost, _, ghost_frame) = resized[0];
+        assert!(ghost, "the ghost still leads the subviews");
+        assert_eq!(
+            (
+                ghost_frame.size.width.to_bits(),
+                ghost_frame.size.height.to_bits()
+            ),
+            (b_size.width.to_bits(), b_size.height.to_bits()),
+            "the ghost's size is frozen — never re-measured"
+        );
+    }
+
+    /// A ghost re-anchors on every edit: it stays after the nearest
+    /// preceding live id, or at the head when none survives — and a head
+    /// ghost stays ahead of an insertion at the head, as in Hydrolysis.
+    pub fn ghosts_rebase_across_later_edits() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        // Only row 2 claims a transition — an anchor that ghosts would
+        // make "first" ambiguous.
+        let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
+            let content = hstack((text(format!("row {}", row.id)), spacer())).size(200.0, 20.0);
+            if row.id == 2 {
+                AnyView::new(Metadata::new(content, row_spec()))
+            } else {
+                AnyView::new(content)
+            }
+        }));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let container = member_container(leaf.view()).expect("the container holds the members");
+        autoreleasepool(|_| {
+            let _ = items.remove(1);
+        });
+        assert!(
+            pump_main_until(2.0, || member_frames(&container).iter().any(|m| m.0)),
+            "the removed member ghosts"
+        );
+        autoreleasepool(|_| {
+            let _ = items.remove(0);
+        });
+        // With its anchor gone the ghost sits first.
+        let members = member_frames(&container);
+        assert_eq!(members.len(), 2);
+        let (ghost, _, ghost_frame) = members[0];
+        assert!(ghost, "the ghost leads the subviews");
+        assert!(
+            ghost_frame.origin.y < members[1].2.origin.y,
+            "the head-anchored ghost sits first"
+        );
+        // The surviving member's identity, to name it after the insert.
+        let c_ptr = members
+            .iter()
+            .find(|m| !m.0)
+            .expect("the survivor is live")
+            .1;
+        // Inserting at the head keeps the head ghost first.
+        autoreleasepool(|_| {
+            items.insert(0, Row { id: 4 });
+        });
+        assert!(
+            pump_main_until(2.0, || member_frames(&container).len() == 3),
+            "the inserted member joins"
+        );
+        let members = members_by_origin(&container);
+        assert_eq!(members.len(), 3);
+        // By frame origin: the head ghost first, then the inserted
+        // member, then the survivor.
+        assert!(
+            members[0].0 && !members[1].0 && !members[2].0,
+            "member order by frame origin is ghost(B), D, C: {members:?}"
+        );
+        assert_eq!(members[2].1, c_ptr, "the survivor keeps the tail slot");
+        assert_ne!(
+            members[1].1, c_ptr,
+            "the member after the ghost is the fresh insertion, not the survivor"
+        );
+    }
+
+    /// Re-adding an id whose exit is still in flight joins a fresh live
+    /// instance — new semantics, new insertion — while the old ghost
+    /// completes on its own clock.
+    pub fn reinsertion_creates_a_fresh_instance_beside_the_ghost() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let flags: DiedFlags = Rc::new(RefCell::new(Vec::new()));
+        let leaf = super::resolve::render(VStack::for_each(items.clone(), {
+            let flags = Rc::clone(&flags);
+            move |row: Row| {
+                let died = Rc::new(Cell::new(false));
+                flags.borrow_mut().push((row.id, Rc::clone(&died)));
+                Metadata::new(
+                    Metadata::new(
+                        hstack((text(format!("row {}", row.id)), spacer())).size(200.0, 20.0),
+                        Retain::new(Died(died)),
+                    ),
+                    row_spec(),
+                )
+            }
+        }));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let container = member_container(leaf.view()).expect("the container holds the members");
+        let old_died = flags
+            .borrow()
+            .iter()
+            .find(|(id, _)| *id == 2)
+            .map(|(_, died)| Rc::clone(died))
+            .expect("row 2 rendered");
+        autoreleasepool(|_| {
+            let _ = items.remove(1);
+        });
+        assert!(
+            old_died.get(),
+            "the removed instance's semantics end at once"
+        );
+        assert!(
+            pump_main_until(2.0, || member_frames(&container).iter().any(|m| m.0)),
+            "the removed member ghosts"
+        );
+        // The same id comes back mid-flight.
+        autoreleasepool(|_| {
+            items.insert(1, Row { id: 2 });
+        });
+        assert!(
+            pump_main_until(2.0, || member_frames(&container).len() == 4),
+            "the reinserted member joins beside the ghost"
+        );
+        let members = member_frames(&container);
+        assert_eq!(members.len(), 4, "the ghost beside three live members");
+        assert!(members[0].0, "the ghost paints beneath the live members");
+        let new_died = flags
+            .borrow()
+            .iter()
+            .rfind(|(id, _)| *id == 2)
+            .map(|(_, died)| Rc::clone(died))
+            .expect("row 2 re-rendered");
+        assert!(
+            !new_died.get(),
+            "the reinserted instance is a fresh live member"
+        );
+        assert!(
+            !members
+                .iter()
+                .filter(|m| !m.0)
+                .any(|m| m.2.size.height.to_bits() != 20.0f64.to_bits()),
+            "the live members keep their frames"
+        );
+    }
+
+    /// A lazy row that never materialized releases at once: removing it
+    /// creates no ghost host, and the container's extent reflows on the
+    /// next pass.
+    pub fn unplaced_lazy_row_releases_immediately() {
+        let _mtm = mtm();
+        let rows: Vec<Row> = (0..40).map(|id| Row { id }).collect();
+        let mut items = ReactiveList::from(rows);
+        let leaf = super::resolve::render(Lazy::vstack(ForEach::new(items.clone(), |row: Row| {
+            Metadata::new(
+                hstack((text(format!("row {}", row.id)), spacer())).size(300.0, 30.0),
+                row_spec(),
+            )
+        })));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let (container, height) = {
+            let container =
+                member_container(leaf.view()).expect("the lazy container materialized rows");
+            let count = autoreleasepool(|_| view::subviews(&container).len());
+            assert!(
+                count < 40,
+                "the window virtualizes: {count} materialized of 40"
+            );
+            let height = view::frame(&container).size.height;
+            (container, height)
+        };
+        // A row past the window plus overscan never materialized.
+        autoreleasepool(|_| {
+            let _ = items.remove(39);
+        });
+        assert!(
+            !pump_main_until(0.5, || has_retired_descendant(leaf.view())),
+            "an unmaterialized row leaves no ghost"
+        );
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        assert!(
+            view::frame(&container).size.height < height,
+            "the membership reflowed to one fewer row"
+        );
+    }
+
+    /// The ghost's slot holds the gap until the clock ends — siblings
+    /// move into it only when `on_complete` releases the slot.
+    pub fn siblings_close_the_gap_at_completion() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        // Only the middle row claims a transition.
+        let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
+            let height = match row.id {
+                1 => 10.0,
+                2 => 30.0,
+                _ => 20.0,
+            };
+            let content = hstack((text(format!("row {}", row.id)), spacer())).size(200.0, height);
+            if row.id == 2 {
+                AnyView::new(Metadata::new(content, row_spec()))
+            } else {
+                AnyView::new(content)
+            }
+        }));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let container = member_container(leaf.view()).expect("the container holds the members");
+        let b_origin = member_frames(&container)[1].2.origin.y;
+        autoreleasepool(|_| {
+            let _ = items.remove(1);
+        });
+        assert!(
+            pump_main_until(2.0, || member_frames(&container).iter().any(|m| m.0)),
+            "the removed member ghosts"
+        );
+        // Completion drops the ghost and the slot; the trailing member's
+        // origin lands exactly where the removed member began.
+        assert!(
+            pump_main_until(3.0, || {
+                autoreleasepool(|_| view::layout_immediately(leaf.view()));
+                let members = member_frames(&container);
+                members.len() == 2 && members[1].2.origin.y.to_bits() == b_origin.to_bits()
+            }),
+            "siblings close the gap once the ghost completes"
+        );
     }
 }

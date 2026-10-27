@@ -139,6 +139,27 @@ impl Ghost {
     pub fn slot(&self) -> Option<&GhostSlot> {
         self.0.slot.as_ref()
     }
+
+    /// Places the retired host at the frame the collection's layout
+    /// computed for the ghost's slot (§4.3). Only the host moves — its
+    /// frozen size means the content inside never re-lays out, and the
+    /// pass's `frame.size` is the slot's own answer, so a mismatch is a
+    /// container bug, not an event.
+    pub fn place(&self, frame: cocoa_ui::Rect) {
+        let slot = self
+            .0
+            .slot
+            .as_ref()
+            .expect("a collection ghost holds a slot");
+        let expected =
+            cocoa_ui::Size::new(f64::from(slot.size().width), f64::from(slot.size().height));
+        assert!(
+            frame.size.width.to_bits() == expected.width.to_bits()
+                && frame.size.height.to_bits() == expected.height.to_bits(),
+            "container placed a ghost at {frame:?}, not its frozen slot size {expected:?}"
+        );
+        view::set_frame(&self.0.visual.host, frame);
+    }
 }
 
 impl GhostRun {

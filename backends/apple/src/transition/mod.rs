@@ -47,6 +47,7 @@ pub mod host;
 pub mod live;
 pub mod property;
 pub mod retire;
+pub mod slots;
 
 pub use ghost::Ghost;
 pub use live::{LiveChild, Removal};

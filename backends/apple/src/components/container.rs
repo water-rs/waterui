@@ -35,9 +35,10 @@ use waterui_core::layout::{
 use waterui_core::views::AnyViews;
 
 use crate::contract::{NativeLeaf, Renderer};
-use crate::transition::{Ghost, LiveChild, Removal};
 use crate::dispatch::Dispatcher;
 use crate::proposal;
+use crate::transition::slots::{FrozenPlacement, GhostKey, Slot, SlotSequence};
+use crate::transition::{Ghost, LiveChild, Removal};
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{HitTest, HostView};
@@ -190,15 +191,26 @@ struct ContainerState {
     item_ids: Vec<ItemId>,
     /// The materialized children by id — every mounted child lives here.
     rendered: HashMap<ItemId, LiveChild>,
+    /// The member order layout sees: live ids and held removal ghosts in
+    /// one sequence, each ghost anchored to the live id that precedes it
+    /// and rebased by every reconcile (§4.1).
+    slots: SlotSequence<ItemId>,
+    /// Removal transitions in flight by ghost key — each retains the
+    /// outgoing view and the slot its key holds in `slots` until its
+    /// clock ends (layout-spec §4.5).
+    ghosts: HashMap<GhostKey, Ghost>,
+    /// Each live member's last placed measurement, by id — the ghost
+    /// slot's source, recorded by the placement passes and never
+    /// re-measured at removal (§4.2).
+    placed: HashMap<ItemId, FrozenPlacement>,
     /// The non-lazy child order, as ids; empty while virtualizing.
     order: Vec<ItemId>,
-    /// Removal transitions in flight, in member order — each retains the
-    /// outgoing view plus the slot position it holds until its clock ends
-    /// (layout-spec §4.5).
-    ghosts: Vec<ContainerGhost>,
     /// Lazy-path ids waiting for their first materialization as a
     /// structural join — a virtualized remount never replays insertion.
     pending_inserts: HashSet<ItemId>,
+    /// `false` until the first membership applies: the initial population
+    /// mounts quiet, later joins play their insertion.
+    built: bool,
     /// Measured main-axis extents by id.
     measured_main: HashMap<ItemId, f64>,
     /// Measured cross-axis extents by id.
@@ -220,25 +232,6 @@ impl core::fmt::Debug for ContainerState {
     }
 }
 
-/// One removal transition's held member: the ghost and the merged-member
-/// position it sits at — the count of live ids that precede it.
-struct ContainerGhost {
-    /// The live-member count before this ghost's slot.
-    position: usize,
-    /// The ghost driver: retired view, frozen slot, removal clock.
-    ghost: Ghost,
-    /// The slot's main-axis extent, for the lazy path's extent walk.
-    main_extent: f64,
-    /// The slot's cross-axis extent, for the lazy path's size answer.
-    cross_extent: f64,
-}
-
-impl core::fmt::Debug for ContainerGhost {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ContainerGhost").finish_non_exhaustive()
-    }
-}
-
 /// One merged member of the container — a live child or a held ghost slot
 /// (§4.5: a removal transition's slot stays a layout member, spacing
 /// included, until the transition completes).
@@ -247,34 +240,30 @@ enum Member {
     /// A live child: its collection id and index in the ids list — the
     /// lazy path's `getView(at:)` index.
     Id { id: ItemId, index: usize },
-    /// A removal ghost: its index in `state.ghosts`.
-    Ghost(usize),
+    /// A removal ghost: its key in `state.ghosts` and `state.slots`.
+    Ghost(GhostKey),
 }
 
-/// The ordered membership layout sees: live ids with ghost slots spliced
-/// in at their removal positions — a ghost's position counts the live ids
-/// that precede it, and same-position ghosts keep their removal order.
+/// The ordered membership layout sees — the slot sequence's live ids and
+/// ghosts, each live id paired with its index in `item_ids` (the lazy
+/// path's `getView(at:)` index).
 fn members(state: &ContainerState) -> Vec<Member> {
-    let ids = if state.lazy.is_some() {
-        &state.item_ids
-    } else {
-        &state.order
-    };
-    let mut ghosts: Vec<(usize, &ContainerGhost)> = state.ghosts.iter().enumerate().collect();
-    // `sort_by_key` is stable: same-position ghosts keep their removal
-    // order, which is their order in `state.ghosts`.
-    ghosts.sort_by_key(|(_, ghost)| ghost.position);
-    let mut members = Vec::with_capacity(ids.len() + ghosts.len());
-    let mut ghost_index = 0;
-    for (index, &id) in ids.iter().enumerate() {
-        while ghost_index < ghosts.len() && ghosts[ghost_index].1.position <= index {
-            members.push(Member::Ghost(ghosts[ghost_index].0));
-            ghost_index += 1;
-        }
-        members.push(Member::Id { id, index });
-    }
-    members.extend(ghosts[ghost_index..].iter().map(|(i, _)| Member::Ghost(*i)));
-    members
+    let mut live_index = 0;
+    state
+        .slots
+        .iter()
+        .map(|slot| match slot {
+            Slot::Live(id) => {
+                let member = Member::Id {
+                    id,
+                    index: live_index,
+                };
+                live_index += 1;
+                member
+            }
+            Slot::Ghost(key) => Member::Ghost(key),
+        })
+        .collect()
 }
 
 /// `subViewCache` without the per-call memoization `with_memoized_children`
@@ -285,8 +274,7 @@ fn children(state: &ContainerState) -> Vec<&dyn SubView> {
         .iter()
         .map(|member| match member {
             Member::Id { id, .. } => state.rendered[id].layout(),
-            Member::Ghost(index) => state.ghosts[*index]
-                .ghost
+            Member::Ghost(key) => state.ghosts[key]
                 .slot()
                 .expect("a container ghost holds a slot")
                 as &dyn SubView,
@@ -309,12 +297,7 @@ fn render_at(state: &ContainerState, index: usize) -> NativeLeaf {
 fn materialize(state: &mut ContainerState, index: usize, id: ItemId, insertion: bool) {
     let leaf = render_at(state, index);
     let child = if insertion {
-        LiveChild::mount_inserted(
-            leaf,
-            &state.host,
-            None,
-            state.renderer.context().env(),
-        )
+        LiveChild::mount_inserted(leaf, &state.host, None, state.renderer.context().env())
     } else {
         LiveChild::mount(leaf, &state.host, None)
     };
@@ -322,44 +305,22 @@ fn materialize(state: &mut ContainerState, index: usize, id: ItemId, insertion: 
     state.rendered.insert(id, child);
 }
 
-/// §4.5's removal: the member leaves the semantic tree now — `retire`
-/// drops its leaf, ending watchers and subscriptions — while a declared
-/// transition keeps the outgoing view as a non-interactive ghost that
-/// holds this layout slot until its clock ends. A member with no declared
-/// transition drops as before.
+/// §4.5's removal: the member leaves the semantic tree now while a
+/// declared transition keeps the outgoing view as a non-interactive
+/// ghost, holding the frozen `slot` the reconcile reserved under `key`
+/// until its clock ends and `on_complete` releases both.
 ///
 /// `state_rc` is the same state the mutable borrow came from — the
 /// ghost's completion runs on a later display tick, where the borrow is
-/// already released. `position` is the count of surviving ids that
-/// precede the removed member.
+/// already released.
 fn retire_member(
     state: &mut ContainerState,
     state_rc: &Rc<RefCell<ContainerState>>,
+    key: GhostKey,
     child: LiveChild,
-    position: usize,
+    slot: waterui_core::transition::GhostSlot,
 ) {
-    if child.claim().is_none() {
-        // No declaration: the ordinary drop — detach and release.
-        drop(child);
-        return;
-    }
-    let proposal = state.lazy.as_ref().map_or_else(
-        || state.selected.get().unwrap_or(ProposalSize::UNSPECIFIED),
-        |lazy| lazy_child_proposal(state.last_cross, lazy),
-    );
-    let dimensions = child.layout().measure(proposal);
-    let priority = child.layout().priority();
-    let slot = waterui_core::transition::GhostSlot::new(dimensions, priority);
-    let (main_extent, cross_extent) = state.lazy.as_ref().map_or((0.0, 0.0), |lazy| {
-        let size = slot.size();
-        main_cross(
-            cocoa_ui::Size::new(f64::from(size.width), f64::from(size.height)),
-            lazy,
-        )
-    });
     let weak = Rc::downgrade(state_rc);
-    let ghost_view = view::retain_base(child.view());
-    let is_lazy = state.lazy.is_some();
     let Some(ghost) = child.remove(Removal {
         env: state.renderer.context().env(),
         slot: Some(slot),
@@ -368,14 +329,9 @@ fn retire_member(
                 return;
             };
             let mut state = state_rc.borrow_mut();
-            if let Some(index) = state
-                .ghosts
-                .iter()
-                .position(|entry| std::ptr::from_ref(entry.ghost.host()) == Retained::as_ptr(&ghost_view))
-            {
-                state.ghosts.remove(index);
-            }
-            if is_lazy {
+            state.slots.remove_ghost(key);
+            state.ghosts.remove(&key);
+            if state.lazy.is_some() {
                 invalidate_virtual_layout(&state);
             } else {
                 state.host.set_needs_layout();
@@ -383,16 +339,47 @@ fn retire_member(
             }
         }),
     }) else {
+        // The transition was already complete: the reserved slot goes
+        // back, so siblings never see the gap.
+        state.slots.remove_ghost(key);
         return;
     };
     // The ghost paints at its slot beneath live children (§4.5).
     view::add_subview_at_bottom(&state.host, ghost.host());
-    state.ghosts.push(ContainerGhost {
-        position,
-        ghost,
-        main_extent,
-        cross_extent,
-    });
+    state.ghosts.insert(key, ghost);
+}
+
+/// Applies a reconcile's departures: a member that asked for no ghost —
+/// unclaimed, or never placed — detaches and releases at once (§4.2); a
+/// ghosted member retires onto the reserved slot.
+fn depart_members(
+    state: &mut ContainerState,
+    state_rc: &Rc<RefCell<ContainerState>>,
+    departed: Vec<(ItemId, Option<GhostKey>)>,
+) {
+    for (id, key) in departed {
+        state.pending_inserts.remove(&id);
+        let placement = state.placed.remove(&id);
+        let Some(child) = state.rendered.remove(&id) else {
+            continue;
+        };
+        let Some(key) = key else {
+            drop(child);
+            continue;
+        };
+        // `wants_ghost` required a recorded placement for `key` to exist.
+        let slot = placement.expect("a ghosted member was placed").ghost_slot();
+        retire_member(state, state_rc, key, child, slot);
+    }
+}
+
+/// A ghost slot's frozen size read on the lazy stack's axes.
+fn ghost_main_cross(slot: &waterui_core::transition::GhostSlot, lazy: &LazyConfig) -> (f64, f64) {
+    let size = slot.size();
+    main_cross(
+        cocoa_ui::Size::new(f64::from(size.width), f64::from(size.height)),
+        lazy,
+    )
 }
 
 /// A lazy item's cross extent and whether it stretches the cross axis, under
@@ -470,9 +457,22 @@ fn measure_lazy_child(
     cross: f64,
     lazy: &LazyConfig,
 ) -> (cocoa_ui::Size, bool) {
+    let (_, size, stretches) = measure_lazy_child_dimensions(child, cross, lazy);
+    (size, stretches)
+}
+
+/// [`measure_lazy_child`] plus the raw measurement the placement pass
+/// negotiated — the frozen placement a departed member's ghost slot is
+/// built from (§4.2).
+fn measure_lazy_child_dimensions(
+    child: &dyn SubView,
+    cross: f64,
+    lazy: &LazyConfig,
+) -> (ViewDimensions, cocoa_ui::Size, bool) {
     let axis = child.stretch_axis();
     let proposal = lazy_child_proposal(cross, lazy);
-    let intrinsic = child.measure(proposal).size;
+    let dimensions = child.measure(proposal);
+    let intrinsic = dimensions.size;
     let (intrinsic_main, intrinsic_cross) = main_cross(
         cocoa_ui::Size::new(f64::from(intrinsic.width), f64::from(intrinsic.height)),
         lazy,
@@ -484,11 +484,12 @@ fn measure_lazy_child(
             _ => unreachable!("lazy stack axis is vertical or horizontal"),
         };
     let (final_cross, stretches) = lazy_cross_extent(intrinsic_cross, claims_cross, cross);
-    match lazy.main_axis() {
-        Axis::Vertical => (cocoa_ui::Size::new(final_cross, intrinsic_main), stretches),
-        Axis::Horizontal => (cocoa_ui::Size::new(intrinsic_main, final_cross), stretches),
+    let size = match lazy.main_axis() {
+        Axis::Vertical => cocoa_ui::Size::new(final_cross, intrinsic_main),
+        Axis::Horizontal => cocoa_ui::Size::new(intrinsic_main, final_cross),
         _ => unreachable!("lazy stack axis is vertical or horizontal"),
-    }
+    };
+    (dimensions, size, stretches)
 }
 
 /// `ensureSampleMeasurement`: measure the first item once to seed the
@@ -566,7 +567,15 @@ fn lazy_size_that_fits(state: &mut ContainerState, proposal: ProposalSize) -> Si
     let estimate = estimated_main_extent(state, cross, &lazy);
     let member_extent = |member: &Member| match member {
         Member::Id { id, .. } => state.measured_main.get(id).copied().unwrap_or(estimate),
-        Member::Ghost(index) => state.ghosts[*index].main_extent,
+        Member::Ghost(key) => {
+            ghost_main_cross(
+                state.ghosts[key]
+                    .slot()
+                    .expect("a container ghost holds a slot"),
+                &lazy,
+            )
+            .0
+        }
     };
     let total_main = members
         .iter()
@@ -582,8 +591,10 @@ fn lazy_size_that_fits(state: &mut ContainerState, proposal: ProposalSize) -> Si
     let ghost_cross = || {
         state
             .ghosts
-            .iter()
-            .map(|ghost| ghost.cross_extent)
+            .values()
+            .map(|ghost| {
+                ghost_main_cross(ghost.slot().expect("a container ghost holds a slot"), &lazy).1
+            })
             .reduce(f64::max)
     };
     match lazy.main_axis() {
@@ -623,61 +634,55 @@ fn lazy_size_that_fits(state: &mut ContainerState, proposal: ProposalSize) -> Si
     }
 }
 
-/// `syncChildren`: the id-keyed reconcile — reuse the mounted view of every
-/// unchanged id, materialize only the joins, and make the host's subviews
-/// exactly the ordered set. Departing members retire through
-/// [`retire_member`]: a declared transition leaves a ghost holding its slot
-/// beneath the live children (§4.5).
+/// `syncChildren`: the id-keyed reconcile — the slot sequence first
+/// rebases every live id and ghost against the new order, departing
+/// members retire through [`depart_members`] (a declared, placed
+/// transition leaves a ghost holding its slot beneath the live
+/// children, §4.5), and joins materialize through [`materialize`]. The
+/// first population mounts quiet; later joins play their insertion.
 fn sync_children(
     state: &mut ContainerState,
     state_rc: &Rc<RefCell<ContainerState>>,
     ids: Vec<ItemId>,
 ) {
     let mut seen = HashSet::with_capacity(ids.len());
-    let mut ordered_views = Vec::with_capacity(ids.len());
-    let mut order = Vec::with_capacity(ids.len());
-    for (index, &id) in ids.iter().enumerate() {
+    for &id in &ids {
         assert!(
             seen.insert(id),
             "duplicate child view id in container: {id:?}"
         );
-        if !state.rendered.contains_key(&id) {
-            materialize(state, index, id, true);
-        }
-        let mounted = &state.rendered[&id];
-        ordered_views.push(view::retain_base(mounted.view()));
-        order.push(id);
     }
-    // Walk the OLD order so same-position ghosts keep their member order.
-    let dropped: Vec<ItemId> = state
-        .order
-        .iter()
-        .copied()
-        .filter(|id| !seen.contains(id))
-        .collect();
-    for id in dropped {
-        let position = state
-            .order
-            .iter()
-            .take_while(|&&member| member != id)
-            .filter(|member| seen.contains(member))
-            .count();
-        let mounted = state
+    let reconciled = state.slots.reconcile(&ids, |id| {
+        state
             .rendered
-            .remove(&id)
-            .expect("a container order entry is rendered");
-        retire_member(state, state_rc, mounted, position);
+            .get(&id)
+            .is_some_and(|child| child.claim().is_some())
+            && state.placed.contains_key(&id)
+    });
+    depart_members(state, state_rc, reconciled.departed);
+    state.item_ids = ids;
+    let inserted: HashSet<ItemId> = reconciled.inserted.into_iter().collect();
+    let item_ids = state.item_ids.clone();
+    let mut ordered_views = Vec::with_capacity(item_ids.len());
+    for (index, id) in item_ids.into_iter().enumerate() {
+        if !state.rendered.contains_key(&id) {
+            materialize(state, index, id, state.built && inserted.contains(&id));
+        }
+        ordered_views.push(view::retain_base(state.rendered[&id].view()));
     }
+    state.built = true;
     // Ghost views paint beneath the live children.
     let mut subviews: Vec<Retained<PlatformView>> = state
-        .ghosts
+        .slots
         .iter()
-        .map(|ghost| view::retain_base(ghost.ghost.host()))
+        .filter_map(|slot| match slot {
+            Slot::Live(_) => None,
+            Slot::Ghost(key) => Some(view::retain_base(state.ghosts[&key].host())),
+        })
         .collect();
     subviews.extend(ordered_views);
     view::reconcile_subviews(&state.host, &subviews);
-    state.order = order;
-    state.item_ids = ids;
+    state.order = state.item_ids.clone();
     crate::measure_memo::invalidate();
     state.host.set_needs_layout();
 }
@@ -771,9 +776,12 @@ fn with_children_tx<T>(
     result
 }
 
-/// `updateVirtualIds`: filter measurements and rendered children to the ids
-/// that survived, retire departed members as ghosts (§4.5), record the
-/// joins awaiting their insertion, then invalidate.
+/// `updateVirtualIds`: the slot sequence rebases live ids and ghosts
+/// against the new order, departing members retire through
+/// [`depart_members`] — an un-materialized member never realized a leaf,
+/// so nothing is claimed and its slot releases at once (§4.2) — joins
+/// record their pending insertion, then measurements filter to the ids
+/// that survived and the layout invalidates.
 fn update_virtual_ids(
     state: &mut ContainerState,
     state_rc: &Rc<RefCell<ContainerState>>,
@@ -786,30 +794,22 @@ fn update_virtual_ids(
             "duplicate child view id in container: {id:?}"
         );
     }
-    let old_ids = core::mem::take(&mut state.item_ids);
+    let reconciled = state.slots.reconcile(&ids, |id| {
+        state
+            .rendered
+            .get(&id)
+            .is_some_and(|child| child.claim().is_some())
+            && state.placed.contains_key(&id)
+    });
+    depart_members(state, state_rc, reconciled.departed);
     state.item_ids = ids;
-    let old_set: HashSet<ItemId> = old_ids.iter().copied().collect();
-    for &id in &state.item_ids {
-        if !old_set.contains(&id) {
-            state.pending_inserts.insert(id);
-        }
+    // The initial population mounts quiet; later joins play their
+    // insertion on first materialization — a virtualized remount never
+    // does.
+    if state.built {
+        state.pending_inserts.extend(reconciled.inserted);
     }
-    // Membership removals, in old member order — an un-materialized member
-    // never realized a leaf, so there is no declaration to claim and its
-    // slot releases immediately.
-    for (old_index, &id) in old_ids.iter().enumerate() {
-        if seen.contains(&id) {
-            continue;
-        }
-        if let Some(mounted) = state.rendered.remove(&id) {
-            let position = old_ids
-                .iter()
-                .take(old_index)
-                .filter(|member| seen.contains(member))
-                .count();
-            retire_member(state, state_rc, mounted, position);
-        }
-    }
+    state.built = true;
     state.measured_main.retain(|id, _| seen.contains(id));
     state.measured_cross.retain(|id, _| seen.contains(id));
     crate::measure_memo::invalidate();
@@ -916,7 +916,8 @@ fn place_live_member(
     // The virtualized child is natively hosted: its selected proposal
     // is the offer it was measured with, not the frame it lands in.
     proposal::deliver(mounted.view(), pass.child_proposal);
-    let (size, stretches) = measure_lazy_child(mounted.layout(), pass.cross, pass.lazy);
+    let (mut measured, size, stretches) =
+        measure_lazy_child_dimensions(mounted.layout(), pass.cross, pass.lazy);
     let (main, cross_axis) = main_cross(size, pass.lazy);
     // The lazy path sets cursor-based frames directly — unpixel-snapped,
     // as the baseline's `child.frame =` assignment does.
@@ -929,6 +930,22 @@ fn place_live_member(
         pass.rtl,
     );
     view::set_frame(mounted.view(), frame);
+    // What the member's ghost slot reports if it departs: this pass's
+    // negotiated measurement, size replaced by the frame it landed in.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the layout contract is f32; kit geometry is f64"
+    )]
+    {
+        measured.size = Size::new(frame.size.width as f32, frame.size.height as f32);
+    }
+    state.placed.insert(
+        id,
+        FrozenPlacement {
+            dimensions: measured,
+            priority: mounted.layout().priority(),
+        },
+    );
 
     let remeasured = state.measured_main.get(&id) != Some(&main)
         || state.measured_cross.get(&id) != Some(&cross_axis);
@@ -938,6 +955,31 @@ fn place_live_member(
         crate::measure_memo::invalidate();
     }
     (main, remeasured)
+}
+
+/// Places a lazy ghost member at `cursor`: the slot still places every
+/// frame — its extent and spacing count like a member's (§4.5) — and the
+/// ghost view tracks it, so the outgoing pixels follow layout. Answers
+/// the main-axis extent the cursor advances by.
+fn place_ghost_member(
+    state: &ContainerState,
+    pass: &LazyPass<'_>,
+    key: GhostKey,
+    cursor: f64,
+) -> f64 {
+    let ghost = &state.ghosts[&key];
+    let (main, cross) = ghost_main_cross(
+        ghost.slot().expect("a container ghost holds a slot"),
+        pass.lazy,
+    );
+    let size = match pass.lazy.main_axis() {
+        Axis::Vertical => cocoa_ui::Size::new(cross, main),
+        Axis::Horizontal => cocoa_ui::Size::new(main, cross),
+        _ => unreachable!("lazy stack axis is vertical or horizontal"),
+    };
+    let frame = member_frame(&pass.lazy.axis, pass.bounds, cursor, size, false, pass.rtl);
+    ghost.place(frame);
+    main
 }
 
 /// `performLazyStackLayout`: find the viewport window plus overscan, mount
@@ -962,6 +1004,7 @@ fn perform_lazy_layout(state: &mut ContainerState) {
         state.measured_main.clear();
         state.measured_cross.clear();
         state.rendered.clear();
+        state.placed.clear();
         crate::measure_memo::invalidate();
     }
 
@@ -982,7 +1025,15 @@ fn perform_lazy_layout(state: &mut ContainerState) {
         |index| {
             let extent = match &members[index] {
                 Member::Id { id, .. } => state.measured_main.get(id).copied().unwrap_or(estimate),
-                Member::Ghost(ghost) => state.ghosts[*ghost].main_extent,
+                Member::Ghost(key) => {
+                    ghost_main_cross(
+                        state.ghosts[key]
+                            .slot()
+                            .expect("a container ghost holds a slot"),
+                        &lazy,
+                    )
+                    .0
+                }
             };
             extent + if index + 1 < count { lazy.spacing } else { 0.0 }
         },
@@ -1007,19 +1058,9 @@ fn perform_lazy_layout(state: &mut ContainerState) {
         .skip(window.start)
     {
         match *member {
-            Member::Ghost(ghost) => {
-                // The slot still places every frame — its extent and
-                // spacing count like a member's (§4.5) and the ghost view
-                // tracks it, so the outgoing pixels follow layout.
-                let ghost = &state.ghosts[ghost];
-                let size = match lazy.main_axis() {
-                    Axis::Vertical => cocoa_ui::Size::new(ghost.cross_extent, ghost.main_extent),
-                    Axis::Horizontal => cocoa_ui::Size::new(ghost.main_extent, ghost.cross_extent),
-                    _ => unreachable!("lazy stack axis is vertical or horizontal"),
-                };
-                let frame = member_frame(&lazy.axis, pass.bounds, cursor, size, false, pass.rtl);
-                view::set_frame(ghost.ghost.host(), frame);
-                cursor += ghost.main_extent + if index + 1 < count { lazy.spacing } else { 0.0 };
+            Member::Ghost(key) => {
+                let main = place_ghost_member(state, &pass, key, cursor);
+                cursor += main + if index + 1 < count { lazy.spacing } else { 0.0 };
             }
             Member::Id {
                 id,
@@ -1041,6 +1082,7 @@ fn perform_lazy_layout(state: &mut ContainerState) {
         .collect();
     for id in dropped {
         state.rendered.remove(&id);
+        state.placed.remove(&id);
     }
 
     if needs_invalidation {
@@ -1054,7 +1096,7 @@ fn perform_lazy_layout(state: &mut ContainerState) {
     clippy::cast_possible_truncation,
     reason = "the layout contract is f32; kit geometry is f64"
 )]
-fn perform_fixed_layout(state: &ContainerState) {
+fn perform_fixed_layout(state: &mut ContainerState) {
     let members = members(state);
     if members.is_empty() {
         return;
@@ -1108,11 +1150,23 @@ fn perform_fixed_layout(state: &ContainerState) {
                 // The negotiated proposal lands before the frame.
                 proposal::deliver(child.view(), placement.proposal);
                 view::set_frame(child.view(), frame);
+                // What the member's ghost slot reports if it departs: this
+                // pass's negotiated measurement, size replaced by the
+                // frame it landed in.
+                let mut dimensions = child.layout().measure(placement.proposal);
+                dimensions.size = Size::new(frame.size.width as f32, frame.size.height as f32);
+                state.placed.insert(
+                    *id,
+                    FrozenPlacement {
+                        dimensions,
+                        priority: child.layout().priority(),
+                    },
+                );
             }
-            Member::Ghost(ghost) => {
+            Member::Ghost(key) => {
                 // A ghost paints at its slot — the same placement, so the
                 // outgoing pixels track the layout (§4.5).
-                view::set_frame(state.ghosts[*ghost].ghost.host(), frame);
+                state.ghosts[key].place(frame);
             }
         }
     }
@@ -1129,7 +1183,7 @@ fn perform_layout(state: &Rc<RefCell<ContainerState>>, pending: &Rc<RefCell<Pend
         if state.lazy.is_some() {
             perform_lazy_layout(&mut state);
         } else {
-            perform_fixed_layout(&state);
+            perform_fixed_layout(&mut state);
         }
     });
 }
@@ -1210,9 +1264,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
             direction,
             item_ids: Vec::new(),
             rendered: HashMap::new(),
+            slots: SlotSequence::new(Vec::new()),
+            ghosts: HashMap::new(),
+            placed: HashMap::new(),
             order: Vec::new(),
-            ghosts: Vec::new(),
             pending_inserts: HashSet::new(),
+            built: false,
             measured_main: HashMap::new(),
             measured_cross: HashMap::new(),
             last_cross: -1.0,

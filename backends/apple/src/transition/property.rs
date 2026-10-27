@@ -189,8 +189,16 @@ impl InsertionRun {
             Size::new(size.width as f32, size.height as f32),
             claim.direction,
         );
-        host.apply_sample(&state.properties(geometry));
         let slot: Rc<RefCell<Option<Self>>> = Rc::new(RefCell::new(None));
+        // A host with no window never ticks — `FrameClock::start` on a
+        // windowless view stops the clock for good — and a zero-duration
+        // insertion has nothing left to sample; both end at identity at
+        // once rather than freeze on the absent sample.
+        if state.is_complete() || !view::has_window(&host.host) {
+            host.apply_sample(&TransitionProperties::IDENTITY);
+            return slot;
+        }
+        host.apply_sample(&state.properties(geometry));
         let mtm =
             cocoa_ui::MainThreadMarker::new().expect("a transition starts on the main thread");
         let driver = TransitionDriver::start(mtm, &host.host, {
