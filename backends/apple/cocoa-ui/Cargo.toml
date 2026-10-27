@@ -449,6 +449,7 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "UILabel",
     "UIAccessibility",
     "UIAccessibilityConstants",
+    "UIAccessibilityCustomAction",
     "UIAccessibilityIdentification",
     "UIButton",
     "UIButtonConfiguration",

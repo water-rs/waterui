@@ -607,7 +607,8 @@ define_class!(
         #[unsafe(method(accessibilityPerformPress))]
         fn accessibility_perform_press_override(&self) -> bool {
             guarded("HostView accessibilityPerformPress", || {
-                if let Some(handler) = self.ivars().accessibility_press.borrow().clone() {
+                let handler = self.ivars().accessibility_press.borrow().clone();
+                if let Some(handler) = handler {
                     return handler(self);
                 }
                 // SAFETY: see the module safety note.
