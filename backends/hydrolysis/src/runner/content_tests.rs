@@ -98,19 +98,61 @@ struct Capture {
 /// resolves its `Body` slot, and the shared font collection its text engine
 /// shapes from.
 fn capture_environment() -> Environment {
+    capture_environment_with_fonts(waterui_text::FontCollection::from_parley(
+        parley::FontContext::new(),
+    ))
+}
+
+/// [`capture_environment`] with `collection` installed as the shared font
+/// collection.
+fn capture_environment_with_fonts(collection: waterui_text::FontCollection) -> Environment {
     let mut env = crate::renderer::tests::pumped_test_environment();
-    waterui_text::FontCollection::new(parley::FontContext::new()).install(&mut env);
+    collection.install(&mut env);
     env
+}
+
+/// A `FontCollection` carrying exactly the faces `blobs` register: built
+/// with system discovery off, so what it holds is what was registered into
+/// it and nothing of the host's.
+fn isolated_collection(blobs: &[&[u8]]) -> waterui_text::FontCollection {
+    let mut font_cx = parley::FontContext {
+        collection: parley::fontique::Collection::new(parley::fontique::CollectionOptions {
+            system_fonts: false,
+            ..parley::fontique::CollectionOptions::default()
+        }),
+        source_cache: parley::fontique::SourceCache::default(),
+    };
+    for blob in blobs {
+        font_cx.collection.register_fonts(
+            parley::fontique::Blob::new(std::sync::Arc::new(blob.to_vec())),
+            None,
+        );
+    }
+    waterui_text::FontCollection::from_parley(font_cx)
 }
 
 impl Capture {
     fn start(view: AnyView, content_deadline: Duration) -> Self {
+        Self::start_in(
+            view,
+            content_deadline,
+            capture_environment(),
+            FontFamilyResolution::Lenient,
+        )
+    }
+
+    fn start_in(
+        view: AnyView,
+        content_deadline: Duration,
+        env: Environment,
+        family_resolution: FontFamilyResolution,
+    ) -> Self {
         let executor = HeadlessMainThreadExecutor::thread_shared();
         let _ = executor_core::try_init_local_executor(executor.clone());
         let renderer = HydrolysisViewRenderer::new(
             Rc::new(MinimalTestTheme::default()),
-            capture_environment(),
-            FontFamilyResolution::Lenient,
+            env,
+            family_resolution,
         );
         let result: Rc<RefCell<Option<Result<RenderResult, RenderError>>>> = Rc::default();
         executor_core::spawn_local({
@@ -171,6 +213,64 @@ fn a_capture_renders_text_under_the_installed_environment() {
     let rendered = Capture::render(AnyView::new(text("capture me")))
         .expect("a text leaf captures under the installed environment");
     assert_eq!((rendered.width, rendered.height), (64, 32));
+}
+
+/// A face registered into the installed collection answers a named family
+/// inside a capture exactly as it does in a window: the collection built
+/// here carries only the registered Roboto — no system faces — so "Roboto"
+/// resolving proves the capture's engine shapes from the environment's
+/// collection rather than one it built for itself
+/// (water-rs/waterui#1963).
+#[test]
+fn a_capture_resolves_a_family_the_installed_collection_carries() {
+    use waterui::prelude::text;
+    use waterui_text::font::Font;
+
+    let roboto = crate::text::fonts::installed_font_bytes("Roboto");
+    let env = capture_environment_with_fonts(isolated_collection(&[&roboto]));
+
+    let view = text("probe").font(Font::default().family("Roboto"));
+    Capture::start_in(
+        AnyView::new(view),
+        Duration::from_secs(30),
+        env,
+        FontFamilyResolution::Strict,
+    )
+    .finish()
+    .expect("a capture resolves a family the installed collection carries");
+}
+
+/// The installed collection is authoritative: a family the host's system
+/// collection answers but the installed one does not fails strict
+/// resolution inside the capture. Only an engine built from the installed
+/// collection behaves that way — one shaped against a fresh system context,
+/// as the capture's was before water-rs/waterui#1963, resolves the family
+/// and renders instead.
+#[test]
+#[should_panic(expected = "is neither installed on this host nor provided by a declared font file")]
+fn a_capture_shapes_only_against_the_installed_collection() {
+    use waterui::prelude::text;
+    use waterui_text::font::Font;
+
+    let roboto = crate::text::fonts::installed_font_bytes("Roboto");
+    let env = capture_environment_with_fonts(isolated_collection(&[&roboto]));
+    // Any family the host resolves besides the one the collection carries:
+    // `installed_font_bytes` already guarantees "Roboto" itself installed.
+    let host_family = parley::FontContext::new()
+        .collection
+        .family_names()
+        .find(|name| !name.eq_ignore_ascii_case("Roboto"))
+        .expect("the probe needs a second host-installed family")
+        .to_owned();
+
+    let view = text("probe").font(Font::default().family(host_family));
+    let _ = Capture::start_in(
+        AnyView::new(view),
+        Duration::from_secs(30),
+        env,
+        FontFamilyResolution::Strict,
+    )
+    .finish();
 }
 
 #[test]

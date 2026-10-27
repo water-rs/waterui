@@ -33,24 +33,6 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// Marks every memoized measure stale tree-wide. Call it wherever a leaf's
 /// measure-relevant inputs change — content rebuilds, child resyncs, bound
 /// value updates that resize.
-#[cfg(any(
-    test,
-    feature = "badge",
-    feature = "container",
-    feature = "dynamic",
-    feature = "fixed_container",
-    feature = "gpu_surface",
-    feature = "list",
-    feature = "menu",
-    feature = "picker",
-    feature = "plain",
-    all(feature = "scroll", target_os = "macos"),
-    feature = "table",
-    feature = "text",
-    feature = "text_field",
-    feature = "video",
-    feature = "video_player"
-))]
 pub fn invalidate() {
     GENERATION.fetch_add(1, Ordering::Relaxed);
 }

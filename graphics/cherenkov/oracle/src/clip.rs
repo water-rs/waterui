@@ -1,15 +1,12 @@
 //! Geometric clipping: coverage inside a layer clip is the exact area of
 //! `shape ∩ clip`, never a product of two independent coverages.
 //!
-//! The boundary of `shape ∩ clip` is traced by the parts of the shape's
-//! edges that lie inside the clip polygon, together with the parts of the
-//! clip's edges that lie inside the shape. This module splits each edge set
-//! at pairwise intersections, keeps the sub-segments whose midpoint is inside
-//! the other polygon (winding test under that polygon's fill rule), and
-//! returns the surviving directed segments. Accumulating them with the
-//! `NonZero` rule in [`crate::coverage::Coverage`] yields the exact
-//! intersection coverage — engines that merely multiply coverage images show
-//! the difference as measured error near intersecting partial edges.
+//! Vertex and crossing ordinates divide the two operands into bands where
+//! their edges cannot change horizontal order. Each band's winding intervals
+//! are intersected and emitted as consistently oriented trapezoids. Original
+//! contour directions affect the operand's fill rule, never the output
+//! direction. The complete closed boundaries can be clipped again, and
+//! [`crate::coverage::Coverage`] evaluates their union with `NonZero`.
 
 use cherenkov_scene::FillRule;
 
@@ -47,133 +44,143 @@ pub(crate) fn is_left(x0: f64, y0: f64, x1: f64, y1: f64, px: f64, py: f64) -> f
     (px - x0).mul_add(-(y1 - y0), (x1 - x0) * (py - y0))
 }
 
-/// The `t` parameters along `(x0,y0)-(x1,y1)` where it crosses `clip` edges.
-fn intersection_params(seg: Segment, clip_edges: &[Segment]) -> Vec<f64> {
-    let (x0, y0, x1, y1) = seg;
-    let dx = x1 - x0;
-    let dy = y1 - y0;
-    let mut ts = Vec::new();
-    for &(cx0, cy0, cx1, cy1) in clip_edges {
-        let cdx = cx1 - cx0;
-        let cdy = cy1 - cy0;
-        let denom = dy.mul_add(-cdx, dx * cdy);
-        if denom.abs() < 1e-12 {
-            // Parallel or collinear: no clean crossing, but a collinear
-            // overlap still needs splits at the clip edge's endpoints so
-            // the boundary-on-edge portions can be kept individually.
-            let len2 = dy.mul_add(dy, dx * dx);
-            let len = len2.sqrt();
-            if len > 1e-12 {
-                for &(ex, ey) in &[(cx0, cy0), (cx1, cy1)] {
-                    let perp = (ey - y0).mul_add(-dx, (ex - x0) * dy);
-                    if perp.abs() <= 1e-9 * len.max(1.0) {
-                        let t = (ey - y0).mul_add(dy, (ex - x0) * dx) / len2;
-                        if t > 1e-9 && t < 1.0 - 1e-9 {
-                            ts.push(t);
-                        }
-                    }
-                }
-            }
-            continue;
-        }
-        let t = (cy0 - y0).mul_add(-cdx, (cx0 - x0) * cdy) / denom;
-        let u = (cy0 - y0).mul_add(-dx, (cx0 - x0) * dy) / denom;
-        if t > 1e-9 && t < 1.0 - 1e-9 && (-1e-9..=1.0 + 1e-9).contains(&u) {
-            ts.push(t);
-        }
-    }
-    ts.sort_by(f64::total_cmp);
-    ts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
-    ts
+/// A nonhorizontal edge, normalized top to bottom without losing its
+/// original winding contribution or which operand it belongs to.
+struct Edge {
+    segment: Segment,
+    direction: i32,
+    operand: usize,
 }
 
-/// Sub-segments of `subject` lying inside `clip_edges` under `rule`.
-fn clipped(subject: &[Segment], clip_edges: &[Segment], rule: FillRule) -> Vec<Segment> {
-    let mut out = Vec::new();
-    for &seg in subject {
-        let (x0, y0, x1, y1) = seg;
-        let dx = x1 - x0;
-        let dy = y1 - y0;
-        if dx == 0.0 && dy == 0.0 {
-            continue;
-        }
-        let mut ts = vec![0.0];
-        ts.extend(intersection_params(seg, clip_edges));
-        ts.push(1.0);
-        for w in ts.windows(2) {
-            let (ta, tb) = (w[0], w[1]);
-            if tb - ta < 1e-12 {
-                continue;
-            }
-            let tm = ta.midpoint(tb);
-            let (mx, my) = (dx.mul_add(tm, x0), dy.mul_add(tm, y0));
-            // A midpoint exactly on a boundary edge belongs to the
-            // intersection boundary: the winding convention is ambiguous
-            // there, so count it as inside.
-            if inside(winding(clip_edges, mx, my), rule) || on_edge(clip_edges, mx, my) {
-                out.push((
-                    dx.mul_add(ta, x0),
-                    dy.mul_add(ta, y0),
-                    dx.mul_add(tb, x0),
-                    dy.mul_add(tb, y0),
-                ));
-            }
+impl Edge {
+    #[expect(clippy::float_cmp, reason = "reuse exact endpoint coordinates")]
+    fn x_at(&self, y: f64) -> f64 {
+        let (x0, y0, x1, y1) = self.segment;
+        if y == y1 {
+            x1
+        } else {
+            (x1 - x0).mul_add((y - y0) / (y1 - y0), x0)
         }
     }
-    out
+}
+
+/// Interior crossing ordinate. Endpoints are already band boundaries;
+/// parallel/collinear edges only change their ordering at those endpoints.
+fn crossing_y(a: &Edge, b: &Edge) -> Option<f64> {
+    let (ax0, ay0, ax1, ay1) = a.segment;
+    let (bx0, by0, bx1, by1) = b.segment;
+    if ay0.max(by0) >= ay1.min(by1)
+        || ax0.min(ax1).max(bx0.min(bx1)) > ax0.max(ax1).min(bx0.max(bx1))
+    {
+        return None;
+    }
+    let (adx, ady) = (ax1 - ax0, ay1 - ay0);
+    let (bdx, bdy) = (bx1 - bx0, by1 - by0);
+    let determinant = adx.mul_add(bdy, -ady * bdx);
+    if determinant == 0.0 {
+        return None;
+    }
+    let (dx, dy) = (bx0 - ax0, by0 - ay0);
+    let ta = dx.mul_add(bdy, -dy * bdx) / determinant;
+    let tb = dx.mul_add(ady, -dy * adx) / determinant;
+    if ta > 0.0 && ta < 1.0 && tb > 0.0 && tb < 1.0 {
+        Some(ady.mul_add(ta, ay0))
+    } else {
+        None
+    }
 }
 
 /// Directed segments tracing the boundary of `shape ∩ clip`.
 ///
-/// `shape` edges keep their direction and `shape_rule` decides "inside the
-/// shape" for clip-edge portions. `clip` is always `NonZero`: a layer clip is a
-/// solid region.
+/// Each operand is classified separately before intersecting its filled
+/// intervals. The clip uses `NonZero`; the output always uses `NonZero`,
+/// including when `shape_rule` is `EvenOdd`.
+///
+/// # Panics
+///
+/// If an internal band interval closes without its opening boundary.
 #[must_use]
+#[expect(
+    clippy::float_cmp,
+    reason = "horizontal edges and coincident scanline crossings are geometric equalities"
+)]
 pub fn intersect_edges(shape: &[Segment], shape_rule: FillRule, clip: &[Segment]) -> Vec<Segment> {
-    let mut out = clipped(shape, clip, FillRule::NonZero);
-    // Where a clip edge runs along a shape edge in the same direction, the
-    // shape pass already keeps that boundary (its midpoint lies on the
-    // clip); keeping the clip's portion too would trace it twice. The two
-    // passes split at different parameters, so under a rotation their
-    // endpoints differ in the last bits and only geometry can tell them
-    // apart. Opposite directions are kept: they cancel, as the boundary of
-    // shapes that only touch must.
-    out.extend(
-        clipped(clip, shape, shape_rule)
-            .into_iter()
-            .filter(|&segment| !runs_along(shape, segment)),
-    );
-    out
-}
-
-/// Whether `segment`'s midpoint lies on an edge of `edges` that points the
-/// same way.
-fn runs_along(edges: &[Segment], segment: Segment) -> bool {
-    let (x0, y0, x1, y1) = segment;
-    let (mx, my) = (x0.midpoint(x1), y0.midpoint(y1));
-    edges.iter().any(|&(ex0, ey0, ex1, ey1)| {
-        (x1 - x0).mul_add(ex1 - ex0, (y1 - y0) * (ey1 - ey0)) > 0.0
-            && point_seg_dist(mx, my, ex0, ey0, ex1, ey1) < 1e-9
-    })
-}
-
-/// Distance from `(px, py)` to segment `(x0,y0)-(x1,y1)`.
-fn point_seg_dist(px: f64, py: f64, x0: f64, y0: f64, x1: f64, y1: f64) -> f64 {
-    let dx = x1 - x0;
-    let dy = y1 - y0;
-    let len2 = dy.mul_add(dy, dx * dx);
-    if len2 < 1e-24 {
-        return (px - x0).hypot(py - y0);
+    let mut edges = Vec::new();
+    let mut ordinates = Vec::new();
+    for (operand, segments) in [shape, clip].into_iter().enumerate() {
+        for &(x0, y0, x1, y1) in segments {
+            if y0 == y1 {
+                continue;
+            }
+            let (segment, direction) = if y0 < y1 {
+                ((x0, y0, x1, y1), 1)
+            } else {
+                ((x1, y1, x0, y0), -1)
+            };
+            edges.push(Edge {
+                segment,
+                direction,
+                operand,
+            });
+            ordinates.extend([y0, y1]);
+        }
     }
-    let t = ((py - y0).mul_add(dy, (px - x0) * dx) / len2).clamp(0.0, 1.0);
-    (px - dx.mul_add(t, x0)).hypot(py - dy.mul_add(t, y0))
-}
+    // Self-crossings matter too: they can change either operand's filled
+    // intervals without crossing an edge of the other operand.
+    for (index, edge) in edges.iter().enumerate() {
+        for other in &edges[index + 1..] {
+            if let Some(y) = crossing_y(edge, other) {
+                ordinates.push(y);
+            }
+        }
+    }
+    ordinates.sort_by(f64::total_cmp);
+    ordinates.dedup();
 
-/// Whether `(px, py)` lies on (within a hair of) any edge in `edges`.
-fn on_edge(edges: &[Segment], px: f64, py: f64) -> bool {
-    edges
-        .iter()
-        .any(|&(x0, y0, x1, y1)| point_seg_dist(px, py, x0, y0, x1, y1) < 1e-9)
+    let mut out = Vec::new();
+    let mut crossings = Vec::new();
+    for band in ordinates.windows(2) {
+        let (top, bottom) = (band[0], band[1]);
+        let middle = top.midpoint(bottom);
+        crossings.clear();
+        for (index, edge) in edges.iter().enumerate() {
+            if edge.segment.1 <= top && edge.segment.3 >= bottom {
+                crossings.push((edge.x_at(middle), index));
+            }
+        }
+        crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut winding = [0; 2];
+        let mut left = None;
+        let mut index = 0;
+        while index < crossings.len() {
+            let (x, boundary) = crossings[index];
+            let was_inside =
+                inside(winding[0], shape_rule) && inside(winding[1], FillRule::NonZero);
+            // Apply coincident crossings together, so a shared boundary
+            // cannot open a zero-width intersection between operands.
+            while index < crossings.len() && crossings[index].0 == x {
+                let edge = &edges[crossings[index].1];
+                winding[edge.operand] += edge.direction;
+                index += 1;
+            }
+            let is_inside = inside(winding[0], shape_rule) && inside(winding[1], FillRule::NonZero);
+            if !was_inside && is_inside {
+                left = Some(boundary);
+            } else if was_inside && !is_inside {
+                let left = &edges[left.take().expect("an interval has a left boundary")];
+                let right = &edges[boundary];
+                let (lt, lb) = (left.x_at(top), left.x_at(bottom));
+                let (rt, rb) = (right.x_at(top), right.x_at(bottom));
+                out.extend([
+                    (lt, top, rt, top),
+                    (rt, top, rb, bottom),
+                    (rb, bottom, lb, bottom),
+                    (lb, bottom, lt, top),
+                ]);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -196,6 +203,38 @@ mod tests {
                 (from.x, from.y, to.x, to.y)
             })
             .collect()
+    }
+
+    #[test]
+    fn an_intersection_keeps_closed_boundaries_for_another_clip() {
+        let identity = kurbo::Affine::IDENTITY;
+        let shape = rect_edges(kurbo::Rect::new(1.0, 1.0, 13.0, 13.0), identity);
+        let mut first = rect_edges(kurbo::Rect::new(0.0, 4.0, 14.0, 10.0), identity);
+        for edge in &mut first {
+            *edge = (edge.2, edge.3, edge.0, edge.1);
+        }
+        let second = rect_edges(kurbo::Rect::new(5.0, 0.0, 9.0, 14.0), identity);
+        let intersection = intersect_edges(&shape, FillRule::NonZero, &first);
+        let intersection = intersect_edges(&intersection, FillRule::NonZero, &second);
+        let mut coverage = Coverage::new(16, 16);
+        for (x0, y0, x1, y1) in intersection {
+            coverage.add_line(x0, y0, x1, y1);
+        }
+        let pixels = coverage.finish(FillRule::NonZero);
+        for y in 0..16 {
+            for x in 0..16 {
+                let expected = if (5..9).contains(&x) && (4..10).contains(&y) {
+                    1.0
+                } else {
+                    0.0
+                };
+                assert!(
+                    (pixels[y * 16 + x] - expected).abs() < 1e-9,
+                    "second clip pixel ({x},{y}): {}",
+                    pixels[y * 16 + x]
+                );
+            }
+        }
     }
 
     /// A band spanning a rotated clip's full width shares two of its

@@ -72,6 +72,7 @@ impl Mapped {
 #[test]
 fn nv12_two_planes() {
     let mut map = Mapped::new(WIDTH as usize, WIDTH as usize);
+    // SAFETY: the planes describe `map.bytes`' own luma and UV regions.
     unsafe {
         pattern::fill_nv12(
             &[
@@ -98,7 +99,9 @@ fn nv12_two_planes() {
 #[test]
 fn nv12_as_three_planes() {
     let mut map = Mapped::new(WIDTH as usize, WIDTH as usize);
+    // SAFETY: `luma_len` is inside `map.bytes`.
     let uv = unsafe { map.bytes.as_mut_ptr().add(map.luma_len) };
+    // SAFETY: the planes describe `map.bytes`' own luma and UV regions.
     unsafe {
         pattern::fill_nv12(
             &[
@@ -130,8 +133,12 @@ fn planar_i420() {
     let uv_stride = WIDTH as usize / 2;
     let mut map = Mapped::new(WIDTH as usize, uv_stride * 2);
     // Cb plane then Cr plane, each `uv_stride` per row, packed.
+    // SAFETY: `luma_len` is inside `map.bytes`.
     let cb = unsafe { map.bytes.as_mut_ptr().add(map.luma_len) };
+    // SAFETY: `cb + uv_stride * HEIGHT / 2` is inside `map.bytes` —
+    // the UV region is two `uv_stride`-row planes.
     let cr = unsafe { cb.add(uv_stride * HEIGHT as usize / 2) };
+    // SAFETY: the planes describe `map.bytes`' own luma and UV regions.
     unsafe {
         pattern::fill_nv12(
             &[

@@ -433,6 +433,7 @@ pub async fn seed_managed_crate_lock(
 /// feature selection the build invokes with — optional dependencies (and the
 /// metadata they declare) only enter the resolved graph under it; an empty
 /// slice resolves the manifest's default feature set.
+#[cfg(test)]
 pub async fn crate_metadata(
     host: &crate::toolchain::Host,
     build_manifest: &Path,
@@ -1425,7 +1426,7 @@ fn unsatisfiable_builtin_font(decl: &FontDeclaration) -> eyre::Report {
 }
 
 /// Gets the cache directory holding fonts fetched out of band.
-fn cache_dir(host: &crate::toolchain::Host) -> eyre::Result<PathBuf> {
+pub(super) fn cache_dir(host: &crate::toolchain::Host) -> eyre::Result<PathBuf> {
     let cache = host
         .cache_dir()
         .map(|root| root.join("waterui").join("fonts"))
@@ -2792,10 +2793,8 @@ mod tests {
         let machine = crate::toolchain::testing::TestMachine::new();
         let host = font_cache_host(&machine);
         let url = "https://example.com/inter.ttf";
-        let expected = host
-            .cache_dir()
+        let expected = cache_dir(&host)
             .expect("the declared host has a cache dir")
-            .join("waterui/fonts")
             .join(format!("{}.ttf", sha256_hex(url)));
 
         let resolved = smol::block_on(resolve_fonts_with(
@@ -2830,10 +2829,7 @@ mod tests {
     fn an_offline_build_reports_an_uncached_remote_font_without_downloading() {
         let machine = crate::toolchain::testing::TestMachine::new();
         let host = font_cache_host(&machine).with_offline(true);
-        let cache_dir = host
-            .cache_dir()
-            .expect("the declared host has a cache dir")
-            .join("waterui/fonts");
+        let cache_dir = cache_dir(&host).expect("the declared host has a cache dir");
         let url = "https://example.com/inter.ttf";
 
         let error = smol::block_on(resolve_fonts_with(
@@ -2894,10 +2890,7 @@ mod tests {
     fn a_build_refuses_a_download_that_misses_the_pinned_digest() {
         let machine = crate::toolchain::testing::TestMachine::new();
         let host = font_cache_host(&machine);
-        let cache_dir = host
-            .cache_dir()
-            .expect("the declared host has a cache dir")
-            .join("waterui/fonts");
+        let cache_dir = cache_dir(&host).expect("the declared host has a cache dir");
 
         let error = smol::block_on(resolve_fonts_with(
             &host,

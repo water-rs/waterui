@@ -134,6 +134,8 @@ pub struct LayerNode {
     /// The stamp of the last change to what this layer draws in its own
     /// space: clip, scroll offset, filter, backdrop, content, children.
     inner_stamp: u64,
+    /// Last inner change other than replacing or patching recorded content.
+    property_stamp: u64,
     /// The stamp of the last change to how it composes into its parent:
     /// transform, components, projection, opacity, blend.
     outer_stamp: u64,
@@ -155,6 +157,28 @@ impl std::fmt::Debug for LayerNode {
 }
 
 impl LayerNode {
+    /// Version of this layer's own content and sampled properties, including
+    /// child membership/order but excluding changes inside descendants.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        if self.inner_stamp > self.outer_stamp {
+            self.inner_stamp
+        } else {
+            self.outer_stamp
+        }
+    }
+
+    /// Version of placement, composition and child structure, excluding
+    /// changes to this layer's own recorded commands.
+    #[must_use]
+    pub const fn property_revision(&self) -> u64 {
+        if self.property_stamp > self.outer_stamp {
+            self.property_stamp
+        } else {
+            self.outer_stamp
+        }
+    }
+
     /// The affine track, including its original start and velocity.
     /// Component transforms are returned only when their sole moving
     /// component is translation, which is affine-linear in the same lanes.
@@ -199,6 +223,7 @@ impl LayerNode {
         if inner {
             *clock += 1;
             self.inner_stamp = *clock;
+            self.property_stamp = *clock;
         }
     }
 
@@ -224,6 +249,7 @@ impl LayerNode {
             projective: false,
             animation_rate: None,
             inner_stamp: 0,
+            property_stamp: 0,
             outer_stamp: 0,
         }
     }
@@ -258,6 +284,24 @@ impl LayerNode {
     #[must_use]
     pub const fn has_content(&self) -> bool {
         self.has_content
+    }
+
+    /// The tree clock at the last change to what this layer draws in its
+    /// own space: its clip, scroll offset, filter, backdrop, content or
+    /// children, including a step a running scroll track sampled. A target
+    /// that mirrors the tree re-encodes the layer's own state only when
+    /// this moved past the stamp it last encoded.
+    #[must_use]
+    pub const fn inner_stamp(&self) -> u64 {
+        self.inner_stamp
+    }
+
+    /// The tree clock at the last change to how this layer composes into
+    /// its parent: its transform, components, projection, opacity or
+    /// blend, including a step a running track sampled.
+    #[must_use]
+    pub const fn outer_stamp(&self) -> u64 {
+        self.outer_stamp
     }
 
     fn classify_rate(&self, scale: f64, components_running: bool) -> Option<RefreshRange> {
@@ -539,6 +583,7 @@ impl SurfaceTree {
         let node = self.node_mut(id);
         if inner {
             node.inner_stamp = clock;
+            node.property_stamp = clock;
         } else {
             node.outer_stamp = clock;
         }
@@ -731,6 +776,7 @@ impl SurfaceTree {
     /// violation. Attaching the root or closing a cycle also panics before
     /// mutating the tree.
     pub fn apply(&mut self, op: LayerOp) {
+        let content = matches!(&op, LayerOp::Content(..));
         let touched = match &op {
             LayerOp::Create(_) | LayerOp::Remove(_) => None,
             LayerOp::Transform(id, _)
@@ -756,7 +802,12 @@ impl SurfaceTree {
         };
         self.apply_layer_op(op);
         if let Some((id, inner)) = touched {
-            self.stamp(id, inner);
+            if content {
+                self.clock += 1;
+                self.node_mut(id).inner_stamp = self.clock;
+            } else {
+                self.stamp(id, inner);
+            }
             self.refresh_projective(id);
         }
     }
@@ -1151,6 +1202,22 @@ mod hierarchy_tests {
         tree.apply(LayerOp::Push {
             parent: LayerId::new(2),
             child: tree.root(),
+        });
+    }
+
+    /// A commit never emits `Remove` before `Push` for one layer; a
+    /// stream that carries it anyway is an invariant violation, not a
+    /// tree to render (water-rs/waterui#3453).
+    #[test]
+    #[should_panic(expected = "pushing unknown layer")]
+    fn pushing_a_removed_layer_panics() {
+        let mut tree = tree();
+        let id = LayerId::new(4);
+        tree.apply(LayerOp::Create(id));
+        tree.remove(id);
+        tree.apply(LayerOp::Push {
+            parent: tree.root(),
+            child: id,
         });
     }
 

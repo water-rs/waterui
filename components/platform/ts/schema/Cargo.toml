@@ -37,7 +37,7 @@ derive = ["dep:waterui-macros"]
 waterui = ["dep:waterui-core", "dep:suiteki"]
 
 [dev-dependencies]
-object = { version = "0.37", default-features = false, features = ["read", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "std"] }
 
 [lints]
 workspace = true

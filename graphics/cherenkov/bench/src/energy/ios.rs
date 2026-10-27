@@ -10,6 +10,17 @@ use std::time::Duration;
 use crate::BenchError;
 use crate::report::{EnergyReport, RailEnergy};
 
+// libc gates the libproc functions to macOS — `proc_pid_rusage` is a
+// private API the App Store prohibits, but a signed bench binary calls it
+// freely. Its ABI is the stable libproc.h signature.
+unsafe extern "C" {
+    fn proc_pid_rusage(
+        pid: libc::c_int,
+        flavor: libc::c_int,
+        buffer: *mut libc::c_void,
+    ) -> libc::c_int;
+}
+
 // libc exposes the v4 prefix. The v6 suffix follows sys/resource.h from
 // the iPhoneOS SDK; keep the reserved tail so the kernel owns the full buffer.
 #[repr(C)]
@@ -52,7 +63,7 @@ pub fn snapshot() -> Result<Snapshot, BenchError> {
     let mut usage = MaybeUninit::<Usage>::uninit();
     // SAFETY: v6 receives the complete SDK-defined layout, and the kernel
     // initializes that buffer on success. getpid names this process.
-    let result = unsafe { libc::proc_pid_rusage(libc::getpid(), 6, usage.as_mut_ptr().cast()) };
+    let result = unsafe { proc_pid_rusage(libc::getpid(), 6, usage.as_mut_ptr().cast()) };
     if result != 0 {
         return Err(BenchError::Engine(format!(
             "energy: proc_pid_rusage v6: {}",
@@ -84,14 +95,14 @@ pub(super) fn report(
         .ok_or_else(|| {
             BenchError::Engine("energy: the iOS process energy counter went backwards".into())
         })?;
-    if delta == 0 {
+    if delta == 0 && frames > 0 {
         return Err(BenchError::Engine(
             "energy: iOS returned no process energy over the measured window".into(),
         ));
     }
     let joules = delta as f64 / 1e9;
     let seconds = window.as_secs_f64();
-    let per_frame = joules / f64::from(frames);
+    let per_frame = (frames > 0).then(|| joules / f64::from(frames));
     let watts = joules / seconds;
     Ok(EnergyReport {
         source: "proc_pid_rusage_v6",

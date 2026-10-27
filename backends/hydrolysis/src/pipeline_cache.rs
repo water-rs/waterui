@@ -15,6 +15,7 @@ pub fn path(adapter: &wgpu::Adapter) -> Option<PathBuf> {
     let key = wgpu::util::pipeline_cache_key(&adapter.get_info())?;
     let base = std::env::var_os("HYDROLYSIS_CACHE_DIR")
         .map(PathBuf::from)
+        .or_else(|| std::env::var_os("WATER_CACHE_DIR").map(PathBuf::from))
         .or_else(default_cache_base)?;
     Some(base.join("hydrolysis").join(format!("pipelines-{key}.bin")))
 }

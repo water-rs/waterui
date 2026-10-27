@@ -36,10 +36,14 @@ on:
     # push that touches none of the prefix digest's inputs cannot change the
     # digest, so it neither needs nor produces a new prefix.
     paths:
-      - components/platform/browser-wpe/runtime/source.toml
-      - components/platform/browser-wpe/runtime/build-webkit.sh
+      # The runtime source lives in water-rs/browsers; what decides a rebuild
+      # here is the revision the consumed package pins, which Cargo.lock
+      # records.
+      - Cargo.toml
+      - Cargo.lock
       - .github/actions/setup-linux-deps/action.yml
       - .github/actions/refresh-apt-index/refresh.sh
+      - .github/actions/checkout-browsers/**
       - .github/actions/wpe-webkit-prefix/**
       - .github/workflows/browser-runtime-wpe.yml
 
@@ -91,6 +95,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/checkout-browsers
+
       - uses: ./.github/actions/wpe-webkit-prefix
         id: prefix
         with:
@@ -107,7 +113,7 @@ jobs:
 
       - name: Build WPE WebKit
         if: steps.prefix.outputs.hit != 'true'
-        run: components/platform/browser-wpe/runtime/build-webkit.sh "${{ env.WPE_WORK_DIRECTORY }}"
+        run: browsers/browser-wpe/runtime/build-webkit.sh "${{ env.WPE_WORK_DIRECTORY }}"
 
       - uses: ./.github/actions/wpe-webkit-prefix/push
         if: steps.prefix.outputs.hit != 'true'
@@ -146,6 +152,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/checkout-browsers
+
       - uses: ./.github/actions/wpe-webkit-prefix
         id: prefix
         with:
@@ -163,7 +171,7 @@ jobs:
       # packaging vendors from and, on a store hit, skips the compile through
       # the completion marker inside the restored prefix.
       - name: Build self-contained WPE runtime
-        run: components/platform/browser-wpe/runtime/build-runtime.sh runtime-artifacts "${{ env.WPE_WORK_DIRECTORY }}"
+        run: browsers/browser-wpe/runtime/build-runtime.sh runtime-artifacts "${{ env.WPE_WORK_DIRECTORY }}"
 
       - name: Upload WPE runtime
         uses: actions/upload-artifact@v4
@@ -191,6 +199,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/checkout-browsers
 
       - name: Resolve the release tag
         id: tag
@@ -223,7 +233,7 @@ jobs:
         run: |
           set -euo pipefail
           BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
-          python3 components/platform/browser-wpe/runtime/generate-manifest.py \
+          python3 browsers/browser-wpe/runtime/generate-manifest.py \
             --base-url "$BASE_URL" \
             --output target/distrib/browser-runtime-manifest.json \
             target/distrib/*.artifact.json

@@ -29,6 +29,7 @@ use cherenkov_record::{animation, color, display_list, glyph, paint, record, sha
 mod backend;
 mod capability;
 mod config;
+pub mod damage;
 mod engine;
 mod error;
 mod frame;
@@ -113,8 +114,8 @@ pub use cherenkov_record::{
     AnimationStart, BackdropEffect, BackdropId, BackdropOuter, BackdropOuterError, BackdropSample,
     BackdropSampling, BackdropShaderEffect, BackdropShaderId, BackdropShaderSource, BackdropSpec,
     BackdropUnion, BackdropUnionError, CaptureLevels, CaptureLevelsError, CaptureScale,
-    CaptureScaleError, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, Install, Layer,
-    LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, LevelRamp,
+    CaptureScaleError, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, ImageStorage, Install,
+    Layer, LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, LevelRamp,
     LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
     RecordingScale, RecordingScaleError, Refraction, RefreshRange, ResourceId, Rim, Shared,
     SurfaceId, SurfaceTree, Target, Transaction, snap_animating,

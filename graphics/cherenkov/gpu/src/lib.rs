@@ -173,8 +173,11 @@ pub enum TimestampSupport {
 /// frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ScratchFormat {
-    /// `Rgba16Float`: linear, no banding, 8 bytes per texel.
+    /// Choose compact encoded SDR storage per image; retain float storage for
+    /// extended-range content, filters and native tile outputs.
     #[default]
+    Content,
+    /// `Rgba16Float`: linear, no banding, 8 bytes per texel.
     LinearF16,
     /// `Rgba8Unorm`: half the bandwidth, 8-bit precision; intermediate
     /// results are clamped to `0..=1`.
@@ -186,7 +189,7 @@ pub enum ScratchFormat {
 pub struct GpuConfig {
     /// Per-engine route override for the internal differential harness.
     #[cfg(test)]
-    pub(crate) force_gpu_coverage: bool,
+    pub(crate) coverage_route: Option<render::CoverageRoute>,
     /// Uses an existing host device. Handles must share one creation chain.
     /// Device limits and enabled features govern engine capabilities.
     pub device: Option<interop::SharedDevice>,
@@ -213,7 +216,7 @@ pub struct GpuConfig {
     /// pipeline set is persisted at this path, best effort.
     pub pipeline_cache: Option<PathBuf>,
     /// The isolation (scratch) texture format. Defaults to
-    /// [`ScratchFormat::LinearF16`].
+    /// [`ScratchFormat::Content`].
     pub scratch_format: ScratchFormat,
     /// When set, the renderer records an allocation-event trace into
     /// this sink. Diagnostics only; the per-event allocator snapshot is
@@ -239,7 +242,7 @@ impl Default for GpuConfig {
     fn default() -> Self {
         Self {
             #[cfg(test)]
-            force_gpu_coverage: false,
+            coverage_route: None,
             device: None,
             backends: wgpu::Backends::all(),
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -321,7 +324,7 @@ impl WindowTarget {
             refresh: cherenkov::DEFAULT_REFRESH,
             output: render::present::OutputRequest {
                 transparent: false,
-                color_space: render::present::ColorSpaceRequest::Best,
+                color_space: render::present::ColorSpaceRequest::Content,
                 sync: DisplaySync::Synchronized,
             },
             probe: None,
@@ -339,9 +342,9 @@ impl WindowTarget {
     }
 
     /// Sets the swapchain's colour-space request (#98, #2445). The
-    /// default, [`ColorSpaceRequest::Best`](interop::ColorSpaceRequest::Best),
-    /// negotiates the surface's best advertised pair — an extended or HDR
-    /// space where offered, otherwise a reported SDR selection.
+    /// default, [`ColorSpaceRequest::Content`](interop::ColorSpaceRequest::Content),
+    /// uses compact SDR storage until HDR content requires extended output.
+    /// [`Best`](interop::ColorSpaceRequest::Best) always selects the best advertised pair.
     /// [`Range`](interop::ColorSpaceRequest::Range) takes the best pair
     /// inside a [`ColorRangeInterval`](interop::ColorRangeInterval) of
     /// classes, and [`Exact`](interop::ColorSpaceRequest::Exact) one space.

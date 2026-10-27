@@ -24,7 +24,10 @@ use std::rc::Rc;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::NSObject;
 use objc2::sel;
-use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{
+    ClassType, DefinedClass, DowncastTarget, MainThreadMarker, MainThreadOnly, define_class,
+    msg_send,
+};
 use objc2_app_kit::{
     NSClickGestureRecognizer, NSGestureRecognizer, NSGestureRecognizerState,
     NSMagnificationGestureRecognizer, NSPanGestureRecognizer, NSPressGestureRecognizer,
@@ -46,8 +49,12 @@ fn state_of(recognizer: &NSGestureRecognizer) -> GestureState {
     }
 }
 
+/// The closure a [`Target`] holds: the recognizer's normalized state and
+/// the recognizer itself, so the handler can read its geometry.
+type RecognizerHandler = Rc<dyn Fn(GestureState, &NSGestureRecognizer)>;
+
 struct TargetIvars {
-    handler: Rc<dyn Fn(GestureState)>,
+    handler: RecognizerHandler,
 }
 
 define_class!(
@@ -64,18 +71,18 @@ define_class!(
 
     impl Target {
         /// The action every recognizer this module creates sends: the
-        /// recognizer, whose state the handler reads.
+        /// recognizer, whose state and geometry the handler reads.
         #[unsafe(method(invoke:))]
         fn invoke(&self, recognizer: &NSGestureRecognizer) {
             guarded("CocoaUiGestureTarget invoke:", || {
-                (self.ivars().handler)(state_of(recognizer));
+                (self.ivars().handler)(state_of(recognizer), recognizer);
             });
         }
     }
 );
 
 impl Target {
-    fn new(mtm: MainThreadMarker, handler: Rc<dyn Fn(GestureState)>) -> Retained<Self> {
+    fn new(mtm: MainThreadMarker, handler: RecognizerHandler) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(TargetIvars { handler });
         // SAFETY: `init` is `NSObject`'s designated initializer.
         unsafe { msg_send![super(this), init] }
@@ -131,13 +138,23 @@ impl Drop for GestureAttachment {
 fn attach<R>(
     view: &NSView,
     recognizer: Retained<R>,
-    handler: Rc<dyn Fn(GestureState)>,
+    handler: impl Fn(GestureState, &R) + 'static,
 ) -> GestureAttachment
 where
-    R: ClassType<Super = NSGestureRecognizer> + MainThreadOnly + 'static,
+    R: ClassType<Super = NSGestureRecognizer> + MainThreadOnly + DowncastTarget + 'static,
 {
     let mtm = recognizer.mtm();
-    let target = Target::new(mtm, handler);
+    let target = Target::new(
+        mtm,
+        Rc::new(move |state, recognizer| {
+            handler(
+                state,
+                recognizer
+                    .downcast_ref::<R>()
+                    .expect("the recognizer is the class this constructor built"),
+            );
+        }),
+    );
     let recognizer: Retained<NSGestureRecognizer> = recognizer.into_super();
     // SAFETY: `setTarget`/`setAction` are the documented weak-reference pair;
     // the attachment owns the target the recognizer points at.
@@ -155,64 +172,77 @@ where
 /// A click recognizer on `view`: `clicks` consecutive presses (at least one)
 /// from a pointer button in `buttons`.
 ///
+/// The handler receives the recognizer's normalized state and the
+/// recognizer itself, so it can read the recognition point.
+///
 /// `NSClickGestureRecognizer.buttonMask` follows the same DOM `buttons` bit
 /// order [`ButtonMask`] uses, so the mask applies verbatim.
 pub fn click(
     view: &NSView,
     clicks: usize,
     buttons: ButtonMask,
-    handler: impl Fn(GestureState) + 'static,
+    handler: impl Fn(GestureState, &NSClickGestureRecognizer) + 'static,
 ) -> GestureAttachment {
     let mtm = view.mtm();
     let recognizer = NSClickGestureRecognizer::new(mtm);
     recognizer.setNumberOfClicksRequired(clicks.max(1).cast_signed());
     recognizer.setButtonMask(usize::from(buttons.bits()));
-    attach(view, recognizer, Rc::new(handler))
+    attach(view, recognizer, handler)
 }
 
 /// A press recognizer on `view`: a press of at least `minimum_seconds`
 /// from a pointer button in `buttons`.
+///
+/// The handler receives the recognizer's normalized state and the
+/// recognizer itself.
 pub fn press(
     view: &NSView,
     minimum_seconds: f64,
     buttons: ButtonMask,
-    handler: impl Fn(GestureState) + 'static,
+    handler: impl Fn(GestureState, &NSPressGestureRecognizer) + 'static,
 ) -> GestureAttachment {
     let mtm = view.mtm();
     let recognizer = NSPressGestureRecognizer::new(mtm);
     recognizer.setMinimumPressDuration(minimum_seconds);
     recognizer.setButtonMask(usize::from(buttons.bits()));
-    attach(view, recognizer, Rc::new(handler))
+    attach(view, recognizer, handler)
 }
 
 /// A pan recognizer on `view`, from a pointer button in `buttons`.
+///
+/// The handler receives the recognizer's normalized state and the
+/// recognizer itself, so it can read `translationInView:`/`velocityInView:`.
 pub fn pan(
     view: &NSView,
     buttons: ButtonMask,
-    handler: impl Fn(GestureState) + 'static,
+    handler: impl Fn(GestureState, &NSPanGestureRecognizer) + 'static,
 ) -> GestureAttachment {
     let mtm = view.mtm();
     let recognizer = NSPanGestureRecognizer::new(mtm);
     recognizer.setButtonMask(usize::from(buttons.bits()));
-    attach(view, recognizer, Rc::new(handler))
+    attach(view, recognizer, handler)
 }
 
 /// A magnification recognizer on `view`.
-pub fn magnification(view: &NSView, handler: impl Fn(GestureState) + 'static) -> GestureAttachment {
+///
+/// The handler receives the recognizer's normalized state and the
+/// recognizer itself.
+pub fn magnification(
+    view: &NSView,
+    handler: impl Fn(GestureState, &NSMagnificationGestureRecognizer) + 'static,
+) -> GestureAttachment {
     let mtm = view.mtm();
-    attach(
-        view,
-        NSMagnificationGestureRecognizer::new(mtm),
-        Rc::new(handler),
-    )
+    attach(view, NSMagnificationGestureRecognizer::new(mtm), handler)
 }
 
 /// A rotation recognizer on `view`.
-pub fn rotation(view: &NSView, handler: impl Fn(GestureState) + 'static) -> GestureAttachment {
+///
+/// The handler receives the recognizer's normalized state and the
+/// recognizer itself.
+pub fn rotation(
+    view: &NSView,
+    handler: impl Fn(GestureState, &NSRotationGestureRecognizer) + 'static,
+) -> GestureAttachment {
     let mtm = view.mtm();
-    attach(
-        view,
-        NSRotationGestureRecognizer::new(mtm),
-        Rc::new(handler),
-    )
+    attach(view, NSRotationGestureRecognizer::new(mtm), handler)
 }

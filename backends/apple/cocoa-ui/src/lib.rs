@@ -67,6 +67,7 @@ pub mod color_scheme;
 pub mod content_type;
 pub mod core_animation;
 pub mod date;
+#[cfg(target_os = "macos")]
 mod defined_class;
 pub mod display_link;
 pub mod dynamic_range;

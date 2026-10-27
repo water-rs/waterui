@@ -37,7 +37,7 @@ undocumented_unsafe_blocks = "warn"
 multiple_crate_versions = "allow"
 
 [dependencies]
-syn = { version = "3", features = ["full"] }
+syn = { version = "3.0.9", default-features = false, features = ["parsing", "printing", "proc-macro", "full"] }
 quote = "1"
 proc-macro2 = "1"
 proc-macro-crate = "3"

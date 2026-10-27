@@ -431,7 +431,52 @@ fn write_json_atomically<T: serde::Serialize>(path: &Path, value: &T) -> Result<
         .and_then(|()| file.sync_all())
         .map_err(StoreError::io(temporary.clone()))?;
     drop(file);
-    fs::rename(&temporary, path).map_err(StoreError::io(path))?;
+    rename_durably(&temporary, path)
+}
+
+/// Replaces `path` with `temporary` so the replacement is on disk before
+/// this returns: `MoveFileExW` with `MOVEFILE_WRITE_THROUGH` does not return
+/// until the move is written through, which is what the directory sync is on
+/// other platforms — a power loss may still show the old document, never a
+/// torn one, but it cannot lose a write this call reported as done.
+#[cfg(windows)]
+fn rename_durably(temporary: &Path, path: &Path) -> Result<(), StoreError> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+    let wide = |path: &Path| {
+        path.as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<u16>>()
+    };
+    let from = wide(temporary);
+    let to = wide(path);
+    // SAFETY: both arguments are NUL-terminated UTF-16 buffers that outlive
+    // the call, and `MoveFileExW` only reads them.
+    let moved = unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(StoreError::io(path)(io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+/// Replaces `path` with `temporary` so the replacement is on disk before
+/// this returns: one rename over `path`, then a sync of the directory that
+/// records it.
+#[cfg(not(windows))]
+fn rename_durably(temporary: &Path, path: &Path) -> Result<(), StoreError> {
+    let parent = path
+        .parent()
+        .expect("a store file sits inside the store's root directory");
+    fs::rename(temporary, path).map_err(StoreError::io(path))?;
     // The rename is durable only once the directory that records it is: a
     // power loss before that would show the old document, never a torn one,
     // but it would also lose a write this call reported as done.

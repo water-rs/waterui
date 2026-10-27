@@ -128,6 +128,12 @@ async fn capture_leaf_to_rgba(
     );
     let host = host::CaptureHost::attach(view, proposed, mtm)?;
     lay_out(view, request.size);
+    // The capture window cannot present, so the surfaces inside never
+    // attach: the drive keeps their frames — and the content their scenes
+    // settle — moving from here until the terminal capture. Declared
+    // after `host` so the scopes it opened end before the leaf unhosts.
+    #[cfg(feature = "gpu_surface")]
+    let drive = crate::capture_image::CaptureDrive::begin(view, env, mtm);
     crate::content::await_content(ledger, view, request.content_deadline).await?;
     lay_out(view, request.size);
 
@@ -136,8 +142,8 @@ async fn capture_leaf_to_rgba(
         // The central capture owns the native+GPU composite and its
         // lifecycle — a first-frame wait here could deadlock under
         // link-only delivery on the screenless capture window.
-        let scale = cocoa_ui::view::backing_scale_factor(view);
-        crate::capture_image::capture_rgba(view, env, scale, mtm)
+        drive
+            .capture_rgba()
             .await
             .map(|captured| (captured.pixels, captured.width, captured.height))
             .map_err(render_error)

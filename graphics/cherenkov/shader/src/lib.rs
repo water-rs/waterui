@@ -103,6 +103,7 @@ pub mod eval;
 mod import;
 mod parse;
 mod rewrite;
+mod spv_flags;
 
 pub use abi::{
     FoldBlocker, Param, ParamType, ParamValue, Precision, SamplerFilter, SnippetKind,
@@ -118,3 +119,4 @@ pub use errors::{ComposeError, EmitError, SnippetError};
 /// The naga version modules are built with; the same one wgpu 30 links.
 pub use naga;
 pub use parse::{LibrarySource, SampleCount, Snippet, SnippetSource, Variant};
+pub use spv_flags::SPIRV_WRITER_FLAGS;

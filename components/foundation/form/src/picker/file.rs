@@ -3,10 +3,7 @@
 use alloc::vec::Vec;
 // The native dialog hands back `std::path::PathBuf`, so the picker needs `std`
 // linked as well as a target that has a dialog to present.
-#[cfg(all(
-    feature = "std",
-    not(any(target_os = "espidf", target_arch = "wasm32"))
-))]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 use alloc::{string::ToString, vec};
 use nami::Binding;
 use waterui_controls::label::{Label, LabelDisplayMode};
@@ -14,10 +11,7 @@ use waterui_controls::{Button, IntoLabel};
 use waterui_core::View;
 use waterui_url::Url;
 
-#[cfg(all(
-    feature = "std",
-    not(any(target_os = "espidf", target_arch = "wasm32"))
-))]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 use waterkit_dialog::FileDialog;
 
 /// Configuration for a file picker component.
@@ -92,7 +86,7 @@ impl View for FilePicker {
             async move {
                 #[cfg(all(
                     feature = "std",
-                    not(any(target_os = "espidf", target_arch = "wasm32"))
+                    not(target_arch = "wasm32")
                 ))]
                 {
                     let dialog = if self.import {
@@ -132,7 +126,7 @@ impl View for FilePicker {
 
                 #[cfg(not(all(
                     feature = "std",
-                    not(any(target_os = "espidf", target_arch = "wasm32"))
+                    not(target_arch = "wasm32")
                 )))]
                 {
                     let _ = value;

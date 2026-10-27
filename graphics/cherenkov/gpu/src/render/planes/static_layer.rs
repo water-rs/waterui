@@ -46,6 +46,7 @@ pub struct Observation {
     pub stamp: u64,
     pub resources: (u64, u64),
     pub domain: Option<Domain>,
+    pub range: crate::render::present::ColorRange,
     pub density: f64,
     pub quiet_frames: u64,
     /// Admission must outlast a recent content period, and is at most eight frames.
@@ -69,6 +70,7 @@ impl Observation {
             stamp,
             resources,
             domain: None,
+            range: crate::render::present::ColorRange::Standard,
             density: 0.0,
             quiet_frames: 0,
             quiet_required: 2,
@@ -238,7 +240,9 @@ fn bounds(
                 }
                 (*local, path_bounds(outline, list))
             }
-            Op::Glyphs { local, run, paint } => {
+            Op::Glyphs {
+                local, run, paint, ..
+            } => {
                 if matches!(paint, ResolvedPaint::Shader(_)) {
                     return Ok(None);
                 }
@@ -248,7 +252,6 @@ fn bounds(
                 local,
                 font,
                 glyph,
-                origin,
                 size,
             } => {
                 let font = &fonts[font];
@@ -258,12 +261,7 @@ fn bounds(
                 else {
                     continue;
                 };
-                (
-                    *local
-                        * Affine::translate((f64::from(origin[0]), f64::from(origin[1])))
-                        * Affine::scale(f64::from(*size)),
-                    decoded.em,
-                )
+                (*local * Affine::scale(f64::from(*size)), decoded.em)
             }
             Op::BeginShadow { parameters, .. } => {
                 let margin = 6.0_f64.mul_add(parameters.sigma, parameters.spread.max(0.0));

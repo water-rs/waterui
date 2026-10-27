@@ -96,7 +96,7 @@ impl View for ProbeContent {
 }
 
 struct Fixture {
-    node: RenderNode,
+    node: RenderNode<crate::text::ParleyEngine>,
     trace: Trace,
     builds: Rc<Cell<usize>>,
 }
@@ -105,7 +105,7 @@ impl Fixture {
     fn new<V: View>(
         vertical: bool,
         wrap: impl FnOnce(ProbeContent) -> V,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         env: &Environment,
     ) -> Self {
         let trace = Rc::new(RefCell::new(Vec::new()));
@@ -197,9 +197,9 @@ fn equal_bounds_keep_the_selected_proposal_after_other_probes() {
 
 /// Runs `f` inside the root's record: a sub-view flush always runs under a
 /// recording reader, which owns what it registers and anchors its placement.
-fn under_root_record<R>(
-    renderer: &mut HydrolysisRenderer,
-    f: impl FnOnce(&mut HydrolysisRenderer) -> R,
+fn under_root_record<R, E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    f: impl FnOnce(&mut HydrolysisRenderer<E>) -> R,
 ) -> R {
     let root = renderer.core.root_core.clone();
     renderer
@@ -321,67 +321,79 @@ fn retained_subview_relayouts_when_a_layout_signal_invalidates() {
 /// signal firing *inside* that label marks the label's cells only. The leaf's
 /// `take_layout_dirty` arm must fold the mark out or the outer sub-view keeps
 /// the toggle at its first measured box (water-rs/waterui#1957).
+///
+/// Both styles run on every platform: `Automatic` resolves per target, and the
+/// two place the label differently — a checkbox at its fitted width, a switch
+/// across the row up to the control.
 #[test]
 fn retained_subview_relayouts_when_a_widget_leaf_label_invalidates() {
     use crate::renderer::{RenderContext, tree::RetainedSubview};
     use kurbo::{Affine, Rect as SceneRect};
     use waterui_controls::label::Label;
-    use waterui_controls::toggle::toggle;
+    use waterui_controls::toggle::{ToggleStyle, toggle};
     use waterui_layout::frame::Frame;
 
-    let env = test_environment();
-    let mut renderer = test_renderer();
-    let max_width = nami::Binding::container(120.0f32);
-    let constraint = max_width.clone();
-    let on = nami::Binding::container(false);
-    let trace = Rc::new(RefCell::new(Vec::new()));
-    let probe_trace = Rc::clone(&trace);
-    // The toggle always wraps its label in a `RetainedSubview`; a custom-content
-    // label keeps that sub-view in charge of the probe's layout.
-    let mut retained = RetainedSubview::new(AnyView::new(toggle(
-        Label::new("flag", move || {
-            Frame::new(ProbeContent {
-                vertical: false,
-                trace: Rc::clone(&probe_trace),
-                builds: Rc::new(Cell::new(0)),
-            })
-            .max_width(constraint.clone())
-        }),
-        &on,
-    )));
-    let rect = SceneRect::new(0.0, 0.0, 800.0, 600.0);
-    let ctx = RenderContext {
-        local: Affine::IDENTITY,
-        bounds: rect,
-    };
-    let proposal = ProposalSize::new(Some(800.0), Some(600.0));
-    under_root_record(&mut renderer, |renderer| {
-        retained.place(renderer, ctx, &env, proposal, rect, None);
-    });
-    assert_eq!(
-        trace.borrow().last().expect("mount places").proposal.width,
-        Some(120.0)
-    );
-    max_width.set(400.0);
-    assert!(
-        retained.take_layout_dirty(),
-        "the label sub-view's layout mark must reach the enclosing retained \
-         sub-view through the widget leaf"
-    );
-    under_root_record(&mut renderer, |renderer| {
-        retained.place(renderer, ctx, &env, proposal, rect, None);
-    });
-    assert_eq!(
-        trace
-            .borrow()
-            .last()
-            .expect("the widget's label mark must re-place the retained subtree")
-            .proposal
-            .width,
-        Some(160.0),
-        "max_width 120 → 400 must re-measure the label: the 160-wide probe is \
-         no longer capped, while a stale first box would still report 120"
-    );
+    // The placed width once the cap lifts: the probe's own 160 for a checkbox,
+    // the 400 cap for a switch. A stale first box would still report 120.
+    for (style, relaid) in [(ToggleStyle::Checkbox, 160.0), (ToggleStyle::Switch, 400.0)] {
+        let env = test_environment();
+        let mut renderer = test_renderer();
+        let max_width = nami::Binding::container(120.0f32);
+        let constraint = max_width.clone();
+        let on = nami::Binding::container(false);
+        let trace = Rc::new(RefCell::new(Vec::new()));
+        let probe_trace = Rc::clone(&trace);
+        // The toggle always wraps its label in a `RetainedSubview`; a
+        // custom-content label keeps that sub-view in charge of the probe's
+        // layout.
+        let mut retained = RetainedSubview::new(AnyView::new(
+            toggle(
+                Label::new("flag", move || {
+                    Frame::new(ProbeContent {
+                        vertical: false,
+                        trace: Rc::clone(&probe_trace),
+                        builds: Rc::new(Cell::new(0)),
+                    })
+                    .max_width(constraint.clone())
+                }),
+                &on,
+            )
+            .style(style),
+        ));
+        let rect = SceneRect::new(0.0, 0.0, 800.0, 600.0);
+        let ctx = RenderContext {
+            local: Affine::IDENTITY,
+            bounds: rect,
+        };
+        let proposal = ProposalSize::new(Some(800.0), Some(600.0));
+        under_root_record(&mut renderer, |renderer| {
+            retained.place(renderer, ctx, &env, proposal, rect, None);
+        });
+        assert_eq!(
+            trace.borrow().last().expect("mount places").proposal.width,
+            Some(120.0),
+            "{style:?}"
+        );
+        max_width.set(400.0);
+        assert!(
+            retained.take_layout_dirty(),
+            "{style:?}: the label sub-view's layout mark must reach the enclosing \
+             retained sub-view through the widget leaf"
+        );
+        under_root_record(&mut renderer, |renderer| {
+            retained.place(renderer, ctx, &env, proposal, rect, None);
+        });
+        assert_eq!(
+            trace
+                .borrow()
+                .last()
+                .expect("the widget's label mark must re-place the retained subtree")
+                .proposal
+                .width,
+            Some(relaid),
+            "{style:?}: max_width 120 → 400 must re-measure the label"
+        );
+    }
 }
 
 /// Scene content whose natural width is driven by a cell — the drift a

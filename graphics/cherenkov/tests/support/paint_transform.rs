@@ -4,8 +4,19 @@ use cherenkov::{
     Backend, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, Paint, Picture, RadialGradient,
     TransformedPaint, WorkingColor,
 };
+use cherenkov_oracle::image::F32Image;
+use cherenkov_oracle::metrics::{assert_f16_close, assert_images_match};
 use nami::Binding;
 use std::sync::Arc;
+
+/// A readback as an image for the visual-equivalence comparison.
+fn image(readback: &cherenkov::Readback) -> F32Image {
+    F32Image {
+        width: readback.width,
+        height: readback.height,
+        pixels: readback.pixels.clone(),
+    }
+}
 
 fn gradient() -> Paint {
     RadialGradient::new((32.0, 32.0), 28.0)
@@ -44,7 +55,7 @@ pub fn retained<B: Backend>(config: B::Config) {
         .expect("readback")
         .pixels
         .into_iter()
-        .map(|p| p[3].to_bits())
+        .map(|p| p[3])
         .collect::<Vec<_>>();
     for map in [
         Affine::new([1.8, 0.0, 0.3, 0.6, -15.0, 8.0]),
@@ -55,10 +66,11 @@ pub fn retained<B: Backend>(config: B::Config) {
         wait!(engine.render(FrameTime::now())).expect("live transform");
         assert_eq!(engine.stats().commands_lowered, 1);
         let a = wait!(retained.readback()).expect("retained pixels");
-        assert_eq!(
-            alpha,
-            a.pixels.iter().map(|p| p[3].to_bits()).collect::<Vec<_>>(),
-            "paint changed coverage/stroke width"
+        // A paint transform must not change coverage or stroke width.
+        assert_f16_close(
+            &a.pixels.iter().map(|p| p[3]).collect::<Vec<_>>(),
+            &alpha,
+            1.0,
         );
         full.update(|tx| {
             tx[full.root()].content(full.record(|c| {
@@ -72,9 +84,7 @@ pub fn retained<B: Backend>(config: B::Config) {
         });
         wait!(engine.render(FrameTime::now())).expect("full lowering");
         let b = wait!(full.readback()).expect("full pixels");
-        for (a, b) in a.pixels.iter().zip(b.pixels) {
-            assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits));
-        }
+        assert_images_match(&image(&b), &image(&a));
         wait!(engine.render(FrameTime::now())).expect("unchanged");
         assert_eq!(engine.stats().commands_lowered, 0);
     }
@@ -111,9 +121,7 @@ pub fn composition<B: Backend>(config: B::Config) {
     wait!(engine.render(FrameTime::now())).expect("composition");
     let a = wait!(a.readback()).expect("nested");
     let b = wait!(b.readback()).expect("combined");
-    for (a, b) in a.pixels.iter().zip(&b.pixels) {
-        assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits));
-    }
+    assert_images_match(&image(&b), &image(&a));
     // Analytic radial sample in paint space, independent of the implementation.
     for (x, y) in [(24_u32, 20_u32), (40, 28), (48, 35)] {
         let point = (outer * inner).inverse()
@@ -176,14 +184,9 @@ pub fn identity<B: Backend>(config: B::Config) {
         }));
     });
     wait!(engine.render(FrameTime::now())).expect("identity");
-    for (a, b) in wait!(plain
-        .readback())
-        .expect("plain")
-        .pixels
-        .into_iter()
-        .zip(wait!(wrapped.readback()).expect("wrapped").pixels)
-    {
-        assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits));
-    }
+    assert_images_match(
+        &image(&wait!(plain.readback()).expect("plain")),
+        &image(&wait!(wrapped.readback()).expect("wrapped")),
+    );
 }
 }

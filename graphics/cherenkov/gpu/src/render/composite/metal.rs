@@ -128,6 +128,12 @@ const LONG_TILE_METALLIB: &[u8] =
 /// `engine_tile_image.metallib` — the variant-6 (image source) tile module.
 const IMAGE_TILE_METALLIB: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_image.metallib"));
+/// Solid clipped glyph tile module.
+const GLYPH_TILE_METALLIB: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_glyph.metallib"));
+/// Span composite tile module.
+const COMPOSITE_TILE_METALLIB: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_composite.metallib"));
 
 /// The passthrough module for one tile family: the declared entries are
 /// identical across families — the attachment interfaces wrap whichever
@@ -139,6 +145,7 @@ fn tile_module(device: &wgpu::Device, metallib: &'static [u8]) -> wgpu::ShaderMo
             .map(|name| wgpu::PassthroughShaderEntryPoint {
                 name: Cow::Borrowed(name),
                 workgroup_size: (0, 0, 0),
+                workgroup_memory_sizes: std::borrow::Cow::Borrowed(&[]),
             })
             .collect();
     for target in 0..SLOTS {
@@ -150,6 +157,7 @@ fn tile_module(device: &wgpu::Device, metallib: &'static [u8]) -> wgpu::ShaderMo
             entries.push(wgpu::PassthroughShaderEntryPoint {
                 name: Cow::Owned(format!("tile_{target}_{source}")),
                 workgroup_size: (0, 0, 0),
+                workgroup_memory_sizes: std::borrow::Cow::Borrowed(&[]),
             });
         }
     }
@@ -176,6 +184,10 @@ pub struct Executor {
     /// The image-source tile module, created on its family's first
     /// pipeline.
     module_image: Option<wgpu::ShaderModule>,
+    /// Solid clipped glyph module.
+    module_glyph: Option<wgpu::ShaderModule>,
+    /// Span composite module.
+    module_composite: Option<wgpu::ShaderModule>,
     pipelines: FxHashMap<Key, wgpu::RenderPipeline>,
 }
 
@@ -200,6 +212,12 @@ impl Executor {
             6 => self
                 .module_image
                 .get_or_insert_with(|| tile_module(device, IMAGE_TILE_METALLIB)),
+            7 => self
+                .module_glyph
+                .get_or_insert_with(|| tile_module(device, GLYPH_TILE_METALLIB)),
+            8 => self
+                .module_composite
+                .get_or_insert_with(|| tile_module(device, COMPOSITE_TILE_METALLIB)),
             _ => self
                 .module
                 .get_or_insert_with(|| tile_module(device, TILE_METALLIB)),
@@ -209,7 +227,7 @@ impl Executor {
             let entry = match key.variant {
                 0 => format!("tile_{}_simple", key.target),
                 1 => format!("tile_{}_shadow", key.target),
-                2 | 4 | 5 => format!("tile_{}_{}", key.target, key.source),
+                2 | 4 | 5 | 6 | 7 | 8 => format!("tile_{}_{}", key.target, key.source),
                 3 => format!("tile_{}_clear", key.target),
                 _ => unreachable!("closed tile shader set"),
             };
@@ -275,7 +293,7 @@ fn note(
             variant: match key.variant {
                 0 => report::Variant::Simple,
                 1 => report::Variant::Shadow,
-                2 | 4 | 6 => report::Variant::Source,
+                2 | 4 | 6 | 7 | 8 => report::Variant::Source,
                 3 => report::Variant::Clear,
                 _ => unreachable!("closed tile shader set"),
             },
@@ -340,7 +358,10 @@ pub fn encode(
     let output = &surf.composition.images[epoch.output.0];
     let (view, texture) = match output.target {
         Target::Part(part) => surf.part(part),
-        Target::Scratch(depth) => (&surf.scratch[&depth].view, &surf.scratch[&depth].texture),
+        Target::Scratch(_) => {
+            let slot = output.backing.expect("tile output has backing");
+            (&surf.scratch[&slot].view, &surf.scratch[&slot].texture)
+        }
         _ => unreachable!("planner restricts persistent tile outputs"),
     };
     let view = view.clone();
@@ -350,8 +371,62 @@ pub fn encode(
         .iter()
         .find(|op| op.target == 0)
         .expect("epoch writes its output");
+    let partial_clear = surf.repaint_clears.instance(first_output.pass);
+    if let Some(instance) = partial_clear {
+        let bind = surf
+            .binds1
+            .entry((None, None, None, None))
+            .or_insert_with(|| {
+                stats.bind_groups_created += 1;
+                make_bind1(
+                    resources.device,
+                    resources.layout1,
+                    resources.dummy,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            });
+        let key = Key {
+            target: 0,
+            source: 0,
+            variant: 0,
+            replace: true,
+            slots: 1,
+        };
+        let mut created = false;
+        crate::render::repaint::ClearDraw {
+            timestamps: timestamps
+                .as_ref()
+                .map(|writes| wgpu::RenderPassTimestampWrites {
+                    query_set: writes.query_set,
+                    beginning_of_pass_write_index: writes.beginning_of_pass_write_index,
+                    end_of_pass_write_index: None,
+                }),
+            pipeline: executor.pipeline(resources.device, resources.layout, key, &mut created),
+            bind0: resources.bind0,
+            bind1: bind,
+            offset: (surf.globals_base + u32::try_from(first_output.pass).expect("pass index"))
+                * 256,
+            instance: surf.inst_base + instance,
+        }
+        .encode(
+            encoder,
+            &view,
+            &crate::render::repaint::Scissors::new(
+                surf.draw_demand.pass(first_output.pass),
+                epoch.region,
+            ),
+        );
+        note(&mut pipelines, created, first_output.pass, key);
+        stats.passes += 1;
+        stats.draws += u32::try_from(surf.draw_demand.pass(first_output.pass).rectangles().len())
+            .expect("damage rectangle count");
+    }
     let load = surf.frame.passes[first_output.pass]
         .clear
+        .filter(|_| partial_clear.is_none())
         .map_or(wgpu::LoadOp::Load, |c| {
             wgpu::LoadOp::Clear(wgpu::Color {
                 r: f64::from(c[0]),
@@ -360,6 +435,12 @@ pub fn encode(
                 a: f64::from(c[3]),
             })
         });
+    let timestamps = timestamps.map(|mut writes| {
+        if partial_clear.is_some() {
+            writes.beginning_of_pass_write_index = None;
+        }
+        writes
+    });
     let temporaries = surf
         .tile_targets
         .get(resources.device, size, epoch.slots - 1);
@@ -462,12 +543,19 @@ pub fn encode(
                 // `ExecutionPlan::epoch` never admits into a tile epoch.
                 // `Cell` is a draw module (`DrawRange::module`), never a
                 // range's lowered variant.
-                ShaderVariant::Cell => unreachable!("no range is lowered with the cell module"),
+                ShaderVariant::Cell
+                | ShaderVariant::CellSimple
+                | ShaderVariant::CellGlyph
+                | ShaderVariant::CellFull => {
+                    unreachable!("no range is lowered with the cell module")
+                }
                 ShaderVariant::Union => {
                     unreachable!("a union sample reads its capture; no tile epoch admits it")
                 }
                 ShaderVariant::LongGradient => 4,
                 ShaderVariant::Image => 6,
+                ShaderVariant::Glyph => 7,
+                ShaderVariant::Composite => 8,
             };
             let key = Key {
                 target: op.target,
@@ -520,11 +608,16 @@ pub fn encode(
                 });
                 pass.set_bind_group(1, &*bind, &[]);
             }
-            pass.draw(
-                0..6,
-                surf.inst_base + range.instances.start..surf.inst_base + range.instances.end,
-            );
-            stats.draws += 1;
+            let scissors =
+                crate::render::repaint::Scissors::new(surf.draw_demand.pass(op.pass), epoch.region)
+                    .within(canonical.region);
+            scissors.draw(&mut pass, |pass| {
+                pass.draw(
+                    0..6,
+                    surf.inst_base + range.instances.start..surf.inst_base + range.instances.end,
+                );
+            });
+            stats.draws += scissors.draw_count();
             stats.pipeline_switches += 1;
         }
     }

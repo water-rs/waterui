@@ -9,7 +9,7 @@
 //! through their `CapturableSurface` contract, so a GPU surface or a
 //! nested filter contributes real pixels rather than a blank.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
@@ -407,15 +407,7 @@ pub async fn capture_rgba(
             height: 0,
         });
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a view's pixel dimensions fit u32 and are positive"
-    )]
-    let (width, height) = (
-        (bounds.size.width * scale).ceil() as u32,
-        (bounds.size.height * scale).ceil() as u32,
-    );
+    let (width, height) = pixel_extent(bounds.size, scale);
 
     let capture = Rc::new(cocoa_ui::capture::ViewCapture::new(mtm, view.clone()));
     // `shutdown` is owed even if the awaiting task is cancelled.
@@ -440,6 +432,26 @@ pub async fn capture_rgba(
     drop(guard);
     drop(host);
 
+    Ok(read_target(&target, width, height))
+}
+
+/// The capture pass's pixel extent for a point `size` at `scale` — `ceil`
+/// so a positive sub-pixel bound still covers a real pixel row.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a view's pixel dimensions fit u32 and are positive"
+)]
+fn pixel_extent(size: cocoa_ui::Size, scale: f64) -> (u32, u32) {
+    (
+        (size.width * scale).ceil() as u32,
+        (size.height * scale).ceil() as u32,
+    )
+}
+
+/// The one permitted readback: `width` × `height` premultiplied RGBA8
+/// texels out of the `.shared` capture target.
+fn read_target(target: &ProtocolObject<dyn MTLTexture>, width: u32, height: u32) -> CapturedRgba {
     let mut pixels = vec![0u8; width as usize * height as usize * 4];
     // SAFETY: `pixels` holds `width*4` bytes per row for `height` rows and
     // `target` is `.shared` — the region read stays in bounds.
@@ -459,11 +471,235 @@ pub async fn capture_rgba(
             0,
         );
     }
-    Ok(CapturedRgba {
+    CapturedRgba {
         pixels,
         width,
         height,
-    })
+    }
+}
+
+/// The frame drive a windowless capture host runs while it waits for owed
+/// content: one [`ViewCapture`](cocoa_ui::capture::ViewCapture) kept open
+/// from mount to the terminal capture.
+///
+/// A GPU surface whose window cannot present never attaches, so its redraw
+/// requests would die on a display link that never runs — and a surface
+/// with no frame measures zero, so the capture's ordinary collection gives
+/// it no spec. `ViewCapture` joins every resolved surface that cannot
+/// present for redraw routing — see
+/// [`CapturableSurface::can_present`](cocoa_ui::capture::CapturableSurface::can_present)
+/// — and this pump answers each request with one capture pass into a
+/// scratch texture with no readback: the pass lays the root out, records
+/// every scene's content, and settles the registrations the awaited
+/// content — a decoded photo — resolves on.
+///
+/// [`capture_rgba`](Self::capture_rgba) is the terminal half: surface
+/// redraws move off the pump onto its readback retry loop, which renders
+/// the same pass into the `.shared` target the one permitted readback
+/// takes. The move happens inside the drive's one redraw hook, never by
+/// replacing it: a surface binds the hook when it joins, so a replacement
+/// would leave every surface the pump already joined waking the pump
+/// while the retry loop waits on a redraw that never comes.
+pub struct CaptureDrive {
+    /// The open capture the pump passes and the terminal capture share.
+    capture: Rc<cocoa_ui::capture::ViewCapture>,
+    /// The mounted root every pass lays out and captures.
+    root: Retained<cocoa_ui::PlatformView>,
+    /// The environment's GPU runtime — the context resolves per pass.
+    runtime: waterui_graphics::gpu::GpuRuntime,
+    /// The capture window's backing scale — the scratch and readback
+    /// targets' point-to-pixel factor.
+    scale: f64,
+    /// The main-thread proof the queued pump reuses.
+    mtm: cocoa_ui::MainThreadMarker,
+    /// Whether a pump pass is queued or in flight — redraw requests
+    /// coalesce onto it.
+    queued: Cell<bool>,
+    /// The terminal capture's redraw signal once
+    /// [`capture_rgba`](Self::capture_rgba) runs — the hook fires it
+    /// instead of queueing a pump pass from then on.
+    terminal: RefCell<Option<Rc<RefCell<Signal>>>>,
+}
+
+impl CaptureDrive {
+    /// Opens the capture over `root` — already inside its windowless
+    /// capture host — and starts the pump: the first pass runs on the
+    /// next main-queue turn, joining every surface that cannot present,
+    /// and each redraw they issue afterwards runs another.
+    #[must_use]
+    pub fn begin(
+        root: &cocoa_ui::PlatformView,
+        env: &Environment,
+        mtm: cocoa_ui::MainThreadMarker,
+    ) -> Rc<Self> {
+        let root = cocoa_ui::view::retain_base(root);
+        let scale = cocoa_ui::view::backing_scale_factor(root.as_ref());
+        let drive = Rc::new(Self {
+            capture: Rc::new(cocoa_ui::capture::ViewCapture::new(mtm, root.clone())),
+            root,
+            runtime: crate::gpu_runtime::runtime(env),
+            scale,
+            mtm,
+            queued: Cell::new(false),
+            terminal: RefCell::new(None),
+        });
+        // Surface redraws route here through the external-rendering
+        // scopes the capture opens on every resolved surface that cannot
+        // present: each request queues one coalesced pump pass until the
+        // terminal capture starts, then wakes its retry loop instead.
+        drive.capture.set_on_redraw({
+            let drive = Rc::downgrade(&drive);
+            move || {
+                if let Some(drive) = drive.upgrade() {
+                    drive.redraw();
+                }
+            }
+        });
+        drive.request_pump();
+        drive
+    }
+
+    /// The capture's one redraw hook: a pump pass while the drive waits
+    /// for content, the terminal retry loop's wake once it captures.
+    fn redraw(self: &Rc<Self>) {
+        let terminal = self.terminal.borrow().clone();
+        match terminal {
+            Some(signal) => Signal::fire(&signal),
+            None => self.request_pump(),
+        }
+    }
+
+    /// Queues one capture pass — the redraw answer for surfaces that
+    /// cannot present. Requests coalesce: at most one pass is queued or
+    /// in flight, and the pass itself lays the root out, so a request
+    /// that lands while one runs schedules the next.
+    fn request_pump(self: &Rc<Self>) {
+        if self.queued.replace(true) {
+            return;
+        }
+        let drive = Rc::downgrade(self);
+        cocoa_ui::main_queue::enqueue_local(self.mtm, move |_mtm| {
+            if let Some(drive) = drive.upgrade() {
+                drive.pump();
+            }
+        });
+    }
+
+    /// One capture pass into a scratch texture with no readback — the
+    /// frame a presentable surface would have drawn on its link's next
+    /// update. The pass's own prepare lays the root out first, so bounds
+    /// owed content changed are the bounds the collection sees.
+    fn pump(self: &Rc<Self>) {
+        self.queued.set(false);
+        let context = self.runtime.context();
+        if context.device_lost_reason().is_some() {
+            // A dead context produces no frame: the pass re-requests on
+            // the rebuilt context's publication — the same wake the
+            // parked surfaces take.
+            let generation = context.generation();
+            let runtime = self.runtime.clone();
+            let drive = Rc::downgrade(self);
+            executor_core::spawn_local(async move {
+                runtime.context_after(generation).await;
+                if let Some(drive) = drive.upgrade() {
+                    drive.request_pump();
+                }
+            })
+            .detach();
+            return;
+        }
+        let bounds = cocoa_ui::view::bounds(&self.root);
+        if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+            return;
+        }
+        let (width, height) = pixel_extent(bounds.size, self.scale);
+        let device = crate::gpu_runtime::raw_metal_device(&context);
+        let target = scratch_target(&device, width, height);
+        self.capture
+            .capture(&target, context.generation(), |outcome| {
+                if let Err(cocoa_ui::capture::CaptureError::Failed(error)) = &outcome {
+                    tracing::debug!("windowless capture drive pass failed: {error}");
+                }
+            });
+    }
+
+    /// The terminal capture `capture_rgba` performs, over the drive's
+    /// already-open `ViewCapture`: surface redraws move off the pump onto
+    /// the readback's retry loop — `capture_attempts` then renders the
+    /// same pass into the `.shared` target the readback takes.
+    ///
+    /// # Errors
+    ///
+    /// [`CaptureFailure::GpuSurfaceFailed`] with the `Arc`'d cause a
+    /// surface's terminal `CaptureError::Failed` reported, or
+    /// [`CaptureFailure::CompositionFailed`] when the native-view
+    /// composition command buffer did not complete.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the terminal capture awaits main-thread signals shared through `Rc`"
+    )]
+    pub async fn capture_rgba(self: &Rc<Self>) -> Result<CapturedRgba, CaptureFailure> {
+        let bounds = cocoa_ui::view::bounds(&self.root);
+        if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+            return Ok(CapturedRgba {
+                pixels: Vec::new(),
+                width: 0,
+                height: 0,
+            });
+        }
+        let (width, height) = pixel_extent(bounds.size, self.scale);
+        // The redraw contract the retry loop waits on — surface requests
+        // now wake a recapture instead of queueing a pump pass.
+        let redraw = Rc::new(RefCell::new(Signal::default()));
+        let previous = self.terminal.borrow_mut().replace(redraw.clone());
+        assert!(
+            previous.is_none(),
+            "a capture drive performs one terminal capture"
+        );
+        let target = capture_attempts(
+            &self.runtime,
+            &self.capture,
+            &redraw,
+            width,
+            height,
+            self.mtm,
+        )
+        .await?;
+        Ok(read_target(&target, width, height))
+    }
+}
+
+impl Drop for CaptureDrive {
+    /// The capture's own `shutdown` ends every external-rendering scope —
+    /// the same contract `CaptureGuard` keeps for `capture_rgba`'s own
+    /// capture.
+    fn drop(&mut self) {
+        self.capture.shutdown();
+    }
+}
+
+/// A pump pass's render destination: `RenderTarget` usage in private
+/// storage — the pass exists to record scenes and settle registrations,
+/// so its pixels are never sampled or read back.
+fn scratch_target(
+    device: &ProtocolObject<dyn MTLDevice>,
+    width: u32,
+    height: u32,
+) -> Retained<ProtocolObject<dyn MTLTexture>> {
+    // SAFETY: a 2D descriptor is always valid to construct.
+    let descriptor = unsafe {
+        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+            MTLPixelFormat::RGBA8Unorm,
+            width as usize,
+            height as usize,
+            false,
+        )
+    };
+    descriptor.setUsage(MTLTextureUsage::RenderTarget);
+    descriptor.setStorageMode(MTLStorageMode::Private);
+    device
+        .newTextureWithDescriptor(&descriptor)
+        .expect("the device allocates the capture drive's scratch target")
 }
 
 /// The recapture loop behind [`capture_rgba`]: context, device and

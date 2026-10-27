@@ -400,12 +400,13 @@ impl Entry {
 /// The projective pipelines and their layouts, built on the first frame
 /// that composes a projective layer.
 pub struct Pipelines {
+    cache: super::PipelineCache,
     /// The composite's group-1 layout.
     pub layout: wgpu::BindGroupLayout,
     /// The composite's pipeline layout and module, kept for the formats
     /// a later surface draws into.
     composite_layout: wgpu::PipelineLayout,
-    module: wgpu::ShaderModule,
+    program: super::shaders::RenderProgram,
     /// `[format slot][replace]` composite pipelines, source-over or
     /// replace, built for each format a projective composite lands in.
     composite: super::FormatCells<Option<[wgpu::RenderPipeline; 2]>>,
@@ -426,6 +427,7 @@ impl Pipelines {
         device: &wgpu::Device,
         delivery: super::shaders::ShaderDelivery,
         layout0: &wgpu::BindGroupLayout,
+        cache: super::PipelineCache,
     ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("cherenkov projective 1"),
@@ -436,7 +438,7 @@ impl Pipelines {
             bind_group_layouts: &[Some(layout0), Some(&layout)],
             immediate_size: 0,
         });
-        let module = delivery.projective_module(device);
+        let program = delivery.projective_program(device);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("projective image"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -460,15 +462,16 @@ impl Pipelines {
         let mip = quad_pipeline(
             device,
             &mip_pipeline_layout,
-            &delivery.mip_module(device),
-            "fs_main",
+            &delivery.mip_program(device),
             wgpu::TextureFormat::Rgba16Float,
             None,
+            &cache,
         );
         Self {
+            cache,
             layout,
             composite_layout: pipeline_layout,
-            module,
+            program,
             composite: Default::default(),
             sampler,
             mip_layout,
@@ -501,13 +504,13 @@ impl Pipelines {
             quad_pipeline(
                 device,
                 &self.composite_layout,
-                &self.module,
-                "fs_projective",
+                &self.program,
                 format,
                 Some(wgpu::BlendState {
                     color: component,
                     alpha: component,
                 }),
+                &self.cache,
             )
         }));
     }
@@ -528,23 +531,23 @@ impl Pipelines {
 pub(super) fn quad_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
-    module: &wgpu::ShaderModule,
-    fragment: &'static str,
+    program: &super::shaders::RenderProgram,
     format: wgpu::TextureFormat,
     blend: Option<wgpu::BlendState>,
+    cache: &super::PipelineCache,
 ) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(fragment),
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(program.fragment_entry),
         layout: Some(layout),
         vertex: wgpu::VertexState {
-            module,
-            entry_point: Some("vs_main"),
+            module: &program.vertex,
+            entry_point: Some(program.vertex_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[],
         },
         fragment: Some(wgpu::FragmentState {
-            module,
-            entry_point: Some(fragment),
+            module: &program.fragment,
+            entry_point: Some(program.fragment_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
@@ -560,8 +563,10 @@ pub(super) fn quad_pipeline(
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
-        cache: None,
-    })
+        cache: cache.handle.as_ref(),
+    });
+    cache.persist();
+    pipeline
 }
 
 #[cfg(test)]

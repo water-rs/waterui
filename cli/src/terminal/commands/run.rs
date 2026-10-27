@@ -128,12 +128,6 @@ pub enum TargetPlatform {
     Windows,
     /// Web (WASM + WebGPU in browser).
     Web,
-    /// ESP32-S3 (Xtensa); unsupported until #1601.
-    Esp32s3,
-    /// ESP32-C3 (RISC-V); unsupported until #1601.
-    Esp32c3,
-    /// ESP32-P4 (RISC-V with FPU); unsupported until #1601.
-    Esp32p4,
 }
 
 impl TargetPlatform {
@@ -337,9 +331,6 @@ const fn lib_platform(platform: TargetPlatform) -> LibTargetPlatform {
         TargetPlatform::Linux => LibTargetPlatform::Linux,
         TargetPlatform::Windows => LibTargetPlatform::Windows,
         TargetPlatform::Web => LibTargetPlatform::Web,
-        TargetPlatform::Esp32s3 => LibTargetPlatform::Esp32S3,
-        TargetPlatform::Esp32c3 => LibTargetPlatform::Esp32C3,
-        TargetPlatform::Esp32p4 => LibTargetPlatform::Esp32P4,
     }
 }
 
@@ -966,9 +957,6 @@ fn resolve_build_plan(cli_platform: TargetPlatform, device: &SelectedDevice) -> 
         TargetPlatform::Linux => LibTargetPlatform::Linux,
         TargetPlatform::Windows => LibTargetPlatform::Windows,
         TargetPlatform::Web => panic!("web run should not enter build_and_run"),
-        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
-            panic!("esp32 run should not enter build_and_run")
-        }
     };
     let android_abi = device_android_abi(device);
 
@@ -1464,10 +1452,7 @@ async fn check_toolchain_for_backend(
                 TargetPlatform::Android
                 | TargetPlatform::Linux
                 | TargetPlatform::Windows
-                | TargetPlatform::Web
-                | TargetPlatform::Esp32s3
-                | TargetPlatform::Esp32c3
-                | TargetPlatform::Esp32p4 => {
+                | TargetPlatform::Web => {
                     bail!("Internal error: Apple backend is not supported on {platform:?}");
                 }
             };
@@ -1541,9 +1526,6 @@ async fn find_device(
         TargetPlatform::Web => {
             bail!("web platform does not use the device pipeline");
         }
-        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
-            bail!("esp32 platform does not use the device pipeline");
-        }
     };
     if let Some(pb) = spinner {
         pb.finish_and_clear();
@@ -1597,9 +1579,6 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::Linux => "Linux",
         TargetPlatform::Windows => "Windows",
         TargetPlatform::Web => "Web",
-        TargetPlatform::Esp32s3 => "ESP32-S3",
-        TargetPlatform::Esp32c3 => "ESP32-C3",
-        TargetPlatform::Esp32p4 => "ESP32-P4",
     }
 }
 
@@ -2119,12 +2098,11 @@ mod tests {
             )
             .is_ok()
         );
-        // Device, web and embedded platforms carry their own triples.
+        // Device and web platforms carry their own triples.
         for platform in [
             TargetPlatform::Ios,
             TargetPlatform::Android,
             TargetPlatform::Web,
-            TargetPlatform::Esp32s3,
         ] {
             assert!(
                 waterui_cli::platform::ensure_desktop_platform_is_host(

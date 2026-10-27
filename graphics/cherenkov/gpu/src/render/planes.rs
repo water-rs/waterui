@@ -941,6 +941,8 @@ pub enum PlaneContent<'a> {
         view: Option<&'a wgpu::TextureView>,
         /// The capture's content version.
         generation: u64,
+        /// Content range of the captured pixels.
+        range: super::present::ColorRange,
     },
     /// A retained external frame, handed to the system compositor instead of
     /// being sampled by the engine.
@@ -1045,6 +1047,11 @@ pub struct Plane<'a> {
     )
 )]
 pub struct Part<'a> {
+    /// Prepared content range, excluding promoted content.
+    pub range: super::present::ColorRange,
+    /// Pixels written by the latest engine encoding, stable across present retries.
+    #[cfg(target_os = "android")]
+    pub damage: &'a cherenkov::damage::Region,
     /// The engine texture holding the part.
     pub view: &'a wgpu::TextureView,
 }
@@ -1061,6 +1068,9 @@ pub struct Part<'a> {
     )
 )]
 pub struct Composition<'a> {
+    /// Generation of the rendered engine parts, unchanged by presentation retries.
+    #[cfg(target_os = "android")]
+    pub generation: u64,
     /// The engine's device.
     pub device: &'a wgpu::Device,
     /// The engine's queue.
@@ -1085,7 +1095,7 @@ pub enum Presentation {
     /// Drawable availability requires another display frame.
     Retry,
     /// A queued operation will wake the surface when it completes.
-    #[cfg(target_vendor = "apple")]
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
     Pending,
 }
 
@@ -1105,8 +1115,14 @@ pub trait SystemPlanes: Compositor {
     /// empty commit a frame that commits nothing off-thread produces.
     type Commit: cherenkov::RenderTransfer + Default + 'static;
 
-    /// Native immutable capture allocations, excluding the engine's source.
-    fn captured_bytes(&self) -> u64 {
+    /// Retained native presentation bookkeeping on the CPU.
+    fn cpu_bytes(&self) -> u64 {
+        0
+    }
+
+    /// Engine-owned native presentation allocations, excluding render sources
+    /// and externally owned producer images. Include buffers awaiting release.
+    fn native_bytes(&self) -> u64 {
         0
     }
     /// Hands supported tracks to the committed native layer tree. Called

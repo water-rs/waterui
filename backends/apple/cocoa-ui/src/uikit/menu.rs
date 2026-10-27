@@ -15,7 +15,7 @@
 //! # Safety
 //!
 //! The `unsafe` here builds `UIAction`s from `RcBlock`s and `UIKeyCommand`s
-//! from a selector `AppDelegate` implements, and calls `objc2`/`UIKit`
+//! from a selector their owner implements, and calls `objc2`/`UIKit`
 //! bindings marked unsafe because `UIKit` objects are main-thread only,
 //! which [`MainThreadMarker`] guarantees at construction. `UIAction`'s
 //! handler block is `copy`ed by the call that consumes it, so the stack
@@ -27,7 +27,7 @@ use std::rc::Rc;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, sel};
+use objc2::{MainThreadMarker, Message};
 use objc2_foundation::{NSArray, NSString};
 use objc2_ui_kit::{
     UIAction, UIColor, UIImage, UIKeyCommand, UIMenu, UIMenuElement, UIMenuElementAttributes,
@@ -37,6 +37,24 @@ use objc2_ui_kit::{
 use super::key_commands::KeyCommands;
 use crate::menu::{Command, MenuTreeNode};
 use crate::uikit::button::{Button, Chrome};
+
+pub(super) fn key_commands(menu: &UIMenu) -> Vec<Retained<UIKeyCommand>> {
+    menu.children()
+        .iter()
+        .flat_map(|element| {
+            element.downcast_ref::<UIMenu>().map_or_else(
+                || {
+                    element
+                        .downcast_ref::<UIKeyCommand>()
+                        .map(Message::retain)
+                        .into_iter()
+                        .collect()
+                },
+                key_commands,
+            )
+        })
+        .collect()
+}
 
 /// A `UIMenu` from a menu tree, its shortcut commands armed in
 /// `key_commands`.
@@ -188,14 +206,13 @@ fn command_element(
     } else {
         let property_list = key_commands.arm(action);
         // SAFETY: `commandWithTitle:...` is `UIKeyCommand`'s designated
-        // constructor, `cocoaUiMenuCommandFired:` is a selector
-        // `AppDelegate` implements, and an `NSNumber` is a property-list
-        // object.
+        // constructor, the scope's action is a selector the recipient that
+        // armed it implements, and an `NSNumber` is a property-list object.
         let key_command = unsafe {
             UIKeyCommand::commandWithTitle_image_action_input_modifierFlags_propertyList(
                 &title,
                 image.as_deref(),
-                sel!(cocoaUiMenuCommandFired:),
+                key_commands.action(),
                 &NSString::from_str(&command.key_equivalent),
                 command.modifiers.native(),
                 Some(AsRef::<AnyObject>::as_ref(&*property_list)),
@@ -213,6 +230,39 @@ fn command_element(
 
 fn menu_image(symbol: Option<&str>) -> Option<Retained<UIImage>> {
     symbol.and_then(|symbol| UIImage::systemImageNamed(&NSString::from_str(symbol)))
+}
+
+/// A `UIMenu` for a text field's edit menu.
+///
+/// The system's `suggested` actions followed by `nodes`' elements as an
+/// inline group — the shape `textField:editMenuForCharactersInRanges:
+/// suggestedActions:` answers. `nodes` must be non-empty.
+#[must_use]
+pub fn edit_menu(
+    mtm: MainThreadMarker,
+    key_commands: &KeyCommands,
+    suggested: &NSArray<UIMenuElement>,
+    nodes: &[MenuTreeNode],
+) -> Retained<UIMenu> {
+    let custom = elements(mtm, key_commands, nodes);
+    let custom_group = UIMenu::menuWithTitle_image_identifier_options_children(
+        &NSString::new(),
+        None,
+        None,
+        UIMenuOptions::DisplayInline,
+        &NSArray::from_retained_slice(&custom),
+        mtm,
+    );
+    let mut children = suggested.to_vec();
+    children.push(custom_group.into_super());
+    UIMenu::menuWithTitle_image_identifier_options_children(
+        &NSString::new(),
+        None,
+        None,
+        UIMenuOptions::empty(),
+        &NSArray::from_retained_slice(&children),
+        mtm,
+    )
 }
 
 /// One child of a [`Menu`]: a triggerable action or a nested menu.
@@ -319,6 +369,12 @@ pub struct MenuButton {
 }
 
 impl MenuButton {
+    /// A scope routing menu commands through the trigger's own registry.
+    #[must_use]
+    pub fn menu_commands(&self) -> KeyCommands {
+        self.button.menu_commands()
+    }
+
     /// A plain-chrome button whose primary action opens its menu.
     #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Self {

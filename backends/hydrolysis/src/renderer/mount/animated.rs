@@ -12,7 +12,7 @@ use crate::animation::AnimationKey;
 use crate::renderer::signals::SubscribedSnapshot;
 use crate::renderer::{Retain, SemanticCore};
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Opens a structural rebuild of the animation slots: from here, a slot
     /// survives the matching [`Self::retire_unbound_animation_slots`] only if
     /// it is bound again.
@@ -36,6 +36,7 @@ impl SemanticCore {
         signal: &S,
         owner: &Rc<T>,
         slot: usize,
+        refresh: cherenkov::RefreshRange,
     ) -> f32
     where
         S: Signal<Output = f32> + Clone + 'static,
@@ -45,7 +46,7 @@ impl SemanticCore {
         let (subscription, observed_value) = SubscribedSnapshot::new(signal);
         let handle = self
             .animation_controller
-            .bind_scalar(key, observed_value, now);
+            .bind_scalar(key, observed_value, now, refresh);
         let watcher_handle = handle.clone();
         let signals = self.signals.clone();
         let marked = self.mark_owner_for_animation(key, Dirty::PAINT);

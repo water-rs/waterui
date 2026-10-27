@@ -1082,14 +1082,14 @@ fn table_emits_headers_cells_and_scrolls() {
 
 #[test]
 fn tabs_emit_tab_list_and_click_selects() {
-    let selection = Binding::container(0i32);
+    let selection = Binding::container(0usize);
     let selection_for_view = selection.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(Tabs::new(
             &selection_for_view,
             vec![
-                Tab::new(0, "First", || NavigationView::new("One", text("one"))),
-                Tab::new(1, "Second", || NavigationView::new("Two", text("two"))),
+                Tab::new("First", || NavigationView::new("One", text("one"))),
+                Tab::new("Second", || NavigationView::new("Two", text("two"))),
             ],
         ))
     }));

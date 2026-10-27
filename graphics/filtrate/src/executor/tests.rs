@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 
+use cherenkov_oracle::{F32Image, metrics};
 use cherenkov_shader::{
     SamplerFilter,
     eval::{Eval, Value},
@@ -18,9 +19,9 @@ use crate::{
     AnimatedCallback, AnimatedTarget, AuxSource, ColorFilter, ColorStage, CpuFilter, CpuImage,
     CpuKernel, Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput,
     EffectRenderError, EffectSetupError, Filter, FilterExt, FilterParam, Footprint, ImageVisitor,
-    Interpolator, OperatingSpace, ParamArray, ParamSource, Placed, ShaderEffect, ShapeInput,
-    ShapeTextures, SpatialFilter, SpatialStage, StageCollector, WatchGuard, WorkingSpace, filters,
-    kind,
+    Interpolator, OperatingSpace, ParamArray, ParamSource, PipelineCache, Placed, ShaderEffect,
+    ShapeInput, ShapeTextures, SpatialFilter, SpatialStage, StageCollector, WatchGuard,
+    WorkingSpace, filters, kind,
 };
 use filtrate_core::space::{
     P3_TO_SRGB, SRGB_TO_P3, from_srgb, srgb_decode, srgb_encode, to_srgb, transform,
@@ -45,6 +46,7 @@ impl Filter for Masked {
         const STAGE: SpatialStage = SpatialStage {
             name: "masked",
             source: include_str!("test_snippets/masked.wgsl"),
+            source_f16: None,
             params: &[],
             space: OperatingSpace::Working,
             shape: Some(ShapeInput::Mask),
@@ -75,6 +77,7 @@ impl Filter for UndeclaredShape {
         const STAGE: SpatialStage = SpatialStage {
             name: "median",
             source: include_str!("../shaders/image/convolution/median3x3.wgsl"),
+            source_f16: None,
             params: &[],
             space: OperatingSpace::Working,
             shape: Some(ShapeInput::Sdf),
@@ -121,6 +124,7 @@ struct SampleHalf;
 const SAMPLE_HALF: SpatialStage = SpatialStage {
     name: "sample_half",
     source: include_str!("test_snippets/sample_half.wgsl"),
+    source_f16: None,
     params: &[],
     space: OperatingSpace::Working,
     shape: None,
@@ -150,6 +154,7 @@ impl SpatialFilter for SampleHalf {
 const READ_AUX: SpatialStage = SpatialStage {
     name: "read_aux",
     source: include_str!("test_snippets/read_aux.wgsl"),
+    source_f16: None,
     params: &[],
     space: OperatingSpace::Working,
     shape: None,
@@ -227,20 +232,24 @@ impl SpatialFilter for ReadAuxTexture {
 /// Composes `filter` and wraps and validates every pass's entry point —
 /// for the hardware-filtered plan and for the manual-bilinear one.
 fn assert_composes<F: Filter>(name: &str, filter: &F) -> Plan {
-    for filterable in [true, false] {
-        let plan = Plan::new(filter, filterable, filterable, false).unwrap_or_else(|error| {
-            panic!("{name} does not compose (filterable={filterable}): {error}")
-        });
-        for (index, pass) in plan.passes.iter().enumerate() {
-            for resized in [false, true] {
-                entry::pass_module(&plan.module, plan.capabilities, index, pass, resized)
-                    .unwrap_or_else(|error| {
-                        panic!("{name} (filterable={filterable}, resized={resized}): {error}")
-                    });
+    for half in [
+        cherenkov_shader::Precision::F32,
+        cherenkov_shader::Precision::F16,
+    ] {
+        for filterable in [true, false] {
+            let plan =
+                Plan::new(filter, filterable, filterable, false, half).unwrap_or_else(|error| {
+                    panic!("{name} (filterable={filterable}, half={half:?}): {error}")
+                });
+            for (index, pass) in plan.passes.iter().enumerate() {
+                for resized in [false, true] {
+                    entry::pass_module(&plan.module, plan.capabilities, index, pass, resized)
+                        .unwrap_or_else(|error| panic!("{name} (filterable={filterable}, half={half:?}, resized={resized}): {error}"));
+                }
             }
         }
     }
-    Plan::new(filter, true, true, false)
+    Plan::new(filter, true, true, false, cherenkov_shader::Precision::F32)
         .unwrap_or_else(|error| panic!("{name} does not compose: {error}"))
 }
 
@@ -515,6 +524,25 @@ fn srgb_stages_are_converted_around() {
     // The conversions are colour stages, so they share the stage's segment.
     assert_eq!(plan.passes.len(), 1);
     assert_eq!(plan.passes[0].segment.stages, 0..3);
+
+    let plan = assert_composes(
+        "consecutive sRGB stages",
+        &CssInvert.then(filters::GaussianBlur::new(2.0_f32).in_space(OperatingSpace::Srgb)),
+    );
+    // Convert in once, run both spatial stages, then convert out once.
+    let stages: Vec<_> = plan
+        .passes
+        .iter()
+        .map(|pass| pass.segment.stages.clone())
+        .collect();
+    assert_eq!(stages, [0..2, 2..3, 3..4, 4..5]);
+
+    let plan = assert_composes(
+        "sRGB runs separated by a working-space stage",
+        &CssInvert.then(filters::Brightness(0.1_f32)).then(CssInvert),
+    );
+    // Each encoded stage still needs its own pair across the working stage.
+    assert_eq!(plan.passes[0].segment.stages, 0..7);
 }
 
 #[test]
@@ -522,7 +550,13 @@ fn a_stage_declares_the_shape_input_its_snippet_takes() {
     let plan = assert_composes("masked", &Masked);
     assert_eq!(plan.passes[0].shape, Some(ShapeInput::Mask));
     assert!(matches!(
-        Plan::new(&UndeclaredShape, true, true, false),
+        Plan::new(
+            &UndeclaredShape,
+            true,
+            true,
+            false,
+            cherenkov_shader::Precision::F32
+        ),
         Err(EffectSetupError::StageMismatch {
             stage: "median",
             ..
@@ -712,7 +746,7 @@ fn cpu_kernels_match_their_shaders() {
     );
     let mut pixels = COLOURS;
     chain.apply_cpu_now(&WorkingSpace::LINEAR_DISPLAY_P3, &mut pixels);
-    assert_eq!(pixels, chained);
+    metrics::assert_close(pixels.as_flattened(), chained.as_flattened());
 }
 
 /// A luma curve with constant parameters.
@@ -1001,6 +1035,7 @@ fn a_divergent_distortion_scale_spans_the_extent() {
 struct TestGpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    pipelines: PipelineCache,
 }
 
 fn create_test_device() -> TestGpu {
@@ -1014,10 +1049,16 @@ fn create_test_device() -> TestGpu {
         apply_limit_buckets: false,
     }))
     .expect("filter GPU tests require a high-performance adapter");
-    let (device, queue) =
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-            .expect("filter GPU tests require a working device");
-    TestGpu { device, queue }
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_features: adapter.features() & wgpu::Features::SHADER_F16,
+        ..Default::default()
+    }))
+    .expect("filter GPU tests require a working device");
+    TestGpu {
+        device,
+        queue,
+        pipelines: PipelineCache::new(),
+    }
 }
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -1244,6 +1285,7 @@ fn setup_format<E: Effect>(
     let ctx = EffectContext {
         device: &gpu.device,
         queue: &gpu.queue,
+        pipelines: &gpu.pipelines,
         input_format,
         output_format,
     };
@@ -1261,6 +1303,7 @@ fn setup_unfilterable<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static>(
     let ctx = EffectContext {
         device: &gpu.device,
         queue: &gpu.queue,
+        pipelines: &gpu.pipelines,
         input_format,
         output_format,
     };
@@ -1274,6 +1317,7 @@ fn setup_folded<F: Filter>(gpu: &TestGpu, executor: &mut Executor<F>) {
     let ctx = EffectContext {
         device: &gpu.device,
         queue: &gpu.queue,
+        pipelines: &gpu.pipelines,
         input_format: FORMAT,
         output_format: FORMAT,
     };
@@ -1332,14 +1376,19 @@ fn from_unorm(byte: u8) -> f32 {
     f32::from(byte) / 255.0
 }
 
-/// Asserts two RGBA8 images agree within `tolerance` steps per channel.
-fn assert_rgba8_close(actual: &[u8], expected: &[u8], tolerance: u8, what: &str) {
-    assert_eq!(actual.len(), expected.len(), "{what}: sizes differ");
-    for (index, (got, want)) in actual.iter().zip(expected).enumerate() {
-        assert!(
-            got.abs_diff(*want) <= tolerance,
-            "{what}: channel {index} is {got}, expected {want}"
-        );
+/// An `Rgba8Unorm` readback as an [`F32Image`] for
+/// [`metrics::assert_images_match`]: premultiplied linear P3, the space the
+/// executor's output is written in.
+fn rgba8_image(size: (u32, u32), rgba: &[u8]) -> F32Image {
+    F32Image {
+        width: size.0,
+        height: size.1,
+        pixels: rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| pixel.map(from_unorm))
+            .collect(),
     }
 }
 
@@ -1357,17 +1406,40 @@ fn test_pixels(count: u32) -> Vec<u8> {
 fn gpu_color_filter_executes_and_writes_output() {
     let gpu = create_test_device();
     // Opaque black: brightness lifts it by the amount.
+    let size = (8, 8);
     let black: Vec<u8> = core::iter::repeat_n([0u8, 0, 0, 255], 64)
         .flatten()
         .collect();
     let output = run(
         &gpu,
         filters::Brightness(0.25_f32),
-        (8, 8),
+        size,
         &black,
         ShapeTextures::default(),
     );
-    assert_rgba8_close(&output[..4], &[64, 64, 64, 255], 1, "brightness");
+    metrics::assert_images_match(
+        &rgba8_image(size, &[64, 64, 64, 255].repeat(64)),
+        &rgba8_image(size, &output),
+    );
+}
+
+#[test]
+fn gpu_identical_effects_share_pipelines() {
+    let gpu = create_test_device();
+    let chain = || filters::Saturation(1.4_f32).then(filters::HueRotation(60.0_f32));
+    let mut first = Executor::new(chain());
+    setup(&gpu, &mut first);
+    let pipelines = gpu.pipelines.count();
+    assert!(pipelines > 0);
+    // Parameters are uniforms, not part of the compiled pipeline.
+    let mut second =
+        Executor::new(filters::Saturation(0.5_f32).then(filters::HueRotation(10.0_f32)));
+    setup(&gpu, &mut second);
+    assert_eq!(gpu.pipelines.count(), pipelines);
+    // A different target format is a different pipeline.
+    let mut other = Executor::new(chain());
+    setup_format(&gpu, &mut other, FORMAT, wgpu::TextureFormat::Bgra8Unorm);
+    assert!(gpu.pipelines.count() > pipelines);
 }
 
 #[test]
@@ -1392,12 +1464,7 @@ fn gpu_chains_match_their_cpu_kernels() {
         .map(|&value| to_unorm(value))
         .collect();
     let output = run(&gpu, chain, size, &rgba, ShapeTextures::default());
-    assert_rgba8_close(
-        &output,
-        &expected,
-        1,
-        "saturation, grayscale, hue rotation, brightness, css invert, luma curve",
-    );
+    metrics::assert_images_match(&rgba8_image(size, &expected), &rgba8_image(size, &output));
 }
 
 #[test]
@@ -1415,13 +1482,11 @@ fn gpu_shape_mask_reaches_the_stage() {
         mask: Some(mask.create_view(&wgpu::TextureViewDescriptor::default())),
     };
     let output = run(&gpu, Masked, size, &white, shape);
-    assert_rgba8_close(
+    metrics::assert_unorm8_close(
         &output,
         &[
             0, 0, 0, 0, 64, 64, 64, 64, 128, 128, 128, 128, 255, 255, 255, 255,
         ],
-        1,
-        "masked",
     );
 
     // Without the mask the frame fails instead of reading nothing.
@@ -1455,7 +1520,7 @@ fn gpu_srgb_stages_run_in_srgb() {
         })
         .collect();
     let output = run(&gpu, CssInvert, size, &rgba, ShapeTextures::default());
-    assert_rgba8_close(&output, &expected, 2, "invert in sRGB");
+    metrics::assert_images_match(&rgba8_image(size, &expected), &rgba8_image(size, &output));
 
     // The reproduction of #1942: the stage's CPU kernel runs on the sRGB
     // pixels its declared space hands it, and the CPU output matches the
@@ -1470,8 +1535,11 @@ fn gpu_srgb_stages_run_in_srgb() {
         .flatten()
         .map(|&value| to_unorm(value))
         .collect();
-    assert_rgba8_close(&cpu_output, &expected, 2, "invert in sRGB on the CPU");
-    assert_rgba8_close(&cpu_output, &output, 1, "CPU kernel vs GPU output");
+    metrics::assert_images_match(
+        &rgba8_image(size, &expected),
+        &rgba8_image(size, &cpu_output),
+    );
+    metrics::assert_images_match(&rgba8_image(size, &output), &rgba8_image(size, &cpu_output));
 }
 
 /// The executor's manual bilinear, as a CPU reference over f32 texels.
@@ -1539,12 +1607,7 @@ fn gpu_manual_bilinear_matches_hardware_filtering() {
     let mut executor = Executor::new(filters::TwirlDistortion(params));
     setup_unfilterable(&gpu, &mut executor, FORMAT, FORMAT);
     let manual = render_rgba8(&gpu, &mut executor, size, &rgba, ShapeTextures::default());
-    assert_rgba8_close(
-        &manual,
-        &hardware,
-        1,
-        "manual bilinear vs hardware filtering",
-    );
+    metrics::assert_images_match(&rgba8_image(size, &hardware), &rgba8_image(size, &manual));
 }
 
 #[test]
@@ -1577,7 +1640,7 @@ fn gpu_folded_chain_matches_the_unfolded_chain() {
         "the colour prefix folded into the blur's samples"
     );
     let folded = render_rgba8(&gpu, &mut executor, size, &rgba, ShapeTextures::default());
-    assert_rgba8_close(&folded, &unfolded, 1, "folded chain vs unfolded chain");
+    metrics::assert_unorm8_close(&folded, &unfolded);
 }
 
 #[test]
@@ -1609,12 +1672,7 @@ fn gpu_folded_segment_reads_the_size_uniform() {
         "the colour prefix folded into the vignette's samples"
     );
     let folded = render_rgba8(&gpu, &mut executor, size, &rgba, ShapeTextures::default());
-    assert_rgba8_close(
-        &folded,
-        &unfolded,
-        1,
-        "folded size-dependent chain vs unfolded chain",
-    );
+    metrics::assert_unorm8_close(&folded, &unfolded);
 }
 
 #[test]
@@ -1695,10 +1753,9 @@ fn gpu_float_aux_upload_keeps_its_precision() {
             &frame_output_format(&gpu, &output, size, wgpu::TextureFormat::Rgba32Float),
         )
         .expect("test render should succeed");
-    assert_eq!(
-        readback_f32_image(&gpu, &output, size),
-        aux_texels,
-        "a textureLoad pass-through returns the uploaded f32 texels exactly"
+    metrics::assert_close(
+        readback_f32_image(&gpu, &output, size).as_flattened(),
+        aux_texels.as_flattened(),
     );
 }
 
@@ -1734,10 +1791,9 @@ fn gpu_texture_aux_binds_at_native_format() {
             &frame_output_format(&gpu, &output, size, wgpu::TextureFormat::Rgba32Float),
         )
         .expect("test render should succeed");
-    assert_eq!(
-        readback_f32_image(&gpu, &output, size),
-        aux_texels,
-        "a bound texture reads back at its native precision"
+    metrics::assert_close(
+        readback_f32_image(&gpu, &output, size).as_flattened(),
+        aux_texels.as_flattened(),
     );
 }
 
@@ -1746,6 +1802,7 @@ fn setup_error<F: Filter>(gpu: &TestGpu, executor: &mut Executor<F>) -> EffectSe
     let ctx = EffectContext {
         device: &gpu.device,
         queue: &gpu.queue,
+        pipelines: &gpu.pipelines,
         input_format: FORMAT,
         output_format: FORMAT,
     };
@@ -1876,10 +1933,8 @@ fn gpu_declared_output_size_maps_the_whole_input() {
             expected.extend_from_slice(&pixels[start..start + 4]);
         }
     }
-    assert_eq!(
-        actual, expected,
-        "every output pixel maps into the captured input"
-    );
+    // Every output pixel maps into the captured input.
+    metrics::assert_unorm8_close(&actual, &expected);
     let wrong = texture(&gpu, (2, 2), wgpu::TextureUsages::RENDER_ATTACHMENT);
     assert_eq!(
         executor.render(
@@ -1938,9 +1993,9 @@ fn gpu_declared_output_size_preserves_spatial_sampling() {
             .expect("resized spatial pass renders");
         // SampleHalf reads the left half at output pixel centres: exactly the
         // first two input texel centres after the output's 2:1 downscale.
-        assert_eq!(
-            readback_rgba8_image(&gpu, &target, size),
-            [255, 0, 0, 255, 0, 255, 0, 255]
+        metrics::assert_unorm8_close(
+            &readback_rgba8_image(&gpu, &target, size),
+            &[255, 0, 0, 255, 0, 255, 0, 255],
         );
     }
 }
@@ -1999,7 +2054,7 @@ fn gpu_reactive_output_sizes_keep_each_encodes_uniforms() {
                 expected.extend_from_slice(&pixels[index * 4..index * 4 + 4]);
             }
         }
-        assert_rgba8_close(&actual, &expected, 1, "declared size with shared encoder");
+        metrics::assert_unorm8_close(&actual, &expected);
     }
     assert!(
         executor
@@ -2114,29 +2169,29 @@ fn premultiplied_input(size: (usize, usize)) -> Vec<[f32; 4]> {
         .collect()
 }
 
-/// How far an f16 executor run may stray from the f32 CPU result, relative
-/// to `max(|value|, 1)`: a few f16 ulps, `2^-11` just below one.
-const F16_TOLERANCE: f32 = 2.0e-3;
+/// [`metrics::assert_f16_close`] steps for a route that runs one pass and
+/// writes its result to `Rgba16Float` once.
+const F16_ONE_PASS: f64 = 1.0;
 
-/// [`F16_TOLERANCE`] for a stage in encoded sRGB. The GPU these tests were
-/// measured on rounds toward zero when it writes `Rgba16Float`, so the
-/// sRGB path's five f16 intermediates (against two for a blur in the
-/// working space) drift downward cumulatively rather than averaging out,
-/// and decoding near white amplifies that drift by about 2.3: the worst
-/// measured error is 3.31e-3, on the black|white edge, and a flat white
-/// comes back as 0.99756.
-const F16_SRGB_TOLERANCE: f32 = 5.0e-3;
+/// Steps for a separable stage in the working space: two passes, each
+/// writing `Rgba16Float` once.
+const F16_SEPARABLE: f64 = 2.0;
+
+/// Steps for a separable stage in encoded sRGB. The route runs `to_srgb`,
+/// the horizontal stage, the vertical stage and `from_srgb`: three
+/// writes of encoded values, which decoding amplifies by up to sRGB's
+/// exponent 2.4, and one of the linear result.
+const F16_SEPARABLE_SRGB: f64 = 3.0 * 2.4 + 1.0;
 
 /// Runs `filter` on the wgpu executor over f16 textures and on the CPU,
-/// checks they agree within `tolerance` relative to `max(|value|, 1)`, and
-/// returns the GPU output.
+/// checks they agree to the precision of the `steps` half-float writes on
+/// the executor's route, and returns the GPU output.
 fn assert_f16_matches_cpu<F: Filter + CpuFilter>(
     gpu: &TestGpu,
     filter: F,
     size: (u32, u32),
     input: &[[f32; 4]],
-    tolerance: f32,
-    label: &str,
+    steps: f64,
 ) -> Vec<[f32; 4]> {
     let params = filter.params();
     let mut expected = input
@@ -2185,17 +2240,7 @@ fn assert_f16_matches_cpu<F: Filter + CpuFilter>(
         )
         .expect("f16 filter render should succeed");
     let actual = readback_f16_image(gpu, &output, size);
-    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
-        for channel in 0..4 {
-            assert!(
-                (actual[channel] - expected[channel]).abs()
-                    <= tolerance * expected[channel].abs().max(1.0),
-                "{label}, pixel {index}, channel {channel}: GPU {}, CPU {}",
-                actual[channel],
-                expected[channel]
-            );
-        }
-    }
+    metrics::assert_f16_close(actual.as_flattened(), expected.as_flattened(), steps);
     actual
 }
 
@@ -2222,25 +2267,11 @@ fn cpu_blurs_match_the_wgpu_executor_and_window_aprons() {
     let size = (23_usize, 17_usize);
     let input = premultiplied_input(size);
     let gaussian = filters::GaussianBlur::new(1.7_f32);
-    assert_f16_matches_cpu(
-        &gpu,
-        gaussian,
-        (23, 17),
-        &input,
-        F16_TOLERANCE,
-        "GaussianBlur",
-    );
+    assert_f16_matches_cpu(&gpu, gaussian, (23, 17), &input, F16_SEPARABLE);
     let encoded = gaussian.in_space(OperatingSpace::Srgb);
-    assert_f16_matches_cpu(
-        &gpu,
-        encoded,
-        (23, 17),
-        &input,
-        F16_SRGB_TOLERANCE,
-        "GaussianBlur in sRGB",
-    );
+    assert_f16_matches_cpu(&gpu, encoded, (23, 17), &input, F16_SEPARABLE_SRGB);
     let box_blur = filters::Blur(2.0_f32);
-    assert_f16_matches_cpu(&gpu, box_blur, (23, 17), &input, F16_TOLERANCE, "Blur");
+    assert_f16_matches_cpu(&gpu, box_blur, (23, 17), &input, F16_SEPARABLE);
 
     assert_window_matches_full(&filters::GaussianBlur::new(1.0_f32), &input, size, 4);
     let encoded = filters::GaussianBlur::new(1.0_f32).in_space(OperatingSpace::Srgb);
@@ -2264,22 +2295,14 @@ fn cpu_blurs_match_the_wgpu_executor_and_window_aprons() {
         gaussian.in_space(OperatingSpace::Srgb),
         (32, 3),
         &step,
-        F16_SRGB_TOLERANCE,
-        "GaussianBlur in sRGB over an edge",
+        F16_SEPARABLE_SRGB,
     );
     let crossing = encoded_half_crossing(&blurred[middle.clone()]);
     assert!(
         (crossing - 16.0).abs() < 0.05,
         "the sRGB blur crosses encoded half at {crossing}, not at the edge"
     );
-    let blurred = assert_f16_matches_cpu(
-        &gpu,
-        gaussian,
-        (32, 3),
-        &step,
-        F16_TOLERANCE,
-        "GaussianBlur over an edge",
-    );
+    let blurred = assert_f16_matches_cpu(&gpu, gaussian, (32, 3), &step, F16_SEPARABLE);
     let crossing = encoded_half_crossing(&blurred[middle]);
     assert!(
         crossing < 15.0,
@@ -2319,13 +2342,11 @@ fn assert_window_matches_full<F: Filter + CpuFilter>(
             },
         )
         .expect("window CPU filter should succeed");
-    for y in top + apron..bottom - apron {
-        assert_eq!(
-            &full[y * size.0..(y + 1) * size.0],
-            &window[(y - top) * size.0..(y - top + 1) * size.0],
-            "row {y} differs from full-image application"
-        );
-    }
+    let band = (top + apron) * size.0..(bottom - apron) * size.0;
+    metrics::assert_close(
+        full[band.clone()].as_flattened(),
+        window[band.start - top * size.0..band.end - top * size.0].as_flattened(),
+    );
 }
 
 #[test]
@@ -2359,8 +2380,7 @@ fn cpu_image_blend_modes_match_the_wgpu_executor() {
             amount: 0.73_f32,
             mode,
         };
-        let label = format!("BlendWithImage::{mode:?}");
-        assert_f16_matches_cpu(&gpu, filter, (23, 17), &input, F16_TOLERANCE, &label);
+        assert_f16_matches_cpu(&gpu, filter, (23, 17), &input, F16_ONE_PASS);
     }
 
     let auxiliary_f16: Vec<half::f16> = (0..7 * 5 * 4)
@@ -2375,22 +2395,16 @@ fn cpu_image_blend_modes_match_the_wgpu_executor() {
             f32::from(value) / 256.0
         })
         .collect();
-    for (label, image) in [
-        (
-            "BlendWithImage::Rgba16Float",
-            crate::FilterImage::from_rgba16f(7, 5, &auxiliary_f16),
-        ),
-        (
-            "BlendWithImage::Rgba32Float",
-            crate::FilterImage::from_rgba32f(7, 5, &auxiliary_f32),
-        ),
+    for image in [
+        crate::FilterImage::from_rgba16f(7, 5, &auxiliary_f16),
+        crate::FilterImage::from_rgba32f(7, 5, &auxiliary_f32),
     ] {
         let filter = filters::BlendWithImage {
             image,
             amount: 0.73_f32,
             mode: filters::BlendMode::Multiply,
         };
-        assert_f16_matches_cpu(&gpu, filter, (23, 17), &input, F16_TOLERANCE, label);
+        assert_f16_matches_cpu(&gpu, filter, (23, 17), &input, F16_ONE_PASS);
     }
 }
 
@@ -2410,8 +2424,7 @@ fn image_blend_hsl_and_screen_match_gpu_at_alpha_edges() {
             amount: 1.0_f32,
             mode,
         };
-        let label = format!("BlendWithImage::{mode:?}, alpha edges");
-        assert_f16_matches_cpu(&gpu, filter, (4, 1), &input, F16_TOLERANCE, &label);
+        assert_f16_matches_cpu(&gpu, filter, (4, 1), &input, F16_ONE_PASS);
     }
 }
 
@@ -2430,7 +2443,7 @@ fn derived_colour_filters_apply_through_cpu_filter() {
             },
         )
         .expect("derived CPU kernel should succeed");
-    assert_eq!(pixels, [[0.325, 0.425, 0.525, 0.5]]);
+    metrics::assert_close(pixels.as_flattened(), &[0.325, 0.425, 0.525, 0.5]);
 }
 
 /// Parameter values that change every frame must not accumulate one
@@ -2499,11 +2512,9 @@ fn gpu_params_rewrite_buffers_across_frames() {
             &rgba,
             ShapeTextures::default(),
         );
-        assert_rgba8_close(
-            &readback_rgba8_image(&gpu, &output, size),
-            &want,
-            1,
-            "animated frame",
+        metrics::assert_images_match(
+            &rgba8_image(size, &want),
+            &rgba8_image(size, &readback_rgba8_image(&gpu, &output, size)),
         );
     }
     let buffers: usize = executor
@@ -2624,6 +2635,16 @@ fn gpu_export_filter_gallery_images() {
     export_filter!("invert.png", Invert);
     export_filter!("blur.png", Blur(3.0_f32));
     export_filter!("gaussian_blur.png", GaussianBlur::new(2.0_f32));
+    export_filter!(
+        "luma_curve_srgb_blur.png",
+        LumaCurve {
+            curve: [0.9_f32, 0.83, 0.925, 0.815],
+            amount: 0.75,
+            chroma: 0.375,
+            offset: 0.1,
+        }
+        .then(GaussianBlur::new(2.0_f32).in_space(OperatingSpace::Srgb))
+    );
     export_filter!("motion_blur.png", MotionBlur(6.0_f32, 30.0_f32));
     export_filter!("zoom_blur.png", ZoomBlur(0.2_f32, 0.5_f32, 0.5_f32));
     export_filter!("sharpen.png", Sharpen(1.5_f32));
@@ -2823,17 +2844,13 @@ fn gpu_one_effect_two_sizes_one_encoder() {
         &rgba_b,
         ShapeTextures::default(),
     );
-    assert_rgba8_close(
-        &readback_rgba8_image(&gpu, &output_a, size_a),
-        &want_a,
-        0,
-        "first encode",
+    metrics::assert_images_match(
+        &rgba8_image(size_a, &want_a),
+        &rgba8_image(size_a, &readback_rgba8_image(&gpu, &output_a, size_a)),
     );
-    assert_rgba8_close(
-        &readback_rgba8_image(&gpu, &output_b, size_b),
-        &want_b,
-        0,
-        "second encode",
+    metrics::assert_images_match(
+        &rgba8_image(size_b, &want_b),
+        &rgba8_image(size_b, &readback_rgba8_image(&gpu, &output_b, size_b)),
     );
 }
 
@@ -2944,6 +2961,7 @@ fn setup_shader_effect(
     let ctx = EffectContext {
         device: &gpu.device,
         queue: &gpu.queue,
+        pipelines: &gpu.pipelines,
         input_format,
         output_format: FORMAT,
     };
@@ -3028,12 +3046,9 @@ fn gpu_shader_effect_reads_input_time_and_params() {
     assert!(needs_redraw, "an animated shader asks for the next frame");
 
     let pixels = readback_rgba8_image(&gpu, &output, size);
-    for &[red, green, blue, alpha] in pixels.as_chunks::<4>().0 {
-        assert!(red.abs_diff(191) <= 1, "param 0.75 -> red {red}");
-        assert!(green.abs_diff(128) <= 1, "time 1.5 s -> green {green}");
-        assert_eq!(blue, 200, "the input's blue channel passes through");
-        assert_eq!(alpha, 255);
-    }
+    // Param 0.75 -> red 191, time 1.5 s -> green 128, the input's blue
+    // passes through.
+    metrics::assert_unorm8_close(&pixels, &[191, 128, 200, 255].repeat(pixels.len() / 4));
 }
 
 /// Two encodes of one shader effect at different sizes in one encoder keep
@@ -3097,11 +3112,9 @@ fn gpu_shader_effect_two_sizes_one_encoder() {
             let pixels = readback_rgba8_image(&gpu, output, *size);
             let width = u8::try_from(size.0).expect("test width fits u8");
             let height = u8::try_from(size.1).expect("test height fits u8");
-            assert_rgba8_close(
-                &pixels,
-                &[width, height, blue, 255].repeat(pixels.len() / 4),
-                1,
-                "each encode reads its own uniforms",
+            metrics::assert_images_match(
+                &rgba8_image(*size, &[width, height, blue, 255].repeat(pixels.len() / 4)),
+                &rgba8_image(*size, &pixels),
             );
         }
         effect.cached_bind_groups()
@@ -3133,6 +3146,7 @@ fn gpu_shader_effect_sampling_requires_a_filterable_input() {
     let ctx = EffectContext {
         device: &gpu.device,
         queue: &gpu.queue,
+        pipelines: &gpu.pipelines,
         input_format: unfilterable,
         output_format: FORMAT,
     };
@@ -3171,11 +3185,9 @@ fn gpu_shader_effect_sampling_requires_a_filterable_input() {
             &frame_output(&gpu, &output, size),
         )
         .expect("a texel-loading shader renders an unfilterable input");
-    assert_rgba8_close(
+    metrics::assert_unorm8_close(
         &readback_rgba8_image(&gpu, &output, size),
         &[64, 128, 191, 255].repeat(4),
-        1,
-        "loaded texels",
     );
 }
 
@@ -3249,10 +3261,7 @@ fn the_hwui_transcription_matches_hand_computed_values() {
         (10.0, 0.032, 2000.0, 9.480_627_487_124_593),
     ] {
         let actual = hwui_compute_overscroll(in_pos, overscroll, extent);
-        assert!(
-            (actual - expected).abs() < 1e-12,
-            "computeOverscroll({in_pos}, {overscroll}, {extent}) = {actual}, expected {expected}"
-        );
+        metrics::assert_close(&[actual], &[expected]);
     }
 }
 
@@ -3335,18 +3344,19 @@ fn stretch_ramp((width, height): (usize, usize)) -> Vec<[f32; 4]> {
         .collect()
 }
 
-/// Checks every pixel of `output` — the filter applied to
-/// [`stretch_ramp`] — against HWUI's sample position for its centre, and
-/// returns the largest distance a sample moved, in pixels.
+/// What [`stretch_ramp`] reads after the stretch, for every pixel: the ramp
+/// at HWUI's sample position for its centre. Also returns the largest
+/// distance a sample moved, in pixels.
 #[expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     reason = "test images are small"
 )]
-fn assert_stretch_rows(case: &StretchCase, output: &[[f32; 4]], tolerance: f32, what: &str) -> f64 {
+fn hwui_stretch_rows(case: &StretchCase) -> (Vec<[f32; 4]>, f64) {
     let (width, height) = case.image;
     let (w, h) = (width as f64, height as f64);
     let mut reach = 0.0_f64;
+    let mut expected = Vec::with_capacity(width * height);
     for y in 0..height {
         for x in 0..width {
             let pixel = [x as f64 + 0.5, y as f64 + 0.5];
@@ -3354,23 +3364,15 @@ fn assert_stretch_rows(case: &StretchCase, output: &[[f32; 4]], tolerance: f32, 
             reach = reach
                 .max((source[0] - pixel[0]).abs())
                 .max((source[1] - pixel[1]).abs());
-            let expected = [
+            expected.push([
                 (source[1].clamp(0.5, h - 0.5) / h) as f32,
                 (source[0].clamp(0.5, w - 0.5) / w) as f32,
-            ];
-            let actual = output[y * width + x];
-            assert!(
-                (actual[0] - expected[0]).abs() <= tolerance
-                    && (actual[1] - expected[1]).abs() <= tolerance,
-                "{}, {what}: pixel ({x}, {y}) reads {:?}, HWUI samples ({}, {}) = {expected:?}",
-                case.label,
-                &actual[..2],
-                source[0],
-                source[1],
-            );
+                0.25,
+                1.0,
+            ]);
         }
     }
-    reach
+    (expected, reach)
 }
 
 fn stretch_cases() -> [StretchCase; 4] {
@@ -3429,7 +3431,8 @@ fn cpu_overscroll_stretch_samples_where_hwui_does() {
                 },
             )
             .expect("the CPU stretch runs");
-        let reach = assert_stretch_rows(&case, &output, 1e-5, "CPU");
+        let (expected, reach) = hwui_stretch_rows(&case);
+        metrics::assert_close(output.as_flattened(), expected.as_flattened());
         // The footprint covers the reach plus the bilinear neighbour.
         let footprint = filtrate_core::SpatialFilter::footprint(&filter);
         assert!(
@@ -3455,10 +3458,16 @@ fn gpu_overscroll_stretch_samples_where_hwui_does() {
             case.filter(),
             size,
             &stretch_ramp(case.image),
-            F16_TOLERANCE,
-            case.label,
+            F16_ONE_PASS,
         );
-        assert_stretch_rows(&case, &output, 2e-3, "GPU");
+        // Against the exact HWUI positions the ramp's f16 upload, which the
+        // CPU comparison above mirrors, costs a step of its own.
+        let (expected, _) = hwui_stretch_rows(&case);
+        metrics::assert_f16_close(
+            output.as_flattened(),
+            expected.as_flattened(),
+            F16_ONE_PASS + 1.0,
+        );
     }
 }
 

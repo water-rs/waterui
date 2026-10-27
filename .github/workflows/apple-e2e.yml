@@ -165,11 +165,31 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
         run: cargo install --path "${WATER_CLI_DIR:?WATER_CLI_DIR is required; run .github/scripts/setup-e2e.sh first}" --locked --root "${{ github.workspace }}/cli-bin"
 
+      - name: Build the screenshot comparer
+        if: github.event_name != 'schedule' || inputs.full_suite
+        timeout-minutes: 10
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
+        run: |
+          export PATH="${{ github.workspace }}/cli-bin/bin:${PATH}"
+          cargo install --path "${WATERUI_DIR}/graphics/cherenkov/oracle" --locked \
+            --features apple-screenshots --bin compare-screenshots --debug \
+            --root "${{ github.workspace }}/cli-bin"
+
       - name: Upload the water CLI
         uses: actions/upload-artifact@v4
         with:
           name: water-cli
           path: cli-bin/bin/water
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload the screenshot comparer
+        if: github.event_name != 'schedule' || inputs.full_suite
+        uses: actions/upload-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin/compare-screenshots
           retention-days: 1
           if-no-files-found: error
 
@@ -200,7 +220,7 @@ jobs:
       # This job builds under the dated stable pinned below (the header
       # explains why), and rustup ranks this variable above the project's
       # file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
@@ -213,7 +233,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           targets: aarch64-apple-ios-sim
           cache: "false"
 
@@ -296,7 +316,7 @@ jobs:
       # This job builds under the dated stable pinned below (the header
       # explains why), and rustup ranks this variable above the project's
       # file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
@@ -309,7 +329,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           cache: "false"
 
       - name: Install the Metal toolchain
@@ -402,6 +422,13 @@ jobs:
           chmod +x cli-bin/bin/water
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
 
+      - name: Install the screenshot comparer
+        uses: actions/download-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin
+      - run: chmod +x cli-bin/bin/compare-screenshots
+
       - name: Download packaged iOS apps
         uses: actions/download-artifact@v4
         with:
@@ -446,6 +473,10 @@ jobs:
       # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
       - name: Set up modern bash
         uses: ./.github/actions/setup-bash
+
+      - name: Prepare comparison tools
+        uses: ./.github/actions/setup-e2e-tools
+        timeout-minutes: 1
 
       - name: Run iOS e2e shard
         env:
@@ -528,6 +559,13 @@ jobs:
           chmod +x cli-bin/bin/water
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
 
+      - name: Install the screenshot comparer
+        uses: actions/download-artifact@v4
+        with:
+          name: compare-screenshots
+          path: cli-bin/bin
+      - run: chmod +x cli-bin/bin/compare-screenshots
+
       - name: Download packaged macOS apps
         uses: actions/download-artifact@v4
         with:
@@ -544,6 +582,10 @@ jobs:
       # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
       - name: Set up modern bash
         uses: ./.github/actions/setup-bash
+
+      - name: Prepare comparison tools
+        uses: ./.github/actions/setup-e2e-tools
+        timeout-minutes: 1
 
       - name: Run macOS e2e shard
         env:
@@ -656,7 +698,7 @@ jobs:
       # This job builds under the dated stable pinned below (the header
       # explains why), and rustup ranks this variable above the project's
       # file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
       # Packages the repository's own ios_test_host fixture in dev profile —
       # not one of the release examples build-ios packages — so it keeps its
       # own toolchain and target dir.
@@ -672,7 +714,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           targets: aarch64-apple-ios-sim
           # run-ios-device-tests.sh verifies the packaged archive's exports
           # with the llvm-nm shipped by this toolchain.
@@ -888,7 +930,7 @@ jobs:
       # This job builds under the dated stable pinned below (the header
       # explains why), and rustup ranks this variable above the project's
       # file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_TOOLCHAIN: "1.99.1"
       # Packages a generated hello-world playground rather than a discovered
       # example, so it keeps its own toolchain and target dir.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -903,7 +945,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.1"
           targets: aarch64-apple-ios-sim
           cache: "false"
 
@@ -1020,7 +1062,7 @@ jobs:
   # Baselines are recorded on CI, not locally: window metrics, scale factors,
   # and OS rendering all differ across machines. A record run uploads its
   # captures; this job files them under backends/apple/Tests/E2EBaselines and opens a PR so a
-  # human reviews every changed pixel.
+  # human reviews the captured output for visual equivalence.
   publish-baselines:
     name: publish-baselines
     if: always() && inputs.record_baselines == true
@@ -1039,8 +1081,8 @@ jobs:
           pattern: e2e-baselines-*
           path: recorded/
 
-      # Baselines here are text manifests only — parity budgets and the
-      # package-size measurement — never committed captures. The recorded
+      # Baselines here are text manifests only — the package-size
+      # measurement, never committed captures. The recorded
       # PNGs stay on the run's e2e-baselines-* artifacts for review; how a
       # reviewed capture becomes a committed, generator-pinned reference is
       # under design (issue pending).
@@ -1062,30 +1104,8 @@ jobs:
               f.write("\n")
           PY
 
-      # Recorded parity fractions become the new allowed budgets, with headroom
-      # for ordinary render jitter (25% + 0.2pt of a percentage point) so the
-      # gate trips on real drift, not noise.
-      - name: Merge recorded parity budgets
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import glob, json, os
-          budgets_path = "backends/apple/Tests/E2EBaselines/parity-budgets.json"
-          budgets = {}
-          if os.path.exists(budgets_path):
-              with open(budgets_path) as f:
-                  budgets = json.load(f)
-          for path in glob.glob("recorded/*/parity/*.txt"):
-              stem = os.path.basename(path)[:-4]
-              platform, _, example = stem.partition("-")
-              with open(path) as f:
-                  fraction = float(f.read().strip())
-              budgets.setdefault(platform, {})[example] = \
-                  min(1.0, round(fraction * 1.25 + 0.002, 4))
-          with open(budgets_path, "w") as f:
-              json.dump(budgets, f, indent=2, sort_keys=True)
-              f.write("\n")
-          PY
+      # FLIP reports remain review artifacts. Recording a difference must
+      # not automatically raise the tolerance that would accept it.
 
       - name: Open baseline pull request
         env:
@@ -1101,11 +1121,11 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           branch="e2e/baselines-${GITHUB_RUN_ID}"
           git checkout -b "${branch}"
-          git commit -m "test: refresh e2e screenshot baselines"
+          git commit -m "test: refresh e2e release measurements"
           git push -u origin "${branch}"
           gh pr create --base dev \
-            --title "test: refresh e2e screenshot baselines" \
-            --body "Baselines recorded by nightly run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. The captures themselves are on the run's e2e-baselines-* artifacts — review them; a changed budget or measurement without an expected visual change is a regression report, not a rubber stamp."
+            --title "test: refresh e2e release measurements" \
+            --body "Measurements recorded by nightly run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Captures and FLIP reports remain on the run artifacts for whole-image visual review; recorded differences do not automatically change comparison tolerances."
 
   # One issue per broken nightly, updated in place while it stays red, so a
   # failure that nobody was watching is on the board by morning. Record runs

@@ -9,6 +9,7 @@ use cherenkov::{
 };
 use cherenkov::{Draw, GlyphRun, WorkingColor};
 use cherenkov_gpu::{Gpu, GpuConfig, TimestampSupport};
+use cherenkov_oracle::metrics::assert_images_match;
 use cherenkov_oracle::paint::radial_t;
 
 split_fn! {
@@ -55,7 +56,9 @@ fn font() -> cherenkov::FontSource {
 
 /// `count` distinct glyph-cache entries at `size` px, tiled on a grid: the
 /// glyph ids cycle through the subset, and each cycle steps the size so no
-/// two entries share an atlas cell.
+/// two entries share an atlas cell. Rows wrap after six so every run stays
+/// inside a 512 px target: the lowering culls runs outside it before they
+/// reach the atlas.
 #[expect(clippy::cast_precision_loss)]
 fn text_runs(font: cherenkov::FontId, count: u32, size: f32) -> Vec<GlyphRun> {
     (0..count.div_ceil(FONT_GLYPHS))
@@ -66,7 +69,7 @@ fn text_runs(font: cherenkov::FontId, count: u32, size: f32) -> Vec<GlyphRun> {
                 .map(|i| cherenkov::Glyph {
                     id: 1 + i % FONT_GLYPHS,
                     x: (i % 32) as f32 * (size * 0.8),
-                    y: (1 + i / 32) as f32 * size,
+                    y: (1 + (i / 32) % 6) as f32 * size,
                     transform: None,
                 })
                 .collect();
@@ -127,17 +130,12 @@ fn a_full_atlas_grows_then_reports_exhaustion() -> Result<(), Box<dyn std::error
     let small = small?;
     assert!(big.iter().any(|p| p[3] > 0.0), "default render is empty");
     assert!(small.iter().any(|p| p[3] > 0.0), "capped render is empty");
-    let eps = 1.0 / 255.0 + 1e-4;
-    for (i, (a, b)) in big.iter().zip(&small).enumerate() {
-        for c in 0..4 {
-            assert!(
-                (a[c] - b[c]).abs() <= eps,
-                "pixel {i} channel {c}: {} vs {}",
-                a[c],
-                b[c]
-            );
-        }
-    }
+    let image = |pixels: Vec<[f32; 4]>| cherenkov_oracle::F32Image {
+        width: 512,
+        height: 512,
+        pixels,
+    };
+    assert_images_match(&image(big), &image(small));
     // A live set that does not fit the capped atlas exhausts it.
     let Some(exhausted) = wait!(render_text(tiny, 2000, 48.0)) else {
         return Ok(());
@@ -370,8 +368,6 @@ fn dropping_a_font_frees_its_renderer_state() -> Result<(), Box<dyn std::error::
     // already carries the `commit_writes` lists a same-size text commit
     // retains — what the assertion compares is A's cells alone (#2711).
     let font_b = engine.font(font())?;
-    let font = engine.font(font())?;
-    let font_id = font.id();
     let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     let solid = |surface: &cherenkov::Surface<Gpu>| {
         surface.update(|tx| {
@@ -389,7 +385,11 @@ fn dropping_a_font_frees_its_renderer_state() -> Result<(), Box<dyn std::error::
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     solid(&surface);
     wait!(engine.render(cherenkov::FrameTime::now()))?;
-    let without_glyphs = wait!(engine.memory()).cpu;
+    let without_glyphs = wait!(engine.memory()).glyph_cache;
+    // A is created after the baseline: everything it allocates is what
+    // dropping it must give back.
+    let font = engine.font(font())?;
+    let font_id = font.id();
     let runs = text_runs(font_id, 8, 24.0);
     let text = |surface: &cherenkov::Surface<Gpu>| {
         surface.update(|tx| {
@@ -400,18 +400,18 @@ fn dropping_a_font_frees_its_renderer_state() -> Result<(), Box<dyn std::error::
     };
     text(&surface);
     wait!(engine.render(cherenkov::FrameTime::now()))?;
-    assert!(wait!(engine.memory()).cpu > without_glyphs, "glyph cells cached");
+    assert!(wait!(engine.memory()).glyph_cache > without_glyphs, "glyph cells cached");
     drop(font);
     // Dirty the surface so the next frame re-lowers and consults the font.
     surface.clear_color(WorkingColor::new([0.0, 0.0, 0.0, 1.0]));
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     assert!(
-        wait!(engine.memory()).cpu > without_glyphs,
+        wait!(engine.memory()).glyph_cache > without_glyphs,
         "the installed content still draws the font"
     );
     solid(&surface);
     wait!(engine.render(cherenkov::FrameTime::now()))?;
-    assert_eq!(wait!(engine.memory()).cpu, without_glyphs, "font cells released");
+    assert_eq!(wait!(engine.memory()).glyph_cache, without_glyphs, "font cells released");
     text(&surface);
     assert!(
         matches!(
