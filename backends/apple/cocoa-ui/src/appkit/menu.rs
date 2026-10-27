@@ -576,3 +576,18 @@ impl Menu {
         &self.menu
     }
 }
+
+/// Appends `nodes` to a field editor's standard context `menu`, separated
+/// from the platform's own rows — the customization
+/// `textView:menu:forEvent:atIndex:` is for. An empty `nodes` leaves the
+/// menu untouched.
+pub fn append_edit_menu(menu: &NSMenu, nodes: &[MenuTreeNode]) {
+    if nodes.is_empty() {
+        return;
+    }
+    let menu = Menu {
+        menu: menu.retain(),
+    };
+    menu.add_separator();
+    menu.append_nodes(nodes);
+}

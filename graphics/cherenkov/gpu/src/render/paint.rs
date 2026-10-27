@@ -24,7 +24,7 @@ struct Entry {
 impl Entry {
     /// Creates the module and pipeline of a user shader paint. Errors are
     /// reported through the caller's validation scope.
-    fn new(device: &wgpu::Device, source: &ShaderSource) -> Self {
+    fn new(device: &wgpu::Device, source: &ShaderSource, cache: &super::PipelineCache) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shader paint"),
             source: wgpu::ShaderSource::Wgsl(Cow::Owned(module_text(source))),
@@ -61,7 +61,7 @@ impl Entry {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: cache.handle.as_ref(),
         });
         Self {
             pipeline,
@@ -129,12 +129,14 @@ impl Registry {
         device: &wgpu::Device,
         id: u64,
         source: &ShaderSource,
+        cache: &super::PipelineCache,
     ) -> Result<(), ResourceError> {
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let entry = Entry::new(device, source);
+        let entry = Entry::new(device, source, cache);
         if let Some(error) = pollster::block_on(scope.pop()) {
             return Err(ResourceError::Shader(error.to_string()));
         }
+        cache.persist();
         self.insert(id, entry);
         Ok(())
     }
@@ -151,12 +153,14 @@ impl Registry {
         device: &wgpu::Device,
         id: u64,
         source: &ShaderSource,
+        cache: &super::PipelineCache,
     ) -> Result<(), ResourceError> {
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let entry = Entry::new(device, source);
+        let entry = Entry::new(device, source, cache);
         if let Some(error) = scope.pop().await {
             return Err(ResourceError::Shader(error.to_string()));
         }
+        cache.persist();
         self.insert(id, entry);
         Ok(())
     }
@@ -233,6 +237,7 @@ impl Registry {
             });
             Texture {
                 image: super::GpuImage {
+                    revision: 0,
                     sampling_flags: 0,
                     texture,
                     view,

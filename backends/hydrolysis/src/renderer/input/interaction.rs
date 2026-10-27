@@ -20,9 +20,8 @@ const INTERACTION_KEYS_PER_WAVE: usize = 2;
 const INTERACTION_KEYS_PER_IDENTITY: usize =
     INTERACTION_WAVE_KEYS_BASE + INTERACTION_KEYS_PER_WAVE * MAX_PRESS_WAVES;
 
-#[derive(Debug, Default)]
-pub struct InteractionEngine {
-    states: BTreeMap<InteractionKey, WidgetInteractionEntry>,
+pub struct InteractionEngine<E: crate::text::TextEngine> {
+    states: BTreeMap<InteractionKey, WidgetInteractionEntry<E>>,
     active: BTreeSet<InteractionKey>,
     /// The full reported [`InteractionState`] each active control sampled at
     /// bind time — draw sites read it back by key instead of repeating the
@@ -69,13 +68,12 @@ impl InteractionKey {
     }
 }
 
-#[derive(Debug, Default)]
-struct WidgetInteractionEntry {
+struct WidgetInteractionEntry<E: crate::text::TextEngine> {
     hovering: bool,
     handles: Option<Rc<InteractionLayerHandles>>,
     /// The retained node that bound this key — the cell a state change
     /// marks so only the owning widget re-records.
-    owner: std::rc::Weak<crate::renderer::mount::NodeCell>,
+    owner: std::rc::Weak<crate::renderer::mount::NodeCell<E>>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -98,7 +96,7 @@ impl InteractionFocus {
     }
 }
 
-impl InteractionEngine {
+impl<E: crate::text::TextEngine> InteractionEngine<E> {
     pub(crate) fn begin_rebuild_frame(&mut self) {
         self.active.clear();
         self.selected_claims.clear();
@@ -168,7 +166,7 @@ impl InteractionEngine {
     pub(crate) fn bind_hover(
         &mut self,
         key: &InteractionKey,
-        owner: &std::rc::Rc<crate::renderer::mount::NodeCell>,
+        owner: &std::rc::Rc<crate::renderer::mount::NodeCell<E>>,
     ) -> (HoverSlot, bool) {
         self.active.insert(key.clone());
         let entry = self.states.entry(key.clone()).or_default();
@@ -211,7 +209,7 @@ impl InteractionEngine {
     pub(crate) fn owner_of(
         &self,
         key: &InteractionKey,
-    ) -> Option<std::rc::Weak<crate::renderer::mount::NodeCell>> {
+    ) -> Option<std::rc::Weak<crate::renderer::mount::NodeCell<E>>> {
         self.states.get(key).map(|entry| entry.owner.clone())
     }
 
@@ -316,7 +314,7 @@ impl InteractionEngine {
         motion: &InteractionMotion,
         animation_controller: &mut AnimationController,
         now: Instant,
-        owner: &std::rc::Rc<crate::renderer::mount::NodeCell>,
+        owner: &std::rc::Rc<crate::renderer::mount::NodeCell<E>>,
     ) -> (
         WidgetInteractionState,
         PressSlot,
@@ -534,6 +532,52 @@ fn press_layer_opacity_animation(pressed: bool, motion: &InteractionMotion) -> A
     }
 }
 
+impl<E: crate::text::TextEngine> Default for WidgetInteractionEntry<E> {
+    fn default() -> Self {
+        Self {
+            hovering: Default::default(),
+            handles: Option::default(),
+            owner: Weak::default(),
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> core::fmt::Debug for WidgetInteractionEntry<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WidgetInteractionEntry")
+            .field("hovering", &self.hovering)
+            .field("handles", &self.handles)
+            .field("owner", &self.owner)
+            .finish()
+    }
+}
+
+impl<E: crate::text::TextEngine> Default for InteractionEngine<E> {
+    fn default() -> Self {
+        Self {
+            states: BTreeMap::default(),
+            active: BTreeSet::default(),
+            reported: BTreeMap::default(),
+            selected_claims: BTreeMap::default(),
+            report_claims: BTreeSet::default(),
+            live_reports: BTreeMap::default(),
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> core::fmt::Debug for InteractionEngine<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("InteractionEngine")
+            .field("states", &self.states)
+            .field("active", &self.active)
+            .field("reported", &self.reported)
+            .field("selected_claims", &self.selected_claims)
+            .field("report_claims", &self.report_claims)
+            .field("live_reports", &self.live_reports)
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{InteractionEngine, InteractionKey, WidgetInteractionInput};
@@ -585,7 +629,7 @@ mod tests {
     #[test]
     fn released_ripple_holds_full_size_while_fading_out() {
         let started = Instant::now();
-        let mut engine = InteractionEngine::default();
+        let mut engine = InteractionEngine::<crate::text::ParleyEngine>::default();
         let mut controller = AnimationController::default();
         let motion = motion();
         let bounds = kurbo::Rect::new(0.0, 0.0, 100.0, 40.0);
@@ -593,27 +637,28 @@ mod tests {
         let key = InteractionKey::for_rc(&owner, 0);
 
         let cell_owner = crate::renderer::mount::NodeCore::detached().cell;
-        let bind =
-            |engine: &mut InteractionEngine, controller: &mut AnimationController, now: Instant| {
-                engine.begin_rebuild_frame();
-                controller.begin_rebuild_frame();
-                let bound = engine.bind_widget_state(
-                    &key,
-                    WidgetInteractionInput {
-                        bounds,
-                        hovered: false,
-                        focus: None,
-                        disabled: false,
-                    },
-                    &motion,
-                    controller,
-                    now,
-                    &cell_owner,
-                );
-                controller.finish_rebuild_frame_with_inactive_slot_retention(false);
-                engine.finish_rebuild_frame();
-                bound
-            };
+        let bind = |engine: &mut InteractionEngine<crate::text::ParleyEngine>,
+                    controller: &mut AnimationController,
+                    now: Instant| {
+            engine.begin_rebuild_frame();
+            controller.begin_rebuild_frame();
+            let bound = engine.bind_widget_state(
+                &key,
+                WidgetInteractionInput {
+                    bounds,
+                    hovered: false,
+                    focus: None,
+                    disabled: false,
+                },
+                &motion,
+                controller,
+                now,
+                &cell_owner,
+            );
+            controller.finish_rebuild_frame_with_inactive_slot_retention(false);
+            engine.finish_rebuild_frame();
+            bound
+        };
 
         let (_, slot, _) = bind(&mut engine, &mut controller, started);
         engine.begin_press(&slot, kurbo::Point::new(10.0, 10.0), None, started);
@@ -651,7 +696,7 @@ mod tests {
     #[test]
     fn rapid_represses_overlap_independent_waves() {
         let started = Instant::now();
-        let mut engine = InteractionEngine::default();
+        let mut engine = InteractionEngine::<crate::text::ParleyEngine>::default();
         let mut controller = AnimationController::default();
         let motion = motion();
         let bounds = kurbo::Rect::new(0.0, 0.0, 100.0, 40.0);
@@ -659,27 +704,28 @@ mod tests {
         let key = InteractionKey::for_rc(&owner, 0);
 
         let cell_owner = crate::renderer::mount::NodeCore::detached().cell;
-        let bind =
-            |engine: &mut InteractionEngine, controller: &mut AnimationController, now: Instant| {
-                engine.begin_rebuild_frame();
-                controller.begin_rebuild_frame();
-                let bound = engine.bind_widget_state(
-                    &key,
-                    WidgetInteractionInput {
-                        bounds,
-                        hovered: false,
-                        focus: None,
-                        disabled: false,
-                    },
-                    &motion,
-                    controller,
-                    now,
-                    &cell_owner,
-                );
-                controller.finish_rebuild_frame_with_inactive_slot_retention(false);
-                engine.finish_rebuild_frame();
-                bound
-            };
+        let bind = |engine: &mut InteractionEngine<crate::text::ParleyEngine>,
+                    controller: &mut AnimationController,
+                    now: Instant| {
+            engine.begin_rebuild_frame();
+            controller.begin_rebuild_frame();
+            let bound = engine.bind_widget_state(
+                &key,
+                WidgetInteractionInput {
+                    bounds,
+                    hovered: false,
+                    focus: None,
+                    disabled: false,
+                },
+                &motion,
+                controller,
+                now,
+                &cell_owner,
+            );
+            controller.finish_rebuild_frame_with_inactive_slot_retention(false);
+            engine.finish_rebuild_frame();
+            bound
+        };
 
         let (_, slot, _) = bind(&mut engine, &mut controller, started);
         engine.begin_press(&slot, kurbo::Point::new(10.0, 10.0), None, started);
@@ -734,7 +780,7 @@ mod tests {
     #[test]
     fn disabled_widget_drops_press_and_hover_and_samples_at_rest() {
         let started = Instant::now();
-        let mut engine = InteractionEngine::default();
+        let mut engine = InteractionEngine::<crate::text::ParleyEngine>::default();
         let mut controller = AnimationController::default();
         let motion = motion();
         let bounds = kurbo::Rect::new(0.0, 0.0, 100.0, 40.0);
@@ -742,7 +788,7 @@ mod tests {
         let key = InteractionKey::for_rc(&owner, 0);
 
         let cell_owner = crate::renderer::mount::NodeCore::detached().cell;
-        let bind = |engine: &mut InteractionEngine,
+        let bind = |engine: &mut InteractionEngine<crate::text::ParleyEngine>,
                     controller: &mut AnimationController,
                     now: Instant,
                     hovered: bool,

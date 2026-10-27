@@ -50,6 +50,32 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     val platformViewRegistry: PlatformViewRegistry =
         PlatformViewRegistry(context, session, this)
 
+    /**
+     * Installs (or, with `null`, removes) the painter whose entries draw in
+     * session order, interleaved with the platform views inside the overlay
+     * container's `dispatchDraw`. The GPU path never installs one.
+     */
+    fun setOrderedContent(content: OrderedContent?) {
+        platformViewRegistry.setOrderedContent(content)
+    }
+
+    /**
+     * Invalidates the registry's container — the view that actually draws
+     * the ordered content in `dispatchDraw`, so its cached display list
+     * re-records. Invalidating the host itself would not reach it.
+     */
+    fun invalidateContent() {
+        platformViewRegistry.container.invalidate()
+    }
+
+    /**
+     * The retained tree's platform view under host pixel (`x`, `y`) — the
+     * HWUI painter's ordered hit test; `null` means content or nothing.
+     */
+    fun platformViewAt(x: Float, y: Float): Long? =
+        checkNotNull(session) { "hydrolysis: platformViewAt needs a bound session" }
+            .platformViewAt(x, y)
+
     private val accessibilityProvider: HydrolysisAccessibilityProvider =
         HydrolysisAccessibilityProvider(this, session)
     private val autofillBridge: AutofillBridge =
@@ -373,7 +399,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         for (i in 0 until childCount) {
             getChildAt(i).layout(0, 0, r - l, b - t)
         }
-        platformViewRegistry.publishIfPending()
+        session?.requestPlacementPull()
     }
 
     // ------------------------------------------------------------------
@@ -706,11 +732,6 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
 
     internal fun notifyAccessibilityTreeChanged(diffJson: String) {
         accessibilityProvider.notifyTreeChanged(diffJson)
-    }
-
-    /** The session pushed a new placement set — pull and apply it. */
-    internal fun notifyPlatformViewsChanged() {
-        platformViewRegistry.notifyChanged()
     }
 
     /** Each a11y publish also drives the autofill enter/exit diff. */

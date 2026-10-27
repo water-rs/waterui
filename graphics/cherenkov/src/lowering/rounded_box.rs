@@ -88,9 +88,6 @@ pub fn encloses_nothing(shape: &ShapeData) -> bool {
 /// is a box whose corners are its quarter arcs.
 #[must_use]
 pub fn box_form(shape: &ShapeData) -> BoxForm {
-    if encloses_nothing(shape) {
-        return BoxForm::Empty;
-    }
     let (extra, shape) = match shape {
         ShapeData::Rect(r) => (
             Affine::translate(r.center().to_vec2()),
@@ -123,6 +120,9 @@ pub fn box_form(shape: &ShapeData) -> BoxForm {
             )
         }
         ShapeData::Circle(c) => {
+            if c.radius <= 0.0 {
+                return BoxForm::Empty;
+            }
             let r = f32_f64(c.radius);
             (
                 Affine::translate(c.center.to_vec2()),
@@ -135,10 +135,13 @@ pub fn box_form(shape: &ShapeData) -> BoxForm {
             )
         }
         ShapeData::Ellipse(e) => {
-            let radii = e.radii();
+            let (radii, rotation) = e.radii_and_rotation();
             let (a, b) = (radii.x, radii.y);
+            if a <= 0.0 || b <= 0.0 {
+                return BoxForm::Empty;
+            }
             (
-                Affine::translate(e.center().to_vec2()) * Affine::rotate(e.rotation()),
+                Affine::translate(e.center().to_vec2()) * Affine::rotate(rotation),
                 RoundedBox {
                     half: [f32_f64(a), f32_f64(b)],
                     aspect: f32_f64(b / a),
@@ -147,7 +150,7 @@ pub fn box_form(shape: &ShapeData) -> BoxForm {
                 },
             )
         }
-        ShapeData::Line(_) => unreachable!("a line encloses nothing"),
+        ShapeData::Line(_) => return BoxForm::Empty,
         ShapeData::Path { .. } => return BoxForm::Path,
     };
     BoxForm::Box { extra, shape }

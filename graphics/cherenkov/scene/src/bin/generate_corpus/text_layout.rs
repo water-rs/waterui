@@ -17,7 +17,6 @@ use cherenkov_scene::{
     TextDecoration, TextSource, TextSpan,
 };
 use parley::PositionedLayoutItem;
-use read_fonts::types::F2Dot14;
 use skrifa::MetadataProvider;
 
 use crate::{Corpus, TextContext};
@@ -122,10 +121,10 @@ fn scene_run(
             .normalized_coords()
             .iter()
             .enumerate()
-            .filter(|(_, v)| **v != 0)
+            .filter(|(_, v)| v.to_bits() != 0)
             .map(|(i, v)| NormalizedCoord {
                 tag: axes[i].clone(),
-                value: F2Dot14::from_bits(*v).to_f32(),
+                value: v.to_f32(),
             })
             .collect(),
         glyphs: glyph_run
@@ -197,7 +196,7 @@ fn text_layer(l: &mut LayerBuilder, ctx: &TextContext, source: TextSource) {
                 run.synthesis().embolden(),
             ));
             let style = glyph_run.style();
-            let metrics = run.metrics();
+            let metrics = run.font_metrics();
             let start = glyph_run.offset();
             let end = start + glyph_run.advance();
             if let Some(underline) = &style.underline {

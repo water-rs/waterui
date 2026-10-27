@@ -3,8 +3,7 @@
 use super::*;
 
 pub use crate::text::{
-    FontFamilyResolution, ResolvedTextLayoutInput, SessionTextEngine, SessionTextLayout, TailMark,
-    TextService, resolve_text_layout_input,
+    FontFamilyResolution, ResolvedTextLayoutInput, TailMark, TextService, resolve_text_layout_input,
 };
 
 mod compositor;

@@ -1565,7 +1565,8 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let limits = crate::ImageLimits {
             max_dimension: 4,
-            max_texels: 16,
+            max_bytes: 16 * 4,
+            ..crate::ImageLimits::UNLIMITED
         };
         let engine = Engine::<Null>::new(NullConfig {
             events: tx,
@@ -1620,16 +1621,17 @@ mod tests {
 
     /// Registered images share the image budget, decided on the calling
     /// thread: a registration or a growing replacement that would take
-    /// the live images past `max_texels` fails with `OverBudget`, queues
+    /// the live images past `max_bytes` fails with `OverBudget`, queues
     /// nothing and keeps the previous pixels; a shrinking replacement
-    /// and the last handle's drop return texels, and a clone holds none
+    /// and the last handle's drop return bytes, and a clone holds none
     /// of its own.
     #[test]
     fn registered_images_share_the_image_budget() {
         let (tx, rx) = std::sync::mpsc::channel();
         let limits = crate::ImageLimits {
             max_dimension: 4,
-            max_texels: 16,
+            max_bytes: 16 * 4,
+            ..crate::ImageLimits::UNLIMITED
         };
         let engine = Engine::<Null>::new(NullConfig {
             events: tx,
@@ -1662,11 +1664,11 @@ mod tests {
         a.replace(image(4, 1)).expect("shrink");
         let c = engine.image(image(2, 2)).expect("c");
         // A growing replacement is admitted in place of its own pixels:
-        // 12 texels beside a and c's 8 do not fit.
-        assert_eq!(over(b.replace(image(4, 3))), (4, 3, 8));
+        // 48 bytes beside a and c's 32 do not fit.
+        assert_eq!(over(b.replace(image(4, 3))), (4, 3, 32));
         // A clone holds nothing of its own: dropping it returns nothing.
         drop(a.clone());
-        assert_eq!(over(b.replace(image(4, 3))), (4, 3, 8));
+        assert_eq!(over(b.replace(image(4, 3))), (4, 3, 32));
         // The last handle's drop does.
         drop(a);
         b.replace(image(4, 3)).expect("grow");

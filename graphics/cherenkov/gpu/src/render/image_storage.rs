@@ -20,6 +20,20 @@ const SRGB_PRIMARIES: u32 = 1 << 15;
 /// texel's 8-bit code.
 const TRANSFER_TABLE: u32 = 1 << 16;
 
+/// Range guaranteed by source encoding, without scanning texture contents.
+/// A premultiplied source can carry extended straight values after division
+/// by alpha, even when its stored components are UNORM.
+pub(super) const fn output_range(flags: u32) -> super::present::ColorRange {
+    use super::present::ColorRange;
+    if flags & SOURCE == 0 || flags & PREMULTIPLIED != 0 {
+        ColorRange::HighDynamicRange
+    } else if flags & SRGB_PRIMARIES != 0 {
+        ColorRange::Standard
+    } else {
+        ColorRange::WideGamut
+    }
+}
+
 /// The sRGB transfer decode of every 8-bit code, as the shader's
 /// `image_decode` binding holds it.
 ///
@@ -258,6 +272,16 @@ fn decode(image: &ImageUpload) -> Result<Vec<u8>, ResourceError> {
         .collect())
 }
 
+/// The same device feature selection used by uploads, reported before registration.
+pub(super) const fn limits(features: wgpu::Features) -> cherenkov::ImageStorage {
+    cherenkov::ImageStorage {
+        astc4x4: features.contains(wgpu::Features::TEXTURE_COMPRESSION_ASTC),
+        etc2: features.contains(wgpu::Features::TEXTURE_COMPRESSION_ETC2),
+        bc7: features.contains(wgpu::Features::TEXTURE_COMPRESSION_BC),
+        ..cherenkov::ImageStorage::GPU
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,6 +428,11 @@ mod tests {
             assert!(!native.format.is_srgb());
             assert_eq!(storage_bytes(native.format, 3, 2), 16);
             assert_eq!(storage_bytes(native.format, 5, 7), 64);
+            assert_eq!(limits(COMPRESSION_FEATURES).bytes(5, 7, format), 64);
+            assert_eq!(
+                limits(wgpu::Features::empty()).bytes(5, 7, format),
+                5 * 7 * 4
+            );
             let decoded = Upload::new(&source, wgpu::Features::empty()).unwrap();
             assert!(matches!(decoded.bytes, Cow::Owned(_)));
             // Every decoded texel is an 8-bit code; natively, ASTC's UNORM

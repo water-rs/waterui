@@ -179,14 +179,14 @@ impl DialogStack {
 /// the environment the card presents in — extended with the modal scope —
 /// and the retained layer content. Only the dialog the [`DialogStack`] puts
 /// in front registers.
-pub struct RegisteredDialog {
+pub struct RegisteredDialog<E: crate::text::TextEngine> {
     /// The environment the card is built and flushed in: the node's
     /// environment plus the `ModalInteraction` scope that makes the layer
     /// modal — its targets modal-flagged, Escape routed to the cancel path.
     pub(crate) env: Environment,
     /// The retained layer content — the dialog's scrim-plus-card body —
     /// shared with the effect so it survives across frames.
-    pub(crate) content: Rc<RefCell<RetainedSubview>>,
+    pub(crate) content: Rc<RefCell<RetainedSubview<E>>>,
 }
 
 /// The environment a dialog's layer content presents in: the declaring
@@ -203,7 +203,7 @@ pub fn dialog_modal_environment(env: &Environment, dialog: &Dialog) -> Environme
         .extending(DialogLayerScope)
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Draws the front `.dialog(...)` registration into the modal layer.
     /// Registered by that node's flush; drawn after the tree flush returns,
     /// so nothing the window flushed can stack above the scrim. The layer

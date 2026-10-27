@@ -467,12 +467,9 @@ impl Clone for ShaderEffect {
 
 /// Builds the pipeline running `module` for `ctx`'s device and formats.
 /// `samples_input` says whether `main` reads `input_sampler`.
-#[cfg_attr(
-    target_arch = "wasm32",
-    allow(
-        clippy::future_not_send,
-        reason = "setup runs on the page's event loop; wgpu handles' Send bound varies with Cargo feature unification"
-    )
+#[expect(
+    clippy::future_not_send,
+    reason = "the context carries the device-bound pipeline cache, which setup shares on the GPU host thread"
 )]
 async fn build(
     module: &naga::Module,
@@ -534,7 +531,7 @@ async fn build(
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: ctx.pipelines.driver(),
         });
     if let Some(error) = error_scope.pop().await {
         return Err(EffectSetupError::PipelineValidation {
@@ -659,12 +656,9 @@ impl Effect for ShaderEffect {
         self.animator.install_redraw_callback(callback);
     }
 
-    #[cfg_attr(
-        target_arch = "wasm32",
-        allow(
-            clippy::future_not_send,
-            reason = "setup runs on the page's event loop; wgpu handles' Send bound varies with Cargo feature unification"
-        )
+    #[expect(
+        clippy::future_not_send,
+        reason = "the context carries the device-bound pipeline cache, which setup shares on the GPU host thread"
     )]
     async fn setup(&mut self, ctx: &EffectContext<'_>) -> EffectSetupResult {
         match build(&self.module, self.samples_input, ctx).await {

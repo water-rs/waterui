@@ -94,9 +94,9 @@ impl PlatformViewRenderState {
     }
 }
 
-impl HydroNativeView for Native<PlatformView> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<PlatformView> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -105,7 +105,7 @@ impl HydroNativeView for Native<PlatformView> {
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -117,10 +117,10 @@ impl HydroNativeView for Native<PlatformView> {
 
 /// Measures a platform-view leaf: it fills the proposal — the mounted child
 /// takes whatever the layout assigned.
-pub fn measure_platform_view_node(
+pub fn measure_platform_view_node<E: crate::text::TextEngine>(
     state: &PlatformViewRenderState,
     proposal: ProposalSize,
-    hydro: &mut HydroState,
+    hydro: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -133,8 +133,8 @@ pub fn measure_platform_view_node(
 /// paint order the host stacks embedded children by. The sink republishes the
 /// set once the frame's encode completes, so a frame that never re-flushes
 /// keeps the previous placements.
-pub fn render_platform_view_node(
-    ctx: &mut WidgetRenderContext<'_>,
+pub fn render_platform_view_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<PlatformViewRenderState>>,
     env: &Environment,
 ) {

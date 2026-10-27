@@ -1107,7 +1107,8 @@ fn delayed_timeline_signal_stays_on_gpu() {
     // The wait point is genuinely unsignalled when this render runs:
     // nothing on the host signals it, so a CPU-waiting engine could not
     // return here at all — and any signal would raise the counter below.
-    assert!(matches!(engine.render(FrameTime::now()), Ok(Next::Idle)));
+    let next = engine.render(FrameTime::now());
+    assert!(matches!(next, Ok(Next::Idle)), "render returned {next:?}");
     // SAFETY: `semaphore` is a live timeline semaphore created above on
     // `dev` — a pure query.
     let counter = unsafe { dev.get_semaphore_counter_value(semaphore) }.expect("semaphore counter");
@@ -1134,7 +1135,8 @@ fn delayed_timeline_signal_stays_on_gpu() {
     // The frame lives on the producer: the last clone's drop retires it.
     drop(surface);
     drop(video);
-    assert!(matches!(engine.render(FrameTime::now()), Ok(Next::Idle)));
+    let next = engine.render(FrameTime::now());
+    assert!(matches!(next, Ok(Next::Idle)), "render returned {next:?}");
     // SAFETY: `semaphore` is live; the call only waits on it with a
     // timeout.
     let released = unsafe {
@@ -1277,6 +1279,9 @@ fn binary_state_machine_acquired_once() {
     };
     let (dev, _, family) = raw(&shared);
     let generation = rgb_generation(&shared, &device, rgb, (8, 8), None, None);
+    // A frame reaches `stage_acquire` only through an installed slot,
+    // which holds an engine lease until it is uninstalled.
+    generation.lease();
     // SAFETY: `dev` is live and `family` is the engine's queue family.
     let pool = unsafe {
         dev.create_command_pool(
@@ -1337,6 +1342,7 @@ fn binary_state_machine_acquired_once() {
     vulkan::cancel_staged(&mut native);
     // SAFETY: `cb` was never submitted and `pool` is destroyed once.
     unsafe { dev.destroy_command_pool(pool, None) };
+    generation.unlease();
 }
 
 #[test]
@@ -1437,6 +1443,9 @@ fn plan_cancellation_restores_the_frame() {
         }),
         None,
     );
+    // A frame reaches `stage_acquire` only through an installed slot,
+    // which holds an engine lease until it is uninstalled.
+    generation.lease();
     // Stage an acquire into a scratch context through the engine's own
     // path: `stage_acquire` is the unit a cancelled encode unwinds. The
     // barrier is recorded into a real buffer the submission never sees.
@@ -1494,6 +1503,7 @@ fn plan_cancellation_restores_the_frame() {
     // SAFETY: the semaphore was never submitted to a queue — no command
     // references it, so destroying it is safe and happens exactly once.
     unsafe { dev.destroy_semaphore(semaphore, None) };
+    generation.unlease();
 }
 
 /// A lease that ends between `stage_acquire` and `mark_submitted` — the

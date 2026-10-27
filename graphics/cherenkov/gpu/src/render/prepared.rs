@@ -599,12 +599,9 @@ impl OutlineRef<'_> {
     pub fn build(self, tolerance: f64) -> kurbo::BezPath {
         match self {
             Self::Fill { elements, .. } => kurbo::BezPath::from_vec(elements.to_vec()),
-            Self::Stroke { shape, stroke } => kurbo::stroke(
-                path::shape_path(shape, tolerance),
-                stroke,
-                &kurbo::StrokeOpts::default(),
-                tolerance,
-            ),
+            Self::Stroke { shape, stroke } => {
+                cherenkov_stroke::stroke(path::shape_path(shape, tolerance), stroke, tolerance)
+            }
         }
     }
 }
@@ -702,6 +699,8 @@ pub enum Op {
         local: Affine,
         /// The run, minus its COLR glyphs.
         run: GlyphSource,
+        /// Conservative local outline bounds, independent of device placement.
+        bounds: Rect,
         /// The resolved paint (identity local space).
         paint: ResolvedPaint,
     },
@@ -957,6 +956,7 @@ impl Lowerer<'_> {
         ops: &mut Vec<Op>,
         source: Option<usize>,
     ) -> Result<(), RenderError> {
+        cherenkov::lowering::check_dashes(stroke)?;
         let hw = stroke.width / 2.0;
         let general = match shape {
             ShapeData::Path { .. } => true,
@@ -972,7 +972,7 @@ impl Lowerer<'_> {
                 local: ambient,
                 rule: FillRule::NonZero,
                 gpu_candidate: matches!(shape, ShapeData::Path { elements, .. }
-                    if elements.len() >= path::GPU_ROUTE_MIN_ELEMENTS),
+                    if path::stroke_gpu_candidate(elements.len(), stroke)),
                 outline: source.map_or_else(
                     || Outline::Stroke {
                         shape: shape.clone(),
@@ -1071,7 +1071,15 @@ impl Lowerer<'_> {
             return Ok(());
         }
         let mid = line.p0 + d * 0.5;
-        let extra = Affine::translate(mid.to_vec2()) * Affine::rotate(d.y.atan2(d.x));
+        let direction = d / len;
+        let extra = Affine::new([
+            direction.x,
+            direction.y,
+            -direction.y,
+            direction.x,
+            mid.x,
+            mid.y,
+        ]);
         let half = match stroke.start_cap {
             kurbo::Cap::Butt => [f32_f64(len / 2.0), f32_f64(hw)],
             _ => [f32_f64(len / 2.0 + hw), f32_f64(hw)],
@@ -1200,6 +1208,7 @@ impl Lowerer<'_> {
             if !run.glyphs.is_empty() {
                 ops.push(Op::Glyphs {
                     local: ambient,
+                    bounds: super::glyph::run_bounds(font, run)?,
                     run: source.map_or_else(
                         || GlyphSource::Run(run.clone()),
                         |index| GlyphSource::Command {
@@ -1255,21 +1264,25 @@ impl Lowerer<'_> {
         run: &GlyphRun,
         pending: &mut Vec<cherenkov::Glyph>,
         paint: ResolvedPaint,
-    ) {
+        font: &FontData,
+    ) -> Result<(), RenderError> {
         if pending.is_empty() {
-            return;
+            return Ok(());
         }
+        let run = GlyphRun {
+            font: run.font,
+            size: run.size,
+            coords: run.coords.clone(),
+            glyphs: std::mem::take(pending).into(),
+            style: run.style.clone(),
+        };
         ops.push(Op::Glyphs {
             local: ambient,
-            run: GlyphSource::Run(GlyphRun {
-                font: run.font,
-                size: run.size,
-                coords: run.coords.clone(),
-                glyphs: std::mem::take(pending).into(),
-                style: run.style.clone(),
-            }),
+            bounds: super::glyph::run_bounds(font, &run)?,
+            run: GlyphSource::Run(run),
             paint,
         });
+        Ok(())
     }
 
     #[inline(never)]
@@ -1305,7 +1318,7 @@ impl Lowerer<'_> {
             if let Some(color_glyphs) = color_glyphs.as_ref()
                 && color_glyphs.get(skrifa::GlyphId::new(glyph.id)).is_some()
             {
-                Self::push_pending(ops, ambient, run, &mut pending, resolved.clone());
+                Self::push_pending(ops, ambient, run, &mut pending, resolved.clone(), font)?;
                 let picture = crate::render::colr::glyph_picture(
                     font,
                     run.font.raw(),
@@ -1366,7 +1379,7 @@ impl Lowerer<'_> {
             if path.elements().is_empty() {
                 continue;
             }
-            Self::push_pending(ops, ambient, run, &mut pending, resolved.clone());
+            Self::push_pending(ops, ambient, run, &mut pending, resolved.clone(), font)?;
             self.fill(
                 ambient,
                 &ShapeData::Path {
@@ -1378,7 +1391,7 @@ impl Lowerer<'_> {
                 None,
             )?;
         }
-        Self::push_pending(ops, ambient, run, &mut pending, resolved);
+        Self::push_pending(ops, ambient, run, &mut pending, resolved, font)?;
         Ok(())
     }
 }
@@ -1402,4 +1415,97 @@ fn clip_shape(shape: &ShapeData) -> Result<ClipShape, RenderError> {
             _ => None,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use cherenkov::WorkingColor;
+    use cherenkov::kurbo::Ellipse;
+
+    use super::*;
+
+    /// `stroke` against empty registries, as `draw` dispatches a
+    /// `Command::Stroke`.
+    fn lower_stroke(shape: &ShapeData, stroke: &kurbo::Stroke) -> Result<(), RenderError> {
+        let (mut pending, fonts, images) = (Vec::new(), FxHashMap::default(), FxHashMap::default());
+        let lowerer = Lowerer {
+            pending: &mut pending,
+            fonts: &fonts,
+            images: &images,
+        };
+        let mut ops = Vec::new();
+        lowerer.stroke(
+            Affine::IDENTITY,
+            shape,
+            stroke,
+            &Paint::Solid(WorkingColor::WHITE),
+            &mut ops,
+            None,
+        )
+    }
+
+    /// One shape per route `stroke` selects: the general outline path, the
+    /// line box path, and the offset and distance analytic strokes.
+    fn route_shapes() -> [ShapeData; 4] {
+        let mut path = kurbo::BezPath::new();
+        path.move_to((4.0, 4.0));
+        path.line_to((12.0, 12.0));
+        [
+            ShapeData::Path {
+                elements: path.into_elements().into(),
+                rule: FillRule::NonZero,
+            },
+            ShapeData::Line(Line::new((0.0, 0.0), (8.0, 0.0))),
+            ShapeData::Rect(Rect::new(0.0, 0.0, 8.0, 8.0)),
+            ShapeData::Ellipse(Ellipse::new((4.0, 4.0), (8.0, 3.0), 0.0)),
+        ]
+    }
+
+    /// A negative or non-finite dash entry is rejected before the lowering
+    /// picks a route, so every shape reports the same error.
+    #[test]
+    fn a_negative_or_nonfinite_dash_entry_errors_on_every_route() {
+        for entry in [-1.0, f64::NEG_INFINITY, f64::NAN, f64::INFINITY] {
+            let mut stroke = kurbo::Stroke::new(2.0);
+            stroke.dash_pattern.extend([4.0, entry]);
+            for shape in route_shapes() {
+                assert!(
+                    matches!(lower_stroke(&shape, &stroke), Err(RenderError::Render(_))),
+                    "dash entry {entry} on {shape:?}"
+                );
+            }
+        }
+    }
+
+    /// A dash pattern whose entries sum to zero is rejected on every
+    /// route.
+    #[test]
+    fn a_dash_pattern_summing_to_zero_errors_on_every_route() {
+        let mut stroke = kurbo::Stroke::new(2.0);
+        stroke.dash_pattern.extend([0.0, 0.0]);
+        for shape in route_shapes() {
+            assert!(
+                matches!(lower_stroke(&shape, &stroke), Err(RenderError::Render(_))),
+                "zero-sum pattern on {shape:?}"
+            );
+        }
+    }
+
+    /// A non-finite dash offset is rejected on every route, dashed or not.
+    #[test]
+    fn a_nonfinite_dash_offset_errors_on_every_route() {
+        for offset in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for pattern in [Vec::new(), vec![4.0, 2.0]] {
+                let mut stroke = kurbo::Stroke::new(2.0);
+                stroke.dash_offset = offset;
+                stroke.dash_pattern.extend(pattern.iter().copied());
+                for shape in route_shapes() {
+                    assert!(
+                        matches!(lower_stroke(&shape, &stroke), Err(RenderError::Render(_))),
+                        "dash offset {offset}, {pattern:?} on {shape:?}"
+                    );
+                }
+            }
+        }
+    }
 }

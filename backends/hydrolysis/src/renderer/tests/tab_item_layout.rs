@@ -4,38 +4,46 @@
 
 use super::*;
 use crate::theme::TabItemLayout;
-use waterui_core::id::Id;
-
+use waterui_core::views::{SharedAnyViews, ViewSnapshot as _};
 use waterui_navigation::tab::{Tab, TabsLayout, tab_style};
 
 fn tabs_view(count: usize) -> TabsLayout {
-    let selection = Binding::container(Id::try_from(1).expect("non-zero tab id"));
-    let tabs = (1..=count)
-        .map(|i| {
-            let id = Id::try_from(crate::num_cast::usize_as_i32(i)).expect("non-zero tab id");
-            Tab::new(id, format!("Tab {i}"), move || {
-                NavigationView::new(format!("Pane {i}"), text!("pane"))
+    let tabs = SharedAnyViews::new(
+        (1..=count)
+            .map(|i| {
+                Tab::new(format!("Tab {i}"), move || {
+                    NavigationView::new(format!("Pane {i}"), text!("pane"))
+                })
             })
-        })
-        .collect();
+            .collect::<Vec<_>>(),
+    );
+    let selection = Binding::container(
+        tabs.snapshot()
+            .get_id(0)
+            .expect("a non-empty tab set reports an id"),
+    );
     TabsLayout::new(selection, tabs)
 }
 
 /// Tabs whose items carry a text icon beside the title, so the item's
 /// content extent is icon + spacing + label exactly.
 fn icon_tabs_view(count: usize, icon: &str) -> TabsLayout {
-    let selection = Binding::container(Id::try_from(1).expect("non-zero tab id"));
     let icon = icon.to_owned();
-    let tabs = (1..=count)
-        .map(|i| {
-            let id = Id::try_from(crate::num_cast::usize_as_i32(i)).expect("non-zero tab id");
-            Tab::new(
-                id,
-                label(format!("Tab {i}")).icon(text(icon.clone())),
-                move || NavigationView::new(format!("Pane {i}"), text!("pane")),
-            )
-        })
-        .collect();
+    let tabs = SharedAnyViews::new(
+        (1..=count)
+            .map(|i| {
+                Tab::new(
+                    label(format!("Tab {i}")).icon(text(icon.clone())),
+                    move || NavigationView::new(format!("Pane {i}"), text!("pane")),
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+    let selection = Binding::container(
+        tabs.snapshot()
+            .get_id(0)
+            .expect("a non-empty tab set reports an id"),
+    );
     TabsLayout::new(selection, tabs)
 }
 
@@ -45,7 +53,11 @@ fn sidebar_tabs_view(count: usize) -> TabsLayout {
 
 /// Intrinsic width of a plain-text view, measured the same way the
 /// renderer measures a tab's icon or label.
-fn measure_plain(renderer: &mut HydrolysisRenderer, env: &Environment, s: &str) -> f64 {
+fn measure_plain<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    env: &Environment,
+    s: &str,
+) -> f64 {
     f64::from(
         HydrolysisRenderer::measure_text_intrinsic_size(
             renderer.state_mut(),

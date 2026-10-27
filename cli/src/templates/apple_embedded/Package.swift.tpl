@@ -6,10 +6,10 @@ let package = Package(
     platforms: [.macOS("{{ macos }}"), .iOS("{{ ios }}")],
     products: [.library(name: "WaterUI", targets: ["WaterUI"])],
     targets: [
-        .binaryTarget(name: "WaterUINative", path: "WaterUINative.xcframework"),
+        .binaryTarget(name: "WaterUIBridge", path: "WaterUINative.xcframework"),
         .target(
             name: "WaterUI",
-            dependencies: ["WaterUINative"],
+            dependencies: ["WaterUIBridge"],
             resources: [.copy("Resources/waterui_assets"), .copy("Resources/fonts"), .copy("Resources/Notices")],
             swiftSettings: [
                 .enableExperimentalFeature("Extern"),

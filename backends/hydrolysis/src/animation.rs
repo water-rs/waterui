@@ -11,6 +11,8 @@
 //! choreography (inner dot scale/opacity plus outer ring color), and
 //! free-running repeating/timeline phases for indeterminate indicators.
 
+use cherenkov::RefreshRange;
+use cherenkov_record::tree::RATE_FAST;
 use core::time::Duration;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -102,6 +104,7 @@ struct AnimatedScalarState {
     track: AnimationTrack<f32>,
     active_target: Option<f32>,
     last_tick: Instant,
+    refresh: RefreshRange,
 }
 
 #[derive(Debug)]
@@ -111,6 +114,16 @@ struct AnimatedRadioIndicatorState {
     inner_opacity: AnimationTrack<f32>,
     outer_color: AnimationTrack<f32>,
     last_tick: Instant,
+}
+
+/// Whether a repeat-forever animation counts as running work in a
+/// quiescence query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerpetualAnimation {
+    /// It counts: the query asks whether anything is still animating.
+    Counts,
+    /// It does not: the query asks whether anything will finish.
+    Ignored,
 }
 
 #[derive(Debug)]
@@ -221,6 +234,7 @@ impl AnimationController {
         key: AnimationKey,
         observed_value: f32,
         now: Instant,
+        refresh: RefreshRange,
     ) -> AnimatedScalarHandle {
         assert!(
             key.scope == AnimationKeyScope::RendererLocalScalar,
@@ -233,7 +247,11 @@ impl AnimationController {
         });
 
         let state = Rc::clone(&slot.state);
-        let generation = state.borrow_mut().prepare_generation(observed_value);
+        let generation = {
+            let mut slot = state.borrow_mut();
+            slot.refresh = refresh;
+            slot.prepare_generation(observed_value)
+        };
         AnimatedScalarHandle { state, generation }
     }
 
@@ -333,6 +351,14 @@ impl AnimationController {
     /// scheduled).
     #[must_use]
     pub fn has_active(&self, now: Instant) -> bool {
+        self.has_finite_active(now) || self.repeating_slots.values().any(|slot| slot.repeat)
+    }
+
+    /// Like [`has_active`](Self::has_active), but ignoring repeat-forever
+    /// timeline slots: whether any animation is running that will finish on
+    /// its own.
+    #[must_use]
+    pub fn has_finite_active(&self, now: Instant) -> bool {
         self.slots
             .values()
             .any(|slot| slot.state.borrow().is_active())
@@ -341,7 +367,33 @@ impl AnimationController {
                 .values()
                 .any(|slot| slot.state.borrow().is_active())
             || self.repeating_slots.values().any(|slot| {
+                !slot.repeat && now.saturating_duration_since(slot.started_at) < slot.cycle
+            })
+    }
+
+    /// The range needed by currently running content, independent of how
+    /// often the host happens to sample it.
+    #[cfg(any(target_os = "android", test))]
+    #[must_use]
+    pub fn refresh_range(&self, now: Instant) -> Option<RefreshRange> {
+        if self
+            .radio_indicator_slots
+            .values()
+            .any(|slot| slot.state.borrow().is_active())
+            || self.repeating_slots.values().any(|slot| {
                 slot.repeat || now.saturating_duration_since(slot.started_at) < slot.cycle
+            })
+        {
+            return Some(RATE_FAST);
+        }
+        self.slots
+            .values()
+            .filter_map(|slot| {
+                let state = slot.state.borrow();
+                state.is_active().then(|| state.refresh.clone())
+            })
+            .reduce(|left, right| {
+                (*left.start()).max(*right.start())..=(*left.end()).max(*right.end())
             })
     }
 
@@ -514,6 +566,7 @@ impl AnimatedScalarState {
             track: AnimationTrack::new(initial),
             active_target: None,
             last_tick: now,
+            refresh: RATE_FAST,
         }
     }
 
@@ -658,6 +711,7 @@ const fn approx_eq(a: f32, b: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use cherenkov_record::tree::{RATE_FAST, RATE_SLOW};
     use core::time::Duration;
     use std::time::Instant;
 
@@ -675,11 +729,38 @@ mod tests {
     }
 
     #[test]
+    fn mixed_animation_demand_returns_to_normal_after_motion_finishes() {
+        let mut controller = AnimationController::default();
+        let start = Instant::now();
+        let fade = controller.bind_scalar(scalar_key(1), 0.0, start, RATE_SLOW);
+        let motion = controller.bind_scalar(scalar_key(2), 0.0, start, RATE_FAST);
+        fade.apply_target(1.0, Some(Animation::linear(Duration::from_secs(1))), start);
+        assert_eq!(controller.refresh_range(start), Some(RATE_SLOW));
+        motion.apply_target(
+            1.0,
+            Some(Animation::linear(Duration::from_millis(100))),
+            start,
+        );
+        assert_eq!(controller.refresh_range(start), Some(RATE_FAST));
+        controller.tick(start + Duration::from_millis(200));
+        assert_eq!(
+            controller.refresh_range(start + Duration::from_millis(200)),
+            Some(RATE_SLOW)
+        );
+        controller.tick(start + Duration::from_secs(2));
+        assert_eq!(
+            controller.refresh_range(start + Duration::from_secs(2)),
+            None
+        );
+        assert_eq!(fade.sample(start + Duration::from_secs(2)), 1.0);
+    }
+
+    #[test]
     fn scalar_animation_advances_and_stops() {
         let mut controller = AnimationController::default();
         let start = Instant::now();
         controller.begin_rebuild_frame();
-        let handle = controller.bind_scalar(scalar_key(1), 0.0, start);
+        let handle = controller.bind_scalar(scalar_key(1), 0.0, start, RATE_FAST);
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         handle.apply_target(
@@ -702,11 +783,11 @@ mod tests {
         let mut controller = AnimationController::default();
         let start = Instant::now();
         controller.begin_rebuild_frame();
-        let stale = controller.bind_scalar(scalar_key(1), 0.0, start);
+        let stale = controller.bind_scalar(scalar_key(1), 0.0, start, RATE_FAST);
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         controller.begin_rebuild_frame();
-        let current = controller.bind_scalar(scalar_key(1), 0.0, start);
+        let current = controller.bind_scalar(scalar_key(1), 0.0, start, RATE_FAST);
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         stale.apply_target(1.0, None, start);
@@ -785,7 +866,7 @@ mod tests {
         let animation = Animation::ease_in_out(Duration::from_millis(120));
 
         controller.begin_rebuild_frame();
-        let handle = controller.bind_scalar(scalar_key(1), 0.0, start);
+        let handle = controller.bind_scalar(scalar_key(1), 0.0, start, RATE_FAST);
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
         handle.apply_target(1.0, Some(animation), start);
 
@@ -793,7 +874,7 @@ mod tests {
         controller.finish_rebuild_frame_with_inactive_slot_retention(true);
 
         controller.begin_rebuild_frame();
-        let rebound = controller.bind_scalar(scalar_key(1), 1.0, start);
+        let rebound = controller.bind_scalar(scalar_key(1), 1.0, start, RATE_FAST);
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         let mid = rebound.sample(start + Duration::from_millis(60));

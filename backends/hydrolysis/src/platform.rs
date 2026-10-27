@@ -7,41 +7,42 @@ use waterui::window::{Window as WuiWindow, WindowState};
 use waterui_graphics::gpu::RedrawHandle;
 
 /// The output request every Hydrolysis host surface is negotiated by:
-/// the engine's `select_output` resolves the best advertised (format,
-/// colour space) pair among the surface's offers — HDR where the display
-/// chain carries it — paced FIFO, with a transparency-capable composite
+/// the engine selects compact SDR storage and upgrades for HDR content
+/// where the display chain carries it, paced FIFO, with a transparency-capable composite
 /// alpha mode iff the window is transparent (#2445).
-#[cfg(any(hydrolysis_winit, target_os = "android"))]
+#[cfg(hydrolysis_winit)]
 pub const fn hydrolysis_output_request(transparent: bool) -> cherenkov_gpu::interop::OutputRequest {
     cherenkov_gpu::interop::OutputRequest {
         transparent,
-        color_space: cherenkov_gpu::interop::ColorSpaceRequest::Best,
+        color_space: cherenkov_gpu::interop::ColorSpaceRequest::Content,
         sync: cherenkov_gpu::DisplaySync::Synchronized,
     }
 }
 
 /// Negotiates the output of a host-configured window surface — the
-/// engine's `select_output` over the surface's advertised capabilities
+/// engine's `select_content_output` over the surface's advertised capabilities
 /// with [`hydrolysis_output_request`], the display's reported headroom
-/// sampled alongside (#2445). The winit (Linux, Windows) and Android
-/// hosts configure their swapchains from the result; the macOS host
+/// sampled alongside (#2445). The winit Linux and Windows hosts
+/// configure their swapchains from the result; the macOS host
 /// hands the same request to the engine's `WindowTarget` instead.
 ///
 /// # Errors
 /// [`cherenkov::SurfaceError::UnsupportedTarget`] when the surface
 /// advertises nothing the request admits; the error names the request
 /// and the offer.
-#[cfg(any(all(hydrolysis_winit, not(target_os = "macos")), target_os = "android"))]
+#[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
 pub fn negotiate_host_output(
     surface: &wgpu::Surface<'_>,
     adapter: &wgpu::Adapter,
     transparent: bool,
+    content_range: cherenkov_gpu::interop::ColorRange,
 ) -> Result<cherenkov_gpu::interop::OutputSelection, cherenkov::SurfaceError> {
     let caps = surface.get_capabilities(adapter);
-    let mut selection = cherenkov_gpu::interop::select_output(
+    let mut selection = cherenkov_gpu::interop::select_content_output(
         &caps,
         adapter.get_info().backend,
         hydrolysis_output_request(transparent),
+        content_range,
     )?;
     selection.reported_headroom = surface.display_hdr_info(adapter).tone_map_headroom();
     tracing::debug!(
@@ -127,6 +128,7 @@ fn poll_device(
 /// Metal and Vulkan (water-rs/cherenkov#57); adapters that lack it get the
 /// same hard `Engine::new` failure the engine documents. Normalized 16-bit
 /// textures feed HDR media paths wherever the adapter provides them.
+/// Indirect first instances enable the engine's optional GPU path coverage.
 #[must_use]
 pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Features {
     if cfg!(target_vendor = "apple") {
@@ -140,8 +142,11 @@ pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Featur
         );
     }
 
-    let mut required =
-        adapter_features & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS);
+    let mut required = adapter_features
+        & (wgpu::Features::PIPELINE_CACHE
+            | wgpu::Features::PASSTHROUGH_SHADERS
+            | wgpu::Features::SHADER_F16
+            | wgpu::Features::INDIRECT_FIRST_INSTANCE);
     if adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
         required |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
     }
@@ -1322,15 +1327,6 @@ pub enum SurfaceFrame {
         /// A view of `texture` to render into or read from.
         view: wgpu::TextureView,
     },
-    /// A platform surface frame presented through Android's `ANativeWindow`.
-    #[cfg(target_os = "android")]
-    Android {
-        /// The surface texture this frame was acquired into; presenting it
-        /// queues the frame for display.
-        output: wgpu::SurfaceTexture,
-        /// A view of `texture` to render into or read from.
-        view: wgpu::TextureView,
-    },
 }
 
 impl SurfaceFrame {
@@ -1341,8 +1337,6 @@ impl SurfaceFrame {
             Self::Offscreen { texture, .. } => texture,
             #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
             Self::Window { output, .. } => &output.texture,
-            #[cfg(target_os = "android")]
-            Self::Android { output, .. } => &output.texture,
         }
     }
 
@@ -1353,14 +1347,11 @@ impl SurfaceFrame {
             Self::Offscreen { view, .. } => view,
             #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
             Self::Window { view, .. } => view,
-            #[cfg(target_os = "android")]
-            Self::Android { view, .. } => view,
         }
     }
 }
 
-#[cfg(any(hydrolysis_winit, target_os = "android"))]
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
 pub fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,
 ) -> Result<wgpu::SurfaceTexture, SurfaceError> {
@@ -1422,6 +1413,8 @@ pub trait SurfaceProvider: PresentationSurface {
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError>;
     /// Presents an acquired frame to the surface.
     fn present(&mut self, frame: SurfaceFrame);
+    /// Updates content before acquiring a frame. Fixed-format targets keep their format.
+    fn set_content_range(&mut self, _range: cherenkov_gpu::interop::ColorRange) {}
     /// The surface's texture format.
     fn format(&self) -> wgpu::TextureFormat;
     /// The alpha convention the pixels written into this surface's textures
@@ -1457,12 +1450,29 @@ pub struct EngineWindowTarget<'a> {
     /// The window the engine presents on.
     pub(crate) window: &'a std::sync::Arc<winit::window::Window>,
     /// The window's engine surface and mount, owned by the window's surface.
-    pub(crate) window_slot:
-        &'a mut Option<crate::renderer::CherenkovWindow<crate::engine::WindowCherenkovSurface>>,
+    pub(crate) window_slot: &'a mut Option<
+        crate::renderer::CherenkovWindow<
+            crate::engine::WindowCherenkovSurface,
+            crate::text::ParleyEngine,
+        >,
+    >,
     /// Whether the window composites with what lies behind it.
     pub(crate) transparent: bool,
     /// Whether the window crossed displays since the previous frame.
     pub(crate) display_moved: bool,
+}
+
+/// Android's engine-presented window, owned by its `SurfaceView` attachment.
+#[cfg(target_os = "android")]
+pub struct EngineAndroidTarget<'a> {
+    pub state: &'a std::rc::Rc<crate::engine::SharedEngineState>,
+    pub window: &'a ndk::native_window::NativeWindow,
+    pub window_slot: &'a mut Option<
+        crate::renderer::CherenkovWindow<
+            crate::engine::AndroidCherenkovSurface,
+            crate::text::ParleyEngine,
+        >,
+    >,
 }
 
 /// The window's platform safe area in logical units.
@@ -1889,7 +1899,7 @@ impl OffscreenGpuContext {
                 label: Some("hydrolysis-offscreen-device"),
                 required_features,
                 required_limits,
-                memory_hints: wgpu::MemoryHints::Performance,
+                memory_hints: cherenkov_gpu::interop::memory_hints(adapter.get_info().backend),
                 experimental_features: wgpu::ExperimentalFeatures::default(),
                 trace: wgpu::Trace::default(),
             },
@@ -2550,10 +2560,6 @@ impl OffscreenSurface {
             #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
             SurfaceFrame::Window { .. } => {
                 panic!("hydrolysis offscreen surface received a window frame");
-            }
-            #[cfg(target_os = "android")]
-            SurfaceFrame::Android { .. } => {
-                panic!("hydrolysis offscreen surface received an android frame");
             }
         }
     }
@@ -3232,7 +3238,7 @@ mod winit_impl {
                     label: Some("hydrolysis-winit-device"),
                     required_features,
                     required_limits,
-                    memory_hints: wgpu::MemoryHints::Performance,
+                    memory_hints: cherenkov_gpu::interop::memory_hints(adapter.get_info().backend),
                     experimental_features: wgpu::ExperimentalFeatures::default(),
                     trace: wgpu::Trace::default(),
                 },
@@ -3305,6 +3311,8 @@ mod winit_impl {
         /// sampled at negotiation (#2445).
         #[cfg(not(target_os = "macos"))]
         selection: cherenkov_gpu::interop::OutputSelection,
+        #[cfg(not(target_os = "macos"))]
+        content_range: cherenkov_gpu::interop::ColorRange,
         /// The window this surface presents into. A host-presented surface
         /// asks it for the platform's next-frame pacing
         /// (`pre_present_notify`), which on Wayland requests the frame
@@ -3327,8 +3335,12 @@ mod winit_impl {
         display_moved: std::rc::Rc<std::cell::Cell<bool>>,
         /// The typed Cherenkov engine target, created on the first render.
         #[cfg(target_os = "macos")]
-        engine_window:
-            Option<crate::renderer::CherenkovWindow<crate::engine::WindowCherenkovSurface>>,
+        engine_window: Option<
+            crate::renderer::CherenkovWindow<
+                crate::engine::WindowCherenkovSurface,
+                crate::text::ParleyEngine,
+            >,
+        >,
         /// The screen-change observer that sets `display_moved`;
         /// unregisters itself on drop.
         #[cfg(target_os = "macos")]
@@ -3460,14 +3472,16 @@ mod winit_impl {
             surface: &wgpu::Surface<'static>,
             adapter: &wgpu::Adapter,
             transparent: bool,
+            content_range: cherenkov_gpu::interop::ColorRange,
         ) -> cherenkov_gpu::interop::OutputSelection {
-            super::negotiate_host_output(surface, adapter, transparent).unwrap_or_else(|error| {
-                let info = adapter.get_info();
-                panic!(
-                    "hydrolysis winit surface: {error} (adapter {:?}, {:?})",
-                    info.name, info.backend
-                )
-            })
+            super::negotiate_host_output(surface, adapter, transparent, content_range)
+                .unwrap_or_else(|error| {
+                    let info = adapter.get_info();
+                    panic!(
+                        "hydrolysis winit surface: {error} (adapter {:?}, {:?})",
+                        info.name, info.backend
+                    )
+                })
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -3492,6 +3506,7 @@ mod winit_impl {
                 &surface,
                 &handles.gpu_context().shared_device.adapter,
                 requires_transparency,
+                cherenkov_gpu::interop::ColorRange::WideGamut,
             );
             let config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -3512,6 +3527,7 @@ mod winit_impl {
                 transparent: requires_transparency,
                 config,
                 selection,
+                content_range: cherenkov_gpu::interop::ColorRange::WideGamut,
                 window,
             }
         }
@@ -3628,8 +3644,12 @@ mod winit_impl {
             }
             self.handles = generation;
             let shared = &self.handles.gpu_context().shared_device;
-            let selection =
-                Self::negotiate_surface_output(&self.surface, &shared.adapter, self.transparent);
+            let selection = Self::negotiate_surface_output(
+                &self.surface,
+                &shared.adapter,
+                self.transparent,
+                self.content_range,
+            );
             self.config.alpha_mode = selection.alpha_mode;
             self.config.format = selection.format;
             self.config.color_space = selection.color_space;
@@ -3664,6 +3684,7 @@ mod winit_impl {
                 &self.surface,
                 &self.handles.gpu_context().shared_device.adapter,
                 transparent,
+                self.content_range,
             );
             if selection.alpha_mode != self.selection.alpha_mode
                 || selection.format != self.selection.format
@@ -3805,6 +3826,13 @@ mod winit_impl {
         /// The surface's texture format.
         fn format(&self) -> wgpu::TextureFormat {
             self.config.format
+        }
+
+        fn set_content_range(&mut self, range: cherenkov_gpu::interop::ColorRange) {
+            if range > self.content_range {
+                self.content_range = range;
+                self.set_transparent(self.transparent);
+            }
         }
 
         fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
@@ -4545,7 +4573,7 @@ mod winit_impl {
         /// the same space `CursorMoved` reports in.
         #[cfg(target_os = "windows")]
         fn windows_live_pointer_position(&self) -> Option<(f32, f32)> {
-            use windows_sys::Win32::Foundation::POINT;
+            use windows_sys::Win32::Foundation::{HWND, POINT};
             use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
             use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
             let RawWindowHandle::Win32(win32) = self.window.window_handle().ok()?.as_raw() else {
@@ -4560,7 +4588,7 @@ mod winit_impl {
             // SAFETY: `hwnd` is the window's live Win32 handle for as long
             // as the `NativeWindow` lives, and `point` is a valid, writable
             // `POINT` the call rewrites in client coordinates.
-            if unsafe { ScreenToClient(win32.hwnd.get(), &raw mut point) } == 0 {
+            if unsafe { ScreenToClient(win32.hwnd.get() as HWND, &raw mut point) } == 0 {
                 return None;
             }
             let position = PhysicalPosition::new(f64::from(point.x), f64::from(point.y))

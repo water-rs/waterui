@@ -1,18 +1,116 @@
 //! Backdrop groups on the CPU backend: captures scheduled into bands.
 
 #![cfg(not(target_arch = "wasm32"))]
+use std::ops::Range;
 use std::sync::mpsc;
 
 use cherenkov::kurbo::{Circle, Ellipse, Rect, RoundedRect};
 use cherenkov::{BackdropOuter, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor};
 use cherenkov_cpu::{BandPixels, Bands, Raster, RasterConfig};
+use cherenkov_oracle::F32Image;
+use cherenkov_oracle::metrics::{assert_close, assert_images_match};
+
+#[path = "support/visual.rs"]
+mod visual;
 
 fn engine() -> Engine<Raster> {
     Engine::<Raster>::new(RasterConfig::default()).expect("engine")
 }
 
+#[test]
+fn reduced_capture_repaints_members_when_only_sampling_apron_changes() {
+    let engine = engine();
+    let size = (128, 512);
+    let target = || Offscreen::new(size, OffscreenFormat::LinearF32);
+    let build = |surface: &cherenkov::Surface<Raster>| {
+        let group = surface.backdrop_group(
+            filtrate::filters::GaussianBlur::new(3.0f32),
+            cherenkov::CaptureScale::new(0.5).unwrap(),
+        );
+        let patch = surface.layer();
+        let glass = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()]
+                .push(&patch)
+                .push(&glass)
+                .content(surface.record(|r| {
+                    r.fill(
+                        Rect::new(0.0, 0.0, 128.0, 512.0),
+                        WorkingColor::new([0.1, 0.2, 0.3, 1.0]),
+                    );
+                }));
+            tx[&glass]
+                .clip(Rect::new(24.0, 64.0, 88.0, 96.0))
+                .backdrop(group.sample());
+        });
+        (patch, glass, group)
+    };
+    let surface = engine.surface(target(), || {}).unwrap();
+    let (patch, _glass, _group) = build(&surface);
+    for (step, (y, color)) in [
+        (Some(58.0), WorkingColor::new([3.0, 0.1, 0.0, 1.0])),
+        (Some(58.0), WorkingColor::new([0.1, 2.0, 0.0, 1.0])),
+        (Some(400.0), WorkingColor::WHITE),
+        (None, WorkingColor::WHITE),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let paint = |r: &mut cherenkov::Recorder| {
+            if let Some(y) = y {
+                r.fill(Rect::new(32.0, y, 80.0, y + 4.0), color);
+            }
+        };
+        surface.update(|tx| {
+            tx[&patch].content(surface.record(paint));
+        });
+        engine.render(FrameTime::now()).unwrap();
+        if step > 0 {
+            let passes = engine.stats().passes;
+            assert!(passes > 0 && passes < 16, "frame {step}: {passes} bands");
+        }
+        let actual = surface.readback().unwrap();
+        let reference = engine.surface(target(), || {}).unwrap();
+        let (reference_patch, _reference_glass, _reference_group) = build(&reference);
+        reference.update(|tx| {
+            tx[&reference_patch].content(reference.record(paint));
+        });
+        engine.render(FrameTime::now()).unwrap();
+        let expected = reference.readback().unwrap();
+        let actual = F32Image {
+            width: size.0,
+            height: size.1,
+            pixels: actual.pixels,
+        };
+        let expected = F32Image {
+            width: size.0,
+            height: size.1,
+            pixels: expected.pixels,
+        };
+        actual
+            .write_png(
+                &std::env::temp_dir().join(format!("cherenkov-cpu-capture-damage-{step}.png")),
+            )
+            .unwrap();
+        assert_images_match(&expected, &actual);
+    }
+}
+
 fn pixel(readback: &cherenkov::Readback, x: usize, y: usize) -> [f32; 4] {
     readback.pixels[y * readback.width as usize + x]
+}
+
+/// The `x` by `y` window of `readback` as an image.
+fn crop(readback: &cherenkov::Readback, x: Range<usize>, y: Range<usize>) -> F32Image {
+    let width = readback.width as usize;
+    F32Image {
+        width: u32::try_from(x.len()).expect("window width fits u32"),
+        height: u32::try_from(y.len()).expect("window height fits u32"),
+        pixels: y
+            .flat_map(|row| x.clone().map(move |col| (col, row)))
+            .map(|(col, row)| readback.pixels[row * width + col])
+            .collect(),
+    }
 }
 
 fn assert_pixel(actual: [f32; 4], expected: [f32; 4], tolerance: f32) {
@@ -278,7 +376,7 @@ fn member_sample_is_attenuated_by_layer_opacity() {
             [0.0, 0.0, 1.0, 1.0]
         }
     };
-    let faded = |full: &cherenkov::Readback, x: usize, y: usize| {
+    let faded = |full: &cherenkov::Readback, x: usize, y: usize| -> [f32; 4] {
         std::array::from_fn(|c| 0.5f32.mul_add(pixel(full, x, y)[c], 0.5 * dst(x)[c]))
     };
     let normal = cherenkov::BlendMode::Normal;
@@ -287,10 +385,10 @@ fn member_sample_is_attenuated_by_layer_opacity() {
     // Sample-only over red, content-covered at the step, covered
     // content, and the clip's corner edge.
     for &(x, y) in &[(8, 16), (16, 16), (24, 16), (5, 5)] {
-        assert_pixel(pixel(&half, x, y), faded(&full, x, y), 1e-5);
+        assert_close(&pixel(&half, x, y), &faded(&full, x, y));
     }
     // Outside the clip the surface is untouched.
-    assert_pixel(pixel(&half, 1, 16), [1.0, 0.0, 0.0, 1.0], 1e-5);
+    assert_close(&pixel(&half, 1, 16), &[1.0, 0.0, 0.0, 1.0]);
     // A filtered member at the same pixels: the sample is attenuated —
     // never swapped — and fades with the member's content, so the rule
     // holds at covered pixels too; the member scope compositing sample
@@ -299,11 +397,7 @@ fn member_sample_is_attenuated_by_layer_opacity() {
     let filtered_full = render(1.0, Some(SWAP), normal);
     let filtered_half = render(0.5, Some(SWAP), normal);
     for &(x, y) in &[(8, 16), (16, 16), (24, 16), (5, 5)] {
-        assert_pixel(
-            pixel(&filtered_half, x, y),
-            faded(&filtered_full, x, y),
-            1e-5,
-        );
+        assert_close(&pixel(&filtered_half, x, y), &faded(&filtered_full, x, y));
     }
     // An identity-filtered member equals the unfiltered member: the
     // member scope's nested scopes change nothing — on the clip's rim,
@@ -313,8 +407,8 @@ fn member_sample_is_attenuated_by_layer_opacity() {
     let identity_full = render(1.0, Some(IDENTITY), normal);
     let identity_half = render(0.5, Some(IDENTITY), normal);
     for &(x, y) in &[(6, 5), (5, 5), (8, 16), (16, 16), (24, 16)] {
-        assert_pixel(pixel(&identity_full, x, y), pixel(&full, x, y), 1e-5);
-        assert_pixel(pixel(&identity_half, x, y), pixel(&half, x, y), 1e-5);
+        assert_close(&pixel(&identity_full, x, y), &pixel(&full, x, y));
+        assert_close(&pixel(&identity_half, x, y), &pixel(&half, x, y));
     }
     // A member's non-Normal blend applies to its sample, for both member
     // kinds: `Multiply` blends the whole member — sample and content —
@@ -330,9 +424,9 @@ fn member_sample_is_attenuated_by_layer_opacity() {
         // Sample-only pixel over red: Multiply blends S as S·D — the
         // swapped sample is blue over red, so only black survives.
         let s = pixel(base, 8, 16);
-        assert_pixel(pixel(&multi, 8, 16), [s[0], 0.0, 0.0, 1.0], 1e-5);
+        assert_close(&pixel(&multi, 8, 16), &[s[0], 0.0, 0.0, 1.0]);
         // Covered content over the step: green × blue = black.
-        assert_pixel(pixel(&multi, 24, 16), [0.0, 0.0, 0.0, 1.0], 1e-5);
+        assert_close(&pixel(&multi, 24, 16), &[0.0, 0.0, 0.0, 1.0]);
     }
 }
 
@@ -444,15 +538,18 @@ fn band_streamed_backdrop_matches_offscreen_byte_for_byte() {
     }
     assert_eq!(next_y, size.1);
     let expected = offscreen.readback().expect("readback").pixels;
-    let streamed_bits = streamed
-        .iter()
-        .flat_map(|pixel| pixel.map(f32::to_bits))
-        .collect::<Vec<_>>();
-    let expected_bits = expected
-        .iter()
-        .flat_map(|pixel| pixel.map(f32::to_bits))
-        .collect::<Vec<_>>();
-    assert_eq!(streamed_bits, expected_bits);
+    assert_images_match(
+        &F32Image {
+            width: size.0,
+            height: size.1,
+            pixels: expected,
+        },
+        &F32Image {
+            width: size.0,
+            height: size.1,
+            pixels: streamed,
+        },
+    );
 }
 
 /// A blurred member taller than a band: sampling identical spans at
@@ -558,15 +655,11 @@ fn nested_blurred_groups_have_no_band_seams() {
         let base = nested_blur(0, scale);
         for shift in (step..=16).step_by(usize::from(step)) {
             let moved = nested_blur(shift, scale);
-            for y in 24..120 {
-                for x in 0..32 {
-                    let (a, b) = (pixel(&base, x, y), pixel(&moved, x, y + usize::from(shift)));
-                    assert!(
-                        a.iter().zip(b).all(|(a, b)| (a - b).abs() <= 1e-5),
-                        "scale {scale}, shift {shift}, pixel ({x}, {y}): {a:?} vs {b:?}"
-                    );
-                }
-            }
+            let shift = usize::from(shift);
+            assert_images_match(
+                &crop(&base, 0..32, 24..120),
+                &crop(&moved, 0..32, 24 + shift..120 + shift),
+            );
         }
     }
 }
@@ -1234,16 +1327,10 @@ fn deep_level_member(with_plain: bool) -> cherenkov::Readback {
 fn deep_level_reads_are_independent_of_the_other_members() {
     let alone = deep_level_member(false);
     let shared = deep_level_member(true);
-    for y in 8..56 {
-        for x in 600..840 {
-            // Both renders run the same arithmetic on the same inputs: identical bits.
-            assert_eq!(
-                pixel(&alone, x, y).map(f32::to_bits),
-                pixel(&shared, x, y).map(f32::to_bits),
-                "member pixel ({x}, {y}) depends on the other member"
-            );
-        }
-    }
+    assert_images_match(
+        &crop(&alone, 600..840, 8..56),
+        &crop(&shared, 600..840, 8..56),
+    );
 }
 
 /// Two groups anchored at the same layer each capture the anchor's canvas
@@ -1509,10 +1596,7 @@ fn union_bridge(a_opacity: f32, b_opacity: f32, swap: bool) -> cherenkov::Readba
 fn union_members_composite_identically_in_any_order() {
     let ab = union_bridge(0.5, 0.5, false);
     let ba = union_bridge(0.5, 0.5, true);
-    assert_eq!(
-        ab.pixels, ba.pixels,
-        "the union composite depends on member order"
-    );
+    assert_images_match(&visual::image(&ab), &visual::image(&ba));
 }
 
 #[test]
@@ -2316,7 +2400,7 @@ fn isolated_members_under_a_masked_ancestor_match_unclipped() {
         // Deep inside the triangle the ancestor's coverage is 1, so the
         // masked render must read like the unclipped one.
         for (x, y) in [(32usize, 14usize), (35, 20), (38, 12), (33, 11)] {
-            assert_pixel(pixel(&masked, x, y), pixel(&plain, x, y), 3e-3);
+            assert_close(&pixel(&masked, x, y), &pixel(&plain, x, y));
         }
     }
 }

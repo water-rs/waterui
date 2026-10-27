@@ -112,15 +112,19 @@ fn read_launch(app: &AndroidApp) -> (Scenario, bool) {
 
 fn intent_extras(app: &AndroidApp) -> Result<(Option<String>, bool), String> {
     use jni::objects::{JObject, JString, JValue};
+    // SAFETY: `vm_as_ptr` is the process's live JavaVM.
     let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) };
     vm.attach_current_thread(|env| -> jni::errors::Result<(Option<String>, bool)> {
         // android-activity owns the activity's global ref; hold it
         // through a local ref so this `JObject` only deletes what it
         // created.
+        // SAFETY: `env_raw` is this attached thread's JNIEnv and
+        // `activity_as_ptr` is the activity's live jobject.
         let local = unsafe {
             let env_raw = env.get_raw();
             ((**env_raw).v1_2.NewLocalRef)(env_raw, app.activity_as_ptr().cast())
         };
+        // SAFETY: `local` is the live local ref the call above created.
         let activity = unsafe { JObject::from_raw(env, local) };
         let intent = env
             .call_method(
@@ -187,7 +191,9 @@ struct Run {
 struct Video {
     layer: Layer,
     producer: Pool,
-    video: cherenkov::GpuProducer<Gpu>,
+    /// Keeps the frame source registered — the producer's last drop
+    /// retires it.
+    _gpu_producer: cherenkov::GpuProducer<Gpu>,
     sink: cherenkov::FrameSink<Gpu>,
 }
 
@@ -214,13 +220,29 @@ impl Run {
             window.width().cast_unsigned(),
             window.height().cast_unsigned(),
         );
+        // SAFETY: `window` is the app's live NativeWindow.
         let parent = unsafe { SurfaceControl::from_window(window.ptr(), c"cherenkov harness") }
             .expect("surface control from window");
         logcat::line("SurfaceControl \"cherenkov harness\" created");
         let surface = engine
-            .surface(SurfaceControlTarget::new(parent, size), || {})
+            .surface(
+                SurfaceControlTarget::new(
+                    parent,
+                    size,
+                    ndk::looper::ForeignLooper::for_thread().expect("Android activity looper"),
+                ),
+                || {},
+            )
             .expect("surface-control surface");
         logcat::line(&format!("surface target {}x{} created", size.0, size.1));
+        if matches!(scenario, Scenario::Recorded(spec) if spec.hdr) {
+            surface
+                .display(cherenkov::Display {
+                    scale: 1.0,
+                    headroom: 2.0,
+                })
+                .expect("HDR output request");
+        }
         surface.clear_color(WorkingColor::new([0.01, 0.012, 0.018, 1.0]));
 
         let font_data = std::fs::read(FONT).expect("Roboto is present on Android");
@@ -253,7 +275,7 @@ impl Run {
                 Video {
                     layer,
                     producer: Pool::new(&vk, spec, paused).expect("producer pool"),
-                    video,
+                    _gpu_producer: video,
                     sink,
                 }
             })

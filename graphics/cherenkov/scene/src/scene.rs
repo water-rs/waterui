@@ -148,6 +148,10 @@ pub struct Scene {
         skip_serializing_if = "Scene::is_default_present_headroom"
     )]
     pub present_headroom: f64,
+    /// End offset of a root-content scroll sweep in the performance harness.
+    /// Each measured run traverses zero to this offset after its own warmup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_extent: Option<kurbo::Vec2>,
     /// The features this scene uses.
     pub features: BTreeSet<Feature>,
     /// The backdrop groups member layers sample (`Layer::backdrop`).
@@ -167,6 +171,7 @@ impl Scene {
             working_space: WorkingSpace::LinearDisplayP3,
             clear,
             present_headroom: Self::default_present_headroom(),
+            scroll_extent: None,
             features: BTreeSet::new(),
             backdrop_groups: Vec::new(),
             root: Layer::default(),
@@ -263,6 +268,12 @@ impl Scene {
     /// # Errors
     /// [`SceneError`] on the first violated rule.
     pub fn validate(&self) -> Result<(), SceneError> {
+        if self
+            .scroll_extent
+            .is_some_and(|extent| !extent.x.is_finite() || !extent.y.is_finite())
+        {
+            return Err(SceneError::InvalidScrollExtent);
+        }
         self.validate_backdrops()?;
         self.validate_projections()?;
         self.validate_text()?;

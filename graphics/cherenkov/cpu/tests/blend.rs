@@ -1,11 +1,12 @@
 //! Group compositing is clipped as an operation, including destination modes.
 #![cfg(not(target_arch = "wasm32"))]
-use cherenkov::kurbo::Rect;
+use cherenkov::kurbo::{Circle, Rect, RoundedRect};
 use cherenkov::{
-    BlendMode, BlendSpace, Color, Draw, Engine, FrameTime, Group, Offscreen, OffscreenFormat, Srgb,
-    WorkingColor,
+    BlendMode, BlendSpace, Color, Draw, Engine, FrameTime, Group, LinearGradient, Offscreen,
+    OffscreenFormat, Paint, Srgb, WorkingColor,
 };
 use cherenkov_cpu::{Raster, RasterConfig};
+use cherenkov_oracle::metrics::assert_close;
 
 const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
 const BLUE: WorkingColor = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
@@ -29,11 +30,8 @@ fn clear_composite_preserves_destination_outside_clip() {
     });
     engine.render(FrameTime::now()).expect("render");
     let pixels = surface.readback().expect("pixels").pixels;
-    assert_eq!(pixels[0].map(f32::to_bits), [1.0_f32; 4].map(f32::to_bits));
-    assert_eq!(
-        pixels[3 * 8 + 3].map(f32::to_bits),
-        [0.0_f32; 4].map(f32::to_bits)
-    );
+    assert_close(&pixels[0], &[1.0_f32; 4]);
+    assert_close(&pixels[3 * 8 + 3], &[0.0_f32; 4]);
 }
 
 #[test]
@@ -68,9 +66,8 @@ fn blended_descendant_isolates_its_normal_group() {
     // outer group's offscreen, which then composites `Normal` over the red
     // background. Without outer isolation the `Clear` reached the scene
     // framebuffer and every pixel came out transparent.
-    let red = [1.0_f32, 0.0, 0.0, 1.0].map(f32::to_bits);
-    for (i, px) in pixels.iter().enumerate() {
-        assert_eq!(px.map(f32::to_bits), red, "pixel {i}");
+    for px in &pixels {
+        assert_close(px, &[1.0, 0.0, 0.0, 1.0]);
     }
 }
 
@@ -101,14 +98,8 @@ fn tree_layer_isolates_blended_child_layer() {
     engine.render(FrameTime::now()).expect("render");
     let pixels = surface.readback().expect("pixels").pixels;
     let pixel = |x: usize, y: usize| pixels[y * 8 + x];
-    assert_eq!(
-        pixel(1, 3).map(f32::to_bits),
-        [0.0_f32, 0.0, 1.0, 1.0].map(f32::to_bits)
-    );
-    assert_eq!(
-        pixel(3, 3).map(f32::to_bits),
-        [1.0_f32, 0.0, 0.0, 1.0].map(f32::to_bits)
-    );
+    assert_close(&pixel(1, 3), &[0.0_f32, 0.0, 1.0, 1.0]);
+    assert_close(&pixel(3, 3), &[1.0_f32, 0.0, 0.0, 1.0]);
 }
 
 #[test]
@@ -134,14 +125,8 @@ fn tree_layer_isolates_blended_content_group() {
     engine.render(FrameTime::now()).expect("render");
     let pixels = surface.readback().expect("pixels").pixels;
     let pixel = |x: usize, y: usize| pixels[y * 8 + x];
-    assert_eq!(
-        pixel(1, 3).map(f32::to_bits),
-        [0.0_f32, 0.0, 1.0, 1.0].map(f32::to_bits)
-    );
-    assert_eq!(
-        pixel(3, 3).map(f32::to_bits),
-        [1.0_f32, 0.0, 0.0, 1.0].map(f32::to_bits)
-    );
+    assert_close(&pixel(1, 3), &[0.0_f32, 0.0, 1.0, 1.0]);
+    assert_close(&pixel(3, 3), &[1.0_f32, 0.0, 0.0, 1.0]);
 }
 
 #[test]
@@ -176,14 +161,8 @@ fn nested_tree_layers_isolate_at_the_blending_parent() {
     engine.render(FrameTime::now()).expect("render");
     let pixels = surface.readback().expect("pixels").pixels;
     let pixel = |x: usize, y: usize| pixels[y * 8 + x];
-    assert_eq!(
-        pixel(1, 3).map(f32::to_bits),
-        [0.0_f32, 1.0, 0.0, 1.0].map(f32::to_bits)
-    );
-    assert_eq!(
-        pixel(3, 3).map(f32::to_bits),
-        [0.0_f32, 0.0, 1.0, 1.0].map(f32::to_bits)
-    );
+    assert_close(&pixel(1, 3), &[0.0_f32, 1.0, 0.0, 1.0]);
+    assert_close(&pixel(3, 3), &[0.0_f32, 0.0, 1.0, 1.0]);
 }
 
 #[test]
@@ -218,7 +197,7 @@ fn encoded_group_composites_in_encoded_space() {
     for channel in &pixel[..3] {
         assert!((f64::from(*channel) - expected).abs() < 1e-5, "{pixel:?}");
     }
-    assert_eq!(pixel[3].to_bits(), 1.0_f32.to_bits());
+    assert_close(&[pixel[3]], &[1.0]);
 }
 
 /// A non-destructive blended layer under a clip scales the source by the
@@ -263,40 +242,77 @@ fn clipped_blend_layer_scales_source_by_clip_coverage() {
     // Screen rows (3): outside the clip the backdrop is untouched;
     // fully inside, screen(0.5, 1) = 1; at the half-covered edge the
     // coverage scales the source — B(0.5, 0.5·white) = 0.75 premultiplied.
-    assert_eq!(
-        pixels[3 * w + 2].map(f32::to_bits),
-        [0.5_f32, 0.5, 0.5, 1.0].map(f32::to_bits),
-        "screen outside clip"
-    );
-    assert_eq!(
-        pixels[3 * w + 4].map(f32::to_bits),
-        [0.75_f32, 0.75, 0.75, 1.0].map(f32::to_bits),
-        "screen at half-covered clip edge: {:?}",
-        pixels[3 * w + 4]
-    );
-    assert_eq!(
-        pixels[3 * w + 6].map(f32::to_bits),
-        [1.0_f32; 4].map(f32::to_bits),
-        "screen inside clip"
-    );
+    assert_close(&pixels[3 * w + 2], &[0.5_f32, 0.5, 0.5, 1.0]);
+    assert_close(&pixels[3 * w + 4], &[0.75_f32, 0.75, 0.75, 1.0]);
+    assert_close(&pixels[3 * w + 6], &[1.0_f32; 4]);
     // Clear rows (9): the destructive path lerps by the clip coverage —
     // untouched outside, cleared inside, halfway at the edge.
-    assert_eq!(
-        pixels[9 * w + 2].map(f32::to_bits),
-        [0.5_f32, 0.5, 0.5, 1.0].map(f32::to_bits),
-        "clear outside clip"
-    );
-    assert_eq!(
-        pixels[9 * w + 4].map(f32::to_bits),
-        [0.25_f32, 0.25, 0.25, 0.5].map(f32::to_bits),
-        "clear at half-covered clip edge: {:?}",
-        pixels[9 * w + 4]
-    );
-    assert_eq!(
-        pixels[9 * w + 6].map(f32::to_bits),
-        [0.0_f32; 4].map(f32::to_bits),
-        "clear inside clip"
-    );
+    assert_close(&pixels[9 * w + 2], &[0.5_f32, 0.5, 0.5, 1.0]);
+    assert_close(&pixels[9 * w + 4], &[0.25_f32, 0.25, 0.25, 0.5]);
+    assert_close(&pixels[9 * w + 6], &[0.0_f32; 4]);
+}
+
+/// #2908's original failing shape: a non-separable blended layer under a
+/// clip compositing HDR content. The blended source's achromatic HDR
+/// greys (`channel = x = l > 1`) made `clip_color`'s `x > 1` clip divide
+/// by `x - l = 0` — 140-146 NaN pixels per corpus scene
+/// (`blend-{color,hue,saturation}-clip-hdr`). The shared affine domain
+/// the modes now evaluate over keeps every channel finite.
+#[test]
+fn nonseparable_blends_under_a_clip_on_hdr_stay_finite() {
+    for mode in [
+        BlendMode::Color,
+        BlendMode::Hue,
+        BlendMode::Saturation,
+        BlendMode::Luminosity,
+    ] {
+        let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
+        let surface = engine
+            .surface(Offscreen::new((24, 24), OffscreenFormat::LinearF32), || {})
+            .expect("surface");
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|c| {
+                c.fill(
+                    Rect::new(0.0, 0.0, 24.0, 24.0),
+                    Paint::from(
+                        LinearGradient::new((0.0, 0.0), (24.0, 24.0))
+                            .stop(0.0, WorkingColor::new([4.0, 0.5, 0.0, 1.0]))
+                            .stop(1.0, WorkingColor::new([0.0, 2.0, 4.0, 1.0])),
+                    ),
+                );
+            }));
+        });
+        let layer = surface.layer();
+        surface.update(|tx| {
+            tx[&layer].blend(mode);
+            tx[&layer].clip(RoundedRect::new(4.0, 4.0, 20.0, 20.0, 4.0));
+            tx[surface.root()].push(&layer);
+        });
+        surface.update(|tx| {
+            tx[&layer].content(surface.record(|c| {
+                // The gradient crosses achromatic HDR grey — the exact
+                // input whose `x = l` collapsed to 0/0.
+                c.fill(
+                    Circle::new((12.0, 12.0), 10.0),
+                    Paint::from(
+                        LinearGradient::new((6.0, 6.0), (18.0, 18.0))
+                            .stop(0.0, WorkingColor::new([2.0, 4.0, 0.5, 1.0]))
+                            .stop(1.0, WorkingColor::new([16.0, 16.0, 16.0, 1.0])),
+                    ),
+                );
+            }));
+        });
+        engine.render(FrameTime::now()).expect("render");
+        let pixels = surface.readback().expect("pixels").pixels;
+        for (i, px) in pixels.iter().enumerate() {
+            assert!(
+                px.iter().all(|c| c.is_finite()),
+                "{mode:?} wrote non-finite pixel {i} (x={}, y={}): {px:?}",
+                i % 24,
+                i / 24
+            );
+        }
+    }
 }
 
 /// Two overlapping opaque `PlusLighter` layers: coverage saturates at 1,

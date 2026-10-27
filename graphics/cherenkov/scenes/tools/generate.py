@@ -53,7 +53,7 @@ def run(cmd: list[str]) -> None:
 
 def generate_fonts() -> None:
     run([sys.executable, str(TOOLS / "fetch-fonts.py")])
-    run([*GENERATOR, "prepare-fonts"])
+    run([*GENERATOR, "prepare-fonts", str(ROOT)])
     for tool in FONT_TOOLS:
         run([sys.executable, str(TOOLS / tool)])
 
@@ -62,7 +62,7 @@ def generate_corpus() -> None:
     # The writer does not clean stale scenes; regenerate from scratch.
     for out in ("corpus", "perf"):
         shutil.rmtree(SCENES / out, ignore_errors=True)
-    run([*GENERATOR, "generate-corpus"])
+    run([*GENERATOR, "generate-corpus", str(ROOT)])
 
 
 def main() -> int:

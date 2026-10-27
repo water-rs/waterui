@@ -22,7 +22,8 @@ fallback):
 | Vulkan | SPIR-V passthrough | `<name>.spv`: naga emission as-is. A `spirv-opt -O` step ran here until issue #124 measured it on the Pixel 9 Pro (Mali-G715): ~0.64 s faster cold pipeline creation, but the effects scene's GPU time ~78% slower at p50 and ~2.7x at p99 — so the driver's own compiler does the optimizing |
 | Metal | `.metallib` passthrough | `<name>.metallib`: naga MSL at wgpu-hal's argument slots, compiled by `xcrun -sdk <sdk> metal` + `metallib` during the build |
 | WebGPU (wasm32) | WGSL | The original source, via `create_shader_module_trusted` with unchecked runtime checks |
-| DX12, GL, BrowserWebGpu native | WGSL | Same trusted-WGSL path; wgpu 29 passthrough has no GLSL producer and this build produces no DXIL/HLSL — WGSL is the declared delivery for those backends |
+| DX12 (Windows targets) | DXIL passthrough | `<name>.<vertex>.<fragment>.vs.dxil` and `<name>.<fragment>.ps.dxil` per render program and `<name>.<entry>.cs.dxil` per compute entry (issue #2726): naga HLSL at wgpu-hal's DX12 root-signature registers, the vertex stage written against the fragment stage it links with, compiled by `dxc` from `PATH` with optimization and stripped debug and reflection data. A DXIL module holds one entry point, so each stage loads as its own module |
+| GL, BrowserWebGpu native | WGSL | Same trusted-WGSL path; wgpu 29 passthrough has no GLSL producer — WGSL is the declared delivery for those backends |
 
 Dynamic shaders — `color.wgsl`/`paint.wgsl` composites, user shader-paint
 sources and `interop::shader_module` — are unaffected: they keep the checked
@@ -65,8 +66,8 @@ exist. None of the fixed shaders call `arrayLength`, so the pin is exact.
 A backend that takes passthrough shaders but a device without
 `Features::PASSTHROUGH_SHADERS` — possible only with a host-supplied
 `interop::SharedDevice` — is an explicit `EngineError::Backend` at engine
-creation. Engine-created devices request the feature on Vulkan and Metal,
-which wgpu-hal advertises unconditionally there.
+creation. Engine-created devices request the feature on Vulkan, Metal and
+DX12, which wgpu-hal advertises unconditionally there.
 
 ## Build requirements
 
@@ -84,6 +85,11 @@ which wgpu-hal advertises unconditionally there.
   settings participate in that resolution and invalidate the build script.
   The workspace defaults both to 26.0, matching the native Apple contract
   in `docs/api.md` and both iOS host manifests.
+- Windows targets run `dxc` from `PATH` — the DirectXShaderCompiler
+  release CI and the CLI pin (v1.8.2505.1) — in debug and release builds
+  alike; a missing `dxc` or a failed compile is a build error. Microsoft
+  publishes Windows and Linux binaries, so macOS hosts need a self-built
+  `dxc`.
 - wasm32 targets skip the toolchain entirely (nothing embeds the artifacts);
   the WGSL is still parsed and validated.
 

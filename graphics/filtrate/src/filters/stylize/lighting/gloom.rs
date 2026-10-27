@@ -9,6 +9,7 @@ use crate::{
 /// from the first pass's input.
 const COMPOSITE: SpatialStage = SpatialStage {
     name: "gloom_composite",
+    source_f16: None,
     source: include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/shaders/stylize/lighting/glow_composite.wgsl"
