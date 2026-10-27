@@ -190,13 +190,6 @@ fn trials() -> Vec<Trial> {
         {
             tests.extend(gpu_surface::trials());
             tests.extend(filtered::trials());
-            tests.push(Trial::test(
-                "transition::a_pixel_removal_freezes_into_the_window_overlay",
-                || {
-                    transition::a_pixel_removal_freezes_into_the_window_overlay();
-                    Ok(())
-                },
-            ));
         }
     }
     #[cfg(target_os = "ios")]
@@ -267,13 +260,6 @@ fn base_trials() -> Vec<Trial> {
             resolve::a_native_with_fallback_resolves_to_it();
             Ok(())
         }),
-        Trial::test(
-            "transition::a_replaced_child_semantics_die_while_its_view_ghosts",
-            || {
-                transition::a_replaced_child_semantics_die_while_its_view_ghosts();
-                Ok(())
-            },
-        ),
         Trial::test(
             "resolve::unclaimed_wrappers_panic_while_claimed_render",
             || {
@@ -10229,18 +10215,20 @@ mod transition {
     use std::rc::Rc;
     use std::time::Duration;
 
+    use waterui::ViewExt;
     use waterui::animation::Animation;
     use waterui::component::Dynamic;
     use waterui::component::label::label;
+    use waterui::prelude::vstack;
+    use waterui_apple::contract::Mounted;
     use waterui_apple::native_test_support::pump_main_until;
     use waterui_core::Metadata;
     use waterui_core::metadata::Retain;
-    use waterui_core::transition::{PropertyTransition, TransitionSpec};
+    use waterui_core::transition::{PropertyTransition, Transition, TransitionSpec};
 
     use cocoa_ui::objc2::rc::{Weak, autoreleasepool};
     use cocoa_ui::view;
 
-    #[cfg(target_os = "macos")]
     use super::Retained;
     use super::leaf::TestSubView;
     use super::{HostView, Label, PlatformView, mtm};
@@ -10267,6 +10255,73 @@ mod transition {
                 unowned_declaration_panics_at_mount();
                 Ok(())
             }),
+            libtest_mimic::Trial::test(
+                "transition::a_replaced_child_semantics_die_while_its_view_ghosts",
+                || {
+                    a_replaced_child_semantics_die_while_its_view_ghosts();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::removed_descendants_die_but_their_views_stay_in_the_ghost",
+                || {
+                    removed_descendants_die_but_their_views_stay_in_the_ghost();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::opacity_composes_with_the_contents_own_opacity",
+                || {
+                    opacity_composes_with_the_contents_own_opacity();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::scale_composes_with_the_contents_own_scale",
+                || {
+                    scale_composes_with_the_contents_own_scale();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::combined_transition_samples_every_frame",
+                || {
+                    combined_transition_samples_every_frame();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::adopted_conditional_claims_each_child",
+                || {
+                    adopted_conditional_claims_each_child();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::the_contents_own_claim_beats_the_adopted_one",
+                || {
+                    the_contents_own_claim_beats_the_adopted_one();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test("transition::initial_build_plays_no_insertion", || {
+                initial_build_plays_no_insertion();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test(
+                "transition::zero_duration_removal_detaches_at_once",
+                || {
+                    zero_duration_removal_detaches_at_once();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::ghost_completion_does_not_need_the_site",
+                || {
+                    ghost_completion_does_not_need_the_site();
+                    Ok(())
+                },
+            ),
         ]
     }
 
@@ -10352,124 +10407,6 @@ mod transition {
             (count, first),
             (1, live_ptr.get()),
             "only the live child remains"
-        );
-    }
-
-    /// Exercises a `captures_content` removal end to end: the outgoing
-    /// view freezes once into a GPU texture, the declared effect body —
-    /// a real `ShaderEffect` passthrough, so the coverage is genuine —
-    /// mounts into the window-level overlay through the frozen-input
-    /// path, the anchor hides once the texture lands, and completion
-    /// releases the overlay, the leaf and the outgoing view.
-    #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
-    pub fn a_pixel_removal_freezes_into_the_window_overlay() {
-        use waterui::graphics::gpu::GpuRuntime;
-        use waterui_apple::dispatch;
-        use waterui_apple::native_test_support::install_gpu;
-        use waterui_backend_core::AnyView;
-        use waterui_core::View;
-        use waterui_core::transition::{Transition, TransitionContext, TransitionPhase};
-
-        struct CaptureProbe;
-
-        impl Transition for CaptureProbe {
-            fn captures_content(&self, phase: TransitionPhase) -> bool {
-                phase == TransitionPhase::Removal
-            }
-
-            fn body(&self, content: AnyView, _ctx: TransitionContext) -> impl View {
-                let shader = waterui::graphics::filtrate::ShaderEffect::new(
-                    "@fragment
-                    fn main(in: VertexOutput) -> @location(0) vec4<f32> {
-                        return textureSample(input_texture, input_sampler, in.uv);
-                    }",
-                )
-                .expect("the probe shader is valid WGSL");
-                waterui::graphics::WithEffect::new(content, shader)
-            }
-        }
-
-        let _mtm = mtm();
-        // The pixel path resolves the GPU runtime from the environment
-        // the leaf rendered under — the fixture env installs it, exactly
-        // as the surface trials do.
-        let mut env = super::resolve::env();
-        install_gpu(
-            &mut env,
-            pollster::block_on(GpuRuntime::new()).expect("the fixture GPU runtime"),
-        );
-        let (handler, dynamic) = Dynamic::new();
-        let leaf = dispatch::render(AnyView::new(dynamic), &env);
-        let window = super::mount_and_order_front(leaf.view());
-
-        let died = Rc::new(Cell::new(false));
-        autoreleasepool(|_| {
-            handler.set(Metadata::new(
-                Metadata::new(label("gone"), Retain::new(Died(Rc::clone(&died)))),
-                TransitionSpec::new(waterui_core::transition::AnyTransition::asymmetric(
-                    PropertyTransition::opacity(),
-                    CaptureProbe,
-                ))
-                .with_animation(Animation::linear(Duration::from_millis(60))),
-            ));
-        });
-        // Let the child lay out so the capture reads a nonzero slot.
-        assert!(
-            pump_main_until(2.0, || autoreleasepool(|_| {
-                view::subviews(leaf.view())
-                    .first()
-                    .is_some_and(|child| view::bounds(child).size.width > 0.0)
-            })),
-            "the outgoing child laid out"
-        );
-        let ghost_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
-        let weak = autoreleasepool(|_| {
-            let subviews = view::subviews(leaf.view());
-            assert_eq!(subviews.len(), 1, "the child mounts inside the host");
-            ghost_ptr.set(std::ptr::from_ref(&*subviews[0]));
-            Weak::new(&*subviews[0])
-        });
-
-        autoreleasepool(|_| handler.set(label("here")));
-        assert!(died.get(), "the removed leaf's keepalive ended at removal");
-        assert!(weak.load().is_some(), "the ghost retains the outgoing view");
-
-        // The capture lands and the filtered effect mounts in the window
-        // overlay above the content — the anchor hides once it does. The
-        // harness's `contentView` is the dynamic host itself, so the
-        // overlay arrives as a sibling above the ghost and the new child.
-        #[cfg(target_os = "macos")]
-        let overlay_mounted = || autoreleasepool(|_| view::subviews(leaf.view()).len() == 3);
-        #[cfg(target_os = "ios")]
-        let overlay_mounted = || autoreleasepool(|_| view::subviews(&window).len() == 2);
-        let _ = &window;
-        assert!(
-            pump_main_until(5.0, || {
-                autoreleasepool(|_| {
-                    overlay_mounted()
-                        && view::subviews(leaf.view()).first().is_some_and(|first| {
-                            std::ptr::from_ref(&**first) == ghost_ptr.get()
-                                && view::is_hidden(first)
-                        })
-                })
-            }),
-            "the frozen texture installed and the overlay mounted above content"
-        );
-
-        // Completion: the overlay leaves the window and the ghost
-        // releases the outgoing view.
-        assert!(
-            pump_main_until(5.0, || {
-                autoreleasepool(|_| {
-                    let under = view::subviews(leaf.view());
-                    under.len() == 1 && std::ptr::from_ref(&*under[0]) != ghost_ptr.get()
-                })
-            }),
-            "the ghost and its overlay release when the transition completes"
-        );
-        assert!(
-            pump_main_until(1.0, || weak.load().is_none()),
-            "the ghost releases the outgoing view"
         );
     }
 
@@ -10637,5 +10574,393 @@ mod transition {
             message.contains("no structural transition owner"),
             "unexpected panic message: {message}"
         );
+    }
+
+    /// The transition host of `leaf`'s dynamic — its single subview.
+    fn transition_host(child: &Mounted) -> Retained<PlatformView> {
+        autoreleasepool(|_| {
+            view::subviews(child.view())
+                .into_iter()
+                .next()
+                .expect("the dynamic holds one child")
+        })
+    }
+
+    /// The content root a transition host frames — its single child.
+    fn content_of(host: &PlatformView) -> Retained<PlatformView> {
+        autoreleasepool(|_| {
+            view::subviews(host)
+                .into_iter()
+                .next()
+                .expect("the transition host frames one content view")
+        })
+    }
+
+    /// The x-scale a sampled transform wrote on `view` — `m11` of the
+    /// `CATransform3D` on macOS, `a` of the `CGAffineTransform` on iOS.
+    fn transform_scale(view: &PlatformView) -> f64 {
+        autoreleasepool(|_| {
+            #[cfg(target_os = "macos")]
+            {
+                let layer = view::layer(view).expect("a layer-backed view");
+                layer.transform().m11
+            }
+            #[cfg(target_os = "ios")]
+            {
+                view.transform().a
+            }
+        })
+    }
+
+    /// Removing a `Dynamic` child kills its semantics but not its views:
+    /// every `Retain` in the outgoing subtree drops while every view
+    /// stays in the ghost — descendants too, not just the root
+    /// (§8.2).
+    pub fn removed_descendants_die_but_their_views_stay_in_the_ghost() {
+        let _mtm = mtm();
+        let d1 = Rc::new(Cell::new(false));
+        let d2 = Rc::new(Cell::new(false));
+        let (nested, nested_view) = Dynamic::new();
+        nested.set(Metadata::new(
+            label("inner"),
+            Retain::new(Died(Rc::clone(&d2))),
+        ));
+        let child = vstack((
+            Metadata::new(label("first"), Retain::new(Died(Rc::clone(&d1)))),
+            nested_view,
+        ));
+        let (handler, view) = Dynamic::new();
+        handler.set(Metadata::new(
+            child,
+            TransitionSpec::new(PropertyTransition::opacity())
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+        ));
+        // Every kit call below runs in its own pool: the update path
+        // autoreleases `subviews` arrays that retain the tree, and the weak
+        // probe sees the release only once they drain.
+        let (mounted, window) = autoreleasepool(|_| {
+            let leaf = super::resolve::render(view);
+            let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+            let window = super::mount_and_order_front(mounted.view());
+            (mounted, window)
+        });
+        assert!(!d1.get() && !d2.get(), "the mounted child's Retains live");
+        autoreleasepool(|_| handler.set(label("after")));
+        assert!(d1.get(), "the removed child's Retain dies at the swap");
+        assert!(d2.get(), "the nested Dynamic's Retain dies at the swap");
+        let weak: Weak<PlatformView> = autoreleasepool(|_| {
+            let ghost = transition_host(&mounted);
+            let content = content_of(&ghost);
+            let descendant = view::subviews(&content)
+                .into_iter()
+                .next()
+                .expect("the ghost keeps the stack's children");
+            assert!(
+                view::superview(&descendant).is_some(),
+                "the removed descendant's view stays in the ghost"
+            );
+            Weak::from(&descendant)
+        });
+        let completed = pump_main_until(2.0, || {
+            autoreleasepool(|_| view::subviews(mounted.view()).len() == 1)
+        });
+        assert!(completed, "the ghost completes on the frame clock");
+        assert!(
+            pump_main_until(1.0, || weak.load().is_none()),
+            "the ghost releases every view"
+        );
+        drop(window);
+    }
+
+    /// `PropertyTransition::opacity()` samples the transition host's
+    /// alpha — the content's own `.opacity` is never touched (§8.2).
+    pub fn opacity_composes_with_the_contents_own_opacity() {
+        let _mtm = mtm();
+        let (handler, view) = Dynamic::new();
+        handler.set(label("before"));
+        let leaf = super::resolve::render(view);
+        let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+        let window = super::mount_and_order_front(mounted.view());
+        handler.set(Metadata::new(
+            label("coming").opacity(0.5),
+            TransitionSpec::new(PropertyTransition::opacity())
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+        ));
+        autoreleasepool(|_| {
+            let host = transition_host(&mounted);
+            let content = content_of(&host);
+            let mid = pump_main_until(2.0, || {
+                let alpha = view::alpha(&host);
+                alpha > 0.0 && alpha < 1.0
+            });
+            assert!(mid, "the insertion samples the host's alpha mid-flight");
+            assert!(
+                (view::alpha(&content) - 0.5).abs() < 1e-6,
+                "the content's own opacity is untouched"
+            );
+            let settled = pump_main_until(2.0, || {
+                (view::alpha(&host) - 1.0).abs() < 1e-6
+            });
+            assert!(settled, "the insertion completes to full alpha");
+            assert!((view::alpha(&content) - 0.5).abs() < 1e-6);
+        });
+        drop(window);
+    }
+
+    /// `PropertyTransition::scale` samples the transition child's
+    /// transform — the content's own `.scale` is never touched (§8.2).
+    pub fn scale_composes_with_the_contents_own_scale() {
+        let _mtm = mtm();
+        let (handler, view) = Dynamic::new();
+        handler.set(label("before"));
+        let leaf = super::resolve::render(view);
+        let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+        let window = super::mount_and_order_front(mounted.view());
+        handler.set(Metadata::new(
+            label("coming").scale(0.5, 0.5),
+            TransitionSpec::new(PropertyTransition::scale(0.5))
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+        ));
+        autoreleasepool(|_| {
+            let host = transition_host(&mounted);
+            let transition_child = content_of(&host);
+            let inner = view::subviews(&transition_child)
+                .into_iter()
+                .next()
+                .expect("the scale wrapper holds its child");
+            let mid = pump_main_until(2.0, || {
+                let scale = transform_scale(&transition_child);
+                scale > 0.5 && scale < 1.0
+            });
+            assert!(mid, "the insertion samples the transition child's scale");
+            let own = transform_scale(&inner);
+            assert!(
+                (own - 0.5).abs() < 1e-6,
+                "the content's own scale is untouched mid-flight, read {own}"
+            );
+            let settled = pump_main_until(2.0, || {
+                (transform_scale(&transition_child) - 1.0).abs() < 1e-6
+            });
+            assert!(settled, "the insertion completes to the identity");
+            let own = transform_scale(&inner);
+            assert!(
+                (own - 0.5).abs() < 1e-6,
+                "the content's own scale is untouched at rest, read {own}"
+            );
+        });
+        drop(window);
+    }
+
+    /// A combined transition samples every property on every tick: the
+    /// host alpha and the transition child's scale share one clock's
+    /// progress, within a point sample's tolerance (§8.2).
+    pub fn combined_transition_samples_every_frame() {
+        let _mtm = mtm();
+        let (handler, view) = Dynamic::new();
+        handler.set(label("before"));
+        let leaf = super::resolve::render(view);
+        let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+        let window = super::mount_and_order_front(mounted.view());
+        handler.set(Metadata::new(
+            label("coming"),
+            TransitionSpec::new(
+                PropertyTransition::opacity().combined(PropertyTransition::scale(0.5)),
+            )
+            .with_animation(Animation::linear(Duration::from_millis(120))),
+        ));
+        autoreleasepool(|_| {
+            let host = transition_host(&mounted);
+            let transition_child = content_of(&host);
+            let shared = Cell::new(false);
+            let mid = pump_main_until(2.0, || {
+                let alpha = view::alpha(&host);
+                let scale = transform_scale(&transition_child);
+                if alpha > 0.0 && alpha < 1.0 {
+                    // Insertion progress implied by the scale sample.
+                    let progress = 2.0 * (1.0 - scale);
+                    assert!(
+                        (alpha - (1.0 - progress)).abs() < 1e-3,
+                        "alpha {alpha} and scale {scale} share one progress"
+                    );
+                    shared.set(true);
+                }
+                shared.get()
+            });
+            assert!(mid, "a combined tick landed mid-flight");
+        });
+        drop(window);
+    }
+
+    /// `.transition(...)` directly on a `Dynamic` adopts into the
+    /// conditional: each child it swaps carries the claim — the swap
+    /// ghosts the outgoing child while the `Dynamic` host itself is
+    /// never retired (§5.1, §8.2).
+    pub fn adopted_conditional_claims_each_child() {
+        let _mtm = mtm();
+        let (handler, view) = Dynamic::new();
+        let leaf_view = Metadata::new(
+            view,
+            TransitionSpec::new(PropertyTransition::opacity())
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+        );
+        let leaf = super::resolve::render(leaf_view);
+        let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+        let window = super::mount_and_order_front(mounted.view());
+        handler.set(label("a"));
+        handler.set(label("b"));
+        autoreleasepool(|_| {
+            let host = mounted.view().downcast_ref::<HostView>().expect("a HostView");
+            assert!(
+                !host.is_retired(),
+                "the conditional's own mount never transitions"
+            );
+            assert_eq!(
+                view::subviews(mounted.view()).len(),
+                2,
+                "the adopted claim ghosts the outgoing child"
+            );
+            let completed = pump_main_until(2.0, || {
+                view::subviews(mounted.view()).len() == 1
+            });
+            assert!(completed, "the adopted ghost completes");
+        });
+        drop(window);
+    }
+
+    /// A child's own `.transition(...)` declaration wins over the claim
+    /// the conditional adopted: the outgoing child ghosts on its own
+    /// scale, the host alpha is untouched (§5.1, §8.2).
+    pub fn the_contents_own_claim_beats_the_adopted_one() {
+        let _mtm = mtm();
+        let (handler, view) = Dynamic::new();
+        let leaf_view = Metadata::new(
+            view,
+            TransitionSpec::new(PropertyTransition::opacity())
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+        );
+        let leaf = super::resolve::render(leaf_view);
+        let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+        let window = super::mount_and_order_front(mounted.view());
+        handler.set(Metadata::new(
+            label("a"),
+            TransitionSpec::new(PropertyTransition::scale(0.5))
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+        ));
+        handler.set(label("b"));
+        autoreleasepool(|_| {
+            let host = transition_host(&mounted);
+            let transition_child = content_of(&host);
+            let mid = pump_main_until(2.0, || {
+                transform_scale(&transition_child) < 1.0
+            });
+            assert!(mid, "the child's own claim drives the ghost");
+            assert!(
+                (view::alpha(&host) - 1.0).abs() < 1e-6,
+                "the adopted opacity never applies to a claimed child"
+            );
+        });
+        drop(window);
+    }
+
+    /// The first-mounted child of a conditional is a mount, not an
+    /// insertion: its transition host starts fully present (§5.2, §8.2).
+    pub fn initial_build_plays_no_insertion() {
+        let _mtm = mtm();
+        let (handler, view) = Dynamic::new();
+        let leaf = super::resolve::render(view);
+        let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+        let window = super::mount_and_order_front(mounted.view());
+        handler.set(Metadata::new(
+            label("a"),
+            TransitionSpec::new(PropertyTransition::opacity())
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+        ));
+        autoreleasepool(|_| {
+            let host = transition_host(&mounted);
+            assert!(
+                (view::alpha(&host) - 1.0).abs() < 1e-6,
+                "the initial child presents at full alpha before any pump"
+            );
+        });
+        drop(window);
+    }
+
+    /// A zero-duration removal completes at `start`: the outgoing
+    /// instance detaches in the same turn, with no ghost at all
+    /// (§1.5, §8.2).
+    pub fn zero_duration_removal_detaches_at_once() {
+        let _mtm = mtm();
+        let (handler, view) = Dynamic::new();
+        handler.set(Metadata::new(
+            label("a"),
+            TransitionSpec::new(PropertyTransition::opacity())
+                .with_animation(Animation::linear(Duration::ZERO)),
+        ));
+        let leaf = super::resolve::render(view);
+        let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+        let window = super::mount_and_order_front(mounted.view());
+        handler.set(label("b"));
+        autoreleasepool(|_| {
+            assert_eq!(
+                view::subviews(mounted.view()).len(),
+                1,
+                "a zero-duration removal leaves no ghost behind"
+            );
+        });
+        drop(window);
+    }
+
+    /// Completing a ghost needs nothing the site owns: dropping the
+    /// `Dynamic` leaf cancels the run through the window handler's
+    /// path, and a live site still sees the ordinary completion
+    /// (§1.5, §8.2).
+    pub fn ghost_completion_does_not_need_the_site() {
+        let _mtm = mtm();
+        let (handler, view) = Dynamic::new();
+        handler.set(Metadata::new(
+            label("a"),
+            TransitionSpec::new(PropertyTransition::opacity())
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+        ));
+        // Every kit call below runs in its own pool: the update path
+        // autoreleases `subviews` arrays that retain the tree, and the weak
+        // probe sees the release only once they drain.
+        let (mounted, window) = autoreleasepool(|_| {
+            let leaf = super::resolve::render(view);
+            let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+            let window = super::mount_and_order_front(mounted.view());
+            (mounted, window)
+        });
+        autoreleasepool(|_| handler.set(label("b")));
+        let weak: Weak<PlatformView> = autoreleasepool(|_| {
+            let ghost = transition_host(&mounted);
+            Weak::from(&ghost)
+        });
+        autoreleasepool(|_| drop(mounted));
+        let cancelled = pump_main_until(2.0, || weak.load().is_none());
+        assert!(
+            cancelled,
+            "the site's drop cancels the ghost within one pump"
+        );
+
+        // With the site live, the ghost completes through `on_complete`.
+        let (handler2, view2) = Dynamic::new();
+        handler2.set(Metadata::new(
+            label("a"),
+            TransitionSpec::new(PropertyTransition::opacity())
+                .with_animation(Animation::linear(Duration::from_millis(30))),
+        ));
+        let leaf2 = super::resolve::render(view2);
+        let mounted2 = leaf2.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+        let window2 = super::mount_and_order_front(mounted2.view());
+        handler2.set(label("b"));
+        autoreleasepool(|_| {
+            let completed = pump_main_until(2.0, || {
+                view::subviews(mounted2.view()).len() == 1
+            });
+            assert!(completed, "the ghost completes through on_complete");
+        });
+        drop(window2);
+        drop(window);
     }
 }

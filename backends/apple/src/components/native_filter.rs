@@ -1717,9 +1717,6 @@ impl CapturableSurface for NativeFilterCapturable {
         false
     }
 
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
 }
 
 /// The main-thread half of the external render: builds the `CIImage`

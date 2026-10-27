@@ -2017,51 +2017,8 @@ impl CapturableSurface for FilteredCapturable {
             .is_none_or(|state| state.park.is_failed())
     }
 
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
 }
 
-/// Installs `texture` — a one-shot frozen capture — as the effect input
-/// of the innermost filtered surface in `view`'s subtree, and returns
-/// its state so the caller can drive redraws. A transition ghost calls
-/// this on the rendered effect leaf before mounting it into the window
-/// overlay: the first presented frame then reads the frozen texture
-/// instead of live-capturing the hidden content (layout-spec §4.5).
-///
-/// The innermost surface is the content-adjacent effect: outer filtered
-/// bodies around it still capture this output through the ordinary
-/// external-render path, so only the deepest leaf takes the texture.
-/// Returns `None` when the subtree holds no filtered surface — the body
-/// of a `captures_content` transition must produce one.
-pub fn install_frozen_input(
-    view: &PlatformView,
-    texture: Retained<MetalTexture>,
-) -> Option<Rc<FilteredState>> {
-    fn innermost(view: &PlatformView, depth: usize, best: &mut Option<(usize, Rc<FilteredState>)>) {
-        if let Some(surface) = cocoa_ui::capture::resolve_capturable(view)
-            && let Some(filtered) = surface.as_any().downcast_ref::<FilteredCapturable>()
-            && let Some(state) = filtered.state.upgrade()
-            && best
-                .as_ref()
-                .is_none_or(|(best_depth, _)| depth > *best_depth)
-        {
-            *best = Some((depth, state));
-        }
-        for subview in cocoa_ui::view::subviews(view) {
-            innermost(&subview, depth + 1, best);
-        }
-    }
-    let mut best = None;
-    innermost(view, 0, &mut best);
-    let (_, state) = best?;
-    let previous = state.frozen_input.borrow_mut().replace(texture);
-    assert!(
-        previous.is_none(),
-        "a frozen transition input is installed once — the contract captures once"
-    );
-    Some(state)
-}
 
 /// Dropping clears the filter's registrations and shuts the capture and
 /// render state down — `deinit`.

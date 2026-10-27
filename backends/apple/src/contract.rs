@@ -332,6 +332,16 @@ pub(crate) fn measure_callback(
     Rc::new(move |proposal| measure_layout(&layout, proposal))
 }
 
+/// Whether the leaf's visuals already belong to a ghost: the view sits
+/// inside a retired `HostView`, or it is one — the transition host a site
+/// retired owns its own pixels from that point on, so a `Mounted` whose
+/// view is the retired host itself must not detach it either.
+fn view_is_ghost(view: &PlatformView) -> bool {
+    view.downcast_ref::<HostView>()
+        .is_some_and(HostView::is_retired)
+        || cocoa_ui::view::has_retired_ancestor(view)
+}
+
 /// A child leaf attached to a parent view. Dropping it detaches the view
 /// from its superview, then drops the leaf: this is how a container
 /// releases a child it replaces or removes.
@@ -385,24 +395,21 @@ impl Mounted {
     }
 
     /// Ends containment but leaves the view where it is. The caller has
-    /// retired an ancestor `HostView`, so the subtree is already a ghost —
-    /// the retirement hand-off the transition path makes before dropping
-    /// the leaf's semantics.
+    /// retired the enclosing `HostView` — the transition host the leaf's
+    /// own view is, or a strict ancestor of it — so the subtree is
+    /// already a ghost: the retirement hand-off the transition path makes
+    /// before dropping the leaf's semantics.
     ///
     /// # Panics
     ///
-    /// When no strict ancestor is a retired `HostView` — the internal
-    /// invariant of the hand-off.
+    /// When the view is no retired `HostView` and none of its strict
+    /// ancestors is either — the internal invariant of the hand-off.
     #[must_use]
-    #[expect(
-        dead_code,
-        reason = "the retirement hand-off's caller lands with the transition host"
-    )]
     pub(crate) fn into_retired_leaf(mut self) -> NativeLeaf {
         let mut leaf = self.0.take().expect("a live Mounted");
         assert!(
-            cocoa_ui::view::has_retired_ancestor(&leaf.view),
-            "waterui-apple: `into_retired_leaf` needs a retired ancestor `HostView` — \
+            view_is_ghost(&leaf.view),
+            "waterui-apple: `into_retired_leaf` needs a retired `HostView` — \
              retire the transition host before ending the mount"
         );
         leaf.unwind();
@@ -417,7 +424,7 @@ impl Drop for Mounted {
     fn drop(&mut self) {
         if let Some(mut leaf) = self.0.take() {
             leaf.unwind();
-            if !cocoa_ui::view::has_retired_ancestor(&leaf.view) {
+            if !view_is_ghost(&leaf.view) {
                 cocoa_ui::view::remove_from_superview(&leaf.view);
             }
             drop(leaf);
