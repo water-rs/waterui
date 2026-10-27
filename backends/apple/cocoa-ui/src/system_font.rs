@@ -32,8 +32,8 @@ pub enum TextStyle {
 pub struct FontMetrics {
     /// The point size.
     pub size: f64,
-    /// The weight on the `UIFont.Weight`/`NSFontWeight` scale: light `0.0`,
-    /// regular `0.4`, bold `0.62`, black `1.0`.
+    /// The weight on the `UIFont.Weight`/`NSFontWeight` scale: light `-0.4`,
+    /// regular `0.0`, bold `0.4`, black `0.62`.
     pub weight: f64,
     /// The face's declared line pitch — line box plus leading.
     pub line_height: f64,
@@ -47,7 +47,7 @@ mod imp {
     use objc2_app_kit::{NSFont, NSFontDescriptor, NSFontTextStyle};
     use objc2_foundation::{NSDictionary, NSNumber};
 
-    use super::{FontMetrics, TextStyle};
+    use super::{FontMetrics, TextStyle, weight_or_regular};
 
     fn native_style(style: TextStyle) -> &'static NSFontTextStyle {
         // SAFETY: these are the platform's own text-style constants, alive
@@ -71,7 +71,7 @@ mod imp {
         let font =
             unsafe { NSFont::preferredFontForTextStyle_options(native_style(style), &options) };
         let descriptor = font.fontDescriptor();
-        let weight = traits_weight(&descriptor);
+        let weight = weight_or_regular(traits_weight(&descriptor));
         FontMetrics {
             size: font.pointSize(),
             weight,
@@ -79,22 +79,18 @@ mod imp {
         }
     }
 
-    /// The `NSFontWeightTrait` number from the descriptor's traits
-    /// dictionary, or the regular weight when the descriptor does not say.
-    fn traits_weight(descriptor: &NSFontDescriptor) -> f64 {
+    /// The `NSFontWeightTrait` number the descriptor's traits dictionary
+    /// declares, or `None` when the descriptor does not say.
+    fn traits_weight(descriptor: &NSFontDescriptor) -> Option<f64> {
         // SAFETY: the traits attribute key is a platform constant.
-        let Some(traits) =
-            (unsafe { descriptor.objectForKey(objc2_app_kit::NSFontTraitsAttribute) })
-        else {
-            return 0.4;
-        };
+        let traits = unsafe { descriptor.objectForKey(objc2_app_kit::NSFontTraitsAttribute) }?;
         // SAFETY: the traits attribute is an `NSDictionary` by contract; the
         // weight trait inside it an `NSNumber`.
         unsafe {
             let traits = traits.downcast_ref::<NSDictionary>().expect("font traits");
             let value: Option<Retained<AnyObject>> =
                 msg_send![traits, objectForKey: objc2_app_kit::NSFontWeightTrait];
-            value.map_or(0.4, |value| {
+            value.map(|value| {
                 value
                     .downcast_ref::<NSNumber>()
                     .expect("font weight")
@@ -112,7 +108,7 @@ mod imp {
     use objc2_foundation::{NSDictionary, NSNumber};
     use objc2_ui_kit::{UIFont, UIFontDescriptor, UIFontTextStyle};
 
-    use super::{FontMetrics, TextStyle};
+    use super::{FontMetrics, TextStyle, weight_or_regular};
 
     fn native_style(style: TextStyle) -> &'static UIFontTextStyle {
         // SAFETY: these are the platform's own text-style constants, alive
@@ -133,7 +129,7 @@ mod imp {
         let font = UIFont::preferredFontForTextStyle(native_style(style));
         // SAFETY: `fontDescriptor` is a documented accessor on a live font.
         let descriptor = unsafe { font.fontDescriptor() };
-        let weight = traits_weight(&descriptor);
+        let weight = weight_or_regular(traits_weight(&descriptor));
         // SAFETY: `ascender`, `descender`, `leading` and `pointSize` are
         // documented property accessors.
         unsafe {
@@ -145,22 +141,19 @@ mod imp {
         }
     }
 
-    /// The `UIFontWeightTrait` number from the descriptor's traits
-    /// dictionary, or the regular weight when the descriptor does not say.
-    fn traits_weight(descriptor: &UIFontDescriptor) -> f64 {
+    /// The `UIFontWeightTrait` number the descriptor's traits dictionary
+    /// declares, or `None` when the descriptor does not say.
+    fn traits_weight(descriptor: &UIFontDescriptor) -> Option<f64> {
         // SAFETY: the traits attribute key is a platform constant.
-        let Some(traits) =
-            (unsafe { descriptor.objectForKey(objc2_ui_kit::UIFontDescriptorTraitsAttribute) })
-        else {
-            return 0.4;
-        };
+        let traits =
+            unsafe { descriptor.objectForKey(objc2_ui_kit::UIFontDescriptorTraitsAttribute) }?;
         // SAFETY: the traits attribute is an `NSDictionary` by contract; the
         // weight trait inside it an `NSNumber`.
         unsafe {
             let traits = traits.downcast_ref::<NSDictionary>().expect("font traits");
             let value: Option<Retained<AnyObject>> =
                 msg_send![traits, objectForKey: objc2_ui_kit::UIFontWeightTrait];
-            value.map_or(0.4, |value| {
+            value.map(|value| {
                 value
                     .downcast_ref::<NSNumber>()
                     .expect("font weight")
@@ -178,4 +171,39 @@ mod imp {
 #[must_use]
 pub fn preferred_font(style: TextStyle) -> FontMetrics {
     imp::preferred_font(style)
+}
+
+/// The weight a preferred font's descriptor resolves to: the declared weight
+/// trait, or `0.0` — regular on the `UIFont.Weight`/`NSFontWeight` scale —
+/// when the descriptor omits the traits dictionary or the trait itself. A
+/// preferred font without a weight trait is the regular face.
+fn weight_or_regular(trait_value: Option<f64>) -> f64 {
+    trait_value.unwrap_or(0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::weight_or_regular;
+
+    /// A descriptor without a weight trait — or without a traits dictionary
+    /// at all — is the regular face: `0.0`, not the bold `0.4`.
+    #[test]
+    fn missing_weight_trait_is_regular() {
+        assert_eq!(weight_or_regular(None), 0.0);
+    }
+
+    /// A declared weight trait passes through unchanged, including the
+    /// float32-rounded constants `AppKit`/`UIKit` publish.
+    #[test]
+    fn explicit_weight_trait_passes_through() {
+        assert_eq!(weight_or_regular(Some(0.0)), 0.0);
+        assert_eq!(
+            weight_or_regular(Some(0.400_000_005_960_464_5)),
+            0.400_000_005_960_464_5
+        );
+        assert_eq!(
+            weight_or_regular(Some(-0.800_000_011_920_929)),
+            -0.800_000_011_920_929
+        );
+    }
 }

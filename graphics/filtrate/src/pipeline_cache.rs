@@ -53,6 +53,7 @@ struct Entries {
 #[derive(Debug, Default)]
 pub struct PipelineCache {
     entries: RefCell<Entries>,
+    driver: Option<wgpu::PipelineCache>,
 }
 
 impl PipelineCache {
@@ -60,6 +61,19 @@ impl PipelineCache {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Shares the caller's device-bound driver compilation cache.
+    #[must_use]
+    pub fn with_driver_cache(driver: Option<wgpu::PipelineCache>) -> Self {
+        Self {
+            driver,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) const fn driver(&self) -> Option<&wgpu::PipelineCache> {
+        self.driver.as_ref()
     }
 
     /// The full-screen triangle vertex module, created on first use.

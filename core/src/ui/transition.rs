@@ -113,6 +113,24 @@ pub struct TransitionFrame {
 
 crate::impl_constant!(TransitionFrame);
 
+impl TransitionFrame {
+    /// Window space a host reports to a pixel transition.
+    #[must_use]
+    pub const fn new(
+        source: Rect,
+        window: Size,
+        scale_factor: f32,
+        direction: LayoutDirection,
+    ) -> Self {
+        Self {
+            source,
+            window,
+            scale_factor,
+            direction,
+        }
+    }
+}
+
 /// A sampled set of visual properties, independent of layout.
 ///
 /// Translation is in logical pixels, rotation in radians, and blur in logical

@@ -15,7 +15,11 @@ pub struct Reducer {
 }
 
 impl Reducer {
-    pub fn new(device: &wgpu::Device, delivery: super::shaders::ShaderDelivery) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        delivery: super::shaders::ShaderDelivery,
+        cache: &super::PipelineCache,
+    ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("capture headroom"),
             entries: &super::layout_entries(super::bindings::HEADROOM_GROUP0),
@@ -31,6 +35,7 @@ impl Reducer {
             &delivery.headroom_program(device),
             wgpu::TextureFormat::R32Float,
             None,
+            cache,
         );
         Self { layout, pipeline }
     }

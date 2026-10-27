@@ -37,11 +37,11 @@ use super::engine::{
 };
 use super::input::{ResolvedTextLayoutInput, ResolvedTextStyleSpec};
 
-/// The [`TextEngine`] built on the parley stack.
+/// The `TextEngine` built on the parley stack.
 ///
 /// `fonts` is the collection the engine was born with — the session's
-/// installed fonts via [`Self::from_collection`], or the enumerated system
-/// collection via [`Self::system`]. An engine's fonts never change after
+/// installed fonts via `Self::from_collection`, or the enumerated system
+/// collection via `Self::system`. An engine's fonts never change after
 /// construction, so no shape cache keyed on its inputs can go stale.
 pub struct ParleyEngine {
     /// Fonts registered at construction; the clone source for shaping scratch.
@@ -107,7 +107,7 @@ impl ParleyEngine {
         fonts: &FontCollection,
         family_resolution: FontFamilyResolution,
     ) -> Self {
-        Self::new(fonts.use_fonts(|fonts| fonts.clone()), family_resolution)
+        Self::new(fonts.with_parley(|fonts| fonts.clone()), family_resolution)
     }
 
     /// An engine shaping against the enumerated system collection — exactly
@@ -194,16 +194,15 @@ impl TextEngine for ParleyEngine {
         }))
     }
 
-    fn truncate_tail(
+    fn shape_limited(
         &self,
-        layout: Self::Layout,
         input: &ResolvedTextLayoutInput,
         max_width: Option<f32>,
         max_lines: NonZeroUsize,
         mut shape: impl FnMut(&ResolvedTextLayoutInput, Option<f32>) -> Self::Layout,
     ) -> Self::Layout {
         let limit = max_lines.get();
-        let mut layout = layout;
+        let mut layout = shape(input, max_width);
         if !needs_tail_truncation(&layout.0.layout, limit) {
             return layout;
         }
@@ -556,12 +555,22 @@ fn push_text_style(
         parley::StyleProperty::FontWeight(parley_font_weight(style.font.weight)),
         range.clone(),
     );
-    if let Some(line_height) = style.font.line_height {
-        builder.push(
-            parley::StyleProperty::LineHeight(parley::LineHeight::Absolute(line_height)),
-            range.clone(),
-        );
-    }
+    // `line_height: None` on a resolved font means the selected face's
+    // preferred metrics (`ResolvedFont` documents it), which parley spells
+    // `MetricsRelative(1.0)`. Leaving the span unset would inherit the
+    // paragraph default instead — the theme slot's absolute pitch — so a
+    // resized run (whose `Font::size` drops the slot's metrics) would space
+    // on the *unresized* face's line height: a 40 pt run inside a 16/24
+    // pitch draws its glyph tops above the laid-out frame
+    // (water-rs/waterui#2719).
+    let line_height = style.font.line_height.map_or(
+        parley::LineHeight::MetricsRelative(1.0),
+        parley::LineHeight::Absolute,
+    );
+    builder.push(
+        parley::StyleProperty::LineHeight(line_height),
+        range.clone(),
+    );
     builder.push(
         parley::StyleProperty::LetterSpacing(style.font.letter_spacing),
         range.clone(),
@@ -1116,3 +1125,20 @@ fn parley_alignment(alignment: HorizontalAlignment, right_to_left: bool) -> parl
 
 #[cfg(test)]
 mod tests;
+
+impl core::fmt::Debug for ParleyEngine {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ParleyEngine")
+            .field("family_resolution", &self.family_resolution)
+            .finish_non_exhaustive()
+    }
+}
+
+impl core::fmt::Debug for ParleyLayout {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ParleyLayout")
+            .field("lines", &self.line_count())
+            .field("height", &self.height())
+            .finish_non_exhaustive()
+    }
+}

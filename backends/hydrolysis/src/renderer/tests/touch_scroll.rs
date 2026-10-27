@@ -715,10 +715,10 @@ fn inner_stretch(
             kurbo::Affine,
         )>,
     );
-    impl crate::renderer::mount::layers::LayerVisitor for Probe {
+    impl<E: crate::text::TextEngine> crate::renderer::mount::layers::LayerVisitor<E> for Probe {
         fn node(
             &mut self,
-            layers: &crate::renderer::mount::layers::NodeLayers,
+            layers: &crate::renderer::mount::layers::NodeLayers<E>,
             world: kurbo::Affine,
             _alphas: &[f32],
         ) {

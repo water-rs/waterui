@@ -1667,6 +1667,8 @@ mod tests {
             ),
         )
         .expect("write waterui manifest");
+        std::fs::create_dir_all(root.join("src")).expect("waterui src");
+        std::fs::write(root.join("src/lib.rs"), "// fixture\n").expect("waterui lib");
         let apple = root.join("backends/apple");
         std::fs::create_dir_all(&apple).expect("apple backend dir");
         std::fs::write(apple.join("Package.swift"), "// swift-tools-version:6.0\n")
@@ -1676,6 +1678,8 @@ mod tests {
             manifest("waterui-apple", apple_features),
         )
         .expect("write waterui-apple manifest");
+        std::fs::create_dir_all(apple.join("src")).expect("waterui-apple src");
+        std::fs::write(apple.join("src/lib.rs"), "// fixture\n").expect("waterui-apple lib");
         write_fixture_crate(
             &root.join("backends/cef"),
             "waterui-browser-cef",
@@ -3375,6 +3379,259 @@ mod tests {
         Ok(())
     }
 
+    /// All-features resolution reached the optional dependency and its
+    /// declared feature, plus the target- and build-scoped path deps —
+    /// with no target filter.
+    fn assert_all_features_resolved(metadata: &cargo_metadata::Metadata) {
+        let resolve = metadata.resolve.as_ref().unwrap();
+        let optdep_node = resolve
+            .nodes
+            .iter()
+            .find(|node| {
+                metadata
+                    .packages
+                    .iter()
+                    .any(|package| package.id == node.id && package.name == "optdep")
+            })
+            .expect("optdep is in the resolved graph");
+        assert!(
+            optdep_node.features.iter().any(|f| f.as_str() == "feature"),
+            "all-features enabled the optional dep's feature"
+        );
+        for name in ["targetdep", "builddep"] {
+            assert!(
+                metadata.packages.iter().any(|package| package.name == name),
+                "{name} resolved without a target filter"
+            );
+        }
+    }
+
+    /// The manifest the probe-liveness test resolves — an optional dep
+    /// and its feature, plus target- and build-scoped path deps.
+    fn probe_scoped_manifest() -> cargo_toml::Manifest<()> {
+        let mut manifest = cargo_toml::Manifest::<()> {
+            package: Some(cargo_toml::Package::new(
+                "probe-app".to_string(),
+                super::cargo_semver("0.1.0"),
+            )),
+            ..Default::default()
+        };
+        manifest.features.insert(
+            "all".to_string(),
+            vec!["dep:optdep".to_string(), "optdep/feature".to_string()],
+        );
+        manifest.dependencies.insert(
+            "optdep".to_string(),
+            cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                path: Some("optdep".to_string()),
+                optional: true,
+                ..Default::default()
+            })),
+        );
+        manifest
+            .target
+            .entry("cfg(target_os = \"macos\")".to_string())
+            .or_default()
+            .dependencies
+            .insert(
+                "targetdep".to_string(),
+                cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                    path: Some("targetdep".to_string()),
+                    ..Default::default()
+                })),
+            );
+        manifest.build_dependencies.insert(
+            "builddep".to_string(),
+            cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                path: Some("builddep".to_string()),
+                ..Default::default()
+            })),
+        );
+        manifest
+    }
+
+    /// The probe's owned directory keeps its manifest on disk while its
+    /// `metadata` is consumed — canonicalizing a resolved package's
+    /// manifest path must not find the probe already deleted.
+    #[test]
+    fn apple_source_patches_probe_directory_outlives_metadata() -> std::io::Result<()> {
+        let tempdir = tempdir().expect("temporary probe fixture dir");
+        let host = crate::toolchain::Host::current()
+            .with_env("CARGO_HOME", tempdir.path().join("cargo-home"))
+            .with_env("CARGO_NET_OFFLINE", "true");
+
+        let base_dir = tempdir.path().join("base");
+        std::fs::create_dir_all(&base_dir)?;
+        write_fixture_crate(&base_dir.join("optdep"), "optdep", &["feature"]);
+        write_fixture_crate(&base_dir.join("targetdep"), "targetdep", &[]);
+        write_fixture_crate(&base_dir.join("builddep"), "builddep", &[]);
+
+        let manifest = probe_scoped_manifest();
+
+        let probe = smol::block_on(super::resolve_generated_probe(
+            &host,
+            &manifest,
+            &base_dir,
+            &[],
+            cargo_metadata::CargoOpt::AllFeatures,
+        ))?;
+        let probe_dir = probe.directory().to_path_buf();
+        assert!(
+            probe_dir.join("Cargo.toml").is_file(),
+            "the probe manifest exists while the probe is alive"
+        );
+        assert_all_features_resolved(&probe.metadata);
+        assert!(
+            manifest.features.contains_key("all"),
+            "the input manifest's feature table is untouched"
+        );
+        drop(probe);
+        assert!(
+            !probe_dir.exists(),
+            "the owned probe directory is gone once the probe drops"
+        );
+        Ok(())
+    }
+
+    /// The manifest the probe-preparation test isolates — the same
+    /// dependency shapes as the liveness fixture plus every product and a
+    /// `patch` row.
+    fn probe_isolation_manifest() -> cargo_toml::Manifest<()> {
+        let mut manifest = cargo_toml::Manifest::<()> {
+            package: Some(cargo_toml::Package::new(
+                "probe-app".to_string(),
+                super::cargo_semver("0.1.0"),
+            )),
+            ..Default::default()
+        };
+        manifest.features.insert(
+            "all".to_string(),
+            vec!["dep:optdep".to_string(), "optdep/feature".to_string()],
+        );
+        manifest.dependencies.insert(
+            "optdep".to_string(),
+            cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                path: Some("deps/optdep".to_string()),
+                optional: true,
+                ..Default::default()
+            })),
+        );
+        manifest.build_dependencies.insert(
+            "builddep".to_string(),
+            cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                path: Some("deps/builddep".to_string()),
+                ..Default::default()
+            })),
+        );
+        manifest
+            .target
+            .entry("cfg(target_os = \"macos\")".to_string())
+            .or_default()
+            .dependencies
+            .insert(
+                "targetdep".to_string(),
+                cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                    path: Some("deps/targetdep".to_string()),
+                    ..Default::default()
+                })),
+            );
+        manifest
+            .patch
+            .entry("crates-io".to_string())
+            .or_default()
+            .insert(
+                "patchdep".to_string(),
+                cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                    path: Some("deps/patchdep".to_string()),
+                    ..Default::default()
+                })),
+            );
+        for product in [
+            ("main.rs", &mut manifest.bin),
+            ("tests.rs", &mut manifest.test),
+            ("bench.rs", &mut manifest.bench),
+            ("ex.rs", &mut manifest.example),
+        ] {
+            product.1.push(cargo_toml::Product {
+                name: Some("probe-app".to_string()),
+                path: Some(format!("src/{}", product.0)),
+                ..Default::default()
+            });
+        }
+        manifest
+    }
+
+    /// The probe crate is an isolated copy: the caller's feature table
+    /// survives verbatim, every relative path is absolutized, the stub
+    /// library is the only product, and the managed lock seed is copied —
+    /// all before any `cargo` run. The input manifest is untouched.
+    #[test]
+    fn apple_source_patches_probe_preparation_isolates_the_manifest() -> std::io::Result<()> {
+        fn detail(dependency: &cargo_toml::Dependency) -> &cargo_toml::DependencyDetail {
+            match dependency {
+                cargo_toml::Dependency::Detailed(detail) => detail.as_ref(),
+                _ => panic!("expected a detailed dependency"),
+            }
+        }
+        let tempdir = tempdir().expect("temporary probe fixture dir");
+        let base_dir = tempdir.path().join("base");
+        std::fs::create_dir_all(&base_dir)?;
+
+        // A small valid lockfile seed — the probe must copy it
+        // byte-for-byte.
+        let seed_lock = "version = 4\n\n[[package]]\nname = \"dep\"\nversion = \"0.0.0\"\n";
+        std::fs::write(base_dir.join("Cargo.lock"), seed_lock)?;
+
+        let manifest = probe_isolation_manifest();
+        let original = manifest.clone();
+
+        let probe = smol::block_on(super::prepare_generated_probe(
+            &manifest,
+            &base_dir,
+            &["optdep"],
+        ))?;
+        let probe_manifest: cargo_toml::Manifest<()> =
+            toml::from_str(&std::fs::read_to_string(probe.path().join("Cargo.toml"))?)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+
+        assert_eq!(
+            probe_manifest.features, manifest.features,
+            "feature table verbatim"
+        );
+        let abs = |path: &Option<String>| {
+            assert!(std::path::Path::new(path.as_deref().unwrap()).is_absolute());
+        };
+        abs(&detail(&probe_manifest.dependencies["optdep"]).path);
+        abs(&detail(&probe_manifest.build_dependencies["builddep"]).path);
+        abs(&detail(
+            &probe_manifest.target["cfg(target_os = \"macos\")"].dependencies["targetdep"],
+        )
+        .path);
+        abs(&detail(&probe_manifest.patch["crates-io"]["patchdep"]).path);
+        assert!(
+            !detail(&probe_manifest.dependencies["optdep"]).optional,
+            "the unresolved target is non-optional in the probe"
+        );
+        assert!(probe_manifest.lib.is_some(), "the stub library is declared");
+        assert!(
+            probe_manifest.bin.is_empty()
+                && probe_manifest.test.is_empty()
+                && probe_manifest.bench.is_empty()
+                && probe_manifest.example.is_empty()
+        );
+        assert_eq!(
+            std::fs::read(probe.path().join("Cargo.lock"))?,
+            seed_lock.as_bytes(),
+            "the managed lock seed is copied byte-for-byte"
+        );
+        assert_eq!(manifest, original, "the input manifest is untouched");
+        assert!(
+            !base_dir.join("Cargo.toml").exists(),
+            "no Cargo.toml was written to the real crate dir"
+        );
+        Ok(())
+    }
+
     /// A fake checkout patching `waterui-core` to its own `core/`, and a
     /// project beside it at `app/` with the given `Cargo.toml`, returning the
     /// Apple companion's context and directory.
@@ -3388,9 +3645,29 @@ mod tests {
         let mut text = std::fs::read_to_string(&root_manifest).expect("checkout manifest");
         text.push_str("\n[patch.crates-io]\nwaterui-core = { path = \"core\" }\n");
         std::fs::write(&root_manifest, text).expect("checkout patch table");
+        write_fixture_crate(&checkout.join("core"), "waterui-core", &[]);
         let app = directory.join("app");
         std::fs::create_dir_all(&app).expect("project dir");
-        std::fs::write(app.join("Cargo.toml"), project_manifest).expect("project manifest");
+        // The companion probes with `--all-features`, which enables the
+        // `dev` feature it forwards onto the project dependency — so the
+        // fixture manifest must declare it, merged into whatever the
+        // caller spelled.
+        let mut manifest: cargo_toml::Manifest<()> =
+            toml::from_str::<cargo_toml::Manifest<()>>(project_manifest).expect("project manifest");
+        manifest.features.entry("dev".to_string()).or_default();
+        std::fs::write(
+            app.join("Cargo.toml"),
+            toml::to_string(&manifest).expect("serialize project manifest"),
+        )
+        .expect("project manifest");
+        std::fs::create_dir_all(app.join("src")).expect("project src");
+        std::fs::write(app.join("src/lib.rs"), "// fixture\n").expect("project lib");
+        // `patched_project_*` callers declare patch rows into `vendor/` —
+        // the probe's `cargo metadata` validates each location is a real
+        // crate before the projection decides whether it stays.
+        write_fixture_crate(&app.join("vendor/forked"), "forked", &[]);
+        write_fixture_crate(&app.join("vendor/own-fork"), "own-fork", &[]);
+        write_fixture_crate(&directory.join("elsewhere/core"), "waterui-core", &[]);
         let companion_dir = directory.join("managed_backends/apple-companion");
         let ctx = ctx(Some(checkout), Some(companion_dir.clone()), Some(app));
         (ctx, companion_dir)
@@ -3403,15 +3680,49 @@ mod tests {
     /// directory kept once (#1997).
     #[test]
     fn apple_companion_scaffold_merges_the_projects_patches_with_the_frameworks() {
-        let tempdir = tempdir().expect("temporary companion scaffold dir");
+        // A space-bearing tempdir exercises the URL escaping the git
+        // fixture path needs.
+        let tempdir = tempfile::Builder::new()
+            .prefix("source patches ")
+            .tempdir()
+            .expect("temporary companion scaffold dir");
+        // The git-source patch keeps a real local repo: `cargo metadata`
+        // resolves `git` dependencies by cloning the source, so only a
+        // `file://` remote stays offline.
+        let fork_repo = tempdir.path().join("fork-repo");
+        write_fixture_crate(&fork_repo, "forked", &[]);
+        probe_git(&fork_repo, &["init", "-b", "fixture"]).expect("init fork repo");
+        crate::framework::test_fixtures::git_commit_all(&fork_repo, "fixture")
+            .expect("commit fork repo");
+        let fork_url = url::Url::from_directory_path(&fork_repo)
+            .expect("a tempdir path is a valid directory URL")
+            .to_string();
+        let mut manifest = toml::toml! {
+            [package]
+            name = "waterui_test"
+            version = "0.1.0"
+
+            [patch.crates-io]
+            waterui-core = { path = "../waterui/core" }
+            own-fork = { path = "vendor/own-fork" }
+
+            [dependencies]
+            waterui-core = "*"
+            own-fork = "*"
+        };
+        manifest["patch"].as_table_mut().unwrap().insert(
+            fork_url.clone(),
+            toml::Value::Table(toml::toml!(forked = { path = "vendor/forked" })),
+        );
+        let mut forked = toml::Table::new();
+        forked.insert("git".to_string(), toml::Value::String(fork_url.clone()));
+        manifest["dependencies"]
+            .as_table_mut()
+            .unwrap()
+            .insert("forked".to_string(), toml::Value::Table(forked));
         let (ctx, companion_dir) = patched_project_companion(
             tempdir.path(),
-            "[package]\nname = \"waterui_test\"\nversion = \"0.1.0\"\n\n\
-             [patch.crates-io]\n\
-             waterui-core = { path = \"../waterui/core\" }\n\
-             own-fork = { path = \"vendor/own-fork\" }\n\n\
-             [patch.\"https://github.com/water-rs/fork\"]\n\
-             forked = { path = \"vendor/forked\" }\n",
+            &toml::to_string(&manifest).expect("serialize project manifest"),
         );
 
         smol::block_on(crate::templates::apple_companion::scaffold(
@@ -3434,7 +3745,7 @@ mod tests {
             "the project's path patch resolves from outside the project"
         );
         assert_eq!(
-            patch["https://github.com/water-rs/fork"]["forked"]["path"].as_str(),
+            patch[fork_url.as_str()]["forked"]["path"].as_str(),
             Some(normalize_path_for_config(&app.join("vendor/forked")).as_str()),
             "a git-source table of the project is carried too"
         );
@@ -3458,7 +3769,8 @@ mod tests {
         let (ctx, companion_dir) = patched_project_companion(
             tempdir.path(),
             "[package]\nname = \"waterui_test\"\nversion = \"0.1.0\"\n\n\
-             [patch.crates-io]\nwaterui-core = { path = \"../elsewhere/core\" }\n",
+             [patch.crates-io]\nwaterui-core = { path = \"../elsewhere/core\" }\n\n\
+             [dependencies]\nwaterui-core = \"*\"\n",
         );
 
         smol::block_on(crate::templates::apple_companion::scaffold(
@@ -5250,7 +5562,55 @@ async fn configure_apple_target_tables(
         smol::unblock(move || generated_crate_patches(&ctx)).await?
     };
 
-    configure_capability_forwards(host, manifest, base_dir).await
+    configure_capability_forwards(host, manifest, base_dir).await?;
+
+    // The resolved graph decides which source patches Cargo will actually
+    // apply — a row whose target never enters it is the `patch ... was
+    // not used` warning, so the manifest writes only the rows an
+    // all-features resolve of itself selects.
+    project_source_patches(host, manifest, base_dir).await
+}
+
+/// Replaces `manifest`'s patch tables with the rows a full resolve of the
+/// manifest actually selects — the unused `patch` rows Cargo would warn
+/// about. Skipped entirely when the merged set has no `path`/`git` rows
+/// to project.
+///
+/// # Errors
+///
+/// The probe resolve and the selection must succeed.
+async fn project_source_patches(
+    host: &crate::toolchain::Host,
+    manifest: &mut cargo_toml::Manifest<()>,
+    base_dir: &Path,
+) -> io::Result<()> {
+    let has_source_rows = manifest
+        .patch
+        .values()
+        .flat_map(|table| table.values())
+        .any(|dependency| {
+            matches!(
+                dependency,
+                cargo_toml::Dependency::Detailed(detail)
+                    if detail.path.is_some() || detail.git.is_some()
+            )
+        });
+    if !has_source_rows {
+        return Ok(());
+    }
+    let probe = resolve_generated_probe(
+        host,
+        manifest,
+        base_dir,
+        &[],
+        cargo_metadata::CargoOpt::AllFeatures,
+    )
+    .await?;
+    let projected =
+        crate::patch_tables::resolved_source_patches(&manifest.patch, &probe.metadata, base_dir)
+            .await?;
+    manifest.patch = projected;
+    Ok(())
 }
 
 /// Apple backend templates.
@@ -5857,9 +6217,7 @@ pub mod hydrolysis {
                         NativeBackendDependencySpec::new(
                             "waterui-browser-cef",
                             &[],
-                            NativeBackendDependencySource::WorkspaceSubdir(
-                                "components/platform/browser-cef",
-                            ),
+                            NativeBackendDependencySource::WorkspaceDependency,
                         ),
                     )?),
                 );
@@ -7372,6 +7730,119 @@ fn absolutize_probe_paths(
     }
 }
 
+/// Resolves a generated manifest's dependency graph in an owned probe
+/// copy — a temporary crate inside `manifest_dir`'s `target` directory
+/// (never `/tmp`) declaring a stub library, the caller's feature
+/// selection, and a copy of the managed `Cargo.lock` seed when one is
+/// already in place. The input's feature table is used as given — the
+/// forward caller clears its copy first, the patch-projection caller
+/// passes the final manifest verbatim.
+///
+/// # Errors
+///
+/// The probe directory, manifest, stub, or `cargo metadata` run must
+/// succeed.
+async fn resolve_generated_probe(
+    host: &crate::toolchain::Host,
+    manifest: &cargo_toml::Manifest<()>,
+    manifest_dir: &Path,
+    unresolved: &[&str],
+    features: cargo_metadata::CargoOpt,
+) -> io::Result<GeneratedProbe> {
+    let probe_dir = prepare_generated_probe(manifest, manifest_dir, unresolved).await?;
+    let manifest_path = probe_dir.path().join("Cargo.toml");
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.manifest_path(&manifest_path);
+    command.current_dir(manifest_dir);
+    command.features(features);
+    let metadata = host.cargo_metadata(&command).await.map_err(|error| {
+        io::Error::other(format!(
+            "cannot resolve the dependency graph of the generated manifest at {} \
+             (probe {}): {error}",
+            manifest_dir.join("Cargo.toml").display(),
+            manifest_path.display(),
+        ))
+    })?;
+    Ok(GeneratedProbe {
+        metadata,
+        _directory: probe_dir,
+    })
+}
+
+/// Writes the isolated probe crate [`resolve_generated_probe`] resolves —
+/// the manifest clone with its own workspace, a stub library and no other
+/// products, every relative path absolutized — and copies the managed
+/// `Cargo.lock` seed into it when one exists. The returned directory
+/// keeps the probe manifest on disk until the caller drops it.
+///
+/// # Errors
+///
+/// The probe directory, lock copy, manifest write, or stub write must
+/// succeed.
+async fn prepare_generated_probe(
+    manifest: &cargo_toml::Manifest<()>,
+    manifest_dir: &Path,
+    unresolved: &[&str],
+) -> io::Result<tempfile::TempDir> {
+    let mut probe = manifest.clone();
+    probe.workspace = Some(cargo_toml::Workspace::default());
+    // The probe resolves before the template sources land, so it declares
+    // no products — their files are not on disk — and gets the single
+    // target Cargo insists on, a stub `src/lib.rs` written beside it
+    // below.
+    probe.lib = Some(cargo_toml::Product {
+        path: Some("src/lib.rs".to_string()),
+        ..cargo_toml::Product::default()
+    });
+    probe.bin.clear();
+    probe.test.clear();
+    probe.bench.clear();
+    probe.example.clear();
+    absolutize_probe_paths(&mut probe, manifest_dir, unresolved);
+
+    let probe_root = manifest_dir.join("target");
+    fs::create_dir_all(&probe_root).await?;
+    let probe_dir = smol::unblock(move || tempfile::tempdir_in(&probe_root)).await?;
+    let lock = manifest_dir.join("Cargo.lock");
+    // The managed lock seed rides into the probe so it resolves the same
+    // graph the build will, pins and all. A missing seed is valid on a
+    // first resolve; every other copy failure propagates.
+    match fs::copy(&lock, probe_dir.path().join("Cargo.lock")).await {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+        _ => {}
+    }
+    let manifest_path = probe_dir.path().join("Cargo.toml");
+    let toml_string = toml::to_string_pretty(&probe)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    fs::create_dir_all(probe_dir.path().join("src")).await?;
+    let write_manifest = fs::write(&manifest_path, toml_string.as_bytes());
+    let write_stub = fs::write(probe_dir.path().join("src/lib.rs"), "// probe target\n");
+    smol::future::try_zip(write_manifest, write_stub).await?;
+    Ok(probe_dir)
+}
+
+/// A probe's resolved metadata alongside the owned directory that keeps
+/// its manifest alive — canonicalizing the resolved packages' manifest
+/// paths touches it, so the directory outlives every consumer's read.
+struct GeneratedProbe {
+    metadata: cargo_metadata::Metadata,
+    // Held for its `Drop`: the probe's manifest paths stay on disk while
+    // any consumer of `metadata` may canonicalize them.
+    _directory: tempfile::TempDir,
+}
+
+impl GeneratedProbe {
+    /// The probe's owned directory, alive for as long as `self` is. The
+    /// field is underscore-named — held only for `Drop` — and the test
+    /// reads it exactly here.
+    #[cfg(test)]
+    #[allow(clippy::used_underscore_binding)]
+    fn directory(&self) -> &Path {
+        self._directory.path()
+    }
+}
+
 async fn probe_forward_tables(
     host: &crate::toolchain::Host,
     manifest: &cargo_toml::Manifest<()>,
@@ -7379,44 +7850,24 @@ async fn probe_forward_tables(
     unresolved: &[&str],
 ) -> io::Result<FeatureTables> {
     let generated_manifest = manifest_dir.join("Cargo.toml");
-    let mut probe = manifest.clone();
-    probe.features.clear();
-    probe.workspace = Some(cargo_toml::Workspace::default());
-    // The probe resolves before the template sources land, so it declares no
-    // products — their files are not on disk — and gets the single target
-    // Cargo insists on, a stub `src/lib.rs` written beside it below.
-    probe.lib = None;
-    probe.bin.clear();
-    probe.test.clear();
-    probe.bench.clear();
-    probe.example.clear();
-    absolutize_probe_paths(&mut probe, manifest_dir, unresolved);
-
-    let probe_dir = tempfile::tempdir_in(host.temp_dir())?;
-    let manifest_path = probe_dir.path().join("Cargo.toml");
-    let toml_string = toml::to_string_pretty(&probe)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    fs::create_dir_all(probe_dir.path().join("src")).await?;
-    fs::write(probe_dir.path().join("src/lib.rs"), "// probe target\n").await?;
-    fs::write(&manifest_path, toml_string.as_bytes()).await?;
-    let metadata = crate::project_model::assets::crate_metadata(host, &manifest_path, &[])
-        .await
-        .map_err(|error| {
-            io::Error::other(format!(
-                "cannot resolve the dependency graph of the generated manifest at {} \
-                 (probe {}): {error}",
-                generated_manifest.display(),
-                manifest_path.display(),
-            ))
-        })?;
+    let mut probe_manifest = manifest.clone();
+    probe_manifest.features.clear();
+    let probe = resolve_generated_probe(
+        host,
+        &probe_manifest,
+        manifest_dir,
+        unresolved,
+        cargo_metadata::CargoOpt::SomeFeatures(vec![]),
+    )
+    .await?;
+    let metadata = &probe.metadata;
 
     let resolve = metadata.resolve.as_ref().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "the generated manifest at {} resolved no dependency graph (probe {})",
+                "the generated manifest at {} resolved no dependency graph",
                 generated_manifest.display(),
-                manifest_path.display(),
             ),
         )
     })?;
@@ -7428,9 +7879,8 @@ async fn probe_forward_tables(
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "the generated manifest at {} resolved without a root node (probe {})",
+                    "the generated manifest at {} resolved without a root node",
                     generated_manifest.display(),
-                    manifest_path.display(),
                 ),
             )
         })?;
@@ -7450,9 +7900,8 @@ async fn probe_forward_tables(
                     io::ErrorKind::InvalidData,
                     format!(
                         "`{target}` is a dependency of the generated manifest at {} \
-                         but resolved no package named `{target}` (probe {})",
+                         but resolved no package named `{target}`",
                         generated_manifest.display(),
-                        manifest_path.display(),
                     ),
                 )
             })?;

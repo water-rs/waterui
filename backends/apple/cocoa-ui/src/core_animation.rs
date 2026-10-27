@@ -255,25 +255,26 @@ pub fn animate_with(timing: Timing, body: impl FnOnce() + 'static) {
     }
 }
 
-/// Writes `layer`'s transform with implicit actions disabled — an
-/// `NSAnimationContext`-free set, for transforms `AppKit` would otherwise
-/// animate as implicit layer changes.
+/// Writes `layer`'s `sublayerTransform` — the transform it applies to its
+/// children — with implicit actions disabled, for transforms `AppKit`
+/// would otherwise animate as implicit layer changes.
 ///
-/// `AppKit` owns a layer-backed view's layer geometry, so the transform is
-/// set on the layer inside a `CATransaction` that suppresses the implicit
-/// animation.
+/// `AppKit` owns a layer-backed view's layer geometry and rewrites a
+/// subview layer's `transform` at display time; `sublayerTransform` on
+/// the parent is not part of that sync, so a view-level transform lives
+/// here.
 #[cfg(target_os = "macos")]
-pub fn set_layer_transform(layer: &objc2_quartz_core::CALayer, transform: CATransform3D) {
+pub fn set_sublayer_transform(layer: &objc2_quartz_core::CALayer, transform: CATransform3D) {
     use objc2_quartz_core::CATransaction;
 
     CATransaction::begin();
     CATransaction::setDisableActions(true);
-    layer.setTransform(transform);
+    layer.setSublayerTransform(transform);
     CATransaction::commit();
 }
 
-/// Moves `layer`'s transform to `transform`, animating the `transform`
-/// keypath under `timing` — `None` writes it directly.
+/// Moves `layer`'s `sublayerTransform` to `transform`, animating the
+/// `sublayerTransform` keypath under `timing` — `None` writes it directly.
 ///
 /// The explicit `CAAnimation` runs on the compositor so it survives the
 /// layout passes that rewrite the layer's geometry; `key` identifies it so
@@ -281,7 +282,7 @@ pub fn set_layer_transform(layer: &objc2_quartz_core::CALayer, transform: CATran
 /// presentation layer, so a mid-flight change starts from where the screen
 /// actually is.
 #[cfg(target_os = "macos")]
-pub fn animate_layer_transform(
+pub fn animate_sublayer_transform(
     layer: &objc2_quartz_core::CALayer,
     transform: CATransform3D,
     key: &str,
@@ -295,7 +296,7 @@ pub fn animate_layer_transform(
     };
 
     let Some(timing) = timing else {
-        set_layer_transform(layer, transform);
+        set_sublayer_transform(layer, transform);
         return;
     };
 
@@ -304,8 +305,8 @@ pub fn animate_layer_transform(
     // SAFETY: `presentationLayer` is a documented accessor on a live layer.
     let from = unsafe {
         layer.presentationLayer().map_or_else(
-            || layer.transform(),
-            |presentation| presentation.transform(),
+            || layer.sublayerTransform(),
+            |presentation| presentation.sublayerTransform(),
         )
     };
     layer.removeAnimationForKey(&NSString::from_str(key));
@@ -326,7 +327,8 @@ pub fn animate_layer_transform(
             duration,
             control_points: [x1, y1, x2, y2],
         } => {
-            let basic = CABasicAnimation::animationWithKeyPath(Some(ns_string!("transform")));
+            let basic =
+                CABasicAnimation::animationWithKeyPath(Some(ns_string!("sublayerTransform")));
             basic.setDuration(duration);
             let function = CAMediaTimingFunction::functionWithControlPoints(x1, y1, x2, y2);
             basic.setTimingFunction(Some(&function));
@@ -339,7 +341,8 @@ pub fn animate_layer_transform(
             unsafe { Retained::cast_unchecked(basic) }
         }
         Timing::Spring { stiffness, damping } => {
-            let spring = CASpringAnimation::animationWithKeyPath(Some(ns_string!("transform")));
+            let spring =
+                CASpringAnimation::animationWithKeyPath(Some(ns_string!("sublayerTransform")));
             spring.setMass(1.0);
             spring.setStiffness(stiffness);
             spring.setDamping(damping);
@@ -359,7 +362,7 @@ pub fn animate_layer_transform(
     // Animation exports.
     animation.setFillMode(unsafe { kCAFillModeBoth });
 
-    set_layer_transform(layer, transform);
+    set_sublayer_transform(layer, transform);
     layer.addAnimation_forKey(&animation, Some(&NSString::from_str(key)));
 }
 /// Sets a layer's frame — the presentation plane updates

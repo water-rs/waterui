@@ -235,7 +235,7 @@ fn convolve(
         .par_chunks_mut(to.width())
         .enumerate()
         .for_each(|(y, row)| {
-            fearless_simd::dispatch!(level, _simd => {
+            cherenkov_simd::dispatch!(level, _simd => {
                 for (x, out) in row.iter_mut().enumerate() {
                     if mode == 2 {
                         *out = 1.0;

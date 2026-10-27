@@ -22,16 +22,16 @@ use waterui_text::styled::{Style, StyledStr};
 /// drives the input model + accessibility, and its floating label is held as a
 /// [`RetainedSubview`] built once and re-flushed each frame under the animated
 /// label transform so reactive label content stays live.
-pub struct TextFieldRenderState {
+pub struct TextFieldRenderState<E: crate::text::TextEngine> {
     config: ResolvedTextFieldConfig,
-    label_view: RetainedSubview,
+    label_view: RetainedSubview<E>,
     /// The caret/selection anchor+focus for this field, owned by the node so it
     /// persists across frames without a renderer-global, flush-order-indexed slot
     /// pool. Node-owned control state is reset only when this node is dropped.
     selection_slot: Rc<RefCell<TextSelectionSlot>>,
 }
 
-impl TextFieldRenderState {
+impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
     pub(crate) fn from_config(config: ResolvedTextFieldConfig) -> Self {
         Self {
             label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
@@ -44,7 +44,7 @@ impl TextFieldRenderState {
     /// `&mut HydroState`, no renderer, so it must be built before then).
     pub(crate) fn prebuild(
         &mut self,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         self.label_view.ensure_built(renderer, env);
@@ -62,14 +62,14 @@ impl TextFieldRenderState {
 /// drives the input model + accessibility, and its floating label is held as a
 /// [`RetainedSubview`] built once and re-flushed each frame under the animated
 /// label transform so reactive label content stays live.
-pub struct SecureFieldRenderState {
+pub struct SecureFieldRenderState<E: crate::text::TextEngine> {
     config: SecureFieldConfig,
-    label_view: RetainedSubview,
+    label_view: RetainedSubview<E>,
     /// Node-owned caret/selection state; see [`TextFieldRenderState::selection_slot`].
     selection_slot: Rc<RefCell<TextSelectionSlot>>,
 }
 
-impl SecureFieldRenderState {
+impl<E: crate::text::TextEngine> SecureFieldRenderState<E> {
     pub(crate) fn from_config(config: SecureFieldConfig) -> Self {
         Self {
             label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
@@ -82,7 +82,7 @@ impl SecureFieldRenderState {
     /// `&mut HydroState`, no renderer, so it must be built before then).
     pub(crate) fn prebuild(
         &mut self,
-        renderer: &mut crate::renderer::SemanticCore,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         self.label_view.ensure_built(renderer, env);
@@ -112,9 +112,9 @@ const CONTENT_ENTER_DELAY_PORTION: f32 = 1.0 - CONTENT_VISIBLE_PORTION;
 const TEXT_FIELD_LABEL_ANIMATION_KEY: usize = 1;
 const SECURE_FIELD_LABEL_ANIMATION_KEY: usize = 2;
 
-impl HydroNativeView for Native<ResolvedTextFieldConfig> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedTextFieldConfig> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -123,7 +123,7 @@ impl HydroNativeView for Native<ResolvedTextFieldConfig> {
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -137,9 +137,9 @@ impl HydroNativeView for Native<ResolvedTextFieldConfig> {
     }
 }
 
-impl HydroNativeView for Native<SecureFieldConfig> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SecureFieldConfig> {
     fn intrinsic(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -148,7 +148,7 @@ impl HydroNativeView for Native<SecureFieldConfig> {
     }
 
     fn dimensions(
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -171,9 +171,9 @@ impl HydroNativeView for Native<SecureFieldConfig> {
 /// render-driven a11y, so the inline a11y is emitted by `render_text_field_parts`
 /// itself; this node suppresses it when the field is accessibility-hidden (the
 /// dispatch path's render-driven suppression contract).
-pub fn render_text_field_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<TextFieldRenderState>>,
+pub fn render_text_field_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<TextFieldRenderState<E>>>,
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
@@ -195,9 +195,9 @@ pub fn render_text_field_node(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn render_text_field_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<TextFieldRenderState>>,
+pub fn render_text_field_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<TextFieldRenderState<E>>>,
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
@@ -233,7 +233,7 @@ pub fn render_text_field_parts(
     };
     #[cfg(feature = "accessibility")]
     let default_accessibility_label =
-        crate::renderer::SemanticCore::accessibility_label_from_label(&label, env);
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
     #[cfg(not(feature = "accessibility"))]
     let _ = label;
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
@@ -255,15 +255,16 @@ pub fn render_text_field_parts(
             default_accessibility_label.or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
         let local = ctx.bounds;
         let bounds = local;
-        let mut node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 if line_limit == Some(1) {
                     AccessibilityNodeRole::TextInput
                 } else {
                     AccessibilityNodeRole::MultilineTextInput
                 },
-            ));
+            ),
+        );
         let label = ctx
             .renderer_mut()
             .resolve_accessibility_label(env, default_label);
@@ -585,9 +586,9 @@ pub fn render_text_field_parts(
 /// render-driven a11y, so the inline a11y is emitted by `render_secure_field_parts`
 /// itself; this node suppresses it when the field is accessibility-hidden (the
 /// dispatch path's render-driven suppression contract).
-pub fn render_secure_field_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<SecureFieldRenderState>>,
+pub fn render_secure_field_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<SecureFieldRenderState<E>>>,
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
@@ -609,9 +610,9 @@ pub fn render_secure_field_node(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn render_secure_field_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<SecureFieldRenderState>>,
+pub fn render_secure_field_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<SecureFieldRenderState<E>>>,
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
@@ -635,7 +636,7 @@ pub fn render_secure_field_parts(
     };
     #[cfg(feature = "accessibility")]
     let default_accessibility_label =
-        crate::renderer::SemanticCore::accessibility_label_from_label(&label, env);
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
     #[cfg(not(feature = "accessibility"))]
     let _ = label;
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
@@ -650,11 +651,12 @@ pub fn render_secure_field_parts(
             .count();
         let local = ctx.bounds;
         let bounds = local;
-        let mut node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::PasswordInput,
-            ));
+            ),
+        );
         let label = ctx
             .renderer_mut()
             .resolve_accessibility_label(env, default_accessibility_label);
@@ -860,10 +862,10 @@ pub fn render_secure_field_parts(
 /// Measures a retained text-field leaf from its [`TextFieldRenderState`], mirroring
 /// [`measure_text_field_intrinsic`] but reading the label size from its already-built
 /// [`RetainedSubview`] so layout and the floating-label render agree.
-pub fn measure_text_field_node(
-    render_state: &TextFieldRenderState,
+pub fn measure_text_field_node<E: crate::text::TextEngine>(
+    render_state: &TextFieldRenderState<E>,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -881,10 +883,10 @@ pub fn measure_text_field_node(
 /// Measures a retained secure-field leaf from its [`SecureFieldRenderState`],
 /// mirroring [`measure_secure_field_intrinsic`] but reading the label size from its
 /// already-built [`RetainedSubview`] so layout and the floating-label render agree.
-pub fn measure_secure_field_node(
-    render_state: &SecureFieldRenderState,
+pub fn measure_secure_field_node<E: crate::text::TextEngine>(
+    render_state: &SecureFieldRenderState<E>,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -954,10 +956,10 @@ fn material_input_resting_label_rect(
     clippy::too_many_arguments,
     reason = "threads the full flush context; grouping into a struct would not improve clarity"
 )]
-fn flush_material_label(
-    ctx: &mut WidgetRenderContext<'_>,
+fn flush_material_label<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     env: &Environment,
-    label_view: &mut RetainedSubview,
+    label_view: &mut RetainedSubview<E>,
     field_rect: kurbo::Rect,
     horizontal_inset: f64,
     label_height: f64,
@@ -1013,8 +1015,8 @@ fn material_input_content_alpha(has_label: bool, progress: f32) -> f32 {
     clippy::too_many_arguments,
     reason = "threads the full flush context; grouping into a struct would not improve clarity"
 )]
-fn flush_material_prompt_label(
-    ctx: &mut WidgetRenderContext<'_>,
+fn flush_material_prompt_label<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
     env: &Environment,
     prompt_styled: StyledStr,
     field_rect: kurbo::Rect,
@@ -1125,9 +1127,9 @@ fn material_input_cursor_rect(
     clippy::too_many_lines,
     reason = "the emission walks every text-field element in one ordered sequence; splitting it would obscure the node ordering"
 )]
-pub fn emit_text_field_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<TextFieldRenderState>>,
+pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<TextFieldRenderState<E>>>,
     env: &Environment,
 ) {
     if env
@@ -1154,22 +1156,23 @@ pub fn emit_text_field_accessibility(
         )
     };
     let default_accessibility_label =
-        crate::renderer::SemanticCore::accessibility_label_from_label(&label, env);
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
     let line_limit = line_limit_raw.map(NonZeroUsize::get);
     {
         let prompt = renderer.read_signal(&prompt_signal).to_plain().to_string();
         let value = renderer.read_signal(&value_binding).to_plain().to_string();
         let default_label =
             default_accessibility_label.or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
-        let mut node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 if line_limit == Some(1) {
                     AccessibilityNodeRole::TextInput
                 } else {
                     AccessibilityNodeRole::MultilineTextInput
                 },
-            ));
+            ),
+        );
         let label = renderer.resolve_accessibility_label(env, default_label);
         if let Some(label) = label {
             node.set_label(label);
@@ -1242,9 +1245,9 @@ pub fn emit_text_field_accessibility(
 /// for the semantic walk — the same node `render_secure_field_parts`
 /// registers, with no bounds.
 #[cfg(feature = "accessibility")]
-pub fn emit_secure_field_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<SecureFieldRenderState>>,
+pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<SecureFieldRenderState<E>>>,
     env: &Environment,
 ) {
     if env
@@ -1264,18 +1267,19 @@ pub fn emit_secure_field_accessibility(
         (secure_field.label.clone(), secure_field.value.clone())
     };
     let default_accessibility_label =
-        crate::renderer::SemanticCore::accessibility_label_from_label(&label, env);
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
     {
         let secure_len = renderer
             .read_signal(&value_binding)
             .expose()
             .chars()
             .count();
-        let mut node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::PasswordInput,
-            ));
+            ),
+        );
         let label = renderer.resolve_accessibility_label(env, default_accessibility_label);
         if let Some(label) = label {
             node.set_label(label);

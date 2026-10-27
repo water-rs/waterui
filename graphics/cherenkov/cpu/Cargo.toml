@@ -27,7 +27,7 @@ half = "2"
 rayon = "1"
 rustc-hash = "2"
 tracing = "0.1"
-wide = { version = "1.7.1", default-features = false }
+cherenkov-simd = { version = "0.0.0", path = "../simd", default-features = false, features = ["std"] }
 
 [target.'cfg(any(target_vendor = "apple", target_os = "android"))'.dependencies]
 libc = "0.2"

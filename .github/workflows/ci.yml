@@ -105,7 +105,7 @@ jobs:
       code: ${{ steps.prose.outputs.code == 'true' || steps.filter.outputs.workflows == 'true' }}
       deps: ${{ steps.filter.outputs.deps == 'true' || steps.filter.outputs.workflows == 'true' }}
       scripts: ${{ steps.filter.outputs.scripts == 'true' || steps.filter.outputs.workflows == 'true' }}
-      android: ${{ steps.filter.outputs.android == 'true' || steps.filter.outputs.workflows == 'true' }}
+      android: ${{ steps.filter.outputs.android == 'true' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'push'
@@ -134,6 +134,16 @@ jobs:
               - "backends/hydrolysis/android/**"
               # `[package.metadata.waterui]`'s Android keys drive the scaffold.
               - "Cargo.toml"
+              # The packaging job's workflow and transitive local action inputs.
+              # Keep these with the android-package job's setup below.
+              - ".github/workflows/ci.yml"
+              - ".github/actions/setup-rust/action.yml"
+              - ".github/actions/cargo-sources/action.yml"
+              - ".github/actions/cache-headroom/action.yml"
+              - ".github/actions/setup-android-ndk/action.yml"
+              - ".github/actions/install-android-platform/action.yml"
+              - ".github/actions/setup-linux-deps/action.yml"
+              - ".github/actions/refresh-apt-index/refresh.sh"
             workflows:
               - ".github/workflows/**"
               - ".github/actions/**"

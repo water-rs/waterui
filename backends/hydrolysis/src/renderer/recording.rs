@@ -148,6 +148,14 @@ enum Op {
         transform: Affine,
         picture: waterui_graphics::draw::Picture,
     },
+    /// A platform text layout, drawn through the retained lease the painter
+    /// handed over — the HWUI seam (water-rs/waterui#1811).
+    #[cfg(any(test, hydrolysis_hwui))]
+    Text {
+        resource: Arc<crate::hwui::text::TextLayoutResource>,
+        transform: Affine,
+        clip: Option<Rect>,
+    },
     PopLayer,
 }
 
@@ -188,7 +196,7 @@ fn fit_image_to_limits(
     image: &peniko::ImageData,
     limits: waterui_graphics::draw::ImageLimits,
 ) -> (u32, u32, Arc<[u8]>) {
-    let (width, height) = limits.fit(image.width, image.height);
+    let (width, height) = limits.fit::<waterui_graphics::draw::Rgba8>(image.width, image.height);
     assert!(
         (width, height) != (0, 0),
         "hydrolysis renderer: engine image limits admit no image at all"
@@ -307,6 +315,10 @@ pub struct LoweringNames<'a> {
     table: RecordingResources<'a>,
     fonts: FxHashMap<FontKey, Rc<Cached<FontKey, FontId>>>,
     images: FxHashMap<ImageKey, Rc<Cached<ImageKey, ImageId>>>,
+    /// Text-layout leases this recording's `Text` ops name.
+    #[cfg(any(test, hydrolysis_hwui))]
+    text_layouts:
+        FxHashMap<waterui_graphics::draw::TextLayoutId, Arc<crate::hwui::text::TextLayoutResource>>,
 }
 
 impl LoweringNames<'_> {
@@ -316,6 +328,8 @@ impl LoweringNames<'_> {
             held: self.table.finish(),
             fonts: self.fonts.into_values().collect(),
             images: self.images.into_values().collect(),
+            #[cfg(any(test, hydrolysis_hwui))]
+            text_layouts: self.text_layouts.into_values().collect(),
         }
     }
 }
@@ -330,15 +344,21 @@ pub struct LoweredResources {
     held: HeldResources,
     fonts: Box<[Rc<Cached<FontKey, FontId>>]>,
     images: Box<[Rc<Cached<ImageKey, ImageId>>]>,
+    /// The text-layout leases installed content still names: the layout
+    /// lives until the last installed recording holding it is replaced.
+    #[cfg(any(test, hydrolysis_hwui))]
+    text_layouts: Box<[Arc<crate::hwui::text::TextLayoutResource>]>,
 }
 
 impl fmt::Debug for LoweredResources {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LoweredResources")
-            .field("held", &self.held)
+        let mut d = f.debug_struct("LoweredResources");
+        d.field("held", &self.held)
             .field("fonts", &self.fonts.len())
-            .field("images", &self.images.len())
-            .finish()
+            .field("images", &self.images.len());
+        #[cfg(any(test, hydrolysis_hwui))]
+        d.field("text_layouts", &self.text_layouts.len());
+        d.finish()
     }
 }
 
@@ -376,7 +396,7 @@ impl SceneResources {
     }
 
     /// Creates caches over the registration table `inner`.
-    fn over(inner: waterui_graphics::SceneResources) -> Self {
+    pub(crate) fn over(inner: waterui_graphics::SceneResources) -> Self {
         Self {
             inner,
             fonts: IdentityCache::new(),
@@ -390,6 +410,8 @@ impl SceneResources {
     fn recording(&self) -> LoweringNames<'_> {
         LoweringNames {
             table: self.inner.recording(),
+            #[cfg(any(test, hydrolysis_hwui))]
+            text_layouts: FxHashMap::default(),
             fonts: FxHashMap::default(),
             images: FxHashMap::default(),
         }
@@ -671,6 +693,22 @@ impl Recording {
         self.ops.push(Op::Picture { transform, picture });
     }
 
+    /// Draws the platform text layout `resource` leases, under `transform`
+    /// and clipped to `clip` in layout-local coordinates.
+    #[cfg(any(test, hydrolysis_hwui))]
+    pub(crate) fn draw_platform_text(
+        &mut self,
+        resource: Arc<crate::hwui::text::TextLayoutResource>,
+        transform: Affine,
+        clip: Option<Rect>,
+    ) {
+        self.ops.push(Op::Text {
+            resource,
+            transform,
+            clip,
+        });
+    }
+
     /// Draws `shape`'s Gaussian-blurred silhouette in `color` under
     /// `transform` — `sigma` in the shape's units.
     pub(crate) fn shadow<S: Shape + 'static>(
@@ -746,6 +784,8 @@ impl Recording {
                 | Op::Shadow { transform, .. }
                 | Op::PushGroup { transform, .. }
                 | Op::Picture { transform, .. } => *transform = placement * *transform,
+                #[cfg(any(test, hydrolysis_hwui))]
+                Op::Text { transform, .. } => *transform = placement * *transform,
                 Op::PopLayer => {}
             }
             op
@@ -1151,6 +1191,25 @@ fn lower(
                 });
             }
             Op::Picture { transform, picture } => recorder.picture(picture, *transform),
+            #[cfg(any(test, hydrolysis_hwui))]
+            Op::Text {
+                resource,
+                transform,
+                clip,
+            } => {
+                let id = resource.id();
+                names
+                    .text_layouts
+                    .entry(id)
+                    .or_insert_with(|| Arc::clone(resource));
+                if let Some(clip) = clip {
+                    recorder.transform(*transform, |r| {
+                        r.clip(*clip, |r| r.text(id, Affine::IDENTITY));
+                    });
+                } else {
+                    recorder.text(id, *transform);
+                }
+            }
             Op::PopLayer => return,
         }
     }
@@ -1486,6 +1545,50 @@ mod tests {
         }
     }
 
+    /// The HWUI text seam: a recording's `Text` op names the layout by
+    /// lease, and the lowered resources keep it live until the installed
+    /// content is replaced (water-rs/waterui#1811).
+    #[test]
+    fn a_platform_text_op_installs_its_layout_lease() {
+        let ids = crate::hwui::text::TextLayoutIds::new();
+        let wire = ids.acquire().expect("a fresh table has ids");
+        let resource = Arc::new(crate::hwui::text::TextLayoutResource::new(wire, ids));
+        let weak = Arc::downgrade(&resource);
+        let layout_id = waterui_graphics::draw::TextLayoutId::new(u64::from(wire));
+
+        let mut recording = Recording::new();
+        recording.draw_platform_text(
+            Arc::clone(&resource),
+            Affine::translate((3.0, 4.0)),
+            Some(Rect::new(0.0, 0.0, 30.0, 20.0)),
+        );
+
+        // The resource also survives a clone through `append` into a placed
+        // recording — the same lease, under a composed transform.
+        let mut placed = Recording::new();
+        placed.append(&recording, Affine::translate((7.0, 9.0)));
+        drop(recording);
+
+        let mount = NullMount::new();
+        let mut lowered = None;
+        let content = mount.surface.record(|recorder| {
+            lowered = Some(placed.record_on(recorder, &mount.resources));
+        });
+        assert!(content.references(waterui_graphics::draw::ResourceId::TextLayout(layout_id)));
+
+        drop(placed);
+        drop(resource);
+        assert!(
+            weak.upgrade().is_some(),
+            "installed content keeps the layout lease live"
+        );
+        drop(lowered);
+        assert!(
+            weak.upgrade().is_none(),
+            "the last installed set releases the lease"
+        );
+    }
+
     /// A recording of one text run in `font`, over a fill painted with
     /// `photo` when there is one.
     fn page(font: &FontData, photo: Option<&peniko::ImageData>) -> Recording {
@@ -1598,7 +1701,8 @@ mod tests {
         let (events, _events) = std::sync::mpsc::channel();
         let limits = waterui_graphics::draw::ImageLimits {
             max_dimension: 8,
-            max_texels: 64,
+            max_bytes: 64 * 4,
+            ..waterui_graphics::draw::ImageLimits::UNLIMITED
         };
         let engine = std::rc::Rc::new(
             cherenkov::Engine::<cherenkov::testing::Null>::new(cherenkov::testing::NullConfig {
@@ -1618,7 +1722,7 @@ mod tests {
             height: side,
         };
 
-        // 36 texels, then 36 more beside them: 28 are left.
+        // 144 bytes, then 144 more beside them: 112 are left.
         resources
             .image(&mut names, &square(6, 1))
             .expect("the first image fits");
@@ -1629,7 +1733,7 @@ mod tests {
                 height,
                 available,
                 limits: reported,
-            }) => assert_eq!((width, height, available, reported), (6, 6, 28, limits)),
+            }) => assert_eq!((width, height, available, reported), (6, 6, 112, limits)),
             other => panic!("an image past the budget was registered: {other:?}"),
         }
 
@@ -1661,7 +1765,8 @@ mod tests {
         };
         let limits = waterui_graphics::draw::ImageLimits {
             max_dimension: 8,
-            max_texels: 64,
+            max_bytes: 64 * 4,
+            ..waterui_graphics::draw::ImageLimits::UNLIMITED
         };
         let (width, height, bytes) = fit_image_to_limits(&source, limits);
         assert_eq!((width, height), (8, 2));

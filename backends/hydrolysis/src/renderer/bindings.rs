@@ -5,7 +5,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(super) const fn target_hit_priority(
         depth: usize,
         order: usize,
@@ -388,7 +388,7 @@ impl SemanticCore {
         group_id
     }
 
-    pub(crate) fn register_text_input_target(&mut self, target: TextInputTargetRegistration) {
+    pub(crate) fn register_text_input_target(&mut self, target: TextInputTargetRegistration<E>) {
         #[cfg(feature = "accessibility")]
         let accessibility_node_id = self.take_pending_text_input_accessibility_node();
         self.register_text_input_target_data(text_editing::TextInputTargetData {
@@ -402,7 +402,7 @@ impl SemanticCore {
 
     pub(super) fn register_text_input_target_data(
         &mut self,
-        data: text_editing::TextInputTargetData,
+        data: text_editing::TextInputTargetData<E>,
     ) {
         // All four rects stay node-local; materialization resolves them and
         // applies the clip intersect + alpha gate.

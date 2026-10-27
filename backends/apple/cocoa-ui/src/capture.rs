@@ -430,6 +430,13 @@ pub trait CapturableSurface {
     /// than hanging. Not a substitute for [`Self::has_presented_frame`]:
     /// the wait covers `presented || failed`, nothing else.
     fn presentation_failed(&self) -> bool;
+    /// The last frame this surface put on screen, as an immutable GPU
+    /// input, or `None` when it never presented — handed back with the
+    /// surface's presentation layer. Every surface a retirement walk
+    /// reaches renders under a transition declaration and is armed.
+    /// Called once, during a transition's retirement walk, while the
+    /// surface is still live.
+    fn take_frozen_frame(&self) -> (Option<FrozenSurface>, Retained<CAMetalLayer>);
 }
 
 impl fmt::Debug for dyn CapturableSurface {
@@ -1519,11 +1526,12 @@ pub fn resolve_capturable(view: &PlatformView) -> Option<Rc<dyn CapturableSurfac
     None
 }
 
-/// The one subtree walk the capture paths share: `visit` receives each
-/// resolved capturable surface and the view carrying it; a resolved
-/// view stops the descent — its own subtree renders through its
-/// producer, and its readiness covers them.
-fn walk_capturables(
+/// The one subtree walk the capture paths share.
+///
+/// `visit` receives each resolved capturable surface and the view
+/// carrying it; a resolved view stops the descent — its own subtree
+/// renders through its producer, and its readiness covers them.
+pub fn for_each_capturable(
     view: &PlatformView,
     visit: &mut impl FnMut(&PlatformView, &Rc<dyn CapturableSurface>),
 ) {
@@ -1532,14 +1540,280 @@ fn walk_capturables(
         return;
     }
     for subview in crate::view::subviews(view) {
-        walk_capturables(&subview, visit);
+        for_each_capturable(&subview, visit);
     }
 }
 
 /// Every capturable surface inside `root`'s subtree — `f` receives each
 /// live surface.
 pub fn collect_capturables(root: &PlatformView, f: &mut impl FnMut(&Rc<dyn CapturableSurface>)) {
-    walk_capturables(root, &mut |_, surface| f(surface));
+    for_each_capturable(root, &mut |_, surface| f(surface));
+}
+
+/// The view's capturable slot, reached through the same downcast
+/// [`resolve_capturable`] performs — `None` for a view that can never
+/// carry a surface.
+pub fn capturable_slot(view: &PlatformView) -> Option<&CapturableSlot> {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::appkit::{HostView, surface_view::SurfaceView};
+        if let Some(view) = view.downcast_ref::<SurfaceView>() {
+            return Some(view.capturable_slot());
+        }
+        if let Some(view) = view.downcast_ref::<HostView>() {
+            return Some(view.capturable_slot());
+        }
+    }
+    #[cfg(target_os = "ios")]
+    {
+        use crate::uikit::{HostView, surface_view::SurfaceView};
+        if let Some(view) = view.downcast_ref::<SurfaceView>() {
+            return Some(view.capturable_slot());
+        }
+        if let Some(view) = view.downcast_ref::<HostView>() {
+            return Some(view.capturable_slot());
+        }
+    }
+    let _ = view;
+    None
+}
+
+/// The frame an armed surface last put on screen, handed to the
+/// retirement walk as an immutable GPU input — private storage, the
+/// presentation format, and the context generation it was made under.
+#[derive(Clone)]
+pub struct FrozenSurface {
+    /// The frozen pixels — a GPU→GPU copy of the last presented frame;
+    /// nothing ever writes to it again.
+    pub texture: Retained<ProtocolObject<dyn MTLTexture>>,
+    /// The surface's presentation pixel format.
+    pub pixel_format: MTLPixelFormat,
+    /// The context generation the texture belongs to.
+    pub generation: u64,
+}
+
+impl fmt::Debug for FrozenSurface {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FrozenSurface")
+            .field("pixel_format", &self.pixel_format)
+            .field("generation", &self.generation)
+            .field("size", &(self.texture.width(), self.texture.height()))
+            .finish()
+    }
+}
+
+/// An immutable surface: the last frame a retired surface put on screen,
+/// answering real capture requests by blitting its frozen texture — or
+/// clearing to transparent when the surface never presented.
+///
+/// It never redraws: suppression hides the presentation layer,
+/// `can_present` is always `false`, and a frozen producer never requests
+/// a redraw, so external-rendering redirection is a no-op.
+///
+/// Installed by a transition's retirement into the surface view's
+/// capturable slot so an enclosing live filter keeps resolving the
+/// ghost's surfaces — and the ghost keeps showing each layer's last
+/// contents natively. It references no render state and no renderer.
+pub struct FrozenCapturable {
+    /// The surface view — weak: the retired host retains the whole
+    /// native tree, so the view outlives this surface in every ghost.
+    view: objc2::rc::Weak<PlatformView>,
+    /// The surface's presentation `CAMetalLayer` — hidden while a
+    /// capture suppresses this producer.
+    layer: Retained<CAMetalLayer>,
+    /// The last presented frame — `None` when the surface never landed
+    /// one, answered as a transparent clear.
+    frame: Option<FrozenSurface>,
+    /// The serial queue the blit/composition submissions run on.
+    queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+}
+
+impl fmt::Debug for FrozenCapturable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FrozenCapturable")
+            .field("frame", &self.frame)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FrozenCapturable {
+    /// The frozen stand-in for `surface_view`'s just-released capturable:
+    /// `presentation_layer` is the surface's own `CAMetalLayer`,
+    /// `frame` its last presented frame, `device` the context's device —
+    /// the queue a capture submission runs on is created from it.
+    ///
+    /// # Panics
+    ///
+    /// When `device` cannot create a command queue.
+    #[must_use]
+    pub fn new(
+        surface_view: &Retained<PlatformView>,
+        presentation_layer: Retained<CAMetalLayer>,
+        frame: Option<FrozenSurface>,
+        device: &ProtocolObject<dyn MTLDevice>,
+    ) -> Rc<Self> {
+        Rc::new(Self {
+            view: objc2::rc::Weak::new(surface_view),
+            layer: presentation_layer,
+            frame,
+            queue: device
+                .newCommandQueue()
+                .expect("failed to create the frozen surface command queue"),
+        })
+    }
+}
+
+impl CapturableSurface for FrozenCapturable {
+    fn capture_pixel_format(&self) -> MTLPixelFormat {
+        self.frame
+            .as_ref()
+            .map_or_else(|| self.layer.pixelFormat(), |frame| frame.pixel_format)
+    }
+
+    fn content_bounds(&self, relative_to: &PlatformView) -> Rect {
+        let Some(view) = self.view.load() else {
+            return Rect::ZERO;
+        };
+        crate::view::convert_rect(&view, crate::view::bounds(&view), Some(relative_to))
+    }
+
+    fn begin_capture_suppression(&self) {
+        self.layer.setHidden(true);
+    }
+
+    fn end_capture_suppression(&self) {
+        self.layer.setHidden(false);
+    }
+
+    /// A frozen producer has no presenter — nothing ever puts its frame
+    /// in front of the user again.
+    fn can_present(&self) -> bool {
+        false
+    }
+
+    /// A frozen producer never requests a redraw — there is nothing to
+    /// redirect.
+    fn begin_external_rendering(&self, _on_redraw: Rc<dyn Fn()>) {}
+
+    fn end_external_rendering(&self, _resume: bool) {}
+
+    fn prepare_external_render(&self, _texture: &ProtocolObject<dyn MTLTexture>) -> bool {
+        true
+    }
+
+    /// Blits the frozen texture into `texture` — or clears it to
+    /// transparent when the surface never presented — on this surface's
+    /// queue; the buffer's completed status answers the completion on
+    /// the main queue.
+    fn render_prepared_external_texture(
+        &self,
+        texture: &ProtocolObject<dyn MTLTexture>,
+        _width: u32,
+        _height: u32,
+        completion: SurfaceCaptureCompletion,
+    ) {
+        let Some(command_buffer) = self.queue.commandBuffer() else {
+            completion(Err(CaptureError::Failed(Arc::new(CompositionFailed {
+                status: MTLCommandBufferStatus::NotEnqueued,
+                error: Some("the frozen surface could not create a command buffer".into()),
+            }))));
+            return;
+        };
+        if let Some(frame) = &self.frame {
+            // A GPU→GPU copy on the surface's own queue — the frozen
+            // pixels are the whole frame; a target larger than it keeps
+            // the rest of its prepared contents.
+            let encoder = command_buffer
+                .blitCommandEncoder()
+                .expect("failed to create the frozen surface blit encoder");
+            // SAFETY: both textures are valid private-storage 2D
+            // targets retained past command completion; the copy
+            // region is the smaller of the two extents.
+            unsafe {
+                encoder.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
+                    &frame.texture,
+                    0,
+                    0,
+                    MTLOrigin { x: 0, y: 0, z: 0 },
+                    MTLSize {
+                        width: frame.texture.width().min(texture.width() as _),
+                        height: frame.texture.height().min(texture.height() as _),
+                        depth: 1,
+                    },
+                    texture,
+                    0,
+                    0,
+                    MTLOrigin { x: 0, y: 0, z: 0 },
+                );
+            }
+            encoder.endEncoding();
+        } else {
+            // The surface never presented — the region answers
+            // transparent, like a frame with nothing drawn.
+            let descriptor = MTLRenderPassDescriptor::new();
+            // SAFETY: index 0 is the only color attachment.
+            let attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(0) };
+            attachment.setTexture(Some(texture));
+            attachment.setLoadAction(MTLLoadAction::Clear);
+            attachment.setStoreAction(MTLStoreAction::Store);
+            attachment.setClearColor(MTLClearColor {
+                red: 0.0,
+                green: 0.0,
+                blue: 0.0,
+                alpha: 0.0,
+            });
+            command_buffer
+                .renderCommandEncoderWithDescriptor(&descriptor)
+                .expect("failed to create the frozen surface clear encoder")
+                .endEncoding();
+        }
+        let completion = Mutex::new(Some(completion));
+        let handler = RcBlock::new(
+            move |buffer: std::ptr::NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+                // SAFETY: the buffer is alive for the handler call.
+                let buffer = unsafe { buffer.as_ref() };
+                let status = buffer.status();
+                let error = buffer
+                    .error()
+                    .map(|error| error.localizedDescription().to_string());
+                let completion = completion.lock().expect("frozen capture lock").take();
+                if let Some(completion) = completion {
+                    enqueue(move |_mtm| {
+                        completion(composition_outcome(status, error));
+                    });
+                }
+            },
+        );
+        // SAFETY: Metal copies the block.
+        unsafe {
+            command_buffer.addCompletedHandler(RcBlock::as_ptr(&handler));
+        }
+        command_buffer.commit();
+    }
+
+    /// `true` once the surface landed a frame before it retired.
+    fn has_presented_frame(&self) -> bool {
+        self.frame.is_some()
+    }
+
+    /// A retired producer owes no first-paint frame.
+    fn participates_in_first_paint(&self) -> bool {
+        false
+    }
+
+    /// Nothing is pending — the waker fires at once.
+    fn register_ready_waiter(&self, waker: std::task::Waker) {
+        waker.wake();
+    }
+
+    /// An immutable producer can no longer fail.
+    fn presentation_failed(&self) -> bool {
+        false
+    }
+
+    fn take_frozen_frame(&self) -> (Option<FrozenSurface>, Retained<CAMetalLayer>) {
+        (self.frame.clone(), self.layer.clone())
+    }
 }
 
 /// Whether `view`'s subtree holds a `CAMetalLayer` that the capture walk
@@ -1883,7 +2157,7 @@ impl ViewCapture {
         (snapshots, unpresentable)
     }
 
-    /// Recursion over `view`'s subviews through [`walk_capturables`]:
+    /// Recursion over `view`'s subviews through [`for_each_capturable`]:
     /// a resolved surface snapshots and stops the descent.
     fn collect_into(
         &self,
@@ -1894,7 +2168,7 @@ impl ViewCapture {
         target_width: usize,
         target_height: usize,
     ) {
-        walk_capturables(view, &mut |view, surface| {
+        for_each_capturable(view, &mut |view, surface| {
             let bounds = surface.content_bounds(&self.content);
             if let Some(spec) = surface_spec(
                 view_key(view),

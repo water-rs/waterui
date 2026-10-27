@@ -531,7 +531,7 @@ async fn build(
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: ctx.pipelines.driver(),
         });
     if let Some(error) = error_scope.pop().await {
         return Err(EffectSetupError::PipelineValidation {

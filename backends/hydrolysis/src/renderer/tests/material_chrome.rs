@@ -85,6 +85,7 @@ fn glass_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
             ),
         ],
         draws,
+        fills: Vec::new(),
         stateful_draws: None,
     }
 }
@@ -161,10 +162,10 @@ fn rendered(
 fn chrome_layers(runtime: &HeadlessRuntime) -> Vec<cherenkov::LayerId> {
     use crate::renderer::mount::layers::{LayerVisitor, visit};
     struct Members(Vec<cherenkov::LayerId>);
-    impl LayerVisitor for Members {
+    impl<E: crate::text::TextEngine> LayerVisitor<E> for Members {
         fn node(
             &mut self,
-            layers: &crate::renderer::mount::layers::NodeLayers,
+            layers: &crate::renderer::mount::layers::NodeLayers<E>,
             _world: kurbo::Affine,
             _alphas: &[f32],
         ) {
@@ -178,13 +179,15 @@ fn chrome_layers(runtime: &HeadlessRuntime) -> Vec<cherenkov::LayerId> {
 }
 
 /// The same walk over the mirror mount.
-fn mirror_chrome_layers(renderer: &crate::renderer::HydrolysisRenderer) -> Vec<cherenkov::LayerId> {
+fn mirror_chrome_layers<E: crate::text::TextEngine>(
+    renderer: &crate::renderer::HydrolysisRenderer<E>,
+) -> Vec<cherenkov::LayerId> {
     use crate::renderer::mount::layers::{LayerVisitor, visit};
     struct Members(Vec<cherenkov::LayerId>);
-    impl LayerVisitor for Members {
+    impl<E: crate::text::TextEngine> LayerVisitor<E> for Members {
         fn node(
             &mut self,
-            layers: &crate::renderer::mount::layers::NodeLayers,
+            layers: &crate::renderer::mount::layers::NodeLayers<E>,
             _world: kurbo::Affine,
             _alphas: &[f32],
         ) {
@@ -199,17 +202,22 @@ fn mirror_chrome_layers(renderer: &crate::renderer::HydrolysisRenderer) -> Vec<c
 
 /// The mount's cells whose staged program records chrome members, in
 /// mount order — the cells a partial commit can stage independently.
-fn chrome_cells(
-    renderer: &crate::renderer::HydrolysisRenderer,
-) -> Vec<Rc<crate::renderer::NodeCell>> {
-    fn has_chrome(items: &[crate::renderer::mount::program::Item]) -> bool {
+fn chrome_cells<E: crate::text::TextEngine>(
+    renderer: &crate::renderer::HydrolysisRenderer<E>,
+) -> Vec<Rc<crate::renderer::NodeCell<E>>> {
+    fn has_chrome<E: crate::text::TextEngine>(
+        items: &[crate::renderer::mount::program::Item<E>],
+    ) -> bool {
         items.iter().any(|item| match item {
             crate::renderer::mount::program::Item::Chrome(_) => true,
             crate::renderer::mount::program::Item::Scope { items, .. } => has_chrome(items),
             _ => false,
         })
     }
-    fn walk(cell: &Rc<crate::renderer::NodeCell>, out: &mut Vec<Rc<crate::renderer::NodeCell>>) {
+    fn walk<E: crate::text::TextEngine>(
+        cell: &Rc<crate::renderer::NodeCell<E>>,
+        out: &mut Vec<Rc<crate::renderer::NodeCell<E>>>,
+    ) {
         let retained = cell.retained();
         if retained
             .pending
@@ -238,6 +246,7 @@ fn chrome_mount(
 ) -> &crate::renderer::mount::backdrop::ChromeBackdropGroups<
     cherenkov::BackdropGroup,
     cherenkov::BackdropShader,
+    crate::text::ParleyEngine,
 > {
     super::window_mount(runtime).chrome_groups()
 }
@@ -251,7 +260,10 @@ fn member_group(runtime: &HeadlessRuntime, member: cherenkov::LayerId) -> cheren
 }
 
 /// One frame through the mirror mount — `view` only matters on the first.
-fn mirror_frame(renderer: &mut crate::renderer::HydrolysisRenderer, view: waterui_core::AnyView) {
+fn mirror_frame(
+    renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    view: waterui_core::AnyView,
+) {
     let env = chrome_env();
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
@@ -268,7 +280,7 @@ fn mirror_frame(renderer: &mut crate::renderer::HydrolysisRenderer, view: wateru
 
 /// One frame through the mirror mount at `scale` device pixels per point.
 fn mirror_frame_at(
-    renderer: &mut crate::renderer::HydrolysisRenderer,
+    renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
     view: waterui_core::AnyView,
     scale: f64,
 ) {
@@ -290,7 +302,7 @@ fn mirror_frame_at(
 fn mirrored(
     view: impl waterui_core::View,
     theme: MinimalTestTheme,
-) -> crate::renderer::HydrolysisRenderer {
+) -> crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine> {
     let mut renderer = test_renderer_with_theme(theme);
     mirror_frame(&mut renderer, waterui_core::AnyView::new(view));
     renderer
@@ -298,7 +310,7 @@ fn mirrored(
 
 /// The layer `id`'s committed node in the mirror.
 fn mirrored_node(
-    renderer: &crate::renderer::HydrolysisRenderer,
+    renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
     id: cherenkov::LayerId,
 ) -> std::cell::Ref<'_, cherenkov::LayerNode> {
     renderer
@@ -439,7 +451,7 @@ fn glass_material() -> cherenkov_record::BackdropMaterial {
 /// A fresh program builder bound to `clock`'s placements.
 fn scope_program_builder(
     clock: &Rc<crate::renderer::mount::PlacementClock>,
-) -> crate::renderer::mount::ProgramBuilder {
+) -> crate::renderer::mount::ProgramBuilder<crate::text::ParleyEngine> {
     use crate::renderer::FrameSignals;
     use crate::renderer::mount::{NodeCell, Placement, ProgramBuilder};
 
@@ -989,7 +1001,7 @@ fn a_no_program_commit_keeps_a_filtered_members_canvas() {
         },
     );
     let member = mirror_chrome_layers(&renderer)[0];
-    let group = |renderer: &crate::renderer::HydrolysisRenderer| {
+    let group = |renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>| {
         *renderer
             .mirror()
             .chrome_groups()
@@ -1556,7 +1568,7 @@ fn a_scale_rebuild_rebinds_members_of_other_cells_with_their_own_effect() {
         "one scope, one class, one canvas: one group",
     );
     assert_eq!(renderer.mirror().union_log().len(), 1);
-    let group = |renderer: &crate::renderer::HydrolysisRenderer| {
+    let group = |renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>| {
         *renderer
             .mirror()
             .chrome_groups()
@@ -1622,7 +1634,7 @@ fn a_rebound_member_tracks_the_signals_value_after_recording() {
     });
     mirror_frame(&mut renderer, tap_view());
     let member = mirror_chrome_layers(&renderer)[0];
-    let bound = |renderer: &crate::renderer::HydrolysisRenderer| {
+    let bound = |renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>| {
         let node = mirrored_node(renderer, member);
         let Some(BackdropEffect::Shader(effect)) = node
             .backdrop
@@ -1688,7 +1700,7 @@ fn a_press_rebinds_the_members_new_effect() {
     });
     mirror_frame(&mut renderer, tap_view());
     let member = mirror_chrome_layers(&renderer)[0];
-    let bound = |renderer: &crate::renderer::HydrolysisRenderer| {
+    let bound = |renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>| {
         let node = mirrored_node(renderer, member);
         let Some(BackdropEffect::Shader(effect)) = node
             .backdrop

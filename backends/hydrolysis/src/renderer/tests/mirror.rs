@@ -107,7 +107,7 @@ pub struct MirrorHost {
     resources: Rc<SceneResources>,
     engine: Rc<GpuEngine>,
     metrics: Arc<AppliedFilterMetrics>,
-    materials: MaterialTerms<MirrorTarget>,
+    materials: MaterialTerms<cherenkov::BackdropShader>,
     /// Each chrome group's spec at creation — what
     /// [`mount::target::chrome_spec`] resolved for the key's class at the
     /// group's display scale.
@@ -120,7 +120,7 @@ impl std::fmt::Debug for MirrorHost {
     }
 }
 
-impl LayerTarget for MirrorTarget {
+impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
     type Host = MirrorHost;
     /// The mirror's chrome-group object is a synthetic `BackdropId` the
     /// sample binds — the install a member commits carries it, so a test
@@ -166,24 +166,28 @@ impl LayerTarget for MirrorTarget {
     }
 
     fn filter(host: &MirrorHost, runtime: &mut FilteredRuntime) -> FilterId {
-        runtime.filter(&host.engine, &host.metrics).id()
+        runtime.filter(|source| {
+            crate::renderer::mount::target::FilterHandle::new(host.engine.effect(
+                crate::renderer::effects::EngineEffect::new(source, Arc::clone(&host.metrics)),
+            ))
+        })
     }
 
     fn stretch_filter(
         host: &MirrorHost,
         filter: waterui_graphics::filtrate::filters::OverscrollStretch<waterui_graphics::Reactive>,
-    ) -> cherenkov::Filter {
-        host.engine.filter(filter)
+    ) -> crate::renderer::mount::target::FilterHandle {
+        crate::renderer::mount::target::FilterHandle::new(host.engine.filter(filter))
     }
 
     fn mount_material(
         _host: &MirrorHost,
         tx: &mut Transaction<'_, Self>,
-        groups: &mut crate::renderer::mount::backdrop::MaterialBackdropGroups<BackdropId>,
+        groups: &mut crate::renderer::mount::backdrop::MaterialBackdropGroups<BackdropId, E>,
         layer: &Layer,
         key: crate::renderer::mount::backdrop::BackdropGroupKey,
         display_scale: f64,
-        membership: &crate::renderer::mount::backdrop::MaterialMembership,
+        membership: &crate::renderer::mount::backdrop::MaterialMembership<E>,
         bind: MemberBind,
     ) {
         // The mirror's material bind installs nothing of its own.
@@ -206,7 +210,7 @@ impl LayerTarget for MirrorTarget {
         );
     }
 
-    fn material_terms(host: &MirrorHost) -> &MaterialTerms<Self> {
+    fn material_terms(host: &MirrorHost) -> &MaterialTerms<Self::Shader> {
         &host.materials
     }
 
@@ -216,12 +220,13 @@ impl LayerTarget for MirrorTarget {
         groups: &mut crate::renderer::mount::backdrop::ChromeBackdropGroups<
             BackdropId,
             cherenkov::BackdropShader,
+            E,
         >,
         layer: &Layer,
         key: crate::renderer::mount::backdrop::ChromeGroupKey,
         params: cherenkov_record::MaterialCapture,
         display_scale: f64,
-        membership: &crate::renderer::mount::backdrop::MaterialMembership,
+        membership: &crate::renderer::mount::backdrop::MaterialMembership<E>,
         payload: impl FnOnce() -> crate::renderer::mount::backdrop::ChromeMemberPayload<
             cherenkov::BackdropShader,
         >,
@@ -294,7 +299,7 @@ thread_local! {
 
 /// A renderer's mirror mount and the tree it commits into.
 pub struct MirrorWindow {
-    mount: Mount<MirrorTarget>,
+    mount: Mount<MirrorTarget, crate::text::ParleyEngine>,
     host: MirrorHost,
     mirrored: Rc<RefCell<Mirrored>>,
 }
@@ -430,7 +435,7 @@ impl MirrorWindow {
     }
 
     /// The theme's material terms on the mirror's engine.
-    pub fn materials(&self) -> &MaterialTerms<MirrorTarget> {
+    pub fn materials(&self) -> &MaterialTerms<cherenkov::BackdropShader> {
         &self.host.materials
     }
 
@@ -456,6 +461,7 @@ impl MirrorWindow {
     ) -> &crate::renderer::mount::backdrop::ChromeBackdropGroups<
         BackdropId,
         cherenkov::BackdropShader,
+        crate::text::ParleyEngine,
     > {
         self.mount.chrome_groups()
     }
@@ -494,7 +500,7 @@ pub struct NoShaderHost {
     resources: Rc<SceneResources>,
     engine: Rc<GpuEngine>,
     metrics: Arc<AppliedFilterMetrics>,
-    materials: MaterialTerms<NoShaderTarget>,
+    materials: MaterialTerms<()>,
 }
 
 impl std::fmt::Debug for NoShaderHost {
@@ -505,7 +511,9 @@ impl std::fmt::Debug for NoShaderHost {
 
 /// A `Mount<NoShaderTarget>` under construction against `registry` — the
 /// CPU-engine attach rule's panic lives in `Mount::new`.
-pub fn no_shader_mount(registry: &MaterialRegistry) -> Mount<NoShaderTarget> {
+pub fn no_shader_mount(
+    registry: &MaterialRegistry,
+) -> Mount<NoShaderTarget, crate::text::ParleyEngine> {
     let shared = Rc::new(RefCell::new(Shared::new(
         SurfaceId::new(2),
         MirrorQueue {
@@ -518,7 +526,7 @@ pub fn no_shader_mount(registry: &MaterialRegistry) -> Mount<NoShaderTarget> {
     Mount::new(shared, registry)
 }
 
-impl LayerTarget for NoShaderTarget {
+impl<E: crate::text::TextEngine> LayerTarget<E> for NoShaderTarget {
     type Host = NoShaderHost;
     type Group = ();
     type Shader = ();
@@ -549,41 +557,45 @@ impl LayerTarget for NoShaderTarget {
     }
 
     fn filter(host: &NoShaderHost, runtime: &mut FilteredRuntime) -> FilterId {
-        runtime.filter(&host.engine, &host.metrics).id()
+        runtime.filter(|source| {
+            crate::renderer::mount::target::FilterHandle::new(host.engine.effect(
+                crate::renderer::effects::EngineEffect::new(source, Arc::clone(&host.metrics)),
+            ))
+        })
     }
 
     fn stretch_filter(
         host: &NoShaderHost,
         filter: waterui_graphics::filtrate::filters::OverscrollStretch<waterui_graphics::Reactive>,
-    ) -> cherenkov::Filter {
-        host.engine.filter(filter)
+    ) -> crate::renderer::mount::target::FilterHandle {
+        crate::renderer::mount::target::FilterHandle::new(host.engine.filter(filter))
     }
 
     fn mount_material(
         _host: &NoShaderHost,
         _tx: &mut Transaction<'_, Self>,
-        _groups: &mut crate::renderer::mount::backdrop::MaterialBackdropGroups<()>,
+        _groups: &mut crate::renderer::mount::backdrop::MaterialBackdropGroups<(), E>,
         _layer: &Layer,
         _key: crate::renderer::mount::backdrop::BackdropGroupKey,
         _display_scale: f64,
-        _membership: &crate::renderer::mount::backdrop::MaterialMembership,
+        _membership: &crate::renderer::mount::backdrop::MaterialMembership<E>,
         _bind: MemberBind,
     ) {
     }
 
-    fn material_terms(host: &NoShaderHost) -> &MaterialTerms<Self> {
+    fn material_terms(host: &NoShaderHost) -> &MaterialTerms<Self::Shader> {
         &host.materials
     }
 
     fn mount_chrome(
         _host: &NoShaderHost,
         _tx: &mut Transaction<'_, Self>,
-        _groups: &mut crate::renderer::mount::backdrop::ChromeBackdropGroups<(), ()>,
+        _groups: &mut crate::renderer::mount::backdrop::ChromeBackdropGroups<(), (), E>,
         _layer: &Layer,
         _key: crate::renderer::mount::backdrop::ChromeGroupKey,
         _params: cherenkov_record::MaterialCapture,
         _display_scale: f64,
-        _membership: &crate::renderer::mount::backdrop::MaterialMembership,
+        _membership: &crate::renderer::mount::backdrop::MaterialMembership<E>,
         _payload: impl FnOnce() -> crate::renderer::mount::backdrop::ChromeMemberPayload<()>,
         _bind: MemberBind,
     ) {
@@ -593,7 +605,7 @@ impl LayerTarget for NoShaderTarget {
 /// Flattens every committed run into one window-space recording.
 struct Painted(Recording);
 
-impl LayerVisitor for Painted {
+impl<E: crate::text::TextEngine> LayerVisitor<E> for Painted {
     fn run(&mut self, world: kurbo::Affine, recording: &Recording) {
         self.0.append(recording, world);
     }
@@ -607,7 +619,7 @@ impl LayerVisitor for Painted {
     }
 }
 
-impl HydrolysisRenderer {
+impl HydrolysisRenderer<crate::text::ParleyEngine> {
     /// Commits the window's host frames into the renderer's mirror mount
     /// and returns that commit's stats with the mounted layers' census.
     pub fn commit_mirror(&mut self) -> MountStats {
@@ -625,9 +637,9 @@ impl HydrolysisRenderer {
         let redraw = self.host_redraw_handle.clone();
         let core = &mut self.core;
         let window_material = core.window_material;
-        let mut wakes = |cell: &Rc<crate::renderer::mount::cell::NodeCell>| {
-            core.producer_wake(cell, redraw.clone())
-        };
+        let mut wakes = |cell: &Rc<
+            crate::renderer::mount::cell::NodeCell<crate::text::ParleyEngine>,
+        >| { core.producer_wake(cell, redraw.clone()) };
         window.mount.commit(
             &window.host,
             kurbo::Affine::IDENTITY,

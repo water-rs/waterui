@@ -20,6 +20,7 @@ use crate::{
     apple::app_bundle,
     apple::backend::AppleBackend,
     apple::dynamic_runtime,
+    apple::widgets,
     assets,
     build::{
         ArtifactLockScope, BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage,
@@ -27,7 +28,7 @@ use crate::{
     },
     device::Artifact,
     platform::{PackageOptions, TargetBackend, TargetPlatform},
-    project::{BrowserRuntimePlan, Project, ResolvedWebViewBackend},
+    project::{BrowserRuntimePlan, Project},
     utils::copy_file,
 };
 
@@ -222,7 +223,7 @@ pub async fn stage_packaged_host_library(
 /// Returns an error when the project's enabled capabilities cannot be resolved.
 pub(crate) async fn apple_dependency_features(
     project: &Project,
-    browser_runtime: BrowserRuntimePlan,
+    browser_runtime: &BrowserRuntimePlan,
     target: &Triple,
 ) -> eyre::Result<Vec<String>> {
     let build_manifest = project.apple_crate_path().join("Cargo.toml");
@@ -233,7 +234,7 @@ pub(crate) async fn apple_dependency_features(
     if browser_runtime.chromium {
         features.push("chromium".to_string());
     }
-    if matches!(browser_runtime.webview, Some(ResolvedWebViewBackend::Cef)) {
+    if browser_runtime.cef_webview {
         features.push("webview-cef".to_string());
     }
     Ok(features)
@@ -241,7 +242,7 @@ pub(crate) async fn apple_dependency_features(
 
 async fn apple_build_features(
     project: &Project,
-    browser_runtime: BrowserRuntimePlan,
+    browser_runtime: &BrowserRuntimePlan,
     linkage: RustLinkage,
     target: &Triple,
 ) -> eyre::Result<Vec<String>> {
@@ -291,7 +292,7 @@ pub(crate) async fn apple_rust_build(
         .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
         .await?;
     let features =
-        apple_build_features(project, browser_runtime_plan, options.linkage(), &triple).await?;
+        apple_build_features(project, &browser_runtime_plan, options.linkage(), &triple).await?;
     let target = triple.to_string();
     let target_underscore = target.replace('-', "_");
     let mut build = RustBuild::for_project(project, crate_path, triple)
@@ -854,7 +855,7 @@ pub async fn package_apple(
     let mut apple_declarations = crate::assets::scan_apple_declarations(
         project,
         &project.apple_crate_path().join("Cargo.toml"),
-        &apple_dependency_features(project, browser_runtime_plan, &triple).await?,
+        &apple_dependency_features(project, &browser_runtime_plan, &triple).await?,
     )
     .await?;
     apple_declarations.supply_app_values(&project.manifest().app_values)?;
@@ -1006,6 +1007,24 @@ pub async fn package_apple(
             package_cef_helper_app(&app_path, &main_binary, helper_binary, &bundle_id).await?;
         }
     }
+
+    // `#[widget]` declarations the app artifact carries compile into a
+    // `WidgetKit` extension under `PlugIns/` — after the shared-runtime
+    // libraries are staged (the extension links `libwaterui_app.dylib` in a
+    // development build), before the app's signature seals the bundle.
+    widgets::assemble_widget_extensions(
+        project,
+        platform,
+        &triple,
+        &layout,
+        built,
+        &options,
+        project_path.as_path(),
+        &deployment_target,
+        &bundle_id,
+        &product_name,
+    )
+    .await?;
 
     app_bundle::sign_apple_app(
         &layout,

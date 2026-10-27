@@ -27,7 +27,7 @@ pub mod text;
 #[cfg(feature = "highlight")]
 pub use code::{Code, CodeConfig, OnCopied, code};
 #[cfg(feature = "font-collection")]
-pub use collection::FontCollection;
+pub use collection::{FontBytes, FontCollection, FontFace};
 pub use styled::{StyledStr, TapSpan};
 pub use text::{Formatter, IntoText, Text, TextConfig, text};
 

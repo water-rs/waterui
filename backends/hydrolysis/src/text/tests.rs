@@ -1,11 +1,12 @@
 //! Engine-neutral contract tests: the behaviours every `TextEngine` must
 //! satisfy for the editing and measurement paths that consume it.
 
-use waterui_core::layout::{HorizontalAlignment, Size as LayoutSize};
+use waterui_core::layout::{HorizontalAlignment, Size as LayoutSize, VerticalAlignment};
+use waterui_text::font::{Body, FontWeight, ResolvedFont};
 use waterui_text::styled::StyledStr;
 
 use super::{
-    Affinity, FontFamilyResolution, SessionTextEngine, TextEngine, TextLayout, TextPosition,
+    Affinity, FontFamilyResolution, ParleyEngine, TextEngine, TextLayout, TextPosition,
     TextSelection, TextService, resolve_text_layout_input,
 };
 use crate::renderer::tests::test_environment;
@@ -121,7 +122,7 @@ fn editing_contract<E: TextEngine>(service: &TextService<E>) {
 /// The session's bound engine satisfies the editing contract.
 #[test]
 fn session_engine_satisfies_the_editing_contract() {
-    let service = TextService::new(SessionTextEngine::system(FontFamilyResolution::Lenient));
+    let service = TextService::new(ParleyEngine::system(FontFamilyResolution::Lenient));
     editing_contract(&service);
 }
 
@@ -132,7 +133,7 @@ fn session_engine_satisfies_the_editing_contract() {
 #[test]
 fn a_truncated_leaf_reports_the_drawn_line() {
     let env = test_environment();
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let styled = StyledStr::plain("aaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
 
     let dimensions = HydrolysisRenderer::measure_text_dimensions(
@@ -154,12 +155,56 @@ fn a_truncated_leaf_reports_the_drawn_line() {
     );
 }
 
+/// A resized run spaces on the resized face's own metrics, never the theme
+/// slot's absolute pitch: a `.size(40)` text inside a 16/24 `Body` slot
+/// must not inherit the default's 24 pt line height — that parked the
+/// baseline at 25 pt under a 24 pt frame and cut the glyph tops off at the
+/// window edge (water-rs/waterui#2719).
+#[test]
+fn a_resized_run_spaces_on_its_own_face_metrics() {
+    let mut env = test_environment();
+    waterui::theme::install_font_signal::<Body>(
+        &mut env,
+        nami::Computed::constant(
+            ResolvedFont::new(16.0, FontWeight::Normal).with_typography_metrics(24.0, 0.0),
+        ),
+    );
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
+    let styled = StyledStr::plain("Hello 0").size(40.0);
+
+    let dimensions = HydrolysisRenderer::measure_text_dimensions(
+        &mut state,
+        styled,
+        HorizontalAlignment::Leading,
+        &env,
+        Some(600.0),
+        None,
+    );
+
+    // A Latin face's own pitch at 40 pt exceeds the em — the stale 24 pt
+    // the paragraph default carried does not.
+    assert!(
+        dimensions.size.height >= 40.0,
+        "a 40 pt run must report the resized face's own line height, got {}",
+        dimensions.size.height
+    );
+    // Its baseline stays inside the measured frame: the slot pitch left the
+    // baseline one point *below* a 24 pt frame, so the glyph tops painted
+    // above the window's first row.
+    let first_baseline = dimensions.vertical(VerticalAlignment::FirstBaseline);
+    assert!(
+        first_baseline <= dimensions.size.height,
+        "first baseline {first_baseline} must stay inside the measured height {}",
+        dimensions.size.height
+    );
+}
+
 /// A tail the line count alone cuts — the kept line never reached the
 /// bound — reports its drawn extent, not the bound.
 #[test]
 fn a_line_count_truncation_reports_the_drawn_extent() {
     let env = test_environment();
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let styled = StyledStr::plain("a\nb\nc");
 
     let dimensions = HydrolysisRenderer::measure_text_dimensions(

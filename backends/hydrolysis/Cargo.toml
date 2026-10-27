@@ -22,10 +22,10 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 nami.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
-# `font-collection` for the one `parley` collection this runner builds and
-# installs into the environment; the faces come from the resource loader and
-# the system source `parley/system` provides, so `system-fonts` is not needed.
-waterui-text = { workspace = true, features = ["font-collection"] }
+# `engine` for the `parley` font context this runner builds and installs into
+# the environment; the faces come from the resource loader and the system
+# source `parley/system` provides, so `system-fonts` is not needed.
+waterui-text = { workspace = true, features = ["engine"] }
 waterui-icon.workspace = true
 waterui-shape.workspace = true
 waterui-map.workspace = true
@@ -67,6 +67,9 @@ parley = { workspace = true, features = ["system", "complex-scripts"] }
 # the real outline extents with this crate's own skrifa over the raw font
 # bytes; no typed value crosses to parley's font stack.
 skrifa = "0.48"
+# The HWUI target reads a registered font's bounds and variation axes
+# (`head`, `fvar`, `avar`) without the shaping engine skrifa carries.
+read-fonts = { version = "0.45.1", default-features = false, features = ["std"], optional = true }
 # `Emoji`/`Emoji_Presentation` sets for the emoji-cluster ranges shaping must
 # route through the `emoji` generic family first.
 icu_properties = { version = "2.3", default-features = false, features = ["compiled_data"] }
@@ -333,6 +336,11 @@ hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
 # `SceneView` before it reaches layout. The tests still author canvases, which
 # is what keeps that resolution honest.
 waterui-canvas.workspace = true
+# The HWUI target's unit tests read font metrics on the host as well.
+read-fonts = { version = "0.45.1", default-features = false, features = ["std"] }
+# The `hwui::kotlin` test renders the Kotlin wire constants from the Rust
+# definitions.
+askama = { version = "0.16", default-features = false, features = ["derive", "std"] }
 # The tests' `MirrorTarget` implements `Queue`, whose `ChangeSet` the engine
 # crate does not re-export.
 cherenkov-record.workspace = true
@@ -392,6 +400,12 @@ testing = []
 # exercise a software adapter for bring-up on a host without a GPU.
 frame-profile = ["testing"]
 inspector-signals = ["waterui/inspector-signals"]
+# The HWUI render target (Android only): the retained layer tree recorded
+# into `RenderNode` display lists through one command buffer per frame, and
+# text laid out and drawn by the platform's `StaticLayout`
+# (water-rs/waterui#1811). On other targets the feature selects nothing; the
+# subsystem still compiles for tests.
+hwui = ["dep:read-fonts"]
 # The platform's own web engine: `WKWebView` on macOS, an `<iframe>` on the web,
 # each hosted on a compositor plane, and `android.webkit.WebView` on Android,
 # mounted as a platform-view instance. Every other engine is a crate the

@@ -215,7 +215,7 @@ impl WindowId {
 
 impl_extractor!(WindowId);
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// (Re)register a mounted `Menu` trigger's chords on the app's shared
     /// registry, scoped to this renderer's window — the trigger's render
     /// calls it every flush, so a source the flush no longer visits drops
@@ -226,11 +226,11 @@ impl HydrolysisRenderer {
     )]
     pub(crate) fn register_menu_shortcuts(
         &mut self,
-        menu_state: Weak<RefCell<MenuRenderState>>,
+        menu_state: Weak<RefCell<MenuRenderState<E>>>,
         items: Computed<Vec<ResolvedMenuItem>>,
         env: Environment,
     ) {
-        env.get::<MenuShortcutRegistry>()
+        env.get::<MenuShortcutRegistry<E>>()
             .cloned()
             .expect(MISSING_MENU_SHORTCUT_REGISTRY)
             .register_mounted(self.window_id, menu_state, items, env);
@@ -320,14 +320,14 @@ fn collect_popup_shortcuts(nodes: &[PopupMenuNode], out: &mut Vec<MenuShortcut>)
 /// dispatches, since app-level commands are not scoped to one window).
 /// `seq` orders sources by registration, so the most recently registered one
 /// wins a chord conflict however the windows interleave.
-enum MenuShortcutSource {
+enum MenuShortcutSource<E: crate::text::TextEngine> {
     Mounted {
         /// The window the chords dispatch on — the one the `Menu` mounted in.
         window: WindowId,
         /// The `Menu` trigger's render state: the source's identity —
         /// `Weak::ptr_eq` against a live upgrade — and its liveness (unmount
         /// drops the render state, and the source with it).
-        menu_state: Weak<RefCell<MenuRenderState>>,
+        menu_state: Weak<RefCell<MenuRenderState<E>>>,
         items: Computed<Vec<ResolvedMenuItem>>,
         env: Environment,
         seq: u64,
@@ -347,7 +347,7 @@ enum MenuShortcutSource {
     },
 }
 
-impl MenuShortcutSource {
+impl<E: crate::text::TextEngine> MenuShortcutSource<E> {
     const fn seq(&self) -> u64 {
         match self {
             Self::Mounted { seq, .. } | Self::Popup { seq, .. } | Self::AppBar { seq, .. } => *seq,
@@ -375,12 +375,12 @@ impl MenuShortcutSource {
 /// holds every chord source — mounted `Menu` triggers keyed by the window
 /// that mounted them, and open popup menus — plus the counter that orders
 /// them by registration (water-rs/hydrolysis#247).
-#[derive(Clone, Default)]
-pub struct MenuShortcutRegistry(Rc<RefCell<MenuShortcutRegistryState>>);
+pub struct MenuShortcutRegistry<E: crate::text::TextEngine>(
+    Rc<RefCell<MenuShortcutRegistryState<E>>>,
+);
 
-#[derive(Default)]
-struct MenuShortcutRegistryState {
-    sources: Vec<MenuShortcutSource>,
+struct MenuShortcutRegistryState<E: crate::text::TextEngine> {
+    sources: Vec<MenuShortcutSource<E>>,
     /// Registration order across every window — a chord conflict resolves to
     /// the most recently registered source.
     next_seq: u64,
@@ -389,7 +389,7 @@ struct MenuShortcutRegistryState {
     next_window_ordinal: u64,
 }
 
-impl MenuShortcutRegistryState {
+impl<E: crate::text::TextEngine> MenuShortcutRegistryState<E> {
     const fn next_source_seq(&mut self) -> u64 {
         let seq = self.next_seq;
         self.next_seq += 1;
@@ -397,7 +397,7 @@ impl MenuShortcutRegistryState {
     }
 }
 
-impl MenuShortcutRegistry {
+impl<E: crate::text::TextEngine> MenuShortcutRegistry<E> {
     /// A fresh window id for a runner with no native one — minted in creation
     /// order. Winit windows take [`WindowId::Winit`] instead.
     pub(crate) fn mint_window_id(&self) -> WindowId {
@@ -413,7 +413,7 @@ impl MenuShortcutRegistry {
     fn register_mounted(
         &self,
         window: WindowId,
-        menu_state: Weak<RefCell<MenuRenderState>>,
+        menu_state: Weak<RefCell<MenuRenderState<E>>>,
         items: Computed<Vec<ResolvedMenuItem>>,
         env: Environment,
     ) {
@@ -581,5 +581,27 @@ impl MenuShortcutRegistry {
         }
         call_action_discarding_result(&shortcut.action, &action_env);
         true
+    }
+}
+
+impl<E: crate::text::TextEngine> Default for MenuShortcutRegistryState<E> {
+    fn default() -> Self {
+        Self {
+            sources: Vec::default(),
+            next_seq: Default::default(),
+            next_window_ordinal: Default::default(),
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> Default for MenuShortcutRegistry<E> {
+    fn default() -> Self {
+        Self(Rc::default())
+    }
+}
+
+impl<E: crate::text::TextEngine> Clone for MenuShortcutRegistry<E> {
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
     }
 }

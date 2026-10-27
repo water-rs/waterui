@@ -13,8 +13,8 @@ use waterui_layout::padding::EdgeInsets;
 /// [`WindowSafeArea`] binding re-lays out through the ordinary input path with
 /// no explicit refresh request. An environment that carries none reports zero
 /// insets, which is also what the whole window pipeline saw before.
-pub(super) fn window_container_insets(
-    renderer: &mut HydrolysisRenderer,
+pub(super) fn window_container_insets<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     env: &Environment,
 ) -> EdgeInsets {
     env.get::<WindowSafeArea>()
@@ -26,8 +26,8 @@ pub(super) fn window_container_insets(
 /// region: the software keyboard's own cover of the window, tracked
 /// frame-by-frame as the host animates it, which never resizes the window
 /// or the rendering surface.
-pub(super) fn window_keyboard_insets(
-    renderer: &mut HydrolysisRenderer,
+pub(super) fn window_keyboard_insets<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     env: &Environment,
 ) -> EdgeInsets {
     env.get::<WindowKeyboardArea>()
@@ -41,18 +41,25 @@ pub(super) fn window_keyboard_insets(
 /// collapse to the origin rather than inverting the rect.
 /// [`ReleasedRegions::unreleased_depth`](safe_area::ReleasedRegions::unreleased_depth)
 /// owns the `max(container, keyboard)` resolution — the one place it lives.
+/// `direction` is the publish direction the insets' leading and trailing
+/// resolve under (water-rs/waterui#1827).
 pub fn window_content_rect(
     bounds: kurbo::Rect,
     container: &EdgeInsets,
     keyboard: &EdgeInsets,
+    direction: waterui_core::layout::LayoutDirection,
 ) -> kurbo::Rect {
     let none = safe_area::ReleasedRegions::default();
-    let x0 = bounds.x0 + none.unreleased_depth(safe_area::Edge::Leading, container, keyboard);
-    let y0 = bounds.y0 + none.unreleased_depth(safe_area::Edge::Top, container, keyboard);
-    let x1 =
-        (bounds.x1 - none.unreleased_depth(safe_area::Edge::Trailing, container, keyboard)).max(x0);
-    let y1 =
-        (bounds.y1 - none.unreleased_depth(safe_area::Edge::Bottom, container, keyboard)).max(y0);
+    let x0 =
+        bounds.x0 + none.unreleased_depth(safe_area::Edge::Leading, container, keyboard, direction);
+    let y0 =
+        bounds.y0 + none.unreleased_depth(safe_area::Edge::Top, container, keyboard, direction);
+    let x1 = (bounds.x1
+        - none.unreleased_depth(safe_area::Edge::Trailing, container, keyboard, direction))
+    .max(x0);
+    let y1 = (bounds.y1
+        - none.unreleased_depth(safe_area::Edge::Bottom, container, keyboard, direction))
+    .max(y0);
     kurbo::Rect::new(x0, y0, x1, y1)
 }
 
@@ -63,15 +70,19 @@ pub fn window_content_rect(
 /// context's frame agree exactly. `transform` places the window in device
 /// pixels: the touch tolerance derives from its per-axis scale, never a
 /// literal.
-pub fn window_root_layout(
-    renderer: &mut HydrolysisRenderer,
+pub fn window_root_layout<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     env: &Environment,
     bounds: kurbo::Rect,
     transform: kurbo::Affine,
 ) -> (kurbo::Rect, Size, safe_area::SafeAreaLayout) {
     let container = window_container_insets(renderer, env);
     let keyboard = window_keyboard_insets(renderer, env);
-    let content = window_content_rect(bounds, &container, &keyboard);
+    // The direction the regions' leading and trailing resolve under —
+    // read as a signal so a direction change re-lays the window out
+    // (water-rs/waterui#1827).
+    let direction = renderer.read_signal(&waterui_layout::layout_direction(env));
+    let content = window_content_rect(bounds, &container, &keyboard, direction);
     let size = Size::new(
         crate::num_cast::f64_as_f32(content.width()),
         crate::num_cast::f64_as_f32(content.height()),
@@ -93,6 +104,7 @@ pub fn window_root_layout(
             frame,
             xx.hypot(yx),
             xy.hypot(yy),
+            direction,
         ),
     )
 }
@@ -117,14 +129,14 @@ fn safe_area_context(
     )
 }
 
-impl RenderNode {
+impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Apply pending reactive `Dynamic` content changes by rebuilding only the
     /// affected child subtree — no whole-window re-dispatch. Returns whether
     /// anything changed; the caller relays the whole (retained, cheap) tree out
     /// when so, which lets a size-changing swap reflow its ancestors without
     /// resetting the scene and re-dispatching, which is visible as a flash.
     /// Walks the whole tree.
-    pub(crate) fn patch(&mut self, renderer: &mut SemanticCore) -> bool {
+    pub(crate) fn patch(&mut self, renderer: &mut SemanticCore<E>) -> bool {
         // No environment is threaded through: a rebuild uses the node's own captured
         // environment (`Dynamic`/`Collection`/`Env` carry it), so the walk only needs
         // the renderer.
@@ -314,7 +326,7 @@ impl RenderNode {
     }
 }
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The emit-pass equivalent of the `SemanticCore` half of
     /// `HydrolysisRenderer::reset_scene`: clears every pure-emission registry
     /// the accessibility walk re-pushes — input targets, gesture targets,
@@ -384,7 +396,7 @@ impl SemanticCore {
     /// focus validation/relocation and the accessibility tree's publication.
     /// Releasing in the renderer's order is what exposes same-manager watcher
     /// re-entrancy (water-rs/waterui#1213) to `#[waterui::test]`.
-    fn finish_semantic_emit_frame(&mut self, tree: &RenderNode, structural_change: bool) {
+    fn finish_semantic_emit_frame(&mut self, tree: &RenderNode<E>, structural_change: bool) {
         self.registries();
         self.hit_test
             .finish_rebuild_frame(&self.text_editing.text_input_targets);
@@ -492,7 +504,7 @@ impl SemanticCore {
     }
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Refreshes text presentation without walking or laying out the view tree.
     pub(crate) fn record_text_input_overlay(
         &mut self,
@@ -547,7 +559,7 @@ impl HydrolysisRenderer {
     }
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Build the retained tree before its first sized frame, so statically
     /// reachable nodes exist before the first render target is presented.
     #[cfg(test)]
@@ -822,7 +834,7 @@ impl HydrolysisRenderer {
 
     /// The retained window tree's root, for render-identity probes.
     #[cfg(test)]
-    pub(crate) fn render_tree_root(&self) -> Option<&RenderNode> {
+    pub(crate) fn render_tree_root(&self) -> Option<&RenderNode<E>> {
         self.render_tree.as_ref()
     }
 }
