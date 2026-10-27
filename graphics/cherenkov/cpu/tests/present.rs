@@ -3,7 +3,7 @@
 //! unorm-8 step — same algorithm, `f32` against `f64`.
 
 #![cfg(not(target_arch = "wasm32"))]
-use cherenkov_cpu::{Level, present_linear_p3, present_srgb8};
+use cherenkov_cpu::{present_linear_p3, present_srgb8};
 use cherenkov_oracle::Image;
 use cherenkov_oracle::metrics::assert_unorm8_close;
 use cherenkov_oracle::present::{
@@ -47,7 +47,7 @@ fn present_srgb8_matches_oracle() {
         // Half-alpha premultiplied P3 red.
         [0.5, 0.0, 0.0, 0.5],
     ];
-    let got = present_srgb8(Level::new(), 1.0, &pixels);
+    let got = present_srgb8(cherenkov_cpu::detect(), 1.0, &pixels);
     for (i, p) in pixels.iter().enumerate() {
         assert_unorm8_close(&got[i * 4..i * 4 + 4], &oracle_bytes(*p));
     }
@@ -65,8 +65,8 @@ fn present_srgb8_is_headroom_invariant() {
     ];
     for headroom in [2.0f32, 4.0, 16.0] {
         assert_unorm8_close(
-            &present_srgb8(Level::new(), headroom, &pixels),
-            &present_srgb8(Level::new(), 1.0, &pixels),
+            &present_srgb8(cherenkov_cpu::detect(), headroom, &pixels),
+            &present_srgb8(cherenkov_cpu::detect(), 1.0, &pixels),
         );
     }
 }
@@ -93,7 +93,7 @@ fn present_linear_p3_matches_oracle() {
         pixels: pixels.map(|p| p.map(f64::from)).to_vec(),
     };
     for headroom in [1.0f32, 2.0, 4.0] {
-        let got = present_linear_p3(Level::new(), headroom, &pixels);
+        let got = present_linear_p3(cherenkov_cpu::detect(), headroom, &pixels);
         let want = oracle_linear_p3(f64::from(headroom), &image);
         for (i, (g, w)) in got.iter().zip(&want.pixels).enumerate() {
             for (gc, wc) in g.iter().zip(w) {

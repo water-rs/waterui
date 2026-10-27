@@ -269,7 +269,7 @@ impl Case {
             .expect("the case table's paints lower");
         self.kind.assert_variant(&paint);
         Eval {
-            level: cherenkov_cpu::Level::new(),
+            level: cherenkov_cpu::detect(),
             paint,
             x0: self.offset,
             py: PY,
