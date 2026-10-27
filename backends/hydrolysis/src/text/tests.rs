@@ -169,7 +169,7 @@ fn a_resized_run_spaces_on_its_own_face_metrics() {
             ResolvedFont::new(16.0, FontWeight::Normal).with_typography_metrics(24.0, 0.0),
         ),
     );
-    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let styled = StyledStr::plain("Hello 0").size(40.0);
 
     let dimensions = HydrolysisRenderer::measure_text_dimensions(
