@@ -160,6 +160,19 @@ mod tests {
             assert_eq!(result[..3], [0.0, 1.0, f32::INFINITY]);
             assert!(result[3].is_nan());
         }
-        crate::dispatch!(crate::detect(), simd => check(simd));
+        let native = crate::detect();
+        let levels = [
+            Some(native),
+            Some(crate::Level::baseline()),
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            native.as_sse2().map(Simd::level),
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            native.as_sse4_2().map(Simd::level),
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            native.as_avx2().map(Simd::level),
+        ];
+        for level in levels.into_iter().flatten() {
+            crate::dispatch!(level, simd => check(simd));
+        }
     }
 }
