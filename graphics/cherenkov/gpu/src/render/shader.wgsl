@@ -712,17 +712,6 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     return backdrop_effect(px, params);
 }
 
-@fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    if VARIANT == VARIANT_SIMPLE {
-        return fs_simple(in, false);
-    }
-    if VARIANT == VARIANT_SHADOW {
-        return fs_shadow(in);
-    }
-    return fs_full(in);
-}
-
 // The tile build profile replaces these two interfaces with attachment
 // inputs. Coverage, colour conversion and blend arithmetic remain shared.
 fn read_composite_source(coord: vec2<i32>) -> vec4<f32> {
