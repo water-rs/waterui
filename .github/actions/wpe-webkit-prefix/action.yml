@@ -52,7 +52,7 @@ runs:
       shell: bash
       env:
         RUNNER_LABEL: ${{ inputs.runner }}
-        INPUTS_HASH: ${{ hashFiles('components/platform/browser-wpe/runtime/source.toml', 'components/platform/browser-wpe/runtime/build-webkit.sh', '.github/actions/setup-linux-deps/action.yml', '.github/actions/refresh-apt-index/refresh.sh', '.github/actions/wpe-webkit-prefix/**') }}
+        INPUTS_HASH: ${{ hashFiles('browsers/browser-wpe/runtime/source.toml', 'browsers/browser-wpe/runtime/build-webkit.sh', '.github/actions/setup-linux-deps/action.yml', '.github/actions/refresh-apt-index/refresh.sh', '.github/actions/wpe-webkit-prefix/**') }}
       run: |
         set -euo pipefail
         : "${CC:?the calling job must select CC}" "${CXX:?the calling job must select CXX}" "${INPUTS_HASH:?no prefix input file matched}"

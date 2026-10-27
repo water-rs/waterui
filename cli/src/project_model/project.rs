@@ -3920,11 +3920,11 @@ impl ResolvedWpeRuntime {
     ) -> Self {
         Self {
             package_name: "waterui-browser-wpe".to_owned(),
-            package_version: "0.5.1".to_owned(),
+            package_version: "0.1.0".to_owned(),
             manifest_directory,
             native_source,
             webkit_version: "2.52.5".to_owned(),
-            bridge_abi: 4,
+            bridge_abi: 5,
             target,
         }
     }
@@ -6444,11 +6444,11 @@ mod wpe_metadata_tests {
         );
         let valid: super::WpeRuntimeMetadata = serde_json::from_value(serde_json::json!({
             "version": "2.52.5",
-            "bridge-abi": 4,
+            "bridge-abi": 5,
             "native-source": "native"
         }))
         .expect("a valid producer contract must decode");
-        assert_eq!(valid.bridge_abi, 4);
+        assert_eq!(valid.bridge_abi, 5);
         assert_eq!(valid.native_source, std::path::Path::new("native"));
     }
 }
