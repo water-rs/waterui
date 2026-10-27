@@ -55,20 +55,19 @@ pub use waterui_meta as meta;
 /// which reads this record out of the composed application artifact — can
 /// compile the extension from the same sources the crate ships, on any
 /// machine that has them (path, git or registry dependency alike). The
-/// record is `#[used]` and ungated: its consumer links release artifacts
-/// too.
+/// record is ungated, because packaging reads it from release artifacts
+/// too; `dir_static!` keeps it in the archive and out of the linked image.
 const SWIFT_SOURCES_RECORD_NAME: &[u8] = b"waterui_meta_widgets_swift_sources";
 const SWIFT_SOURCES_RECORD_LEN: usize =
     SWIFT_SOURCES_RECORD_NAME.len() + env!("WATERUI_WIDGETS_SWIFT_SOURCES").len() + 2;
 
-#[used]
-#[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
-#[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wmeta"))]
-static WIDGETS_SWIFT_SOURCES: [u8; SWIFT_SOURCES_RECORD_LEN] =
-    meta::dir_entry::<SWIFT_SOURCES_RECORD_LEN>(
-        SWIFT_SOURCES_RECORD_NAME,
-        env!("WATERUI_WIDGETS_SWIFT_SOURCES").as_bytes(),
-    );
+meta::dir_static! {
+    static WIDGETS_SWIFT_SOURCES: [u8; SWIFT_SOURCES_RECORD_LEN] =
+        meta::dir_entry::<SWIFT_SOURCES_RECORD_LEN>(
+            SWIFT_SOURCES_RECORD_NAME,
+            env!("WATERUI_WIDGETS_SWIFT_SOURCES").as_bytes(),
+        );
+}
 
 /// Emits the `waterui_widget_*` export and its `waterui_meta_widget_*`
 /// declaration record for a `#[widget]`-attributed function.
@@ -93,11 +92,9 @@ macro_rules! __export_widget {
             .as_bytes();
             const PAYLOAD: &[u8] = $payload.as_bytes();
             const LEN: usize = NAME.len() + PAYLOAD.len() + 2;
-            #[allow(non_upper_case_globals)]
-            #[used]
-            #[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
-            #[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wmeta"))]
-            static META: [u8; LEN] = $crate::meta::dir_entry::<LEN>(NAME, PAYLOAD);
+            $crate::meta::dir_static! {
+                static META: [u8; LEN] = $crate::meta::dir_entry::<LEN>(NAME, PAYLOAD);
+            }
         };
         $crate::pastey::paste! {
             #[doc(hidden)]
@@ -136,11 +133,9 @@ macro_rules! __export_intent {
                 concat!("waterui_meta_intent_", env!("CARGO_CRATE_NAME"), "_", $hash).as_bytes();
             const PAYLOAD: &[u8] = $payload.as_bytes();
             const LEN: usize = NAME.len() + PAYLOAD.len() + 2;
-            #[allow(non_upper_case_globals)]
-            #[used]
-            #[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
-            #[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wmeta"))]
-            static META: [u8; LEN] = $crate::meta::dir_entry::<LEN>(NAME, PAYLOAD);
+            $crate::meta::dir_static! {
+                static META: [u8; LEN] = $crate::meta::dir_entry::<LEN>(NAME, PAYLOAD);
+            }
         };
         $crate::pastey::paste! {
             #[doc(hidden)]
