@@ -12868,7 +12868,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=dev#507289ff55809f35e11bbe90aacb1cb6ce945903"
+source = "git+https://github.com/water-rs/browsers?branch=dev#66a2ad26cba3054f799d2e2f714b0a399ec8b8d8"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12906,7 +12906,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=dev#507289ff55809f35e11bbe90aacb1cb6ce945903"
+source = "git+https://github.com/water-rs/browsers?branch=dev#66a2ad26cba3054f799d2e2f714b0a399ec8b8d8"
 dependencies = [
  "bytemuck",
  "cookie",
