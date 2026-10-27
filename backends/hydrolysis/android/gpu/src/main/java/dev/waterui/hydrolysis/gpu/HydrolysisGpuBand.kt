@@ -2,13 +2,13 @@ package dev.waterui.hydrolysis.gpu
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.os.Build
 import android.util.AttributeSet
-import android.view.Choreographer
+import android.view.Display
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import dev.waterui.hydrolysis.HydrolysisSession
 import dev.waterui.hydrolysis.NativeBridge
-import java.util.concurrent.TimeUnit
 
 /**
  * The GPU attachment: a [SurfaceView] band whose `SurfaceHolder`
@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit
  * Every `surfaceCreated` bumps [generation]; attach/change/destroy carry that
  * number across JNI so a stale `surfaceDestroyed` can never tear down the
  * surface a newer `surfaceCreated` produced. The native side owns the
- * `ANativeWindow` lease and destroys its wgpu surface before the band's
+ * `ANativeWindow` lease and destroys its compositor target before the band's
  * surface is released — SurfaceFlinger ordering is preserved.
  */
 // Programmatic-only: the band cannot exist without a live session, so it is
@@ -37,24 +37,8 @@ constructor(
     defStyleAttr: Int = 0,
 ) : SurfaceView(context, attrs, defStyleAttr), SurfaceHolder.Callback {
 
-    /**
-     * Attach retries are bounded by one second of vsync frames: SurfaceView's
-     * BLAST placeholder keeps the window's producer connection busy for the
-     * first traversal, and `eglCreateWindowSurface` fails "already connected"
-     * until SurfaceFlinger releases it. Retrying once per frame is not idle
-     * pumping — the callback list is empty the moment attach lands or the
-     * deadline passes.
-     */
-    private var attachDeadlineNanos = 0L
-    private var attachPending = false
-
     /** The host's attachment-generation counter, owned on the UI thread. */
     private var generation = 0L
-
-    private val attachRetry = Choreographer.FrameCallback {
-        attachPending = false
-        attemptAttach()
-    }
 
     init {
         holder.addCallback(this)
@@ -65,38 +49,38 @@ constructor(
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         generation += 1
-        attachDeadlineNanos = System.nanoTime() + ATTACH_RETRY_NANOS
-        attemptAttach()
-    }
-
-    private fun attemptAttach() {
-        val surface = holder.surface
-        if (surface == null || !surface.isValid) return
         val peakRefreshHz = peakRefreshHz()
-        // The accessor sits outside the retry: a destroyed session is a
-        // named error, not an attach failure to retry.
-        val attached =
-            session.withNativePtr(NativeBridge::nativeSurfaceAttached.name) { ptr ->
-                try {
-                    NativeBridge.nativeSurfaceAttached(
-                        ptr,
-                        surface,
-                        peakRefreshHz,
-                        width,
-                        height,
-                        generation,
-                    )
-                } catch (error: RuntimeException) {
-                    retryAttachOrThrow(error)
-                    return
-                }
+        val attachedDisplay = checkNotNull(display)
+        val (normalRefreshHz, highRefreshHz) =
+            if (Build.VERSION.SDK_INT >= 36 && attachedDisplay.hasArrSupport()) {
+                val rates = attachedDisplay.supportedRefreshRates
+                val suggestions =
+                    listOf(Display.FRAME_RATE_CATEGORY_NORMAL, Display.FRAME_RATE_CATEGORY_HIGH).map {
+                        category ->
+                        val suggested =
+                            attachedDisplay.getSuggestedFrameRate(category).coerceAtMost(peakRefreshHz)
+                        // Category suggestions need not be supported rates: a 90 Hz
+                        // vote on Pixel can resolve to 80 Hz. Round upward so the
+                        // chosen display cadence does not undershoot the suggestion.
+                        rates.filter { it >= suggested }.min()
+                    }
+                suggestions[0] to suggestions[1]
+            } else {
+                peakRefreshHz to peakRefreshHz
             }
-        if (!attached) {
-            retryAttachOrThrow(
-                IllegalStateException(
-                    "hydrolysis android: GPU surface attach failed (generation $generation)",
+        session.withNativePtr(NativeBridge::nativeSurfaceAttached.name) { ptr ->
+            check(
+                NativeBridge.nativeSurfaceAttached(
+                    ptr,
+                    holder.surface,
+                    peakRefreshHz,
+                    normalRefreshHz,
+                    highRefreshHz,
+                    width,
+                    height,
+                    generation,
                 ),
-            )
+            ) { "hydrolysis android: GPU surface attach failed (generation $generation)" }
         }
     }
 
@@ -117,17 +101,6 @@ constructor(
             .maxOf { it.refreshRate }
     }
 
-    private fun retryAttachOrThrow(error: RuntimeException) {
-        if (System.nanoTime() < attachDeadlineNanos) {
-            if (!attachPending) {
-                attachPending = true
-                Choreographer.getInstance().postFrameCallback(attachRetry)
-            }
-        } else {
-            throw error
-        }
-    }
-
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         session.withNativePtr(NativeBridge::nativeSurfaceChanged.name) { ptr ->
             NativeBridge.nativeSurfaceChanged(ptr, width, height, generation)
@@ -135,14 +108,8 @@ constructor(
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
-        attachPending = false
-        Choreographer.getInstance().removeFrameCallback(attachRetry)
         session.withNativePtr(NativeBridge::nativeSurfaceDestroyed.name) { ptr ->
             NativeBridge.nativeSurfaceDestroyed(ptr, generation)
         }
-    }
-
-    private companion object {
-        val ATTACH_RETRY_NANOS: Long = TimeUnit.SECONDS.toNanos(1)
     }
 }

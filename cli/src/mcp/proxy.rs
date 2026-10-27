@@ -334,7 +334,7 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
     // assets: the binary runs out of the shared Cargo profile directory, so
     // the exe-relative `resources/waterui_assets` probe cannot find the tree
     // staging wrote under the managed backend (water-rs/waterui#1884).
-    let mut command = project.host().command(binary_path);
+    let mut command = project.host().command(binary_path)?;
     command
         .kill_on_drop(true)
         .current_dir(&backend_path)
@@ -397,6 +397,7 @@ async fn drive_child(mut transport: ChildTransport, mut child: Child, calls: Rec
             CallToolParams {
                 name: call.name.to_owned(),
                 arguments: call.arguments,
+                meta: None,
             },
         );
         let result = match transport.request(request).await {

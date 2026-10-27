@@ -25,7 +25,9 @@ use nami::{Computed, SignalExt as _};
 use suiteki::Str;
 use waterui_controls::label::Label;
 use waterui_controls::{Button, Slider, Stepper, TextField, Toggle};
+use waterui_core::id::SelfId;
 use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment};
+use waterui_core::views::ForEach;
 use waterui_core::{AnyView, Environment, Error, View};
 use waterui_form::picker::{Picker, PickerItem};
 use waterui_layout::ScrollView;
@@ -408,20 +410,35 @@ fn navigation(
         }
         "Tabs" => {
             let attributes = TabsAttributes::from_js(config, bridge)?;
-            let tabs = children::content(bridge, children)?
+            let pairs = children::content(bridge, children)?
                 .into_iter()
-                .map(|child| Carried::<Tab<Str>>::take_from(child, "Tab", "Tabs"))
+                .map(|child| Carried::<(Str, Tab)>::take_from(child, "Tab", "Tabs"))
                 .collect::<Result<Vec<_>, _>>()?;
-            AnyView::new(Tabs::new(&attributes.value, tabs))
+            let tabs: std::collections::BTreeMap<Str, Tab> = pairs.iter().cloned().collect();
+            let ids = pairs
+                .into_iter()
+                .map(|(value, _)| SelfId::new(value))
+                .collect::<Vec<_>>();
+            AnyView::new(Tabs::new(
+                &attributes.value,
+                ForEach::new(nami::collection::List::from(ids), move |id: SelfId<Str>| {
+                    tabs.get(&id.into_inner())
+                        .expect("a keyed tab collection reports a tab for every id")
+                        .clone()
+                }),
+            ))
         }
         "Tab" => {
             let attributes = TabAttributes::from_js(config, bridge)?;
             let label = children::label(bridge, component, None, children)?;
             let content = attributes.content;
             let title = title_of(attributes.title);
-            AnyView::new(Carried::new(Tab::new(attributes.value, label, move || {
-                NavigationView::new(title.clone(), content.build())
-            })))
+            AnyView::new(Carried::new((
+                attributes.value,
+                Tab::new(label, move || {
+                    NavigationView::new(title.clone(), content.build())
+                }),
+            )))
         }
         _ => return Ok(None),
     }))

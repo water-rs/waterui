@@ -7,9 +7,9 @@ struct HostedNode {
     runtime: Rc<crate::hosted::HostedRuntime>,
 }
 
-impl HydroNativeView for Native<crate::HostedView> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<crate::HostedView> {
     fn intrinsic(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -18,7 +18,7 @@ impl HydroNativeView for Native<crate::HostedView> {
     }
 
     fn dimensions(
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         _view: &Self,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -34,10 +34,10 @@ impl Drop for HostedNode {
     }
 }
 
-impl WidgetBehavior for HostedNode {
+impl<E: crate::text::TextEngine> WidgetBehavior<E> for HostedNode {
     fn measure(
         &self,
-        _state: &mut HydroState,
+        _state: &mut HydroState<E>,
         proposal: ProposalSize,
         _env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -47,7 +47,7 @@ impl WidgetBehavior for HostedNode {
 
     fn render(
         self: Rc<Self>,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
         env: &Environment,
         _safe_area: Option<safe_area::SafeAreaLayout>,
@@ -80,16 +80,16 @@ impl WidgetBehavior for HostedNode {
     }
 
     #[cfg(feature = "accessibility")]
-    fn emit_accessibility(self: Rc<Self>, renderer: &mut SemanticCore, env: &Environment) {
+    fn emit_accessibility(self: Rc<Self>, renderer: &mut SemanticCore<E>, env: &Environment) {
         emit_graphics_image_accessibility(renderer, None, env, None, None, true);
     }
 }
 
-impl RenderNode {
+impl<E: crate::text::TextEngine> RenderNode<E> {
     pub(super) fn build_hosted(
         view: crate::hosted::HostedView,
         env: &Environment,
-        renderer: &SemanticCore,
+        renderer: &SemanticCore<E>,
     ) -> Self {
         let state = Rc::new(HostedNode {
             runtime: crate::hosted::HostedRuntime::new(view),

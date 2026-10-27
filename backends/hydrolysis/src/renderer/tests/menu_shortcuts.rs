@@ -447,7 +447,8 @@ fn menu_bar_chord_fires_without_a_mounted_menu() {
         )])
     };
     let env = test_environment();
-    let _menu_bar_items = crate::runner::menu_bar::register_menu_bar(&menu_bar, &env);
+    let _menu_bar_items =
+        crate::runner::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     let mut runtime = HeadlessRuntime::new_for_tests(
         env,
         AnyViewBuilder::<AnyView>::new(|| AnyView::new(button("plain").action(|| {}))),
@@ -481,7 +482,8 @@ fn command() -> Modifiers {
 /// A headless runtime whose app menu bar declares only `MenuItem::Quit`.
 fn runtime_with_declared_quit(env: Environment) -> HeadlessRuntime {
     let menu_bar = nami::Computed::constant(vec![Menu::new("App", MenuItem::Quit)]);
-    let _menu_bar_items = crate::runner::menu_bar::register_menu_bar(&menu_bar, &env);
+    let _menu_bar_items =
+        crate::runner::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     let mut runtime = HeadlessRuntime::new_for_tests(
         env,
         AnyViewBuilder::<AnyView>::new(|| AnyView::new(button("plain").action(|| {}))),
@@ -529,7 +531,7 @@ fn a_declared_quit_chord_requests_termination() {
 fn a_declared_quit_arms_no_chord_where_nothing_can_quit() {
     let env = test_environment();
     let registry = env
-        .get::<crate::renderer::MenuShortcutRegistry>()
+        .get::<crate::renderer::MenuShortcutRegistry<crate::text::ParleyEngine>>()
         .cloned()
         .expect("the test environment seeds a menu shortcut registry");
     let mut runtime = runtime_with_declared_quit(env.clone());
@@ -552,7 +554,8 @@ fn a_declared_quit_arms_no_chord_where_nothing_can_quit() {
 /// `MenuItem::CloseWindow`.
 fn runtime_with_declared_close_window(env: Environment) -> HeadlessRuntime {
     let menu_bar = nami::Computed::constant(vec![Menu::new("Window", MenuItem::CloseWindow)]);
-    let _menu_bar_items = crate::runner::menu_bar::register_menu_bar(&menu_bar, &env);
+    let _menu_bar_items =
+        crate::runner::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     let mut runtime = HeadlessRuntime::new_for_tests(
         env,
         AnyViewBuilder::<AnyView>::new(|| AnyView::new(button("plain").action(|| {}))),
@@ -587,7 +590,7 @@ fn a_declared_close_window_chord_closes_the_dispatching_window() {
 
     closed.set(None);
     let registry = env
-        .get::<crate::renderer::MenuShortcutRegistry>()
+        .get::<crate::renderer::MenuShortcutRegistry<crate::text::ParleyEngine>>()
         .cloned()
         .expect("the test environment seeds a menu shortcut registry");
     assert!(registry.dispatch(
@@ -708,7 +711,7 @@ fn a_context_menu_close_row_targets_its_owner_window() {
 fn a_declared_close_window_is_omitted_where_windows_cannot_close() {
     let env = test_environment();
     let registry = env
-        .get::<crate::renderer::MenuShortcutRegistry>()
+        .get::<crate::renderer::MenuShortcutRegistry<crate::text::ParleyEngine>>()
         .cloned()
         .expect("the test environment seeds a menu shortcut registry");
     let mut runtime = runtime_with_declared_close_window(env.clone());
@@ -761,7 +764,8 @@ fn a_mounted_close_window_follows_the_application_decided_chord() {
         let closed = Rc::clone(&closed);
         move |window| closed.set(Some(window))
     }));
-    let _menu_bar_items = crate::runner::menu_bar::register_menu_bar(&menu_bar, &env);
+    let _menu_bar_items =
+        crate::runner::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     let mut runtime = HeadlessRuntime::new_for_tests(
         env,
         AnyViewBuilder::<AnyView>::new(|| AnyView::new(Menu::new("Window", MenuItem::CloseWindow))),
@@ -818,7 +822,8 @@ fn a_mounted_menu_wins_the_app_bars_chord_while_mounted() {
     };
     let mounted = Binding::container(false);
     let env = test_environment();
-    let _menu_bar_items = crate::runner::menu_bar::register_menu_bar(&menu_bar, &env);
+    let _menu_bar_items =
+        crate::runner::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     let view = {
         let menu_fired = menu_fired.clone();
         let mounted = mounted.clone();

@@ -241,6 +241,14 @@ jobs:
       # DXIL; the Windows image does not ship it.
       - uses: ./.github/actions/install-dxc
         if: runner.os == 'Windows'
+      # #3093: the ignored hydrolysis suite's test binaries create wgpu
+      # devices; stage the pinned WARP before nextest builds them.
+      - uses: ./.github/actions/install-warp
+        if: runner.os == 'Windows'
+        with:
+          into: |
+            target/debug/deps
+            target/debug
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145
@@ -510,7 +518,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo -u "$E2E_USER" -H env E2E_PLATFORM="$E2E_PLATFORM" E2E_BACKEND="$E2E_BACKEND" \
+          # The Ubuntu image writes the runner's XDG_CONFIG_HOME into
+          # /etc/environment, which sudo applies to the fresh user too
+          # (actions/runner-images#13049); AGP would then put the debug
+          # keystore under /home/runner. A new account has none.
+          sudo -u "$E2E_USER" -H env -u XDG_CONFIG_HOME E2E_PLATFORM="$E2E_PLATFORM" E2E_BACKEND="$E2E_BACKEND" \
             WATERUI_SRC="$GITHUB_WORKSPACE" \
             ANDROID_HOME="${ANDROID_HOME:-}" ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-}" \
             ANDROID_NDK_ROOT="${ANDROID_NDK_ROOT:-}" ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-}" \
@@ -1007,7 +1019,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo -u "$E2E_USER" -H env E2E_PLATFORM="$E2E_PLATFORM" E2E_BACKEND="$E2E_BACKEND" \
+          # No runner XDG_CONFIG_HOME, as in the package step above.
+          sudo -u "$E2E_USER" -H env -u XDG_CONFIG_HOME E2E_PLATFORM="$E2E_PLATFORM" E2E_BACKEND="$E2E_BACKEND" \
             bash -s <<'SCRIPT'
           set -uo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
@@ -1087,6 +1100,13 @@ jobs:
         run: |
           Copy-Item "C:\Users\$env:E2E_USER\e2e-logs" "$env:RUNNER_TEMP\e2e-logs" `
             -Recurse -Force -ErrorAction SilentlyContinue
+          # winget's own diagnostic logs of the fresh user: what it was doing
+          # when a doctor fix stalled.
+          $diag = "C:\Users\$env:E2E_USER\AppData\Local\Packages\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\LocalState\DiagOutputDir"
+          if (Test-Path $diag) {
+            New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\e2e-logs\winget-diag" | Out-Null
+            Copy-Item "$diag\*" "$env:RUNNER_TEMP\e2e-logs\winget-diag" -Recurse -Force
+          }
 
       # One JSON record per leg for `cli-e2e-metrics`: the fresh user's
       # timings.tsv plus what the runner account timed (the CLI install, the

@@ -8,8 +8,9 @@ use super::ContainerNode;
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use waterui_graphics::scene_stretch_axis;
+use waterui_layout::scroll::scroll_stretch_axis;
 
-impl RenderNode {
+impl<E: crate::text::TextEngine> RenderNode<E> {
     /// The stretch axis this node exposes when it is a layout child.
     /// The layout priority this subtree carries, or `0` when nothing set one.
     ///
@@ -68,7 +69,11 @@ impl RenderNode {
 
     pub(super) fn stretch(&self) -> StretchAxis {
         match self {
-            Self::Color(_) | Self::Scroll(_) => StretchAxis::Both,
+            Self::Color(_) => StretchAxis::Both,
+            // §6: a scroll stretches on its scrolling axis and on the
+            // non-scrolling axis only when its content stretches there
+            // (water-rs/waterui#1208).
+            Self::Scroll(node) => scroll_stretch_axis(node.axis, node.child.stretch()),
             // The same stack laid out eagerly is content-sized on both axes, so a
             // lazy one has to be too: making a stack virtualizable must not change
             // how it sizes. Rows that want the full cross axis ask for it
@@ -92,13 +97,18 @@ impl RenderNode {
             // Scene content that is naturally a size is content-sized and claims
             // no leftover space; content that has no size of its own fills.
             Self::SceneView(node) => scene_stretch_axis(node.content.borrow().intrinsic_size()),
-            // GPU content fills its proposal; a filtered view is a
+            // GPU content's stretch is the view's declared contract, fixed
+            // at construction by `intrinsic_size`: a live `measure` answer
+            // that resolves later is a size, not a new stretch declaration
+            // (water-rs/waterui#1958). A filtered view is a
             // layout-transparent wrapper delegating to its child.
             Self::GpuContent(node) => {
-                scene_stretch_axis(node.runtime.borrow().view.intrinsic_size())
+                waterui_core::NativeView::stretch_axis(&node.runtime.borrow().view)
             }
+            // An external frame stream's stretch is the same declared
+            // contract — a size learned while decoding does not change it.
             Self::ExternalFrame(node) => {
-                scene_stretch_axis(node.runtime.borrow().view.intrinsic_size())
+                waterui_core::NativeView::stretch_axis(&node.runtime.borrow().view)
             }
             Self::Filtered(node) => node.child.stretch(),
             Self::Collection(node) => {
@@ -132,7 +142,7 @@ impl RenderNode {
     /// a proposal it already answered keeps memoizing.
     pub(crate) fn measure(
         &self,
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
@@ -173,7 +183,7 @@ impl RenderNode {
     )]
     pub(crate) fn measure_body(
         &self,
-        state: &mut HydroState,
+        state: &mut HydroState<E>,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
@@ -198,7 +208,7 @@ impl RenderNode {
             }
             Self::Container(container) => {
                 let cell = RefCell::new(state);
-                let subs: Vec<NodeSubView> = container
+                let subs: Vec<NodeSubView<E>> = container
                     .children
                     .iter()
                     .map(|child| NodeSubView::new(child, &cell, env, theme))
@@ -250,71 +260,115 @@ impl RenderNode {
             // filter to the mount the child's layers hang from.
             Self::Filtered(node) => node.child.measure(state, &node.env, theme, proposal),
             Self::Scroll(node) => {
-                // layout-spec.md §6: a scroll claims the whole offer — a
-                // finite proposal on either axis is answered with that
-                // proposal; only a `0` proposal measures the content,
-                // answering its intrinsic extent on the non-scrolling axis
-                // and `0` on the scrolling axis.
-                let mut size = Size::new(
-                    proposal.width.unwrap_or(0.0),
-                    proposal.height.unwrap_or(0.0),
-                );
-                if match node.axis {
-                    ScrollAxis::Vertical => proposal.width == Some(0.0),
-                    ScrollAxis::Horizontal => proposal.height == Some(0.0),
-                    ScrollAxis::All => false,
-                    _ => panic!("hydrolysis render tree: unsupported scroll axis"),
-                } {
-                    let floor = node.non_scrolling_minimum.get().unwrap_or_else(|| {
-                        // The `0` propagates to the content: its own minimum
-                        // on the non-scrolling axis is the floor the scroll
-                        // reports there. The scrolling axis gets `None`.
-                        let content_proposal = match node.axis {
-                            ScrollAxis::Vertical => ProposalSize::new(Some(0.0), None),
-                            ScrollAxis::Horizontal => ProposalSize::new(None, Some(0.0)),
-                            _ => ProposalSize::UNSPECIFIED,
+                // layout-spec.md §6 (water-rs/waterui#1208): on the scrolling
+                // axis a scroll claims the offer — a finite proposal is
+                // answered with the proposal, `None` with the content's
+                // intrinsic extent, `0` with `0`. On the non-scrolling axis
+                // it answers the content's own answer to the content
+                // proposal — the offer on that axis, `None` on the
+                // scrolling axis — clamped to a finite offer, so a scroll
+                // hugs non-filling content; `0` keeps the cached content
+                // minimum and `None` the intrinsic extent. `Axis::All`
+                // fills both axes.
+                let size = match node.axis {
+                    ScrollAxis::Vertical | ScrollAxis::Horizontal => {
+                        let cross_zero = match node.axis {
+                            ScrollAxis::Vertical => proposal.width == Some(0.0),
+                            _ => proposal.height == Some(0.0),
                         };
-                        let measured = node.child.measure(state, env, theme, content_proposal).size;
-                        let value = match node.axis {
+                        // The §6 content proposal: the scroll's offer on the
+                        // non-scrolling axis, `None` on the scrolling axis.
+                        // One memoised measure serves the cross answer and
+                        // an unspecified scrolling-axis extent together.
+                        let content_proposal = match node.axis {
+                            ScrollAxis::Vertical => ProposalSize::new(proposal.width, None),
+                            _ => ProposalSize::new(None, proposal.height),
+                        };
+                        // A `0` non-scrolling proposal reads the cached
+                        // content minimum: window-limits replay frames must
+                        // not run a live measure for it. The measure runs
+                        // only for a finite or unspecified answer — or once,
+                        // to seed a cold cache.
+                        let scrolling_unspecified = match node.axis {
+                            ScrollAxis::Vertical => proposal.height.is_none(),
+                            _ => proposal.width.is_none(),
+                        };
+                        let measured = (!cross_zero
+                            || scrolling_unspecified
+                            || node.non_scrolling_minimum.get().is_none())
+                        .then(|| node.child.measure(state, env, theme, content_proposal).size);
+                        let cross_extent = |measured: Size| match node.axis {
                             ScrollAxis::Vertical => measured.width,
                             _ => measured.height,
                         };
-                        node.non_scrolling_minimum.set(Some(value));
-                        value
-                    });
-                    match node.axis {
-                        ScrollAxis::Vertical => size.width = floor,
-                        ScrollAxis::Horizontal => size.height = floor,
-                        _ => {}
+                        let scrolling_extent = |measured: Size| match node.axis {
+                            ScrollAxis::Vertical => measured.height,
+                            _ => measured.width,
+                        };
+                        let non_scrolling = |offer: Option<f32>| match offer {
+                            Some(0.0) => node.non_scrolling_minimum.get().unwrap_or_else(|| {
+                                let value = cross_extent(measured.expect(
+                                    "a cold non-scrolling minimum runs the content measure",
+                                ));
+                                node.non_scrolling_minimum.set(Some(value));
+                                value
+                            }),
+                            Some(offer) => {
+                                let answer = cross_extent(measured.expect(
+                                    "a finite non-scrolling offer runs the content measure",
+                                ));
+                                if answer.is_finite() {
+                                    answer.clamp(0.0, offer)
+                                } else {
+                                    offer
+                                }
+                            }
+                            None => cross_extent(
+                                measured.expect("an unspecified axis runs the content measure"),
+                            ),
+                        };
+                        let scrolling =
+                            |offer: Option<f32>| match offer {
+                                Some(0.0) => 0.0,
+                                Some(offer) => offer,
+                                None => scrolling_extent(measured.expect(
+                                    "an unspecified scrolling axis runs the content measure",
+                                )),
+                            };
+                        match node.axis {
+                            ScrollAxis::Vertical => {
+                                Size::new(non_scrolling(proposal.width), scrolling(proposal.height))
+                            }
+                            _ => {
+                                Size::new(scrolling(proposal.width), non_scrolling(proposal.height))
+                            }
+                        }
                     }
-                }
-                // A `None` proposal asks for the ideal (intrinsic) extent
-                // (layout-spec.md §2), and the `min <= ideal <= max` probe
-                // invariant there means it cannot sit below the `0` answer:
-                // on the non-scrolling axis that minimum is already the
-                // content's intrinsic extent, so the ideal is the same
-                // content measure; on the scrolling axis the scroll's
-                // intrinsic extent is its content's. The content is measured
-                // with the proposed extent on the non-scrolling axis and
-                // `None` on the scrolling axis, as §6 prescribes — so a
-                // `(None, _)` answer reports the same extent the layout pass
-                // measures the scroll's content at, and nested scrolls see a
-                // real content size instead of `0`.
-                if proposal.width.is_none() || proposal.height.is_none() {
-                    let content_proposal = match node.axis {
-                        ScrollAxis::Vertical => ProposalSize::new(proposal.width, None),
-                        ScrollAxis::Horizontal => ProposalSize::new(None, proposal.height),
-                        ScrollAxis::All => ProposalSize::UNSPECIFIED,
-                        _ => panic!("hydrolysis render tree: unsupported scroll axis"),
-                    };
-                    let intrinsic = node.child.measure(state, env, theme, content_proposal).size;
-                    if proposal.width.is_none() {
-                        size.width = intrinsic.width;
+                    ScrollAxis::All => {
+                        // Unchanged: both axes scroll, so a finite proposal
+                        // is claimed, `None` asks for the intrinsic extent
+                        // and `0` answers `0`.
+                        let intrinsic = (proposal.width.is_none() || proposal.height.is_none())
+                            .then(|| {
+                                node.child
+                                    .measure(state, env, theme, ProposalSize::UNSPECIFIED)
+                                    .size
+                            });
+                        Size::new(
+                            match proposal.width {
+                                Some(0.0) => 0.0,
+                                Some(width) => width,
+                                None => intrinsic.map_or(0.0, |measured| measured.width),
+                            },
+                            match proposal.height {
+                                Some(0.0) => 0.0,
+                                Some(height) => height,
+                                None => intrinsic.map_or(0.0, |measured| measured.height),
+                            },
+                        )
                     }
-                    if proposal.height.is_none() {
-                        size.height = intrinsic.height;
-                    }
-                }
+                    _ => panic!("hydrolysis render tree: unsupported scroll axis"),
+                };
                 ViewDimensions::new(size)
             }
             Self::LazyStack(node) => node.measure(state, theme, proposal),
@@ -331,7 +385,7 @@ impl RenderNode {
     /// the `Env` an `hstack`'s `with(Axis)` installs, retains, effects — for
     /// tests that drive its `Layout` against recording children.
     #[cfg(test)]
-    pub(in crate::renderer) fn transparent_container(&self) -> Option<&ContainerNode> {
+    pub(in crate::renderer) fn transparent_container(&self) -> Option<&ContainerNode<E>> {
         let mut node = self;
         loop {
             match node {
@@ -365,7 +419,10 @@ impl RenderNode {
     /// place, place_in_ctx}` and the window's
     /// layout pump), before any node is measured. A semantic runtime never
     /// runs this pass, so no theme reaches it.
-    pub(in crate::renderer) fn prepare_for_measure(&mut self, renderer: &mut HydrolysisRenderer) {
+    pub(in crate::renderer) fn prepare_for_measure(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<E>,
+    ) {
         match self {
             // Prepare builds subviews and reads bindings at measure time:
             // run it under this widget's cell as the layout reader so its
@@ -417,7 +474,7 @@ impl RenderNode {
     /// sub-views.
     pub(crate) fn layout(
         &mut self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         env: &Environment,
         safe_area: Option<safe_area::SafeAreaLayout>,
         proposal: ProposalSize,
@@ -435,7 +492,7 @@ impl RenderNode {
     )]
     fn layout_inner(
         &mut self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         env: &Environment,
         safe_area: Option<safe_area::SafeAreaLayout>,
         proposal: ProposalSize,
@@ -449,7 +506,7 @@ impl RenderNode {
             Self::Container(container) => {
                 let placements = {
                     let cell = RefCell::new(&mut renderer.state);
-                    let subs: Vec<NodeSubView> = container
+                    let subs: Vec<NodeSubView<E>> = container
                         .children
                         .iter()
                         .map(|child| NodeSubView::new(child, &cell, env, &theme))
@@ -591,27 +648,46 @@ impl RenderNode {
                 let viewport_height = viewport.height;
                 let content_width = content.width;
                 let content_height = content.height;
-                let handle = if let Some(handle) = node.handle.borrow_mut().as_mut() {
-                    handle.rebind(
+                // The position sink reports the logical (unextended)
+                // viewport and content: the safe-area extension is the
+                // surface's presentation detail, not the semantic scroll
+                // geometry the controller reads back.
+                let position_report = node.controller.as_ref().map(|controller| {
+                    crate::scroll::ScrollPositionReport::new(
+                        controller.position_report(),
+                        size,
+                        content_size,
+                    )
+                });
+                let existing = node.handle.borrow().clone();
+                let handle = if let Some(mut handle) = existing {
+                    // Rebind outside the `node.handle` borrow — the report
+                    // writes inside may run watchers that re-enter the tree.
+                    let rebound = handle.rebind(
                         node.axis,
                         viewport_width,
                         viewport_height,
                         content_width,
                         content_height,
                         (0.0, 0.0),
-                    )
+                        position_report,
+                    );
+                    *node.handle.borrow_mut() = Some(rebound.clone());
+                    rebound
                 } else {
                     // `report_offset`: the handle writes the content offset
                     // into this binding on every change, glide frames
                     // included, from here on.
-                    ScrollHandle::new(
+                    let handle = ScrollHandle::new(
                         node.axis,
                         viewport_width,
                         viewport_height,
                         content_width,
                         content_height,
                         node.offset.clone(),
-                    )
+                    );
+                    handle.set_position_report(position_report);
+                    handle
                 };
                 if let Some(controller) = &node.controller {
                     let generation = renderer.read_signal(&controller.generation());
@@ -791,7 +867,7 @@ pub(super) fn hash_frame(hasher: &mut SignatureHasher, frame: Rect) {
 }
 
 #[cfg(feature = "frame-profile")]
-impl RenderNode {
+impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Digest of what the layout pass computed for this subtree under `frame`:
     /// every node's variant tag and its placed frame, depth-first, plus the
     /// geometry nodes cache for the flush pass (a scroll's content size and

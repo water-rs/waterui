@@ -6,6 +6,7 @@ use crate::{
     toolchain::{Host, Installation, Toolchain, ToolchainError, UnfixableToolchain},
     utils::CommandError,
 };
+use futures_util::StreamExt as _;
 
 /// Linux system dependencies required by `waterui` desktop/media builds.
 #[derive(Debug, Clone, Copy, Default)]
@@ -169,7 +170,7 @@ impl Toolchain for LinuxSystemToolchain {
         let mut required_packages = manager.required_packages().to_vec();
         for library in VERSIONED_NATIVE_LIBRARIES
             .iter()
-            .filter(|library| resolved_dependencies.contains(library.required_by))
+            .filter(|library| resolved_dependencies.all.contains(library.required_by))
         {
             if let Some(package) = manager.package_for_native_library(library.module)
                 && !required_packages.contains(&package)
@@ -177,17 +178,23 @@ impl Toolchain for LinuxSystemToolchain {
                 required_packages.push(package);
             }
         }
+        // A selected WPE runtime builds its bridge from source with CMake,
+        // which every supported distribution packages under that name.
+        let wpe_selected = resolved_dependencies.normal.contains("waterui-browser-wpe");
+        if wpe_selected && !required_packages.contains(&"cmake") {
+            required_packages.push("cmake");
+        }
+        // Each package's installed check is independent — probe them
+        // concurrently with a stable bound.
+        let probe_results = probe_installed_packages(host, manager, &required_packages).await;
         let mut missing_packages = Vec::new();
-        for &package in &required_packages {
-            let installed = manager
-                .check_installed(host, package)
-                .await
-                .map_err(|error| {
-                    ToolchainError::unfixable(
-                        format!("Failed checking Linux package `{package}`: {error}"),
-                        manager.install_hint(&required_packages_to_owned(&required_packages)),
-                    )
-                })?;
+        for (&package, installed) in required_packages.iter().zip(probe_results) {
+            let installed = installed.map_err(|error| {
+                ToolchainError::unfixable(
+                    format!("Failed checking Linux package `{package}`: {error}"),
+                    manager.install_hint(&required_packages_to_owned(&required_packages)),
+                )
+            })?;
             if !installed {
                 missing_packages.push(package.to_string());
             }
@@ -199,8 +206,35 @@ impl Toolchain for LinuxSystemToolchain {
             ));
         }
 
-        check_native_libraries(host, manager, &resolved_dependencies).await
+        check_native_libraries(host, manager, &resolved_dependencies.all, wpe_selected).await
     }
+}
+
+/// The project's resolved dependency names, split by edge kind: `all` is
+/// every node cargo resolved, `normal` is only what normal dependency edges
+/// reach from the root — dev and build dependencies excluded.
+struct ResolvedLinuxDependencies {
+    all: BTreeSet<String>,
+    normal: BTreeSet<String>,
+}
+
+/// Probes every package's installed state concurrently, results in input
+/// order. A named function, not an inline closure: the closure's inferred
+/// higher-ranked signature does not survive the `Send` check of
+/// `Toolchain::check`'s future.
+async fn probe_installed_packages(
+    host: &Host,
+    manager: LinuxPackageManager,
+    packages: &[&'static str],
+) -> Vec<Result<bool, CommandError>> {
+    let mut probes = Vec::with_capacity(packages.len());
+    for &package in packages {
+        probes.push(manager.check_installed(host, package));
+    }
+    futures_util::stream::iter(probes)
+        .buffered(8)
+        .collect::<Vec<_>>()
+        .await
 }
 
 /// The package names in the dependency graph the checked project resolves
@@ -214,12 +248,15 @@ impl Toolchain for LinuxSystemToolchain {
 /// set: an empty graph would silently drop the native libraries it needs.
 async fn resolved_dependency_names(
     host: &Host,
-) -> Result<BTreeSet<String>, ToolchainError<LinuxSystemPackagesInstallation>> {
+) -> Result<ResolvedLinuxDependencies, ToolchainError<LinuxSystemPackagesInstallation>> {
     if !smol::fs::metadata(host.cwd().join("Water.toml"))
         .await
         .is_ok_and(|metadata| metadata.is_file())
     {
-        return Ok(BTreeSet::new());
+        return Ok(ResolvedLinuxDependencies {
+            all: BTreeSet::new(),
+            normal: BTreeSet::new(),
+        });
     }
     let mut command = cargo_metadata::MetadataCommand::new();
     command
@@ -238,14 +275,32 @@ async fn resolved_dependency_names(
     // Only `--no-deps` omits the resolve, and this command never passes it.
     let resolve = metadata
         .resolve
+        .as_ref()
         .expect("cargo metadata without --no-deps reports a resolve");
     let resolved: BTreeSet<_> = resolve.nodes.iter().map(|node| &node.id).collect();
-    Ok(metadata
+    let all: BTreeSet<String> = metadata
         .packages
         .iter()
         .filter(|package| resolved.contains(&package.id))
         .map(|package| package.name.to_string())
-        .collect())
+        .collect();
+    let root = resolve.root.as_ref().ok_or_else(|| {
+        ToolchainError::unfixable(
+            "cargo metadata reported no root package for the project's resolve graph",
+            "Fix the project's manifest so `cargo metadata` reports a root, then re-run `water doctor`.",
+        )
+    })?;
+    let normal = crate::project::normal_dependency_packages(&metadata, &root.to_string())
+        .map_err(|error| {
+            ToolchainError::unfixable(
+                format!("Failed walking the project's normal dependencies: {error}"),
+                "Fix the project's manifest so the graph resolves, then re-run `water doctor`.",
+            )
+        })?
+        .into_iter()
+        .map(|package| package.name.to_string())
+        .collect();
+    Ok(ResolvedLinuxDependencies { all, normal })
 }
 
 /// The C toolchain every native Linux build invokes.
@@ -288,7 +343,8 @@ impl Toolchain for CToolchain {
                 manager
                     .c_toolchain_packages()
                     .iter()
-                    .map(|package| (*package).to_string())
+                    .copied()
+                    .map(str::to_owned)
                     .collect(),
             ),
         ))
@@ -495,6 +551,30 @@ impl LinuxPackageManager {
                 Self::Pacman => "mesa",
                 Self::Apk => "mesa-dev",
             }),
+            b"glib-2.0" => Some(match self {
+                Self::Apt => "libglib2.0-dev",
+                Self::Dnf | Self::Zypper => "glib2-devel",
+                Self::Pacman => "glib2",
+                Self::Apk => "glib-dev",
+            }),
+            b"libsoup-3.0" => Some(match self {
+                Self::Apt => "libsoup-3.0-dev",
+                Self::Dnf => "libsoup3-devel",
+                Self::Zypper => "libsoup-devel",
+                Self::Pacman => "libsoup3",
+                Self::Apk => "libsoup3-dev",
+            }),
+            b"json-glib-1.0" => Some(match self {
+                Self::Apt => "libjson-glib-dev",
+                Self::Dnf | Self::Zypper => "json-glib-devel",
+                Self::Pacman => "json-glib",
+                Self::Apk => "json-glib-dev",
+            }),
+            b"libdrm" => Some(match self {
+                Self::Apt | Self::Apk => "libdrm-dev",
+                Self::Dnf | Self::Zypper => "libdrm-devel",
+                Self::Pacman => "libdrm",
+            }),
             _ => None,
         }
     }
@@ -601,6 +681,11 @@ const VERSIONED_NATIVE_LIBRARIES: &[VersionedNativeLibrary] = &[
 /// distribution's Mesa package or a source build on `PKG_CONFIG_PATH`.
 const REQUIRED_NATIVE_MODULES: &[&str] = &["egl"];
 
+/// The WPE bridge's `pkg-config` build prerequisites — the modules
+/// `browser-wpe/native/CMakeLists.txt` asks for. They are probed only when
+/// the project's normal dependency graph selects `waterui-browser-wpe`.
+const WPE_NATIVE_MODULES: &[&str] = &["glib-2.0", "libsoup-3.0", "json-glib-1.0", "libdrm"];
+
 /// Outcome of probing one [`VersionedNativeLibrary`] with `pkg-config`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NativeLibraryStatus {
@@ -670,6 +755,7 @@ async fn check_native_libraries(
     host: &Host,
     manager: LinuxPackageManager,
     resolved_dependencies: &BTreeSet<String>,
+    wpe_selected: bool,
 ) -> Result<(), ToolchainError<LinuxSystemPackagesInstallation>> {
     if !pkg_config_available(host).await {
         return Err(ToolchainError::unfixable(
@@ -722,17 +808,33 @@ async fn check_native_libraries(
         }
     }
 
-    for &module in REQUIRED_NATIVE_MODULES {
-        let present = pkg_config_module_present(host, module)
-            .await
-            .map_err(|error| {
-                ToolchainError::unfixable(
-                    format!("Failed checking `{module}` with pkg-config: {error}"),
-                    format!(
-                        "Ensure `pkg-config --exists {module}` works, then re-run `water doctor`."
-                    ),
-                )
-            })?;
+    // WPE's bridge compiles against these modules only when the project's
+    // normal dependency graph selects `waterui-browser-wpe` — dev and build
+    // dependencies do not make a runtime a build prerequisite.
+    let mut presence_modules: Vec<&str> = REQUIRED_NATIVE_MODULES.to_vec();
+    if wpe_selected {
+        presence_modules.extend(WPE_NATIVE_MODULES);
+    }
+    // Each module's presence probe is independent — collect them
+    // concurrently with a stable bound before deduplicating the packages.
+    // Plain pushes rather than a `map` closure: the closure's inferred
+    // higher-ranked signature does not survive `Toolchain::check`'s `Send`
+    // check.
+    let mut probes = Vec::with_capacity(presence_modules.len());
+    for &module in &presence_modules {
+        probes.push(pkg_config_module_present(host, module));
+    }
+    let presence_results = futures_util::stream::iter(probes)
+        .buffered(8)
+        .collect::<Vec<_>>()
+        .await;
+    for (&module, present) in presence_modules.iter().zip(presence_results) {
+        let present = present.map_err(|error| {
+            ToolchainError::unfixable(
+                format!("Failed checking `{module}` with pkg-config: {error}"),
+                format!("Ensure `pkg-config --exists {module}` works, then re-run `water doctor`."),
+            )
+        })?;
         if present {
             continue;
         }
@@ -1060,7 +1162,7 @@ pub async fn install_java_jdk(host: &Host) -> Result<(), LinuxPackageManagerErro
 mod tests {
     use super::{
         LinuxPackageManager, NativeLibraryStatus, REQUIRED_NATIVE_MODULES,
-        VERSIONED_NATIVE_LIBRARIES, VersionedNativeLibrary, version_at_least,
+        VERSIONED_NATIVE_LIBRARIES, VersionedNativeLibrary, WPE_NATIVE_MODULES, version_at_least,
     };
 
     /// Stand-in for `pkg-config --modversion` / `--variable=…` on a machine that
@@ -1188,7 +1290,7 @@ mod tests {
                     library.module
                 );
             }
-            for &module in REQUIRED_NATIVE_MODULES {
+            for &module in REQUIRED_NATIVE_MODULES.iter().chain(WPE_NATIVE_MODULES) {
                 assert!(
                     manager.package_for_native_library(module).is_some(),
                     "{} has no package mapping for {module}",
@@ -1673,5 +1775,62 @@ mod host_tests {
             installation.missing_packages(),
             &[String::from("libpipewire-0.3-dev")]
         );
+    }
+}
+
+/// `check_native_libraries` probes pkg-config through the fake dispatcher, so
+/// the WPE module selection is verifiable on any Unix host.
+#[cfg(all(test, unix))]
+mod wpe_module_tests {
+    use std::collections::BTreeSet;
+
+    use super::{LinuxPackageManager, WPE_NATIVE_MODULES, check_native_libraries};
+    use crate::toolchain::ToolchainError;
+    use crate::toolchain::testing::TestMachine;
+
+    /// A machine whose pkg-config knows `egl` and every WPE module except
+    /// `libsoup-3.0`.
+    fn machine_without_libsoup() -> TestMachine {
+        let machine = TestMachine::new();
+        machine.install("pkg-config");
+        machine.respond_pkg_config_module("egl", "1.5.0");
+        for module in WPE_NATIVE_MODULES {
+            if *module != "libsoup-3.0" {
+                machine.respond_pkg_config_module(module, "1.0");
+            }
+        }
+        machine
+    }
+
+    #[test]
+    fn a_selected_wpe_runtime_requires_its_pkg_config_modules() {
+        let machine = machine_without_libsoup();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(check_native_libraries(
+            &host,
+            LinuxPackageManager::Apt,
+            &BTreeSet::new(),
+            true,
+        ));
+        let Err(ToolchainError::Fixable(installation)) = result else {
+            panic!("a missing libsoup-3.0 must be fixable: {result:?}");
+        };
+        assert_eq!(
+            installation.missing_packages(),
+            &[String::from("libsoup-3.0-dev")]
+        );
+    }
+
+    #[test]
+    fn an_unselected_wpe_runtime_probes_no_wpe_module() {
+        let machine = machine_without_libsoup();
+        let host = machine.host(Vec::<(String, String)>::new());
+        smol::block_on(check_native_libraries(
+            &host,
+            LinuxPackageManager::Apt,
+            &BTreeSet::new(),
+            false,
+        ))
+        .expect("the WPE modules are not prerequisites without the runtime");
     }
 }

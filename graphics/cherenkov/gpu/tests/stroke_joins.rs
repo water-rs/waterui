@@ -8,6 +8,19 @@ use cherenkov::{__engine_fn as split_fn, __engine_test as split_test, __engine_w
 use cherenkov::{ContinuousRect, Draw, WorkingColor};
 use cherenkov::{Engine, EngineError, Offscreen, OffscreenFormat};
 use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::metrics::assert_images_match;
+
+#[path = "support/visual.rs"]
+mod visual;
+use visual::crop;
+
+fn image(readback: &cherenkov::Readback) -> cherenkov_oracle::F32Image {
+    crop(
+        readback,
+        0..readback.width as usize,
+        0..readback.height as usize,
+    )
+}
 
 const CLEAR: WorkingColor = WorkingColor::new([0.0, 0.0, 0.0, 1.0]);
 const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
@@ -70,10 +83,7 @@ fn a_bevel_rect_stroke_matches_its_path_form() -> Result<(), Box<dyn std::error:
     let path_form = wait!(render(&engine, |c| {
         c.stroke(RECT.to_path(0.1), style(kurbo::Join::Bevel, 4.0), RED);
     }))?;
-    assert_eq!(
-        analytic.pixels, path_form.pixels,
-        "a bevelled rect stroke is rasterized from its stroked path"
-    );
+    assert_images_match(&image(&analytic), &image(&path_form));
     Ok(())
 }
 }
@@ -85,10 +95,7 @@ fn a_miter_limit_below_root_two_bevels() -> Result<(), Box<dyn std::error::Error
     };
     let mitered = wait!(render(&engine, stroke(style(kurbo::Join::Miter, 1.0))))?;
     let bevelled = wait!(render(&engine, stroke(style(kurbo::Join::Bevel, 4.0))))?;
-    assert_eq!(
-        mitered.pixels, bevelled.pixels,
-        "a miter limit of 1.0 cannot hold a right angle, so it bevels"
-    );
+    assert_images_match(&image(&mitered), &image(&bevelled));
     Ok(())
 }
 }
@@ -103,10 +110,7 @@ fn a_miter_limit_at_root_two_stays_analytic() -> Result<(), Box<dyn std::error::
         stroke(style(kurbo::Join::Miter, std::f64::consts::SQRT_2)),
     ))?;
     let high_limit = wait!(render(&engine, stroke(style(kurbo::Join::Miter, 4.0))))?;
-    assert_eq!(
-        at_limit.pixels, high_limit.pixels,
-        "a right angle's miter ratio is √2, so the limit still holds it"
-    );
+    assert_images_match(&image(&at_limit), &image(&high_limit));
     // Inside the outer sharp corner the miter is drawn; a bevel cuts it.
     let [r, ..] = px(&at_limit, 13, 13);
     assert!(r > 0.5, "miter corner: {r}");

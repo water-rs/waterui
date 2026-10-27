@@ -143,6 +143,37 @@ impl TabContentController {
     ) {
         self.ivars().scroll_surface.replace(Some(Rc::new(handler)));
     }
+
+    /// Installs `spec`'s chrome — title, symbol image, badge, enabled state
+    /// and the search system item — on the controller's `UITabBarItem`.
+    pub fn apply_spec(&self, spec: &TabSpec) {
+        let mtm = MainThreadMarker::from(self);
+        let title = NSString::from_str(&spec.label);
+        let image = spec
+            .symbol
+            .as_ref()
+            .and_then(|symbol| UIImage::systemImageNamed(&NSString::from_str(symbol)));
+        if spec.is_search {
+            let item = objc2_ui_kit::UITabBarItem::initWithTabBarSystemItem_tag(
+                mtm.alloc(),
+                objc2_ui_kit::UITabBarSystemItem::Search,
+                0,
+            );
+            // SAFETY: `setTabBarItem:` installs the search tab's item.
+            unsafe {
+                self.setTabBarItem(Some(&item));
+            }
+        } else {
+            self.setTitle(Some(&title));
+        }
+        if let Some(item) = self.tabBarItem() {
+            item.setImage(image.as_deref());
+            if let Some(badge) = &spec.badge {
+                item.setBadgeValue(Some(&NSString::from_str(badge)));
+            }
+            item.setEnabled(spec.enabled);
+        }
+    }
 }
 
 /// The tab bar controller's selection state.
@@ -220,43 +251,11 @@ impl TabsController {
         this
     }
 
-    /// Replaces the tabs: `specs` describe the tabs, `contents` their
-    /// content views — the two are equal in length.
-    pub fn set_tabs(&self, specs: &[TabSpec], contents: &[Retained<UIView>]) {
-        let mtm = MainThreadMarker::from(self);
-        let controllers: Vec<Retained<TabContentController>> = specs
-            .iter()
-            .zip(contents.iter())
-            .map(|(spec, view)| {
-                let controller = TabContentController::new(mtm, view);
-                let title = NSString::from_str(&spec.label);
-                let image = spec
-                    .symbol
-                    .as_ref()
-                    .and_then(|symbol| UIImage::systemImageNamed(&NSString::from_str(symbol)));
-                if spec.is_search {
-                    let item = objc2_ui_kit::UITabBarItem::initWithTabBarSystemItem_tag(
-                        mtm.alloc(),
-                        objc2_ui_kit::UITabBarSystemItem::Search,
-                        0,
-                    );
-                    // SAFETY: `setTabBarItem:` installs the search tab's item.
-                    unsafe {
-                        controller.setTabBarItem(Some(&item));
-                    }
-                } else {
-                    controller.setTitle(Some(&title));
-                }
-                if let Some(item) = controller.tabBarItem() {
-                    item.setImage(image.as_deref());
-                    if let Some(badge) = &spec.badge {
-                        item.setBadgeValue(Some(&NSString::from_str(badge)));
-                    }
-                    item.setEnabled(spec.enabled);
-                }
-                controller
-            })
-            .collect();
+    /// Installs `controllers` — one per tab, in bar order — as the bar's view
+    /// controllers. Pass each installed controller in every call: a
+    /// controller that survives a membership change keeps its pane, only the
+    /// array membership mutates.
+    pub fn set_view_controllers(&self, controllers: &[Retained<TabContentController>]) {
         self.setViewControllers_animated(
             Some(&NSArray::from_retained_slice(
                 &controllers

@@ -83,10 +83,14 @@ belong to water-rs/waterui.
   the limit. Frame-budget checks run under the default governor.
   Sub-millisecond scenes are compared by Mali shader-core active cycles
   (`pixel_compare.py run --gpu-counters`), never by GPU time: their frames
-  are latency-bound, so added work does not add GPU time. CPU-backend
-  comparisons (`pixel_compare.py run --engine cherenkov-cpu`) hold every
-  cluster the workers run on at one clock and are judged on frame and shade
-  time, at one worker and at eight.
+  are latency-bound, so added work does not add GPU time.
+- **A phone never decides a CPU-side change.** Its big.LITTLE scheduling
+  makes CPU timing unstable, and pinning threads or steering their placement
+  measures a device no user has; a CPU-side change is proven by the Callgrind
+  gate. On a phone the CPU backend is checked only for an obvious regression,
+  with clocks held so thermal throttling stays out of the run and the
+  scheduler left alone. Real devices are for what only they have: the GPU,
+  memory bandwidth, and real memory use, energy and frame time.
 - **Memory is a first-class cost, measured like time.** A cache or retained
   structure has to pay for its memory in measured time or energy. Every
   change reports the steady-state `Engine::memory()` (GPU and CPU) of the five
@@ -104,7 +108,7 @@ belong to water-rs/waterui.
   shaders and `as_hal` on the same device and queue: on-chip blending, tile
   memory, memoryless attachments (#50–#53).
 - **Engine shaders are precompiled at build time** (WGSL through naga to
-  metallib or SPIR-V) and loaded as passthrough shaders (#57). naga still links
+  metallib, SPIR-V or DXIL) and loaded as passthrough shaders (#57). naga still links
   through wgpu, and that is accepted.
 - **The hardware floor** is on-chip programmable blending plus f16 arithmetic
   on every supported device (#1); there is no low-end tier. Compute is a

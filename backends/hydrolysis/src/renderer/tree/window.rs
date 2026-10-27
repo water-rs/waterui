@@ -13,8 +13,8 @@ use waterui_layout::padding::EdgeInsets;
 /// [`WindowSafeArea`] binding re-lays out through the ordinary input path with
 /// no explicit refresh request. An environment that carries none reports zero
 /// insets, which is also what the whole window pipeline saw before.
-pub(super) fn window_container_insets(
-    renderer: &mut HydrolysisRenderer,
+pub(super) fn window_container_insets<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     env: &Environment,
 ) -> EdgeInsets {
     env.get::<WindowSafeArea>()
@@ -26,8 +26,8 @@ pub(super) fn window_container_insets(
 /// region: the software keyboard's own cover of the window, tracked
 /// frame-by-frame as the host animates it, which never resizes the window
 /// or the rendering surface.
-pub(super) fn window_keyboard_insets(
-    renderer: &mut HydrolysisRenderer,
+pub(super) fn window_keyboard_insets<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     env: &Environment,
 ) -> EdgeInsets {
     env.get::<WindowKeyboardArea>()
@@ -70,8 +70,8 @@ pub fn window_content_rect(
 /// context's frame agree exactly. `transform` places the window in device
 /// pixels: the touch tolerance derives from its per-axis scale, never a
 /// literal.
-pub fn window_root_layout(
-    renderer: &mut HydrolysisRenderer,
+pub fn window_root_layout<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
     env: &Environment,
     bounds: kurbo::Rect,
     transform: kurbo::Affine,
@@ -129,14 +129,14 @@ fn safe_area_context(
     )
 }
 
-impl RenderNode {
+impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Apply pending reactive `Dynamic` content changes by rebuilding only the
     /// affected child subtree — no whole-window re-dispatch. Returns whether
     /// anything changed; the caller relays the whole (retained, cheap) tree out
     /// when so, which lets a size-changing swap reflow its ancestors without
     /// resetting the scene and re-dispatching, which is visible as a flash.
     /// Walks the whole tree.
-    pub(crate) fn patch(&mut self, renderer: &mut SemanticCore) -> bool {
+    pub(crate) fn patch(&mut self, renderer: &mut SemanticCore<E>) -> bool {
         // No environment is threaded through: a rebuild uses the node's own captured
         // environment (`Dynamic`/`Collection`/`Env` carry it), so the walk only needs
         // the renderer.
@@ -326,7 +326,7 @@ impl RenderNode {
     }
 }
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The emit-pass equivalent of the `SemanticCore` half of
     /// `HydrolysisRenderer::reset_scene`: clears every pure-emission registry
     /// the accessibility walk re-pushes — input targets, gesture targets,
@@ -396,7 +396,7 @@ impl SemanticCore {
     /// focus validation/relocation and the accessibility tree's publication.
     /// Releasing in the renderer's order is what exposes same-manager watcher
     /// re-entrancy (water-rs/waterui#1213) to `#[waterui::test]`.
-    fn finish_semantic_emit_frame(&mut self, tree: &RenderNode, structural_change: bool) {
+    fn finish_semantic_emit_frame(&mut self, tree: &RenderNode<E>, structural_change: bool) {
         self.registries();
         self.hit_test
             .finish_rebuild_frame(&self.text_editing.text_input_targets);
@@ -453,6 +453,7 @@ impl SemanticCore {
             tree.emit_accessibility(self, env);
             self.finish_emit_pass();
         }
+        self.content_minimum = None;
         self.render_tree = Some(tree);
         self.finish_semantic_rebuild_frame(&live_dynamics);
         self.finish_rebuild();
@@ -497,12 +498,27 @@ impl SemanticCore {
             self.finish_emit_pass();
         }
         self.finish_semantic_emit_frame(&tree, structural_change);
+        self.content_minimum = None;
         self.render_tree = Some(tree);
         true
     }
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
+    /// Refreshes text presentation without walking or laying out the view tree.
+    pub(crate) fn record_text_input_overlay(
+        &mut self,
+        env: &Environment,
+        transform: kurbo::Affine,
+    ) {
+        let host = self.core.presentation_hosts.text_overlay.clone();
+        self.record_host(&host, |renderer| {
+            renderer.registries();
+            renderer.render_active_text_context_menu_overlay(env, transform);
+            renderer.prepare_transient_text_input_overlay(env, transform);
+        });
+    }
+
     /// Records every presentation under its host cell — the text context
     /// menu overlay, the open `.context_menu` presentation and the anchored
     /// overlays — after the window content's flush. Each host's record
@@ -519,11 +535,7 @@ impl HydrolysisRenderer {
         // The overlay-mode text context menu re-encodes with the frame it
         // floats over; drawing it only on the one-time build path would
         // leave it visible for a single frame.
-        let host = self.core.presentation_hosts.text_overlay.clone();
-        self.record_host(&host, |renderer| {
-            renderer.render_active_text_context_menu_overlay(env, transform);
-            renderer.prepare_transient_text_input_overlay(env, transform);
-        });
+        self.record_text_input_overlay(env, transform);
         // Same for an open `.context_menu` presentation: its dim backdrop,
         // lifted preview and anchored accessory re-encode per frame and the
         // pass is where dismiss_requests/menu-close is observed.
@@ -547,7 +559,7 @@ impl HydrolysisRenderer {
     }
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Build the retained tree before its first sized frame, so statically
     /// reachable nodes exist before the first render target is presented.
     #[cfg(test)]
@@ -563,6 +575,7 @@ impl HydrolysisRenderer {
         // Build-time marks are consumed by the build itself.
         self.clear_all_marks();
         let _ = self.signals.take_patch_request();
+        self.content_minimum = None;
         self.render_tree = Some(tree);
         self.finish_rebuild_frame();
     }
@@ -630,6 +643,7 @@ impl HydrolysisRenderer {
             {
                 self.frame_stage_times.encode += encode_started_at.elapsed();
             }
+            self.content_minimum = None;
             self.render_tree = Some(tree);
             return;
         }
@@ -668,6 +682,7 @@ impl HydrolysisRenderer {
         {
             self.frame_stage_times.encode += encode_started_at.elapsed();
         }
+        self.content_minimum = None;
         self.render_tree = Some(node);
     }
 
@@ -779,6 +794,7 @@ impl HydrolysisRenderer {
         self.clear_focused_fields();
         #[cfg(feature = "accessibility")]
         self.finalize_accessibility_tree_update();
+        self.content_minimum = None;
         self.render_tree = Some(tree);
         true
     }
@@ -794,6 +810,9 @@ impl HydrolysisRenderer {
     /// axis is laid out inside a larger offer per the layout spec, so an app
     /// pins a maximum only through `Window::max_size`.
     pub(crate) fn measure_content_minimum(&mut self, env: &Environment) -> Option<Size> {
+        if let Some(minimum) = self.content_minimum {
+            return Some(minimum);
+        }
         let tree = self.render_tree.take()?;
         let theme = self.theme();
         // Both axes are probed together, not independently: what a view
@@ -805,15 +824,17 @@ impl HydrolysisRenderer {
             .measure(&mut self.state, env, &theme, ProposalSize::ZERO)
             .size;
         self.render_tree = Some(tree);
-        Some(Size::new(
+        let minimum = Size::new(
             validated_minimum_axis(min_box.width, "width"),
             validated_minimum_axis(min_box.height, "height"),
-        ))
+        );
+        self.content_minimum = Some(minimum);
+        Some(minimum)
     }
 
     /// The retained window tree's root, for render-identity probes.
     #[cfg(test)]
-    pub(crate) fn render_tree_root(&self) -> Option<&RenderNode> {
+    pub(crate) fn render_tree_root(&self) -> Option<&RenderNode<E>> {
         self.render_tree.as_ref()
     }
 }

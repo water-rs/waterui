@@ -37,11 +37,11 @@ use crate::widgets::util::{centered_label_rect, inset_rect, widget_disabled};
 /// built once (with the theme's button styling + label color applied) and
 /// re-flushed each frame. The `config` is kept for the value/style/action and for
 /// accessibility resolution.
-pub struct ButtonRenderState {
+pub struct ButtonRenderState<E: crate::text::TextEngine> {
     config: ButtonConfig,
     /// `Some` for a non-title (general) label held as a retained sub-view; `None`
     /// for a `TitleOnly` label rendered as styled text from `config.label`.
-    label_view: Option<RetainedSubview>,
+    label_view: Option<RetainedSubview<E>>,
     /// The last [`InteractionState`] the render pass reported for this control,
     /// feeding the retained label's reactive colour resolution.
     label_state: nami::Binding<InteractionState>,
@@ -52,7 +52,7 @@ pub struct ButtonRenderState {
     chrome: Option<LiveChromeParts>,
 }
 
-impl ButtonRenderState {
+impl<E: crate::text::TextEngine> ButtonRenderState<E> {
     pub(crate) fn from_config(config: ButtonConfig) -> Self {
         Self {
             config,
@@ -98,7 +98,7 @@ impl ButtonRenderState {
     /// built there: accessibility reads the label config directly.
     pub(crate) fn ensure_label_built(
         &mut self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         env: &Environment,
     ) {
         let Some(subview) = &mut self.label_view else {
@@ -129,9 +129,9 @@ impl ButtonRenderState {
     }
 }
 
-impl HydroNativeView for Native<ButtonConfig> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ButtonConfig> {
     fn intrinsic(
-        state: &mut crate::renderer::HydroState,
+        state: &mut crate::renderer::HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -145,25 +145,26 @@ impl HydroNativeView for Native<ButtonConfig> {
 /// the same a11y tree.
 // empty when the accessibility feature is off
 #[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
-pub fn button_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn button_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
-    state: &Rc<RefCell<ButtonRenderState>>,
+    state: &Rc<RefCell<ButtonRenderState<E>>>,
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
     {
         let button = &state.borrow().config;
-        let mut node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 match button.style {
                     ButtonStyle::Link => AccessibilityNodeRole::Link,
                     _ => AccessibilityNodeRole::Button,
                 },
-            ));
+            ),
+        );
         let default_label =
-            crate::renderer::SemanticCore::accessibility_label_from_label(&button.label, env);
+            crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&button.label, env);
         let label = renderer.resolve_accessibility_label(env, default_label);
         if let Some(label) = label {
             node.set_label(label);
@@ -212,14 +213,14 @@ pub fn button_accessibility(
 /// `Click` target share: invokes `config.action` through the retained state
 /// cell so both hit the live config.
 #[cfg(feature = "accessibility")]
-pub fn button_activation(
-    state: &Rc<RefCell<ButtonRenderState>>,
+pub fn button_activation<E: crate::text::TextEngine>(
+    state: &Rc<RefCell<ButtonRenderState<E>>>,
     env: &Environment,
-) -> crate::renderer::AccessibilityActivation {
+) -> crate::renderer::AccessibilityActivation<E> {
     let state = Rc::clone(state);
     let action_env = env.clone();
     Rc::new(RefCell::new(
-        move |_renderer: &mut crate::renderer::SemanticCore, _env: &Environment| {
+        move |_renderer: &mut crate::renderer::SemanticCore<E>, _env: &Environment| {
             (state.borrow_mut().config.action)(&action_env);
             true
         },
@@ -254,10 +255,10 @@ fn button_chrome_size(
 /// Measures a retained button leaf from its [`ButtonRenderState`]: a general label
 /// is measured from its built [`RetainedSubview`], a title from its styled text —
 /// mirroring the render path so layout and render agree.
-pub fn measure_button_node(
-    render_state: &ButtonRenderState,
+pub fn measure_button_node<E: crate::text::TextEngine>(
+    render_state: &ButtonRenderState<E>,
     proposal: ProposalSize,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -286,9 +287,9 @@ pub fn measure_button_node(
 
 /// Renders a retained button leaf every flush: emits a11y (unless hidden) then the
 /// chrome + label + tap target, reading the config's live signals each frame.
-pub fn render_button_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<ButtonRenderState>>,
+pub fn render_button_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<ButtonRenderState<E>>>,
     env: &Environment,
 ) {
     let hidden = env
@@ -309,9 +310,9 @@ pub fn render_button_node(
 /// `read_signal`.
 const MENU_TRIGGER_STYLE: ButtonStyle = ButtonStyle::Automatic;
 
-pub struct MenuRenderState {
+pub struct MenuRenderState<E: crate::text::TextEngine> {
     /// The build-time decision of how to render the label.
-    label: MenuLabel,
+    label: MenuLabel<E>,
     /// Whether the label resolves to an icon-only presentation — decided
     /// once at build from the label's own display-mode resolution, so the
     /// trigger sizes under the icon-button contract like a button.
@@ -323,15 +324,15 @@ pub struct MenuRenderState {
 
 /// How a menu trigger renders its label, decided once at build time from the
 /// label `AnyView`.
-enum MenuLabel {
+enum MenuLabel<E: crate::text::TextEngine> {
     /// A `Label` with `TitleOnly` display: rendered as centered styled text fresh
     /// each frame (cloneable, like a button title).
     Title(Label),
     /// Any other view: re-flushed from a retained sub-view each frame.
-    View(Box<RetainedSubview>),
+    View(Box<RetainedSubview<E>>),
 }
 
-impl MenuRenderState {
+impl<E: crate::text::TextEngine> MenuRenderState<E> {
     pub(crate) fn from_resolved(menu: ResolvedMenu, env: &Environment) -> Self {
         let ResolvedMenu {
             label,
@@ -365,7 +366,7 @@ impl MenuRenderState {
     /// runtime never prepares and never needs the painted label.
     pub(crate) fn ensure_label_built(
         &mut self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut HydrolysisRenderer<E>,
         env: &Environment,
     ) {
         let theme = renderer.theme();
@@ -391,9 +392,9 @@ impl MenuRenderState {
     }
 }
 
-impl HydroNativeView for Native<ResolvedMenu> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedMenu> {
     fn intrinsic(
-        state: &mut crate::renderer::HydroState,
+        state: &mut crate::renderer::HydroState<E>,
         view: &Self,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -406,21 +407,22 @@ impl HydroNativeView for Native<ResolvedMenu> {
 /// Shared by the rendered `Widget`-node flush (which passes its [`RenderContext`]
 /// and theme for the popup anchor and metrics) and the semantic emission walk
 /// (which passes `None` for both — activation only marks a menu group active).
-pub fn menu_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
+pub fn menu_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
     theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
-    state: &Rc<RefCell<MenuRenderState>>,
+    state: &Rc<RefCell<MenuRenderState<E>>>,
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
     {
         let accessibility_label = state.borrow().accessibility_label.clone();
-        let mut node =
-            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::Button,
-            ));
+            ),
+        );
         let default_label = Some(
             renderer
                 .read_signal(&accessibility_label)
@@ -454,7 +456,7 @@ pub fn menu_accessibility(
         let menu_env = env.clone();
         let activation = AccessibilityActionTarget::Activate {
             action: Rc::new(RefCell::new(
-                move |renderer: &mut crate::renderer::SemanticCore, env: &Environment| {
+                move |renderer: &mut crate::renderer::SemanticCore<E>, env: &Environment| {
                     let env = menu_env.layered_on(env);
                     let nodes =
                         popup_menu_nodes(&items.snapshot(), &env, renderer.window_closable());
@@ -491,10 +493,10 @@ pub fn menu_accessibility(
 }
 
 /// Measures a retained menu leaf from its [`MenuRenderState`].
-pub fn measure_menu_node(
-    state: &MenuRenderState,
+pub fn measure_menu_node<E: crate::text::TextEngine>(
+    state: &MenuRenderState<E>,
     proposal: ProposalSize,
-    hydro: &mut HydroState,
+    hydro: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
@@ -518,9 +520,9 @@ pub fn measure_menu_node(
 
 /// Renders a retained menu leaf every flush: emits a11y (unless hidden) then the
 /// chrome + label + tap target, reading the accessibility-label/items signals.
-pub fn render_menu_node(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<MenuRenderState>>,
+pub fn render_menu_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<MenuRenderState<E>>>,
     env: &Environment,
 ) {
     let hidden = env
@@ -544,9 +546,9 @@ pub fn render_menu_node(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
-pub fn render_button_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<ButtonRenderState>>,
+pub fn render_button_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<ButtonRenderState<E>>>,
     env: &Environment,
 ) {
     let theme = ctx.theme();
@@ -781,9 +783,9 @@ pub fn render_button_parts(
     );
 }
 
-pub fn render_menu_parts(
-    ctx: &mut WidgetRenderContext<'_>,
-    state: &Rc<RefCell<MenuRenderState>>,
+pub fn render_menu_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<MenuRenderState<E>>>,
     env: &Environment,
 ) {
     let theme = ctx.theme();
@@ -889,9 +891,9 @@ pub fn render_menu_parts(
     );
 }
 
-pub fn measure_button_intrinsic(
+pub fn measure_button_intrinsic<E: crate::text::TextEngine>(
     button: &ButtonConfig,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
@@ -907,9 +909,9 @@ pub fn measure_button_intrinsic(
     button_chrome_size(label_size, &metrics, ProposalSize::UNSPECIFIED)
 }
 
-pub fn measure_menu_intrinsic(
+pub fn measure_menu_intrinsic<E: crate::text::TextEngine>(
     menu: &ResolvedMenu,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
@@ -1068,11 +1070,11 @@ pub fn button_label_color(
     )
 }
 
-fn measure_button_label_intrinsic(
+fn measure_button_label_intrinsic<E: crate::text::TextEngine>(
     theme: &Rc<dyn crate::theme::WidgetTheme>,
     style: ButtonStyle,
     label: &Label,
-    state: &mut HydroState,
+    state: &mut HydroState<E>,
     env: &Environment,
 ) -> LayoutSize {
     if renders_as_plain_title(label) {
@@ -1108,8 +1110,8 @@ pub fn label_resolves_icon_only(label: &Label, env: &Environment) -> bool {
     )
 }
 
-fn styled_button_title(
-    state: &mut HydroState,
+fn styled_button_title<E: crate::text::TextEngine>(
+    state: &mut HydroState<E>,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
     style: ButtonStyle,
     label: &Label,
@@ -1128,7 +1130,11 @@ fn styled_button_title(
 /// Subscribes to a label's reactive title content so a change schedules a frame
 /// (the persistent `Widget` node then re-renders it live). The returned value is
 /// ignored; the side effect is the watch registration.
-fn watch_button_title(renderer: &mut HydrolysisRenderer, label: &Label, env: &Environment) {
+fn watch_button_title<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    label: &Label,
+    env: &Environment,
+) {
     let _ = renderer.read_signal(&label.semantic_text().resolve(env).content);
 }
 
@@ -1173,9 +1179,9 @@ fn styled_button_label(
 /// sub-view flushes visual-only (its semantics are merged into the button's
 /// node), so there is nothing else to emit.
 #[cfg(feature = "accessibility")]
-pub fn emit_button_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<ButtonRenderState>>,
+pub fn emit_button_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<ButtonRenderState<E>>>,
     env: &Environment,
 ) {
     button_accessibility(renderer, None, state, env);
@@ -1184,9 +1190,9 @@ pub fn emit_button_accessibility(
 /// Emits a retained menu trigger's accessibility node for the semantic walk —
 /// the same node `menu_accessibility` registers, with no bounds.
 #[cfg(feature = "accessibility")]
-pub fn emit_menu_accessibility(
-    renderer: &mut crate::renderer::SemanticCore,
-    state: &Rc<RefCell<MenuRenderState>>,
+pub fn emit_menu_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<MenuRenderState<E>>>,
     env: &Environment,
 ) {
     menu_accessibility(renderer, None, None, state, env);

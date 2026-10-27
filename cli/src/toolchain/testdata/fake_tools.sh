@@ -554,7 +554,13 @@ git)
     # The managed-checkout sequence `git -C <dir> init | remote add | fetch |
     # checkout` produces: on `checkout`, copy the staged
     # WATERUI_FAKE_GIT_CHECKOUT tree into the -C directory, like a clone's
-    # detached checkout. Every other subcommand succeeds silently.
+    # detached checkout — a copy that fails is a nonzero exit naming the
+    # staged tree, not a silent partial checkout. Every other subcommand
+    # succeeds silently.
+    #
+    # Every invocation the CLI spawns leads with `-c core.longpaths=true`;
+    # drop the `-c <kv>` pairs so "$*" and $1 below see the subcommand.
+    while [ $# -ge 2 ] && [ "$1" = "-c" ]; do shift 2; done
     git_dir=""
     git_prev=""
     for git_arg in "$@"; do
@@ -579,7 +585,47 @@ git)
             ;;
         *checkout*)
             if [ -n "${WATERUI_FAKE_GIT_CHECKOUT-}" ] && [ -n "$git_dir" ]; then
-                /bin/cp -R "${WATERUI_FAKE_GIT_CHECKOUT}/." "$git_dir/"
+                if ! /bin/cp -R "${WATERUI_FAKE_GIT_CHECKOUT}/." "$git_dir/"; then
+                    printf 'git checkout: failed to copy %s into %s\n' \
+                        "${WATERUI_FAKE_GIT_CHECKOUT}" "$git_dir" >&2
+                    exit 1
+                fi
+            fi
+            ;;
+    esac
+    exit 0
+    ;;
+reg)
+    # `reg query <key> /v LongPathsEnabled` — the only value modeled. The
+    # state file wins over the staged WATERUI_FAKE_LONG_PATHS value: it is
+    # what the elevated write the powershell fake models produces. An absent
+    # value fails the query like the real tool.
+    case "$1" in
+        query)
+            _reg_val="${WATERUI_FAKE_LONG_PATHS-}"
+            if [ -f "$HOME/.fake-long-paths" ]; then
+                IFS= read -r _reg_val < "$HOME/.fake-long-paths"
+            fi
+            if [ -n "$_reg_val" ]; then
+                printf '\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\FileSystem\n'
+                printf '    LongPathsEnabled    REG_DWORD    0x%s\n' "$_reg_val"
+                exit 0
+            fi
+            echo "ERROR: The system was unable to find the specified registry key or value." >&2
+            exit 1
+            ;;
+    esac
+    exit 0
+    ;;
+powershell | pwsh)
+    # `doctor --fix` elevates `reg add` through `Start-Process -Verb RunAs`;
+    # land that write in the state file the `reg` branch reads so a re-check
+    # observes the repair. WATERUI_FAKE_POWERSHELL_NO_WRITE models a write
+    # that did not land.
+    case "$*" in
+        *LongPathsEnabled*)
+            if [ -z "${WATERUI_FAKE_POWERSHELL_NO_WRITE-}" ]; then
+                printf '1\n' > "$HOME/.fake-long-paths"
             fi
             ;;
     esac
@@ -591,6 +637,28 @@ cmake | meson | spirv-opt | sh | bash)
             printf '%s 1.0.0 (waterui-test)\n' "$tool"
             ;;
     esac
+    if [ "$tool" = "cmake" ]; then
+        # WPE source-build fixture: --install --prefix <dir> materializes the
+        # two bridge outputs (or only the bridge under OMIT_EXTENSION); any
+        # invocation fails under WATERUI_FAKE_CMAKE_FAIL.
+        if [ -n "${WATERUI_FAKE_LOG-}" ]; then
+            printf 'cmake-env PKG_CONFIG_PATH=%s\n' "${PKG_CONFIG_PATH-}" >> "$WATERUI_FAKE_LOG"
+        fi
+        [ -n "${WATERUI_FAKE_CMAKE_FAIL-}" ] && exit 1
+        _prefix=""
+        _prev=""
+        for _arg in "$@"; do
+            [ "$_prev" = "--prefix" ] && _prefix="$_arg"
+            _prev="$_arg"
+        done
+        if [ -n "$_prefix" ]; then
+            /bin/mkdir -p "$_prefix/lib/waterui-wpe/extensions"
+            printf 'fake bridge' > "$_prefix/lib/libwaterui_wpe.so"
+            if [ -z "${WATERUI_FAKE_CMAKE_OMIT_EXTENSION-}" ]; then
+                printf 'fake extension' > "$_prefix/lib/waterui-wpe/extensions/waterui_wpe_extension.so"
+            fi
+        fi
+    fi
     exit 0
     ;;
 wasm-pack)
@@ -646,6 +714,11 @@ winget)
             exit 1
             ;;
         install*)
+            # A winget that never returns: its child outlives the direct
+            # process unless the whole tree is killed.
+            if [ -n "${WATERUI_FAKE_WINGET_HANG-}" ]; then
+                /bin/sleep 300
+            fi
             exit 0
             ;;
         *)

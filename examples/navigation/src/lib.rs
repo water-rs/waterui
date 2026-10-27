@@ -32,7 +32,7 @@ use mdi::view_gallery;
 use waterui::Identifiable;
 use waterui::app::App;
 use waterui::component::list::{List, ListDelete, ListItem, ListMove, Section, row};
-use waterui::id::Id;
+use waterui::id::{Id, SelfId};
 use waterui::navigation::{NavigationSplitView, NavigationView, Navigator};
 use waterui::prelude::theme_color::{Accent, Foreground, SurfaceVariant};
 use waterui::prelude::*;
@@ -40,6 +40,7 @@ use waterui::preview;
 use waterui::reactive::binding;
 use waterui::reactive::collection::SignalCollection;
 use waterui::shape::{Circle, RoundedRectangle};
+use waterui::views::ForEach;
 use waterui_icons_material_icon as mdi;
 
 // ---------------------------------------------------------------------------
@@ -268,30 +269,36 @@ pub fn demo() -> impl View {
     let mail = Mail::new();
     let pane = binding(Pane::Inbox);
 
-    Tabs::new(
-        &pane,
-        vec![
-            Tab::container(Pane::Inbox, label("Inbox").icon(inbox()), {
+    let tabs = std::collections::BTreeMap::from([
+        (
+            Pane::Inbox,
+            Tab::container(label("Inbox").icon(inbox()), {
                 let mail = mail.clone();
                 move || inbox_stack(mail.clone())
             })
             .badge(mail.unread_count()),
-            Tab::container(
-                Pane::Library,
-                label("Library").icon(image_album()),
-                library_split,
-            ),
-            Tab::container(
-                Pane::Gallery,
-                label("Gallery").icon(view_gallery()),
-                gallery_stack,
-            ),
-            Tab::container(
-                Pane::Settings,
-                label("Settings").icon(cog()),
-                settings_stack,
-            ),
-        ],
+        ),
+        (
+            Pane::Library,
+            Tab::container(label("Library").icon(image_album()), library_split),
+        ),
+        (
+            Pane::Gallery,
+            Tab::container(label("Gallery").icon(view_gallery()), gallery_stack),
+        ),
+        (
+            Pane::Settings,
+            Tab::container(label("Settings").icon(cog()), settings_stack),
+        ),
+    ]);
+    let panes = [Pane::Inbox, Pane::Library, Pane::Gallery, Pane::Settings].map(SelfId::new);
+    Tabs::new(
+        &pane,
+        ForEach::new(panes.to_vec(), move |pane: SelfId<Pane>| {
+            tabs.get(&pane.into_inner())
+                .expect("a keyed tab collection reports a tab for every id")
+                .clone()
+        }),
     )
     // A tab bar on a phone, a sidebar or navigation rail on a large window: the
     // backend decides from the platform and the current window size.

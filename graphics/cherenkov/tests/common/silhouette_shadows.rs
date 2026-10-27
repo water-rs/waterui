@@ -3,6 +3,8 @@ use cherenkov::{__engine_fn as split_fn, __engine_wait as wait};
 use cherenkov::{
     Backend, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, Shadow, WorkingColor,
 };
+use cherenkov_oracle::image::F32Image;
+use cherenkov_oracle::metrics::{assert_close, assert_images_match};
 use kurbo::{Affine, BezPath, Rect};
 
 fn silhouette() -> BezPath {
@@ -55,23 +57,26 @@ pub fn retained_and_padded<B: Backend>(config: B::Config) {
         });
         wait!(engine.render(FrameTime::now())).expect("padded reference");
         let expected = wait!(reference.readback()).expect("reference pixels").pixels;
+        let window = F32Image {
+            width: 64,
+            height: 64,
+            pixels: (0..64)
+                .flat_map(|y| (0..64).map(move |x| (x, y)))
+                .map(|(x, y)| expected[(y + 32) * 128 + x + 32])
+                .collect(),
+        };
+        assert_images_match(
+            &window,
+            &F32Image {
+                width: 64,
+                height: 64,
+                pixels: pixels.clone(),
+            },
+        );
         for y in 0..64 {
-            for x in 0..64 {
-                let a = pixels[y * 64 + x];
-                let b = expected[(y + 32) * 128 + x + 32];
-                for (a, b) in a.into_iter().zip(b) {
-                    assert!(
-                        (a - b).abs() < 0.001,
-                        "viewport changes shadow at {x},{y}: {a} != {b}"
-                    );
-                }
-                if (49..60).contains(&x) {
-                    assert_eq!(
-                        a.map(f32::to_bits),
-                        [0.0_f32; 4].map(f32::to_bits),
-                        "clip applied after blur"
-                    );
-                }
+            for x in 49..60 {
+                // The clip applies after the blur.
+                assert_close(&pixels[y * 64 + x], &[0.0; 4]);
             }
         }
         wait!(engine.render(FrameTime::now())).expect("idle");

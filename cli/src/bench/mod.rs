@@ -127,7 +127,7 @@ pub async fn run_bench_suite(
 
     // nextest paints its progress UI on the user's terminal but never reads
     // stdin — monitored, not interactive.
-    let mut command = smol::process::Command::from(host.monitored_command("cargo"));
+    let mut command = smol::process::Command::from(host.monitored_command("cargo")?);
     command
         .arg("nextest")
         .arg("run")
@@ -176,7 +176,7 @@ pub async fn run_bench_suite(
 /// Fails fast with an install hint when `cargo-nextest` is unavailable.
 async fn ensure_nextest_installed(host: &crate::toolchain::Host) -> Result<()> {
     let probe = host
-        .command("cargo")
+        .command("cargo")?
         .arg("nextest")
         .arg("--version")
         .stdout(Stdio::null())

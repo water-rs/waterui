@@ -29,25 +29,25 @@ const CONTEXT_MENU_SHADOW_OPACITY: f32 = 0.35;
 /// [`PopupMenuState`] for the same lifetime as the menu window; when the menu
 /// closes — by item choice, outside press, or `dismiss_requests` — the
 /// presentation drops and the sub-views return to their owning node's slots.
-pub struct ContextMenuPresentation {
+pub struct ContextMenuPresentation<E: crate::text::TextEngine> {
     /// The context-menu target's rect in hit space: where the preview is
     /// lifted and what the accessory anchors to.
     pub(crate) source_bounds: kurbo::Rect,
     /// The menu's rows, drawn into this window's scene at `menu_frame` every
     /// frame — no borderless popup window exists in this presentation, so
     /// nothing transparent can stray over the dimmed backdrop.
-    pub(crate) menu: RetainedSubview,
+    pub(crate) menu: RetainedSubview<E>,
     /// The custom preview being lifted over `source_bounds`. `None` keeps the
     /// source view lit through a hole in the dim backdrop — the source is
     /// still drawn by the owning tree, so it cannot be re-flushed here.
-    pub(crate) preview: Option<RetainedSubview>,
+    pub(crate) preview: Option<RetainedSubview<E>>,
     /// The mounted interactive accessory. `None` for a preview-only or
     /// hold-opened presentation — those mount the dim and the lift without
     /// an accessory panel.
-    pub(crate) accessory: Option<RetainedSubview>,
+    pub(crate) accessory: Option<RetainedSubview<E>>,
     /// The owning node's slots the sub-views return to on drop.
-    pub(crate) preview_slot: Rc<RefCell<Option<RetainedSubview>>>,
-    pub(crate) accessory_slot: Rc<RefCell<Option<RetainedSubview>>>,
+    pub(crate) preview_slot: Rc<RefCell<Option<RetainedSubview<E>>>>,
+    pub(crate) accessory_slot: Rc<RefCell<Option<RetainedSubview<E>>>>,
     /// The accessory's dismiss-request counter; every change closes the menu.
     pub(crate) dismiss_requests: nami::Computed<i32>,
     /// The counter value last observed by the presentation's frame render.
@@ -77,7 +77,7 @@ pub struct ContextMenuPresentation {
     pub(crate) env: Environment,
 }
 
-impl Drop for ContextMenuPresentation {
+impl<E: crate::text::TextEngine> Drop for ContextMenuPresentation<E> {
     fn drop(&mut self) {
         // Return the borrowed sub-views to the node's slots so a later open
         // mounts them again, still built and still holding their state.
@@ -227,7 +227,7 @@ fn context_menu_presentation_layout(
     }
 }
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Whether `point` (hit space) lands inside the open context-menu
     /// presentation — its drawn menu or its accessory. Presses there belong
     /// to the presentation's own targets: they must not dismiss the menu,
@@ -287,7 +287,7 @@ impl SemanticCore {
     }
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Open a `.context_menu` popup at `origin` (hit space) — the drawn menu a
     /// secondary press or press-and-hold resolves. The drawn presentation
     /// mounts when the declaring node carries a preview or an accessory, or
@@ -300,7 +300,7 @@ impl HydrolysisRenderer {
     pub(crate) fn show_context_menu(
         &mut self,
         nodes: Vec<PopupMenuNode>,
-        target: Option<&ContextMenuTarget>,
+        target: Option<&ContextMenuTarget<E>>,
         origin: LayoutPoint,
         metrics: TextContextMenuMetrics,
         env: &Environment,
@@ -321,7 +321,7 @@ impl HydrolysisRenderer {
         // The menu's chords publish to the app's shared registry — live while
         // any menu in the group is open — so a popup window that took
         // keyboard focus still resolves them (water-rs/hydrolysis#247).
-        env.get::<MenuShortcutRegistry>()
+        env.get::<MenuShortcutRegistry<E>>()
             .expect(MISSING_MENU_SHORTCUT_REGISTRY)
             .register_popup(&nodes, &group, env);
         let theme = self.theme();
@@ -426,7 +426,7 @@ impl HydrolysisRenderer {
     }
 }
 
-impl HydrolysisRenderer {
+impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Snapshot every hit-test registration the overlay can produce, run `f`
     /// (a sub-view flush), then truncate them back — the lifted preview is a
     /// snapshot of what the menu acts on: it renders, but it does not receive

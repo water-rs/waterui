@@ -145,7 +145,7 @@ impl SignalWatchRegistry {
 /// reused while every pass keeps reading it, so a steady-state pass allocates
 /// and subscribes nothing. Identity-less signals have no key to reuse under —
 /// each pass drops their previous subscriptions and re-subscribes.
-pub(super) struct LayoutDependencies {
+pub(super) struct LayoutDependencies<E: crate::text::TextEngine> {
     /// Identity-stable dependencies: subscribed on first read and kept —
     /// pruned back to what the latest pass read by `finish_pass`.
     identities: SignalWatchRegistry,
@@ -159,12 +159,12 @@ pub(super) struct LayoutDependencies {
     dirty: Rc<Cell<bool>>,
     /// The sub-view's own cell — the node a dependency's update marks for
     /// re-layout (the `Layout::watch_invalidation` row of §B.1).
-    cell: Weak<NodeCell>,
+    cell: Weak<NodeCell<E>>,
 }
 
-impl LayoutDependencies {
+impl<E: crate::text::TextEngine> LayoutDependencies<E> {
     /// An empty set for a sub-view whose layout has not run yet.
-    pub(super) fn new(cell: Weak<NodeCell>) -> Self {
+    pub(super) fn new(cell: Weak<NodeCell<E>>) -> Self {
         Self {
             identities: SignalWatchRegistry::default(),
             anonymous: Vec::new(),
@@ -235,7 +235,7 @@ impl LayoutDependencies {
     }
 }
 
-impl HydroState {
+impl<E: crate::text::TextEngine> HydroState<E> {
     /// Reads `signal` at measure time: a plain `snapshot()`, plus — while a
     /// `BuiltSubview` layout pass is collecting — a record in the pass's
     /// dependency set so an update invalidates the cached layout that read
@@ -307,7 +307,7 @@ impl<T: 'static, G> SubscribedSnapshot<T, G> {
 /// (`input/interaction.rs`'s `animation_discriminator`).
 const TOGGLE_PROGRESS_KEY: usize = 0x0100_0008;
 
-impl SemanticCore {
+impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Pushes a watcher guard onto the store the current phase reads into:
     /// the reading node's `subscriptions` while it records, its
     /// `layout_subscriptions` while it measures/lays out, or the renderer's
@@ -321,7 +321,7 @@ impl SemanticCore {
 
     /// The cell an outside-reader watch marks, shared by the identity-less
     /// and identity-keyed paths below.
-    fn root_weak(&self) -> Weak<NodeCell> {
+    fn root_weak(&self) -> Weak<NodeCell<E>> {
         Rc::downgrade(&self.root)
     }
 
@@ -547,7 +547,7 @@ impl SemanticCore {
         &mut self,
         key: AnimationKey,
         dirty: Dirty,
-    ) -> Weak<NodeCell> {
+    ) -> Weak<NodeCell<E>> {
         let cell = match &self.reader {
             Some(reader) => Rc::clone(&reader.cell),
             None => Rc::clone(&self.root),
@@ -620,6 +620,34 @@ impl SemanticCore {
             .bind_repeating_phase(key, cycle, self.frame_instant)
     }
 
+    fn navigation_animating(&self, now: Instant) -> bool {
+        self.navigation.slots.values().any(|slot| {
+            slot.transition
+                .as_ref()
+                .is_some_and(|state| state.is_active(now))
+                || slot
+                    .interactive_pop
+                    .as_ref()
+                    .is_some_and(NavigationInteractivePop::is_animating)
+        })
+    }
+
+    /// Content demand for the host's animation cadence. Input-release and
+    /// navigation motion keep the fast range regardless of scalar fades.
+    #[cfg(any(target_os = "android", test))]
+    pub(crate) fn animation_refresh_range(&self) -> Option<cherenkov::RefreshRange> {
+        let now = self.frame_instant;
+        if self.has_pending_interaction_releases(now)
+            || self.navigation_animating(now)
+            || self.has_gliding_smooth_scrolls()
+            || self.has_active_touch_fling()
+        {
+            Some(cherenkov_record::tree::RATE_FAST)
+        } else {
+            self.animation_controller.refresh_range(now)
+        }
+    }
+
     pub fn advance_animations(&mut self) -> bool {
         let now = self.frame_instant;
         let pending_releases = self.flush_interaction_releases(now);
@@ -640,31 +668,23 @@ impl SemanticCore {
                 active.contains(key)
             });
         }
-        ticked
-            || pending_releases
-            || self.navigation.slots.values().any(|slot| {
-                slot.transition
-                    .as_ref()
-                    .is_some_and(|state| state.is_active(now))
-                    || slot
-                        .interactive_pop
-                        .as_ref()
-                        .is_some_and(NavigationInteractivePop::is_animating)
-            })
+        ticked || pending_releases || self.navigation_animating(now)
     }
 
     pub fn animations_active(&self) -> bool {
+        self.animations_active_with(PerpetualAnimation::Counts)
+    }
+
+    /// [`Self::animations_active`] with a choice of whether repeat-forever
+    /// animations count.
+    pub(crate) fn animations_active_with(&self, perpetual: PerpetualAnimation) -> bool {
         let now = self.frame_instant;
-        self.animation_controller.has_active(now)
+        let controller_active = match perpetual {
+            PerpetualAnimation::Counts => self.animation_controller.has_active(now),
+            PerpetualAnimation::Ignored => self.animation_controller.has_finite_active(now),
+        };
+        controller_active
             || self.has_pending_interaction_releases(now)
-            || self.navigation.slots.values().any(|slot| {
-                slot.transition
-                    .as_ref()
-                    .is_some_and(|state| state.is_active(now))
-                    || slot
-                        .interactive_pop
-                        .as_ref()
-                        .is_some_and(NavigationInteractivePop::is_animating)
-            })
+            || self.navigation_animating(now)
     }
 }

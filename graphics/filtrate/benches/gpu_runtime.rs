@@ -13,7 +13,7 @@ use divan::Bencher;
 use filtrate::filters::{BlendMode, BlendWithImage, Bloom, Blur, Brightness, Saturation};
 use filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, Executor, FilterExt, FilterImage,
-    ShapeTextures,
+    PipelineCache, ShapeTextures,
 };
 
 fn main() {
@@ -23,6 +23,7 @@ fn main() {
 struct GpuBench {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    pipelines: PipelineCache,
     input_texture: wgpu::Texture,
     input_view: wgpu::TextureView,
     output_texture: wgpu::Texture,
@@ -87,6 +88,7 @@ impl GpuBench {
         Self {
             device,
             queue,
+            pipelines: PipelineCache::new(),
             input_view: input_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             output_view: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             input_texture,
@@ -103,6 +105,7 @@ impl GpuBench {
             queue: &self.queue,
             input_format: self.format,
             output_format: self.format,
+            pipelines: &self.pipelines,
         };
         pollster::block_on(filter.setup(&ctx)).expect("filter setup should succeed");
     }

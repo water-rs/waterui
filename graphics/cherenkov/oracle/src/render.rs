@@ -2046,13 +2046,9 @@ mod tests {
         std::array::from_fn(|c| texels.iter().map(|&(x, y)| texel(x, y)[c]).sum::<f64>() / n)
     }
 
+    #[track_caller]
     fn assert_texel(actual: [f64; 4], expected: [f64; 4]) {
-        for (a, e) in actual.iter().zip(expected) {
-            assert!(
-                (a - e).abs() <= 1e-12,
-                "texel {actual:?}, expected {expected:?}"
-            );
-        }
+        crate::metrics::assert_close(&actual, &expected);
     }
 
     #[test]

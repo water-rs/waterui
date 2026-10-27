@@ -1,4 +1,4 @@
-//! The scenario table's contract: the two names parse, anything else is
+//! The scenario table's contract: known names parse, anything else is
 //! a clear error — the harness never guesses a scenario.
 
 use apple_planes::scenario::{NAMES, Scenario};
@@ -6,6 +6,10 @@ use apple_planes::scenario::{NAMES, Scenario};
 #[test]
 fn the_known_scenarios_parse() {
     assert!(matches!(Scenario::parse("overlay"), Ok(Scenario::Overlay)));
+    assert!(matches!(
+        Scenario::parse("static-hdr:512:1:0:plane"),
+        Ok(Scenario::Recorded(spec)) if spec.hdr && spec.name() == "static-hdr"
+    ));
     assert!(matches!(
         Scenario::parse("in-engine"),
         Ok(Scenario::InEngine)

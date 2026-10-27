@@ -64,11 +64,19 @@ image = { version = "0.25", default-features = false }
 parley = { workspace = true, features = ["system", "complex-scripts"] }
 # Glyph outline bounds for the measured-frame-must-cover-ink contract (#237):
 # parley's advance metrics stop at the pen advance, so the measure path reads
-# the real outline extents through the same font stack version parley uses.
-skrifa = "0.44"
+# the real outline extents with this crate's own skrifa over the raw font
+# bytes; no typed value crosses to parley's font stack.
+skrifa = "0.48"
+# The HWUI target reads a registered font's bounds and variation axes
+# (`head`, `fvar`, `avar`) without the shaping engine skrifa carries.
+read-fonts = { version = "0.45.1", default-features = false, features = ["std"], optional = true }
 # `Emoji`/`Emoji_Presentation` sets for the emoji-cluster ranges shaping must
 # route through the `emoji` generic family first.
 icu_properties = { version = "2.3", default-features = false, features = ["compiled_data"] }
+# CLDR likely-subtags (`LocaleExpander`): the script an Android platform
+# face's bare language tag is written in — see
+# `text/parley_engine/android_fonts::fallback_keys`.
+icu_locale = { version = "2.3", default-features = false, features = ["compiled_data"] }
 wgpu.workspace = true
 lru.workspace = true
 pollster.workspace = true
@@ -91,7 +99,7 @@ waterui-inspector-protocol.workspace = true
 [target.'cfg(not(target_os = "android"))'.dependencies]
 winit = { version = "0.30", optional = true }
 ui-events-winit = { workspace = true, optional = true }
-accesskit_winit = { version = "0.34.0", optional = true }
+accesskit_winit = { version = "0.34.1", optional = true }
 
 [build-dependencies]
 cfg_aliases = "0.2.2"
@@ -206,7 +214,9 @@ futures = { workspace = true, optional = true }
 # module turns the Xlib backend's `Display*` into its `xcb_connection_t`.
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "emscripten", target_os = "redox"))))'.dependencies]
 x11-dl = { version = "2.21", optional = true }
-x11rb = { version = "0.13", optional = true }
+# `allow-unsafe-code` exposes `xcb_ffi`, which 0.14 gates behind it: the
+# runner wraps the `xcb_connection_t` winit already owns.
+x11rb = { version = "0.14", features = ["allow-unsafe-code"], optional = true }
 # `ext-background-effect-v1` blur behind a Wayland window, bound on the
 # `wl_display` winit already owns — borrowed through the raw display handle,
 # never a second connection. `staging` carries the ext-* protocols, and
@@ -223,10 +233,9 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"], option
 # `DwmGetWindowAttribute(DWMWA_CLOAKED)` for hidden-window occlusion,
 # `DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE)` and
 # `DwmExtendFrameIntoClientArea` for the behind-window material's acrylic
-# backdrop, `RtlGetVersion` for the build floor that gates it. The version
-# tracks the `windows-sys` release winit 0.30 already builds against.
+# backdrop, `RtlGetVersion` for the build floor that gates it.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", optional = true, features = [
+windows-sys = { version = "0.61", optional = true, features = [
     "Wdk_System_SystemServices",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
@@ -255,7 +264,7 @@ windows = { workspace = true, features = [
 # carries the eventfd the main-Looper executor wakes on, and `android_logger`
 # + `tracing-log` route `tracing` into logcat.
 [target.'cfg(target_os = "android")'.dependencies]
-jni = "0.21.1"
+jni.workspace = true
 ndk = { version = "0.9.0", features = ["nativewindow", "api-level-31"] }
 # The application `Context` for service crates that resolve it through
 # `ndk_context::android_context` — waterkit-clipboard's Android backend
@@ -327,6 +336,11 @@ hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
 # `SceneView` before it reaches layout. The tests still author canvases, which
 # is what keeps that resolution honest.
 waterui-canvas.workspace = true
+# The HWUI target's unit tests read font metrics on the host as well.
+read-fonts = { version = "0.45.1", default-features = false, features = ["std"] }
+# The `hwui::kotlin` test renders the Kotlin wire constants from the Rust
+# definitions.
+askama = { version = "0.16", default-features = false, features = ["derive", "std"] }
 # The tests' `MirrorTarget` implements `Queue`, whose `ChangeSet` the engine
 # crate does not re-export.
 cherenkov-record.workspace = true
@@ -343,7 +357,7 @@ toml.workspace = true
 jiff.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 waterui = { workspace = true, features = ["dialog", "flow-markdown", "gpu", "snackbar", "video-gpu"] }
-base64 = "0.22"
+base64 = "0.23"
 # The font-collection tests stage a resource root of their own — a real
 # directory, since the loader reads one from the filesystem.
 tempfile = "3.27"
@@ -386,6 +400,12 @@ testing = []
 # exercise a software adapter for bring-up on a host without a GPU.
 frame-profile = ["testing"]
 inspector-signals = ["waterui/inspector-signals"]
+# The HWUI render target (Android only): the retained layer tree recorded
+# into `RenderNode` display lists through one command buffer per frame, and
+# text laid out and drawn by the platform's `StaticLayout`
+# (water-rs/waterui#1811). On other targets the feature selects nothing; the
+# subsystem still compiles for tests.
+hwui = ["dep:read-fonts"]
 # The platform's own web engine: `WKWebView` on macOS, an `<iframe>` on the web,
 # each hosted on a compositor plane, and `android.webkit.WebView` on Android,
 # mounted as a platform-view instance. Every other engine is a crate the

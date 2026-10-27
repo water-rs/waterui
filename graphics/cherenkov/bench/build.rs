@@ -210,7 +210,7 @@ fn main() {
     let packages = lockfile_packages(&text);
     for (pkg, env) in [
         ("vello", "DEP_VELLO"),
-        ("vello_hybrid", "DEP_VELLO_HYBRID"),
+        ("vello_gpu", "DEP_VELLO_GPU"),
         ("vello_cpu", "DEP_VELLO_CPU"),
         ("skia-safe", "DEP_SKIA_SAFE"),
         ("wgpu", "DEP_WGPU"),

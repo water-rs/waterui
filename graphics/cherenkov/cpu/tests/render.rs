@@ -9,12 +9,198 @@ use cherenkov::{
 };
 use cherenkov::{Engine, FrameTime, Offscreen, OffscreenFormat};
 use cherenkov_cpu::{Raster, RasterConfig};
+use cherenkov_oracle::F32Image;
+use cherenkov_oracle::metrics::{assert_close, assert_images_match};
 
 fn engine() -> Engine<Raster> {
     Engine::<Raster>::new(RasterConfig::default()).expect("engine")
 }
 
 const RED: WorkingColor = WorkingColor::new([1., 0., 0., 1.]);
+
+#[test]
+fn retained_outputs_skip_unchanged_bands_after_motion_and_clear() {
+    compare_retained_outputs(false);
+}
+
+#[test]
+fn retained_outputs_expand_damage_through_nested_filters() {
+    compare_retained_outputs(true);
+}
+
+fn compare_retained_outputs(filtered: bool) {
+    for format in [OffscreenFormat::LinearF32, OffscreenFormat::LinearF16] {
+        let engine = engine();
+        let size = (128, 1024);
+        let surface = engine.surface(Offscreen::new(size, format), || {}).unwrap();
+        let moving = surface.layer();
+        let outer = surface.layer();
+        let inner = surface.layer();
+        let blur = filtered.then(|| engine.filter(filtrate::filters::GaussianBlur::new(2.0f32)));
+        let background = WorkingColor::new([0.1, 0.3, 0.2, 0.5]);
+        let foreground = WorkingColor::new([3.0, 0.2, 0.8, 0.6]);
+        surface.update(|tx| {
+            tx[surface.root()].push(&outer).content(surface.record(|r| {
+                r.fill(Rect::new(0.0, 0.0, 128.0, 1024.0), background);
+            }));
+            tx[&outer].push(&inner);
+            tx[&inner].push(&moving);
+            if let Some(blur) = &blur {
+                tx[&outer].filter(blur.id());
+                tx[&inner].filter(blur.id());
+            }
+        });
+        for (step, position) in [
+            Some((20.0, 32.0)),
+            Some((80.0, 448.0)),
+            None,
+            Some((20.0, 32.0)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            surface.update(|tx| {
+                if let Some(position) = position {
+                    tx[&moving]
+                        .transform(Affine::translate(position))
+                        .content(surface.record(|r| {
+                            r.fill(Rect::new(0.0, 0.0, 8.0, 8.0), foreground);
+                        }));
+                } else {
+                    tx[&moving].clear_content();
+                }
+            });
+            engine.render(FrameTime::now()).unwrap();
+            let passes = engine.stats().passes;
+            if step == 0 {
+                assert_eq!(passes, 64);
+            } else {
+                assert!(
+                    passes > 0 && passes * if filtered { 4 } else { 20 } < 64,
+                    "frame {step}: {passes} bands"
+                );
+            }
+            let actual = surface.readback().unwrap();
+            let reference = engine.surface(Offscreen::new(size, format), || {}).unwrap();
+            reference.update(|tx| {
+                tx[reference.root()].content(reference.record(|r| {
+                    r.fill(Rect::new(0.0, 0.0, 128.0, 1024.0), background);
+                    if let Some((x, y)) = position {
+                        let draw = |r: &mut cherenkov::Recorder| {
+                            r.fill(Rect::new(x, y, x + 8.0, y + 8.0), foreground);
+                        };
+                        if let Some(blur) = &blur {
+                            r.group(Group::new().filter(blur.id()), |r| {
+                                r.group(Group::new().filter(blur.id()), draw);
+                            });
+                        } else {
+                            draw(r);
+                        }
+                    }
+                }));
+            });
+            engine.render(FrameTime::now()).unwrap();
+            let expected = reference.readback().unwrap();
+            let actual = F32Image {
+                width: size.0,
+                height: size.1,
+                pixels: actual.pixels,
+            };
+            let expected = F32Image {
+                width: size.0,
+                height: size.1,
+                pixels: expected.pixels,
+            };
+            assert_images_match(&expected, &actual);
+            let path = std::env::temp_dir().join(format!(
+                "cherenkov-cpu-damage-{filtered}-{format:?}-{step}.png"
+            ));
+            actual.write_png(&path).unwrap();
+        }
+    }
+}
+
+#[test]
+fn retained_command_motion_preserves_background_and_layer_changes() {
+    for format in [OffscreenFormat::LinearF32, OffscreenFormat::LinearF16] {
+        let engine = engine();
+        let size = (128, 1024);
+        let surface = engine.surface(Offscreen::new(size, format), || {}).unwrap();
+        let shape = nami::Binding::container(Rect::new(20.0, 32.0, 28.0, 40.0));
+        let background = WorkingColor::new([0.1, 0.3, 0.2, 0.5]);
+        let foreground = WorkingColor::new([3.0, 0.2, 0.8, 0.6]);
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|r| {
+                r.fill(Rect::new(0.0, 0.0, 128.0, 1024.0), background);
+                r.fill(shape.clone(), foreground);
+            }));
+        });
+        for (step, (rect, opacity, empty)) in [
+            (Rect::new(20.0, 32.0, 28.0, 40.0), 1.0_f32, false),
+            (Rect::new(80.0, 448.0, 88.0, 456.0), 1.0_f32, false),
+            (Rect::ZERO, 1.0_f32, false),
+            (Rect::new(20.0, 32.0, 28.0, 40.0), 0.5_f32, false),
+            (Rect::ZERO, 0.5_f32, true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if step > 0 && !empty {
+                shape.set(rect);
+            }
+            if step == 3 {
+                surface.update(|tx| {
+                    tx[surface.root()].opacity(opacity);
+                });
+            }
+            if empty {
+                surface.update(|tx| {
+                    tx[surface.root()].content(surface.record(|_| {}));
+                });
+            }
+            engine.render(FrameTime::now()).unwrap();
+            let passes = engine.stats().passes;
+            if step == 1 || step == 2 {
+                assert!(
+                    passes > 0 && passes < 4,
+                    "command update repainted {passes} bands"
+                );
+            } else {
+                assert_eq!(passes, 64, "whole-layer change {step}");
+            }
+            let actual = surface.readback().unwrap();
+            let reference = engine.surface(Offscreen::new(size, format), || {}).unwrap();
+            reference.update(|tx| {
+                tx[reference.root()]
+                    .opacity(opacity)
+                    .content(reference.record(|r| {
+                        if !empty {
+                            r.fill(Rect::new(0.0, 0.0, 128.0, 1024.0), background);
+                            r.fill(rect, foreground);
+                        }
+                    }));
+            });
+            engine.render(FrameTime::now()).unwrap();
+            let expected = reference.readback().unwrap();
+            let actual = F32Image {
+                width: size.0,
+                height: size.1,
+                pixels: actual.pixels,
+            };
+            let expected = F32Image {
+                width: size.0,
+                height: size.1,
+                pixels: expected.pixels,
+            };
+            assert_images_match(&expected, &actual);
+            actual
+                .write_png(&std::env::temp_dir().join(format!(
+                    "cherenkov-cpu-command-damage-{format:?}-{step}.png"
+                )))
+                .unwrap();
+        }
+    }
+}
 
 #[test]
 fn a_half_edge_rect_has_exact_coverage() {
@@ -30,11 +216,7 @@ fn a_half_edge_rect_has_exact_coverage() {
     let rb = surface.readback().expect("readback");
     let at = |x: usize, y: usize| rb.pixels[y * 64 + x];
     // Full coverage of an opaque fill writes the paint unchanged.
-    assert_eq!(
-        at(20, 20).map(f32::to_bits),
-        [1.0, 0.0, 0.0, 1.0].map(f32::to_bits),
-        "interior"
-    );
+    assert_close(&at(20, 20), &[1.0, 0.0, 0.0, 1.0]);
     let left = at(8, 20);
     assert!(
         (left[0] - 0.5).abs() < 1e-6 && (left[3] - 0.5).abs() < 1e-6,
@@ -47,7 +229,7 @@ fn a_half_edge_rect_has_exact_coverage() {
     );
     // Fully transparent outside.
     // No coverage leaves the cleared zero.
-    assert_eq!(at(0, 0).map(f32::to_bits), [0.0; 4].map(f32::to_bits));
+    assert_close(&at(0, 0), &[0.0; 4]);
 }
 
 #[test]
@@ -104,17 +286,9 @@ fn even_odd_leaves_the_centre_of_concentric_squares_empty() {
         surface.readback().expect("readback").pixels[32 * 64 + 32]
     };
     // The even-odd hole has zero coverage: the cleared zero.
-    assert_eq!(
-        centre(true).map(f32::to_bits),
-        [0.0; 4].map(f32::to_bits),
-        "even-odd centre"
-    );
+    assert_close(&centre(true), &[0.0; 4]);
     // Full non-zero coverage writes the opaque paint unchanged.
-    assert_eq!(
-        centre(false).map(f32::to_bits),
-        [1.0, 0.0, 0.0, 1.0].map(f32::to_bits),
-        "non-zero centre"
-    );
+    assert_close(&centre(false), &[1.0, 0.0, 0.0, 1.0]);
 }
 
 #[test]
@@ -411,7 +585,7 @@ fn sweep_renders_and_remaining_unsupported_features_report_their_names() {
     let angle = 0.5_f64.atan2(16.5) / std::f64::consts::TAU;
     assert!((f64::from(pixel[0]) - (1.0 - angle)).abs() < 1e-6);
     assert!((f64::from(pixel[2]) - angle).abs() < 1e-6);
-    assert_eq!(pixel[3].to_bits(), 1.0_f32.to_bits());
+    assert_close(&[pixel[3]], &[1.0]);
     // A rotated glyph renders as outline coverage.
     let engine2 = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let data = std::fs::read("../scenes/fonts/NotoSans.ttf").expect("test font");
@@ -501,13 +675,17 @@ fn re_recorded_overlapping_geometry_renders_like_a_fresh_lowering() {
     }
     for (frame, color) in frames.iter().zip([first, first, second]) {
         let fresh = render_f32(&self::engine(), 64, 64, draw(color));
-        assert!(
-            frame
-                .iter()
-                .flatten()
-                .map(|v| v.to_bits())
-                .eq(fresh.iter().flatten().map(|v| v.to_bits())),
-            "a re-recorded frame differs from a fresh lowering"
+        assert_images_match(
+            &F32Image {
+                width: 64,
+                height: 64,
+                pixels: fresh,
+            },
+            &F32Image {
+                width: 64,
+                height: 64,
+                pixels: frame.clone(),
+            },
         );
     }
 }

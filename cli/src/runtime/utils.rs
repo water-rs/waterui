@@ -43,6 +43,17 @@ pub enum CommandError {
         /// Formatted diagnostic tail of the captured output streams.
         report: String,
     },
+    /// The command did not exit before its deadline; it and every process it
+    /// started were killed.
+    #[error("command `{program}` did not exit within {after:?} and was killed{report}")]
+    TimedOut {
+        /// The program that was invoked.
+        program: String,
+        /// The deadline that elapsed.
+        after: std::time::Duration,
+        /// Formatted diagnostic tail of the output captured before the kill.
+        report: String,
+    },
 }
 
 /// Returns a platform-appropriate installation hint for sccache.

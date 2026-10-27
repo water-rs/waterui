@@ -46,6 +46,10 @@ impl RuntimeDriver for NoopDriver {
         true
     }
 
+    fn is_settled_except_perpetual(&self) -> bool {
+        true
+    }
+
     fn has_pending_semantic_update(&self) -> bool {
         false
     }
@@ -195,6 +199,10 @@ impl RuntimeDriver for EmitThenSettleDriver {
     }
 
     fn is_settled(&self) -> bool {
+        self.pumps >= self.emit_at
+    }
+
+    fn is_settled_except_perpetual(&self) -> bool {
         self.pumps >= self.emit_at
     }
 

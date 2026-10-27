@@ -9,6 +9,7 @@ use crate::{
 /// box-accumulated horizontally. Parameters: radius, threshold.
 pub(super) const EXTRACT: SpatialStage = SpatialStage {
     name: "glow_extract",
+    source_f16: None,
     source: include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/shaders/stylize/lighting/glow_extract.wgsl"
@@ -23,6 +24,7 @@ pub(super) const EXTRACT: SpatialStage = SpatialStage {
 /// onto the first pass's input.
 const COMPOSITE: SpatialStage = SpatialStage {
     name: "bloom_composite",
+    source_f16: None,
     source: include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/shaders/stylize/lighting/glow_composite.wgsl"

@@ -3,10 +3,9 @@
 //! Route: wgpu backend (Vulkan/Metal/D3D12/GL — whichever the system
 //! provides; lavapipe on a headless Linux box). The target format is
 //! chosen from the adapter's queried texture-format capabilities (see
-//! [`crate::wgpu_ctx::Gpu::new`]). GPU time comes from drained standalone
-//! timestamp submissions bracketing `render_to_texture` (see
-//! [`crate::wgpu_ctx::drain_and_stamp`]) — real device timestamps that
-//! serialize CPU and GPU for the measured frame, never wall clock.
+//! [`crate::wgpu_ctx::Gpu::new`]). GPU time uses Vello's existing encoder
+//! profiler where supported. Metal reports GPU timing unavailable; external
+//! queue markers would include CPU submission gaps.
 
 use std::collections::BTreeSet;
 use std::time::Instant;
@@ -15,12 +14,16 @@ use cherenkov_scene::Feature;
 use peniko::Brush;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Fill;
-use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene as VelloScene};
+use vello::{
+    AaConfig, AaSupport, BumpReadback, RenderParams, Renderer, RendererOptions, Scene as VelloScene,
+};
 
 use crate::convert::{self, Prepared};
-use crate::memory::{AdapterMemory, Reading, wgpu29_allocator, wgpu29_vk_memory_budget};
-use crate::vello_like::{Lowered, Op, lower, vello_features};
-use crate::wgpu_ctx::{Gpu, Target, drain_and_stamp, readback, resolve_timestamps};
+use crate::memory::{
+    AdapterMemory, Reading, allocator_report, wgpu_metal_allocated_bytes, wgpu_vk_memory_budget,
+};
+use crate::vello_like::{Lowered, Op, lower, scrolled, vello_features};
+use crate::wgpu_ctx::{Gpu, Target, readback, wait};
 use crate::{BenchError, Counters, DeviceInfo, EncodeInput, Engine, EngineInfo, GpuSample, Submit};
 
 /// `vello` classic adapter.
@@ -53,7 +56,9 @@ impl VelloClassic {
     /// # Errors
     /// [`BenchError::Gpu`] when no adapter exists.
     pub fn new() -> Result<Self, BenchError> {
-        let gpu = Gpu::new()?;
+        let gpu = Gpu::new(
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS,
+        )?;
         Ok(Self {
             info: EngineInfo {
                 name: Self::NAME,
@@ -81,7 +86,12 @@ impl VelloClassic {
 
 /// Replays a lowered op into `vello::Scene` — the timed `encode` is a
 /// single loop of these recording calls.
-fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
+fn replay_op(
+    scene: &mut VelloScene,
+    op: &Op<Brush>,
+    counters: &mut Counters,
+    scroll: Option<Affine>,
+) {
     match op {
         Op::PushLayer {
             transform,
@@ -89,8 +99,9 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
             blend,
             opacity,
         } => {
+            let transform = scrolled(*transform, scroll);
             let clip = clip.as_ref().expect("classic lowering fills opaque clips");
-            scene.push_layer(Fill::NonZero, *blend, *opacity, *transform, clip);
+            scene.push_layer(Fill::NonZero, *blend, *opacity, transform, clip);
         }
         Op::PopLayer => scene.pop_layer(),
         Op::Fill {
@@ -100,8 +111,9 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
             paint_transform,
             path,
         } => {
+            let transform = scrolled(*transform, scroll);
             counters.draw_commands += 1;
-            scene.fill(*rule, *transform, paint, *paint_transform, path);
+            scene.fill(*rule, transform, paint, *paint_transform, path);
         }
         Op::Stroke {
             transform,
@@ -110,8 +122,9 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
             paint_transform,
             path,
         } => {
+            let transform = scrolled(*transform, scroll);
             counters.draw_commands += 1;
-            scene.stroke(stroke, *transform, paint, *paint_transform, path);
+            scene.stroke(stroke, transform, paint, *paint_transform, path);
         }
         Op::ImageFill {
             transform,
@@ -120,10 +133,11 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
             dst_path,
             ..
         } => {
+            let transform = scrolled(*transform, scroll);
             counters.draw_commands += 1;
             scene.fill(
                 Fill::NonZero,
-                *transform,
+                transform,
                 paint,
                 Some(*paint_transform),
                 dst_path,
@@ -138,6 +152,7 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
             glyphs,
             ..
         } => {
+            let transform = scrolled(*transform, scroll);
             counters.draw_commands += 1;
             scene
                 .draw_glyphs(font)
@@ -145,7 +160,7 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
                 .normalized_coords(coords)
                 .hint(false)
                 .brush(paint)
-                .transform(*transform)
+                .transform(transform)
                 .draw(
                     Fill::NonZero,
                     glyphs.iter().map(|g| vello::Glyph {
@@ -162,15 +177,121 @@ fn replay_op(scene: &mut VelloScene, op: &Op<Brush>, counters: &mut Counters) {
             std_dev,
             color,
         } => {
+            let transform = scrolled(*transform, scroll);
             counters.draw_commands += 1;
-            scene.draw_blurred_rounded_rect(*transform, *rect, *color, *radius, *std_dev);
+            scene.draw_blurred_rounded_rect(transform, *rect, *color, *radius, *std_dev);
         }
     }
+}
+
+/// Upper bound on growth rounds (re-renders) a scene needs to stop
+/// overflowing.
+///
+/// The fork's pipeline gates each stage on the failure bits of earlier
+/// ones: `tile_alloc.wgsl` bails when `STAGE_BINNING | STAGE_FLATTEN` is
+/// set, and `coarse.wgsl` skips on `STAGE_BINNING | STAGE_TILE_ALLOC |
+/// STAGE_FLATTEN`, flagging `STAGE_PATH_COUNT`. A failed render therefore
+/// reports exact demand only up to its first failing stage, and
+/// `Renderer::verify_bump_readbacks` grows just that. Grown sizes persist
+/// in the renderer, so a satisfied stage stays satisfied for the same
+/// scene and each round clears at least one of the five stages
+/// (`STAGE_BINNING`, `STAGE_TILE_ALLOC`, `STAGE_FLATTEN`,
+/// `STAGE_PATH_COUNT`, `STAGE_COARSE`, see `shader/shared/bump.wgsl`).
+/// The stage bits are WGSL constants, not exported by `vello_encoding`,
+/// so the count is declared here.
+const GROWTH_ROUNDS: u32 = 5;
+
+/// One attempt, including the completion wait needed before checking overflow.
+struct RenderAttempt {
+    ticket: Option<BumpReadback>,
+    gpu_seconds: Option<f64>,
+    wait_seconds: f64,
+}
+
+fn render_measured(
+    gpu: &Gpu,
+    renderer: &mut Renderer,
+    scene: &VelloScene,
+    target: &Target,
+    params: &RenderParams,
+) -> Result<RenderAttempt, BenchError> {
+    let ticket = renderer
+        .render_to_texture(&gpu.device, &gpu.queue, scene, &target.view, params)
+        .map_err(|e| BenchError::Gpu(format!("vello render: {e}")))?;
+    let wait_at = Instant::now();
+    wait(gpu, None, "the Vello classic render and overflow feedback")?;
+    let wait_seconds = wait_at.elapsed().as_secs_f64();
+    // Each attempt is drained here, so at most this attempt's profiler frame
+    // is pending. render_to_texture may already have collected it.
+    let profile = renderer.profile_result.take().or_else(|| {
+        renderer
+            .profiler
+            .process_finished_frame(gpu.queue.get_timestamp_period())
+    });
+    let gpu_seconds = if gpu
+        .device
+        .features()
+        .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
+    {
+        let profile = profile.ok_or_else(|| {
+            BenchError::Gpu("Vello profiler did not resolve the completed render".into())
+        })?;
+        let scope = profile
+            .iter()
+            .find(|scope| scope.label == "render_to_texture")
+            .and_then(|scope| scope.time.as_ref())
+            .ok_or_else(|| {
+                BenchError::Gpu("Vello profiler omitted the render_to_texture interval".into())
+            })?;
+        if scope.end <= scope.start {
+            return Err(BenchError::Gpu(
+                "Vello profiler returned a non-increasing render interval".into(),
+            ));
+        }
+        Some(scope.end - scope.start)
+    } else {
+        None
+    };
+    Ok(RenderAttempt {
+        ticket,
+        gpu_seconds,
+        wait_seconds,
+    })
+}
+
+/// Whether `ticket`'s render overflowed its bump buffers — the feedback
+/// [`Renderer::render_to_texture`] hands the caller to resolve. Dropping
+/// the ticket unresolved is not an option here: this build's vello fork
+/// `unwrap`s the map callback's send, so a discarded ticket panics on the
+/// next device poll, and an unverified overflow would pass a truncated
+/// frame off as rendered. `None` issues no feedback (the CPU pipeline)
+/// and cannot overflow.
+fn bump_overflowed(
+    gpu: &Gpu,
+    renderer: &mut Renderer,
+    ticket: Option<BumpReadback>,
+) -> Result<bool, BenchError> {
+    let Some(ticket) = ticket else {
+        return Ok(false);
+    };
+    let overflowed = renderer
+        .verify_bump_readbacks(&gpu.device, vec![ticket])
+        .map_err(|e| BenchError::Gpu(format!("vello bump readback: {e}")))?;
+    Ok(!overflowed.is_empty())
 }
 
 impl Engine for VelloClassic {
     fn info(&self) -> &EngineInfo {
         &self.info
+    }
+
+    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+        (!self
+            .gpu
+            .device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS))
+        .then_some("Vello classic's encoder profiler is unavailable on this backend")
     }
 
     fn supported(&self) -> BTreeSet<Feature> {
@@ -251,8 +372,9 @@ impl Engine for VelloClassic {
             ),
         );
         self.counters.draw_commands += 1;
+        let scroll = input.scroll_transform();
         for op in &lowered.ops {
-            replay_op(&mut scene, op, &mut self.counters);
+            replay_op(&mut scene, op, &mut self.counters, scroll);
         }
         self.scene = Some(scene);
         // `bytes_uploaded` counts the decoded texels the GPU receives, not
@@ -275,24 +397,32 @@ impl Engine for VelloClassic {
             height: target.height,
             antialiasing_method: AaConfig::Area,
         };
-        // GPU time: bracket the render with timestamps written in
-        // standalone submissions after a full queue drain — on
-        // job-scheduled tiled GPUs a timestamp inside the same submission
-        // runs concurrently with the render and brackets an empty
-        // interval. This serializes CPU and GPU for the measured frame.
-        drain_and_stamp(&self.gpu, 0)?;
+        // Verify every attempt and include all work needed to obtain a complete
+        // frame. Overflow growth is part of rendering, not discarded warmup.
         let render_at = Instant::now();
-        renderer
-            .render_to_texture(
-                &self.gpu.device,
-                &self.gpu.queue,
-                scene,
-                &target.view,
-                &params,
-            )
-            .map_err(|e| BenchError::Gpu(format!("vello render: {e}")))?;
-        drain_and_stamp(&self.gpu, 1)?;
-        let gpu_seconds = resolve_timestamps(&self.gpu)?;
+        let mut attempt = render_measured(&self.gpu, renderer, scene, target, &params)?;
+        let mut gpu_seconds = attempt.gpu_seconds;
+        let mut gpu_wait_seconds = attempt.wait_seconds;
+        let mut round = 0;
+        while bump_overflowed(&self.gpu, renderer, attempt.ticket)? {
+            round += 1;
+            if round > GROWTH_ROUNDS {
+                return Err(BenchError::Engine(format!(
+                    "vello-classic: the scene still overflows the bump buffers after \
+                     {GROWTH_ROUNDS} growth rounds, one per failure stage ({}x{})",
+                    target.width, target.height
+                )));
+            }
+            tracing::debug!(
+                round,
+                "vello-classic: re-rendering after bump buffer growth"
+            );
+            attempt = render_measured(&self.gpu, renderer, scene, target, &params)?;
+            gpu_seconds = gpu_seconds
+                .zip(attempt.gpu_seconds)
+                .map(|(total, seconds)| total + seconds);
+            gpu_wait_seconds += attempt.wait_seconds;
+        }
         let render_seconds = render_at.elapsed().as_secs_f64();
         let readback_at = Instant::now();
         let image = if readback_flag {
@@ -305,9 +435,15 @@ impl Engine for VelloClassic {
             gpu: GpuSample::whole_frame(frame, gpu_seconds),
             phases: Vec::new(),
             composition: None,
+            gpu_wait_seconds,
             render_seconds: Some(render_seconds),
             readback_seconds: readback_flag.then(|| readback_at.elapsed().as_secs_f64()),
         })
+    }
+
+    fn wait_idle(&mut self) -> Result<(), BenchError> {
+        // submit waits for every render attempt before verifying its overflow feedback.
+        Ok(())
     }
 
     fn counters(&self) -> Counters {
@@ -321,12 +457,16 @@ impl Engine for VelloClassic {
     fn memory(&self) -> AdapterMemory {
         AdapterMemory {
             engine: Reading::unavailable("Vello classic does not expose engine memory"),
-            wgpu_allocator: wgpu29_allocator(&self.gpu.device, self.gpu.info.backend),
+            wgpu_allocator: allocator_report(&self.gpu.device, self.gpu.info.backend),
             skia_budgeted: Reading::unavailable("Vello classic has no Skia budget"),
-            vk_memory_budget: wgpu29_vk_memory_budget(
+            vk_memory_budget: wgpu_vk_memory_budget(
                 &self.gpu.device,
                 self.gpu.info.backend,
                 &self.gpu.info.name,
+            ),
+            metal_allocated_bytes: wgpu_metal_allocated_bytes(
+                &self.gpu.device,
+                self.gpu.info.backend,
             ),
         }
     }

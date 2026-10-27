@@ -43,6 +43,7 @@ async fn install_simulator_artifact(
 ) -> Result<(), FailToRun> {
     let install_output = host
         .command("xcrun")
+        .map_err(|error| FailToRun::Install(eyre!("Failed to install app: {error}")))?
         .args(["simctl", "install", udid])
         .arg(artifact_path)
         .stdout(Stdio::piped())
@@ -102,7 +103,9 @@ async fn launch_simulator_app(
     env_vars: &[(String, String)],
     sender: Sender<DeviceEvent>,
 ) -> Result<(smol::process::Child, u32), FailToRun> {
-    let mut launch = host.command("xcrun");
+    let mut launch = host
+        .command("xcrun")
+        .map_err(|error| FailToRun::Launch(eyre!("Failed to launch app: {error}")))?;
     launch
         .arg("simctl")
         .arg("launch")
@@ -323,16 +326,18 @@ async fn kill_simulator_session(
     sender: &Sender<DeviceEvent>,
 ) -> std::io::Result<std::process::ExitStatus> {
     let remote_kill = async {
-        let terminate = host
-            .command("xcrun")
-            .args([
-                "simctl",
-                "terminate",
-                &context.device_identifier,
-                &context.bundle_id,
-            ])
-            .output()
-            .await;
+        let terminate = match host.command("xcrun") {
+            Ok(mut command) => {
+                command.args([
+                    "simctl",
+                    "terminate",
+                    &context.device_identifier,
+                    &context.bundle_id,
+                ]);
+                command.output().await
+            }
+            Err(error) => Err(error),
+        };
         match terminate {
             Ok(output) if output.status.success() => {}
             Ok(output) => report_monitor_error(
@@ -495,9 +500,9 @@ fn start_log_stream(
     // sim processes on these systems, so a host-side `log stream` sees zero
     // entries while `simctl spawn <udid> log stream` sees them all.
     #[cfg(unix)]
-    let mut log_cmd = host.command_in_own_process_group("xcrun");
+    let mut log_cmd = host.command_in_own_process_group("xcrun")?;
     #[cfg(not(unix))]
-    let mut log_cmd = host.command("xcrun");
+    let mut log_cmd = host.command("xcrun")?;
     log_cmd
         .args(["simctl", "spawn", udid, "log", "stream"])
         .arg("--predicate")
@@ -594,8 +599,10 @@ fn replay_log_history(
 ) {
     spawn(async move {
         Timer::after(Duration::from_secs(4)).await;
-        let Ok(output) = host
-            .command("xcrun")
+        let Ok(mut command) = host.command("xcrun") else {
+            return;
+        };
+        let Ok(output) = command
             .args(["simctl", "spawn", &udid, "log", "show"])
             .args(["--last", "2m", "--predicate", &predicate])
             .args(["--style", "compact"])

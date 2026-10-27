@@ -1,12 +1,12 @@
 //! CPU coverage rasterization of general paths: sparse strips into atlas
 //! cells, plus the cache key for replaying them.
 
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use cherenkov::{FillRule, ShapeData};
 use kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape as _, Vec2};
+use rustc_hash::FxHasher;
 
 use crate::render::glyph::{CellTexels, PathCell, PathEmit};
 use crate::render::instance::Instance;
@@ -15,8 +15,14 @@ use crate::render::raster::Raster;
 use crate::render::raster::{self, Band, BandRaster};
 use cherenkov::RenderError;
 
+pub mod stroke;
+use stroke::{DashTable, GpuStrokeRecord, StrokeParams};
+
 /// Coverage strip height in device rows.
 pub const STRIP_H: usize = 4;
+
+/// Columns owned by one GPU coverage classification invocation.
+pub const GPU_CLASSIFY_WIDTH: u32 = 128;
 
 /// A path whose raster bbox fits inside this edge length is emitted as one
 /// whole-bbox cell, skipping strips.
@@ -24,22 +30,6 @@ const SMALL_BBOX: f64 = 32.0;
 
 /// Flattening tolerance in device pixels.
 pub const FLATTEN: f64 = 0.02;
-
-/// The largest singular value of `t`'s linear part — the worst-case factor
-/// by which a local distance error grows under the transform. Mirrors
-/// `cherenkov_oracle::path::sigma_max`.
-#[must_use]
-#[expect(
-    clippy::many_single_char_names,
-    reason = "a/b/c/d are the conventional affine coefficient names"
-)]
-pub fn sigma_max(t: Affine) -> f64 {
-    let [a, b, c, d, _, _] = t.as_coeffs();
-    let p = a.mul_add(a, b * b) + c.mul_add(c, d * d);
-    let det = a.mul_add(d, -(b * c));
-    let disc = p.mul_add(p, (-4.0 * det) * det).sqrt();
-    p.midpoint(disc).sqrt()
-}
 
 /// A semantic shape as a local `BezPath`: its outline (shared with every
 /// other lowering through [`cherenkov::lowering::shape_outline`]), or the
@@ -107,6 +97,21 @@ pub enum CoverageRoute {
 /// Keep ordinary UI geometry out of the GPU preparation pass.
 pub const GPU_ROUTE_MIN_ELEMENTS: usize = 4096;
 
+/// Rounded joins and caps expand into arcs, unlike a plain offset outline.
+/// Admit them earlier for actual segment/incidence/grid assessment; keep
+/// ordinary polylines on the existing two-sided-outline candidate threshold.
+pub const fn stroke_gpu_candidate(elements: usize, stroke: &kurbo::Stroke) -> bool {
+    let expansion = if matches!(stroke.join, kurbo::Join::Round)
+        || matches!(stroke.start_cap, kurbo::Cap::Round)
+        || matches!(stroke.end_cap, kurbo::Cap::Round)
+    {
+        5
+    } else {
+        2
+    };
+    elements >= GPU_ROUTE_MIN_ELEMENTS / expansion
+}
+
 /// A coverage grid over an integer device-space rect.
 pub struct Coverage {
     /// Device origin of the grid.
@@ -148,7 +153,7 @@ fn sweep(
     let (x0, y0, w, h, clipped) = grid(bbox, surface)?;
     let (segments, rule) = resolve(segments, rule);
     let mut data = Vec::with_capacity(w * h);
-    queue(scratch, &segments, (x0, y0, w, h), rule);
+    queue(scratch, &segments, Vec2::new(-x0, -y0), (w, h), rule);
     scratch.finish_choose(&mut |band, _| match band {
         Band::Dense(coverage) => data.extend_from_slice(coverage),
         Band::Sparse(runs, ends) => {
@@ -205,7 +210,12 @@ impl EmitScratch {
 /// band is classified and emitted directly, so the `w × h` coverage grid
 /// never materializes. Cell texels append to `arena`; the bool is
 /// `Coverage::clipped`.
-#[expect(clippy::cast_precision_loss)]
+///
+/// The direct device-space route retained geometry superseded: kept
+/// for the `emit_eq` reference tests as the same winding-processing
+/// pipeline — grid, `resolve`, then the shared [`emit_resolved`]
+/// kernel.
+#[cfg(test)]
 #[expect(clippy::type_complexity)]
 pub fn rasterize_emit(
     segments: &[(f32, f32, f32, f32)],
@@ -215,8 +225,35 @@ pub fn rasterize_emit(
     scratch: &mut EmitScratch,
     arena: &mut Vec<u8>,
 ) -> Option<Result<(PathEmit, Vec<CellTexels>, bool), RenderError>> {
-    let (x0, y0, w, h, clipped) = grid(bbox, surface)?;
+    let grid @ (x0, y0, ..) = grid(bbox, surface)?;
     let (segments, rule) = resolve(segments, rule);
+    Some(emit_resolved(
+        &segments,
+        Vec2::new(-x0, -y0),
+        grid,
+        rule,
+        scratch,
+        arena,
+    ))
+}
+
+/// The emission kernel shared by `rasterize_emit` and the retained
+/// geometry route: `segments` are already winding-resolved and stored
+/// in a frame that `offset` maps into raster space — each queued
+/// endpoint is read at `segment + offset`, so a placement needs no
+/// translated copy. `grid` is [`grid`]'s result over the placed
+/// device-space bbox: the emitted rects land in device space exactly
+/// like the direct route's. The bool is `Coverage::clipped`.
+#[expect(clippy::cast_precision_loss)]
+pub fn emit_resolved(
+    segments: &[(f32, f32, f32, f32)],
+    offset: Vec2,
+    grid: (f64, f64, usize, usize, bool),
+    rule: FillRule,
+    scratch: &mut EmitScratch,
+    arena: &mut Vec<u8>,
+) -> Result<(PathEmit, Vec<CellTexels>, bool), RenderError> {
+    let (x0, y0, w, h, clipped) = grid;
     let EmitScratch {
         raster,
         columns,
@@ -226,7 +263,7 @@ pub fn rasterize_emit(
         // One whole-bbox cell needs the texels: collect the (small)
         // coverage and emit it like `emit` does.
         let mut data = Vec::with_capacity(w * h);
-        queue(raster, &segments, (x0, y0, w, h), rule);
+        queue(raster, segments, offset, (w, h), rule);
         raster.finish(&mut |band: &[f32]| data.extend_from_slice(band));
         let coverage = Coverage {
             x: x0,
@@ -236,7 +273,7 @@ pub fn rasterize_emit(
             clipped,
             data,
         };
-        return Some(emit(&coverage, arena).map(|(p, r)| (p, r, clipped)));
+        return emit(&coverage, arena).map(|(p, r)| (p, r, clipped));
     }
     let mut out = PathEmit::default();
     let mut rasters = Vec::new();
@@ -281,25 +318,36 @@ pub fn rasterize_emit(
             err = Some(e);
         }
     };
-    queue(raster, &segments, (x0, y0, w, h), rule);
+    queue(raster, segments, offset, (w, h), rule);
     raster.finish_choose(&mut sink);
-    Some(err.map_or(Ok((out, rasters, clipped)), Err))
+    err.map_or(Ok((out, rasters, clipped)), Err)
 }
 
 /// The integer raster grid for `bbox` inflated by 1 px and clipped to
 /// the surface rect: origin, size, and whether clipping happened.
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_sign_loss)]
-fn grid(bbox: Rect, surface: (f64, f64)) -> Option<(f64, f64, usize, usize, bool)> {
-    let clip = Rect::new(0.0, 0.0, surface.0, surface.1);
+pub fn grid(bbox: Rect, surface: (f64, f64)) -> Option<(f64, f64, usize, usize, bool)> {
+    let (r, clipped) = clipped_grid(bbox, surface);
+    let w = r.width() as usize;
+    let h = r.height() as usize;
+    (w > 0 && h > 0).then_some((r.x0, r.y0, w, h, clipped))
+}
+
+/// Intersect before rounding: a fractional zero-area intersection must not
+/// grow into a one-pixel strip outside the surface.
+fn clipped_grid(bbox: Rect, surface: (f64, f64)) -> (Rect, bool) {
     let inflated = bbox.inflate(1.0, 1.0);
-    let r = inflated.intersect(clip);
+    let r = inflated.intersect(Rect::new(0.0, 0.0, surface.0, surface.1));
     let clipped = r != inflated;
-    let x0 = r.x0.floor();
-    let y0 = r.y0.floor();
-    let w = (r.x1.ceil() - x0).max(0.0) as usize;
-    let h = (r.y1.ceil() - y0).max(0.0) as usize;
-    (w > 0 && h > 0).then_some((x0, y0, w, h, clipped))
+    (
+        if r.is_zero_area() {
+            Rect::ZERO
+        } else {
+            r.expand()
+        },
+        clipped,
+    )
 }
 
 /// The segments `resolve_winding` settles on, borrowed when it leaves the
@@ -324,25 +372,29 @@ fn resolve(segments: &[(f32, f32, f32, f32)], rule: FillRule) -> (Segments<'_>, 
     )
 }
 
-/// Queues clipped segments while preserving their input order.
+/// Queues clipped segments while preserving their input order. `offset`
+/// maps a stored coordinate into the raster grid's space: each endpoint
+/// is read at `segment + offset` in f64, so a stored frame whose
+/// coordinates sit near the origin keeps its f32 precision at any
+/// device placement.
 #[expect(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 fn queue(
     scratch: &mut BandRaster,
     segments: &[(f32, f32, f32, f32)],
-    grid: (f64, f64, usize, usize),
+    offset: Vec2,
+    size: (usize, usize),
     rule: FillRule,
 ) {
-    let (x0, y0, w, h) = grid;
+    let (w, h) = size;
     scratch.reset(w, h, rule);
     scratch.reserve_edges(segments.len());
-    let (ox, oy) = (x0 as f32, y0 as f32);
     for &(sx0, sy0, sx1, sy1) in segments {
         clip_x(
             &mut |a, b, c, d| scratch.draw(a, b, c, d),
-            sx0 - ox,
-            sy0 - oy,
-            sx1 - ox,
-            sy1 - oy,
+            (f64::from(sx0) + offset.x) as f32,
+            (f64::from(sy0) + offset.y) as f32,
+            (f64::from(sx1) + offset.x) as f32,
+            (f64::from(sy1) + offset.y) as f32,
             w as f32,
         );
     }
@@ -411,23 +463,23 @@ pub struct GpuElement {
 /// A compute path and the capacity bound derived from those same elements.
 #[derive(Clone)]
 pub struct GpuPath {
-    /// Local curve records consumed by the flatten kernel.
+    /// Local curve records consumed by the flatten kernel. Empty for a
+    /// stroke, which has `strokes` instead.
     pub elements: Arc<[GpuElement]>,
+    /// Stroke records consumed by the compute stroker. Empty for a fill.
+    pub strokes: Arc<[GpuStrokeRecord]>,
+    /// The stroke's per-path parameters; zero for a fill.
+    pub stroke: StrokeParams,
+    /// A dashed stroke's pattern and capacities.
+    pub dash: Option<Arc<DashTable>>,
+    /// The device hull under the encoding raster.
     hull: Rect,
+    /// The encoding raster's translation: [`GpuPath::placed`] moves the
+    /// hull by a translation's difference from it, so a placement is
+    /// always measured from the encoding, never from an earlier placement.
+    origin: Vec2,
     /// Device-space capacity and work estimates for these records.
     pub bound: GpuBound,
-}
-
-impl GpuPath {
-    /// Large, crossing-dense paths amortize compute dispatch and classification.
-    pub const fn prefers_gpu(&self) -> bool {
-        let bound = &self.bound;
-        let strips = bound.grid_h.div_ceil(STRIP_H);
-        !bound.empty
-            && bound.segments >= GPU_ROUTE_MIN_ELEMENTS
-            && bound.grid_w * bound.grid_h >= 4096
-            && bound.bins >= strips * 32
-    }
 }
 
 /// Decision R2's per-path buffer bound, computed in `O(n)` over the
@@ -458,6 +510,35 @@ pub struct GpuBound {
     pub rect: [f32; 4],
 }
 
+impl GpuBound {
+    /// Large, crossing-dense paths amortize compute dispatch and classification.
+    /// A narrow visible clip does not reduce the CPU sweep over the full path.
+    pub const fn prefers_gpu(&self) -> bool {
+        let strips = self.grid_h.div_ceil(STRIP_H);
+        !self.empty && self.segments >= GPU_ROUTE_MIN_ELEMENTS && self.bins >= strips * 32
+    }
+
+    /// The same bound seen from a frame moved by the integer vector `by`:
+    /// the geometry and the surface clip move together, so only the
+    /// grid's position changes — its size, clipping and capacities hold.
+    /// A retained coverage entry's placement-relative frame is the device
+    /// frame shifted by `−offset` (water-rs/waterui#3081).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "device coordinates are f32; the shift is an integer"
+    )]
+    pub const fn shifted(mut self, by: Vec2) -> Self {
+        let (x, y) = (by.x as f32, by.y as f32);
+        self.rect = [
+            self.rect[0] + x,
+            self.rect[1] + y,
+            self.rect[2] + x,
+            self.rect[3] + y,
+        ];
+        self
+    }
+}
+
 /// The uniform subdivision count for `kind` (1 quad, 2 cubic) whose
 /// control hull sits at `points` in device space, at the `FLATTEN`
 /// tolerance. The kernel subdivides uniformly into exactly this many
@@ -480,6 +561,20 @@ fn wang_segments(kind: u32, p0: Point, a: Point, b: Point, p1: Point) -> usize {
     };
     // Linear interpolation error <= max|B''| / (8 n^2).
     (second / (8.0 * FLATTEN)).sqrt().ceil().max(1.0) as usize
+}
+
+/// Whether every point of an element is finite in f32, locally and under
+/// `raster`. An element with a point that is not carries no geometry: the
+/// sweep's `clip_x` and the oracle drop such segments, so encoders skip it
+/// while the cursor still advances to its end. `kurbo::dash` emits a NaN
+/// start for a dash that begins at an open subpath's end, which
+/// `kurbo::stroke` widens into an all-NaN contour; one uploaded NaN poisons
+/// the kernel's device bbox, and `classify` never returns
+/// (water-rs/waterui#3156).
+#[expect(clippy::cast_possible_truncation, reason = "device coords are f32")]
+pub fn encodable(raster: Affine, points: &[Point]) -> bool {
+    let finite = |p: Point| (p.x as f32).is_finite() && (p.y as f32).is_finite();
+    points.iter().all(|&p| finite(p) && finite(raster * p))
 }
 
 /// The element walk state of [`gpu_bound`]: the encoded records so far,
@@ -505,6 +600,11 @@ impl GpuEncode {
         if kind == 0 && p1 == self.last {
             return;
         }
+        let points = [self.last, a, b, p1];
+        if !encodable(self.raster, &points) {
+            self.last = p1;
+            return;
+        }
         // The subdivision count is measured on the device-space control
         // hull; the element itself is uploaded in local space for the
         // kernel to transform.
@@ -521,7 +621,6 @@ impl GpuEncode {
             dev = dev.union_pt(self.raster * b);
         }
         *hull = hull.union(dev);
-        let points = [self.last, a, b, p1];
         let short;
         let points: &[Point] = match kind {
             0 => {
@@ -611,32 +710,52 @@ pub fn prepare_gpu(elements: &[PathEl], raster: Affine, surface: (f64, f64)) -> 
         state.push(&mut hull, 0, p0, p0, s);
     }
     let (out, bound) = (state.out, state.bound);
+    let [.., e, f] = raster.as_coeffs();
+    let origin = Vec2::new(e, f);
     GpuPath {
         elements: out.into(),
+        strokes: Arc::from([]),
+        stroke: StrokeParams::default(),
+        dash: None,
         bound,
         hull,
+        origin,
     }
-    .translated(Vec2::ZERO, surface)
+    .placed(origin, surface)
 }
 
 impl GpuPath {
-    /// Reposition encoded geometry without rebuilding its local curves.
+    /// The encoded geometry under the encoding raster's 2x2 and the
+    /// translation `translation`, bound against the surface — without
+    /// rebuilding its local curves.
+    pub fn placed(&self, translation: Vec2, surface: (f64, f64)) -> Self {
+        self.clone().with_bound(self.bound_at(translation, surface))
+    }
+
+    /// The same geometry under `bound`.
+    pub const fn with_bound(mut self, bound: GpuBound) -> Self {
+        self.bound = bound;
+        self
+    }
+
+    /// [`GpuPath::placed`]'s bound alone: [`GpuPath::grid_bound`] of the
+    /// grid the placement covers, positioned on it.
     #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    pub fn translated(&self, offset: Vec2, surface: (f64, f64)) -> Self {
-        let clip = Rect::new(0.0, 0.0, surface.0, surface.1);
+    pub fn bound_at(&self, translation: Vec2, surface: (f64, f64)) -> GpuBound {
+        let (r, clipped) = clipped_grid(self.hull + (translation - self.origin), surface);
+        let mut bound = self.grid_bound(r.width() as usize, r.height() as usize);
+        bound.rect = [r.x0 as f32, r.y0 as f32, r.x1 as f32, r.y1 as f32];
+        bound.clipped = clipped;
+        bound
+    }
+
+    /// This path's bound on a `w` x `h` grid: everything
+    /// [`GpuPath::bound_at`] derives except where the grid lies (`rect`)
+    /// and whether the surface clips it (`clipped`), which keep this
+    /// path's own. Every other field of a placed bound is a function of
+    /// the grid size alone.
+    pub fn grid_bound(&self, w: usize, h: usize) -> GpuBound {
         let mut bound = self.bound;
-        // The bound raster grid: the hull inflated by a pixel and clipped to
-        // the surface, floored and ceiled like the sweep's rect.
-        let inflated = (self.hull + offset).inflate(1.0, 1.0);
-        let r = inflated.intersect(clip);
-        let w = (r.x1.ceil() - r.x0.floor()).max(0.0) as usize;
-        let h = (r.y1.ceil() - r.y0.floor()).max(0.0) as usize;
-        bound.rect = [
-            r.x0.floor() as f32,
-            r.y0.floor() as f32,
-            r.x1.ceil() as f32,
-            r.y1.ceil() as f32,
-        ];
         bound.grid_w = w;
         bound.grid_h = h;
         // Partial columns, absorbed gaps (<=8) and demoted full runs (<8)
@@ -648,22 +767,69 @@ impl GpuPath {
             (bound.fragments * 64).min(w * h)
         };
         bound.empty = w == 0 || h == 0;
-        bound.clipped = r != inflated;
-        // Cells are column-disjoint inside their strip, so the strip count
-        // times the grid width is the grid-side cap; spans obey the same
-        // bound. The element bound may be tighter.
-        let strip_cap = h.div_ceil(STRIP_H) * w;
+        // classify demotes full runs shorter than 8 columns and bridges
+        // empty gaps up to 8. Within a chunk, separate cells therefore have
+        // at least 8 intervening columns; chunk edges can split a run.
+        // Spans occupy at least 8 columns and all outputs are disjoint.
+        let strips = h.div_ceil(STRIP_H);
+        let chunks = w.div_ceil(GPU_CLASSIFY_WIDTH as usize);
+        let cells_per_strip = w.div_ceil(8) + chunks;
+        let strip_cap = strips * w;
+        let cell_cap = (strips * cells_per_strip).min(strip_cap);
+        let instance_cap = (strips * (cells_per_strip + w / 8)).min(strip_cap);
         bound.cell_cap = bound
             .fragments
-            .min(strip_cap)
+            .min(cell_cap)
             .max(usize::from(w <= 32 && h <= 32));
-        // Spans and cells share the same output range and never overlap.
-        bound.instance_cap = (bound.cell_cap * 2 + h.div_ceil(STRIP_H)).min(strip_cap);
+        bound.instance_cap = (bound.cell_cap * 2 + strips).min(instance_cap);
+        bound
+    }
+}
+
+/// A retained GPU coverage entry's identity (water-rs/waterui#3081):
+/// the path content, the raster's 2x2 and translation fraction as the
+/// f32 the kernels run on, the surface, and — for coverage the surface
+/// clips — the integer offset as well. Compared field for field: two
+/// placements share an entry exactly when the kernels would generate
+/// the same coverage for both.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct CoverageKey {
+    content: u64,
+    linear: [u32; 4],
+    fraction: [u32; 2],
+    surface: [u32; 2],
+    offset: Option<[i32; 2]>,
+}
+
+impl CoverageKey {
+    /// The key of `content` generated under `raster`, whose translation
+    /// splits into the integer `offset` and the fraction the kernels
+    /// see. `exact` keeps the offset in the key, for coverage the surface
+    /// clips; otherwise every integer offset shares the entry.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the kernels run on f32 coefficients and i32 offsets"
+    )]
+    pub fn new(
+        content: u64,
+        raster: Affine,
+        offset: Vec2,
+        surface: (u32, u32),
+        exact: bool,
+    ) -> Self {
+        let [xx, yx, xy, yy, tx, ty] = raster.as_coeffs();
         Self {
-            elements: Arc::clone(&self.elements),
-            bound,
-            hull: (self.hull + offset),
+            content,
+            linear: [xx, yx, xy, yy].map(|v| (v as f32).to_bits()),
+            fraction: [tx - offset.x, ty - offset.y].map(|v| (v as f32).to_bits()),
+            surface: surface.into(),
+            offset: exact.then_some([offset.x as i32, offset.y as i32]),
         }
+    }
+
+    /// The path content the key was made for.
+    pub const fn content(&self) -> u64 {
+        self.content
     }
 }
 
@@ -1493,7 +1659,7 @@ fn hash_shape_fields(hasher: &mut impl Hasher, shape: &ShapeData) {
 /// stroke parameter and the local flatten tolerance, tagged so it never
 /// collides with a fill of the same geometry.
 pub fn hash_stroke(shape: &ShapeData, stroke: &kurbo::Stroke, tolerance: f64) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = FxHasher::default();
     stroke_into(&mut hasher, shape, stroke, tolerance);
     hasher.finish()
 }
@@ -1525,7 +1691,7 @@ fn stroke_into(
 /// A stable hash of a local path's element list, tagged by draw mode so a
 /// fill, an even-odd fill and a stroke of the same outline never collide.
 pub fn hash_elements(elements: &[PathEl], tag: u64) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = FxHasher::default();
     tag.hash(&mut hasher);
     hash_elements_into(&mut hasher, elements);
     hasher.finish()
@@ -1594,7 +1760,7 @@ impl Placement {
         bytes[..8].copy_from_slice(&self.key.to_ne_bytes());
         bytes[8..16].copy_from_slice(&(self.offset.x as i64).to_ne_bytes());
         bytes[16..].copy_from_slice(&(self.offset.y as i64).to_ne_bytes());
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = FxHasher::default();
         hasher.write(&bytes);
         hasher.finish()
     }
@@ -1627,7 +1793,7 @@ pub fn placement(content_hash: u64, transform: Affine, surface: (u32, u32)) -> P
     }
     bytes[32..36].copy_from_slice(&surface.0.to_ne_bytes());
     bytes[36..].copy_from_slice(&surface.1.to_ne_bytes());
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = FxHasher::default();
     hasher.write(&bytes);
     let key = hasher.finish();
     Placement {
@@ -1652,6 +1818,29 @@ fn classes<R: Runs + ?Sized>(runs: &R) -> Vec<(u32, Class)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipped_fractional_empty_bounds_stay_empty() {
+        let surface = (100.0, 100.0);
+        for bbox in [
+            Rect::new(101.25, 10.25, 110.25, 20.25),
+            Rect::new(10.25, 101.25, 20.25, 110.25),
+            Rect::new(101.25, 101.25, 110.25, 110.25),
+        ] {
+            assert!(grid(bbox, surface).is_none(), "{bbox:?}");
+            let path = prepare_gpu(bbox.to_path(0.1).elements(), Affine::IDENTITY, surface);
+            assert!(path.bound.empty, "{bbox:?}");
+        }
+        // A visible subpixel edge and a path surrounding the viewport still draw.
+        for bbox in [
+            Rect::new(99.75, 10.25, 110.25, 20.25),
+            Rect::new(-10.25, -10.25, 110.25, 110.25),
+        ] {
+            assert!(grid(bbox, surface).is_some(), "{bbox:?}");
+            let path = prepare_gpu(bbox.to_path(0.1).elements(), Affine::IDENTITY, surface);
+            assert!(!path.bound.empty, "{bbox:?}");
+        }
+    }
 
     /// The translation's fraction is rasterized exactly and hashed as f32
     /// bits, not snapped to the 1/4 px grid.
@@ -1885,6 +2074,37 @@ mod tests {
         let (emitted, rasters) = emit(&coverage, &mut arena).unwrap();
         assert_eq!(emitted.cells.len(), 1);
         assert_eq!(rasters[0].0, 3, "the cell spans only the uploaded coverage");
+    }
+
+    /// A non-finite contour, as `kurbo::dash` emits for a dash that starts
+    /// at an open subpath's end, encodes to nothing: the elements and the
+    /// bound are those of the path without it (water-rs/waterui#3156).
+    #[test]
+    fn a_non_finite_contour_encodes_to_nothing() {
+        let square = [
+            PathEl::MoveTo(Point::new(10.0, 10.0)),
+            PathEl::LineTo(Point::new(90.0, 10.0)),
+            PathEl::LineTo(Point::new(90.0, 90.0)),
+            PathEl::LineTo(Point::new(10.0, 90.0)),
+            PathEl::ClosePath,
+        ];
+        let nan = Point::new(f64::NAN, f64::NAN);
+        let mut poisoned = vec![
+            PathEl::MoveTo(nan),
+            PathEl::LineTo(nan),
+            PathEl::CurveTo(nan, nan, nan),
+            PathEl::ClosePath,
+        ];
+        poisoned.extend(square);
+        let raster = Affine::scale(1.5);
+        let clean = prepare_gpu(&square, raster, (256.0, 256.0));
+        let encoded = prepare_gpu(&poisoned, raster, (256.0, 256.0));
+        assert_eq!(
+            bytemuck::cast_slice::<GpuElement, u32>(&encoded.elements),
+            bytemuck::cast_slice::<GpuElement, u32>(&clean.elements),
+        );
+        let bound = |b: GpuBound| (b.segments, b.bins, b.fragments, b.texels, b.rect);
+        assert_eq!(bound(encoded.bound), bound(clean.bound));
     }
 }
 

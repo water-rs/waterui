@@ -8,7 +8,13 @@ use cherenkov::{
     RenderError, WorkingColor,
 };
 use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::F32Image;
+use cherenkov_oracle::metrics::assert_images_match;
 use nami::Binding;
+
+#[path = "support/visual.rs"]
+mod visual;
+use visual::crop;
 
 split_fn! {
 fn engine_and_font() -> (Engine<Gpu>, cherenkov::Font) {
@@ -61,14 +67,9 @@ fn surface_with(
 }
 
 split_fn! {
-fn pixels(surface: &cherenkov::Surface<Gpu>) -> Vec<[u32; 4]> {
-    wait!(surface
-        .readback())
-        .expect("pixels")
-        .pixels
-        .iter()
-        .map(|p| p.map(f32::to_bits))
-        .collect()
+fn pixels(surface: &cherenkov::Surface<Gpu>) -> F32Image {
+    let readback = wait!(surface.readback()).expect("pixels");
+    crop(&readback, 0..readback.width as usize, 0..readback.height as usize)
 }
 }
 
@@ -94,7 +95,7 @@ fn pure_translation_folds_into_position() {
         let a = wait!(pixels(&surface));
         let (surface, _) = wait!(surface_with(&engine, direct));
         wait!(engine.render(FrameTime::now())).expect("direct render");
-        assert_eq!(a, wait!(pixels(&surface)), "folded translation must be identical");
+        assert_images_match(&a, &wait!(pixels(&surface)));
     }
 }
 }
@@ -134,7 +135,7 @@ fn rotated_glyph_renders_outline_coverage() {
     transformed.glyphs = glyphs.into();
     value.set(transformed);
     wait!(engine.render(FrameTime::now())).expect("restored render");
-    assert_eq!(plain_pixels, wait!(pixels(&surface)));
+    assert_images_match(&plain_pixels, &wait!(pixels(&surface)));
 }
 }
 
@@ -157,5 +158,36 @@ fn invalid_transform_is_an_error() {
         }
         drop(surface);
     }
+}
+}
+
+split_test! {
+fn offscreen_runs_skip_rasterization_and_reappear_after_scroll_or_edit() {
+    let (engine, font) = wait!(engine_and_font());
+    let (surface, value) = wait!(surface_with(
+        &engine,
+        run(font.id(), vec![glyph(12.25, 452.5, None)], GlyphStyle::Fill),
+    ));
+    wait!(engine.render(FrameTime::now())).expect("offscreen frame");
+    assert_eq!(engine.stats().glyphs_rasterized, 0);
+    let empty = wait!(pixels(&surface));
+
+    surface.update(|tx| {
+        tx[surface.root()].scroll_offset(cherenkov::kurbo::Vec2::new(0.0, 400.25));
+    });
+    wait!(engine.render(FrameTime::now())).expect("scroll into view");
+    assert!(engine.stats().glyphs_rasterized > 0);
+    let scrolled = wait!(pixels(&surface));
+
+    surface.update(|tx| {
+        tx[surface.root()].scroll_offset(cherenkov::kurbo::Vec2::ZERO);
+    });
+    wait!(engine.render(FrameTime::now())).expect("scroll out of view");
+    assert_eq!(engine.stats().glyphs_rasterized, 0);
+    assert_images_match(&empty, &wait!(pixels(&surface)));
+
+    value.set(run(font.id(), vec![glyph(12.25, 52.25, None)], GlyphStyle::Fill));
+    wait!(engine.render(FrameTime::now())).expect("edited run enters view");
+    assert_images_match(&scrolled, &wait!(pixels(&surface)));
 }
 }

@@ -71,6 +71,16 @@ jobs:
       - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
+      # #3093: before the first test binary is built, so `target/debug/deps`
+      # already holds the pinned WARP when nextest's executables land there,
+      # and `target/debug` holds it for the binaries tests spawn through
+      # `CARGO_BIN_EXE_*` (#3163).
+      - name: Install current WARP
+        uses: ./.github/actions/install-warp
+        with:
+          into: |
+            target/debug/deps
+            target/debug
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145
@@ -200,6 +210,12 @@ jobs:
       - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
+      - name: Install current WARP
+        uses: ./.github/actions/install-warp
+        with:
+          into: |
+            target/debug/deps
+            target/debug
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145
@@ -208,6 +224,13 @@ jobs:
       # fixture setup scripts install their fonts through `uv run`
       # (`.config/nextest.toml`).
       - uses: astral-sh/setup-uv@v6
+      # Same as the test job: the Cherenkov test targets this pass compiles
+      # `include_bytes!` generated fonts, and its bench tests read the
+      # generated corpus scenes.
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: full
       - name: Test (root crate, every feature but dynamic_linking)
         run: cargo nextest run --locked --features all --profile ci
       # The `trybuild_*` binaries each drive a cold fixture build that is
