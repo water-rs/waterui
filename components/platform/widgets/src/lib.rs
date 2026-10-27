@@ -44,6 +44,11 @@ pub use schema::*;
 
 #[doc(hidden)]
 pub use pastey;
+/// Re-exported so `#[widget_intent]` can derive `Serialize`/`Deserialize` on
+/// the declared action type without the calling crate having to depend on
+/// `serde` itself.
+#[doc(hidden)]
+pub use serde;
 #[doc(hidden)]
 pub use serde_json;
 #[doc(hidden)]
@@ -120,7 +125,7 @@ macro_rules! __export_widget {
 }
 
 /// Emits the `waterui_intent_*` export and its `waterui_meta_intent_*`
-/// record for a `#[widget_intent]`-attributed `impl WidgetIntent` block.
+/// record for a `#[widget_intent]`-attributed action type.
 ///
 /// `#waterui::widgets::__export_intent!` expands the exported symbol
 /// `waterui_intent_<crate>_<hash>` — a `#[no_mangle]` C entry point the

@@ -31,7 +31,7 @@ pub struct WidgetDeclaration {
     pub families: Vec<String>,
 }
 
-/// What a `#[widget_intent]` impl declares — the `waterui_meta_intent_*`
+/// What a `#[widget_intent]` action declares — the `waterui_meta_intent_*`
 /// record payload. `kind` names the generated `Swift` `AppIntent` type
 /// (`swift_type` is its stable hash-derived identifier).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
