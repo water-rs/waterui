@@ -567,7 +567,10 @@ fn push_text_style(
         parley::LineHeight::MetricsRelative(1.0),
         parley::LineHeight::Absolute,
     );
-    builder.push(parley::StyleProperty::LineHeight(line_height), range.clone());
+    builder.push(
+        parley::StyleProperty::LineHeight(line_height),
+        range.clone(),
+    );
     builder.push(
         parley::StyleProperty::LetterSpacing(style.font.letter_spacing),
         range.clone(),
