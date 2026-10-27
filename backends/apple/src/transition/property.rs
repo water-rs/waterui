@@ -11,7 +11,7 @@ use alloc::rc::Rc;
 use core::cell::RefCell;
 
 use cocoa_ui::{PlatformView, Retained, view};
-use waterui_core::layout::Size;
+use waterui_core::layout::{LayoutDirection, Size};
 use waterui_core::transition::{
     TransitionGeometry, TransitionPhase, TransitionProperties, TransitionState,
 };
@@ -161,13 +161,16 @@ impl PropertyTarget {
 pub struct InsertionRun {
     /// The transition clock — `Insertion` phase, progress at 1.
     state: TransitionState,
-    /// The host bounds at start plus the claim's direction.
+    /// The claim's direction — the geometry freezes it with the host
+    /// bounds when the run arms.
+    direction: LayoutDirection,
+    /// The host bounds when the run armed plus the claim's direction.
     geometry: TransitionGeometry,
     /// The host each tick samples through — the live wrapper, so the
     /// recorded transform stays current for the layout re-apply.
     host: Rc<TransitionHost>,
-    /// The display driver — held so the run ticks.
-    driver: TransitionDriver,
+    /// The display driver — `None` until the host is in a window.
+    driver: Option<TransitionDriver>,
 }
 
 impl core::fmt::Debug for InsertionRun {
@@ -176,11 +179,25 @@ impl core::fmt::Debug for InsertionRun {
     }
 }
 
+/// The host's bounds as the geometry a sample is computed against.
+fn host_geometry(host: &TransitionHost, direction: LayoutDirection) -> TransitionGeometry {
+    let size = view::bounds(&host.host).size;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the layout contract is f32; kit geometry is f64"
+    )]
+    TransitionGeometry::new(Size::new(size.width as f32, size.height as f32), direction)
+}
+
 impl InsertionRun {
     /// Starts the insertion of `host`'s content: the absent (progress-1)
     /// sample applies synchronously, before the host's first layout, so
-    /// the first presented frame is never fully present. Answers the slot
-    /// the site stores — the run clears it on completion.
+    /// the first presented frame is never fully present. A zero-duration
+    /// insertion ends at identity at once. A host not yet in a window — a
+    /// table cell built before the table adds it — arms when it enters
+    /// one: its geometry freezes and its clock starts then, never before
+    /// it can be seen. Answers the slot the site stores — the run clears
+    /// it on completion.
     pub fn start(
         host: &Rc<TransitionHost>,
         claim: &TransitionClaim,
@@ -197,29 +214,57 @@ impl InsertionRun {
                  move, rotation) or an asymmetric transition"
             );
         }
-        let size = view::bounds(&host.host).size;
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the layout contract is f32; kit geometry is f64"
-        )]
-        let geometry = TransitionGeometry::new(
-            Size::new(size.width as f32, size.height as f32),
-            claim.direction,
-        );
         let slot: Rc<RefCell<Option<Self>>> = Rc::new(RefCell::new(None));
-        // A host with no window never ticks — `FrameClock::start` on a
-        // windowless view stops the clock for good — and a zero-duration
-        // insertion has nothing left to sample; both end at identity at
-        // once rather than freeze on the absent sample.
-        if state.is_complete() || !view::has_window(&host.host) {
+        if state.is_complete() {
             host.apply_sample(&TransitionProperties::IDENTITY);
             return slot;
         }
+        let geometry = host_geometry(host, claim.direction);
         host.apply_sample(&state.properties(geometry));
+        *slot.borrow_mut() = Some(Self {
+            state,
+            direction: claim.direction,
+            geometry,
+            host: Rc::clone(host),
+            driver: None,
+        });
+        // Entering a window arms the run; entering one again — a row
+        // scrolled away and back — re-arms its clock on the new window.
+        host.host.set_window_handler({
+            let slot = Rc::downgrade(&slot);
+            move |view| {
+                if view::has_window(view)
+                    && let Some(slot) = slot.upgrade()
+                {
+                    Self::arm(&slot);
+                }
+            }
+        });
+        if view::has_window(&host.host) {
+            Self::arm(&slot);
+        }
+        slot
+    }
+
+    /// Starts the clock on the host's window — freezing the geometry and
+    /// re-applying the progress-0 sample on the first arm, re-arming the
+    /// display link on a later one. A run that already completed is gone
+    /// from the slot and arms nothing.
+    fn arm(slot: &Rc<RefCell<Option<Self>>>) {
+        let mut borrowed = slot.borrow_mut();
+        let Some(run) = borrowed.as_mut() else {
+            return;
+        };
+        if let Some(driver) = &run.driver {
+            driver.restart(&run.host.host);
+            return;
+        }
+        run.geometry = host_geometry(&run.host, run.direction);
+        run.host.apply_sample(&run.state.properties(run.geometry));
         let mtm =
             cocoa_ui::MainThreadMarker::new().expect("a transition starts on the main thread");
-        let driver = TransitionDriver::start(mtm, &host.host, {
-            let slot = Rc::downgrade(&slot);
+        let driver = TransitionDriver::start(mtm, &run.host.host, {
+            let slot = Rc::downgrade(slot);
             move |delta| {
                 let Some(slot) = slot.upgrade() else {
                     return;
@@ -247,13 +292,7 @@ impl InsertionRun {
                 }
             }
         });
-        *slot.borrow_mut() = Some(Self {
-            state,
-            geometry,
-            host: Rc::clone(host),
-            driver,
-        });
-        slot
+        run.driver = Some(driver);
     }
 }
 
@@ -261,6 +300,8 @@ impl Drop for InsertionRun {
     /// Dropping the run — at retirement or from the completion task —
     /// stops its clock at the driver's boundary.
     fn drop(&mut self) {
-        self.driver.stop();
+        if let Some(driver) = &self.driver {
+            driver.stop();
+        }
     }
 }

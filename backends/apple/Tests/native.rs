@@ -10364,6 +10364,27 @@ mod transition {
                 siblings_close_the_gap_at_completion();
                 Ok(())
             }),
+            libtest_mimic::Trial::test(
+                "transition::list_ghost_row_keeps_its_frozen_height",
+                || {
+                    list_ghost_row_keeps_its_frozen_height();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::list_ghost_row_is_not_selectable_or_accessible",
+                || {
+                    list_ghost_row_is_not_selectable_or_accessible();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::list_claimed_insertion_plays_without_row_animation",
+                || {
+                    list_claimed_insertion_plays_without_row_animation();
+                    Ok(())
+                },
+            ),
         ]
     }
 
@@ -11395,6 +11416,309 @@ mod transition {
                 members.len() == 2 && members[1].2.origin.y.to_bits() == b_origin.to_bits()
             }),
             "siblings close the gap once the ghost completes"
+        );
+    }
+
+    /// The list's table inside `view`'s subtree, `view` included —
+    /// the table may be the leaf's own view or nested under it.
+    fn find_table(view: &PlatformView) -> Option<Retained<PlatformView>> {
+        if table_is(view) {
+            return Some(view::retain_base(view));
+        }
+        view::subviews(view).iter().find_map(|sub| find_table(sub))
+    }
+
+    #[cfg(target_os = "ios")]
+    fn table_is(view: &PlatformView) -> bool {
+        view.downcast_ref::<cocoa_ui::uikit::TableView>().is_some()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn table_is(view: &PlatformView) -> bool {
+        view.downcast_ref::<cocoa_ui::appkit::ListTableView>()
+            .is_some()
+    }
+
+    /// The table's displayed row count — ghosts included.
+    fn table_row_count(table: &PlatformView) -> usize {
+        autoreleasepool(|_| {
+            #[cfg(target_os = "ios")]
+            // SAFETY: `numberOfRowsInSection:` is safe on a `UITableView`.
+            unsafe {
+                objc2::msg_send![table, numberOfRowsInSection: 0usize]
+            }
+            #[cfg(target_os = "macos")]
+            {
+                table
+                    .downcast_ref::<cocoa_ui::appkit::ListTableView>()
+                    .expect("the list mounts a ListTableView")
+                    .row_count()
+            }
+        })
+    }
+
+    /// Display row `row`'s height — the frozen-height check.
+    fn table_row_height(table: &PlatformView, row: usize) -> f64 {
+        autoreleasepool(|_| {
+            #[cfg(target_os = "ios")]
+            {
+                let table = table
+                    .downcast_ref::<cocoa_ui::uikit::TableView>()
+                    .expect("the list mounts a UITableView");
+                let index = |row| cocoa_ui::uikit::IndexPath { section: 0, row };
+                // Contiguous rows: a row's height is the distance to the
+                // previous row's bottom edge.
+                assert!(
+                    row > 0,
+                    "the height read needs the previous row's bottom edge"
+                );
+                table.row_bottom(index(row)) - table.row_bottom(index(row - 1))
+            }
+            #[cfg(target_os = "macos")]
+            {
+                table
+                    .downcast_ref::<cocoa_ui::appkit::ListTableView>()
+                    .expect("the list mounts a ListTableView")
+                    .rect_of_row(row)
+                    .size
+                    .height
+            }
+        })
+    }
+
+    /// Whether the table's delegate allows `row` to be selected —
+    /// `tableView:willSelectRowAtIndexPath:` on `UIKit`,
+    /// `tableView:shouldSelectRow:` on `AppKit`.
+    fn row_selectable(table: &PlatformView, row: usize) -> bool {
+        autoreleasepool(|_| {
+            #[cfg(target_os = "ios")]
+            // SAFETY: the table's delegate answers the selection
+            // callbacks on the main thread.
+            unsafe {
+                use cocoa_ui::objc2_foundation::NSIndexPath;
+                use objc2::runtime::AnyObject;
+                let delegate: Option<Retained<AnyObject>> = objc2::msg_send![table, delegate];
+                let delegate = delegate.expect("the table carries a source delegate");
+                // `NSIndexPath` stores its components in order — section
+                // 0, then `row`.
+                let mut components = [0usize, row];
+                let index = NSIndexPath::indexPathWithIndexes_length(components.as_mut_ptr(), 2);
+                let answer: Option<Retained<NSIndexPath>> = objc2::msg_send![
+                    &*delegate,
+                    tableView: table,
+                    willSelectRowAtIndexPath: &*index
+                ];
+                answer.is_some()
+            }
+            #[cfg(target_os = "macos")]
+            {
+                use objc2::runtime::AnyObject;
+                let inner = table
+                    .downcast_ref::<cocoa_ui::appkit::ListTableView>()
+                    .expect("the list mounts a ListTableView")
+                    .table_view();
+                // SAFETY: the table's delegate answers the selection
+                // callbacks on the main thread.
+                unsafe {
+                    let delegate: Option<Retained<AnyObject>> = objc2::msg_send![&*inner, delegate];
+                    let delegate = delegate.expect("the table carries a source delegate");
+                    objc2::msg_send![
+                        &*delegate,
+                        tableView: &*inner,
+                        shouldSelectRow: row.cast_signed()
+                    ]
+                }
+            }
+        })
+    }
+
+    /// The content the table materialized at `row` — a ghost row answers
+    /// its retired host; a live row its `LiveChild` view.
+    fn cell_content(table: &PlatformView, row: usize) -> Option<Retained<PlatformView>> {
+        autoreleasepool(|_| {
+            #[cfg(target_os = "ios")]
+            {
+                use cocoa_ui::objc2_foundation::NSArray;
+                use cocoa_ui::objc2_ui_kit::UITableViewCell;
+                use cocoa_ui::uikit::TableCell;
+                let table_view = table
+                    .downcast_ref::<cocoa_ui::uikit::TableView>()
+                    .expect("the list mounts a UITableView");
+                // SAFETY: `visibleCells` is safe on a `UITableView`.
+                let cells: Option<Retained<NSArray<UITableViewCell>>> =
+                    unsafe { objc2::msg_send![table_view, visibleCells] };
+                cells.and_then(|cells| {
+                    cells.iter().find_map(|cell| {
+                        let cell = cell.downcast_ref::<TableCell>()?;
+                        let index = table_view.index_path_for_cell(cell)?;
+                        (index.section == 0 && index.row == row)
+                            .then(|| cell.content().map(|content| view::retain_base(&content)))
+                            .flatten()
+                    })
+                })
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let inner = table
+                    .downcast_ref::<cocoa_ui::appkit::ListTableView>()
+                    .expect("the list mounts a ListTableView")
+                    .table_view();
+                // A row the table has not applied yet has no cell — the
+                // contents notification lands on a later turn — and
+                // `viewAtColumn:row:makeIfNecessary:` raises on it.
+                if row.cast_signed() >= inner.numberOfRows() {
+                    return None;
+                }
+                // SAFETY: `viewAtColumn:row:makeIfNecessary:` is safe on an
+                // `NSTableView` on the main thread for a row inside
+                // `numberOfRows`, checked above.
+                let container: Option<Retained<PlatformView>> = unsafe {
+                    objc2::msg_send![
+                        &*inner,
+                        viewAtColumn: 0isize,
+                        row: row.cast_signed(),
+                        makeIfNecessary: true
+                    ]
+                };
+                container.and_then(|container| {
+                    container
+                        .downcast_ref::<cocoa_ui::appkit::RowContainer>()
+                        .and_then(|container| {
+                            container
+                                .content()
+                                .map(|content| view::retain_base(&content))
+                        })
+                })
+            }
+        })
+    }
+
+    /// Whether `view` is out of the accessibility tree — the retired
+    /// host's own mark.
+    fn accessibility_hidden(view: &PlatformView) -> bool {
+        #[cfg(target_os = "ios")]
+        // SAFETY: `accessibilityElementsHidden` is safe on a `UIView`.
+        unsafe {
+            objc2::msg_send![view, accessibilityElementsHidden]
+        }
+        #[cfg(target_os = "macos")]
+        // SAFETY: `isAccessibilityElement` is safe on an `NSView`.
+        unsafe {
+            !objc2::msg_send![view, isAccessibilityElement]
+        }
+    }
+
+    /// A single-selection list whose every row claims the row transition
+    /// — fixed-height rows, so the frozen height is a real contract.
+    fn row_list(items: &ReactiveList<Row>) -> AnyView {
+        use waterui::component::list::{List, ListItem};
+        use waterui::reactive::binding;
+        AnyView::new(
+            List::for_each(items.clone(), |row: Row| {
+                let content = hstack((text(format!("row {}", row.id)), spacer())).size(200.0, 44.0);
+                ListItem::new(Metadata::new(content, row_spec()))
+            })
+            .selection(&binding(Option::<u64>::None)),
+        )
+    }
+
+    /// §8 row 4: removing a claimed row ghosts it at its frozen measured
+    /// height — the table's row count holds through the exit,
+    /// `heightForRow`/`heightOfRow` at the ghost's row answers the removed
+    /// row's last measurement, and completion deletes the row.
+    pub fn list_ghost_row_keeps_its_frozen_height() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let leaf = super::resolve::render(row_list(&items));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let table = autoreleasepool(|_| find_table(leaf.view()).expect("the list mounts a table"));
+        let before = table_row_height(&table, 1);
+        assert_eq!(table_row_count(&table), 3, "three live rows mounted");
+        autoreleasepool(|_| {
+            let _ = items.remove(1);
+        });
+        assert_eq!(
+            table_row_count(&table),
+            3,
+            "the ghost holds the removed row's slot",
+        );
+        assert_eq!(
+            table_row_height(&table, 1).to_bits(),
+            before.to_bits(),
+            "the ghost row keeps the removed row's measured height",
+        );
+        assert!(
+            pump_main_until(3.0, || table_row_count(&table) == 2),
+            "the ghost row deletes when its transition completes",
+        );
+    }
+
+    /// §8 row 4: `willSelectRow`/`shouldSelectRow` refuse the ghost index,
+    /// and the ghost cell's content is the retired host — out of the
+    /// accessibility tree.
+    pub fn list_ghost_row_is_not_selectable_or_accessible() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let leaf = super::resolve::render(row_list(&items));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let table = autoreleasepool(|_| find_table(leaf.view()).expect("the list mounts a table"));
+        autoreleasepool(|_| {
+            let _ = items.remove(1);
+        });
+        assert!(
+            pump_main_until(2.0, || !row_selectable(&table, 1)),
+            "the ghost row is not selectable",
+        );
+        assert!(row_selectable(&table, 0), "a live row stays selectable");
+        let hidden = autoreleasepool(|_| {
+            cell_content(&table, 1).is_some_and(|content| {
+                content
+                    .downcast_ref::<HostView>()
+                    .is_some_and(HostView::is_retired)
+                    && accessibility_hidden(&content)
+            })
+        });
+        assert!(
+            hidden,
+            "the ghost cell's retired host stays out of the accessibility tree",
+        );
+    }
+
+    /// §8 row 4: a claimed insertion materializes its row at once — the
+    /// batch animates it with `None` — while the mounted `LiveChild`'s
+    /// own transition ramps the host alpha from the absent sample.
+    pub fn list_claimed_insertion_plays_without_row_animation() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let leaf = super::resolve::render(row_list(&items));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let table = autoreleasepool(|_| find_table(leaf.view()).expect("the list mounts a table"));
+        autoreleasepool(|_| {
+            items.push(Row { id: 4 });
+        });
+        // The inserted row's cell is configured immediately — the table
+        // adds it with no row animation — while the transition host's
+        // alpha ramps up from the absent sample.
+        let saw_ramp = Cell::new(false);
+        assert!(
+            pump_main_until(3.0, || {
+                autoreleasepool(|_| {
+                    let Some(host) = cell_content(&table, 3) else {
+                        return false;
+                    };
+                    let alpha = view::alpha(&host);
+                    saw_ramp.set(saw_ramp.get() || alpha < 1.0);
+                    alpha >= 1.0
+                })
+            }),
+            "the inserted row's transition plays to full opacity",
+        );
+        assert!(
+            saw_ramp.get(),
+            "the host alpha ramped from the absent sample — the row itself was inserted without animation",
         );
     }
 }

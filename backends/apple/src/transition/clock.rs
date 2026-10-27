@@ -71,6 +71,12 @@ impl TransitionDriver {
         Self { inner }
     }
 
+    /// Re-arms the clock against `on`'s current window — the view moved
+    /// to a window after a loss stopped the link.
+    pub fn restart(&self, on: &PlatformView) {
+        self.inner.clock.start(on);
+    }
+
     /// Stops the clock: the display link invalidates.
     pub fn stop(&self) {
         self.inner.clock.stop();
