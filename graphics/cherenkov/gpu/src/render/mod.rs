@@ -2320,9 +2320,20 @@ fn open_pipeline_cache(device: &wgpu::Device, config: &GpuConfig) -> Option<wgpu
 fn persist_pipeline_cache(cache: Option<&wgpu::PipelineCache>, config: &GpuConfig) {
     if let (Some(cache), Some(path)) = (cache, &config.pipeline_cache)
         && let Some(data) = cache.get_data()
+        && let Err(error) = write_pipeline_cache(path, &data)
     {
-        let _ = std::fs::write(path, data);
+        tracing::debug!(?path, %error, "could not persist pipeline cache");
     }
+}
+
+fn write_pipeline_cache(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, data)
 }
 
 /// The closed pipeline set: one instanced-quad pipeline from `shader.wgsl`
