@@ -7628,6 +7628,23 @@ impl GpuRenderer {
                         ),
                         |slot| touches.push(slot),
                     );
+                    // One stored UV names only the shelf its own quad
+                    // samples, but an emission's band set is wider: a
+                    // region interval widened across cells can span
+                    // shelves. The `(slot, epoch)` refs folded at
+                    // apply hold every band the emission samples, so
+                    // the still-live ones pin too (#2909). A deferred
+                    // `refs` has no pairs yet — apply derives them,
+                    // and every cell they will name is already pinned
+                    // by the UV scan above.
+                    if emission.refs & lower::DEFERRED_REFS == 0 {
+                        touches.extend(
+                            content.storage.refs[emission.refs_range()]
+                                .iter()
+                                .filter(|&&(slot, epoch)| self.atlas.shelf_matches(slot, epoch))
+                                .map(|&(slot, _)| slot),
+                        );
+                    }
                 }
             }
             // Clip masks bound through `uv[2..3]` pin the same way:
