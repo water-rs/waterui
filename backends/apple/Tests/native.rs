@@ -10386,6 +10386,353 @@ mod transition {
                 },
             ),
         ]
+        .into_iter()
+        .chain(navigation_trials())
+        .collect()
+    }
+
+    /// The Stage 5 navigation trials (§8.2): a page root's
+    /// `.transition(...)` replaces the stack's own push/pop animation.
+    fn navigation_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "transition::navigation_claimed_pop_ghosts_above_the_new_top",
+                || {
+                    navigation_claimed_pop_ghosts_above_the_new_top();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::navigation_claimed_push_replaces_the_stack_animation",
+                || {
+                    navigation_claimed_push_replaces_the_stack_animation();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// The `UINavigationController` owning a view in the subtree,
+    /// depth-first — either the view's own controller is the nav
+    /// controller, or the page controller answers one.
+    #[cfg(target_os = "ios")]
+    fn nav_controller_in(
+        view: &PlatformView,
+    ) -> Option<Retained<cocoa_ui::objc2_ui_kit::UINavigationController>> {
+        use cocoa_ui::uikit::view_controller::owning_controller;
+        if let Some(controller) = owning_controller(view) {
+            if let Ok(nav) = controller.clone().downcast() {
+                return Some(nav);
+            }
+            if let Some(nav) = controller.navigationController() {
+                return Some(nav);
+            }
+        }
+        for sub in view::subviews(view) {
+            if let Some(found) = nav_controller_in(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// A path-driven stack whose pushed page carries a page-root
+    /// `.transition(...)`: `path.push`/`path.pop` drive the model
+    /// transactions the trials assert on.
+    fn claimed_stack() -> (
+        waterui::navigation::NavigationPath<i32>,
+        waterui_apple::contract::NativeLeaf,
+    ) {
+        use waterui::navigation::{NavigationPath, NavigationStack, NavigationView};
+        let path = NavigationPath::<i32>::new();
+        let leaf = super::resolve::render(
+            NavigationStack::with_path(path.clone(), NavigationView::new("Root", text("root")))
+                .destination(|_route: i32| {
+                    NavigationView::new(
+                        "Detail",
+                        Metadata::new(
+                            text("detail"),
+                            TransitionSpec::new(PropertyTransition::opacity())
+                                .with_animation(Animation::linear(Duration::from_millis(150))),
+                        ),
+                    )
+                }),
+        );
+        (path, leaf)
+    }
+
+    /// A claimed page pushed then popped through the model: the pop is
+    /// unanimated and the outgoing page's transition host is reparented
+    /// into `nav.view` directly beneath the navigation bar — above the new
+    /// top, as Hydrolysis paints the moving page over the stationary one —
+    /// at the frame it occupied inside its controller's view, staying
+    /// until the removal transition's clock releases it (§5.5). On
+    /// `AppKit` the ghost is the stack host's top subview at the entry's
+    /// last frame.
+    pub fn navigation_claimed_pop_ghosts_above_the_new_top() {
+        let _mtm = mtm();
+        let (path, leaf) = claimed_stack();
+        let _window = super::mount_and_order_front(leaf.view());
+        #[cfg(target_os = "ios")]
+        pop_ghost_ios(&path, &leaf);
+        #[cfg(target_os = "macos")]
+        pop_ghost_macos(&path, &leaf);
+    }
+
+    /// The `UIKit` half of the claimed-pop assertion: the subview of
+    /// `nav.view` directly beneath the navigation bar is the outgoing
+    /// page's retired transition host.
+    #[cfg(target_os = "ios")]
+    fn pop_ghost_ios(
+        path: &waterui::navigation::NavigationPath<i32>,
+        leaf: &waterui_apple::contract::NativeLeaf,
+    ) {
+        let nav = nav_controller_in(leaf.view()).expect("the stack mounts a navigation controller");
+        autoreleasepool(|_| path.push(1));
+        assert!(
+            pump_main_until(5.0, || nav.viewControllers().count() == 2),
+            "the push installs the claimed page"
+        );
+        let nav_view = nav.view().expect("the navigation controller's view");
+        let (page_ptr, page_frame, weak) = autoreleasepool(|_| {
+            let top = nav.topViewController().expect("the pushed page is top");
+            let page_view = top.view().expect("the page's view");
+            let host = view::subviews(&page_view)
+                .into_iter()
+                .next()
+                .expect("a claimed page mounts inside a transition host");
+            (
+                std::ptr::from_ref(&*host),
+                view::convert_rect(&host, view::bounds(&host), Some(&nav_view)),
+                Weak::new(&*host),
+            )
+        });
+        // The subview directly beneath the navigation bar.
+        let beneath_bar = || {
+            let bar = nav.navigationBar();
+            let subs = view::subviews(&nav_view);
+            let index = subs
+                .iter()
+                .position(|sub| std::ptr::eq(&raw const **sub, (&raw const *bar).cast()))
+                .expect("the navigation bar is a subview of nav.view");
+            index.checked_sub(1).map(|below| subs[below].clone())
+        };
+        let _ = autoreleasepool(|_| path.pop());
+        let landed = pump_main_until(5.0, || {
+            autoreleasepool(|_| {
+                nav.viewControllers().count() == 1
+                    && beneath_bar().is_some_and(|sub| std::ptr::eq(&raw const *sub, page_ptr))
+            })
+        });
+        let (count, subs) = autoreleasepool(|_| {
+            (
+                nav.viewControllers().count(),
+                view::subviews(&nav_view)
+                    .iter()
+                    .map(|sub| {
+                        (
+                            std::ptr::eq(&raw const **sub, page_ptr),
+                            sub.class().name().to_string_lossy().into_owned(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        });
+        assert!(
+            landed,
+            "the pop leaves the claimed page's ghost above the root, beneath the bar: \
+             {count} controllers, nav.view subviews {subs:?}"
+        );
+        autoreleasepool(|_| {
+            let ghost = &beneath_bar().expect("the ghost sits beneath the bar");
+            assert!(
+                ghost
+                    .downcast_ref::<HostView>()
+                    .is_some_and(HostView::is_retired),
+                "the ghost host retired at the pop"
+            );
+            let frame = view::frame(ghost);
+            assert_eq!(
+                (
+                    frame.origin.x,
+                    frame.origin.y,
+                    frame.size.width,
+                    frame.size.height
+                ),
+                (
+                    page_frame.origin.x,
+                    page_frame.origin.y,
+                    page_frame.size.width,
+                    page_frame.size.height
+                ),
+                "the ghost keeps the page's last frame in nav.view"
+            );
+        });
+        assert!(
+            pump_main_until(5.0, || weak.load().is_none()),
+            "the completion releases the ghost's visuals"
+        );
+    }
+
+    /// The `AppKit` half: the entries are direct subviews of the stack
+    /// host, and a claimed pop retires the top entry's transition host
+    /// above the remaining pages — the host's top subview, at the entry's
+    /// last frame.
+    #[cfg(target_os = "macos")]
+    fn pop_ghost_macos(
+        path: &waterui::navigation::NavigationPath<i32>,
+        leaf: &waterui_apple::contract::NativeLeaf,
+    ) {
+        let host = view::retain_base(leaf.view());
+        autoreleasepool(|_| path.push(1));
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| view::subviews(&host).len() == 2)
+            }),
+            "the push installs the claimed page"
+        );
+        let (page_ptr, entry_frame, weak) = autoreleasepool(|_| {
+            let entry = view::subviews(&host)
+                .into_iter()
+                .next_back()
+                .expect("the pushed page's entry view");
+            let ghost = view::subviews(&entry)
+                .into_iter()
+                .next()
+                .expect("a claimed page mounts inside a transition host");
+            (
+                std::ptr::from_ref(&*ghost),
+                view::frame(&entry),
+                Weak::new(&*ghost),
+            )
+        });
+        let _ = autoreleasepool(|_| path.pop());
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| {
+                    view::subviews(&host)
+                        .last()
+                        .is_some_and(|sub| std::ptr::eq(&raw const **sub, page_ptr))
+                })
+            }),
+            "the pop leaves the claimed page's ghost above the root"
+        );
+        autoreleasepool(|_| {
+            let ghost = view::subviews(&host)
+                .pop()
+                .expect("the ghost is the host's top subview");
+            let ghost = &ghost;
+            assert!(
+                ghost
+                    .downcast_ref::<HostView>()
+                    .is_some_and(HostView::is_retired),
+                "the ghost host retired at the pop"
+            );
+            let frame = view::frame(ghost);
+            assert_eq!(
+                (
+                    frame.origin.x,
+                    frame.origin.y,
+                    frame.size.width,
+                    frame.size.height
+                ),
+                (
+                    entry_frame.origin.x,
+                    entry_frame.origin.y,
+                    entry_frame.size.width,
+                    entry_frame.size.height
+                ),
+                "the ghost keeps the entry's last frame in the stack host"
+            );
+        });
+        assert!(
+            pump_main_until(5.0, || weak.load().is_none()),
+            "the completion releases the ghost's visuals"
+        );
+    }
+
+    /// A claimed page pushed through the model: the stack's own push
+    /// animation is skipped — `UIKit` reports no transition coordinator
+    /// and `AppKit` skips its fade — while the page's transition host
+    /// ramps its own insertion instead (§5.5).
+    pub fn navigation_claimed_push_replaces_the_stack_animation() {
+        let _mtm = mtm();
+        let (path, leaf) = claimed_stack();
+        let _window = super::mount_and_order_front(leaf.view());
+        let mid_ramp = Cell::new(false);
+        #[cfg(target_os = "ios")]
+        push_unanimated_ios(&path, &leaf, &mid_ramp);
+        #[cfg(target_os = "macos")]
+        push_unanimated_macos(&path, &leaf, &mid_ramp);
+        assert!(
+            mid_ramp.get(),
+            "the page host's alpha ramped through its own transition"
+        );
+    }
+
+    /// `UIKit`: the claimed push installs without a transition
+    /// coordinator and the page host's alpha ramps mid-flight.
+    #[cfg(target_os = "ios")]
+    fn push_unanimated_ios(
+        path: &waterui::navigation::NavigationPath<i32>,
+        leaf: &waterui_apple::contract::NativeLeaf,
+        mid_ramp: &Cell<bool>,
+    ) {
+        let nav = nav_controller_in(leaf.view()).expect("the stack mounts a navigation controller");
+        autoreleasepool(|_| path.push(1));
+        assert!(
+            pump_main_until(5.0, || nav.viewControllers().count() == 2),
+            "the push installs the claimed page"
+        );
+        assert!(
+            nav.transitionCoordinator().is_none(),
+            "a claimed push is not the stack's animated transition"
+        );
+        let done = pump_main_until(5.0, || {
+            autoreleasepool(|_| {
+                let top = nav.topViewController().expect("the pushed page is top");
+                let host = view::subviews(&top.view().expect("view"))
+                    .into_iter()
+                    .next()
+                    .expect("a claimed page mounts inside a transition host");
+                let alpha = view::alpha(&host);
+                if alpha > 0.0 && alpha < 1.0 {
+                    mid_ramp.set(true);
+                }
+                alpha >= 1.0
+            })
+        });
+        assert!(done, "the insertion transition completes");
+    }
+
+    /// `AppKit`: the claimed push's entry host alpha ramps — the stack
+    /// fade never ran for it.
+    #[cfg(target_os = "macos")]
+    fn push_unanimated_macos(
+        path: &waterui::navigation::NavigationPath<i32>,
+        leaf: &waterui_apple::contract::NativeLeaf,
+        mid_ramp: &Cell<bool>,
+    ) {
+        let host = view::retain_base(leaf.view());
+        autoreleasepool(|_| path.push(1));
+        let done = pump_main_until(5.0, || {
+            autoreleasepool(|_| {
+                let subviews = view::subviews(&host);
+                if subviews.len() < 2 {
+                    return false;
+                }
+                let alpha = subviews.last().map_or(1.0, |entry| {
+                    view::subviews(entry)
+                        .first()
+                        .map_or(1.0, |page| view::alpha(page))
+                });
+                if alpha > 0.0 && alpha < 1.0 {
+                    mid_ramp.set(true);
+                }
+                alpha >= 1.0
+            })
+        });
+        assert!(done, "the insertion transition completes");
     }
 
     /// A flag whose drop proves the leaf's keepalive ended — the same
