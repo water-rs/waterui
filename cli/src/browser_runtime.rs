@@ -270,7 +270,6 @@ async fn stage_wpe(
     // builds fresh from source replaces them.
     let sdk_inputs = SdkCacheInputs {
         archive_sha256: artifact.sha256.clone(),
-        pkg_config_layout: PKG_CONFIG_LAYOUT,
     };
     let sdk_root = sdk_cache_root(host, &sdk_inputs).await?;
     if !sdk_cache_ready(&sdk_root, &sdk_inputs).await? {
@@ -290,7 +289,6 @@ async fn stage_wpe(
                 &wpe::SDK_NATIVE_EXCLUDES,
             )
             .await?;
-            wpe::normalize_sdk_descriptors(candidate.clone()).await?;
             fs::write(
                 candidate.join(".extracted"),
                 serde_json::to_vec(&sdk_inputs)?,
@@ -337,16 +335,12 @@ async fn stage_wpe(
     Ok(())
 }
 
-/// The descriptor normalization layout version: bump it whenever the `.pc`
-/// normalization output changes so no cache entry of an older layout is read.
-const PKG_CONFIG_LAYOUT: u32 = 1;
-
-/// The SDK cache identity: the archive digest plus the descriptor
-/// normalization layout — a layout change never reads an old entry.
+/// The SDK cache identity: the verified archive digest alone — the packaged
+/// descriptors already resolve `${pcfiledir}`-relative, so extraction is the
+/// only transform a cache entry records.
 #[derive(serde::Serialize, serde::Deserialize, PartialEq)]
 struct SdkCacheInputs {
     archive_sha256: String,
-    pkg_config_layout: u32,
 }
 
 fn sdk_key(inputs: &SdkCacheInputs) -> eyre::Result<String> {
@@ -956,26 +950,23 @@ mod tests {
     use crate::project::BrowserRuntimePlan;
     use std::io::Write as _;
 
-    fn sdk_inputs(layout: u32) -> super::SdkCacheInputs {
-        super::SdkCacheInputs {
-            archive_sha256: "ab".repeat(32),
-            pkg_config_layout: layout,
-        }
-    }
-
     #[test]
     fn sdk_cache_ready_distinguishes_missing_matching_and_foreign_markers() {
         smol::block_on(async {
             let root = tempfile::tempdir().unwrap();
             let marker = root.path().join(".extracted");
-            let inputs = sdk_inputs(super::PKG_CONFIG_LAYOUT);
+            let inputs = super::SdkCacheInputs {
+                archive_sha256: "ab".repeat(32),
+            };
             assert!(!super::sdk_cache_ready(root.path(), &inputs).await.unwrap());
 
             std::fs::write(&marker, serde_json::to_vec(&inputs).unwrap()).unwrap();
             assert!(super::sdk_cache_ready(root.path(), &inputs).await.unwrap());
 
-            let other_layout = sdk_inputs(super::PKG_CONFIG_LAYOUT + 1);
-            std::fs::write(&marker, serde_json::to_vec(&other_layout).unwrap()).unwrap();
+            let other = super::SdkCacheInputs {
+                archive_sha256: "cd".repeat(32),
+            };
+            std::fs::write(&marker, serde_json::to_vec(&other).unwrap()).unwrap();
             assert!(super::sdk_cache_ready(root.path(), &inputs).await.is_err());
 
             std::fs::write(&marker, "ab".repeat(32)).unwrap();

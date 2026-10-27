@@ -43,7 +43,8 @@ runs:
     # The digest covers exactly what the compiled prefix depends on: the
     # pinned version and tarball digest in source.toml, the CMake options and
     # dependency handling in build-webkit.sh, the dependency list in the
-    # setup action files, the runner image and the CC/CXX toolchain — plus
+    # setup action files, the apt source and selected toolchain in
+    # llvm-apt-source, the runner image and the CC/CXX toolchain — plus
     # this directory, because it defines the stored layout, and a stored
     # prefix must never be read back under a different one. Editing the shim
     # or packaging, anything outside build-webkit.sh, keeps the digest, so
@@ -52,7 +53,7 @@ runs:
       shell: bash
       env:
         RUNNER_LABEL: ${{ inputs.runner }}
-        INPUTS_HASH: ${{ hashFiles('browsers/browser-wpe/runtime/source.toml', 'browsers/browser-wpe/runtime/build-webkit.sh', '.github/actions/setup-linux-deps/action.yml', '.github/actions/refresh-apt-index/refresh.sh', '.github/actions/wpe-webkit-prefix/**') }}
+        INPUTS_HASH: ${{ hashFiles('browsers/browser-wpe/runtime/source.toml', 'browsers/browser-wpe/runtime/build-webkit.sh', 'browsers/.github/actions/llvm-apt-source/action.yml', '.github/actions/setup-linux-deps/action.yml', '.github/actions/refresh-apt-index/refresh.sh', '.github/actions/wpe-webkit-prefix/**') }}
       run: |
         set -euo pipefail
         : "${CC:?the calling job must select CC}" "${CXX:?the calling job must select CXX}" "${INPUTS_HASH:?no prefix input file matched}"
