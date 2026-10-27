@@ -4,10 +4,31 @@
 //!
 //! A lone `kill_on_drop` on the direct child orphans whatever it re-execs
 //! (`bun run dev` → `node vite`, `winget` → its installer), so a caller that
-//! must be able to stop the whole tree spawns the child with
-//! [`ProcessTree::lead`] and adopts it with [`ProcessTree::adopt`].
+//! must be able to stop the whole tree spawns the child through
+//! [`ProcessTree::spawn`], the only way to obtain a tree: on Unix it makes the
+//! child lead its group before the spawn, so the group is the child's pid by
+//! construction and nothing queries it afterwards.
 
 use std::io;
+
+/// A spawned child whose operating-system process identifier is known,
+/// whichever process API spawned it.
+pub trait Spawned {
+    /// The child's process identifier.
+    fn id(&self) -> u32;
+}
+
+impl Spawned for std::process::Child {
+    fn id(&self) -> u32 {
+        Self::id(self)
+    }
+}
+
+impl Spawned for smol::process::Child {
+    fn id(&self) -> u32 {
+        Self::id(self)
+    }
+}
 
 /// A child and every process it re-execs, addressable as one.
 #[cfg(unix)]
@@ -18,28 +39,23 @@ pub struct ProcessTree {
 
 #[cfg(unix)]
 impl ProcessTree {
-    /// Make `command`'s child lead a process group of its own, which
-    /// [`ProcessTree::adopt`] then addresses.
-    pub fn lead(command: &mut std::process::Command) {
+    /// Make `command`'s child lead a process group of its own, run `spawn` on
+    /// it, and return the child with the tree that group forms. `spawn` may
+    /// wrap the command in another process API but must spawn exactly this
+    /// command. The group is the child's pid because the child was spawned as
+    /// its leader, so signalling it never reaches a group `water` shares.
+    pub fn spawn<C: Spawned>(
+        mut command: std::process::Command,
+        spawn: impl FnOnce(std::process::Command) -> io::Result<C>,
+    ) -> io::Result<(C, Self)> {
         use std::os::unix::process::CommandExt as _;
 
         command.process_group(0);
-    }
-
-    /// The process group the process `pid` leads. It was spawned with
-    /// [`ProcessTree::lead`]; a process that did not end up leading its own
-    /// group is refused rather than signalled, because a group signal would
-    /// then reach whatever group it shares — `water` included.
-    pub fn adopt(pid: u32) -> io::Result<Self> {
-        let pid =
-            nix::unistd::Pid::from_raw(i32::try_from(pid).expect("process identifiers fit in i32"));
-        let group = nix::unistd::getpgid(Some(pid))?;
-        if group != pid {
-            return Err(io::Error::other(format!(
-                "process {pid} belongs to group {group} instead of leading its own"
-            )));
-        }
-        Ok(Self { group })
+        let child = spawn(command)?;
+        let group = nix::unistd::Pid::from_raw(
+            i32::try_from(child.id()).expect("process identifiers fit in i32"),
+        );
+        Ok((child, Self { group }))
     }
 
     /// Signal every process in the group: SIGTERM when `graceful`, else
@@ -65,14 +81,21 @@ pub struct ProcessTree {
 
 #[cfg(windows)]
 impl ProcessTree {
-    /// Nothing to arrange before spawn: the job object takes the child in
-    /// [`ProcessTree::adopt`], and the processes it spawns from then on join
-    /// automatically.
-    pub const fn lead(_command: &mut std::process::Command) {}
+    /// Run `spawn` on `command` and return the child with a new job that has
+    /// taken it. Nothing needs arranging before the spawn: the processes the
+    /// child spawns from then on join the job automatically.
+    pub fn spawn<C: Spawned>(
+        command: std::process::Command,
+        spawn: impl FnOnce(std::process::Command) -> io::Result<C>,
+    ) -> io::Result<(C, Self)> {
+        let child = spawn(command)?;
+        let tree = Self::adopt(child.id())?;
+        Ok((child, tree))
+    }
 
     /// A new job that kills its members on close, with the process `pid`
     /// assigned to it.
-    pub fn adopt(pid: u32) -> io::Result<Self> {
+    fn adopt(pid: u32) -> io::Result<Self> {
         use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
         use windows_sys::Win32::System::{
             JobObjects::{
