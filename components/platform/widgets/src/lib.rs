@@ -55,12 +55,17 @@ pub use waterui_meta as meta;
 /// which reads this record out of the composed application artifact — can
 /// compile the extension from the same sources the crate ships, on any
 /// machine that has them (path, git or registry dependency alike). The
-/// record is ungated, because packaging reads it from release artifacts
-/// too; `dir_static!` keeps it in the archive and out of the linked image.
+/// record is not debug-gated, because packaging reads it from release
+/// artifacts too; `dir_static!` keeps it in the archive and out of the
+/// linked image. Only Apple packaging builds a `WidgetKit` extension, so
+/// other targets carry no record.
+#[cfg(target_vendor = "apple")]
 const SWIFT_SOURCES_RECORD_NAME: &[u8] = b"waterui_meta_widgets_swift_sources";
+#[cfg(target_vendor = "apple")]
 const SWIFT_SOURCES_RECORD_LEN: usize =
     SWIFT_SOURCES_RECORD_NAME.len() + env!("WATERUI_WIDGETS_SWIFT_SOURCES").len() + 2;
 
+#[cfg(target_vendor = "apple")]
 meta::dir_static! {
     static WIDGETS_SWIFT_SOURCES: [u8; SWIFT_SOURCES_RECORD_LEN] =
         meta::dir_entry::<SWIFT_SOURCES_RECORD_LEN>(
