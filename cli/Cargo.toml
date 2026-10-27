@@ -135,6 +135,9 @@ waterui-assets-core = { workspace = true, features = ["remote"] }
 waterui-assets-planner = { workspace = true, features = ["font-declarations"] }
 # `ArtifactSymbols` walks the `.wmeta` metadata directory's records.
 waterui-meta.workspace = true
+# `WidgetDeclaration` is the wire contract `#[widget]`'s
+# `waterui_meta_widget_*` records carry.
+waterui-widgets.workspace = true
 waterui-preview-protocol.workspace = true
 waterui-inspector-protocol.workspace = true
 waterui-mcp-protocol.workspace = true

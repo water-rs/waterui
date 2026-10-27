@@ -107,7 +107,7 @@ impl ParleyEngine {
         fonts: &FontCollection,
         family_resolution: FontFamilyResolution,
     ) -> Self {
-        Self::new(fonts.use_fonts(|fonts| fonts.clone()), family_resolution)
+        Self::new(fonts.with_parley(|fonts| fonts.clone()), family_resolution)
     }
 
     /// An engine shaping against the enumerated system collection — exactly

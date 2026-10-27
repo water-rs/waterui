@@ -1,0 +1,33 @@
+[package]
+name = "waterui-widgets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The type-restricted authoring surface for home-screen widgets: Rust produces dated, immutable snapshots that the generated Apple WidgetKit extension renders with native SwiftUI"
+keywords = ["widget", "widgetkit", "apple"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+suiteki = { workspace = true }
+pastey = { workspace = true }
+waterui-meta = { workspace = true }
+
+[dev-dependencies]
+waterui-text.workspace = true
+serde_json.workspace = true
+
+# `waterui-text` is referenced only inside `WidgetContent`'s `compile_fail`
+# doctests — cargo-machete does not scan doc code.
+[package.metadata.cargo-machete]
+ignored = ["waterui-text"]

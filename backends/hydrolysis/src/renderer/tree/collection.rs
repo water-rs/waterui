@@ -683,6 +683,9 @@ pub struct RowPlacement {
     pub content: kurbo::Rect,
     /// The proposal the content was placed at.
     pub proposal: ProposalSize,
+    /// The stretch the row measured with, kept so its ghost is re-placed
+    /// with the same cross-axis behavior.
+    pub stretch: StretchAxis,
 }
 
 /// The transition state of one realized row.
@@ -1533,6 +1536,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
                 slot: child_rect,
                 content: kurbo::Rect::from_origin_size(kurbo::Point::ZERO, child_rect.size()),
                 proposal,
+                stretch,
             },
         );
         let row = self.transitions.row(id);
@@ -1589,7 +1593,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
             ..
         } = &mut *ghost;
         let proposal = &placement.proposal;
-        let rect = place_lazy_stack_item(&self.axis, StretchAxis::None, size, ctx.bounds, cursor);
+        let rect = place_lazy_stack_item(&self.axis, placement.stretch, size, ctx.bounds, cursor);
         let area = stack_area.map(|area| area.with_frame(area.hosted_frame(ctx.bounds, rect)));
         let delta = kurbo::Affine::translate((rect.x0, rect.y0));
         let child_ctx = ctx.child(

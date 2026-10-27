@@ -229,12 +229,16 @@ let highlighted = highlight_text(Language::Rust, &code, &mut highlighter);
   syntax highlighter, and the `Code` fenced-code widget built on it.
 - `markdown` — `StyledStr::from_markdown` and the `pulldown-cmark` grammar
   behind it.
-- `font-collection` — `FontCollection`, the one `parley` font collection a host
-  installs into the `Environment` and every component that shapes or typesets
-  text itself reads back out. Turned on by those components, not by
+- `font-collection` — `FontCollection`, the one font collection a host
+  installs into the `Environment` and every component that draws text itself
+  reads back out, as semantic `faces`: `parley` stays the collection's engine
+  and out of its API. Turned on by those components, not by
   applications: text drawn by the platform's own engine never reaches for it,
   and a build that does not need it carries neither the type nor the font stack
   behind it.
+- `engine` — `FontCollection::from_parley` and `FontCollection::with_parley`,
+  the `parley` context behind the collection, for the self-drawn text engine
+  that shapes with it.
 - `system-fonts` — discovering the platform's fonts, which is how a host that
   owns no font stack of its own obtains the collection it installs through
   `install_system_font_collection`.

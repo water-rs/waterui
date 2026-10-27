@@ -309,7 +309,7 @@ fn sample_rows_at(
     (w, h): (usize, usize),
     meter: Option<&FrameMeter>,
 ) -> (usize, usize) {
-    fearless_simd::dispatch!(level, _simd => {
+    cherenkov_simd::dispatch!(level, _simd => {
         sample_rows(level, items, range, group, band, (w, h), meter)
     })
 }
@@ -2422,7 +2422,7 @@ fn run_at(
     ctx: &mut FrameCtx<'_>,
     depth: usize,
 ) -> Result<(), cherenkov::RenderError> {
-    fearless_simd::dispatch!(level, simd => run(simd, items, index, sel, limit, band, acc, stack, buffers, ctx, depth))
+    cherenkov_simd::dispatch!(level, simd => run(simd, items, index, sel, limit, band, acc, stack, buffers, ctx, depth))
 }
 
 #[expect(
@@ -4141,7 +4141,7 @@ mod tests {
                 }
             }
         }
-        fearless_simd::dispatch!(crate::Level::new(), simd => check(simd));
+        cherenkov_simd::dispatch!(cherenkov_simd::detect(), simd => check(simd));
         check(fearless_simd::Fallback::new());
     }
 
@@ -4182,7 +4182,7 @@ mod tests {
                 }
             }
         }
-        fearless_simd::dispatch!(crate::Level::new(), simd => check(simd));
+        cherenkov_simd::dispatch!(cherenkov_simd::detect(), simd => check(simd));
         check(fearless_simd::Fallback::new());
     }
 }

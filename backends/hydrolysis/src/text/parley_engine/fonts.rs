@@ -340,7 +340,7 @@ pub fn native_collection(env: &waterui_core::Environment) -> FontCollection {
         }
     }
     resource_fonts.install(&mut font_cx.collection);
-    FontCollection::new(font_cx)
+    FontCollection::from_parley(font_cx)
 }
 
 /// Registers the font file at `path` into `font_cx` and classifies its
@@ -386,7 +386,7 @@ fn register_font_file(
 /// directory to scan and no `WebFonts` collection to build on.
 #[cfg(target_arch = "wasm32")]
 pub fn system_collection() -> FontCollection {
-    FontCollection::new(parley::FontContext::new())
+    FontCollection::from_parley(parley::FontContext::new())
 }
 
 /// Raw data of the default face of an installed font `family`, resolved
@@ -463,7 +463,7 @@ mod tests {
             ],
         );
 
-        super::native_collection(&env).use_fonts(|fonts| {
+        super::native_collection(&env).with_parley(|fonts| {
             let staged = fonts
                 .collection
                 .family_id("Roboto")
@@ -490,7 +490,7 @@ mod tests {
         let (mut env, _) = staged_environment(dir.path(), &[]);
         env.insert(crate::text::DeclaredFonts::new([declared]));
 
-        super::native_collection(&env).use_fonts(|fonts| {
+        super::native_collection(&env).with_parley(|fonts| {
             assert!(
                 fonts.collection.family_id("Bungee Color").is_some(),
                 "the declared face's family is registered"
@@ -511,7 +511,7 @@ mod tests {
             dir.path().join("fonts"),
         ));
 
-        super::native_collection(&env).use_fonts(|fonts| {
+        super::native_collection(&env).with_parley(|fonts| {
             assert!(
                 fonts.collection.family_names().next().is_some(),
                 "the platform's collection enumerates its faces"

@@ -44,6 +44,11 @@ mod programs;
 mod stroke_abi;
 
 mod build_tile_spirv;
+/// The SPIR-V writer flags `cherenkov_shader::emit::spirv` emits with,
+/// pulled in the same way so the two emitters cannot drift
+/// (water-rs/waterui#3079).
+#[path = "../shader/src/spv_flags.rs"]
+mod spv_flags;
 #[path = "build_tile.rs"]
 mod tile;
 /// The union member cap the WGSL fold compiles against — the same
@@ -892,9 +897,9 @@ fn write_spirv(out_dir: &Path, spec: &Spec, module: &naga::Module, info: &naga::
         // The attachment pass finds the reads by name; it strips the
         // names again, so the written module matches the others.
         flags: if spec.attachment {
-            spv::WriterFlags::DEBUG
+            spv_flags::SPIRV_WRITER_FLAGS | spv::WriterFlags::DEBUG
         } else {
-            spv::WriterFlags::empty()
+            spv_flags::SPIRV_WRITER_FLAGS
         },
         fake_missing_bindings: false,
         binding_map: binding_map(spec, module),

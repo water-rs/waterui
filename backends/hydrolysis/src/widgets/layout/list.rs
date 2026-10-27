@@ -2421,6 +2421,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
                         slot: slot_rect,
                         content: content_rect - slot_rect.origin().to_vec2(),
                         proposal,
+                        stretch: subview.stretch_axis(),
                     },
                 );
                 let row = state_ref.transitions.row(row_id);

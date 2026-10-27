@@ -203,7 +203,7 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
     builder
         .build()
         .map(|pool| {
-            let level = fearless_simd::Level::new();
+            let level = cherenkov_simd::detect();
             let info = RasterInfo {
                 threads: pool.current_num_threads(),
                 simd: level_name(level),
@@ -504,9 +504,10 @@ impl Renderer for RasterRenderer {
             max_dimension: u32::MAX,
             // The image budget: every registered image together holds at
             // most the CPU budget, decoded as f32 RGBA at sixteen bytes a
-            // texel. The engine admits registrations against it, and the
+            // pixel. The engine admits registrations against it, and the
             // glyph caches take what the images leave.
-            max_texels: self.image_budget / 16,
+            max_bytes: self.image_budget,
+            storage: cherenkov::ImageStorage::CPU,
         }
     }
 
@@ -722,6 +723,7 @@ impl Renderer for RasterRenderer {
         MemoryUsage {
             gpu: cherenkov::Bytes(0),
             cpu: cherenkov::Bytes(categories.total()),
+            glyph_cache: cherenkov::Bytes(categories.glyphs + categories.colr + categories.bitmaps),
             // The CPU backend has no tile memory to compose in.
             tile_reserved: cherenkov::Bytes(0),
             tile_committed: None,

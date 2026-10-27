@@ -2895,19 +2895,13 @@ impl Fact for WpeRuntimePackage {
     }
 }
 
-/// The `waterui-browser-wpe` package `root_package_id`'s resolved graph for
-/// `target` reaches through normal dependency edges — pure over the
-/// `cargo metadata` document so synthetic graphs exercise it directly.
-///
-/// Normal edges only: dev and build dependencies do not reach the runtime
-/// the application actually links. Candidates deduplicate on package id — a
-/// diamond reaching one package through two parents is not an ambiguity —
-/// while two distinct versions error.
-fn select_wpe_package<'m>(
+/// Every package reachable from the root through normal dependency edges —
+/// dev and build dependencies excluded — deduplicated by package ID. The
+/// graph's root package is not itself part of the result.
+pub(crate) fn normal_dependency_packages<'m>(
     metadata: &'m cargo_metadata::Metadata,
     root_package_id: &str,
-    target: &str,
-) -> eyre::Result<&'m cargo_metadata::Package> {
+) -> eyre::Result<Vec<&'m cargo_metadata::Package>> {
     let resolve = metadata
         .resolve
         .as_ref()
@@ -2919,13 +2913,11 @@ fn select_wpe_package<'m>(
         .ok_or_else(|| {
             eyre::eyre!("the resolved graph holds no node for root package {root_package_id}")
         })?;
-    let mut found = std::collections::BTreeMap::new();
+    let mut packages = std::collections::BTreeMap::new();
     let mut stack = vec![root];
     let mut visited = std::collections::BTreeSet::new();
+    visited.insert(root.id.clone());
     while let Some(node) = stack.pop() {
-        if !visited.insert(node.id.clone()) {
-            continue;
-        }
         for dependency in node.deps.iter().filter(|dependency| {
             dependency
                 .dep_kinds
@@ -2942,9 +2934,7 @@ fn select_wpe_package<'m>(
                         dependency.pkg
                     )
                 })?;
-            if package.name.as_str() == "waterui-browser-wpe" {
-                found.entry(package.id.to_string()).or_insert(package);
-            }
+            packages.entry(package.id.to_string()).or_insert(package);
             let next = resolve
                 .nodes
                 .iter()
@@ -2955,10 +2945,33 @@ fn select_wpe_package<'m>(
                         dependency.pkg
                     )
                 })?;
-            stack.push(next);
+            if visited.insert(next.id.clone()) {
+                stack.push(next);
+            }
         }
     }
-    match found.values().collect::<Vec<_>>().as_slice() {
+    Ok(packages.into_values().collect())
+}
+
+/// The `waterui-browser-wpe` package `root_package_id`'s resolved graph for
+/// `target` reaches through normal dependency edges — pure over the
+/// `cargo metadata` document so synthetic graphs exercise it directly.
+///
+/// Normal edges only: dev and build dependencies do not reach the runtime
+/// the application actually links. Candidates deduplicate on package id — a
+/// diamond reaching one package through two parents is not an ambiguity —
+/// while two distinct versions error.
+fn select_wpe_package<'m>(
+    metadata: &'m cargo_metadata::Metadata,
+    root_package_id: &str,
+    target: &str,
+) -> eyre::Result<&'m cargo_metadata::Package> {
+    let found: Vec<&'m cargo_metadata::Package> =
+        normal_dependency_packages(metadata, root_package_id)?
+            .into_iter()
+            .filter(|package| package.name.as_str() == "waterui-browser-wpe")
+            .collect();
+    match found.as_slice() {
         [package] => Ok(*package),
         [] => eyre::bail!(
             "the resolved graph for {target} reaches no waterui-browser-wpe through normal edges"
@@ -3920,11 +3933,11 @@ impl ResolvedWpeRuntime {
     ) -> Self {
         Self {
             package_name: "waterui-browser-wpe".to_owned(),
-            package_version: "0.5.1".to_owned(),
+            package_version: "0.1.0".to_owned(),
             manifest_directory,
             native_source,
             webkit_version: "2.52.5".to_owned(),
-            bridge_abi: 4,
+            bridge_abi: 5,
             target,
         }
     }
@@ -6276,7 +6289,7 @@ mod wpe_metadata_tests {
     use cargo_metadata::{Metadata, MetadataCommand};
     use serde_json::{Value, json};
 
-    use super::select_wpe_package;
+    use super::{normal_dependency_packages, select_wpe_package};
 
     fn package(id: &str, name: &str, version: &str) -> Value {
         json!({
@@ -6431,6 +6444,28 @@ mod wpe_metadata_tests {
     }
 
     #[test]
+    fn normal_dependency_packages_exclude_the_root_dev_edges_and_unreachable_nodes() {
+        // `right` is a resolved node no edge from the root reaches, `wpe-two`
+        // hangs off a dev edge, and `wpe-one` is reached through a diamond.
+        let metadata = graph(&[
+            node(
+                "app",
+                &[("left", None), ("wpe-one", None), ("wpe-two", Some("dev"))],
+            ),
+            node("left", &[("wpe-one", None)]),
+            node("right", &[("wpe-one", None)]),
+            node("wpe-one", &[]),
+            node("wpe-two", &[]),
+        ]);
+        let ids: Vec<_> = normal_dependency_packages(&metadata, "app")
+            .unwrap()
+            .iter()
+            .map(|package| package.id.repr.clone())
+            .collect();
+        assert_eq!(ids, ["left", "wpe-one"]);
+    }
+
+    #[test]
     fn wpe_runtime_metadata_rejects_an_out_of_range_abi() {
         let declared: Result<super::WpeRuntimeMetadata, _> =
             serde_json::from_value(serde_json::json!({
@@ -6444,11 +6479,11 @@ mod wpe_metadata_tests {
         );
         let valid: super::WpeRuntimeMetadata = serde_json::from_value(serde_json::json!({
             "version": "2.52.5",
-            "bridge-abi": 4,
+            "bridge-abi": 5,
             "native-source": "native"
         }))
         .expect("a valid producer contract must decode");
-        assert_eq!(valid.bridge_abi, 4);
+        assert_eq!(valid.bridge_abi, 5);
         assert_eq!(valid.native_source, std::path::Path::new("native"));
     }
 }

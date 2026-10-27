@@ -1,10 +1,13 @@
 use std::{io::Write, num::NonZeroU32, path::PathBuf, process::ExitCode};
 
 use cherenkov_oracle::metrics;
-use clap::{Args as ClapArgs, Parser, Subcommand};
+use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
-use super::{Error, decode, score};
+use super::{
+    Error, decode,
+    score::{self, Limits, RouteLimits, TwinLimits},
+};
 
 #[derive(Parser)]
 #[command(about = "Color-managed FLIP comparison of Apple E2E PNG screenshots")]
@@ -26,12 +29,18 @@ struct Compare {
     reference: PathBuf,
     actual: PathBuf,
     heatmap: PathBuf,
-    /// Reviewed parity limits; omit for the oracle's default limits.
-    #[arg(long, requires = "os_major")]
-    tolerances: Option<PathBuf>,
+    /// Acceptance rule: `route` for two routes to the same pixels (frame
+    /// settling, stored baselines), `twin` for a `SwiftUI` twin.
+    #[arg(long, value_enum, default_value_t = LimitSet::Route)]
+    limits: LimitSet,
+    /// Pixels per point of both captures, the backing scale of the display
+    /// they were taken on. Required by `twin`, whose block is sized in
+    /// points.
+    #[arg(long, required_if_eq("limits", "twin"))]
+    scale: Option<NonZeroU32>,
     #[arg(long, value_parser = ["ios", "macos"])]
     platform: String,
-    /// OS major; required when selecting reviewed, versioned limits.
+    /// OS major the capture was taken on, recorded in the report.
     #[arg(long)]
     os_major: Option<NonZeroU32>,
     #[arg(long)]
@@ -39,6 +48,12 @@ struct Compare {
     /// Record a comparison without treating its score as acceptance.
     #[arg(long)]
     record: bool,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum LimitSet {
+    Route,
+    Twin,
 }
 
 #[derive(Serialize)]
@@ -51,7 +66,7 @@ struct Decoded {
 }
 
 #[derive(Serialize)]
-struct Comparison {
+struct Comparison<L> {
     platform: String,
     os_major: Option<u32>,
     example: String,
@@ -63,7 +78,7 @@ struct Comparison {
     working_space: &'static str,
     #[serde(flatten)]
     score: score::Score,
-    limits: score::Limits,
+    limits: L,
     within_tolerance: bool,
     mode: &'static str,
     visual_review: &'static str,
@@ -95,22 +110,32 @@ pub fn run() -> Result<ExitCode, Error> {
 }
 
 fn compare(args: Compare) -> Result<ExitCode, Error> {
-    let limits = if let Some(path) = &args.tolerances {
-        score::load_limits(
-            path,
-            &args.platform,
-            args.os_major
-                .expect("Clap requires --os-major with --tolerances")
-                .get(),
-            &args.example,
-        )?
-    } else {
-        score::Limits::default()
-    };
+    match args.limits {
+        LimitSet::Route => gate(args, RouteLimits::ORACLE),
+        LimitSet::Twin => gate(args, TwinLimits::CALIBRATED),
+    }
+}
+
+fn gate(args: Compare, limits: impl Limits) -> Result<ExitCode, Error> {
     let reference = decode::load(&args.reference)?;
     let actual = decode::load(&args.actual)?;
-    let (score, heatmap) = score::compare(&reference, &actual)?;
-    metrics::write_heatmap(&heatmap, reference.width, reference.height, &args.heatmap)?;
+    let block_px = match (limits.block_pt(), args.scale) {
+        (None, None) => None,
+        (None, Some(_)) => {
+            return Err(String::from(
+                "--scale applies only to limits that judge blocks (--limits twin)",
+            )
+            .into());
+        }
+        (Some(block), Some(scale)) => Some(
+            block
+                .checked_mul(scale)
+                .ok_or_else(|| format!("a {block} pt block at scale {scale} overflows"))?,
+        ),
+        (Some(_), None) => unreachable!("clap requires --scale for limits that judge blocks"),
+    };
+    let (score, heatmap) = score::compare(&reference, &actual, limits.shift_radius(), block_px)?;
+    metrics::write_heatmap(&heatmap.rgb, heatmap.width, heatmap.height, &args.heatmap)?;
     let within_tolerance = limits.accepts(&score);
     emit(&Comparison {
         platform: args.platform,
@@ -139,7 +164,7 @@ fn compare(args: Compare) -> Result<ExitCode, Error> {
 mod tests {
     use clap::Parser;
 
-    use super::Args;
+    use super::{Args, Command, LimitSet};
 
     fn compare_args() -> Vec<&'static str> {
         vec![
@@ -156,16 +181,20 @@ mod tests {
     }
 
     #[test]
-    fn default_limits_do_not_require_unknown_os_metadata() {
-        assert!(Args::try_parse_from(compare_args()).is_ok());
+    fn route_limits_are_the_default_and_need_no_os_metadata() {
+        let args = Args::try_parse_from(compare_args()).unwrap();
+        let Command::Compare(compare) = args.command else {
+            panic!("compare subcommand expected");
+        };
+        assert!(matches!(compare.limits, LimitSet::Route));
     }
 
     #[test]
-    fn reviewed_limits_require_an_explicit_os_version() {
+    fn twin_limits_are_selected_by_name_and_need_the_capture_scale() {
         let mut args = compare_args();
-        args.extend(["--tolerances", "limits.json"]);
+        args.extend(["--limits", "twin"]);
         assert!(Args::try_parse_from(args.iter().copied()).is_err());
-        args.extend(["--os-major", "27"]);
-        assert!(Args::try_parse_from(args).is_ok());
+        args.extend(["--scale", "3"]);
+        assert!(Args::try_parse_from(args.iter().copied()).is_ok());
     }
 }

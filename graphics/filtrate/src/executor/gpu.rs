@@ -463,7 +463,15 @@ impl GpuPass {
             shared
         } else {
             let vertex = ctx.pipelines.vertex(ctx.device);
-            let built = build_pipeline(ctx.device, &vertex, module, &key, index).await?;
+            let built = build_pipeline(
+                ctx.device,
+                &vertex,
+                module,
+                &key,
+                index,
+                ctx.pipelines.driver(),
+            )
+            .await?;
             ctx.pipelines.insert(key, built)
         };
 
@@ -592,6 +600,7 @@ async fn build_pipeline(
     module: Module,
     key: &PassKey,
     index: usize,
+    cache: Option<&wgpu::PipelineCache>,
 ) -> Result<PassPipeline, EffectSetupError> {
     let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -633,7 +642,7 @@ async fn build_pipeline(
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
-        cache: None,
+        cache,
     });
     if let Some(error) = error_scope.pop().await {
         let message = error.to_string();

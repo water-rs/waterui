@@ -7,6 +7,7 @@
 /// The conversion module's layout and its pipelines by target format,
 /// built on the first frame that filters an sRGB-encoded scope.
 pub struct Pipelines {
+    cache: super::PipelineCache,
     layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
     programs: [super::shaders::RenderProgram; 2],
@@ -17,7 +18,11 @@ pub struct Pipelines {
 
 impl Pipelines {
     /// The layout and module; pipelines are built per format on demand.
-    pub fn new(device: &wgpu::Device, delivery: super::shaders::ShaderDelivery) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        delivery: super::shaders::ShaderDelivery,
+        cache: super::PipelineCache,
+    ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("cherenkov space conversion"),
             entries: &super::layout_entries(super::bindings::SPACE_CONVERT_GROUP0),
@@ -28,6 +33,7 @@ impl Pipelines {
             immediate_size: 0,
         });
         Self {
+            cache,
             layout,
             pipeline_layout,
             programs: delivery.space_convert_programs(device),
@@ -98,6 +104,7 @@ impl Pipelines {
                     program,
                     format,
                     None,
+                    &self.cache,
                 )
             });
             self.by_format.push((format, pipelines));

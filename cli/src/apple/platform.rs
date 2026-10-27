@@ -20,6 +20,7 @@ use crate::{
     apple::app_bundle,
     apple::backend::AppleBackend,
     apple::dynamic_runtime,
+    apple::widgets,
     assets,
     build::{
         ArtifactLockScope, BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage,
@@ -1006,6 +1007,24 @@ pub async fn package_apple(
             package_cef_helper_app(&app_path, &main_binary, helper_binary, &bundle_id).await?;
         }
     }
+
+    // `#[widget]` declarations the app artifact carries compile into a
+    // `WidgetKit` extension under `PlugIns/` — after the shared-runtime
+    // libraries are staged (the extension links `libwaterui_app.dylib` in a
+    // development build), before the app's signature seals the bundle.
+    widgets::assemble_widget_extensions(
+        project,
+        platform,
+        &triple,
+        &layout,
+        built,
+        &options,
+        project_path.as_path(),
+        &deployment_target,
+        &bundle_id,
+        &product_name,
+    )
+    .await?;
 
     app_bundle::sign_apple_app(
         &layout,
