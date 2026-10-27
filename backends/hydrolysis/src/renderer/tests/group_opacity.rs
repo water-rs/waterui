@@ -57,10 +57,10 @@ fn chrome_rect() -> kurbo::RoundedRect {
 /// Counts the chrome member layers under the mount roots.
 struct Members(usize);
 
-impl crate::renderer::mount::layers::LayerVisitor for Members {
+impl<E: crate::text::TextEngine> crate::renderer::mount::layers::LayerVisitor<E> for Members {
     fn node(
         &mut self,
-        layers: &crate::renderer::mount::layers::NodeLayers,
+        layers: &crate::renderer::mount::layers::NodeLayers<E>,
         _world: kurbo::Affine,
         _alphas: &[f32],
     ) {
@@ -82,8 +82,8 @@ fn pumped(
     theme: MinimalTestTheme,
 ) -> HeadlessRuntime {
     let builder = AnyViewBuilder::<AnyView>::new(view);
-    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, WIDTH, HEIGHT, theme)
-        .with_scale_factor(SCALE);
+    let mut runtime =
+        HeadlessRuntime::new_for_tests(env, builder, WIDTH, HEIGHT, theme).with_scale_factor(SCALE);
     let _ = runtime.pump_snapshot();
     runtime
 }
@@ -156,7 +156,11 @@ fn a_translucent_material_and_label_fade_together() {
     );
 
     // The label is centred over the material: (80, 60) is inside both.
-    assert_same_fade(pixel(&mut runtime, 80, 60), faded(LABEL), "label over material");
+    assert_same_fade(
+        pixel(&mut runtime, 80, 60),
+        faded(LABEL),
+        "label over material",
+    );
 }
 
 /// A `draw_context` program holding a keyed mount between scene
@@ -198,19 +202,17 @@ fn a_translucent_segment_over_a_chrome_member_fades_once() {
             }],
             // An opaque red fill in the segment above the member, covering
             // the member's whole rect.
-            fills: vec![
-                (
-                    chrome_rect(),
-                    Paint::Solid(
-                        waterui::color::Srgb::new(
-                            f32::from(LABEL[0]) / 255.0,
-                            f32::from(LABEL[1]) / 255.0,
-                            f32::from(LABEL[2]) / 255.0,
-                        )
-                        .resolve(),
-                    ),
+            fills: vec![(
+                chrome_rect(),
+                Paint::Solid(
+                    waterui::color::Srgb::new(
+                        f32::from(LABEL[0]) / 255.0,
+                        f32::from(LABEL[1]) / 255.0,
+                        f32::from(LABEL[2]) / 255.0,
+                    )
+                    .resolve(),
                 ),
-            ],
+            )],
             stateful_draws: None,
         },
         ..Default::default()
