@@ -431,6 +431,13 @@ mod platform {
                 Mount::Top => LiveChild::mount_inserted(leaf, &host, None, self.env()),
                 Mount::Root | Mount::Below => LiveChild::mount(leaf, &host, None),
             };
+            // The page root is a transparent wrapper: the tab controller's
+            // scroll-surface association looks through it to the page. It
+            // answers what it holds now — a popped page's content retires
+            // into a ghost the host must not keep alive.
+            crate::primary_content::forward_current(&host, |host| {
+                view::subviews(host).into_iter().next()
+            });
             let root = matches!(mount, Mount::Root);
             let state = Rc::new(RefCell::new(core::mem::take(&mut view.state)));
             let transition = page_transition(view.transition.as_ref(), &self.transition);
@@ -1017,6 +1024,9 @@ mod platform {
                 Mount::Top => LiveChild::mount_inserted(leaf, &host, None, self.env()),
                 Mount::Root | Mount::Below => LiveChild::mount(leaf, &host, None),
             };
+            crate::primary_content::forward_current(&host, |host| {
+                cocoa_ui::view::subviews(host).into_iter().next()
+            });
             host.set_layout_handler(|host| {
                 let rect = bounds(host);
                 for subview in cocoa_ui::view::subviews(host) {
