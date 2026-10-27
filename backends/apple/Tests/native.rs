@@ -10413,6 +10413,7 @@ mod transition {
         .into_iter()
         .chain(overlay_trials())
         .chain(frozen_trials())
+        .chain(blur_trials())
         .collect()
     }
 
@@ -12366,6 +12367,37 @@ mod transition {
         );
     }
 
+    /// The Stage 8 blur trials (§8.2): `PropertyTransition::blur` runs
+    /// through the filtered GPU pipeline — a live capture for the
+    /// insertion, the frozen exit capture for the removal, one lazy
+    /// effect per instance.
+    #[cfg(feature = "gpu_surface")]
+    fn blur_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "transition::blur_insertion_renders_through_the_live_effect",
+                || {
+                    blur_insertion_renders_through_the_live_effect();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::blur_removal_renders_from_the_frozen_capture",
+                || {
+                    blur_removal_renders_from_the_frozen_capture();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::blur_returning_to_zero_keeps_one_effect",
+                || {
+                    blur_returning_to_zero_keeps_one_effect();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
     /// The Stage 7 frozen-frame trials (§8.2): retirement installs a
     /// `FrozenCapturable` into each armed surface's capturable slot.
     fn frozen_trials() -> Vec<libtest_mimic::Trial> {
@@ -12508,11 +12540,11 @@ mod transition {
             .with_animation(Animation::linear(Duration::from_millis(400)))
     }
 
-    /// Writes the window's captured pixels to `/tmp/1472-stage7/<name>.png`
+    /// Writes the window's captured pixels to `<dir>/<name>.png`
     /// through the harness's own `capture_rgba` — visual review only;
     /// nothing asserts on pixel values.
     #[cfg(feature = "gpu_surface")]
-    fn export_window_png(view: &PlatformView, name: &str) {
+    fn export_window_png(view: &PlatformView, dir: &str, name: &str) {
         let captured = waterui_apple::native_test_support::capture_view_rgba(view);
         let image = cocoa_ui::bitmap::image_from_rgba(
             &captured.pixels,
@@ -12543,9 +12575,8 @@ mod transition {
             .expect("PNG encoding succeeds")
             .to_vec()
         };
-        std::fs::create_dir_all("/tmp/1472-stage7").expect("the review directory creates");
-        std::fs::write(format!("/tmp/1472-stage7/{name}.png"), data)
-            .expect("the review PNG writes");
+        std::fs::create_dir_all(dir).expect("the review directory creates");
+        std::fs::write(format!("{dir}/{name}.png"), data).expect("the review PNG writes");
     }
 
     /// `gpu_surface_ghost_keeps_its_last_frame` — a GPU surface under a
@@ -12593,7 +12624,11 @@ mod transition {
                 "a frozen surface never presents itself"
             );
         });
-        export_window_png(leaf.view(), "gpu_surface_ghost_keeps_its_last_frame");
+        export_window_png(
+            leaf.view(),
+            "/tmp/1472-stage7",
+            "gpu_surface_ghost_keeps_its_last_frame",
+        );
         assert!(
             pump_main_until(5.0, || {
                 autoreleasepool(|_| capturables_in(leaf.view()).is_empty())
@@ -12649,7 +12684,11 @@ mod transition {
                 "a frozen surface never presents itself"
             );
         });
-        export_window_png(leaf.view(), "filtered_ghost_keeps_its_last_frame");
+        export_window_png(
+            leaf.view(),
+            "/tmp/1472-stage7",
+            "filtered_ghost_keeps_its_last_frame",
+        );
         assert!(
             pump_main_until(5.0, || {
                 autoreleasepool(|_| capturables_in(leaf.view()).is_empty())
@@ -12716,7 +12755,11 @@ mod transition {
             live.clear();
             frozen.clear();
         });
-        export_window_png(leaf.view(), "ghost_inside_a_live_filter_still_resolves");
+        export_window_png(
+            leaf.view(),
+            "/tmp/1472-stage7",
+            "ghost_inside_a_live_filter_still_resolves",
+        );
         assert!(
             pump_main_until(5.0, || autoreleasepool(|_| {
                 capturables_deep(leaf.view())
@@ -12781,6 +12824,259 @@ mod transition {
                 "an armed surface's drawables are readable"
             );
         });
+    }
+
+    /// A blur spec — long enough to watch the effect live mid-flight.
+    #[cfg(feature = "gpu_surface")]
+    /// Sharp edges over the GPU gradient: a review PNG shows whether
+    /// the frame is blurred, which a smooth gradient alone cannot.
+    #[cfg(feature = "gpu_surface")]
+    fn blur_picture() -> impl waterui_backend_core::View {
+        use waterui::prelude::{text, vstack};
+        vstack((text("BLUR").size(96.0), gpu_picture()))
+    }
+
+    fn blur_spec() -> TransitionSpec {
+        TransitionSpec::new(PropertyTransition::blur(8.0))
+            .with_animation(Animation::linear(Duration::from_millis(400)))
+    }
+
+    /// `blur_insertion_renders_through_the_live_effect` — a
+    /// `.transition(blur)` insertion mounts the content's own view
+    /// inside the transition host and adds the `LiveEffect`'s output as
+    /// a sibling (§8.2): mid-flight the host carries both, the content
+    /// view is never reparented, and completion removes the output —
+    /// the same content pointer remains.
+    #[cfg(feature = "gpu_surface")]
+    pub fn blur_insertion_renders_through_the_live_effect() {
+        let _mtm = mtm();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| handler.set(label("before")));
+        assert!(
+            pump_main_until(3.0, || {
+                autoreleasepool(|_| !view::subviews(leaf.view()).is_empty())
+            }),
+            "the first child mounts"
+        );
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(blur_picture(), blur_spec()));
+        });
+        let host_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
+        let content_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
+        // Mid-flight the host carries the content view plus the effect's
+        // output view.
+        assert!(
+            pump_main_until(3.0, || {
+                autoreleasepool(|_| {
+                    let Some(host) = view::subviews(leaf.view()).into_iter().next() else {
+                        return false;
+                    };
+                    let subviews = view::subviews(&host);
+                    if subviews.len() == 2 {
+                        host_ptr.set(std::ptr::from_ref(&*host));
+                        content_ptr.set(std::ptr::from_ref(&*subviews[0]));
+                    }
+                    subviews.len() == 2
+                })
+            }),
+            "the live effect's output joins the transition host"
+        );
+        export_window_png(
+            leaf.view(),
+            "/tmp/1472-stage8",
+            "blur_insertion_renders_through_the_live_effect",
+        );
+        // Completion: the output leaves and the content view is the same
+        // pointer — it was never reparented.
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| {
+                    let Some(host) = view::subviews(leaf.view()).into_iter().next() else {
+                        return false;
+                    };
+                    let subviews = view::subviews(&host);
+                    subviews.len() == 1 && std::ptr::from_ref(&*subviews[0]) == content_ptr.get()
+                })
+            }),
+            "the effect's output leaves at completion and the content view stays"
+        );
+    }
+
+    /// `blur_removal_renders_from_the_frozen_capture` — a blur removal
+    /// ghosts the retired subtree: the ghost host gains the
+    /// `FrozenEffect`'s output view, and the retired root is hidden only
+    /// after the effect's first present (§8.2) — never at attach, so no
+    /// frame shows a gap.
+    #[cfg(feature = "gpu_surface")]
+    pub fn blur_removal_renders_from_the_frozen_capture() {
+        let _mtm = mtm();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(blur_picture(), blur_spec()));
+        });
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                capturables_in(leaf.view())
+                    .iter()
+                    .any(|(_, surface)| surface.has_presented_frame())
+            })),
+            "the GPU surface presents before removal"
+        );
+        let host_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
+        let root_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
+        autoreleasepool(|_| {
+            let host = view::subviews(leaf.view())
+                .into_iter()
+                .next()
+                .expect("the transition host mounts");
+            host_ptr.set(std::ptr::from_ref(&*host));
+            root_ptr.set(std::ptr::from_ref(
+                &*view::subviews(&host).into_iter().next().expect("content"),
+            ));
+        });
+        autoreleasepool(|_| handler.set(label("gone")));
+        // The root is still visible right at removal — it hides only
+        // when the effect's first frame lands.
+        let root_view = autoreleasepool(|_| {
+            let host = view::subviews(leaf.view())
+                .into_iter()
+                .find(|v| std::ptr::from_ref(&**v) == host_ptr.get())
+                .expect("the ghost host remains under the dynamic");
+            let subviews = view::subviews(&host);
+            assert_eq!(subviews.len(), 1, "the ghost starts with just the root");
+            let root = view::retain_base(&*subviews[0]);
+            assert_eq!(
+                std::ptr::from_ref(&*root),
+                root_ptr.get(),
+                "the retired root is the outgoing content view"
+            );
+            assert!(
+                !view::is_hidden(&root),
+                "the retired root is visible until the effect's first present"
+            );
+            root
+        });
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| view::is_hidden(&root_view))),
+            "the first blurred frame hides the retired root"
+        );
+        autoreleasepool(|_| {
+            let host = view::superview(&root_view).expect("the root stays in the ghost host");
+            assert_eq!(
+                view::subviews(&host).len(),
+                2,
+                "the frozen effect's output joined the ghost host"
+            );
+        });
+        // Mid-ramp: the removal blur grows from 0, so the frame the
+        // effect first presents is barely blurred.
+        pump_main_until(0.2, || false);
+        export_window_png(
+            leaf.view(),
+            "/tmp/1472-stage8",
+            "blur_removal_renders_from_the_frozen_capture",
+        );
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| view::subviews(leaf.view()).len() == 1)
+            }),
+            "the ghost's completion detaches it"
+        );
+    }
+
+    /// `blur_returning_to_zero_keeps_one_effect` — a transition whose
+    /// sampled blur rises and returns to zero inside one instance
+    /// creates exactly one effect view, lazily on the first nonzero
+    /// sample, and keeps it until the instance ends (§8.2).
+    #[cfg(feature = "gpu_surface")]
+    pub fn blur_returning_to_zero_keeps_one_effect() {
+        use waterui_core::transition::{
+            Transition, TransitionGeometry, TransitionPhase, TransitionProperties,
+        };
+        /// Blur `0 → 8 → 0` across the middle of the progress ramp —
+        /// nonzero only for `progress ∈ (1/6, 5/6)`, so the transition
+        /// still runs a while after the radius reaches 0 again.
+        struct PulseBlur;
+        impl Transition for PulseBlur {
+            fn properties(
+                &self,
+                _phase: TransitionPhase,
+                progress: f32,
+                _geometry: TransitionGeometry,
+            ) -> TransitionProperties {
+                let mut properties = TransitionProperties::IDENTITY;
+                properties.blur = 8.0 * (1.0 - 3.0f32.mul_add(progress, -1.5).abs()).max(0.0);
+                properties
+            }
+        }
+        let _mtm = mtm();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| handler.set(label("before")));
+        assert!(
+            pump_main_until(3.0, || {
+                autoreleasepool(|_| !view::subviews(leaf.view()).is_empty())
+            }),
+            "the first child mounts"
+        );
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(
+                label("pulse"),
+                TransitionSpec::new(PulseBlur)
+                    .with_animation(Animation::linear(Duration::from_millis(400))),
+            ));
+        });
+        let first_effect: Cell<*const PlatformView> = Cell::new(std::ptr::null());
+        let saw_effect = Cell::new(false);
+        let recreated = Cell::new(false);
+        // Watch every pump until the insertion completes: the effect
+        // view appears once, never changes pointer — including across
+        // the ramp's return to zero — and leaves at the end. Completion
+        // reads "the effect was seen and is gone" so the pump does not
+        // close on the pre-effect window.
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| {
+                    let Some(host) = view::subviews(leaf.view()).into_iter().next() else {
+                        return false;
+                    };
+                    let subviews = view::subviews(&host);
+                    assert!(
+                        subviews.len() <= 2,
+                        "the host never carries more than content plus one effect"
+                    );
+                    if subviews.len() == 2 {
+                        saw_effect.set(true);
+                        let ptr = std::ptr::from_ref(&*subviews[1]);
+                        if first_effect.get().is_null() {
+                            first_effect.set(ptr);
+                        } else {
+                            recreated.set(recreated.get() || ptr != first_effect.get());
+                        }
+                    }
+                    saw_effect.get() && subviews.len() == 1
+                })
+            }),
+            "the insertion transition completes"
+        );
+        assert!(
+            !first_effect.get().is_null(),
+            "the effect was created during the nonzero-blur ramp"
+        );
+        assert!(
+            !recreated.get(),
+            "one effect view served the whole ramp — none was recreated at zero"
+        );
+        export_window_png(
+            leaf.view(),
+            "/tmp/1472-stage8",
+            "blur_returning_to_zero_keeps_one_effect",
+        );
     }
 }
 

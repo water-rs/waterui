@@ -49,6 +49,11 @@ pub mod ghost;
 pub mod host;
 #[cfg(feature = "transition_sites")]
 pub mod live;
+#[cfg(all(
+    feature = "transition_sites",
+    any(feature = "applied_filter", feature = "view_effect")
+))]
+pub mod pixel;
 #[cfg(feature = "transition_sites")]
 pub mod property;
 #[cfg(feature = "transition_sites")]

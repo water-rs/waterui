@@ -123,8 +123,7 @@ impl PropertyTarget {
     /// # Panics
     ///
     /// When a property is not finite or `blur` is negative — the same
-    /// contract `record_blurred` declares in Hydrolysis — and when `blur`
-    /// is nonzero: blur lands in stage 8.
+    /// contract `record_blurred` declares in Hydrolysis.
     pub fn apply(&self, sample: &TransitionProperties) {
         assert!(
             sample.opacity.is_finite()
@@ -136,7 +135,6 @@ impl PropertyTarget {
             "waterui-apple: a transition sampled {sample:?} — every property must be finite \
              and the blur radius non-negative"
         );
-        assert!(sample.blur == 0.0, "waterui-apple: blur lands in stage 8");
         cocoa_ui::core_animation::without_animation(|| {
             view::set_alpha(&self.host, f64::from(sample.opacity));
             #[cfg(target_os = "macos")]
@@ -171,6 +169,22 @@ pub struct InsertionRun {
     host: Rc<TransitionHost>,
     /// The display driver — `None` until the host is in a window.
     driver: Option<TransitionDriver>,
+    /// The site's environment — the lazy blur effect reads its GPU
+    /// services from it.
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    env: waterui_backend_core::Environment,
+    /// The lazy blur effect (§2.6) — created on the first sample whose
+    /// `blur > 0`, kept when the radius returns to 0. The run's drop
+    /// tears it down.
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    blur: Option<(
+        waterui::reactive::Binding<f32>,
+        crate::components::filtered::LiveEffect,
+    )>,
+    /// Set once a nonzero radius could not be realized — one violation
+    /// report per run.
+    #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
+    blur_warned: core::cell::Cell<bool>,
 }
 
 impl core::fmt::Debug for InsertionRun {
@@ -203,6 +217,7 @@ impl InsertionRun {
         claim: &TransitionClaim,
         env: &waterui_backend_core::Environment,
     ) -> Rc<RefCell<Option<Self>>> {
+        #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
         let _ = env; // GPU services land with the pixel insertion (stage 9)
         let state = claim
             .spec
@@ -227,6 +242,12 @@ impl InsertionRun {
             geometry,
             host: Rc::clone(host),
             driver: None,
+            #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+            env: env.clone(),
+            #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+            blur: None,
+            #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
+            blur_warned: core::cell::Cell::new(false),
         });
         // Entering a window arms the run; entering one again — a row
         // scrolled away and back — re-arms its clock on the new window.
@@ -260,7 +281,9 @@ impl InsertionRun {
             return;
         }
         run.geometry = host_geometry(&run.host, run.direction);
-        run.host.apply_sample(&run.state.properties(run.geometry));
+        let sample = run.state.properties(run.geometry);
+        run.host.apply_sample(&sample);
+        run.update_blur(&sample);
         let mtm =
             cocoa_ui::MainThreadMarker::new().expect("a transition starts on the main thread");
         let driver = TransitionDriver::start(mtm, &run.host.host, {
@@ -277,6 +300,7 @@ impl InsertionRun {
                     if run.state.advance(delta) {
                         let sample = run.state.properties(run.geometry);
                         run.host.apply_sample(&sample);
+                        run.update_blur(&sample);
                         false
                     } else {
                         // Completion: restore the identity sample, then the
@@ -293,6 +317,49 @@ impl InsertionRun {
             }
         });
         run.driver = Some(driver);
+    }
+
+    /// The lazy blur (§2.6): the first sample whose `blur > 0` creates
+    /// the radius binding and a
+    /// [`crate::components::filtered::LiveEffect`] over the live
+    /// content — captured in place, never reparented. A radius
+    /// returning to 0 keeps the effect — one per instance.
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    fn update_blur(&mut self, sample: &TransitionProperties) {
+        use waterui::reactive::Signal as _;
+        if self.blur.is_none() && sample.blur > 0.0 {
+            let radius = waterui::reactive::Binding::container(sample.blur);
+            let mut guards = waterui_graphics::filter_view::ParamGuards::default();
+            let effect = waterui_graphics::filter_view::AnyEffect::filter(
+                waterui_graphics::filtrate::filters::Blur(guards.bind(radius.clone())),
+            );
+            self.blur = Some((
+                radius,
+                crate::components::filtered::LiveEffect::attach(
+                    vec![(effect, guards)],
+                    &self.host.content_view,
+                    &self.host.host,
+                    &self.env,
+                ),
+            ));
+        }
+        if let Some((radius, _effect)) = &self.blur
+            && radius.snapshot().to_bits() != sample.blur.to_bits()
+        {
+            radius.set(sample.blur);
+        }
+    }
+
+    /// Without the filtered pipeline a nonzero blur radius has no
+    /// realization — a user-triggerable failure, reported once per run.
+    #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
+    fn update_blur(&mut self, sample: &TransitionProperties) {
+        if sample.blur > 0.0 && !self.blur_warned.replace(true) {
+            crate::transition::transition_violation!(
+                "waterui-apple: a blur transition needs the filtered pipeline \
+                 (the view_effect or applied_filter feature)"
+            );
+        }
     }
 }
 
