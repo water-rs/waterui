@@ -29,6 +29,7 @@ use nami::Signal;
 use ndk::looper::{FdEvent, ForeignLooper, ThreadLooper};
 use waterui::Environment;
 use waterui::cursor::CursorStyle;
+use waterui::theme::ColorScheme;
 use waterui::window::WindowState;
 use waterui_core::layout::LayoutDirection;
 use waterui_graphics::gpu::RedrawHandle;
@@ -844,6 +845,9 @@ pub struct AndroidSession {
     /// direction-only change re-derives both regions
     /// (water-rs/waterui#1827).
     insets_direction: LayoutDirection,
+    /// The live colour-scheme signal the session's theme tokens resolve
+    /// against — `set_night_mode` writes it on the host's pushes.
+    color_scheme: nami::Binding<ColorScheme>,
     /// A frame reached the surface at least once; together with an idle
     /// `wants_next_frame` it arms the one-shot readiness log the device's
     /// idle-CPU sampling waits on.
@@ -953,6 +957,9 @@ struct SessionMounts {
     platform_view_focus: crate::platform_view::PlatformViewFocus,
     safe_area: nami::Binding<waterui_layout::padding::EdgeInsets>,
     keyboard_area: nami::Binding<waterui_layout::padding::EdgeInsets>,
+    /// The session's colour-scheme signal — the binding `install_theme_tokens`
+    /// resolved the default tokens over; `set_night_mode` writes it.
+    color_scheme: nami::Binding<ColorScheme>,
 }
 
 /// Builds the session's mount inputs: instantiates the app, layers the
@@ -969,6 +976,7 @@ struct SessionMounts {
 )]
 fn session_mounts(
     services: &'static UiThreadServices,
+    night: bool,
     #[cfg(hydrolysis_android_system_webview)] jni_env: &mut Env,
     #[cfg(hydrolysis_android_system_webview)] bridge: &HostBridge,
 ) -> Result<SessionMounts, JniError> {
@@ -996,9 +1004,16 @@ fn session_mounts(
     );
     menu_bar::register_menu_bar::<super::AndroidTextEngine>(&menu_bar, &env);
     env.insert(HydrolysisTextContextMenuMode::Overlay);
-    // The configuration's night mode (`uiMode`) is not observed yet: the
-    // scheme is Light unless the application installs its own.
-    crate::theme::install_theme_tokens(&mut env, Some(&*style), waterui::theme::ColorScheme::Light);
+    // The configuration's night mode is the colour-scheme signal: created
+    // with the real `uiMode` the create call carried and kept current by
+    // `nativeSetColorScheme` pushes, so the default tokens re-resolve on a
+    // theme flip the way macOS's appearance binding does (#1972).
+    let color_scheme = nami::binding(if night {
+        ColorScheme::Dark
+    } else {
+        ColorScheme::Light
+    });
+    crate::theme::install_theme_tokens(&mut env, Some(&*style), color_scheme.clone());
     let theme: Rc<dyn WidgetTheme> = style;
     let fonts = crate::text::fonts::native_collection(&env);
     fonts.clone().install(&mut env);
@@ -1056,6 +1071,7 @@ fn session_mounts(
         platform_view_focus,
         safe_area,
         keyboard_area,
+        color_scheme,
     })
 }
 
@@ -1146,13 +1162,16 @@ impl AndroidSession {
     /// layers its environment over the process's.
     ///
     /// `metrics` is the host's snapshot at creation time — content size and
-    /// scale exist from the start, before the surface band attaches.
+    /// scale exist from the start, before the surface band attaches. `night`
+    /// is the configuration's real `uiMode` at the same instant, so the
+    /// colour-scheme signal never starts on a Light default.
     pub(crate) fn create(
         jni_env: &mut Env,
         vm: JavaVM,
         host_view: Global<JObject<'static>>,
         painter: &JObject<'_>,
         metrics: MetricsSnapshot,
+        night: bool,
         services: &'static UiThreadServices,
     ) -> Result<Box<Self>, JniError> {
         let bridge = HostBridge::new(jni_env, vm, host_view)?;
@@ -1172,8 +1191,10 @@ impl AndroidSession {
             platform_view_focus,
             safe_area,
             keyboard_area,
+            color_scheme,
         } = session_mounts(
             services,
+            night,
             #[cfg(hydrolysis_android_system_webview)]
             jni_env,
             #[cfg(hydrolysis_android_system_webview)]
@@ -1233,6 +1254,7 @@ impl AndroidSession {
             safe_area,
             keyboard_area,
             insets_direction: LayoutDirection::default(),
+            color_scheme,
             presented_once: Cell::new(false),
             ready_logged: Cell::new(false),
             back_navigation_available: false,
@@ -1312,6 +1334,22 @@ impl AndroidSession {
                 .surface
                 .set_hidden(self.runtime.platform.is_occluded());
             self.runtime.sync_occlusion_and_post_restore();
+        }
+    }
+
+    /// The host's configuration reported a night-mode value — at bind and
+    /// on every `onConfigurationChanged` dispatch. A moved value writes the
+    /// scheme binding; the token signals' subscribers re-resolve and their
+    /// frame signals schedule the repaint, so no explicit frame request is
+    /// needed, and an unchanged push sets nothing.
+    pub(crate) fn set_night_mode(&self, night: bool) {
+        let scheme = if night {
+            ColorScheme::Dark
+        } else {
+            ColorScheme::Light
+        };
+        if self.color_scheme.snapshot() != scheme {
+            self.color_scheme.set(scheme);
         }
     }
 

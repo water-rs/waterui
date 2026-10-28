@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.Drawable
 import android.util.SparseArray
@@ -258,6 +259,17 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         inputRestartPosted = false
         session?.unbind(this)
         super.onDetachedFromWindow()
+    }
+
+    /**
+     * A configuration change the Activity kept (`android:configChanges`
+     * declares `uiMode`) reaches the running session here rather than
+     * through recreation — the night-mode flag re-derives the session's
+     * colour-scheme signal so the theme tokens follow the system theme.
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        session?.setNightMode(newConfig.isNightMode)
     }
 
     // ------------------------------------------------------------------

@@ -1,6 +1,7 @@
 package dev.waterui.hydrolysis
 
 import android.content.Context
+import android.content.res.Configuration
 import android.os.Handler
 import android.os.Looper
 import android.view.View
@@ -38,6 +39,7 @@ class HydrolysisSession internal constructor(
             context.applicationContext,
             painter,
             NativeBridge.uiThreadServices,
+            context.resources.configuration.isNightMode,
         )
 
     /** [destroy] ran; a second call is a named error. */
@@ -232,6 +234,10 @@ class HydrolysisSession internal constructor(
         withNativePtr(NativeBridge::nativeSetHostAttached.name) { ptr ->
             NativeBridge.nativeSetHostAttached(ptr, true)
         }
+        // A session retained across an activity recreation binds its new
+        // view under the new configuration — the recreate path delivers no
+        // `onConfigurationChanged`, so the bind itself reports the scheme.
+        setNightMode(view.resources.configuration.isNightMode)
         // The new binding owns the Activity the instances draw on: each
         // `HostRebindAware` retargets its own context wrapper and re-observes
         // what the old binding's context owned (the WebView's Lifecycle).
@@ -293,6 +299,19 @@ class HydrolysisSession internal constructor(
         if (destroyRequested) return
         withNativePtr(NativeBridge::nativeSetVisible.name) { ptr ->
             NativeBridge.nativeSetVisible(ptr, visible)
+        }
+    }
+
+    /**
+     * The configuration's night-mode flag, into the session's colour-scheme
+     * signal — the scheme the theme tokens resolve against. The host calls
+     * this at bind and on every `onConfigurationChanged`; an unchanged value
+     * re-resolves nothing native-side.
+     */
+    internal fun setNightMode(nightMode: Boolean) {
+        if (destroyRequested) return
+        withNativePtr(NativeBridge::nativeSetColorScheme.name) { ptr ->
+            NativeBridge.nativeSetColorScheme(ptr, nightMode)
         }
     }
 
@@ -514,3 +533,11 @@ class HydrolysisSession internal constructor(
         else translucencyPending = true
     }
 }
+
+/**
+ * The configuration's night-mode flag (`UI_MODE_NIGHT_YES` under
+ * `UI_MODE_NIGHT_MASK`) — the colour-scheme input the host reports to the
+ * session at creation, at bind and on every configuration change.
+ */
+internal val Configuration.isNightMode: Boolean
+    get() = uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES

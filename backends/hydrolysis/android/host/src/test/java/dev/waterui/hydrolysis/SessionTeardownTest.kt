@@ -658,6 +658,12 @@ class ShadowNativeBridge {
         /** Every `nativeSetVisible` call, in order. */
         val visibilities = mutableListOf<Boolean>()
 
+        /** The night-mode flag each `nativeCreateSession` carried. */
+        val createNightModes = mutableListOf<Boolean>()
+
+        /** Every `nativeSetColorScheme` push, in order. */
+        val colorSchemes = mutableListOf<Boolean>()
+
         /** Every `nativeBackEvent` phase, in order. */
         val backEvents = mutableListOf<Int>()
 
@@ -688,6 +694,8 @@ class ShadowNativeBridge {
             deadlineNanos = 0L
             highRefreshDemands.clear()
             visibilities.clear()
+            createNightModes.clear()
+            colorSchemes.clear()
             backEvents.clear()
             onDestroy = {}
             onFrame = { 0L }
@@ -721,9 +729,18 @@ class ShadowNativeBridge {
             @Suppress("UNUSED_PARAMETER") context: Context,
             @Suppress("UNUSED_PARAMETER") painter: SessionPainter?,
             @Suppress("UNUSED_PARAMETER") uiThreadServices: Long,
+            nightMode: Boolean,
         ): Long {
             sessions += 1
+            createNightModes += nightMode
             return SESSION_PTR
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativeSetColorScheme(sessionPtr: Long, nightMode: Boolean) {
+            assertLive(sessionPtr)
+            colorSchemes += nightMode
         }
 
         @JvmStatic
