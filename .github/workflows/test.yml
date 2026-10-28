@@ -233,6 +233,11 @@ jobs:
       - name: Clippy (filtrate without wgpu)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'filtrate')
         run: cargo clippy --locked --profile ci-check -p filtrate --no-default-features --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      # filtrate-core's `no_std` build: `filtrate` keeps the core's default
+      # `std`, so no other leg compiles the crate without it (#3537).
+      - name: Clippy (filtrate-core without std)
+        if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'filtrate')
+        run: cargo clippy --locked --profile ci-check -p filtrate-core --no-default-features --lib --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # The scene crate's `generator` feature compiles the corpus-writing
       # binaries (`generate-corpus`, `prepare-fonts`) that every scene
       # consumer's assets come from; the cherenkov repository kept a
