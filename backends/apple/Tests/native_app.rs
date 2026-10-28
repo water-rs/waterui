@@ -26,6 +26,11 @@ fn main() {
     // `UIKit` objects may only be built on the real main thread; a single
     // runner keeps every trial on the application's main thread.
     arguments.test_threads = Some(1);
+    // The precondition a GPU trial relies on: an awake display — a
+    // sleeping one presents nothing (#3529). `--list` mounts nothing and
+    // skips it.
+    #[cfg(target_os = "macos")]
+    let _display_awake = (!arguments.list).then(cocoa_ui::native_test::DisplayAwake::hold);
     #[cfg(target_os = "ios")]
     cocoa_ui::uikit::native_test::run(arguments, trials);
     #[cfg(target_os = "macos")]

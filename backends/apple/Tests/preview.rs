@@ -71,6 +71,11 @@ mod suite {
             let slug = args
                 .next()
                 .expect("a spawned child names its trial after --preview-child");
+            // A GPU-surface run waits on presented frames, which a
+            // sleeping display never delivers (#3529) — the child holds
+            // the display awake for its `preview::run`.
+            #[cfg(target_os = "macos")]
+            let _display_awake = cocoa_ui::native_test::DisplayAwake::hold();
             std::process::exit(child(&slug));
         }
         let mut args = Arguments::from_args();
