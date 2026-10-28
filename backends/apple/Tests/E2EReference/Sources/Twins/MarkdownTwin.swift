@@ -174,7 +174,12 @@ struct MarkdownTwin: View {
     /// initializer drops — paint it on the code presentation intent
     /// (water-rs/waterui#3593).
     private func inlineCodeRuns(_ source: String) -> AttributedString {
-        var attributed = try! AttributedString(markdown: source)
+        var attributed: AttributedString
+        do {
+            attributed = try AttributedString(markdown: source)
+        } catch {
+            preconditionFailure("inline-code markdown literal failed to parse: \(error)")
+        }
         for run in attributed.runs where run.inlinePresentationIntent?.contains(.code) == true {
             attributed[run.range].backgroundColor = .tertiarySystemFill
         }
