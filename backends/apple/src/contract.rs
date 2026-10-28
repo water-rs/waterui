@@ -181,14 +181,25 @@ impl NativeLeaf {
     /// content size and the constraint system collapses it to zero.
     fn install_intrinsic_measure(view: &PlatformView, layout: &Rc<dyn SubView>) {
         if let Some(host) = view.downcast_ref::<HostView>() {
-            // The handler may hold the layout face strongly: `detach`
-            // clears it when the leaf moves, and the leaf's `Drop` clears
-            // every handler slot, which breaks the HostView → handler →
-            // SubView → leaf-state → HostView cycle (water-rs/waterui#1567).
-            // The context-menu panel clones the layout through
-            // `layout_handle` for its own measure.
-            let layout = Rc::clone(layout);
-            host.set_measure_handler(move |_host, proposal| measure_layout(&layout, proposal));
+            // The layout face often captures the leaf's own state, which
+            // retains this view — a strong capture here would close a
+            // HostView → handler → SubView → leaf-state → HostView
+            // ownership cycle (water-rs/waterui#1567). The handler holds
+            // the face weakly instead: `detach` clears the slot when the
+            // leaf moves and the leaf's `Drop` clears every handler
+            // before the face dies, so a failed upgrade means the face
+            // died under an installed handler — a structural violation,
+            // not a live mount. The context-menu panel clones the layout
+            // through `layout_handle` for its own measure.
+            let layout = Rc::downgrade(layout);
+            host.set_measure_handler(move |_host, proposal| {
+                measure_layout(
+                    &layout
+                        .upgrade()
+                        .expect("a leaf's layout face outlives its view's measure handler"),
+                    proposal,
+                )
+            });
         }
     }
 
