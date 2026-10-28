@@ -56,9 +56,10 @@ vertex CaptureCompositeVertexOut capture_composite_vertex(
 // Each source and the target carry their own colour contract: the native
 // raster holds (extended) sRGB-encoded values, an `_sRGB` texture samples as
 // linear sRGB, a half-float surface holds linear extended Display P3. Every
-// source reaches the target in the target's own colour, so the blend runs
-// in the target's encoding, as Core Animation's compositing does for an
-// 8-bit target.
+// source reaches the pass's destination in the destination's own colour.
+// The host blends the sources in extended sRGB-encoded values, as Core
+// Animation composites a window's layers, and converts that blend into the
+// target's colour in a pass of its own when the target stores another.
 struct CaptureCompositeConversion {
     // Rows of the linear source-primaries → target-primaries matrix.
     float4 rows[3];
