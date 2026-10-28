@@ -34,10 +34,11 @@ use waterui::reactive::{Computed, Signal};
 use waterui_backend_core::Environment;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_webview::{
-    ASSET_HOST, ASSET_ORIGIN, ASSET_SCHEME, BackendEvent, Cookie, CustomWebViewController,
-    DOCUMENT_START_SCRIPT, DocumentScripts, OriginPolicy, ScriptInjectionTime,
-    ScriptMessageHandler, Url, UserScript, WatcherGuard, WatcherSet, WebViewConfig, WebViewError,
-    WebViewEvent, WebViewHandle, assets, bridge,
+    ASSET_HOST, ASSET_ORIGIN, ASSET_SCHEME, AnsweredNavigations, BackendEvent, Cookie,
+    CustomWebViewController, DOCUMENT_START_SCRIPT, DocumentScripts, NavigationPolicy,
+    NavigationRequest, OriginPolicy, ScriptInjectionTime, ScriptMessageHandler, Url, UserScript,
+    WatcherGuard, WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, assets,
+    bridge,
 };
 
 use crate::contract::NativeLeaf;
@@ -68,6 +69,15 @@ struct Shared {
     last_navigation: RefCell<Option<String>>,
     /// `WebViewWrapper.redirectsEnabled`.
     redirects_enabled: Cell<bool>,
+    /// The policy deciding navigations the page initiates; `None` allows
+    /// them all.
+    navigation_policy: Option<NavigationPolicy>,
+    /// Navigations the policy already answered: `go_to`, the history
+    /// commands, `reload` and the in-place reroutes record the
+    /// `WKNavigation` each one started, and every navigation the policy
+    /// allows joins them — the policy never sees a load the application
+    /// issued nor a redirect a decided navigation follows.
+    answered: AnsweredNavigations,
     /// The redirect signal and its guard, for `set_redirects_enabled`.
     redirects: RefCell<Option<(Computed<bool>, BoxWatcherGuard)>>,
     /// Whether the `__wateruiSend` script-message handler is registered —
@@ -308,6 +318,7 @@ impl WkWebViewHandle {
         scheme: Option<web_kit::SchemeHandler>,
         bridge_origins: OriginPolicy,
         scripts: DocumentScripts,
+        navigation_policy: Option<NavigationPolicy>,
     ) -> Self {
         let shared = Rc::new(Shared {
             view: OnceCell::new(),
@@ -317,6 +328,8 @@ impl WkWebViewHandle {
             last_navigation: RefCell::new(None),
             // `WebViewWrapper`'s default: redirects allowed.
             redirects_enabled: Cell::new(true),
+            navigation_policy,
+            answered: AnsweredNavigations::new(),
             redirects: RefCell::new(None),
             transport_registered: Cell::new(false),
             bridge_admitted: Cell::new(false),
@@ -376,11 +389,40 @@ impl WkWebViewHandle {
 
 /// `decidePolicyForNavigationAction`.
 impl Shared {
-    /// `decidePolicyForNavigationAction`: a window-open request has no
-    /// target frame — emit, load it here, and cancel; a main-frame action
-    /// emits `WillNavigate`; everything is allowed.
+    /// A load the application issued is recorded by the `WKNavigation` the
+    /// call returned — the same object its action later reports as
+    /// `mainFrameNavigation`, so the policy never sees it or the redirects
+    /// it follows. `None` starts nothing: a `go_back` with no previous
+    /// entry leaves none.
+    fn app_load(&self, navigation: Option<&web_kit::WKNavigation>) {
+        if let Some(navigation) = navigation {
+            self.answered.answer(navigation);
+        }
+    }
+
+    /// The navigation policy's answer to a page-initiated navigation:
+    /// whether the engine proceeds. `OpenExternally` has already been
+    /// carried out by [`NavigationPolicy::allows`] when it answers `false`.
+    /// An action naming no URL is allowed — nothing would navigate anyway.
+    fn policy_allows(&self, url: Option<&str>, is_main_frame: bool, user_initiated: bool) -> bool {
+        let (Some(policy), Some(url)) = (&self.navigation_policy, url) else {
+            return true;
+        };
+        policy.allows(&NavigationRequest::new(
+            parse_url(url),
+            self.view().url_string().map(|url| parse_url(&url)),
+            is_main_frame,
+            user_initiated,
+        ))
+    }
+
+    /// `decidePolicyForNavigationAction`: a page-initiated action the policy
+    /// refuses is cancelled; a window-open request has no target frame —
+    /// emit, load it here, and cancel; a main-frame action emits
+    /// `WillNavigate`; loads the application issued bypass the policy.
     fn decide_action(&self, info: &web_kit::ActionInfo) -> web_kit::Policy {
-        let url = info.url_string().unwrap_or_default();
+        let action_url = info.url_string();
+        let url = action_url.clone().unwrap_or_default();
         let allow_repeat = matches!(
             info.navigation_type,
             web_kit::NavigationType::Reload
@@ -388,10 +430,28 @@ impl Shared {
                 | web_kit::NavigationType::FormSubmitted
                 | web_kit::NavigationType::FormResubmitted
         );
+        let answered = self.answered.is_answered(info.navigation.as_deref());
+        let user_initiated = info.navigation_type == web_kit::NavigationType::LinkActivated;
         if !info.has_target_frame {
+            // A targetless action lands in this view's main frame when it is
+            // allowed — report it as one, before the in-place reroute.
+            if !answered && !self.policy_allows(action_url.as_deref(), true, user_initiated) {
+                return web_kit::Policy::Cancel;
+            }
             self.emit_will_navigate(&url, allow_repeat);
-            self.view().load_request(&info.request);
+            self.app_load(self.view().load_request(&info.request).as_deref());
             return web_kit::Policy::Cancel;
+        }
+        if !answered {
+            if !self.policy_allows(action_url.as_deref(), info.target_is_main, user_initiated) {
+                return web_kit::Policy::Cancel;
+            }
+            // An answer given is an answer kept: `WebKit` asks again for
+            // every server redirect the navigation follows, and each of
+            // those actions carries the same `mainFrameNavigation`.
+            if let Some(navigation) = info.navigation.as_deref() {
+                self.answered.answer(navigation);
+            }
         }
         if info.target_is_main {
             // Document-start scripts have to be chosen before the load
@@ -482,12 +542,9 @@ impl Shared {
                     self.view().stop_loading();
                     return;
                 }
-                // The document that commits is the redirect's target, which
-                // no `decidePolicyForNavigationAction` ever named — the
-                // callback does not run again for a server redirect — so
-                // admission is re-decided here, against where the load
-                // actually lands.
-                self.admit_document(&to);
+                // `WebKit` asks `decidePolicyForNavigationAction` again for
+                // every server redirect, so the document's admission was
+                // already re-decided there — only the events remain here.
                 self.emit_will_navigate(&to, true);
             }
             web_kit::Event::Finished => {
@@ -509,7 +566,9 @@ impl Shared {
                 });
             }
             web_kit::Event::OpenRequest(request) => {
-                self.view().load_request(&request);
+                // The in-place reroute of an action `decide_action` already
+                // answered — the policy is not consulted twice.
+                self.app_load(self.view().load_request(&request).as_deref());
             }
         }
     }
@@ -517,15 +576,17 @@ impl Shared {
 
 impl WebViewHandle for WkWebViewHandle {
     fn go_back(&self) {
-        self.controller().go_back();
+        self.shared.app_load(self.controller().go_back().as_deref());
     }
 
     fn go_forward(&self) {
-        self.controller().go_forward();
+        self.shared
+            .app_load(self.controller().go_forward().as_deref());
     }
 
     fn go_to(&self, url: &Url) {
-        self.controller().load_url(url.as_str());
+        self.shared
+            .app_load(self.controller().load_url(url.as_str()).as_deref());
     }
 
     fn stop(&self) {
@@ -533,7 +594,7 @@ impl WebViewHandle for WkWebViewHandle {
     }
 
     fn refresh(&self) {
-        self.controller().reload();
+        self.shared.app_load(self.controller().reload().as_deref());
     }
 
     fn set_user_agent(&self, user_agent: &str) {
@@ -703,7 +764,13 @@ impl CustomWebViewController for AppleWebViewController {
         // being assembled, so the asset server arrives at creation.
         let scripts = DocumentScripts::new(&config);
         let scheme = config.asset_server.map(|server| asset_scheme(&server));
-        WkWebViewHandle::new(mtm, scheme, config.bridge_origins, scripts)
+        WkWebViewHandle::new(
+            mtm,
+            scheme,
+            config.bridge_origins,
+            scripts,
+            config.navigation_policy,
+        )
     }
 
     fn asset_origin(&self) -> Option<Url> {

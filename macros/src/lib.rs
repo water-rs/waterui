@@ -1354,26 +1354,25 @@ mod widget_tests {
     }
 
     #[test]
-    fn widget_intent_validator_accepts_concrete_generic_self_type() {
-        let input_impl: syn::ItemImpl = syn::parse_quote!(
-            impl WidgetIntent for crate::Record<String> {
-                fn perform(self) {}
+    fn widget_intent_validator_accepts_a_concrete_type() {
+        let input: syn::DeriveInput = syn::parse_quote!(
+            struct Record {
+                value: String,
             }
         );
-        let ident =
-            validate_widget_intent_impl(&input_impl).expect("a concrete generic Self type accepts");
+        let ident = validate_widget_intent_type(&input).expect("a concrete type accepts");
         assert_eq!(ident, "Record");
     }
 
     #[test]
-    fn widget_intent_validator_rejects_generic_impl() {
-        let input_impl: syn::ItemImpl = syn::parse_quote!(
-            impl<T> WidgetIntent for Record<T> {
-                fn perform(self) {}
+    fn widget_intent_validator_rejects_a_generic_type() {
+        let input: syn::DeriveInput = syn::parse_quote!(
+            struct Record<T> {
+                value: T,
             }
         );
-        let error = validate_widget_intent_impl(&input_impl).err().unwrap();
-        assert!(error.to_string().contains("concrete-type"));
+        let error = validate_widget_intent_type(&input).err().unwrap();
+        assert!(error.to_string().contains("concrete"));
     }
 
     #[test]
@@ -1476,59 +1475,35 @@ fn widget_intent_params(
     })
 }
 
-/// Validates `#[widget_intent]`'s impl block — `impl WidgetIntent for
-/// <concrete-type>` with `fn perform(self)` — returning the `Self` type's
-/// terminal ident for the default kind.
+/// Validates `#[widget_intent]`'s type declaration — a concrete struct or
+/// enum — returning its ident for the default kind.
 #[cfg(feature = "widgets")]
-fn validate_widget_intent_impl(input_impl: &syn::ItemImpl) -> syn::Result<syn::Ident> {
-    if !input_impl.generics.params.is_empty() {
+fn validate_widget_intent_type(input: &syn::DeriveInput) -> syn::Result<&syn::Ident> {
+    if !input.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
-            &input_impl.generics,
-            "`#[widget_intent]` requires `impl WidgetIntent for <concrete-type>` — a generic impl cannot declare one intent kind",
+            &input.generics,
+            "`#[widget_intent]` requires a concrete action type — a generic type cannot declare one intent kind",
         ));
     }
-    let type_ident = match (input_impl.trait_.as_ref(), &*input_impl.self_ty) {
-        (Some((path, _)), syn::Type::Path(type_path))
-            if path.segments.last().is_some_and(|seg| {
-                seg.ident == "WidgetIntent" && matches!(seg.arguments, syn::PathArguments::None)
-            }) =>
-        {
-            type_path.path.segments.last().map(|seg| seg.ident.clone())
-        }
-        _ => None,
-    };
-    let Some(type_ident) = type_ident else {
-        return Err(syn::Error::new_spanned(
-            input_impl,
-            "`#[widget_intent]` requires `impl WidgetIntent for <concrete-type>`",
-        ));
-    };
-    let has_perform = input_impl
-        .items
-        .iter()
-        .any(|item| matches!(item, syn::ImplItem::Fn(item_fn) if item_fn.sig.ident == "perform"));
-    if !has_perform {
-        return Err(syn::Error::new_spanned(
-            input_impl,
-            "`#[widget_intent]` requires `fn perform(self)` — the action's effect",
-        ));
-    }
-    Ok(type_ident)
+    Ok(&input.ident)
 }
 
 /// Declares a `WidgetKit` intent: `#[waterui::widget_intent(name = "…")]`
-/// on an `impl WidgetIntent for T` block.
+/// on the action's type declaration. `impl WidgetIntent for T` — the
+/// action's `perform` — is written separately.
 ///
-/// The attribute keeps the impl intact, implements `DeclaredWidgetIntent`
-/// for `T` (a hidden trait carrying the declared kind), and emits the
-/// `waterui_intent_<crate>_<hash>` C export plus the
+/// The attribute derives `Serialize`/`Deserialize` for the type through
+/// `waterui::widgets::serde`, so the application needs no `serde`
+/// dependency of its own; keeps the type intact; implements
+/// `DeclaredWidgetIntent` for it (a hidden trait carrying the declared
+/// kind); and emits the `waterui_intent_<crate>_<hash>` C export plus the
 /// `waterui_meta_intent_<crate>_<hash>` record `water` reads while it
 /// generates the extension's `AppIntent` conformers — `hash` is the
 /// declared kind's `SHA-256` hex digest, so the generated `Swift` type
 /// identity is stable across record ordering.
 ///
-/// `kind` defaults to the impl's concrete type ident; an explicit `kind`
-/// disambiguates impls for module-qualified type names that would collide.
+/// `kind` defaults to the type's ident; an explicit `kind` disambiguates
+/// actions whose type names would collide across modules.
 ///
 /// # Panics
 ///
@@ -1536,15 +1511,15 @@ fn validate_widget_intent_impl(input_impl: &syn::ItemImpl) -> syn::Result<syn::I
 #[cfg(feature = "widgets")]
 #[proc_macro_attribute]
 pub fn widget_intent(args: TokenStream, input: TokenStream) -> TokenStream {
-    let input_impl = parse_macro_input!(input as syn::ItemImpl);
+    let input_type = parse_macro_input!(input as syn::DeriveInput);
     let waterui = match waterui_crate_path() {
         Ok(path) => path,
         Err(error) => return error.into_compile_error().into(),
     };
     let args = parse_macro_input!(args with Punctuated::<WidgetArg, Token![,]>::parse_terminated);
 
-    let type_ident = match validate_widget_intent_impl(&input_impl) {
-        Ok(ident) => ident,
+    let type_ident = match validate_widget_intent_type(&input_type) {
+        Ok(ident) => ident.clone(),
         Err(error) => return error.to_compile_error().into(),
     };
     let params = match widget_intent_params(&args) {
@@ -1578,16 +1553,23 @@ pub fn widget_intent(args: TokenStream, input: TokenStream) -> TokenStream {
     let record_lit = syn::LitStr::new(&record, Span::call_site());
     let hash_lit = syn::LitStr::new(&hash, Span::call_site());
     let kind_lit = syn::LitStr::new(&kind, Span::call_site());
-    let self_ty = &input_impl.self_ty;
+    // `serde(crate = "...")` takes a string literal — the same resolved
+    // `waterui` path, without the token stream's spacing.
+    let serde_crate = syn::LitStr::new(
+        &format!("{}::widgets::serde", waterui.to_string().replace(' ', "")),
+        Span::call_site(),
+    );
 
     let expanded = quote! {
-        #input_impl
+        #[derive(#waterui::widgets::serde::Serialize, #waterui::widgets::serde::Deserialize)]
+        #[serde(crate = #serde_crate)]
+        #input_type
 
         #waterui::widgets::__export_intent!(
             #hash_lit,
             #record_lit,
             [__wui_intent_ptr, __wui_intent_len] => {
-                let __wui_action: #self_ty = #waterui::widgets::serde_json::from_slice(
+                let __wui_action: #type_ident = #waterui::widgets::serde_json::from_slice(
                     unsafe {
                         ::core::slice::from_raw_parts(
                             __wui_intent_ptr,
@@ -1596,11 +1578,11 @@ pub fn widget_intent(args: TokenStream, input: TokenStream) -> TokenStream {
                     },
                 )
                 .expect("a widget intent's payload always decodes");
-                <#self_ty as #waterui::widgets::WidgetIntent>::perform(__wui_action);
+                <#type_ident as #waterui::widgets::WidgetIntent>::perform(__wui_action);
             }
         );
 
-        impl #waterui::widgets::DeclaredWidgetIntent for #self_ty {
+        impl #waterui::widgets::DeclaredWidgetIntent for #type_ident {
             const KIND: &'static str = #kind_lit;
         }
     };

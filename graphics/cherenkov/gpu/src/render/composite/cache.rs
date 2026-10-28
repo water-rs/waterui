@@ -1,6 +1,6 @@
 //! Exact structural keys: changing paint values never repeats lifetime analysis.
 
-use super::plan::{ExecutionPlan, Formats, Limits, ReadKind};
+use super::plan::{Combine, ExecutionPlan, Formats, Limits, ReadKind};
 use crate::render::composition::Materialization;
 use crate::render::lower::{Frame, ImageSource, Pass, PipelineKind, Source, Target};
 
@@ -8,6 +8,7 @@ use crate::render::lower::{Frame, ImageSource, Pass, PipelineKind, Source, Targe
 struct Draw {
     source: Option<Source>,
     read: ReadKind,
+    combine: Combine,
     opaque: bool,
     count: usize,
 }
@@ -86,6 +87,7 @@ impl Cache {
                 .map(|range| Draw {
                     source: range.source,
                     read: super::plan::read_kind(frame, range),
+                    combine: super::plan::combine(frame, range),
                     opaque: !matches!(
                         range.pipeline,
                         PipelineKind::SrcOver | PipelineKind::Replace

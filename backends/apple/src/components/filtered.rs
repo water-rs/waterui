@@ -716,6 +716,12 @@ fn update_output_frame(state: &FilteredState) {
     }
 }
 
+/// An owed reveal frame does not permit drawing after the host is hidden.
+fn can_render_frame(state: &FilteredState) -> bool {
+    !presentation_occluded(&state.view)
+        || (state.first_paint_owed.get() && participates_in_first_paint_ready(state))
+}
+
 /// Whether the link may deliver frames — attached, effectively visible, in
 /// an active scene and with demand (an animating, owed or dirty frame). An
 /// in-flight frame, native-pass suppression, external rendering or a
@@ -732,7 +738,7 @@ fn update_link_demand(state: &Rc<FilteredState>) {
         && !state.frame_presentation_in_flight.get()
         && state.capture_suppression.get() == 0
         && state.external_count.get() == 0
-        && (!presentation_occluded(&state.view) || state.first_paint_owed.get());
+        && can_render_frame(state);
     if let Some(presenter) = state.presenter.borrow().as_ref() {
         presenter.set_paused(!demand);
     }
@@ -779,6 +785,12 @@ fn request_render_if_geometry_changed(state: &Rc<FilteredState>) {
 /// and its completion. Dropping it at any gate releases the lease without
 /// presenting and the next delivery answers the still-owed demand.
 fn render_frame(state: &Rc<FilteredState>, frame: DrawableFrame) {
+    if !can_render_frame(state) {
+        // A queued update can arrive after visibility suspended the link.
+        // Keep the owed work for the next visibility notification.
+        update_link_demand(state);
+        return;
+    }
     if state.park.is_held() {
         // A stale delivery — the link kept a queued update across the
         // park: nothing renders while the leaf waits out the
@@ -2226,10 +2238,9 @@ impl fmt::Debug for FilteredGuard {
 
 impl Drop for FilteredGuard {
     fn drop(&mut self) {
-        // The `Rc<FilteredState> → HostView → handler → Rc<FilteredState>`
-        // cycle: the mounted leaf's `Drop` clears the slots already —
-        // this is a no-op then — while a transition effect's host has
-        // no leaf and needs it here.
+        // The mounted leaf's `Drop` clears the slots already — this is
+        // a no-op then — while a transition effect's host has no leaf
+        // and needs it here.
         self.view.clear_handlers();
         if let Some(sink) = &self.sink {
             crate::invalidation::unregister_sink(sink);
@@ -2619,28 +2630,36 @@ fn wire_filtered_state(
         effect.set_redraw_callback(Arc::clone(&callback));
     }
 
-    // The view retains its handlers and the state retains the view —
-    // the `Rc<FilteredState> → HostView → handler → Rc<FilteredState>`
-    // cycle (WaterUI #1567) is broken by the leaf's `Drop`, which
-    // clears every handler slot when the leaf is released.
+    // `FilteredState` retains this view, so a handler capturing the
+    // state would close an `Rc<FilteredState> → HostView → handler`
+    // ownership cycle (water-rs/waterui#1567). The handlers hold the
+    // state weakly instead: a callback the platform still delivers to a
+    // view that outlived its mount does nothing on a failed upgrade —
+    // the weak-reference contract, not a fallback.
     {
-        let state = Rc::clone(&state);
+        let weak = Rc::downgrade(&state);
         view.set_layout_handler(move |_| {
-            on_layout(&state);
+            if let Some(state) = weak.upgrade() {
+                on_layout(&state);
+            }
         });
     }
     {
-        let state = Rc::clone(&state);
+        let weak = Rc::downgrade(&state);
         view.set_window_handler(move |_| {
-            handle_window_change(&state);
+            if let Some(state) = weak.upgrade() {
+                handle_window_change(&state);
+            }
         });
     }
     {
         // A reparent inside the window moves the ancestor chain the
         // visibility watch subscribed to.
-        let state = Rc::clone(&state);
+        let weak = Rc::downgrade(&state);
         view.set_superview_handler(move |_| {
-            if cocoa_ui::view::window(&state.view).is_some() {
+            if let Some(state) = weak.upgrade()
+                && cocoa_ui::view::window(&state.view).is_some()
+            {
                 refresh_visibility_watch(&state);
                 update_link_demand(&state);
             }
@@ -2648,13 +2667,14 @@ fn wire_filtered_state(
     }
     #[cfg(target_os = "macos")]
     {
-        let state = Rc::clone(&state);
+        let weak = Rc::downgrade(&state);
         view.set_backing_changed_handler(move |_| {
-            if cocoa_ui::view::window(&state.view).is_none() {
-                return;
+            if let Some(state) = weak.upgrade()
+                && cocoa_ui::view::window(&state.view).is_some()
+            {
+                initialize_gpu(&state);
+                request_render(&state);
             }
-            initialize_gpu(&state);
-            request_render(&state);
         });
     }
     #[cfg(target_os = "ios")]
@@ -3005,8 +3025,8 @@ pub mod native_test {
 
     use super::{
         CAMetalLayer, CapturableSurface, CaptureError, DrawableFrame, ErasedEffect, FilteredParts,
-        FilteredState, GpuRuntime, GpuServices, HostView, MetalPresenter, MetalTexture, NativeLeaf,
-        PlatformView, Rc, RefCell, Retained, build_filtered_parts, fmt, output_pixel_format,
+        FilteredState, GpuRuntime, GpuServices, HostView, MetalPresenter, MetalTexture, Mounted,
+        PlatformView, Rc, RefCell, Retained, Weak, build_filtered_parts, fmt, output_pixel_format,
         render_frame, settle_capture_failure, wgpu,
     };
     use crate::components::gpu_surface::native_test::{MountedSceneSurface, fixture_env};
@@ -3022,8 +3042,10 @@ pub mod native_test {
     /// capturable answers back into the filtered settle.
     #[must_use]
     pub struct MountedFilteredSurface {
-        /// The mounted filtered leaf — dropping it unmounts the leaf.
-        pub leaf: NativeLeaf,
+        /// The mounted filtered leaf — mounted through the real
+        /// [`NativeLeaf::mount`], so its drop detaches the host view and
+        /// ends the mount exactly as production's does.
+        pub leaf: Mounted,
         /// The filtered leaf's render state.
         state: Rc<FilteredState>,
         /// The host view the leaf presents through.
@@ -3158,7 +3180,7 @@ pub mod native_test {
         fn trim(&mut self) {}
     }
 
-    /// Holds a nested [`FillEffect`]'s setup until [`Self::release`].
+    /// Holds a [`FillEffect`]'s setup until [`Self::release`].
     pub struct SetupGate(RefCell<Option<oneshot::Sender<()>>>);
 
     impl fmt::Debug for SetupGate {
@@ -3311,6 +3333,33 @@ pub mod native_test {
             Self::mount_on(mtm, runtime, Vec::new())
         }
 
+        /// [`Self::mount`] with one [`FillEffect`] whose setup waits on the
+        /// returned gate: until the trial releases it, `effects_ready`
+        /// keeps the display link paused through attach and the window's
+        /// ordering, so no link-issued frame can consume demand the trial
+        /// set up first.
+        ///
+        /// # Errors
+        ///
+        /// When the runner has no GPU adapter.
+        #[expect(
+            clippy::future_not_send,
+            reason = "the mount is a main-thread fixture: Rc<FilteredState>, the MainThreadMarker and the Objective-C views stay on the trial's main thread"
+        )]
+        pub async fn mount_gated(mtm: MainThreadMarker) -> Result<(Self, SetupGate), String> {
+            let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
+            let (release, gate) = oneshot::channel();
+            let mounted = Self::mount_on(
+                mtm,
+                runtime,
+                vec![Box::new(FillEffect {
+                    gate: Some(gate),
+                    encodes: Arc::new(AtomicU32::new(0)),
+                })],
+            )?;
+            Ok((mounted, SetupGate(RefCell::new(Some(release)))))
+        }
+
         /// [`Self::mount`] with one [`FillEffect`] whose setup lands at
         /// once, so every frame fills the output with [`FILL`].
         ///
@@ -3334,6 +3383,17 @@ pub mod native_test {
             )?;
             mounted.fill_encodes = Some(encodes);
             Ok(mounted)
+        }
+
+        /// [`Self::mount`] on an already-live shared [`GpuRuntime`] — a
+        /// fresh leaf on the runtime a previous mount released with, so
+        /// a trial can remount after unmounting.
+        ///
+        /// # Errors
+        ///
+        /// When `runtime`'s environment is unusable for the mount.
+        pub fn mount_shared(mtm: MainThreadMarker, runtime: GpuRuntime) -> Result<Self, String> {
+            Self::mount_on(mtm, runtime, Vec::new())
         }
 
         /// An empty-chain filtered leaf whose hidden content is a nested
@@ -3395,9 +3455,13 @@ pub mod native_test {
             let container = PlatformView::new(mtm);
             cocoa_ui::view::ensure_layer_backed(&container);
             cocoa_ui::view::set_frame(&container, cocoa_ui::view::bounds(&parts.view));
-            cocoa_ui::view::add_subview(&container, &cocoa_ui::view::retain_base(&parts.view));
+            // The real mount path — `NativeLeaf::mount` installs the
+            // intrinsic measure on the filtered host and parents the
+            // view, so the fixture exercises the same handler wiring a
+            // production mount builds.
+            let leaf = parts.leaf.mount(&container);
             Self {
-                leaf: parts.leaf,
+                leaf,
                 state: parts.state,
                 view: parts.view,
                 capturable: parts.capturable,
@@ -3411,8 +3475,9 @@ pub mod native_test {
         }
 
         /// Uses a real `AppKit`/`UIKit` window — the attach door's only
-        /// host requirement — then pumps the main queue until the leaf's
-        /// own setup lands and the link attaches.
+        /// host requirement — then pumps the main queue until the window
+        /// reports visible. The leaf's visibility watch attaches it on the
+        /// window's occlusion edge inside that pump.
         ///
         /// # Panics
         ///
@@ -3452,8 +3517,11 @@ pub mod native_test {
 
         /// Attaches through the production door: the fixture window makes
         /// the leaf presentable, `initialize_gpu` builds the real
-        /// `MetalPresenter`, and the main-queue pump lets the (empty)
-        /// effect setup land so `effects_ready` opens the link.
+        /// `MetalPresenter`, and the main-queue pump runs until the
+        /// Attached epoch is installed. An ungated effect setup may already
+        /// have landed — and the link delivered frames — while the window
+        /// was ordering in; a trial that must sample the link before its
+        /// first delivery mounts with [`Self::mount_gated`].
         ///
         /// # Panics
         ///
@@ -3661,6 +3729,25 @@ pub mod native_test {
         /// failure stands.
         pub fn request_render(&self) {
             super::request_render(&self.state);
+        }
+
+        /// Weak handles on the render state and the host view — taken
+        /// before [`Self::unmount`] so a trial can observe their release
+        /// once every retainer is gone.
+        pub fn release_probes(&self) -> (Weak<FilteredState>, objc2::rc::Weak<HostView>) {
+            (
+                Rc::downgrade(&self.state),
+                objc2::rc::Weak::from_retained(&self.view),
+            )
+        }
+
+        /// Unmounts the leaf — the `Mounted` drop detaches the host view
+        /// and clears its handlers — then releases every fixture retain
+        /// of the mount: the state, the view, the capturable face, the
+        /// hidden content and the fixture window. Returns the shared
+        /// runtime, which lives on past the mount it served.
+        pub fn unmount(self) -> GpuRuntime {
+            self.runtime
         }
 
         /// Drives the settle the `finish_captured_frame` `Failed` arm

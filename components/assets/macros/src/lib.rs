@@ -523,7 +523,7 @@ pub fn include_web(input: TokenStream) -> TokenStream {
                     ::core::option::Option::None
                 }
             };
-            match dev {
+            let view = match dev {
                 ::core::option::Option::Some(url) => #waterui::webview::WebView::open(url),
                 ::core::option::Option::None => #waterui::webview::WebView::open_assets(
                     #waterui::webview::DirectoryServer::new(
@@ -534,7 +534,14 @@ pub fn include_web(input: TokenStream) -> TokenStream {
                     .into_server_fn(),
                     #entry_lit,
                 ),
-            }
+            };
+            // A bundled frontend's links that leave its origin open in the
+            // system browser; an application's `.navigation_policy(..)`
+            // replaces this. The web `<iframe>` backend cannot intercept
+            // navigations, so the policy does not exist there.
+            #[cfg(not(target_arch = "wasm32"))]
+            let view = view.navigation_policy(#waterui::webview::stay_on_origin);
+            view
         }
     }
     .into()

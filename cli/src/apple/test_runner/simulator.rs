@@ -51,6 +51,17 @@ impl TestDestination for IosSimulator {
             forwarded_env,
         } = invocation;
         binary.require_platform(self.platform())?;
+        // The simulator renders through the host display, so a sleeping
+        // display stops it presenting the frames the GPU suites assert on
+        // (#3529). The assertion lives exactly as long as this runner.
+        let _display_awake = host
+            .command("caffeinate")
+            .wrap_err("failed to spawn caffeinate")?
+            .args(["-d", "-u", "-w"])
+            .arg(std::process::id().to_string())
+            .kill_on_drop(true)
+            .spawn()
+            .wrap_err("failed to hold the host display awake with caffeinate")?;
         let simulator = AppleSimulator::scan(host)
             .await
             .wrap_err("failed to list simulators")?
@@ -216,6 +227,7 @@ mod tests {
     fn the_bare_route_passes_the_spawned_exit_through() {
         let machine = TestMachine::new();
         machine.install("xcrun");
+        machine.install("caffeinate");
         machine.respond("XCRUN_SIMCTL_DEVICES", &simctl_devices_json(&machine));
         let log = machine.file("fake.log", "");
         let binary = crate::apple::test_runner::binary::tests::stage_binary(
@@ -255,6 +267,7 @@ mod tests {
     fn the_app_route_skips_install_when_the_executables_match() {
         let machine = TestMachine::new();
         machine.install("xcrun");
+        machine.install("caffeinate");
         machine.install("codesign");
         machine.respond("XCRUN_SIMCTL_DEVICES", &simctl_devices_json(&machine));
         let plist = crate::apple::test_runner::binary::tests::manifest_plist();

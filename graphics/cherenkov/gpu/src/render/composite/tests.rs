@@ -911,3 +911,42 @@ fn content_storage_reuses_only_dead_images_of_the_same_format() {
             .all(|image| image.storage == Storage::OnChip && image.backing.is_none())
     );
 }
+
+/// An image a non-`Normal` blend composite reads keeps float storage
+/// under compact content storage, while a `Normal` composite's input
+/// stays compact (#3458). The blend mode is part of the cached structure,
+/// so changing it replans the storage.
+#[test]
+fn blend_composite_inputs_keep_float_storage() {
+    use crate::render::instance::{BLEND_CODE_SHIFT, blend_code};
+    let mut frame = frame(vec![
+        pass(Target::Part(0), true, None, 0),
+        pass(Target::Scratch(0), true, None, 1),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 2),
+        pass(Target::Scratch(1), true, None, 3),
+        pass(Target::Part(0), false, Some(Source::Scratch(1)), 4),
+    ]);
+    frame.instances[4].meta[3] |= blend_code(cherenkov::BlendMode::PlusLighter) << BLEND_CODE_SHIFT;
+    frame.passes[4].ranges[0].pipeline = PipelineKind::Replace;
+    let formats = Formats {
+        content: true,
+        ..formats(wgpu::TextureFormat::Rgba16Float)
+    };
+    let executor = Err(Materialization::NoExecutor);
+    let format = |plan: &ExecutionPlan, index: usize| {
+        let slot = plan.images[plan.targets[index].0]
+            .backing
+            .expect("a materialized scratch has backing");
+        plan.scratch[slot].format
+    };
+    let mut cache = crate::render::composite::cache::Cache::default();
+    let mut plan = ExecutionPlan::default();
+    assert!(cache.update(&mut plan, &frame, formats, executor));
+    assert_eq!(format(&plan, 1), wgpu::TextureFormat::Rgba8UnormSrgb);
+    assert_eq!(format(&plan, 3), wgpu::TextureFormat::Rgba16Float);
+
+    frame.instances[4].meta[3] &= !(0xff << BLEND_CODE_SHIFT);
+    frame.passes[4].ranges[0].pipeline = PipelineKind::SrcOver;
+    assert!(cache.update(&mut plan, &frame, formats, executor));
+    assert_eq!(format(&plan, 3), wgpu::TextureFormat::Rgba8UnormSrgb);
+}

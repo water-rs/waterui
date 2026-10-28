@@ -23,7 +23,9 @@ use crate::convert::{self, Prepared};
 use crate::memory::{
     AdapterMemory, Reading, allocator_report, wgpu_metal_allocated_bytes, wgpu_vk_memory_budget,
 };
-use crate::vello_like::{Lowered, VelloLikeCtx, lower, replay, vello_features, vello_missing_api};
+use crate::vello_like::{
+    Lowered, Op, VelloLikeCtx, lower, replay, vello_features, vello_missing_api,
+};
 use crate::wgpu_ctx::{Gpu, Target, readback};
 use crate::{BenchError, Counters, DeviceInfo, EncodeInput, Engine, EngineInfo, GpuSample, Submit};
 
@@ -39,6 +41,8 @@ pub struct VelloHybrid {
     depth_view: Option<wgpu::TextureView>,
     prepared: Option<Prepared>,
     lowered: Option<Lowered<PaintType>>,
+    /// Fonts whose runs draw bitmap glyphs, from [`bitmap_glyph_fonts`].
+    bitmap_fonts: BitmapFonts,
     counters: Counters,
 }
 
@@ -85,6 +89,7 @@ impl VelloHybrid {
             depth_view: None,
             prepared: None,
             lowered: None,
+            bitmap_fonts: BitmapFonts::new(),
             counters: Counters::default(),
         })
     }
@@ -99,9 +104,18 @@ impl VelloHybrid {
 /// every image to the atlas via [`Renderer::upload_image`] once in
 /// `prepare`, and [`Prepared::paint_type`] already resolves image paints
 /// to their `OpaqueId` — `set_paint` needs no interception.
+///
+/// Bitmap glyphs (CBDT, sbix) follow the same rule: `glifo` draws one
+/// through `vello_gpu`'s glyph atlas, an `OpaqueId` source, only when the
+/// run enables the atlas cache; otherwise it paints the decoded strike as
+/// an inline pixmap. Runs in a font that draws bitmap glyphs therefore
+/// enable the atlas, and `prepare` reports the bitmap glyphs the atlas
+/// cannot take as unsupported ([`bitmap_glyph_fonts`]). Other runs keep
+/// the uncached path.
 pub struct HybridCtx<'a> {
     scene: &'a mut HybridScene,
     res: &'a mut Resources,
+    bitmap_fonts: &'a BitmapFonts,
 }
 
 /// The borrowed scene and resources do not format.
@@ -175,6 +189,7 @@ impl VelloLikeCtx for HybridCtx<'_> {
     ) {
         self.scene
             .glyph_run(self.res, font)
+            .atlas_cache(self.bitmap_fonts.contains(&(font.data.id(), font.index)))
             .font_size(size)
             .normalized_coords(coords)
             .fill_glyphs(glyphs.iter().map(|g| glifo::Glyph {
@@ -184,6 +199,87 @@ impl VelloLikeCtx for HybridCtx<'_> {
             }))
             .expect("vello_gpu glyph run renders");
     }
+}
+
+/// Fonts, as (`FontData` blob id, collection index), whose runs draw
+/// bitmap glyphs through `vello_gpu`'s glyph atlas.
+type BitmapFonts = BTreeSet<(u64, u32)>;
+
+/// The `vello_gpu` limit a [`bitmap_glyph_fonts`] rejection names.
+const BITMAP_GLYPH_API: &str = "vello_gpu draws bitmap glyphs only from its glyph atlas, which \
+                                takes no rotation, skew or mirroring and no size above \
+                                GlyphCacheConfig::max_cached_font_size";
+
+/// The fonts whose runs draw bitmap glyphs, which `encode` draws through
+/// the glyph atlas.
+///
+/// `glifo` resolves each glyph COLR first, then a PNG bitmap strike at the
+/// draw size, then the outline. A bitmap glyph reaches `vello_gpu` through
+/// the glyph atlas only when the run's transform has no rotation or skew
+/// and positive axis scales, and its draw size — the run size times a
+/// positive uniform scale, which `glifo` absorbs — is within the default
+/// [`glifo::GlyphCacheConfig`] that `vello_gpu::Resources` uses. Any other
+/// bitmap glyph is painted as an inline pixmap, which `vello_gpu`'s paint
+/// encoder rejects by panicking.
+///
+/// # Errors
+/// [`BenchError::Unsupported`] for a run with a bitmap glyph the atlas
+/// cannot take; [`BenchError::Engine`] for a font `skrifa` cannot read.
+fn bitmap_glyph_fonts(lowered: &Lowered<PaintType>) -> Result<BitmapFonts, BenchError> {
+    use skrifa::MetadataProvider;
+    use skrifa::bitmap::BitmapData;
+    use skrifa::instance::Size;
+
+    // `glifo`'s tolerance for a zero transform coefficient.
+    const NEARLY_ZERO: f64 = 1.0 / 4096.0;
+    let max_cached_size = glifo::GlyphCacheConfig::default().max_cached_font_size;
+    let mut fonts = BitmapFonts::new();
+    for op in &lowered.ops {
+        let Op::Glyphs {
+            transform,
+            font,
+            size,
+            glyphs,
+            ..
+        } = op
+        else {
+            continue;
+        };
+        let [a, b, c, d, _, _] = transform.as_coeffs();
+        let axis_aligned = b.abs() <= NEARLY_ZERO && c.abs() <= NEARLY_ZERO && a > 0.0 && d > 0.0;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "glifo absorbs the scale into its f32 font size the same way"
+        )]
+        let draw_size = if axis_aligned && (a - d).abs() <= NEARLY_ZERO {
+            size * d as f32
+        } else {
+            *size
+        };
+        let font_ref = skrifa::FontRef::from_index(font.data.data(), font.index)
+            .map_err(|e| BenchError::Engine(format!("vello-hybrid: unreadable font: {e}")))?;
+        let colr = font_ref.color_glyphs();
+        let strikes = font_ref.bitmap_strikes();
+        let draws_bitmap = glyphs.iter().any(|g| {
+            let id = skrifa::GlyphId::new(g.id);
+            colr.get(id).is_none()
+                && strikes
+                    .glyph_for_size(Size::new(draw_size), id)
+                    .is_some_and(|bitmap| matches!(bitmap.data, BitmapData::Png(_)))
+        });
+        if !draws_bitmap {
+            continue;
+        }
+        if !axis_aligned || draw_size > max_cached_size {
+            return Err(BenchError::Unsupported {
+                engine: VelloHybrid::NAME,
+                feature: Feature::Glyphs,
+                api: Some(BITMAP_GLYPH_API),
+            });
+        }
+        fonts.insert((font.data.id(), font.index));
+    }
+    Ok(fonts)
 }
 
 impl Engine for VelloHybrid {
@@ -262,7 +358,7 @@ impl Engine for VelloHybrid {
         // Lower after the atlas uploads so `image_fn` resolves OpaqueId
         // sources — `prepare` produces the pre-resolved op list `encode`
         // replays.
-        self.lowered = Some(lower(
+        let lowered = lower(
             input.scene,
             &prepared,
             Self::NAME,
@@ -274,7 +370,9 @@ impl Engine for VelloHybrid {
                     sampler: convert::image_sampler(sampling),
                 }))
             },
-        )?);
+        )?;
+        self.bitmap_fonts = bitmap_glyph_fonts(&lowered)?;
+        self.lowered = Some(lowered);
         self.prepared = Some(prepared);
         // The depth buffer the 0.2 renderer owned internally is now
         // caller-owned; passing it keeps the front-to-back opaque pass.
@@ -315,6 +413,7 @@ impl Engine for VelloHybrid {
         let mut ctx = HybridCtx {
             scene: self.scene.as_mut().expect("set above"),
             res: self.res.as_mut().expect("renderer created in prepare"),
+            bitmap_fonts: &self.bitmap_fonts,
         };
         let lowered = self
             .lowered

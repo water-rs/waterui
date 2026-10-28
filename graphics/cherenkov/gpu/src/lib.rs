@@ -174,7 +174,11 @@ pub enum TimestampSupport {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ScratchFormat {
     /// Choose compact encoded SDR storage per image; retain float storage for
-    /// extended-range content, filters and native tile outputs.
+    /// extended-range content, filters, native tile outputs and every image
+    /// a non-`Normal` blend composite reads. That last exclusion is a
+    /// precision invariant, not a tuning choice: such a blend combines the
+    /// stored values arithmetically, so 8-bit inputs would carry their
+    /// quantisation into a float result, far off the reference (#3458).
     #[default]
     Content,
     /// `Rgba16Float`: linear, no banding, 8 bytes per texel.

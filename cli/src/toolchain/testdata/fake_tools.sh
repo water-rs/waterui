@@ -309,6 +309,10 @@ cargo)
 codesign)
     exit 0
     ;;
+# `caffeinate -d -u -w <pid>`: the display assertion the simulator runner holds.
+caffeinate)
+    exit 0
+    ;;
 xcodebuild)
     case "$*" in
         -version | --version)

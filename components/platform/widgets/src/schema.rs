@@ -370,7 +370,7 @@ impl Intent {
     }
 }
 
-/// A user-declared widget action — `#[widget_intent]` on an `impl` block.
+/// A user-declared widget action — `#[widget_intent]` on the action type.
 ///
 /// The action is serialized to the `Intent` node's `payload`; the
 /// extension decodes the concrete `AppIntent` named by the action's kind

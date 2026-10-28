@@ -1,4 +1,4 @@
-// swift-tools-version: 6.3
+// swift-tools-version: 6.4
 // Frame-recording harness for the WaterUI side of the layout twins.
 // Depends on the framework's own root manifest: the Apple host target is
 // `backends/apple/Sources/WaterUI` in the same repository.
@@ -7,8 +7,8 @@ import PackageDescription
 let package = Package(
   name: "LayoutTwinsHarness",
   platforms: [
-    .iOS(.v26),
-    .macOS(.v26),
+    .iOS(.v27),
+    .macOS(.v27),
   ],
   dependencies: [
     .package(name: "waterui-apple-host", path: "../../..")

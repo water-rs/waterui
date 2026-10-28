@@ -52,7 +52,6 @@ The backend's checks live in this repository:
   named examples without paying for the full suite.
 - `.github/workflows/apple-bench.yml` — the informational criterion bench
   lane (weekly and on dispatch).
-- `.github/workflows/apple-codeql.yml` — CodeQL Swift analysis.
 
 Non-Apple `--workspace` commands `--exclude waterui-apple` rather than
 compile AppKit/UIKit on Linux or Windows; the crate's own lanes own its

@@ -1193,6 +1193,7 @@ impl Project {
             manifest_directory: package.manifest_directory.clone(),
             native_source,
             webkit_version: package.declared.version.clone(),
+            identity: package.declared.identity.clone(),
             bridge_abi: package.declared.bridge_abi,
             target: target.clone(),
         })
@@ -2819,6 +2820,9 @@ impl Fact for CargoTree {
 pub(crate) struct WpeRuntimeMetadata {
     /// The `WebKit` version the package pins.
     pub version: String,
+    /// The published runtime's identity — the `wpe-runtime-<version>-<identity>`
+    /// release tag water-rs/browsers publishes its artifacts under.
+    pub identity: String,
     /// The bridge ABI the package declares.
     pub bridge_abi: u32,
     /// The package-relative directory the bridge sources live in.
@@ -3873,6 +3877,7 @@ pub struct ResolvedWpeRuntime {
     manifest_directory: std::path::PathBuf,
     native_source: std::path::PathBuf,
     webkit_version: String,
+    identity: String,
     bridge_abi: u32,
     target: Triple,
 }
@@ -3909,6 +3914,13 @@ impl ResolvedWpeRuntime {
         &self.webkit_version
     }
 
+    /// The published runtime's identity — with `webkit_version` it names the
+    /// `wpe-runtime-<version>-<identity>` release water-rs/browsers publishes.
+    #[must_use]
+    pub fn identity(&self) -> &str {
+        &self.identity
+    }
+
     /// The bridge ABI the package's producer metadata declares — the value a
     /// source build asserts the headers agree with.
     #[must_use]
@@ -3937,6 +3949,7 @@ impl ResolvedWpeRuntime {
             manifest_directory,
             native_source,
             webkit_version: "2.52.5".to_owned(),
+            identity: "0123456789abcdef".to_owned(),
             bridge_abi: 5,
             target,
         }
@@ -4832,7 +4845,7 @@ mod target_graph_tests {
             let contents = std::fs::read_to_string(&config_path).unwrap();
             let mut config: toml_edit::DocumentMut = contents.parse().unwrap();
             for variable in ["MACOSX_DEPLOYMENT_TARGET", "IPHONEOS_DEPLOYMENT_TARGET"] {
-                assert_eq!(config["env"][variable].as_str(), Some("26.0"));
+                assert_eq!(config["env"][variable].as_str(), Some("27.0"));
             }
             config["env"]["USER_SETTING"] = toml_edit::value("keep me");
             config["build"] = toml_edit::Item::Table(toml_edit::Table::new());
@@ -4845,9 +4858,9 @@ mod target_graph_tests {
             std::fs::write(&config_path, config.to_string()).unwrap();
             let mut selection = toml::Value::try_from(framework).unwrap();
             selection["metadata"]["apple-deployment-targets"]["macos"] =
-                toml::Value::String("27.0".into());
-            selection["metadata"]["apple-deployment-targets"]["ios"] =
                 toml::Value::String("28.0".into());
+            selection["metadata"]["apple-deployment-targets"]["ios"] =
+                toml::Value::String("29.0".into());
             super::apply_channel_selection(&host, &root, selection.try_into().unwrap(), Vec::new())
                 .await
                 .unwrap();
@@ -4856,11 +4869,11 @@ mod target_graph_tests {
             let config: toml::Value = toml::from_str(&updated).unwrap();
             assert_eq!(
                 config["env"]["MACOSX_DEPLOYMENT_TARGET"].as_str(),
-                Some("27.0")
+                Some("28.0")
             );
             assert_eq!(
                 config["env"]["IPHONEOS_DEPLOYMENT_TARGET"].as_str(),
-                Some("28.0")
+                Some("29.0")
             );
             assert_eq!(config["env"]["USER_SETTING"].as_str(), Some("keep me"));
             assert_eq!(config["build"]["jobs"].as_integer(), Some(3));
@@ -6470,6 +6483,7 @@ mod wpe_metadata_tests {
         let declared: Result<super::WpeRuntimeMetadata, _> =
             serde_json::from_value(serde_json::json!({
                 "version": "2.52.5",
+                "identity": "d6117ebfbc001792",
                 "bridge-abi": 4_294_967_300_u64,
                 "native-source": "native"
             }));
@@ -6479,11 +6493,29 @@ mod wpe_metadata_tests {
         );
         let valid: super::WpeRuntimeMetadata = serde_json::from_value(serde_json::json!({
             "version": "2.52.5",
+            "identity": "d6117ebfbc001792",
             "bridge-abi": 5,
             "native-source": "native"
         }))
         .expect("a valid producer contract must decode");
         assert_eq!(valid.bridge_abi, 5);
         assert_eq!(valid.native_source, std::path::Path::new("native"));
+    }
+
+    #[test]
+    fn wpe_runtime_metadata_rejects_a_missing_identity() {
+        let declared: Result<super::WpeRuntimeMetadata, _> =
+            serde_json::from_value(serde_json::json!({
+                "version": "2.52.5",
+                "bridge-abi": 5,
+                "native-source": "native"
+            }));
+        let error = declared
+            .expect_err("a package predating the published-runtime contract is an error")
+            .to_string();
+        assert!(
+            error.contains("identity"),
+            "the error must name the missing key: {error}"
+        );
     }
 }

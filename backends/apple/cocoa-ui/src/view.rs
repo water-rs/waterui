@@ -762,18 +762,32 @@ pub fn set_insets_layout_margins_from_safe_area(view: &PlatformView, insets: boo
     view.setInsetsLayoutMarginsFromSafeArea(insets);
 }
 
-/// Makes `parent`'s subviews exactly `ordered`, in that z-order, reusing the
-/// subview instances already attached.
-#[cfg(target_os = "macos")]
+/// Makes `parent`'s subviews exactly `ordered`, in that z-order.
+///
+/// Reuses the subview instances already attached. A hierarchy already in
+/// that order is left untouched, so a caller may reconcile on every layout
+/// pass.
 pub fn reconcile_subviews(parent: &PlatformView, ordered: &[Retained<PlatformView>]) {
+    let current = parent.subviews();
+    if current.len() == ordered.len()
+        && current
+            .iter()
+            .zip(ordered)
+            .all(|(attached, wanted)| std::ptr::eq(&raw const *attached, &raw const **wanted))
+    {
+        return;
+    }
+    apply_subview_order(parent, ordered);
+}
+
+#[cfg(target_os = "macos")]
+fn apply_subview_order(parent: &PlatformView, ordered: &[Retained<PlatformView>]) {
     use objc2_foundation::NSArray;
     parent.setSubviews(&NSArray::from_retained_slice(ordered));
 }
 
-/// Makes `parent`'s subviews exactly `ordered`, in that z-order, reusing the
-/// subview instances already attached.
 #[cfg(target_os = "ios")]
-pub fn reconcile_subviews(parent: &PlatformView, ordered: &[Retained<PlatformView>]) {
+fn apply_subview_order(parent: &PlatformView, ordered: &[Retained<PlatformView>]) {
     use std::ptr;
 
     for subview in parent.subviews().to_vec() {

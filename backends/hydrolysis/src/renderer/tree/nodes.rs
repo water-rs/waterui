@@ -6,8 +6,11 @@ use super::layout::{SignatureHasher, hash_size};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::text::TextLayout as _;
+use waterui::gesture::TapGesture;
 use waterui_core::transition::TransitionSpec;
 use waterui_layout::safe_area::IgnoreSafeArea;
+use waterui_text::styled::TapSpan;
 
 /// A retained sub-view a native widget owns and re-renders every flush — the
 /// solution for a widget's move-only `AnyView` label sub-views (slider min/max
@@ -1153,6 +1156,27 @@ pub struct TextNode<E: crate::text::TextEngine> {
     /// The `content` and `alignment` subscriptions that arm `layout_dirty`,
     /// owned by this retained leaf.
     pub(crate) _guards: [BoxWatcherGuard; 2],
+    /// The tap targets the last flush registered for the content's
+    /// [`TapSpan`]s — one entry per laid-out span rectangle, reused in order
+    /// each flush like [`GestureObserverEffect::gesture_target`] so a tap
+    /// that began before the repaint keeps its recognizer.
+    pub(crate) tap_span_targets: RefCell<Vec<TapSpanTarget>>,
+}
+
+/// One tap-span rectangle's retained registration: the [`GestureTarget`]
+/// re-registered every flush and the slot its recognizer's action reads.
+/// The slot is refreshed per flush, so a target index that now covers a
+/// different span never fires the stale span's action.
+pub struct TapSpanTarget {
+    pub(crate) target: crate::gesture::GestureTarget,
+    pub(crate) slot: Rc<RefCell<TapSpanSlot>>,
+}
+
+/// What a span tap target fires: the span and the environment captured at
+/// registration, both refreshed on every flush.
+pub struct TapSpanSlot {
+    pub(crate) span: TapSpan,
+    pub(crate) env: Environment,
 }
 
 pub struct ContainerNode<E: crate::text::TextEngine> {
@@ -1743,30 +1767,34 @@ impl<E: crate::text::TextEngine> TextNode<E> {
     /// [`Native<TextConfig>::accessibility`] so the render-tree path produces the
     /// same a11y tree the dispatch path did. Called from `flush` with the node's
     /// scoped environment (label/role resolution reads env).
+    ///
+    /// Returns the node's id — the parent per-span `Link` children attach
+    /// under — or `None` when the leaf published no node (hidden, empty, or
+    /// its label donated to a naming claim).
     #[cfg(feature = "accessibility")]
     pub(super) fn emit_accessibility(
         renderer: &mut crate::renderer::SemanticCore<E>,
         ctx: Option<RenderContext>,
         styled: &StyledStr,
         env: &Environment,
-    ) {
+    ) -> Option<AccessibilityNodeId> {
         if env
             .get::<AccessibilityHidden>()
             .is_some_and(AccessibilityHidden::is_hidden)
         {
-            return;
+            return None;
         }
         let plain = styled.to_semantic().to_string();
         let default_label = (!plain.is_empty()).then_some(plain);
         let label = renderer.resolve_accessibility_label(env, default_label);
         let value = renderer.resolve_accessibility_value(env, None);
         if label.is_none() && value.is_none() {
-            return;
+            return None;
         }
         if let Some(label) = &label
             && renderer.consume_accessibility_descendant_text(env, label)
         {
-            return;
+            return None;
         }
         let mut node = AccessibilityNode::new(SemanticCore::<E>::resolve_accessibility_role(
             env,
@@ -1778,7 +1806,169 @@ impl<E: crate::text::TextEngine> TextNode<E> {
         if let Some(value) = value {
             node.set_value(value);
         }
-        let _ = renderer.register_accessibility_leaf(ctx, node, env, None);
+        renderer.register_accessibility_leaf(ctx, node, env, None)
+    }
+
+    /// Emit one `Link` accessibility node per [`TapSpan`] of `styled` —
+    /// children of the text's own node when `parent` carries it, siblings
+    /// under the ambient parent when the leaf published none. `span_rects`
+    /// is each span's node-local rectangles on the rendered walk (a span the
+    /// line-limit ellipsis cut entirely emits nothing); `None` is the
+    /// semantic walk's no-geometry emission of the same nodes.
+    #[cfg(feature = "accessibility")]
+    pub(super) fn emit_tap_span_accessibility(
+        renderer: &mut crate::renderer::SemanticCore<E>,
+        span_rects: Option<&[Vec<kurbo::Rect>]>,
+        tap_spans: &[TapSpan],
+        plain: &str,
+        env: &Environment,
+        parent: Option<AccessibilityNodeId>,
+    ) {
+        if tap_spans.is_empty()
+            || env
+                .get::<AccessibilityHidden>()
+                .is_some_and(AccessibilityHidden::is_hidden)
+        {
+            return;
+        }
+        let disabled = env
+            .get::<waterui_core::interaction::Disabled>()
+            .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
+        if let Some(parent) = parent {
+            renderer.push_accessibility_parent(parent);
+        }
+        for (index, span) in tap_spans.iter().enumerate() {
+            let bounds = span_rects.and_then(|rects| {
+                let rects = rects.get(index)?;
+                (!rects.is_empty()).then(|| {
+                    rects
+                        .iter()
+                        .skip(1)
+                        .fold(rects[0], |union, rect| union.union(*rect))
+                })
+            });
+            if span_rects.is_some() && bounds.is_none() {
+                continue;
+            }
+            let mut node = AccessibilityNode::new(AccessibilityNodeRole::Link);
+            node.set_label(plain[span.range()].to_string());
+            node.add_action(AccessibilityAction::Focus);
+            let action_target = if disabled {
+                node.set_disabled();
+                None
+            } else {
+                node.add_action(AccessibilityAction::Click);
+                let span = span.clone();
+                let captured_env = env.clone();
+                Some(AccessibilityActionTarget::Activate {
+                    action: Rc::new(RefCell::new(
+                        move |_renderer: &mut crate::renderer::SemanticCore<E>,
+                              runtime_env: &Environment| {
+                            span.activate(&captured_env.layered_on(runtime_env));
+                            true
+                        },
+                    )),
+                })
+            };
+            if let Some(bounds) = bounds {
+                let _ = renderer.register_accessibility_node(node, bounds, env, action_target);
+            } else {
+                let _ = renderer.register_accessibility_node_semantic(node, env, action_target);
+            }
+        }
+        if parent.is_some() {
+            renderer.pop_accessibility_parent();
+        }
+    }
+
+    /// Re-register each [`TapSpan`]'s tap targets at the rectangles `layout`
+    /// reports for its byte range — one target per rectangle, so a wrapped
+    /// span taps on every line it covers — then emit the spans' `Link`
+    /// accessibility children. The targets sit at this node's depth, so a
+    /// tap inside a span reaches the span's action while a tap outside every
+    /// span hits no target here and falls through to whatever lies behind.
+    /// Called from `flush` after the text recorded, under the node's render
+    /// owner so target ancestry matches the node that emitted them.
+    pub(super) fn flush_tap_spans(
+        &self,
+        renderer: &mut HydrolysisRenderer<E>,
+        ctx: RenderContext,
+        layout: &E::Layout,
+        styled: &StyledStr,
+        env: &Environment,
+        #[cfg(feature = "accessibility")] text_node_id: Option<AccessibilityNodeId>,
+    ) {
+        let tap_spans = styled.tap_spans();
+        if tap_spans.is_empty() {
+            return;
+        }
+        let disabled = env
+            .get::<waterui_core::interaction::Disabled>()
+            .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
+        // The recording's origin is the bounds' top-left: a layout-space
+        // rectangle lands there offset into this node's local space.
+        let origin = ctx.bounds.origin().to_vec2();
+        let group_id = renderer
+            .gesture_group_id_for_identity(Rc::as_ptr(&self.accessibility_identity) as usize);
+        let plain = styled.to_plain();
+        let mut targets = self.tap_span_targets.borrow_mut();
+        let mut index = 0usize;
+        #[cfg(feature = "accessibility")]
+        let mut span_rects = Vec::with_capacity(tap_spans.len());
+        for span in tap_spans {
+            let range = span.range();
+            let mut rects = Vec::new();
+            layout.selection_rects(
+                layout.selection(
+                    crate::text::TextPosition::in_text(range.start, plain.len()),
+                    crate::text::TextPosition::in_text(range.end, plain.len()),
+                ),
+                |rect| rects.push(rect + origin),
+            );
+            if !disabled {
+                for rect in rects.iter().copied() {
+                    if let Some(entry) = targets.get_mut(index) {
+                        *entry.slot.borrow_mut() = TapSpanSlot {
+                            span: span.clone(),
+                            env: env.clone(),
+                        };
+                        renderer.register_retained_gesture_target(&entry.target, rect, group_id);
+                    } else {
+                        let slot = Rc::new(RefCell::new(TapSpanSlot {
+                            span: span.clone(),
+                            env: env.clone(),
+                        }));
+                        let action: BoxedAction<()> = Box::new({
+                            let slot = Rc::clone(&slot);
+                            move |runtime_env: &Environment| {
+                                let slot = slot.borrow();
+                                slot.span.activate(&slot.env.layered_on(runtime_env));
+                            }
+                        });
+                        let target = renderer.register_gesture_target(
+                            rect,
+                            group_id,
+                            Gesture::Tap(TapGesture::new()),
+                            action,
+                        );
+                        targets.push(TapSpanTarget { target, slot });
+                    }
+                    index += 1;
+                }
+            }
+            #[cfg(feature = "accessibility")]
+            span_rects.push(rects);
+        }
+        targets.truncate(index);
+        #[cfg(feature = "accessibility")]
+        Self::emit_tap_span_accessibility(
+            renderer,
+            Some(&span_rects),
+            tap_spans,
+            &plain,
+            env,
+            text_node_id,
+        );
     }
 
     #[cfg(not(feature = "accessibility"))]

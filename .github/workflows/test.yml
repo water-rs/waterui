@@ -233,6 +233,11 @@ jobs:
       - name: Clippy (filtrate without wgpu)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'filtrate')
         run: cargo clippy --locked --profile ci-check -p filtrate --no-default-features --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      # filtrate-core's `no_std` build: `filtrate` keeps the core's default
+      # `std`, so no other leg compiles the crate without it (#3537).
+      - name: Clippy (filtrate-core without std)
+        if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'filtrate')
+        run: cargo clippy --locked --profile ci-check -p filtrate-core --no-default-features --lib --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # The scene crate's `generator` feature compiles the corpus-writing
       # binaries (`generate-corpus`, `prepare-fonts`) that every scene
       # consumer's assets come from; the cherenkov repository kept a
@@ -516,7 +521,7 @@ jobs:
         # specific exclusions; `nightly.yml`
         # calls it beside this one. This job runs only when `full` is set, so
         # both platforms are always in the matrix.
-        os: ["ubuntu-latest", "macos-latest"]
+        os: ["ubuntu-latest", "xcode-27"]
     steps:
       - uses: actions/checkout@v4
       # The nightly test profiles restore only Cargo sources. Their multi-GB
@@ -698,9 +703,9 @@ jobs:
   # three have nothing in common but the platform, so each is its own job and
   # the doctests moved into `test`, whose build they share.
   macos-all-features:
-    name: macos-latest (all features)
+    name: macOS (all features)
     if: inputs.full
-    runs-on: macos-latest
+    runs-on: xcode-27
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -772,9 +777,9 @@ jobs:
   # minute all-features compile. The CEF legs it used to carry moved to
   # water-rs/browsers' own CI with the engine crates (#868).
   macos-lint:
-    name: macos-lint (macos-latest)
+    name: macos-lint
     if: inputs.full
-    runs-on: macos-latest
+    runs-on: xcode-27
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -820,7 +825,7 @@ jobs:
       fail-fast: false
       matrix:
         # Gated on `full` like `test` above, so both platforms always run.
-        os: ["ubuntu-latest", "macos-latest"]
+        os: ["ubuntu-latest", "xcode-27"]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
@@ -1085,7 +1090,7 @@ jobs:
     # affected.yml lists only the targets with an Apple-gated crate in
     # scope, so no runner starts to find nothing to lint.
     if: inputs.full == false && inputs['apple-legs'] != '[]'
-    runs-on: macos-latest
+    runs-on: xcode-27
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -1232,7 +1237,7 @@ jobs:
   cherenkov-metal:
     name: cherenkov corpus (Metal adapters)
     if: inputs.full
-    runs-on: macos-latest
+    runs-on: xcode-27
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
