@@ -306,6 +306,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             state,
             window: native_window,
             window_slot,
+            transparent,
         } = engine_target;
         if !window_slot
             .as_ref()
@@ -320,6 +321,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
                 native_window,
                 (target.width, target.height),
                 self.host_wake(),
+                transparent,
             );
             *window_slot = Some(CherenkovWindow::new(
                 surface,

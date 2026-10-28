@@ -318,6 +318,21 @@ impl HostBridge {
     fn set_back_navigation_available(&self, available: bool) {
         self.call(HostMethodId::BackAvailable, &[JValue::Bool(available)]);
     }
+
+    /// `session.onNativeTranslucency(translucent, blurBehind, blurRadiusPx)` —
+    /// the window's compositing request: a translucent window and surface
+    /// when `translucent` holds, the platform behind-window blur at
+    /// `blurRadiusPx` device pixels while `blurBehind` does.
+    fn set_translucency(&self, translucent: bool, blur_behind: bool, blur_radius_px: i32) {
+        self.call(
+            HostMethodId::Translucency,
+            &[
+                JValue::Bool(translucent),
+                JValue::Bool(blur_behind),
+                JValue::Int(blur_radius_px),
+            ],
+        );
+    }
 }
 
 /// The Kotlin host's window on the runner's side: host services only. The
@@ -360,6 +375,14 @@ pub struct AndroidHostWindow {
     /// report UI focus into; while it is held the IME channel belongs to the
     /// child and a stale cleared claim must not hide its keyboard.
     pub(crate) platform_view_focus: crate::platform_view::PlatformViewFocus,
+    /// The window's last compositing request: `translucent` composites the
+    /// window with what lies behind it, `blur_behind` is the behind-window
+    /// material level asking the compositor to blur that content — the pair
+    /// the host callback carries. The HWUI painter rejects behind-window
+    /// material outright, so the blur half exists only on the GPU build.
+    translucent: bool,
+    #[cfg(not(hydrolysis_hwui))]
+    blur_behind: Option<crate::renderer::material::BehindWindowLevel>,
     frame_transaction: FrameTransaction,
 }
 
@@ -438,6 +461,27 @@ impl AndroidHostWindow {
     pub(crate) const fn presentation_attached(&self) -> bool {
         self.metrics.width_px > 0 && self.metrics.height_px > 0
     }
+
+    /// Pushes the compositing request to the Kotlin host. Both halves ride
+    /// one callback: the window's translucency and its blur-behind ask
+    /// describe the same resolved background. The blur radius is the level's
+    /// measured σ converted to device pixels, then to the radius Android's
+    /// `setBackgroundBlurRadius` expects — Skia relates them as
+    /// `σ = radius·0.57735 + 0.5`.
+    fn sync_translucency(&self) {
+        #[cfg(hydrolysis_hwui)]
+        let (blur_behind, blur_radius_px) = (false, 0);
+        #[cfg(not(hydrolysis_hwui))]
+        let (blur_behind, blur_radius_px) = self.blur_behind.map_or((false, 0), |level| {
+            let sigma_px = f64::from(level.sigma()) * self.metrics.density;
+            (
+                true,
+                crate::num_cast::f64_as_i32(((sigma_px - 0.5) / 0.57735).round()),
+            )
+        });
+        self.bridge
+            .set_translucency(self.translucent, blur_behind, blur_radius_px);
+    }
 }
 
 impl PlatformWindow for AndroidHostWindow {
@@ -483,6 +527,21 @@ impl PlatformWindow for AndroidHostWindow {
     /// nothing the renderer could draw reaches the user.
     fn is_occluded(&self) -> bool {
         !self.started || !self.host_attached || !self.presentation_attached()
+    }
+
+    /// The translucent-window request, split at the painter boundary: the
+    /// GPU attachment's next engine surface is created with the request's
+    /// compositing mode, and the Kotlin host switches the Activity window
+    /// translucent. An unchanged request repeats nothing — the per-frame
+    /// application stays a comparison.
+    fn set_transparent(&mut self, transparent: bool) {
+        if self.translucent == transparent {
+            return;
+        }
+        self.translucent = transparent;
+        #[cfg(not(hydrolysis_hwui))]
+        self.surface.set_transparent(transparent);
+        self.sync_translucency();
     }
 
     fn request_redraw(&self) {
@@ -633,6 +692,18 @@ impl GpuSurfaceWindow for AndroidHostWindow {
 
     fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
         Some(self.content_redraw_handle())
+    }
+
+    /// The compositor blur a behind-window material asks for — the host's
+    /// `Window.setBackgroundBlurRadius`, applied while the platform's
+    /// cross-window blur stays enabled. An unchanged request repeats
+    /// nothing.
+    fn set_blur_behind(&mut self, level: Option<crate::renderer::material::BehindWindowLevel>) {
+        if self.blur_behind == level {
+            return;
+        }
+        self.blur_behind = level;
+        self.sync_translucency();
     }
 }
 
@@ -1145,6 +1216,9 @@ impl AndroidSession {
             cursor_style: CursorStyle::default(),
             soft_input: None,
             platform_view_focus,
+            translucent: false,
+            #[cfg(not(hydrolysis_hwui))]
+            blur_behind: None,
             // The session mounts parked — hidden until `onStart` and the
             // surface attach report it visible — so the wake's gate opens
             // on the first occlusion sync, not at construction.

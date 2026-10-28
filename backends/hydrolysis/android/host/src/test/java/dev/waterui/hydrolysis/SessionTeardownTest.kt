@@ -206,6 +206,31 @@ class SessionTeardownTest {
         session.destroy()
     }
 
+    /**
+     * #1966: the translucency listeners switch the Activity window and
+     * recreate the band's surface, whose callbacks re-enter the session — so
+     * a change the frame reports reaches them only when the frame returns.
+     */
+    @Test
+    fun aTranslucencyChangeInsideANativeCallReachesTheListenersWhenItReturns() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(activity, onCloseRequested = {})
+        val seen = mutableListOf<HydrolysisSession.Translucency>()
+        session.addTranslucencyListener { seen += it }
+        seen.clear()
+        ShadowNativeBridge.onFrame = {
+            session.onNativeTranslucency(true, false, 0)
+            assertTrue(seen.isEmpty())
+            0L
+        }
+
+        session.onNativeRequestRedraw()
+        shadowOf(Looper.getMainLooper()).idleFor(FRAME_WINDOW)
+
+        assertEquals(listOf(HydrolysisSession.Translucency(true, false, 0)), seen)
+        session.destroy()
+    }
+
     @Test
     fun aSoftInputRequestOutsideANativeCallReachesTheHostAtOnce() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()

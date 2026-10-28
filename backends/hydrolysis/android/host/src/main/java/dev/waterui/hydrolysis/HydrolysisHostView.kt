@@ -1,8 +1,12 @@
 package dev.waterui.hydrolysis
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.res.Configuration
+import android.graphics.Color
+import android.graphics.drawable.Drawable
 import android.util.SparseArray
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
@@ -13,9 +17,11 @@ import android.view.ViewGroup
 import android.view.ViewStructure
 import android.view.ViewTreeObserver
 import android.view.WindowInsets
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeProvider
 import android.view.autofill.AutofillValue
 import android.view.inputmethod.EditorInfo
+import androidx.core.graphics.drawable.toDrawable
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import androidx.core.view.ViewCompat
@@ -235,11 +241,13 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         session?.bind(this)
+        session?.addTranslucencyListener(translucencyListener)
         viewTreeObserver.addOnPreDrawListener(metricsPreDrawListener)
         pushMetrics()
     }
 
     override fun onDetachedFromWindow() {
+        session?.removeTranslucencyListener(translucencyListener)
         viewTreeObserver.removeOnPreDrawListener(metricsPreDrawListener)
         // Nothing this view queued may reach the session after the detach:
         // a destroyed session tears down inside `unbind` below. The IMM
@@ -412,6 +420,105 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             getChildAt(i).layout(0, 0, r - l, b - t)
         }
         session?.requestPlacementPull()
+    }
+
+    // ------------------------------------------------------------------
+    // Window translucency — the resolved window background's compositing
+    // request, applied to the Activity window and the blur the platform
+    // grants for it.
+
+    /** The session's compositing pushes, applied while this view is on a window. */
+    private val translucencyListener: (HydrolysisSession.Translucency) -> Unit = {
+        (translucent, blurBehind, blurRadiusPx) ->
+        applyWindowTranslucency(translucent, blurBehind, blurRadiusPx)
+    }
+
+    /** The window currently composites with what lies behind it. */
+    private var windowTranslucent = false
+
+    /**
+     * The window background drawable the translucent request replaced, held
+     * so the opaque switch puts the theme's own drawable back.
+     */
+    private var savedWindowBackground: Drawable? = null
+
+    /** The material's behind-window blur ask the session last reported. */
+    private var requestedBlurBehind = false
+
+    /** The blur radius the native side resolved for the reported level, in px. */
+    private var requestedBlurRadiusPx = 0
+
+    /** The cross-window blur listener is registered with the WindowManager. */
+    private var blurListenerRegistered = false
+
+    /** Re-applies the blur request when the system's blur budget flips. */
+    private val blurEnabledListener =
+        java.util.function.Consumer<Boolean> { syncWindowBlur() }
+
+    /**
+     * The window's compositing half of the session's translucency push:
+     * `Activity.setTranslucent` switches the window between translucent and
+     * opaque, the window background drawable goes transparent for the
+     * duration, and `blurBehind` asks for `Window.setBackgroundBlurRadius`
+     * while the system's cross-window blur is enabled.
+     */
+    private fun applyWindowTranslucency(translucent: Boolean, blurBehind: Boolean, blurRadiusPx: Int) {
+        val activity = hostActivity()
+        if (translucent != windowTranslucent) {
+            activity.setTranslucent(translucent)
+            if (translucent) {
+                savedWindowBackground = activity.window.decorView.background
+                activity.window.setBackgroundDrawable(Color.TRANSPARENT.toDrawable())
+            } else {
+                activity.window.setBackgroundDrawable(savedWindowBackground)
+                savedWindowBackground = null
+            }
+            windowTranslucent = translucent
+        }
+        requestedBlurBehind = blurBehind
+        requestedBlurRadiusPx = blurRadiusPx
+        val windowManager = activity.getSystemService(WindowManager::class.java)
+        if (blurBehind != blurListenerRegistered) {
+            if (blurBehind) {
+                // The blur budget can flip at runtime — battery saver,
+                // minimal post-processing — so the radius is re-applied on
+                // every change, never assumed from the first answer.
+                windowManager.addCrossWindowBlurEnabledListener(
+                    activity.mainExecutor,
+                    blurEnabledListener,
+                )
+            } else {
+                windowManager.removeCrossWindowBlurEnabledListener(blurEnabledListener)
+            }
+            blurListenerRegistered = blurBehind
+        }
+        syncWindowBlur()
+    }
+
+    /** Applies the blur ask to the window, honoring the system's blur budget. */
+    private fun syncWindowBlur() {
+        if (!blurListenerRegistered) {
+            hostActivity().window.setBackgroundBlurRadius(0)
+            return
+        }
+        val activity = hostActivity()
+        val windowManager = activity.getSystemService(WindowManager::class.java)
+        val enabled = requestedBlurBehind && windowManager.isCrossWindowBlurEnabled
+        activity.window.setBackgroundBlurRadius(if (enabled) requestedBlurRadiusPx else 0)
+    }
+
+    /**
+     * The Activity this view's window belongs to. A translucent background
+     * names a window; a host with no Activity window is an unmet request,
+     * surfaced loudly rather than rendered opaque.
+     */
+    private fun hostActivity(): Activity {
+        var ctx = context
+        while (ctx is ContextWrapper && ctx !is Activity) {
+            ctx = ctx.baseContext
+        }
+        return ctx as? Activity
+            ?: error("hydrolysis: a translucent window background needs an Activity window; $context has none")
     }
 
     // ------------------------------------------------------------------
