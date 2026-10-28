@@ -1,9 +1,9 @@
 // Twin of examples/menu: menu sections inside a padded scroll stack.
 //
 // Initial bindings render their defaults: "None" for the menu selection and
-// "No action yet" / "No toolbar action yet" for the action logs. Context menus
-// and popup contents never appear in the settled first screen, so only the
-// presenting rows need to exist.
+// "No action yet" / "No toolbar action yet" / "No quit asked yet" for the
+// action logs. Context menus and popup contents never appear in the settled
+// first screen, so only the presenting rows need to exist.
 
 import SwiftUI
 
@@ -21,7 +21,11 @@ struct MenuTwin: View {
         wuiDivider()
         styledMenuSection
         wuiDivider()
-        contextMenuSection
+        VStack(spacing: 10) {
+          contextMenuSection
+          wuiDivider()
+          contextMenuAccessorySection
+        }
         wuiDivider()
         VStack(spacing: 10) {
           contextMenuViewsSection
@@ -29,7 +33,11 @@ struct MenuTwin: View {
           selectionMenuSection
         }
         wuiDivider()
-        toolbarSceneSection
+        VStack(spacing: 10) {
+          toolbarSceneSection
+          wuiDivider()
+          quitSection
+        }
         Spacer().frame(height: 40)
       }
       .padding(16)
@@ -108,6 +116,28 @@ struct MenuTwin: View {
     }
   }
 
+  // The example's preview card and accessory bar appear only while the
+  // context menu is open, so the presenting box is all the first screen shows.
+  private var contextMenuAccessorySection: some View {
+    section("Context Menu with Accessory", "Long press to preview with an inline accessory bar") {
+      Text("Long Press Me")
+        .padding(24)
+        .background(srgbHex(0xFFF3E0))
+        .foregroundStyle(srgbHex(0xE65100))
+        .contextMenu {
+          Button("Copy") {}
+          Button("Share") {}
+          Divider()
+          Menu("More") {
+            Button("Archive") {}
+          }
+          Button("Delete", role: .destructive) {}
+        }
+      Spacer().frame(height: 12)
+      Text("No action yet").font(.caption).foregroundStyle(.secondary)
+    }
+  }
+
   private var contextMenuViewsSection: some View {
     section("Context Menu on Views", "Long press any colored box") {
       HStack(spacing: 0) {
@@ -161,6 +191,20 @@ struct MenuTwin: View {
       Spacer().frame(height: 12)
       Text("Toolbar action: No toolbar action yet").font(.caption).foregroundStyle(.secondary)
     }
+  }
+
+  private var quitSection: some View {
+    VStack(spacing: 10) {
+      Text("Quitting").font(.subheadline)
+      Text(
+        "Quit asks the application, which answers after two seconds. Check Quitting > Refuse Quit in the menu bar to make it refuse."
+      )
+      .font(.body)
+      .foregroundStyle(.secondary)
+      Spacer().frame(height: 12)
+      Text("Last quit answer: No quit asked yet").font(.caption).foregroundStyle(.secondary)
+    }
+    .padding(14)
   }
 
   private func toolbarActions(iconOnly: Bool) -> some View {
