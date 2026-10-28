@@ -49,9 +49,76 @@ vertex CaptureCompositeVertexOut capture_composite_vertex(
     return output;
 }
 
+// The conversion from the sampled texture's colour to the target's, matching
+// the `CompositeConversion` struct the host passes through fragment buffer 0
+// — `repr(C, align(16))`, so the offsets and the 96-byte size line up.
+//
+// Each source and the target carry their own colour contract: the native
+// raster holds (extended) sRGB-encoded values, an `_sRGB` texture samples as
+// linear sRGB, a half-float surface holds linear extended Display P3. Every
+// source reaches the target in the target's own colour, so the blend runs
+// in the target's encoding, as Core Animation's compositing does for an
+// 8-bit target.
+struct CaptureCompositeConversion {
+    // Rows of the linear source-primaries → target-primaries matrix.
+    float4 rows[3];
+    // The sRGB transfer: slope, offset, scale (1 + offset), gamma.
+    float4 transfer;
+    // 1 / gamma, the linear-segment break, the encoded-segment break.
+    float4 breaks;
+    // Whether the conversion is the identity — the sample passes through.
+    uint identity;
+    // Whether the source carries the sRGB transfer.
+    uint decode_source;
+    // Whether the target expects the sRGB transfer.
+    uint encode_target;
+};
+
+// The sRGB transfer of linear light, mirrored through zero so extended
+// values stay extended.
+static float3 srgb_encode(float3 linear, constant CaptureCompositeConversion& c) {
+    float3 magnitude = abs(linear);
+    float3 curve = select(
+        magnitude * c.transfer.x,
+        c.transfer.z * pow(magnitude, float3(c.breaks.x)) - c.transfer.y,
+        magnitude > float3(c.breaks.y));
+    return copysign(curve, linear);
+}
+
+// The inverse of `srgb_encode`.
+static float3 srgb_decode(float3 encoded, constant CaptureCompositeConversion& c) {
+    float3 magnitude = abs(encoded);
+    float3 curve = select(
+        magnitude / c.transfer.x,
+        pow((magnitude + c.transfer.y) / c.transfer.z, float3(c.transfer.w)),
+        magnitude > float3(c.breaks.z));
+    return copysign(curve, encoded);
+}
+
 fragment float4 capture_composite_fragment(
     CaptureCompositeVertexOut input [[stage_in]],
     texture2d<float> overlayTexture [[texture(0)]],
-    sampler overlaySampler [[sampler(0)]]) {
-    return overlayTexture.sample(overlaySampler, input.uv);
+    sampler overlaySampler [[sampler(0)]],
+    constant CaptureCompositeConversion& conversion [[buffer(0)]]) {
+    float4 color = overlayTexture.sample(overlaySampler, input.uv);
+    if (conversion.identity != 0) {
+        return color;
+    }
+    // Premultiplied in, premultiplied out: the transfer applies to the
+    // straight colour. A pixel with zero alpha carries no colour.
+    if (color.a == 0.0) {
+        return float4(0.0);
+    }
+    float3 straight = color.rgb / color.a;
+    if (conversion.decode_source != 0) {
+        straight = srgb_decode(straight, conversion);
+    }
+    straight = float3(
+        dot(conversion.rows[0].xyz, straight),
+        dot(conversion.rows[1].xyz, straight),
+        dot(conversion.rows[2].xyz, straight));
+    if (conversion.encode_target != 0) {
+        straight = srgb_encode(straight, conversion);
+    }
+    return float4(straight * color.a, color.a);
 }

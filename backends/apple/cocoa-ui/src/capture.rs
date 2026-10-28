@@ -37,12 +37,17 @@ use std::sync::{Arc, Mutex};
 
 use block2::RcBlock;
 use dispatch2::{DispatchData, DispatchQoS, DispatchQueue, GlobalQueueIdentifier, MainThreadBound};
+use filtrate_core::space::{
+    P3_TO_SRGB, SRGB_ENCODED_BREAK, SRGB_GAMMA, SRGB_INVERSE_GAMMA, SRGB_LINEAR_BREAK, SRGB_OFFSET,
+    SRGB_SCALE, SRGB_SLOPE, SRGB_TO_P3,
+};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{ClassType, Message};
 use objc2_core_foundation::{CFRetained, CGAffineTransform};
 use objc2_core_graphics::{
-    CGBitmapContextCreate, CGContext, CGImageAlphaInfo, CGImageByteOrderInfo, CGImageComponentInfo,
+    CGBitmapContextCreate, CGColorSpace, CGContext, CGImageAlphaInfo, CGImageByteOrderInfo,
+    CGImageComponentInfo, kCGColorSpaceExtendedSRGB,
 };
 use objc2_foundation::{NSObjectProtocol, NSString};
 use objc2_metal::{
@@ -60,6 +65,7 @@ use crate::PlatformView;
 use crate::core_animation::flush_transaction;
 use crate::geometry::Rect;
 use crate::main_queue::enqueue;
+use crate::metal::{Primaries, ShaderColor, shader_color};
 
 /// The compositor's metallib, precompiled from `capture_composite.metal`
 /// at build time with `-ftexture-write-rounding-mode=rte` (#2827): a
@@ -182,6 +188,67 @@ const IDENTITY_UV: CompositeRegion = CompositeRegion {
     uv_origin: [0.0, 0.0],
     uv_scale: [1.0, 1.0],
 };
+
+/// The colour conversion handed to the composite fragment shader — mirrors
+/// `CaptureCompositeConversion` in `capture_composite.metal`: `float4`
+/// fields are `f32` quadruples, and `align(16)` pads the struct to the
+/// 96 bytes Metal lays it out in.
+///
+/// Every source — the native raster ([`raster_color`]), each surface's
+/// texture ([`shader_color`] of its format) — samples in its own colour, and
+/// the composite must store the target's: a half-float surface holds linear
+/// Display P3, which an 8-bit target read as sRGB-encoded would show darker
+/// and shifted toward P3's primaries (#3528).
+#[repr(C, align(16))]
+struct CompositeConversion {
+    rows: [[f32; 4]; 3],
+    transfer: [f32; 4],
+    breaks: [f32; 4],
+    identity: u32,
+    decode_source: u32,
+    encode_target: u32,
+}
+
+impl CompositeConversion {
+    /// The conversion from what a source samples as to what the target's
+    /// store expects.
+    fn between(source: ShaderColor, target: ShaderColor) -> Self {
+        let matrix = match (source.primaries, target.primaries) {
+            (Primaries::DisplayP3, Primaries::Srgb) => P3_TO_SRGB,
+            (Primaries::Srgb, Primaries::DisplayP3) => SRGB_TO_P3,
+            (Primaries::Srgb, Primaries::Srgb) | (Primaries::DisplayP3, Primaries::DisplayP3) => {
+                [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+            }
+        };
+        Self {
+            rows: matrix.map(|[r, g, b]| [r, g, b, 0.0]),
+            transfer: [SRGB_SLOPE, SRGB_OFFSET, SRGB_SCALE, SRGB_GAMMA],
+            breaks: [
+                SRGB_INVERSE_GAMMA,
+                SRGB_LINEAR_BREAK,
+                SRGB_ENCODED_BREAK,
+                0.0,
+            ],
+            identity: u32::from(source == target),
+            decode_source: u32::from(source.encoded),
+            encode_target: u32::from(target.encoded),
+        }
+    }
+
+    /// Binds the conversion to fragment buffer 0 of `encoder`.
+    fn bind(&self, encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>) {
+        // SAFETY: `encoder` is a live render encoder, index 0 is the
+        // fragment-constant slot the shader binds, and `setFragmentBytes`
+        // copies `self`'s bytes into the command.
+        unsafe {
+            encoder.setFragmentBytes_length_atIndex(
+                std::ptr::NonNull::from(self).cast::<core::ffi::c_void>(),
+                core::mem::size_of::<Self>(),
+                0,
+            );
+        }
+    }
+}
 
 /// A pixel extent as the `f64` Metal viewports and bounds take.
 fn pixel_extent(value: usize) -> f64 {
@@ -843,7 +910,9 @@ impl CompositorGuard<'_> {
     }
 
     /// Encodes the composite pass: each surface's texture at its viewport and
-    /// scissor, then the overlay full-screen, into `target`.
+    /// scissor, then the overlay — sampling as its paired colour — full-screen,
+    /// into `target`. Every source is converted into `target`'s colour, so
+    /// the blend runs in the target's encoding.
     ///
     /// Premultiplied-over blending (`.one` / `.oneMinusSourceAlpha`), a
     /// linear clamp-to-edge sampler, a fullscreen triangle per region — the
@@ -855,12 +924,13 @@ impl CompositorGuard<'_> {
     pub fn encode_composition(
         &mut self,
         surfaces: &[RenderedSurface],
-        overlay: Option<&ProtocolObject<dyn MTLTexture>>,
+        overlay: Option<(&ProtocolObject<dyn MTLTexture>, ShaderColor)>,
         target: &ProtocolObject<dyn MTLTexture>,
         command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
         device: &ProtocolObject<dyn MTLDevice>,
     ) {
         let resources = self.state.device_resources(device);
+        let target_color = shader_color(target.pixelFormat());
         let descriptor = MTLRenderPassDescriptor::new();
         // SAFETY: index 0 is the single color attachment.
         let attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(0) };
@@ -894,6 +964,8 @@ impl CompositorGuard<'_> {
                 zfar: 1.0,
             });
             encoder.setScissorRect(spec.clip);
+            CompositeConversion::between(shader_color(spec.pixel_format), target_color)
+                .bind(&encoder);
             let region = CompositeRegion {
                 uv_origin: spec.uv_origin,
                 uv_scale: spec.uv_scale,
@@ -911,7 +983,7 @@ impl CompositorGuard<'_> {
                 encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3);
             }
         }
-        if let Some(overlay) = overlay {
+        if let Some((overlay, overlay_color)) = overlay {
             encoder.setViewport(MTLViewport {
                 originX: 0.0,
                 originY: 0.0,
@@ -926,6 +998,7 @@ impl CompositorGuard<'_> {
                 width: target.width(),
                 height: target.height(),
             });
+            CompositeConversion::between(overlay_color, target_color).bind(&encoder);
             // SAFETY: same encoder/slot contract as above; the overlay
             // samples its whole texture — identity window.
             unsafe {
@@ -984,6 +1057,40 @@ struct NativeRasterFrame {
     pixel_format: MTLPixelFormat,
     /// The padded row stride the buffer and the blit source layout share.
     row_bytes: usize,
+    /// What the texture samples as — [`raster_color`] of the format.
+    color: ShaderColor,
+}
+
+/// The colour space the native raster draws a `pixel_format` destination
+/// in, and what its texture then samples as.
+///
+/// A `CGContext` blends in its own colour space, and Core Animation
+/// composites a window's layers on their sRGB-encoded values. A raster in
+/// a linear space would blend every translucent layer, antialiased edge and
+/// shadow in linear light — lighter than the window shows it (#3528) — so
+/// the raster always draws in an encoded space: sRGB as [`color_space`]
+/// tags an 8-bit destination, and extended sRGB for the half-float one,
+/// whose extended range keeps wide-gamut content. The composite pass then
+/// converts the raster into the target's colour like every other source.
+///
+/// [`color_space`]: crate::metal::color_space
+fn raster_color(pixel_format: MTLPixelFormat) -> (CFRetained<CGColorSpace>, ShaderColor) {
+    if pixel_format == MTLPixelFormat::RGBA16Float {
+        // SAFETY: the colorspace statics are system constants.
+        let name = unsafe { kCGColorSpaceExtendedSRGB };
+        let space = CGColorSpace::with_name(Some(name))
+            .expect("could not create the extended sRGB raster color space");
+        let color = ShaderColor {
+            primaries: Primaries::Srgb,
+            encoded: true,
+        };
+        (space, color)
+    } else {
+        (
+            crate::metal::color_space(pixel_format),
+            shader_color(pixel_format),
+        )
+    }
 }
 
 /// The (bits per component, `CGBitmapInfo`, bytes per pixel) a capture
@@ -1065,7 +1172,7 @@ impl NativeRasterFrame {
         let texture = device
             .newTextureWithDescriptor(&descriptor)
             .expect("failed to create the private native capture texture");
-        let color_space = crate::metal::color_space(pixel_format);
+        let (color_space, color) = raster_color(pixel_format);
         // SAFETY: `buffer.contents()` is valid for the buffer's whole
         // length — `row_bytes * pixel_height` — for the context's entire
         // lifetime, which `self` bounds by owning the buffer; the layout
@@ -1093,6 +1200,7 @@ impl NativeRasterFrame {
             pixel_height,
             pixel_format,
             row_bytes,
+            color,
         }
     }
 
@@ -1187,6 +1295,11 @@ impl RasterLease {
     /// `encode_transfer` has run on the same command buffer.
     fn texture(&self) -> &Retained<ProtocolObject<dyn MTLTexture>> {
         &self.frame.as_ref().expect("a lease owns its frame").texture
+    }
+
+    /// What [`texture`](Self::texture) samples as.
+    const fn color(&self) -> ShaderColor {
+        self.frame.as_ref().expect("a lease owns its frame").color
     }
 
     /// Encodes the blit transfer into the composition command buffer —
@@ -2335,7 +2448,10 @@ impl ViewCapture {
             preparation.get().raster.encode_transfer(&command_buffer);
             guard.encode_composition(
                 rendered.get(),
-                Some(preparation.get().raster.texture()),
+                Some((
+                    preparation.get().raster.texture(),
+                    preparation.get().raster.color(),
+                )),
                 &preparation.get().target,
                 &command_buffer,
                 &preparation.get().device,
@@ -2501,9 +2617,9 @@ mod tests {
     };
 
     use super::{
-        CaptureError, CompositeRegion, CompositionFailed, CompositorState, DeviceResources,
-        FenceBatch, NativeRenderer, SurfaceSpec, UnresolvedMetalLayer, composition_outcome,
-        metal_in_layer_tree,
+        CaptureError, CompositeConversion, CompositeRegion, CompositionFailed, CompositorState,
+        DeviceResources, FenceBatch, NativeRenderer, SurfaceSpec, UnresolvedMetalLayer,
+        composition_outcome, metal_in_layer_tree,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -2681,6 +2797,8 @@ mod tests {
             uv_origin: [0.0, 0.0],
             uv_scale: [1.0, 1.0],
         };
+        let half_float = crate::metal::shader_color(MTLPixelFormat::RGBA16Float);
+        CompositeConversion::between(half_float, half_float).bind(&encoder);
         // SAFETY: `encoder` is a live render encoder; index 0 is the
         // vertex-constant, texture and sampler slots the shader binds, and
         // `setVertexBytes` copies `region`'s bytes into the command.
