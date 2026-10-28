@@ -237,9 +237,14 @@ jobs:
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
         run: brew install periphery
+      # Periphery (last release 3.8.0, upstream archived) looks for the
+      # index store at SwiftPM's pre-6.4 location, so the scan build names
+      # the store explicitly and Periphery reads it from there.
       - name: Run Periphery
         if: matrix.configuration == 'debug'
-        run: periphery scan --config .periphery.yml
+        run: |
+          swift build --configuration debug -Xswiftc -index-store-path -Xswiftc .build/periphery-index
+          periphery scan --config .periphery.yml --skip-build --index-store-path .build/periphery-index
 
   # One job for every target: the three clippy passes, the feature shapes,
   # the tests and the bench compile share one checkout, one toolchain
