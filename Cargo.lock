@@ -12744,6 +12744,7 @@ dependencies = [
  "async-channel",
  "block2 0.6.2",
  "cfg_aliases",
+ "cherenkov-oracle",
  "cocoa-ui",
  "cookie",
  "criterion",

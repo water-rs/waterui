@@ -192,6 +192,7 @@ fn trials() -> Vec<Trial> {
         {
             tests.extend(gpu_surface::trials());
             tests.extend(filtered::trials());
+            tests.extend(capture_colour::trials());
         }
     }
     #[cfg(target_os = "ios")]
@@ -3648,6 +3649,234 @@ mod filtered {
             }
         }
         Ok(())
+    }
+}
+
+/// #3528: a `FilteredView` whose chain declines the native realizations
+/// composites through `capture.rs` — the compositor once stored every
+/// source's sampled values unconverted, so an identity chain's half-float
+/// linear-P3 output read back darker and hue-shifted. The trial captures
+/// the same column rendered plain and under the identity chain and
+/// measures the difference with the oracle's LDR-FLIP.
+#[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
+mod capture_colour {
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::rc::autoreleasepool;
+    use cocoa_ui::view;
+    use libtest_mimic::Trial;
+    use waterui_apple::native_test_support::{capture_view_rgba, pump_main_until};
+
+    use super::transition::{gpu_leaf, gpu_picture};
+    use super::{HostView, PlatformView, Retained, mtm};
+
+    /// The columns' pinned edge: `200×200` points each.
+    const COLUMN_EDGE: f64 = 200.0;
+
+    /// The gap between the two columns' leading edges.
+    const COLUMN_GAP: f64 = 20.0;
+
+    /// The `capture_colour::` trials.
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "capture_colour::a_capture_realized_identity_filter_preserves_colour",
+            || {
+                a_capture_realized_identity_filter_preserves_colour();
+                Ok(())
+            },
+        )]
+    }
+
+    /// The asymmetric marker rectangle, (40,20)–(140,120) in the
+    /// column's flipped `200×200` space.
+    fn marker_rect() -> waterui::layout::PinConstraints {
+        waterui::layout::PinConstraints::new()
+            .leading(40.0)
+            .top(20.0)
+            .width(100.0)
+            .height(100.0)
+    }
+
+    /// One `200×200` column: a `MeshGradient` GPU surface at the marker
+    /// rectangle, a half-transparent magenta native rectangle over it,
+    /// an opaque black notch at the marker's top-left corner and an
+    /// asymmetric label — GPU content, translucent and opaque native
+    /// raster, and text in one column, so the comparison covers every
+    /// source kind the capture compositor converts.
+    fn column_subtree() -> impl waterui_backend_core::View {
+        use waterui::Color;
+        use waterui::ViewExt;
+        use waterui::graphics::color::Srgb;
+        use waterui::layout::{PinConstraints, PositionExt, absolute};
+        use waterui::prelude::text;
+        absolute((
+            gpu_picture().pin(marker_rect()),
+            Color::new(Srgb::new(1.0, 0.0, 1.0))
+                .opacity(0.5)
+                .pin(marker_rect()),
+            Color::new(Srgb::new(0.0, 0.0, 0.0)).pin(
+                PinConstraints::new()
+                    .leading(40.0)
+                    .top(20.0)
+                    .width(20.0)
+                    .height(20.0),
+            ),
+            text("Fg 3528 \u{2191}").pin(PinConstraints::new().leading(10.0).top(140.0)),
+        ))
+    }
+
+    /// The capturable surfaces resolved at `root`'s first depth, with
+    /// the retained views that carry them — the GPU child's kit
+    /// `SurfaceView` and the `HostView` the filtered output resolves on.
+    fn capturables(
+        root: &PlatformView,
+    ) -> Vec<(
+        Retained<PlatformView>,
+        Rc<dyn cocoa_ui::capture::CapturableSurface>,
+    )> {
+        let mut entries = Vec::new();
+        cocoa_ui::capture::for_each_capturable(root, &mut |surface_view, surface| {
+            entries.push((view::retain_base(surface_view), Rc::clone(surface)));
+        });
+        entries
+    }
+
+    /// The outermost `200×200` views of `root`'s subtree ordered by their
+    /// leading edge in `root`'s coordinates: `index` 0 is the uncaptured
+    /// column, 1 the filtered one. Only size and order identify the
+    /// columns — their absolute origin is the window's — and `f64` frame
+    /// values compare inside a half-point band.
+    fn column(root: &PlatformView, index: usize) -> Retained<PlatformView> {
+        let mut columns = Vec::new();
+        let mut queue = std::collections::VecDeque::from([view::retain_base(root)]);
+        while let Some(candidate) = queue.pop_front() {
+            let frame = view::convert_rect(&candidate, view::bounds(&candidate), Some(root));
+            if (frame.size.width - COLUMN_EDGE).abs() < 0.5
+                && (frame.size.height - COLUMN_EDGE).abs() < 0.5
+            {
+                columns.push((frame.origin.x, candidate));
+            } else {
+                queue.extend(view::subviews(&candidate));
+            }
+        }
+        columns.sort_by(|a, b| a.0.total_cmp(&b.0));
+        columns
+            .into_iter()
+            .nth(index)
+            .unwrap_or_else(|| panic!("no 200×200 column {index}"))
+            .1
+    }
+
+    /// A capture's premultiplied sRGB-encoded RGBA8 texels as the
+    /// oracle's premultiplied linear-P3 interchange image.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the oracle's f32 interchange format deliberately narrows its f64 colour maths"
+    )]
+    fn linear_p3(texels: &[u8], width: u32, height: u32) -> cherenkov_oracle::F32Image {
+        use cherenkov_oracle::color::{linear_srgb_to_linear_p3, srgb_decode};
+        let pixels = texels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| {
+                let alpha = f64::from(p[3]) / 255.0;
+                if alpha == 0.0 {
+                    return [0.0; 4];
+                }
+                let [r, g, b] = linear_srgb_to_linear_p3(
+                    [p[0], p[1], p[2]].map(|c| srgb_decode(f64::from(c) / 255.0 / alpha)),
+                );
+                [r * alpha, g * alpha, b * alpha, alpha].map(|c| c as f32)
+            })
+            .collect();
+        cherenkov_oracle::F32Image {
+            width,
+            height,
+            pixels,
+        }
+    }
+
+    /// `a_capture_realized_identity_filter_preserves_colour` — #3528's
+    /// reproduction: the same `200×200` column uncaptured at x=0 and under
+    /// a capture-realized identity chain (`Brightness(0.0)` with a
+    /// declared `OutputSize::MatchInput`, which `native_filter::plan`
+    /// declines) at x=220. Both columns read back through
+    /// `capture_view_rgba` — the `capture_rgba` path the issue's numbers
+    /// came from — and must match under the oracle's same-pixels limits.
+    pub fn a_capture_realized_identity_filter_preserves_colour() {
+        use waterui::graphics::filtrate::filters::Brightness;
+        use waterui::graphics::{AnyEffect, FilteredView, OutputSize, ParamGuards};
+        use waterui::layout::{PinConstraints, PositionExt, absolute};
+        use waterui_backend_core::AnyView;
+
+        let _mtm = mtm();
+        let column_pin = |leading: f64| {
+            PinConstraints::new()
+                .leading(leading)
+                .top(0.0)
+                .width(COLUMN_EDGE)
+                .height(COLUMN_EDGE)
+        };
+        let filtered = FilteredView {
+            content: AnyView::new(column_subtree()),
+            effect: AnyEffect::filter(Brightness(0.0_f32)),
+            guards: ParamGuards::default(),
+        }
+        .output_size(OutputSize::MatchInput);
+        let leaf = gpu_leaf(absolute((
+            column_subtree().pin(column_pin(0.0)),
+            filtered.pin(column_pin(COLUMN_EDGE + COLUMN_GAP)),
+        )));
+        let _window = super::mount_and_order_front(leaf.view());
+        let root = leaf.view();
+
+        assert!(
+            pump_main_until(10.0, || {
+                autoreleasepool(|_| {
+                    let entries = capturables(root);
+                    entries.len() == 2
+                        && entries
+                            .iter()
+                            .all(|(_, surface)| surface.has_presented_frame())
+                })
+            }),
+            "the reference GPU surface and the filtered output both present"
+        );
+
+        // Realization check: the capture realization hides its unfiltered
+        // content view and never arms `layerUsesCoreImageFilters` — a
+        // `CIFilter` realization keeps the content visible on a Core
+        // Image-filtered layer, so these assertions pin the case to the
+        // path under test.
+        let filtered_host = capturables(root)
+            .into_iter()
+            .find_map(|(host, _)| host.downcast_ref::<HostView>().is_some().then_some(host))
+            .expect("the filtered output resolves on its host view");
+        assert!(
+            view::subviews(&filtered_host)
+                .iter()
+                .any(|child| view::is_hidden(child)),
+            "the capture realization hides its unfiltered content"
+        );
+        assert!(
+            !filtered_host.layerUsesCoreImageFilters(),
+            "the identity chain took the capture realization, not the CIFilter one"
+        );
+
+        assert_columns_match(root);
+    }
+
+    /// Captures both `200×200` columns of `root` through
+    /// `capture_view_rgba` and asserts the oracle's same-pixels equivalence
+    /// between them. The unconverted composite #3528 fixed scored a mean
+    /// FLIP of 0.34 here; the converting one scores 0.0002.
+    fn assert_columns_match(root: &PlatformView) {
+        let [reference, filtered] = [0, 1].map(|index| {
+            let capture = capture_view_rgba(&column(root, index));
+            linear_p3(&capture.pixels, capture.width, capture.height)
+        });
+        cherenkov_oracle::metrics::assert_images_match(&reference, &filtered);
     }
 }
 
@@ -12643,7 +12872,7 @@ mod transition {
     /// scene engine, filter pipelines and `PresentationTime` the
     /// `gpu_runtime::prepare` production path installs.
     #[cfg(feature = "gpu_surface")]
-    fn gpu_leaf(view: impl waterui_backend_core::View) -> waterui_apple::contract::NativeLeaf {
+    pub fn gpu_leaf(view: impl waterui_backend_core::View) -> waterui_apple::contract::NativeLeaf {
         // The filtered leaf's `AnyEffect::build` binds through the local
         // executor — `initialize_process` only runs on macOS, so install
         // the plain main-queue answer here the way the webview trials do.
@@ -12664,7 +12893,7 @@ mod transition {
     /// A `MeshGradient` mounts the `SceneView` GPU surface leaf the
     /// frozen-frame trials arm.
     #[cfg(feature = "gpu_surface")]
-    fn gpu_picture() -> impl waterui_backend_core::View {
+    pub fn gpu_picture() -> impl waterui_backend_core::View {
         use waterui::graphics::color::WorkingColor;
         use waterui::graphics::gradient::MeshGradient;
         use waterui::reactive::constant;

@@ -327,6 +327,10 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSRunningApplication",
     "NSWorkspace",
 ] }
+# The capture-colour trial measures the composited columns with the
+# oracle's LDR-FLIP — the metric the engine tests judge renders by. The
+# case mounts only on macOS, so the edge lives under this target.
+cherenkov-oracle = { path = "../../graphics/cherenkov/oracle" }
 
 # The native tests create real `AppKit`/`UIKit` objects, which are only
 # legal on the process's actual main thread — libtest's worker threads can
