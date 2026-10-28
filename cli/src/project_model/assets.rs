@@ -315,26 +315,29 @@ fn manifest_font_declarations(
     manifest: &crate::project::Manifest,
     root: &Path,
 ) -> eyre::Result<Vec<FontDeclaration>> {
-    let Some(assets) = manifest.assets.as_ref() else {
+    let Some(assets) = manifest.assets() else {
         return Ok(Vec::new());
     };
-    let mut declarations = Vec::with_capacity(assets.font.len());
-    for font in &assets.font {
+    let mut declarations = Vec::with_capacity(assets.font().len());
+    for font in assets.font() {
         let source = FontSource::from_declaration(
             root,
-            font.local_path.clone(),
-            font.remote_path.clone(),
-            &manifest.package.name,
-            &font.name,
+            font.local_path().map(ToOwned::to_owned),
+            font.remote_path().map(ToOwned::to_owned),
+            manifest.package().name(),
+            font.name(),
         )
-        .wrap_err_with(|| format!("[[assets.font]] entry '{}' in Water.toml", font.name))?;
-        let platforms =
-            font_platform_scope(font.platforms.clone(), &manifest.package.name, &font.name)
-                .wrap_err_with(|| format!("[[assets.font]] entry '{}' in Water.toml", font.name))?;
+        .wrap_err_with(|| format!("[[assets.font]] entry '{}' in Water.toml", font.name()))?;
+        let platforms = font_platform_scope(
+            font.platforms().map(<[_]>::to_vec),
+            manifest.package().name(),
+            font.name(),
+        )
+        .wrap_err_with(|| format!("[[assets.font]] entry '{}' in Water.toml", font.name()))?;
         declarations.push(FontDeclaration::new(
-            font.name.clone(),
+            font.name().to_owned(),
             source,
-            manifest.package.name.clone(),
+            manifest.package().name().to_owned(),
             platforms,
         ));
     }
@@ -414,7 +417,7 @@ pub async fn seed_managed_crate_lock(
     // checkout's own `Cargo.lock` is still the canonical pin for the
     // transitive packages only the managed crate reaches.
     let has_framework =
-        project.manifest().framework.is_some() || project.manifest().waterui_path.is_some();
+        project.manifest().framework().is_some() || project.manifest().waterui_path().is_some();
     let canonical = if has_framework {
         project
             .resolved_framework()
@@ -971,7 +974,7 @@ pub async fn stage_android_declarations(
         module_dir,
         project.root(),
         &declarations.app_values,
-        &project.manifest().app_values,
+        project.manifest().app_values(),
         scope,
     )
     .await?;
@@ -3519,7 +3522,7 @@ pub fn warn_missing_permissions(
 ) {
     let enabled: HashSet<PermissionKey> = project
         .manifest()
-        .permissions
+        .permissions()
         .iter()
         .filter(|(_, entry)| entry.is_enabled())
         .map(|(key, _)| *key)

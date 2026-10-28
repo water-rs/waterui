@@ -27,12 +27,35 @@ use crate::{
 
 /// Stable local Swift package location consumed by a native host.
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct EmbeddedArtifact {
     /// Add this directory as a local package dependency in the native host.
-    pub package_path: PathBuf,
+    package_path: PathBuf,
     /// Header-free binary containing the application's native Rust archive.
-    pub xcframework_path: PathBuf,
+    xcframework_path: PathBuf,
+}
+
+impl EmbeddedArtifact {
+    /// An artifact whose Swift package lives at `package_path` and whose
+    /// `XCFramework` lives at `xcframework_path`.
+    #[must_use]
+    pub const fn new(package_path: PathBuf, xcframework_path: PathBuf) -> Self {
+        Self {
+            package_path,
+            xcframework_path,
+        }
+    }
+
+    /// The directory a native host adds as a local package dependency.
+    #[must_use]
+    pub fn package_path(&self) -> &Path {
+        &self.package_path
+    }
+
+    /// Header-free binary containing the application's native Rust archive.
+    #[must_use]
+    pub fn xcframework_path(&self) -> &Path {
+        &self.xcframework_path
+    }
 }
 
 #[derive(Template)]

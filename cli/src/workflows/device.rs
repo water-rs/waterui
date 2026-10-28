@@ -216,7 +216,7 @@ impl RunOptions {
             String::from("WATERUI_PROJECT_DIR"),
             project.root().display().to_string(),
         );
-        let name = project.manifest().package.name.clone();
+        let name = project.manifest().package().name().to_owned();
         self.insert_env_var(String::from("WATERUI_APP_NAME"), name);
     }
 
@@ -735,15 +735,14 @@ impl DeviceEvent {
 
 /// An application crash observed by a device monitor.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct Crash {
     /// What ended the application.
-    pub cause: CrashCause,
+    cause: CrashCause,
     /// How the process ended.
-    pub process_end: Option<ProcessEnd>,
+    process_end: Option<ProcessEnd>,
     /// The crash report the operating system wrote for a crash whose cause
     /// names it already, such as a panic.
-    pub report: Option<Box<CrashReport>>,
+    report: Option<Box<CrashReport>>,
 }
 
 /// How a process ended: the signal that killed it or the code it exited with.
@@ -791,6 +790,29 @@ impl Crash {
             process_end: None,
             report: None,
         }
+    }
+
+    /// What ended the application.
+    #[must_use]
+    pub const fn cause(&self) -> &CrashCause {
+        &self.cause
+    }
+
+    /// How the process ended.
+    #[must_use]
+    pub const fn process_end(&self) -> Option<ProcessEnd> {
+        self.process_end
+    }
+
+    /// The crash report the operating system wrote for the crash, if any.
+    #[must_use]
+    pub fn report(&self) -> Option<&CrashReport> {
+        self.report.as_deref()
+    }
+
+    /// Attach (or clear) the crash report written for this crash.
+    pub fn set_report(&mut self, report: Option<Box<CrashReport>>) {
+        self.report = report;
     }
 
     /// Supplemental crash details for a panic report.
@@ -873,12 +895,31 @@ impl std::fmt::Display for CrashCause {
 
 /// A Rust panic reported by a running application.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct PanicInfo {
     /// The panic message payload.
-    pub payload: String,
+    payload: String,
     /// The source location where the panic occurred, as `file:line:column`.
-    pub location: Option<String>,
+    location: Option<String>,
+}
+
+impl PanicInfo {
+    /// A panic carrying `payload`, reported at `location` when known.
+    #[must_use]
+    pub const fn new(payload: String, location: Option<String>) -> Self {
+        Self { payload, location }
+    }
+
+    /// The panic message payload.
+    #[must_use]
+    pub fn payload(&self) -> &str {
+        &self.payload
+    }
+
+    /// The source location where the panic occurred, as `file:line:column`.
+    #[must_use]
+    pub fn location(&self) -> Option<&str> {
+        self.location.as_deref()
+    }
 }
 
 /// Represents the kind of device
@@ -1294,10 +1335,6 @@ async fn fetch_recent_panic_logs(
 ///
 /// The artifact type determines how it's executed.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit marker for the local machine with no fields to add"
-)]
 pub struct Local;
 
 impl Device for Local {

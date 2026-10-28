@@ -21,12 +21,11 @@ use crate::{
 /// build cache; a local runtime checkout is discovered at
 /// `waterui_path/backends/apple`, never declared.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct AppleBackend {
     /// Path to the generated Apple project below the managed backends root.
-    pub project_path: PathBuf,
+    project_path: PathBuf,
     /// The scheme to use for building the Apple project.
-    pub scheme: String,
+    scheme: String,
 }
 
 /// What this project's built application bundle is called.
@@ -46,7 +45,7 @@ pub struct AppleBackend {
 /// Returns an error when the name cannot be a bundle's: empty, or containing a
 /// path separator that would place the bundle somewhere else entirely.
 pub fn apple_product_name(project: &Project) -> Result<&str, eyre::Report> {
-    let name = project.manifest().package.name.as_str();
+    let name = project.manifest().package().name();
     if name.is_empty() {
         eyre::bail!("This project has no name; `package.name` in Water.toml names the application");
     }
@@ -72,6 +71,12 @@ impl AppleBackend {
     #[must_use]
     pub fn project_path(&self) -> &Path {
         &self.project_path
+    }
+
+    /// The scheme to use for building the Apple project.
+    #[must_use]
+    pub fn scheme(&self) -> &str {
+        &self.scheme
     }
 }
 
@@ -106,7 +111,7 @@ impl AppleBackend {
         // time, rather than letting an invalid value surface inside codesign
         // or provisioning. An embedded project's identifier is the host
         // app's concern; it never reaches a `CFBundleIdentifier` here.
-        if !manifest.package.embedded {
+        if !manifest.package().embedded() {
             let _ = project
                 .bundle_identifier()
                 .apple_bundle_identifier()
@@ -114,7 +119,7 @@ impl AppleBackend {
         }
         let (_, app_name, crate_name_for_template) = Self::scaffold_names();
         let ios_permissions = manifest
-            .permissions
+            .permissions()
             .iter()
             .filter(|(_, entry)| entry.is_enabled())
             .filter_map(|(key, entry)| {
@@ -337,18 +342,12 @@ mod tests {
         smol::block_on(Project::create(
             &host,
             &root,
-            CreateOptions {
-                name: "Water Example".to_string(),
-                bundle_identifier: BundleIdentifier::try_from("dev.waterui.waterexample")
-                    .expect("bundle identifier"),
-                waterui_path: None,
-                channel: None,
-                framework_manifest: None,
-                framework: Some(crate::framework::test_fixtures::stable_framework()),
-                framework_lock: None,
-                author: "Lexo Liu".to_string(),
-                web: None,
-            },
+            CreateOptions::new(
+                "Water Example".to_string(),
+                BundleIdentifier::try_from("dev.waterui.waterexample").expect("bundle identifier"),
+                "Lexo Liu".to_string(),
+            )
+            .with_framework(Some(crate::framework::test_fixtures::stable_framework())),
         ))
         .expect("project creation must succeed");
 
@@ -413,18 +412,13 @@ mod tests {
         let project = smol::block_on(Project::create(
             &host,
             &root,
-            CreateOptions {
-                name: "Menu Example".to_string(),
-                bundle_identifier: BundleIdentifier::try_from("com.waterui.menu_example")
+            CreateOptions::new(
+                "Menu Example".to_string(),
+                BundleIdentifier::try_from("com.waterui.menu_example")
                     .expect("the shared identifier grammar accepts underscores"),
-                waterui_path: None,
-                channel: None,
-                framework_manifest: None,
-                framework: Some(crate::framework::test_fixtures::stable_framework()),
-                framework_lock: None,
-                author: "Lexo Liu".to_string(),
-                web: None,
-            },
+                "Lexo Liu".to_string(),
+            )
+            .with_framework(Some(crate::framework::test_fixtures::stable_framework())),
         ))
         .expect("project creation must succeed");
 
@@ -447,18 +441,13 @@ mod tests {
         smol::block_on(Project::create(
             &host,
             &root,
-            CreateOptions {
-                name: "Liquid Glass".to_string(),
-                bundle_identifier: BundleIdentifier::try_from("dev.waterui.liquid-glass")
+            CreateOptions::new(
+                "Liquid Glass".to_string(),
+                BundleIdentifier::try_from("dev.waterui.liquid-glass")
                     .expect("the shared identifier grammar accepts hyphens"),
-                waterui_path: None,
-                channel: None,
-                framework_manifest: None,
-                framework: Some(crate::framework::test_fixtures::stable_framework()),
-                framework_lock: None,
-                author: "Lexo Liu".to_string(),
-                web: None,
-            },
+                "Lexo Liu".to_string(),
+            )
+            .with_framework(Some(crate::framework::test_fixtures::stable_framework())),
         ))
         .expect("project creation must succeed");
 
@@ -501,18 +490,12 @@ mod tests {
         smol::block_on(Project::create(
             &host,
             &root,
-            CreateOptions {
-                name: "Water Example".to_string(),
-                bundle_identifier: BundleIdentifier::try_from("dev.waterui.waterexample")
-                    .expect("bundle identifier"),
-                waterui_path: None,
-                channel: None,
-                framework_manifest: None,
-                framework: Some(crate::framework::test_fixtures::stable_framework()),
-                framework_lock: None,
-                author: "Lexo Liu".to_string(),
-                web: None,
-            },
+            CreateOptions::new(
+                "Water Example".to_string(),
+                BundleIdentifier::try_from("dev.waterui.waterexample").expect("bundle identifier"),
+                "Lexo Liu".to_string(),
+            )
+            .with_framework(Some(crate::framework::test_fixtures::stable_framework())),
         ))
         .expect("project creation must succeed");
 

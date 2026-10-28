@@ -110,7 +110,7 @@ pub async fn stage_for_apple(
     write_apple_root_contents(&xcassets_dest).await?;
     let accent = project
         .manifest()
-        .theme
+        .theme()
         .as_ref()
         .and_then(|theme| theme.accent);
 
@@ -363,15 +363,15 @@ pub fn launch_plan(project: &Project) -> eyre::Result<LaunchPlan> {
     let manifest = build_main_manifest(project)?;
     let water = project.manifest();
     Ok(LaunchPlan::resolve(
-        water.launch.as_ref(),
-        water.theme.as_ref(),
+        water.launch(),
+        water.theme(),
         &manifest,
     ))
 }
 
 fn launch_assets_from(project: &Project, manifest: &BundleManifest) -> eyre::Result<LaunchAssets> {
     let water = project.manifest();
-    let plan = LaunchPlan::resolve(water.launch.as_ref(), water.theme.as_ref(), manifest);
+    let plan = LaunchPlan::resolve(water.launch(), water.theme(), manifest);
     let artwork = plan
         .image()
         .map(|path| IconSource::load(path))
@@ -424,7 +424,7 @@ pub async fn stage_for_android(
     let icon_background = icon.edge_color()?;
     let launch = launch_assets_from(project, &manifest)?;
 
-    let theme = project.manifest().theme.as_ref();
+    let theme = project.manifest().theme();
     write_android_theme_files(theme, icon_background, &launch, backend_path).await?;
 
     // Older CLI versions staged the foreground as a vector drawable; a PNG
@@ -599,10 +599,10 @@ pub async fn build_manifest(
     // means bun, and the declared manager is never substituted.
     let package_manager = project
         .manifest()
-        .web
+        .web()
         .as_ref()
         .map_or_else(crate::web::PackageManager::default, |web| {
-            web.package_manager
+            web.package_manager()
         });
     // The main root is always planned; a second `assets` declaration is a
     // duplicate mount.

@@ -432,7 +432,7 @@ impl<'a> PanicReport<'a> {
         let mut file = None;
         let mut line = None;
         let mut column = None;
-        if let Some(location) = panic.location.as_deref() {
+        if let Some(location) = panic.location() {
             let parts: Vec<&str> = location.rsplitn(3, ':').collect();
             match parts.as_slice() {
                 [col, ln_num, path] => {
@@ -449,7 +449,7 @@ impl<'a> PanicReport<'a> {
         }
 
         Self {
-            message: &panic.payload,
+            message: panic.payload(),
             file,
             line,
             column,

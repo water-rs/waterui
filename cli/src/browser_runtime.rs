@@ -215,7 +215,7 @@ async fn stage_into(
     fs::create_dir_all(&layout.runtime_root).await?;
 
     let stage_wpe = async {
-        if let Some(wpe) = &plan.wpe {
+        if let Some(wpe) = plan.wpe() {
             stage_wpe(host, &configuration, wpe, platform, &layout.runtime_root).await?;
         }
         Ok::<(), eyre::Report>(())
@@ -232,7 +232,7 @@ async fn stage_into(
 
 fn engines(plan: &BrowserRuntimePlan) -> BTreeSet<RuntimeEngine> {
     let mut engines = BTreeSet::new();
-    if plan.wpe.is_some() {
+    if plan.wpe().is_some() {
         engines.insert(RuntimeEngine::Wpe);
     }
     if plan.requires_cef() {
@@ -999,11 +999,7 @@ mod tests {
 
     #[test]
     fn chromium_and_cef_share_one_runtime() {
-        let engines = engines(&BrowserRuntimePlan {
-            wpe: None,
-            cef_webview: true,
-            chromium: true,
-        });
+        let engines = engines(&BrowserRuntimePlan::new(None, true, true));
         assert_eq!(
             engines.into_iter().collect::<Vec<_>>(),
             [RuntimeEngine::Cef]

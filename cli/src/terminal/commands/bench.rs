@@ -142,7 +142,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 
     render_reports(shell, &suite, args.format, args.output.as_deref()).await?;
     if let Some(gha_path) = args.gha.as_deref() {
-        write_bench_gha_json(gha_path, &suite.reports).await?;
+        write_bench_gha_json(gha_path, suite.reports()).await?;
         success!(
             shell,
             "Benchmark-action JSON written: {}",
@@ -161,16 +161,16 @@ async fn render_reports(
 ) -> Result<()> {
     match format {
         BenchOutputFormat::Human => {
-            for report in &suite.reports {
+            for report in suite.reports() {
                 emit_bench_human(shell, report);
             }
         }
         BenchOutputFormat::Json => {
             if let Some(path) = output {
-                write_bench_output_json(path, &suite.reports).await?;
+                write_bench_output_json(path, suite.reports()).await?;
                 success!(shell, "Bench JSON written: {}", path.display());
             } else {
-                write_bench_stdout_json(&suite.reports)?;
+                write_bench_stdout_json(suite.reports())?;
             }
         }
         BenchOutputFormat::Html => {
@@ -178,7 +178,7 @@ async fn render_reports(
                 || PathBuf::from("waterui-bench-report.html"),
                 std::path::Path::to_path_buf,
             );
-            write_bench_html(&path, &suite.reports).await?;
+            write_bench_html(&path, suite.reports()).await?;
             success!(shell, "Bench HTML report written: {}", path.display());
         }
     }
@@ -186,7 +186,7 @@ async fn render_reports(
 }
 
 fn finish(shell: &Shell, suite: &BenchSuiteRun) -> Result<()> {
-    if !suite.nextest_succeeded {
+    if !suite.nextest_succeeded() {
         bail!(
             "bench run failed: a bench panicked or exceeded its budget; see the nextest output above"
         );
@@ -194,8 +194,8 @@ fn finish(shell: &Shell, suite: &BenchSuiteRun) -> Result<()> {
     success!(
         shell,
         "{} bench report{} collected",
-        suite.reports.len(),
-        if suite.reports.len() == 1 { "" } else { "s" }
+        suite.reports().len(),
+        if suite.reports().len() == 1 { "" } else { "s" }
     );
     Ok(())
 }

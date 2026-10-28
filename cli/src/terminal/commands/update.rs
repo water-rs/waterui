@@ -39,10 +39,10 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         line!(
             shell,
             "Install source: {} ({})",
-            report.source.label(),
-            report.install_dir.display()
+            report.source().label(),
+            report.install_dir().display()
         );
-        match report.outcome {
+        match report.outcome() {
             UpdateOutcome::Updated {
                 previous,
                 installed,

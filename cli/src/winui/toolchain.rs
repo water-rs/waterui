@@ -9,10 +9,6 @@ use crate::toolchain::{Host, Toolchain, ToolchainError, rust::RustToolchain};
 /// working Rust toolchain and Windows itself. The host check is a compile-time
 /// gate in the callers; this checker verifies the Rust side.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct WinUiToolchain;
 
 impl Toolchain for WinUiToolchain {

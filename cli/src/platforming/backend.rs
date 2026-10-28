@@ -26,12 +26,28 @@ pub struct Backends {
 /// The `[hydrolysis]` table: selections the project author declares for
 /// the Hydrolysis backend.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[non_exhaustive]
 pub struct HydrolysisConfig {
     /// The Android painter the generated app mounts on the shared Hydrolysis
     /// host. Absent means the GPU painter; an explicit painter the pinned
     /// host cannot serve is an error at scaffold time, never a substitute.
-    pub painter: Option<crate::hydrolysis::android::HydrolysisAndroidPainter>,
+    painter: Option<crate::hydrolysis::android::HydrolysisAndroidPainter>,
+}
+impl HydrolysisConfig {
+    /// A `HydrolysisConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(
+        painter: Option<crate::hydrolysis::android::HydrolysisAndroidPainter>,
+    ) -> Self {
+        Self { painter }
+    }
+
+    /// The Android painter the generated app mounts on the shared Hydrolysis
+    /// host. Absent means the GPU painter; an explicit painter the pinned
+    /// host cannot serve is an error at scaffold time, never a substitute.
+    #[must_use]
+    pub const fn painter(&self) -> Option<&crate::hydrolysis::android::HydrolysisAndroidPainter> {
+        self.painter.as_ref()
+    }
 }
 
 impl Backends {

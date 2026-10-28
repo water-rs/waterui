@@ -29,18 +29,17 @@ use crate::apple::provisioning;
 /// `Contents/Frameworks`); every other Apple platform uses the flat layout —
 /// executable, resources and `Frameworks/` all at the bundle root.
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct AppleAppLayout {
     /// The `<name>.app` directory itself.
-    pub app_path: PathBuf,
+    app_path: PathBuf,
     /// Directory the executable is copied into.
-    pub executable_dir: PathBuf,
+    executable_dir: PathBuf,
     /// Directory resources are copied into.
-    pub resources_dir: PathBuf,
+    resources_dir: PathBuf,
     /// Directory dynamic libraries are staged into.
-    pub frameworks_dir: PathBuf,
+    frameworks_dir: PathBuf,
     /// `Info.plist` location.
-    pub info_plist_path: PathBuf,
+    info_plist_path: PathBuf,
 }
 
 impl AppleAppLayout {
@@ -65,6 +64,36 @@ impl AppleAppLayout {
                 info_plist_path: app_path.join("Info.plist"),
             }
         }
+    }
+
+    /// The `<name>.app` directory itself.
+    #[must_use]
+    pub fn app_path(&self) -> &Path {
+        &self.app_path
+    }
+
+    /// Directory the executable is copied into.
+    #[must_use]
+    pub fn executable_dir(&self) -> &Path {
+        &self.executable_dir
+    }
+
+    /// Directory resources are copied into.
+    #[must_use]
+    pub fn resources_dir(&self) -> &Path {
+        &self.resources_dir
+    }
+
+    /// Directory dynamic libraries are staged into.
+    #[must_use]
+    pub fn frameworks_dir(&self) -> &Path {
+        &self.frameworks_dir
+    }
+
+    /// `Info.plist` location.
+    #[must_use]
+    pub fn info_plist_path(&self) -> &Path {
+        &self.info_plist_path
     }
 
     /// The shipped executable path for the given product name.
@@ -153,7 +182,7 @@ fn permission_plist_entries(
 ) -> impl Iterator<Item = (String, String)> + '_ {
     project
         .manifest()
-        .permissions
+        .permissions()
         .iter()
         .filter(|(_, entry)| entry.is_enabled())
         .flat_map(move |(key, entry)| {
@@ -318,12 +347,35 @@ fn apply_mobile_plist_entries(
 /// The SDK an Apple artifact is built and signed for: which SDK plus the
 /// deployment target the produced binary may run on.
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct AppleSdkSpec<'a> {
     /// SDK name (`iphoneos`, `iphonesimulator`, `macosx`, `xros`).
-    pub sdk_name: &'a str,
+    sdk_name: &'a str,
     /// Minimum OS version the binary supports.
-    pub deployment_target: &'a str,
+    deployment_target: &'a str,
+}
+
+impl<'a> AppleSdkSpec<'a> {
+    /// The SDK `sdk_name` plus the `deployment_target` the produced binary
+    /// may run on.
+    #[must_use]
+    pub const fn new(sdk_name: &'a str, deployment_target: &'a str) -> Self {
+        Self {
+            sdk_name,
+            deployment_target,
+        }
+    }
+
+    /// SDK name (`iphoneos`, `iphonesimulator`, `macosx`, `xros`).
+    #[must_use]
+    pub const fn sdk_name(&self) -> &'a str {
+        self.sdk_name
+    }
+
+    /// Minimum OS version the binary supports.
+    #[must_use]
+    pub const fn deployment_target(&self) -> &'a str {
+        self.deployment_target
+    }
 }
 
 /// Assemble the `.app` directory for `sdk`: executable, copied resources,
@@ -526,7 +578,7 @@ pub async fn sign_apple_app(
             use crate::platform::PackageAudience;
 
             let requires_stable_identity =
-                project.manifest().permissions.iter().any(|(key, entry)| {
+                project.manifest().permissions().iter().any(|(key, entry)| {
                     entry.is_enabled() && !key.macos_usage_description_keys().is_empty()
                 });
             let signing = match options.audience() {
@@ -546,13 +598,13 @@ pub async fn sign_apple_app(
                     } else {
                         let path = backend_root
                             .join("DerivedData/Signing")
-                            .join(format!("{}.entitlements", backend.scheme));
+                            .join(format!("{}.entitlements", backend.scheme()));
                         write_entitlements(&path, entitlements).await?;
                         Some(path)
                     };
                     crate::macos_bundle::MacOsSigning::Distribution(
                         crate::macos_bundle::DistributionSigning::from_manifest(
-                            project.manifest().signing.macos.as_ref(),
+                            project.manifest().signing().macos(),
                             entitlements,
                         )?,
                     )
@@ -619,8 +671,8 @@ pub async fn sign_apple_app(
 /// The project's generated `<scheme>.entitlements` file.
 fn project_entitlements_path(backend: &AppleBackend, backend_root: &Path) -> PathBuf {
     backend_root
-        .join(&backend.scheme)
-        .join(format!("{}.entitlements", backend.scheme))
+        .join(backend.scheme())
+        .join(format!("{}.entitlements", backend.scheme()))
 }
 
 /// The entitlements a signature of kind `environment` for `platform` claims:
@@ -770,13 +822,13 @@ async fn sign_device_app(
 ) -> eyre::Result<()> {
     let team = crate::apple::toolchain::development_team_id(host).await?;
 
-    let request = provisioning::SigningRequest {
-        team: &team,
-        bundle_id: spec.bundle_id.as_str(),
-        device_udid: spec.options.device_udid(),
-        entitlements: &spec.project_entitlements,
-        platform: spec.platform,
-    };
+    let request = provisioning::SigningRequest::new(
+        &team,
+        spec.bundle_id.as_str(),
+        spec.options.device_udid(),
+        &spec.project_entitlements,
+        spec.platform,
+    );
     sign_development_bundle(
         host,
         layout,
@@ -846,13 +898,13 @@ pub(crate) async fn apply_development_signature(
     // Selection already paired the profile with a usable keychain identity:
     // `selection.identity` is the SHA-1 `codesign --sign` takes.
     copy_file(
-        &selection.path,
+        selection.path(),
         layout.app_path.join("embedded.mobileprovision"),
     )
     .await?;
 
     let entitlements =
-        provisioning::signing_entitlements(&selection.data, request, &selection.app_id_prefix)?;
+        provisioning::signing_entitlements(selection.data(), request, selection.app_id_prefix())?;
     let app_name = layout
         .app_path
         .file_stem()
@@ -865,16 +917,16 @@ pub(crate) async fn apply_development_signature(
         host,
         &layout.app_path,
         &layout.frameworks_dir,
-        &selection.identity,
+        selection.identity(),
         Some(&merged),
-        Some(request.bundle_id),
+        Some(request.bundle_id()),
     )
     .await?;
     info!(
         "Signed {} with {}/{}",
         layout.app_path.display(),
-        request.team,
-        selection.identity
+        request.team(),
+        selection.identity()
     );
     Ok(())
 }

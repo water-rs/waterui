@@ -141,7 +141,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         args.release,
     );
 
-    if context.project.manifest().package.embedded {
+    if context.project.manifest().package().embedded() {
         // The embedded build's toolchain check and XCFramework packaging futures cross
         // clippy's `large_futures` threshold (16 KiB) on Windows, so the future
         // is pinned on the heap instead of the caller's stack.
@@ -208,14 +208,14 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
 
     match result {
         Ok(artifact) => {
-            let library = &artifact.library;
+            let library = artifact.library();
             success!(
                 shell,
                 "Embedded artifact at {}",
-                artifact.aar_path.display()
+                artifact.aar_path().display()
             );
             success!(shell, "Published to mavenLocal as {}", library.coordinate());
-            for host_coordinate in &library.host_coordinates {
+            for host_coordinate in library.host_coordinates() {
                 line!(shell, "    published {}", host_coordinate);
             }
             line!(shell, "In the host Gradle project, add:");
@@ -228,7 +228,7 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
             line!(
                 shell,
                 "then mount the WaterUI root with `WaterUi` (in `{}.waterui`):",
-                library.group
+                library.group()
             );
             line!(
                 shell,
@@ -237,8 +237,8 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
             line!(
                 shell,
                 "The host app needs compileSdk {} and minSdk {} or higher.",
-                library.compile_sdk,
-                library.min_sdk
+                library.compile_sdk(),
+                library.min_sdk()
             );
             line!(
                 shell,
@@ -274,7 +274,7 @@ async fn run_embedded_apple_build(
     success!(
         shell,
         "Embedded Swift package at {}",
-        artifact.package_path.display()
+        artifact.package_path().display()
     );
     line!(
         shell,

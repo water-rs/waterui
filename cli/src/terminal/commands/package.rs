@@ -292,7 +292,7 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
         managed_backends,
     )
     .await?;
-    if project.manifest().package.embedded {
+    if project.manifest().package().embedded() {
         bail!(
             "`water package` does not apply to embedded projects: `water build` already produces the host-consumable artifact"
         );

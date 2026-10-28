@@ -68,20 +68,15 @@ mod tests {
             let project = Project::create(
                 &host,
                 &root,
-                CreateOptions {
-                    name: "Share Example".to_string(),
-                    bundle_identifier: BundleIdentifier::try_from("dev.waterui.shareexample")
+                CreateOptions::new(
+                    "Share Example".to_string(),
+                    BundleIdentifier::try_from("dev.waterui.shareexample")
                         .expect("bundle identifier"),
-                    waterui_path: None,
-                    channel: None,
-                    framework_manifest: None,
-                    // A channel resolution would fetch the newest release from
-                    // GitHub; a unit test resolves a fixture in place instead.
-                    framework: Some(crate::framework::test_fixtures::stable_framework()),
-                    framework_lock: None,
-                    author: "Lexo Liu".to_string(),
-                    web: None,
-                },
+                    "Lexo Liu".to_string(),
+                )
+                // A channel resolution would fetch the newest release from
+                // GitHub; a unit test resolves a fixture in place instead.
+                .with_framework(Some(crate::framework::test_fixtures::stable_framework())),
             )
             .await
             .expect("project creation must succeed");

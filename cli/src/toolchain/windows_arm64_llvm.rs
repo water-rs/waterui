@@ -20,10 +20,6 @@ const TARGET_DASHED: &str = "aarch64-pc-windows-msvc";
 /// This is required by native Rust dependencies that ship `.S` sources
 /// (for example `aws-lc-sys` and `rav1e`) when building on `aarch64-pc-windows-msvc`.
 #[derive(Debug, Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct WindowsArm64LlvmToolchain;
 
 impl WindowsArm64LlvmToolchain {

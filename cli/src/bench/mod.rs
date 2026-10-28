@@ -37,20 +37,19 @@ fn absolute_path(host: &crate::toolchain::Host, path: &Path) -> PathBuf {
 
 /// One `water bench` invocation.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct BenchRunOptions {
     /// Directory of the project or crate whose benches run.
-    pub path: PathBuf,
+    path: PathBuf,
     /// Substring narrowing which benches run, matched against the test name.
-    pub filter: Option<String>,
+    filter: Option<String>,
     /// Frame-run shape exported to the benches.
-    pub config: BenchRunConfig,
+    config: BenchRunConfig,
     /// Directory receiving the per-bench report JSON files; a temporary
     /// directory is used when unset.
-    pub report_dir: Option<PathBuf>,
+    report_dir: Option<PathBuf>,
     /// Budget caps exported to the benches; each is merged against the
     /// attribute budgets with the tighter limit winning.
-    pub budget_caps: BenchBudgets,
+    budget_caps: BenchBudgets,
 }
 
 impl BenchRunOptions {
@@ -73,17 +72,70 @@ impl BenchRunOptions {
             budget_caps,
         }
     }
+
+    /// Directory of the project or crate whose benches run.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Substring narrowing which benches run.
+    #[must_use]
+    pub fn filter(&self) -> Option<&str> {
+        self.filter.as_deref()
+    }
+
+    /// Frame-run shape exported to the benches.
+    #[must_use]
+    pub const fn config(&self) -> &BenchRunConfig {
+        &self.config
+    }
+
+    /// Directory receiving the per-bench report JSON files.
+    #[must_use]
+    pub fn report_dir(&self) -> Option<&Path> {
+        self.report_dir.as_deref()
+    }
+
+    /// Budget caps exported to the benches.
+    #[must_use]
+    pub const fn budget_caps(&self) -> &BenchBudgets {
+        &self.budget_caps
+    }
 }
 
 /// Outcome of one bench suite run.
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct BenchSuiteRun {
     /// Collected reports, sorted by crate then bench name.
-    pub reports: Vec<BenchReport>,
+    reports: Vec<BenchReport>,
     /// Whether the underlying nextest run succeeded (budget violations and
     /// panicking benches fail it).
-    pub nextest_succeeded: bool,
+    nextest_succeeded: bool,
+}
+
+impl BenchSuiteRun {
+    /// The suite's `reports`, plus whether the underlying nextest run
+    /// succeeded.
+    #[must_use]
+    pub const fn new(reports: Vec<BenchReport>, nextest_succeeded: bool) -> Self {
+        Self {
+            reports,
+            nextest_succeeded,
+        }
+    }
+
+    /// Collected reports, sorted by crate then bench name.
+    #[must_use]
+    pub fn reports(&self) -> &[BenchReport] {
+        &self.reports
+    }
+
+    /// Whether the underlying nextest run succeeded.
+    #[must_use]
+    pub const fn nextest_succeeded(&self) -> bool {
+        self.nextest_succeeded
+    }
 }
 
 /// Runs the crate's benches under `cargo nextest` and collects their reports.

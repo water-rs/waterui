@@ -31,10 +31,6 @@ use waterui_preview_protocol::run::{PreviewRunConfig, PreviewRunMode};
 
 /// Request for Apple in-process preview rendering.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the terminal fills every field of the preview request; a new field must fail its build instead of taking a default"
-)]
 pub struct ApplePreviewRequest<'a> {
     /// The host the preview spawns on.
     pub host: &'a crate::toolchain::Host,

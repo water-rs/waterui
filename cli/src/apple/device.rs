@@ -460,11 +460,11 @@ async fn report_simulator_exit(
 
     let panic = query_simulator_panic_logs(host, context, sender).await;
     let event = match (report, panic) {
-        (Some(report), Some(panic)) => DeviceEvent::Crashed(Crash {
-            cause: CrashCause::Panic(panic),
-            process_end: None,
-            report: Some(Box::new(report)),
-        }),
+        (Some(report), Some(panic)) => {
+            let mut crash = Crash::new(CrashCause::Panic(panic));
+            crash.set_report(Some(Box::new(report)));
+            DeviceEvent::Crashed(crash)
+        }
         (Some(report), None) => {
             DeviceEvent::Crashed(Crash::new(CrashCause::Report(Box::new(report))))
         }
@@ -912,10 +912,7 @@ fn extract_panic_info_from_log(line: &str) -> Option<PanicInfo> {
         }
     }
 
-    payload.map(|p| PanicInfo {
-        payload: p,
-        location,
-    })
+    payload.map(|p| PanicInfo::new(p, location))
 }
 
 /// Fetch recent panic logs from the unified logging system.
@@ -986,10 +983,10 @@ async fn fetch_recent_panic_logs(
         }
 
         if payload.is_some() || location.is_some() {
-            return Some(PanicInfo {
-                payload: payload.unwrap_or_default().to_string(),
-                location: location.map(str::to_string),
-            });
+            return Some(PanicInfo::new(
+                payload.unwrap_or_default().to_string(),
+                location.map(str::to_string),
+            ));
         }
     }
 
@@ -1122,28 +1119,27 @@ impl Device for AppleDevice {
 ///
 /// Fields are deserialized from `xcrun simctl list devices --json` output
 #[derive(Debug, Deserialize, Clone)]
-#[non_exhaustive]
 pub struct AppleSimulator {
     /// Path to the simulator data directory
     #[serde(rename = "dataPath")]
-    pub data_path: PathBuf,
+    data_path: PathBuf,
 
     /// Size of the simulator data directory in bytes
     #[serde(rename = "dataPathSize")]
-    pub data_path_size: Option<u64>,
+    data_path_size: Option<u64>,
 
     /// Path to the simulator log directory
     #[serde(rename = "logPath")]
-    pub log_path: PathBuf,
+    log_path: PathBuf,
 
     /// Size of the simulator log directory in bytes
     #[serde(rename = "logPathSize")]
-    pub log_path_size: Option<u64>,
+    log_path_size: Option<u64>,
 
     /// Unique device identifier
     ///
     /// Note: not `uuid` but `udid`!
-    pub udid: String,
+    udid: String,
 
     /// Indicates if the simulator is available
     #[serde(rename = "isAvailable")]
@@ -1167,7 +1163,7 @@ pub struct AppleSimulator {
     /// This is not part of the simulator device object itself; it comes from the map key in
     /// `xcrun simctl list --json`.
     #[serde(skip)]
-    pub runtime_identifier: Option<String>,
+    runtime_identifier: Option<String>,
 
     /// Version of the runtime this simulator runs (e.g. iOS 26.5 -> `26.5.0`).
     ///
@@ -1176,7 +1172,83 @@ pub struct AppleSimulator {
     /// device object. `None` when `simctl` reports no usable version for the
     /// runtime — such a simulator can never satisfy a deployment target.
     #[serde(skip)]
-    pub runtime_version: Option<Version>,
+    runtime_version: Option<Version>,
+}
+
+impl AppleSimulator {
+    /// Path to the simulator data directory.
+    #[must_use]
+    pub fn data_path(&self) -> &Path {
+        &self.data_path
+    }
+
+    /// Size of the simulator data directory in bytes.
+    #[must_use]
+    pub const fn data_path_size(&self) -> Option<u64> {
+        self.data_path_size
+    }
+
+    /// Path to the simulator log directory.
+    #[must_use]
+    pub fn log_path(&self) -> &Path {
+        &self.log_path
+    }
+
+    /// Size of the simulator log directory in bytes.
+    #[must_use]
+    pub const fn log_path_size(&self) -> Option<u64> {
+        self.log_path_size
+    }
+
+    /// Unique device identifier (note: not `uuid` but `udid`!).
+    #[must_use]
+    pub fn udid(&self) -> &str {
+        &self.udid
+    }
+
+    /// Whether the simulator is available.
+    #[must_use]
+    pub const fn is_available(&self) -> bool {
+        self.is_available
+    }
+
+    /// Device type identifier.
+    #[must_use]
+    pub fn device_type_identifier(&self) -> &str {
+        &self.device_type_identifier
+    }
+
+    /// Current state of the simulator (e.g., `Shutdown`, `Booted`).
+    #[must_use]
+    pub fn state(&self) -> &str {
+        &self.state
+    }
+
+    /// Name of the simulator device.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Timestamp of the last boot time.
+    #[must_use]
+    pub fn last_booted_at(&self) -> Option<&str> {
+        self.last_booted_at.as_deref()
+    }
+
+    /// Runtime identifier key from `simctl`, attached by `scan()` from the
+    /// `runtimes` list rather than deserialized from the device object.
+    #[must_use]
+    pub fn runtime_identifier(&self) -> Option<&str> {
+        self.runtime_identifier.as_deref()
+    }
+
+    /// Version of the runtime this simulator runs, or `None` when `simctl`
+    /// reports no usable version for the runtime.
+    #[must_use]
+    pub const fn runtime_version(&self) -> Option<&Version> {
+        self.runtime_version.as_ref()
+    }
 }
 
 impl Device for AppleSimulator {

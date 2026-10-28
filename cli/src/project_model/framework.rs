@@ -187,14 +187,38 @@ impl fmt::Display for ResolvedFramework {
 /// registry release, so the manifest records the pin — git URL, commit and
 /// declared version — by name instead of emitting `scaffold` entries for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct ExperimentalPackage {
     /// The repository the framework pins the package to.
-    pub git: String,
+    git: String,
     /// The pinned commit.
-    pub rev: String,
+    rev: String,
     /// The declared version requirement.
-    pub version: String,
+    version: String,
+}
+impl ExperimentalPackage {
+    /// A `ExperimentalPackage` carrying each of its fields.
+    #[must_use]
+    pub const fn new(git: String, rev: String, version: String) -> Self {
+        Self { git, rev, version }
+    }
+
+    /// The repository the framework pins the package to.
+    #[must_use]
+    pub fn git(&self) -> &str {
+        &self.git
+    }
+
+    /// The pinned commit.
+    #[must_use]
+    pub fn rev(&self) -> &str {
+        &self.rev
+    }
+
+    /// The declared version requirement.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -407,7 +431,7 @@ impl ResolvedFramework {
         manifest: &crate::project::Manifest,
         project_root: &Path,
     ) -> Result<Self> {
-        if let Some(framework) = &manifest.framework {
+        if let Some(framework) = manifest.framework() {
             return framework.clone().validated().map_err(|error| {
                 eyre!(
                     "Water.toml records a framework selection waterui-cli {} cannot scaffold: {error:#}",
@@ -415,7 +439,7 @@ impl ResolvedFramework {
                 )
             });
         }
-        let Some(waterui_path) = &manifest.waterui_path else {
+        let Some(waterui_path) = &manifest.waterui_path() else {
             bail!(
                 "the project records no framework selection; run `water channel` \
                  to select one or point `waterui_path` at a checkout"
@@ -5436,17 +5460,12 @@ mod tests {
     fn a_rejected_recorded_selection_reports_the_inner_error() {
         let mut framework = stable_framework();
         framework.metadata.remove("android-min-api-level");
-        let mut manifest = crate::project::Manifest::new(crate::project::Package {
-            name: "Water Example".to_string(),
-            bundle_identifier: crate::project_types::BundleIdentifier::try_from(
-                "dev.waterui.waterexample",
-            )
-            .expect("bundle identifier"),
-            assets_path: "assets".to_string(),
-            accessory: false,
-            embedded: false,
-        });
-        manifest.framework = Some(framework);
+        let mut manifest = crate::project::Manifest::new(crate::project::Package::new(
+            "Water Example",
+            crate::project_types::BundleIdentifier::try_from("dev.waterui.waterexample")
+                .expect("bundle identifier"),
+        ));
+        manifest.set_framework(Some(framework));
 
         let scratch = tempfile::tempdir().unwrap();
         let facts = Facts::new(

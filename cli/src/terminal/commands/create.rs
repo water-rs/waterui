@@ -181,7 +181,7 @@ async fn create_project(shell: &Shell, host: &Host, plan: &CreatePlan) -> Result
     success!(shell, "Created Cargo.toml and src/lib.rs");
     // The channel resolution is the one fact of a `create` a user cannot
     // see in the files it wrote without opening Water.toml.
-    if let Some(framework) = &draft.project().manifest().framework {
+    if let Some(framework) = draft.project().manifest().framework() {
         success!(shell, "Resolved framework: {framework}");
     }
     Ok(draft)

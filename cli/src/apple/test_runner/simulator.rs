@@ -67,14 +67,14 @@ impl TestDestination for IosSimulator {
             .await
             .wrap_err("failed to list simulators")?
             .into_iter()
-            .find(|simulator| simulator.udid == self.udid)
+            .find(|simulator| simulator.udid() == self.udid)
             .ok_or_else(|| {
                 eyre!(
                     "WATERUI_IOS_SIM_UDID names {} but no simulator reports it in `simctl list`",
                     self.udid
                 )
             })?;
-        let data_path = simulator.data_path.clone();
+        let data_path = simulator.data_path().to_path_buf();
 
         // Boot if needed and wait for it to be ready; a no-op when already
         // booted. Concurrent invocations race to boot a shut-down device and
@@ -93,7 +93,7 @@ impl TestDestination for IosSimulator {
             stderr.write_all(&output.stdout)?;
             stderr.write_all(&output.stderr)?;
             if !output.status.success() {
-                return Ok(TestStatus(exit_code(output.status)));
+                return Ok(TestStatus::new(exit_code(output.status)));
             }
         }
 
@@ -125,12 +125,12 @@ impl TestDestination for IosSimulator {
             DestinationLock::acquire(&data_path.join(".waterui-nextest-ios-sim.lock")).await?;
 
         let bundle = HarnessBundle::stage(binary, manifest, "iphonesimulator").await?;
-        codesign_path(host, &bundle.layout().app_path, "-", None, None).await?;
+        codesign_path(host, bundle.layout().app_path(), "-", None, None).await?;
 
         // Install unless the device already holds a byte-identical
         // executable (the manifest is embedded in it).
         if !installed_matches(host, &self.udid, &bundle, manifest.executable()).await? {
-            install_simulator_artifact(host, &self.udid, &bundle.layout().app_path).await?;
+            install_simulator_artifact(host, &self.udid, bundle.layout().app_path()).await?;
         }
 
         let status = StatusFile::host_absolute(&binary.state_dir()?);
@@ -238,7 +238,7 @@ mod tests {
             &mut stderr,
         ))
         .expect("the spawn route returns a status");
-        assert_eq!(status.0, 17);
+        assert_eq!(status.code(), 17);
     }
 
     #[test]
@@ -285,7 +285,7 @@ mod tests {
             &mut stderr,
         ))
         .expect("the app route returns the harness status");
-        assert_eq!(status.0, 0);
+        assert_eq!(status.code(), 0);
         // Identical executable: no install ran.
         let log = std::fs::read_to_string(&log).expect("read log");
         assert!(

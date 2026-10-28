@@ -269,10 +269,11 @@ pub async fn select_android_target(
         None => None,
     };
     let selection = AndroidTarget::select(host, device_id, remembered.as_deref()).await?;
-    if let Some(stale) = &selection.stale {
+    if let Some(stale) = &selection.stale() {
         warn!(shell, "Last-used device \"{stale}\" is not available");
     }
-    let (target, picked) = match selection.decision {
+    let selection_was_stale = selection.stale().is_some();
+    let (target, picked) = match selection.into_decision() {
         AndroidDecision::Resolved(target) => (target, false),
         AndroidDecision::Ambiguous(candidates) => {
             let options: Vec<(&str, &str)> = candidates
@@ -293,7 +294,7 @@ pub async fn select_android_target(
     // An explicit name, a pick, and a resolution that repaired stale memory
     // are the choices worth remembering.
     if let Some(key) = memory_key
-        && (picked || selection.stale.is_some() || device_id.is_some())
+        && (picked || selection_was_stale || device_id.is_some())
     {
         waterui_cli::water_dir::record_last_used_device(host, key, target.id()).await;
     }
