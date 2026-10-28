@@ -12,6 +12,7 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cherenkov::FillRule;
+use cherenkov_simd::math::erf4;
 
 use crate::render::bins::{FrameIndex, FrameMeter};
 use crate::render::lower::{
@@ -593,9 +594,6 @@ impl Buffers {
         self.sel_items[depth] = buf;
     }
 }
-
-/// Sample count of the shadow y-quadrature (the GPU uses the same).
-const SHADOW_N: usize = 16;
 
 /// A directed edge in device space.
 #[derive(Clone, Copy, Debug)]
@@ -3199,13 +3197,11 @@ impl Band<'_> {
     #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
-        clippy::float_cmp,
         clippy::suboptimal_flops,
         clippy::too_many_arguments,
         clippy::too_many_lines,
-        reason = "pixel indices and band offsets are far below 2^24; the \
-                  flat-row test is intentionally exact and the quadrature \
-                  weights mirror the reference formula"
+        reason = "pixel indices and band offsets are far below 2^24 and \
+                  the quadrature weights mirror the reference formula"
     )]
     #[expect(
         clippy::inline_always,
@@ -3259,23 +3255,22 @@ impl Band<'_> {
         if cx_lo >= cx_hi && clip_mask.is_none() {
             return;
         }
-        // The 16 y-quadrature samples and their `gaussian*step` weights
-        // are per item, not per pixel.
-        let step = 6.0 * sigma / SHADOW_N as f32;
-        let mut dy = [0.0_f32; SHADOW_N];
-        let mut gw = [0.0_f32; SHADOW_N];
-        for (i, (d, w)) in dy.iter_mut().zip(gw.iter_mut()).enumerate() {
-            *d = (i as f32 + 0.5) * step - 3.0 * sigma;
-            *w = gaussian(*d, sigma) * step;
-        }
+        // The y quadrature the GPU shader uses (`shadow` in
+        // gpu/src/render/shader.wgsl): per row, the ±3σ window clipped to
+        // the box's ±half[1], one analytic `erf` sample for the straight
+        // band |y| <= hy - rmax inside the window, and an 8-node
+        // Gauss–Legendre rule (`shadow::GL8`) over each corner band the
+        // window reaches.
+        let rmax = radii.iter().copied().fold(0.0_f32, f32::max);
+        let band = (half[1] - rmax).max(0.0);
         // Per row the quadrature's x-integral saturates except near the
         // left/right edges: `erf` reaches ±1 within `MARGIN` of an edge,
         // so interior columns all evaluate to the same `S` (the sum of
         // in-box sample weights) and only the two edge bands pay the
-        // 32-`erf` sum. For `sigma`-wide margins the tail error is
-        // `erf(5)-1 < 1e-11`.
+        // per-sample `erf` sum. For `sigma`-wide margins the tail error
+        // is `erf(5)-1 < 1e-11`.
         let margin = 5.0 * sigma * std::f32::consts::SQRT_2;
-        // Flat rows — every sample has zero corner inset — share the
+        // Flat rows — the window misses both corner bands — share the
         // straight-wall x-integral, one `erf` pair per column computed
         // once for the whole item.
         let mut x_term: Option<Vec<f32>> = None;
@@ -3284,7 +3279,7 @@ impl Band<'_> {
             right: half[0],
             weight: 1.0,
         }];
-        let mut samples = [shadow::Sample::default(); SHADOW_N];
+        let mut samples = [shadow::Sample::default(); shadow::MAX_SAMPLES];
         // The per-pixel quadrature runs inside `vectorize` so it compiles
         // under the dispatched level's target features — a second closure
         // on this path (a `map_or` or `get_or_insert_with` body) would be
@@ -3295,6 +3290,12 @@ impl Band<'_> {
                 for y in y_lo..y_hi {
                     let py_i = self.y0 + y;
                     let py = py_i as f32 + 0.5 - cy;
+                    // The row's y window: `py ± 3σ` clipped to the box.
+                    let lo = (py - 3.0 * sigma).max(-half[1]);
+                    let hi = (py + 3.0 * sigma).min(half[1]);
+                    if hi <= lo {
+                        continue;
+                    }
                     // The row's sample table: left/right x-edges per in-box
                     // sample, their weights, the interior-coverage sum `s`, and
                     // the most-inset edges bounding the interior zone.
@@ -3302,27 +3303,60 @@ impl Band<'_> {
                     let mut s = 0.0_f32;
                     let mut flat = true;
                     let (mut xlm, mut xrm) = (f32::MIN, f32::MAX);
-                    for (d, w) in dy.iter().zip(gw.iter()) {
-                        let yi = py + d;
-                        if yi.abs() > half[1] {
+                    // The window's straight-band part is one sample whose
+                    // weight is the Gaussian's exact integral over it.
+                    let ya = lo.max(-band);
+                    let yb = hi.min(band);
+                    if yb > ya {
+                        let ends = erf4(
+                            simd,
+                            f32x4::load_array(
+                                simd,
+                                [
+                                    (yb - py) * inv_sqrt2_sigma,
+                                    (ya - py) * inv_sqrt2_sigma,
+                                    0.0,
+                                    0.0,
+                                ],
+                            ),
+                        )
+                        .to_array();
+                        samples[n] = shadow::Sample {
+                            left: -half[0],
+                            right: half[0],
+                            weight: 0.5 * (ends[0] - ends[1]),
+                        };
+                        s += samples[n].weight;
+                        n += 1;
+                    }
+                    // Each corner band the window reaches gets the
+                    // shader's 8-node Gauss–Legendre rule; a node's x
+                    // edges come from the corner inset at its row.
+                    for (a, b, rl, rr) in [
+                        (lo, hi.min(-band), radii[0], radii[1]),
+                        (lo.max(band), hi, radii[3], radii[2]),
+                    ] {
+                        if b <= a {
                             continue;
                         }
-                        let (rl, rr) = if yi < 0.0 {
-                            (radii[0], radii[1])
-                        } else {
-                            (radii[3], radii[2])
-                        };
-                        let ay = yi.abs();
-                        samples[n] = shadow::Sample {
-                            left: -half[0] + corner_inset(rl, ay - (half[1] - rl)),
-                            right: half[0] - corner_inset(rr, ay - (half[1] - rr)),
-                            weight: *w,
-                        };
-                        flat &= samples[n].left == -half[0] && samples[n].right == half[0];
-                        xlm = xlm.max(samples[n].left);
-                        xrm = xrm.min(samples[n].right);
-                        s += w;
-                        n += 1;
+                        flat = false;
+                        let mid = a.midpoint(b);
+                        let hw = 0.5 * (b - a);
+                        for (node, w) in shadow::GL8 {
+                            for sign in [-1.0_f32, 1.0] {
+                                let yi = mid + sign * hw * node;
+                                let ay = yi.abs();
+                                samples[n] = shadow::Sample {
+                                    left: -half[0] + corner_inset(rl, ay - (half[1] - rl)),
+                                    right: half[0] - corner_inset(rr, ay - (half[1] - rr)),
+                                    weight: w * hw * gaussian(yi - py, sigma),
+                                };
+                                xlm = xlm.max(samples[n].left);
+                                xrm = xrm.min(samples[n].right);
+                                s += samples[n].weight;
+                                n += 1;
+                            }
+                        }
                     }
                     if n == 0 || s <= 0.0 {
                         continue;

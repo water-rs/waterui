@@ -1,5 +1,6 @@
 //! Four-pixel evaluation of the existing analytic shadow quadrature.
 
+use cherenkov_simd::math::erf4;
 use fearless_simd::{Simd, f32x4};
 
 /// One in-box y sample's horizontal interval and Gaussian weight.
@@ -10,7 +11,24 @@ pub(super) struct Sample {
     pub weight: f32,
 }
 
-use cherenkov_simd::math::erf4;
+/// The 8-point Gauss–Legendre rule applied to each corner band, as
+/// `(node, weight)` of the symmetric pair `mid ± hw·node`. The values
+/// mirror `shadow` in `gpu/src/render/shader.wgsl` verbatim.
+#[expect(
+    clippy::excessive_precision,
+    clippy::unreadable_literal,
+    reason = "the WGSL constants verbatim; the f32 values are the same"
+)]
+pub(super) const GL8: [(f32, f32); 4] = [
+    (0.1834346425, 0.3626837834),
+    (0.5255324099, 0.3137066459),
+    (0.7966664774, 0.2223810345),
+    (0.9602898565, 0.1012285363),
+];
+
+/// A row's table bound: one analytic sample for the straight band plus
+/// both corner bands' 8-node Gauss–Legendre rules.
+pub(super) const MAX_SAMPLES: usize = 1 + 2 * (2 * GL8.len());
 
 /// Integrate four adjacent pixel centres in the original y-sample order.
 /// Each lane uses the scalar expression's separate products and sum.
