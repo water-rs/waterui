@@ -51,6 +51,12 @@ use cherenkov::{Backend, EngineError, Offscreen, Rgba8, Rgba16F, Uploads};
 /// Adapter information for provenance.
 #[derive(Clone, Debug)]
 pub struct GpuInfo {
+    /// Android system thread running this renderer, for workload hint sessions.
+    #[cfg(target_os = "android")]
+    pub render_thread_id: u32,
+    /// CPU clock of the Android renderer thread, valid while the engine lives.
+    #[cfg(target_os = "android")]
+    pub render_thread_cpu_clock: libc::clockid_t,
     /// Adapter name.
     pub name: String,
     /// Backend (e.g. `Vulkan`).

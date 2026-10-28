@@ -87,6 +87,14 @@ impl<'a> HydrolysisRenderTarget<'a> {
 }
 
 impl HydrolysisRenderer<crate::text::ParleyEngine> {
+    /// Android worker identity and CPU clock for the frame hint session.
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+    pub(crate) fn render_worker(&self) -> Option<&cherenkov_gpu::GpuInfo> {
+        self.cherenkov_window
+            .as_ref()
+            .map(|window| window.host.engine.info())
+    }
+
     crate::engine::cfg_async_fn! {
         /// Renders the frame into `target`'s texture.
         ///

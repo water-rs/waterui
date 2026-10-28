@@ -1622,7 +1622,7 @@ impl AndroidSession {
         &mut self,
         continuous: bool,
         touching: bool,
-    ) -> Result<(), String> {
+    ) -> Result<f32, String> {
         let visible = !self.runtime.is_hidden();
         let engine = match &self.runtime.engine_next {
             cherenkov::Next::At { rate, .. } if visible => Some(rate.clone()),

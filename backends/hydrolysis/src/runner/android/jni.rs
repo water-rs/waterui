@@ -75,7 +75,8 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// 23 = `nativeCreateSession` carries the configuration's night-mode flag so
 /// the colour-scheme signal starts on the real `uiMode`, and
 /// `nativeSetColorScheme` reports every later change (water-rs/waterui#3544).
-pub const JNI_SCHEMA: jint = 23;
+/// 24 = Android frame hints expose worker CPU time and selected content rate.
+pub const JNI_SCHEMA: jint = 24;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -544,6 +545,13 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeOnFrame<'l
 ) -> jlong {
     guard_val(&mut env, 0, |_env| {
         let outcome = session(session_ptr).on_frame();
+        #[cfg(not(hydrolysis_hwui))]
+        let mut bits = session(session_ptr)
+            .runtime
+            .renderer
+            .render_worker()
+            .map_or(0, |worker| i64::from(worker.render_thread_id) << 32);
+        #[cfg(hydrolysis_hwui)]
         let mut bits: jlong = 0;
         if outcome.wants_next_frame {
             bits |= 1;
@@ -750,12 +758,12 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetFrameDe
     session_ptr: jlong,
     continuous: jboolean,
     touching: jboolean,
-) {
-    guard(&mut env, |_env| {
+) -> jfloat {
+    guard_val(&mut env, 0.0, |_env| {
         session(session_ptr)
             .set_frame_demand(continuous, touching)
             .map_err(JniError)
-    });
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,5 +1063,33 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformVi
         Ok(Some(super::platform_views::placements_json(&session(
             session_ptr,
         ))?))
+    })
+}
+
+/// Cumulative CPU execution time of the current renderer thread, without waiting for it.
+#[cfg(not(hydrolysis_hwui))]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeRenderCpuNanos<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+) -> jlong {
+    guard_val(&mut env, 0, |_env| {
+        let host = session(session_ptr);
+        let Some(worker) = host.runtime.renderer.render_worker() else {
+            return Ok(0);
+        };
+        let mut time = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: the borrowed engine owns the live thread and time is writable.
+        if unsafe { libc::clock_gettime(worker.render_thread_cpu_clock, &raw mut time) } != 0 {
+            return Err(JniError(format!(
+                "render CPU clock: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(time.tv_sec * 1_000_000_000 + time.tv_nsec)
     })
 }

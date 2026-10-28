@@ -85,7 +85,10 @@ class HydrolysisSession internal constructor(
      * drives — a view-owned scheduler outlives a replaced view and can
      * still hold a posted frame for a session destroyed later.
      */
-    internal val frameScheduler: FrameScheduler = FrameScheduler(this)
+    internal val frameScheduler: FrameScheduler = FrameScheduler(
+        this,
+        if (painter == null && android.os.Build.VERSION.SDK_INT >= 35) FramePerformance(context) else null,
+    )
 
     /**
      * Runs [block] with the native session pointer for the JNI entry named
@@ -279,10 +282,11 @@ class HydrolysisSession internal constructor(
      * it on the bound host; the GPU path reports it to native, which
      * combines it with the engine's content-rate range.
      */
-    internal fun setFrameDemand(continuous: Boolean, touching: Boolean) {
+    internal fun setFrameDemand(continuous: Boolean, touching: Boolean): Float {
         check(!destroyed) { "hydrolysis: frame demand reached a destroyed HydrolysisSession" }
-        if (painter != null) {
+        return if (painter != null) {
             painter.setHighRefresh(continuous || touching)
+            0f
         } else {
             withNativePtr(NativeBridge::nativeSetFrameDemand.name) { ptr ->
                 NativeBridge.nativeSetFrameDemand(ptr, continuous, touching)

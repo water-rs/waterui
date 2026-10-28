@@ -64,7 +64,8 @@ object NativeBridge {
      * [nativeSetColorScheme] reports every later change
      * (water-rs/waterui#3544).
      */
-    private const val SCHEMA: Int = 23
+    // 24 adds worker CPU-time sampling and returns the selected frame rate.
+    private const val SCHEMA: Int = 24
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -245,7 +246,10 @@ object NativeBridge {
      * range on the native side. The demand survives surface re-creation.
      */
     @JvmStatic
-    external fun nativeSetFrameDemand(sessionPtr: Long, continuous: Boolean, touching: Boolean)
+    external fun nativeSetFrameDemand(sessionPtr: Long, continuous: Boolean, touching: Boolean): Float
+
+    /** Cumulative renderer-thread CPU time; zero before GPU initialization. */
+    @JvmStatic external fun nativeRenderCpuNanos(sessionPtr: Long): Long
 
     /**
      * One system-back phase. `phase` is a `BACK_*` constant. `edge` is

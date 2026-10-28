@@ -1,5 +1,6 @@
 package dev.waterui.hydrolysis
 
+import android.os.Debug
 import android.util.Log
 import android.view.Choreographer
 
@@ -24,7 +25,10 @@ import android.view.Choreographer
  * The session owns the scheduler and [stop]s it when it is destroyed; a
  * stopped scheduler is inert for the rest of its life.
  */
-internal class FrameScheduler(private val session: HydrolysisSession) :
+internal class FrameScheduler(
+    private val session: HydrolysisSession,
+    private val performance: FramePerformance?,
+) :
     Choreographer.FrameCallback {
 
     private val choreographer = Choreographer.getInstance()
@@ -73,6 +77,7 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
      */
     fun stop() {
         stopped = true
+        performance?.close()
         if (posted) {
             choreographer.removeFrameCallback(this)
             posted = false
@@ -87,7 +92,8 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
      * session painter applies it on the bound host.
      */
     private fun publishFrameDemand() {
-        session.setFrameDemand(pumping, touching)
+        val rate = session.setFrameDemand(pumping, touching)
+        performance?.setRefreshRate(rate)
     }
 
     /**
@@ -121,13 +127,20 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
      * transaction itself.
      */
     private fun pump(cause: String) {
+        val workerCpuStart = if (performance != null) renderCpuNanos() else 0L
+        val hostCpuStart = if (performance != null) Debug.threadCpuTimeNanos() else 0L
+        val started = System.nanoTime()
         val outcome =
             session.withNativePtr(NativeBridge::nativeOnFrame.name) { ptr ->
-                NativeBridge.nativeOnFrame(ptr, System.nanoTime())
+                NativeBridge.nativeOnFrame(ptr, started)
             }
         // The frame can end the session: a teardown requested inside it ran
         // as the frame returned and stopped this scheduler.
         if (stopped) return
+        val elapsed = System.nanoTime() - started
+        val cpu = if (performance != null) {
+            Debug.threadCpuTimeNanos() - hostCpuStart + renderCpuNanos() - workerCpuStart
+        } else 0L
         val wantsNext = outcome and WANTS_NEXT_FRAME != 0L
         val deadlineNanos =
             if (outcome and HAS_DEADLINE != 0L) {
@@ -165,7 +178,14 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
         // The native frame may change the content rate even when the pump's
         // continuous-work flag stays the same. Native demand is deduplicated.
         publishFrameDemand()
+        performance?.report((outcome ushr 32).toInt(), started, elapsed, cpu)
+        if (!nowPumping) performance?.close()
     }
+
+    private fun renderCpuNanos(): Long =
+        session.withNativePtr(NativeBridge::nativeRenderCpuNanos.name) { ptr ->
+            NativeBridge.nativeRenderCpuNanos(ptr)
+        }
 
     private companion object {
         const val TAG = "hydrolysis"

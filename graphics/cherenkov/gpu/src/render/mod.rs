@@ -3109,9 +3109,15 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             projective: None,
             frame_count: 0,
         };
+        #[cfg(target_os = "android")]
+        let (render_thread_id, render_thread_cpu_clock) = android_thread_identity();
         Ok((
             renderer,
             GpuInfo {
+                #[cfg(target_os = "android")]
+                render_thread_id,
+                #[cfg(target_os = "android")]
+                render_thread_cpu_clock,
                 name: info.name,
                 backend: format!("{:?}", info.backend),
                 vendor: info.vendor,
@@ -3460,9 +3466,15 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         projective: None,
         frame_count: 0,
     };
+    #[cfg(target_os = "android")]
+    let (render_thread_id, render_thread_cpu_clock) = android_thread_identity();
     Ok((
         renderer,
         GpuInfo {
+            #[cfg(target_os = "android")]
+            render_thread_id,
+            #[cfg(target_os = "android")]
+            render_thread_cpu_clock,
             name: info.name,
             backend: format!("{:?}", info.backend),
             vendor: info.vendor,
@@ -11932,4 +11944,15 @@ mod tests {
         }
         assert_eq!(covered, 20011);
     }
+}
+
+#[cfg(target_os = "android")]
+fn android_thread_identity() -> (u32, libc::clockid_t) {
+    let mut clock = 0;
+    // SAFETY: this is the live calling thread and clock is writable storage.
+    let result = unsafe { libc::pthread_getcpuclockid(libc::pthread_self(), &raw mut clock) };
+    assert_eq!(result, 0, "Android render thread CPU clock is unavailable");
+    // SAFETY: gettid reads the live calling thread identity.
+    let tid = u32::try_from(unsafe { libc::gettid() }).expect("positive Android thread ID");
+    (tid, clock)
 }
