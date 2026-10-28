@@ -12,6 +12,7 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cherenkov::FillRule;
+use cherenkov_simd::math::erf4;
 
 use crate::render::bins::{FrameIndex, FrameMeter};
 use crate::render::lower::{
@@ -594,9 +595,6 @@ impl Buffers {
     }
 }
 
-/// Sample count of the shadow y-quadrature (the GPU uses the same).
-const SHADOW_N: usize = 16;
-
 /// A directed edge in device space.
 #[derive(Clone, Copy, Debug)]
 pub struct Edge {
@@ -633,40 +631,6 @@ fn corner_inset(r: f32, dy: f32) -> f32 {
     r - (r * r - dd * dd).max(0.0).sqrt()
 }
 
-/// The shadow kernel's four-lane coverage at `x0`: one pixel centre per
-/// lane, each computed independently as `(x as f32 + 0.5) - cx`; a 1–3-lane
-/// tail pads with the first lane's valid centre and its outputs are never
-/// read.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "pixel indices and band offsets are far below 2^24"
-)]
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
-)]
-#[inline(always)]
-fn shadow_coverage4<S: Simd>(
-    simd: S,
-    cx: f32,
-    inv_sqrt2_sigma: f32,
-    x0: usize,
-    lanes: usize,
-    samples: &[shadow::Sample],
-) -> [f32; 4] {
-    let mut centres = [(x0 as f32 + 0.5) - cx; 4];
-    for (j, c) in centres.iter_mut().enumerate().take(lanes) {
-        *c = (x0 + j) as f32 + 0.5 - cx;
-    }
-    shadow::integral4(
-        simd,
-        f32x4::load_array(simd, centres),
-        inv_sqrt2_sigma,
-        samples,
-    )
-    .to_array()
-}
-
 /// The shadow's premultiplied source at coverage `cov` under clip `cc`.
 #[expect(
     clippy::inline_always,
@@ -683,11 +647,19 @@ fn shadow_src(color: &[f32; 4], cov: f32, cc: f32) -> [f32; 4] {
     ]
 }
 
-/// Composites the edge columns `from..to` of shadow row `y` — the columns
-/// whose x-integral does not saturate — under `clip_mask`.
+/// Composites a run of shadow rows (rows with the same x intervals): the
+/// edge columns, whose x integrals do not saturate, evaluate each
+/// interval once per four pixels for every row of the run; the interior
+/// columns between them take each row's weight sum. Writes are gated by
+/// `clip_mask`.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the row's shared context travels together"
+    reason = "the item's shared context travels together"
+)]
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    reason = "pixel indices and band offsets are far below 2^24"
 )]
 #[expect(
     clippy::option_if_let_else,
@@ -699,44 +671,96 @@ fn shadow_src(color: &[f32; 4], cov: f32, cc: f32) -> [f32; 4] {
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn shadow_edge<S: Simd>(
+fn shadow_run<S: Simd>(
     simd: S,
     dst: &mut [[f32; 4]],
     w: usize,
-    y: usize,
-    py: usize,
+    y0: usize,
     cx: f32,
     inv_sqrt2_sigma: f32,
+    margin: f32,
     clip_mask: Option<ClipCoverage<'_>>,
     color: &[f32; 4],
     space: cherenkov::BlendSpace,
-    from: usize,
-    to: usize,
-    samples: &[shadow::Sample],
+    (cx_lo, cx_hi): (usize, usize),
+    run: &shadow::Run,
+    integrals: &mut shadow::Integrals<S>,
 ) {
-    let mut x = from;
-    while x < to {
-        let lanes = (to - x).min(4);
-        for (j, cov) in shadow_coverage4(simd, cx, inv_sqrt2_sigma, x, lanes, samples)
-            .into_iter()
-            .enumerate()
-            .take(lanes)
-        {
-            if cov <= 0.0 {
-                continue;
+    // Interior columns: `px >= xlm + margin` saturates every
+    // `erf((xl-px)*is)` at -1 and `px <= xrm - margin` saturates every
+    // `erf((xr-px)*is)` at +1, so `cov = s` for all of them.
+    let x_in_lo = usize::try_from((cx + run.xlm + margin - 0.5).ceil() as i32)
+        .unwrap_or(0)
+        .clamp(cx_lo, cx_hi);
+    let x_in_hi = usize::try_from((cx + run.xrm - margin + 0.5).floor() as i32 + 1)
+        .unwrap_or(0)
+        .clamp(x_in_lo, cx_hi);
+    for (from, to) in [(cx_lo, x_in_lo), (x_in_hi, cx_hi)] {
+        let mut x = from;
+        while x < to {
+            // One pixel centre per lane, each `(x as f32 + 0.5) - cx`; a
+            // 1–3-lane tail pads with the first lane's centre and its
+            // outputs are never read.
+            let lanes = (to - x).min(4);
+            let mut centres = [(x as f32 + 0.5) - cx; 4];
+            for (j, c) in centres.iter_mut().enumerate().take(lanes) {
+                *c = (x + j) as f32 + 0.5 - cx;
             }
-            let x = x + j;
+            // The same saturation per group: columns at least `margin`
+            // inside every right (left) edge skip the right (left) `erf`.
+            let sides = match (
+                centres[0] < run.xlm + margin,
+                centres[lanes - 1] > run.xrm - margin,
+            ) {
+                (true, false) => shadow::Sides::Left,
+                (false, true) => shadow::Sides::Right,
+                _ => shadow::Sides::Both,
+            };
+            run.integrals4(
+                simd,
+                f32x4::load_array(simd, centres),
+                inv_sqrt2_sigma,
+                sides,
+                integrals,
+            );
+            for (i, (y, _)) in run.rows().enumerate() {
+                for (j, cov) in run
+                    .coverage4(simd, i, integrals)
+                    .to_array()
+                    .into_iter()
+                    .enumerate()
+                    .take(lanes)
+                {
+                    if cov <= 0.0 {
+                        continue;
+                    }
+                    let x = x + j;
+                    let cc = match clip_mask {
+                        Some(m) => clip_cov(Some(m), w, x, y0 + y),
+                        None => 1.0,
+                    };
+                    if cc <= 0.0 {
+                        continue;
+                    }
+                    let src = shadow_src(color, cov, cc);
+                    dst[y * w + x] = src_over(dst[y * w + x], member(src, space));
+                }
+            }
+            x += 4;
+        }
+    }
+    for (y, s) in run.rows() {
+        for x in x_in_lo..x_in_hi {
             let cc = match clip_mask {
-                Some(m) => clip_cov(Some(m), w, x, py),
+                Some(m) => clip_cov(Some(m), w, x, y0 + y),
                 None => 1.0,
             };
             if cc <= 0.0 {
                 continue;
             }
-            let src = shadow_src(color, cov, cc);
+            let src = shadow_src(color, s, cc);
             dst[y * w + x] = src_over(dst[y * w + x], member(src, space));
         }
-        x += 4;
     }
 }
 
@@ -3198,14 +3222,11 @@ impl Band<'_> {
     /// `bbox` ∩ band.
     #[expect(
         clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::float_cmp,
         clippy::suboptimal_flops,
         clippy::too_many_arguments,
         clippy::too_many_lines,
-        reason = "pixel indices and band offsets are far below 2^24; the \
-                  flat-row test is intentionally exact and the quadrature \
-                  weights mirror the reference formula"
+        reason = "pixel indices and band offsets are far below 2^24 and \
+                  the quadrature weights mirror the reference formula"
     )]
     #[expect(
         clippy::inline_always,
@@ -3259,32 +3280,28 @@ impl Band<'_> {
         if cx_lo >= cx_hi && clip_mask.is_none() {
             return;
         }
-        // The 16 y-quadrature samples and their `gaussian*step` weights
-        // are per item, not per pixel.
-        let step = 6.0 * sigma / SHADOW_N as f32;
-        let mut dy = [0.0_f32; SHADOW_N];
-        let mut gw = [0.0_f32; SHADOW_N];
-        for (i, (d, w)) in dy.iter_mut().zip(gw.iter_mut()).enumerate() {
-            *d = (i as f32 + 0.5) * step - 3.0 * sigma;
-            *w = gaussian(*d, sigma) * step;
-        }
+        // The y quadrature the GPU shader uses (`shadow` in
+        // gpu/src/render/shader.wgsl): per row, the ±3σ window clipped to
+        // the box's ±half[1], one analytic `erf` sample for the straight
+        // band |y| <= hy - rmax inside the window, and an 8-node
+        // Gauss–Legendre rule (`shadow::GL8`) over each corner band the
+        // window reaches.
+        let rmax = radii.iter().copied().fold(0.0_f32, f32::max);
+        let band = (half[1] - rmax).max(0.0);
         // Per row the quadrature's x-integral saturates except near the
-        // left/right edges: `erf` reaches ±1 within `MARGIN` of an edge,
-        // so interior columns all evaluate to the same `S` (the sum of
+        // left/right edges: `erf` reaches ±1 within `margin` of an edge,
+        // so interior columns all evaluate to the same `s` (the sum of
         // in-box sample weights) and only the two edge bands pay the
-        // 32-`erf` sum. For `sigma`-wide margins the tail error is
-        // `erf(5)-1 < 1e-11`.
+        // per-sample `erf` sum. For `sigma`-wide margins the tail error
+        // is `erf(5)-1 < 1e-11`.
         let margin = 5.0 * sigma * std::f32::consts::SQRT_2;
-        // Flat rows — every sample has zero corner inset — share the
-        // straight-wall x-integral, one `erf` pair per column computed
-        // once for the whole item.
-        let mut x_term: Option<Vec<f32>> = None;
-        let flat_sample = [shadow::Sample {
-            left: -half[0],
-            right: half[0],
-            weight: 1.0,
-        }];
-        let mut samples = [shadow::Sample::default(); SHADOW_N];
+        // Consecutive rows with the same x intervals — every row whose
+        // window misses the corner bands, and every row whose window
+        // covers a whole corner band — form a run that shares the
+        // intervals' x integrals; only the weights differ per row.
+        let mut samples = [shadow::Sample::default(); shadow::MAX_SAMPLES];
+        let mut run = shadow::Run::new();
+        let mut integrals = shadow::Integrals::new();
         // The per-pixel quadrature runs inside `vectorize` so it compiles
         // under the dispatched level's target features — a second closure
         // on this path (a `map_or` or `get_or_insert_with` body) would be
@@ -3293,135 +3310,116 @@ impl Band<'_> {
             #[inline(always)]
             || {
                 for y in y_lo..y_hi {
-                    let py_i = self.y0 + y;
-                    let py = py_i as f32 + 0.5 - cy;
+                    let py = (self.y0 + y) as f32 + 0.5 - cy;
+                    // The row's y window: `py ± 3σ` clipped to the box.
+                    let lo = (py - 3.0 * sigma).max(-half[1]);
+                    let hi = (py + 3.0 * sigma).min(half[1]);
+                    if hi <= lo {
+                        continue;
+                    }
                     // The row's sample table: left/right x-edges per in-box
                     // sample, their weights, the interior-coverage sum `s`, and
                     // the most-inset edges bounding the interior zone.
                     let mut n = 0_usize;
                     let mut s = 0.0_f32;
-                    let mut flat = true;
                     let (mut xlm, mut xrm) = (f32::MIN, f32::MAX);
-                    for (d, w) in dy.iter().zip(gw.iter()) {
-                        let yi = py + d;
-                        if yi.abs() > half[1] {
+                    // The window's straight-band part is one sample whose
+                    // weight is the Gaussian's exact integral over it.
+                    let ya = lo.max(-band);
+                    let yb = hi.min(band);
+                    if yb > ya {
+                        let ends = erf4(
+                            simd,
+                            f32x4::load_array(
+                                simd,
+                                [
+                                    (yb - py) * inv_sqrt2_sigma,
+                                    (ya - py) * inv_sqrt2_sigma,
+                                    0.0,
+                                    0.0,
+                                ],
+                            ),
+                        )
+                        .to_array();
+                        samples[n] = shadow::Sample {
+                            left: -half[0],
+                            right: half[0],
+                            weight: 0.5 * (ends[0] - ends[1]),
+                        };
+                        (xlm, xrm) = (-half[0], half[0]);
+                        s += samples[n].weight;
+                        n += 1;
+                    }
+                    // Each corner band the window reaches gets the
+                    // shader's 8-node Gauss–Legendre rule; a node's x
+                    // edges come from the corner inset at its row.
+                    for (a, b, rl, rr) in [
+                        (lo, hi.min(-band), radii[0], radii[1]),
+                        (lo.max(band), hi, radii[3], radii[2]),
+                    ] {
+                        if b <= a {
                             continue;
                         }
-                        let (rl, rr) = if yi < 0.0 {
-                            (radii[0], radii[1])
-                        } else {
-                            (radii[3], radii[2])
-                        };
-                        let ay = yi.abs();
-                        samples[n] = shadow::Sample {
-                            left: -half[0] + corner_inset(rl, ay - (half[1] - rl)),
-                            right: half[0] - corner_inset(rr, ay - (half[1] - rr)),
-                            weight: *w,
-                        };
-                        flat &= samples[n].left == -half[0] && samples[n].right == half[0];
-                        xlm = xlm.max(samples[n].left);
-                        xrm = xrm.min(samples[n].right);
-                        s += w;
-                        n += 1;
+                        let mid = a.midpoint(b);
+                        let hw = 0.5 * (b - a);
+                        for (node, w) in shadow::GL8 {
+                            for sign in [-1.0_f32, 1.0] {
+                                let yi = mid + sign * hw * node;
+                                let ay = yi.abs();
+                                samples[n] = shadow::Sample {
+                                    left: -half[0] + corner_inset(rl, ay - (half[1] - rl)),
+                                    right: half[0] - corner_inset(rr, ay - (half[1] - rr)),
+                                    weight: w * hw * gaussian(yi - py, sigma),
+                                };
+                                xlm = xlm.max(samples[n].left);
+                                xrm = xrm.min(samples[n].right);
+                                s += samples[n].weight;
+                                n += 1;
+                            }
+                        }
                     }
                     if n == 0 || s <= 0.0 {
                         continue;
                     }
-                    let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
-                    if flat {
-                        // Separable: `cov = x_term[px] * s` across the row.
-                        if x_term.is_none() {
-                            let mut term = Vec::with_capacity(cx_hi - cx_lo);
-                            let mut x = cx_lo;
-                            while x < cx_hi {
-                                let lanes = (cx_hi - x).min(4);
-                                for cov in shadow_coverage4(
-                                    simd,
-                                    cx,
-                                    inv_sqrt2_sigma,
-                                    x,
-                                    lanes,
-                                    &flat_sample,
-                                )
-                                .into_iter()
-                                .take(lanes)
-                                {
-                                    term.push(cov);
-                                }
-                                x += 4;
-                            }
-                            x_term = Some(term);
+                    if !run.continues(y, &samples[..n]) {
+                        if !run.is_empty() {
+                            let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
+                            shadow_run(
+                                simd,
+                                dst,
+                                self.w,
+                                self.y0,
+                                cx,
+                                inv_sqrt2_sigma,
+                                margin,
+                                clip_mask,
+                                color,
+                                space,
+                                (cx_lo, cx_hi),
+                                &run,
+                                &mut integrals,
+                            );
                         }
-                        let Some(t) = x_term.as_deref() else {
-                            unreachable!("x_term is filled above")
-                        };
-                        for x in cx_lo..cx_hi {
-                            let cov = t[x - cx_lo] * s;
-                            if cov <= 0.0 {
-                                continue;
-                            }
-                            let cc = match clip_mask {
-                                Some(m) => clip_cov(Some(m), self.w, x, py_i),
-                                None => 1.0,
-                            };
-                            if cc <= 0.0 {
-                                continue;
-                            }
-                            let src = shadow_src(color, cov, cc);
-                            dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
-                        }
-                        continue;
+                        run.start(y, &samples[..n], xlm, xrm);
                     }
-                    // Interior columns: `px >= xlm + margin` saturates every
-                    // `erf((xl-px)*is)` at -1 and `px <= xrm - margin` saturates
-                    // every `erf((xr-px)*is)` at +1, so `cov = s` for all of them.
-                    let x_in_lo = usize::try_from((cx + xlm + margin - 0.5).ceil() as i32)
-                        .unwrap_or(0)
-                        .clamp(cx_lo, cx_hi);
-                    let x_in_hi = usize::try_from((cx + xrm - margin + 0.5).floor() as i32 + 1)
-                        .unwrap_or(0)
-                        .clamp(x_in_lo, cx_hi);
+                    run.push(s, &samples[..n]);
+                }
+                if !run.is_empty() {
                     let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
-                    shadow_edge(
+                    shadow_run(
                         simd,
                         dst,
                         self.w,
-                        y,
-                        py_i,
+                        self.y0,
                         cx,
                         inv_sqrt2_sigma,
+                        margin,
                         clip_mask,
                         color,
                         space,
-                        cx_lo,
-                        x_in_lo,
-                        &samples[..n],
-                    );
-                    for x in x_in_lo..x_in_hi {
-                        let cc = match clip_mask {
-                            Some(m) => clip_cov(Some(m), self.w, x, py_i),
-                            None => 1.0,
-                        };
-                        if cc <= 0.0 {
-                            continue;
-                        }
-                        let src = shadow_src(color, s, cc);
-                        dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
-                    }
-                    shadow_edge(
-                        simd,
-                        dst,
-                        self.w,
-                        y,
-                        py_i,
-                        cx,
-                        inv_sqrt2_sigma,
-                        clip_mask,
-                        color,
-                        space,
-                        x_in_hi,
-                        cx_hi,
-                        &samples[..n],
+                        (cx_lo, cx_hi),
+                        &run,
+                        &mut integrals,
                     );
                 }
             },
