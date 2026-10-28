@@ -22,6 +22,12 @@
 //! [`OffscreenFormat`] the host asked for — `LinearF16` stores f16
 //! directly, rounding once where readback used to round.
 //!
+//! Firmware builds can enable `bounded-bins` to scan items per band and
+//! rescan vertical boundaries instead of retaining per-frame item bins or
+//! geometry-sized coverage scratch. Bin queries allocate no item lists;
+//! coverage scratch depends on width and band/filter-window height. This
+//! does not bound retained scene geometry, filter nesting, or image storage.
+//!
 //! Measured on the render corpus, f16 output storage costs +0.0013 mean
 //! FLIP versus keeping f32 (0.00406 vs 0.00278).
 //!
