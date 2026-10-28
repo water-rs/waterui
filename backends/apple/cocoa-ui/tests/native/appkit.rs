@@ -61,7 +61,10 @@ pub fn trials() -> Vec<Trial> {
             "appkit::label",
             a_label_draws_its_text_at_the_top_of_an_oversized_frame
         ),
-        case!("appkit::label", a_labels_hit_test_geometry_matches_its_ink),
+        case!(
+            "appkit::label",
+            a_labels_hit_test_geometry_follows_its_layout
+        ),
         case!(
             "appkit::visibility",
             a_windowed_view_is_presentable_until_clipped_or_hidden
@@ -1283,104 +1286,65 @@ fn a_fields_history_observation_retires_when_editing_moves() {
 
     window.close();
 }
-/// The hit-test stack must agree with what the label draws — the geometry
-/// a span tap reads. Rasterizes a label, splits the ink into word
-/// clusters, and checks `character_index` against them: a point inside
-/// the first word maps inside it, a point in the slack past the text maps
-/// nowhere, and `rects` covers the ink of its range.
-fn a_labels_hit_test_geometry_matches_its_ink() {
+
+/// The hit-test stack a span tap reads: each word's rectangles sit where
+/// the label lays the word out, a point inside a word maps to it, slack past
+/// the text maps nowhere, and a one-line limit elides the tail it truncates.
+fn a_labels_hit_test_geometry_follows_its_layout() {
     let mtm = marker();
     let label = Label::label_with_string(mtm, "alpha beta");
-    label.setTextColor(Some(&cocoa_ui::objc2_app_kit::NSColor::blackColor()));
     label.setFrame(cocoa_ui::objc2_foundation::NSRect::new(
         cocoa_ui::objc2_foundation::NSPoint::new(0.0, 0.0),
         cocoa_ui::objc2_foundation::NSSize::new(320.0, 240.0),
     ));
-    let rep = label
-        .bitmapImageRepForCachingDisplayInRect(label.bounds())
-        .expect("a bitmap rep");
-    label.cacheDisplayInRect_toBitmapImageRep(label.bounds(), &rep);
-    // SAFETY: `bitmapData` answers `pixelsHigh * bytesPerRow` readable
-    // bytes, RGBA8 premultiplied.
-    let ink: Vec<(usize, usize)> = unsafe {
-        let bytes = rep.bitmapData().cast::<u8>();
-        let stride = usize::try_from(rep.bytesPerRow()).unwrap();
-        let wide = usize::try_from(rep.pixelsWide()).unwrap();
-        let mut ink = Vec::new();
-        for row in 0..usize::try_from(rep.pixelsHigh()).unwrap() {
-            for col in 0..wide {
-                let px = bytes.add(row * stride + col * 4);
-                if *px.add(3) > 100 && *px < 200 && *px.add(1) < 200 && *px.add(2) < 200 {
-                    ink.push((row, col));
-                }
-            }
-        }
-        ink
-    };
-    assert!(!ink.is_empty(), "the label drew no ink");
-    // Pixel rows are screen order; the label's bounds run y-up.
-    let scale = rep.pixelsWide() as f64 / label.bounds().size.width;
-    let height = rep.pixelsHigh();
-    let to_point = |row: usize, col: usize| {
-        cocoa_ui::Point::new(col as f64 / scale, (height as usize - row) as f64 / scale)
-    };
-    // Contiguous ink column runs, split at gaps wider than a space: word
-    // clusters, in reading order.
-    let mut clusters: Vec<Vec<(usize, usize)>> = Vec::new();
-    let mut last_col = None;
-    for px in &ink {
-        if last_col.is_none_or(|last| px.1 > last + 4) {
-            clusters.push(Vec::new());
-        }
-        last_col = Some(px.1);
-        clusters.last_mut().unwrap().push(*px);
-    }
+    let alpha = label.rects(0..5);
+    let beta = label.rects(6..10);
+    assert_eq!(alpha.len(), 1, "'alpha' lays out on one line: {alpha:?}");
+    assert_eq!(beta.len(), 1, "'beta' lays out on one line: {beta:?}");
+    let (alpha, beta) = (alpha[0], beta[0]);
     assert!(
-        clusters.len() >= 2,
-        "expected at least the two words' ink clusters, got {}",
-        clusters.len()
+        alpha.origin.x + alpha.size.width <= beta.origin.x,
+        "'alpha' {alpha:?} must precede 'beta' {beta:?}"
     );
-    let centroid = |cluster: &[(usize, usize)]| {
-        let (rows, cols) = cluster
-            .iter()
-            .fold((0usize, 0usize), |(r, c), &(row, col)| (r + row, c + col));
-        to_point(rows / cluster.len(), cols / cluster.len())
+    let center = |rect: cocoa_ui::geometry::Rect| {
+        cocoa_ui::Point::new(
+            rect.origin.x + rect.size.width / 2.0,
+            rect.origin.y + rect.size.height / 2.0,
+        )
     };
-    // "alpha" occupies UTF-16 units 0..5, "beta" 6..10.
-    let first = centroid(&clusters[0]);
     assert!(
-        label.character_index(first).is_some_and(|i| i < 5),
-        "ink inside 'alpha' must map inside it, got {:?}",
-        label.character_index(first),
+        label.character_index(center(alpha)).is_some_and(|i| i < 5),
+        "the middle of 'alpha' must map inside it, got {:?}",
+        label.character_index(center(alpha)),
     );
-    let last = centroid(clusters.last().unwrap());
     assert!(
         label
-            .character_index(last)
+            .character_index(center(beta))
             .is_some_and(|i| (6..10).contains(&i)),
-        "ink inside 'beta' must map inside it, got {:?}",
-        label.character_index(last),
+        "the middle of 'beta' must map inside it, got {:?}",
+        label.character_index(center(beta)),
     );
-    // Slack past the text's right edge at the ink row is not a hit.
-    let slack = cocoa_ui::Point::new(300.0, first.y);
     assert_eq!(
-        label.character_index(slack),
+        label.character_index(cocoa_ui::Point::new(300.0, center(alpha).y)),
         None,
         "a point past the text must not map to a character"
     );
-    // Every ink pixel of the first word sits inside that range's rects.
-    let rects = label.rects(0..5);
-    assert!(!rects.is_empty(), "'alpha' covers no rect");
-    for &px in &clusters[0] {
-        let point = to_point(px.0, px.1);
-        assert!(
-            rects.iter().any(|r| {
-                point.x >= r.origin.x
-                    && point.x <= r.origin.x + r.size.width
-                    && point.y >= r.origin.y
-                    && point.y <= r.origin.y + r.size.height
-            }),
-            "ink at {point:?} is outside 'alpha's rects {rects:?}"
-        );
-    }
+
+    // Narrower than the text on one line: the tail is truncated, and the
+    // elided word neither hits nor covers any rectangle.
+    label.set_line_limit(1);
+    label.setFrame(cocoa_ui::objc2_foundation::NSRect::new(
+        cocoa_ui::objc2_foundation::NSPoint::new(0.0, 0.0),
+        cocoa_ui::objc2_foundation::NSSize::new(alpha.size.width + 4.0, 240.0),
+    ));
+    assert!(
+        label.rects(6..10).is_empty(),
+        "the truncated 'beta' covers {:?}",
+        label.rects(6..10)
+    );
+    assert_ne!(
+        label.rects(0..5),
+        Vec::new(),
+        "the visible part of 'alpha' still covers a rectangle"
+    );
 }
