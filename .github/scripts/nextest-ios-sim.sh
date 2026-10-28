@@ -34,7 +34,11 @@
 #   through `spawn`.
 #
 # Every invocation boots the device if it is shut down, under a boot lock
-# beside the launch lock (see the comment at the boot below).
+# beside the launch lock (see the comment at the boot below). Both the
+# `spawn` and `launch` paths run their `simctl` under `caffeinate -d -u`
+# on the host: the simulator renders through the host display, so a
+# sleeping host display would stop it presenting the frames the GPU
+# suites assert on (#3529).
 #
 # Usage:  nextest-ios-sim.sh <test-binary> [test args…]
 # Env:    WATERUI_IOS_SIM_UDID  REQUIRED — the UDID of the owned iPhone
@@ -94,7 +98,7 @@ done
 # `pipefail`, misread a marked binary as unmarked.
 load_commands="$(otool -l "$binary")"
 if [[ "$listing" == true || "$load_commands" != *"sectname __info_plist"* ]]; then
-    exec xcrun simctl spawn "$device" "$binary" "$@"
+    exec caffeinate -d -u xcrun simctl spawn "$device" "$binary" "$@"
 fi
 
 work="$(mktemp -d)"
@@ -126,7 +130,7 @@ launch_app() {
         || ! cmp -s "$installed/$executable" "$app/$executable"; then
         xcrun simctl install "$device" "$app" >&2
     fi
-    xcrun simctl launch --console --terminate-running-process "$device" "$bundle_id" "$@" |
+    caffeinate -d -u xcrun simctl launch --console --terminate-running-process "$device" "$bundle_id" "$@" |
         while IFS= read -r line || [[ -n "$line" ]]; do
             if [[ "$line" =~ ^(.*)("$bundle_id: "[0-9]+)$ ]]; then
                 printf '%s' "${BASH_REMATCH[1]}"

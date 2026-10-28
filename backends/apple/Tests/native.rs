@@ -46,6 +46,11 @@ fn main() {
     // `AppKit`/`UIKit` objects may only be built on the real main thread;
     // `run` executes sequentially in the calling thread at one thread.
     args.test_threads = Some(1);
+    // The precondition the GPU suites rely on for their whole run: an
+    // awake display — a sleeping one presents nothing (#3529). `--list`
+    // mounts nothing and skips it.
+    #[cfg(target_os = "macos")]
+    let _display_awake = (!args.list).then(cocoa_ui::native_test::DisplayAwake::hold);
     // Process-global startup (executors, tracing dispatcher) installs
     // once here on the same true main thread the trials run on — the
     // gpu-surface fixture mounts through it.
