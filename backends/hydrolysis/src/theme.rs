@@ -167,6 +167,23 @@ fn slot(scheme: &Computed<ColorScheme>, pick: fn(&Palette) -> u32) -> Computed<W
         .computed()
 }
 
+/// Writes `resolved` into `scheme`, only when it moved.
+///
+/// The host's appearance feeds reach the scheme binding through this seam —
+/// winit's theme reports on Windows, the portal's `color-scheme` on Linux —
+/// and a report repeating the held scheme writes nothing, so the token
+/// slots never re-resolve for a report that moved nothing.
+#[cfg(any(
+    test,
+    all(hydrolysis_winit, any(target_os = "windows", target_os = "linux"))
+))]
+pub(crate) fn sync_color_scheme(scheme: &nami::Binding<ColorScheme>, resolved: ColorScheme) {
+    use nami::Signal as _;
+    if scheme.snapshot() != resolved {
+        scheme.set(resolved);
+    }
+}
+
 /// Assembles the runtime environment's theme tokens in precedence order:
 /// framework defaults < `Style::install_tokens` < the application's own
 /// environment (water-rs/hydrolysis#203).

@@ -4697,6 +4697,7 @@ dependencies = [
  "ctrlc",
  "executor-core",
  "futures",
+ "futures-core",
  "getrandom 0.4.3",
  "hydrolysis",
  "icu_locale",
@@ -4773,6 +4774,7 @@ dependencies = [
  "winit",
  "x11-dl",
  "x11rb 0.14.0",
+ "zbus",
 ]
 
 [[package]]
