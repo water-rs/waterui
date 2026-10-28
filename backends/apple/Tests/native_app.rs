@@ -241,9 +241,7 @@ mod embedded_menus {
             assert!(can_with_sender(&foreign, &key, None));
         }
         items.set(vec![command(&fired)]);
-        cocoa_ui::uikit::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
-            !can(&button, &key)
-        });
+        cocoa_ui::uikit::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || !can(&button, &key));
         assert!(!can(&button, &key));
         assert_eq!(button.armed_command_count(), 1);
         let rebuilt = commands(&button)
