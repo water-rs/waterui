@@ -1055,6 +1055,32 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             self.hit_test.active_press_origin = None;
         }
     }
+
+    /// Whether Hydrolysis takes the hit at `point` (window hit-test space)
+    /// over the platform view placed as `view` — an interactive target
+    /// painted above the view covers the point. The same rule hosted planes
+    /// publish ([`HitTestState::interactive_regions_above`]).
+    ///
+    /// # Panics
+    ///
+    /// When this frame placed no platform view `view`: the caller names a
+    /// view the same frame's placements bound.
+    #[cfg(any(test, hydrolysis_hwui))]
+    pub(crate) fn platform_view_occluded(&self, view: u64, point: kurbo::Point) -> bool {
+        let placed = self
+            .materialized_platform_views
+            .iter()
+            .find(|placed| placed.placement.id == view)
+            .unwrap_or_else(|| {
+                panic!("hydrolysis: platform view {view} is not placed in the current frame")
+            });
+        self.hit_test
+            .interactive_regions_above(
+                placed.placement.order as usize,
+                &self.text_editing.text_input_targets,
+            )
+            .any(|bounds| bounds.contains(point))
+    }
 }
 
 impl<E: crate::text::TextEngine> HitTestState<E> {
@@ -1168,32 +1194,48 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
         let _ = text_inputs;
         #[cfg(hydrolysis_hosted)]
         for occlusion in &self.native_view_occlusions {
-            let above = |order: usize, bounds: kurbo::Rect| {
-                (order > occlusion.order)
-                    .then(|| bounds.intersect(occlusion.bounds))
-                    .filter(|overlap| !overlap.is_zero_area())
-            };
             let rects: Vec<kurbo::Rect> = self
-                .pointer_targets
-                .iter()
-                .filter_map(|target| above(target.order, target.bounds))
-                .chain(
-                    text_inputs
-                        .iter()
-                        .filter_map(|target| above(target.order, target.bounds)),
-                )
-                .chain(self.embedded_input_targets.iter().filter_map(|target| {
-                    above(
-                        target.order,
-                        target
-                            .inverse_transform
-                            .inverse()
-                            .transform_rect_bbox(target.local_bounds),
-                    )
-                }))
+                .interactive_regions_above(occlusion.order, text_inputs)
+                .map(|bounds| bounds.intersect(occlusion.bounds))
+                .filter(|overlap| !overlap.is_zero_area())
                 .collect();
             occlusion.sink.publish(rects);
         }
+    }
+
+    /// The window hit-test rects of every interactive target painted above
+    /// a native view flushed at `order` — pointer targets, text inputs and
+    /// embedded input targets. This is the one rule deciding where
+    /// Hydrolysis takes a hit over a native view: a hosted plane publishes
+    /// these rects, and an Android platform view is refused at a point one
+    /// of them covers. Self-drawn content that registered no target never
+    /// blocks a native view. Embedded targets answer their transformed
+    /// bounding box, as every rect here is axis-aligned.
+    #[cfg(any(hydrolysis_hosted, test))]
+    fn interactive_regions_above<'a>(
+        &'a self,
+        order: usize,
+        text_inputs: &'a [TextInputTarget<E>],
+    ) -> impl Iterator<Item = kurbo::Rect> + 'a {
+        self.pointer_targets
+            .iter()
+            .map(|target| (target.order, target.bounds))
+            .chain(
+                text_inputs
+                    .iter()
+                    .map(|target| (target.order, target.bounds)),
+            )
+            .chain(self.embedded_input_targets.iter().map(|target| {
+                (
+                    target.order,
+                    target
+                        .inverse_transform
+                        .inverse()
+                        .transform_rect_bbox(target.local_bounds),
+                )
+            }))
+            .filter(move |(above, _)| *above > order)
+            .map(|(_, bounds)| bounds)
     }
 
     pub(crate) fn cursor_style_at(&self, point: kurbo::Point) -> CursorStyle {

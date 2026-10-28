@@ -1,8 +1,10 @@
 //! The retained-tree hit query for native views: `platform_view_at` walks
 //! the mirrored layer tree in paint order — ancestor opacity gates, the
 //! parent's transform maps the point down, clips cut it, scroll shifts it —
-//! and answers which platform view (or self-drawn content, which is a
-//! `None` to the caller) owns the point. It mutates nothing.
+//! and answers the topmost platform view drawn at the point. Self-drawn ink
+//! is not a hit target here: whether an interactive target above the view
+//! takes the point instead is the renderer's shared rule
+//! (`SemanticCore::platform_view_occluded`). It mutates nothing.
 
 use kurbo::{Point, Shape as _};
 
@@ -11,27 +13,19 @@ use crate::hwui::geometry::unproject_point;
 use cherenkov_record::LayerId;
 use waterui_graphics::draw::ShapeData;
 
-/// What `platform_view_at` resolves — self-drawn content or the view's id.
-enum Hit {
-    Content,
-    Platform(u64),
-}
-
 impl Encoder {
-    /// The platform view under `point` (host physical pixels — the root
-    /// transform carries the density), or
-    /// `None` when self-drawn content or nothing covers it. A view reached
-    /// through a clip-free ancestor answers its own bounds; everything else
-    /// — alpha, transforms, clips, scroll — composes exactly as drawn.
+    /// The topmost platform view drawn at `point` (host physical pixels —
+    /// the root transform carries the density), or `None` when no view is.
+    /// Self-drawn content painted above a view does not hide it from this
+    /// query. A view reached through a clip-free ancestor answers its own
+    /// bounds; everything else — alpha, transforms, clips, scroll — composes
+    /// exactly as drawn.
     ///
     /// # Errors
     ///
     /// A [`HwuiError`] when a layer's projective pose is degenerate.
     pub fn platform_view_at(&self, point: Point) -> Result<Option<u64>, HwuiError> {
-        match self.hit_layer(self.tree.root(), point, 1.0)? {
-            Some(Hit::Platform(view)) => Ok(Some(view)),
-            Some(Hit::Content) | None => Ok(None),
-        }
+        self.hit_layer(self.tree.root(), point, 1.0)
     }
 
     /// One layer's subtree, in reverse child order (paint topmost first).
@@ -40,7 +34,7 @@ impl Encoder {
         id: LayerId,
         parent_point: Point,
         alpha: f32,
-    ) -> Result<Option<Hit>, HwuiError> {
+    ) -> Result<Option<u64>, HwuiError> {
         let node = self.tree.layer(id);
         let state = &self.layers[&id.raw()];
         let alpha = alpha * node.opacity;
@@ -82,10 +76,7 @@ impl Encoder {
         if let Some(portal) = &state.platform
             && portal.binding.bounds.contains(point)
         {
-            return Ok(Some(Hit::Platform(portal.binding.view)));
-        }
-        if state.content_ink.is_some_and(|ink| ink.contains(point)) {
-            return Ok(Some(Hit::Content));
+            return Ok(Some(portal.binding.view));
         }
         Ok(None)
     }

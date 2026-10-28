@@ -213,8 +213,9 @@ class HydrolysisSession internal constructor(
 
     /**
      * The retained tree's platform view under host pixel (`x`, `y`) — the
-     * HWUI painter's ordered hit test; `null` means content or nothing
-     * covers the point. GPU sessions never call this.
+     * HWUI painter's ordered hit test; `null` means no view is drawn there
+     * or an interactive target above it takes the point. GPU sessions never
+     * call this.
      */
     internal fun platformViewAt(x: Float, y: Float): Long? {
         val id =
