@@ -520,6 +520,7 @@ mod platform {
                 image: None,
                 enabled: tab.enabled.snapshot(),
                 badge: tab.badge.as_ref().map(|badge| badge.snapshot().to_string()),
+                is_search: tab.is_search,
             })
             .collect()
     }
