@@ -72,7 +72,10 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// `BindPlatformView` op binds a platform view inside its owner's `RenderNode`.
 /// 21->22 = `nativePlatformViewHitTest` answers the retained tree's platform
 /// view under a host pixel — the HWUI painter's ordered-input query.
-pub const JNI_SCHEMA: jint = 22;
+/// 23 = `nativeCreateSession` carries the configuration's night-mode flag so
+/// the colour-scheme signal starts on the real `uiMode`, and
+/// `nativeSetColorScheme` reports every later change (water-rs/waterui#3544).
+pub const JNI_SCHEMA: jint = 23;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -421,6 +424,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
     context: JObject<'local>,
     painter: JObject<'local>,
     services_ptr: jlong,
+    night: jboolean,
 ) -> jlong {
     guard_val(&mut env, 0, |env| {
         let vm = env.get_java_vm()?;
@@ -448,6 +452,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             host_view,
             &painter,
             metrics,
+            night,
             services(services_ptr),
         )?;
         Ok(Box::into_raw(Box::new(SessionBox {
@@ -650,6 +655,21 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceDes
 ) {
     guard(&mut env, |_env| {
         session(session_ptr).surface_detached(crate::num_cast::i64_as_u64(generation));
+        Ok(())
+    });
+}
+
+/// The configuration's night-mode flag — pushed by the host at bind and on
+/// every `onConfigurationChanged`, into the session's colour-scheme signal.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetColorScheme<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    night: jboolean,
+) {
+    guard(&mut env, |_env| {
+        session(session_ptr).set_night_mode(night);
         Ok(())
     });
 }

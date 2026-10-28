@@ -2,6 +2,7 @@ package dev.waterui.hydrolysis
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.res.Configuration
 import android.util.SparseArray
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
@@ -250,6 +251,17 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         inputRestartPosted = false
         session?.unbind(this)
         super.onDetachedFromWindow()
+    }
+
+    /**
+     * A configuration change the Activity kept (`android:configChanges`
+     * declares `uiMode`) reaches the running session here rather than
+     * through recreation — the night-mode flag re-derives the session's
+     * colour-scheme signal so the theme tokens follow the system theme.
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        session?.setNightMode(newConfig.isNightMode)
     }
 
     // ------------------------------------------------------------------
