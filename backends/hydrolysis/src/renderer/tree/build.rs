@@ -85,6 +85,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     line_limit: config.line_limit.map(core::num::NonZeroUsize::get),
                     layout_dirty,
                     _guards: guards,
+                    tap_span_targets: RefCell::new(Vec::new()),
                 }));
             }
             Err(view) => view,

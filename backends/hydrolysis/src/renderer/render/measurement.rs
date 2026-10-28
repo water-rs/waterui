@@ -514,11 +514,46 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         env: &Environment,
         tail: TailMark,
     ) {
-        let state = &mut self.state;
         let input = resolve_text_layout_input(&styled, alignment, env);
+        self.record_text_input(ctx, &input, tail);
+    }
+
+    /// [`Self::render_styled_text_limited`], also returning the layout the
+    /// recording was made from — the handle `record` shaped under its key,
+    /// re-fetched from the shared cache rather than shaped twice. The text
+    /// leaf uses it for per-span geometry (tap targets and `Link`
+    /// accessibility children); paint-only callers skip the lookup.
+    pub(crate) fn render_styled_text_with_layout(
+        &mut self,
+        ctx: RenderContext,
+        styled: &StyledStr,
+        alignment: HorizontalAlignment,
+        env: &Environment,
+        tail: TailMark,
+    ) -> E::Layout {
+        let input = resolve_text_layout_input(styled, alignment, env);
+        let max_width = self.record_text_input(ctx, &input, tail);
+        let (max_lines, tail_ellipsis) = tail.parts();
+        if tail_ellipsis {
+            self.state.text.shape_limited(&input, max_width, max_lines)
+        } else {
+            self.state.text.shape(&input, max_width)
+        }
+    }
+
+    /// Records `input` at `ctx`'s width and pushes the recording as a live
+    /// source; returns the width it was laid out at.
+    fn record_text_input(
+        &mut self,
+        ctx: RenderContext,
+        input: &crate::text::ResolvedTextLayoutInput,
+        tail: TailMark,
+    ) -> Option<f32> {
+        let state = &mut self.state;
+        let max_width = Some(crate::num_cast::f64_as_f32(ctx.bounds.width()));
         let fragment = state.text.record(
-            &input,
-            Some(crate::num_cast::f64_as_f32(ctx.bounds.width())),
+            input,
+            max_width,
             tail,
             &mut state.counters,
             &mut state.text_scenes,
@@ -531,6 +566,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             },
             &source,
         );
+        max_width
     }
 
     #[expect(

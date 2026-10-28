@@ -167,15 +167,34 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 // has no surrounding widget to watch it, so the node must do so itself.)
                 let styled = renderer.read_signal(&text.content);
                 let alignment = renderer.read_signal(&text.alignment);
+                #[cfg(feature = "accessibility")]
+                let text_node_id = TextNode::emit_accessibility(renderer, Some(ctx), &styled, env);
+                #[cfg(not(feature = "accessibility"))]
                 TextNode::emit_accessibility(renderer, Some(ctx), &styled, env);
                 renderer.pop_render_owner();
-                renderer.render_styled_text_limited(
-                    ctx,
-                    styled,
-                    alignment,
-                    env,
-                    text.line_limit.map_or(TailMark::None, TailMark::Ellipsis),
-                );
+                let tail = text.line_limit.map_or(TailMark::None, TailMark::Ellipsis);
+                if styled.tap_spans().is_empty() {
+                    // Content that lost its spans drops their retained targets.
+                    text.tap_span_targets.borrow_mut().clear();
+                    renderer.render_styled_text_limited(ctx, styled, alignment, env, tail);
+                } else {
+                    let layout =
+                        renderer.render_styled_text_with_layout(ctx, &styled, alignment, env, tail);
+                    // Span targets and `Link` children belong to this leaf:
+                    // register them under its render owner so their ancestry
+                    // matches the node that emitted them.
+                    renderer.push_render_owner(&text.accessibility_identity);
+                    text.flush_tap_spans(
+                        renderer,
+                        ctx,
+                        &layout,
+                        &styled,
+                        env,
+                        #[cfg(feature = "accessibility")]
+                        text_node_id,
+                    );
+                    renderer.pop_render_owner();
+                }
             }
             Self::Container(container) => {
                 renderer.push_render_owner(&container.accessibility_identity);
@@ -874,7 +893,19 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Text(text) => {
                 renderer.push_accessibility_owner(&text.accessibility_identity);
                 let styled = renderer.read_signal(&text.content);
-                TextNode::emit_accessibility(renderer, None, &styled, env);
+                let text_node_id = TextNode::emit_accessibility(renderer, None, &styled, env);
+                let tap_spans = styled.tap_spans();
+                if !tap_spans.is_empty() {
+                    let plain = styled.to_plain();
+                    TextNode::emit_tap_span_accessibility(
+                        renderer,
+                        None,
+                        tap_spans,
+                        &plain,
+                        env,
+                        text_node_id,
+                    );
+                }
                 renderer.pop_accessibility_owner();
             }
             Self::Container(container) => {
