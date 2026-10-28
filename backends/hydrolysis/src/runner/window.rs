@@ -14,7 +14,7 @@ use crate::platform::GpuSurfaceWindow;
     all(target_arch = "wasm32", feature = "web")
 ))]
 use crate::platform::PresentationSurface as _;
-use crate::renderer::material::{Blending, WithinWindowLevel};
+use crate::renderer::material::{BehindWindowLevel, Blending, WithinWindowLevel};
 #[cfg(any(target_os = "android", test))]
 use std::sync::{
     Arc,
@@ -125,6 +125,7 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
         platform: P,
         renderer: HydrolysisRenderer<E>,
         render_diagnostics_config: RenderDiagnosticsConfig,
+        env: &Environment,
     ) -> Self {
         // The window's host wake, installed before any subscription can
         // record a request: from here on, a `Binding::set` outside a frame
@@ -132,7 +133,7 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
         // action — fires it on the none→some edge and schedules the frame
         // the request needs, by construction.
         renderer.install_host_wake(platform.frame_wake());
-        let declaration_watches = subscribe_window_declaration_signals(&window, &renderer);
+        let declaration_watches = subscribe_window_declaration_signals(&window, env, &renderer);
         Self {
             window,
             platform,
@@ -159,8 +160,9 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P, crate::text::ParleyEngine> {
         platform: P,
         renderer: HydrolysisRenderer<crate::text::ParleyEngine>,
         config: RenderDiagnosticsConfig,
+        env: &Environment,
     ) -> Self {
-        let mut runtime = Self::new(window, platform, renderer, config);
+        let mut runtime = Self::new(window, platform, renderer, config, env);
         if let Some(handle) = runtime.platform.gpu_surface_redraw_handle() {
             runtime.renderer.set_host_redraw_handle(handle);
         }
@@ -703,15 +705,16 @@ impl SurfaceBackground {
         }
     }
 
-    /// Whether the window asks the compositor to blur what lies behind it:
-    /// exactly a behind-window material — false for every colour and every
-    /// within-window level.
-    pub(super) const fn blurs_behind(self) -> bool {
+    /// The behind-window material level asking for the compositor's blur —
+    /// its measured σ resolves the platform's blur radius — or `None` for
+    /// every colour and every within-window level.
+    pub(super) const fn behind_level(self) -> Option<BehindWindowLevel> {
         match self.0 {
-            ResolvedWindowBackground::Color(_) => false,
-            ResolvedWindowBackground::Material(material) => {
-                matches!(Blending::of(material), Blending::BehindWindow(_))
-            }
+            ResolvedWindowBackground::Color(_) => None,
+            ResolvedWindowBackground::Material(material) => match Blending::of(material) {
+                Blending::BehindWindow(level) => Some(level),
+                Blending::WithinWindow(_) => None,
+            },
         }
     }
 
@@ -768,7 +771,7 @@ pub(super) fn apply_window_background<P: GpuSurfaceWindow, E: crate::text::TextE
 ) -> peniko::Color {
     let background = SurfaceBackground::of(&runtime.window, env);
     runtime.platform.set_transparent(background.transparent());
-    runtime.platform.set_blur_behind(background.blurs_behind());
+    runtime.platform.set_blur_behind(background.behind_level());
     runtime.renderer.set_window_backdrop(background.backdrop());
     background.clear(env)
 }

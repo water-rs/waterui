@@ -1,6 +1,7 @@
 package dev.waterui.hydrolysis
 
 import android.content.Context
+import android.content.res.Configuration
 import android.os.Handler
 import android.os.Looper
 import android.view.View
@@ -38,6 +39,7 @@ class HydrolysisSession internal constructor(
             context.applicationContext,
             painter,
             NativeBridge.uiThreadServices,
+            context.resources.configuration.isNightMode,
         )
 
     /** [destroy] ran; a second call is a named error. */
@@ -48,6 +50,19 @@ class HydrolysisSession internal constructor(
 
     /** A placement pull requested under a native call; the outermost [exitNative] runs it. */
     private var placementPullPending = false
+
+    /**
+     * A soft-input request made under a native call; the outermost
+     * [exitNative] applies the latest one — a later request replaces an
+     * earlier one inside the same outer call.
+     */
+    private var softInputPending: Boolean? = null
+
+    /**
+     * A [translucency] change made under a native call; the outermost
+     * [exitNative] delivers it to the listeners.
+     */
+    private var translucencyPending = false
 
     /** [tearDown] has handed [livePtr] to `nativeDestroySession`. */
     private var destroyed = false
@@ -107,8 +122,10 @@ class HydrolysisSession internal constructor(
 
     /**
      * [withNativePtr]'s exit: the outermost return runs a pending teardown,
-     * else a pending placement pull. The pull opens its own [withNativePtr]
-     * scope, so this runs again at depth zero with the flag already cleared.
+     * else a pending placement pull, then the latest pending soft-input
+     * request and translucency change. The pull opens its own [withNativePtr]
+     * scope, so this runs again at depth zero with the flag already cleared;
+     * a pending teardown wins and drops every deferred request.
      */
     @PublishedApi
     internal fun exitNative() {
@@ -116,10 +133,22 @@ class HydrolysisSession internal constructor(
         if (nativeDepth != 0) return
         if (tearDownPending) {
             placementPullPending = false
+            softInputPending = null
+            translucencyPending = false
             tearDown()
-        } else if (placementPullPending) {
-            placementPullPending = false
-            hostView?.platformViewRegistry?.publishIfPending()
+        } else {
+            if (placementPullPending) {
+                placementPullPending = false
+                hostView?.platformViewRegistry?.publishIfPending()
+            }
+            softInputPending?.let { visible ->
+                softInputPending = null
+                hostView?.setSoftInputVisible(visible)
+            }
+            if (translucencyPending) {
+                translucencyPending = false
+                translucencyListeners.forEach { it(translucency) }
+            }
         }
     }
 
@@ -205,6 +234,10 @@ class HydrolysisSession internal constructor(
         withNativePtr(NativeBridge::nativeSetHostAttached.name) { ptr ->
             NativeBridge.nativeSetHostAttached(ptr, true)
         }
+        // A session retained across an activity recreation binds its new
+        // view under the new configuration — the recreate path delivers no
+        // `onConfigurationChanged`, so the bind itself reports the scheme.
+        setNightMode(view.resources.configuration.isNightMode)
         // The new binding owns the Activity the instances draw on: each
         // `HostRebindAware` retargets its own context wrapper and re-observes
         // what the old binding's context owned (the WebView's Lifecycle).
@@ -266,6 +299,19 @@ class HydrolysisSession internal constructor(
         if (destroyRequested) return
         withNativePtr(NativeBridge::nativeSetVisible.name) { ptr ->
             NativeBridge.nativeSetVisible(ptr, visible)
+        }
+    }
+
+    /**
+     * The configuration's night-mode flag, into the session's colour-scheme
+     * signal — the scheme the theme tokens resolve against. The host calls
+     * this at bind and on every `onConfigurationChanged`; an unchanged value
+     * re-resolves nothing native-side.
+     */
+    internal fun setNightMode(nightMode: Boolean) {
+        if (destroyRequested) return
+        withNativePtr(NativeBridge::nativeSetColorScheme.name) { ptr ->
+            NativeBridge.nativeSetColorScheme(ptr, nightMode)
         }
     }
 
@@ -338,6 +384,43 @@ class HydrolysisSession internal constructor(
     /** The activity's back callback, or none between bindings. */
     internal var onBackAvailable: ((Boolean) -> Unit)? = null
 
+    /**
+     * The window's compositing request the native side last reported:
+     * [translucent] composites the window and its surface with what lies
+     * behind it, [blurBehind] asks the platform to blur that content — a
+     * behind-window material implies both. Retained across host bindings so
+     * a view rebound after a configuration change applies it without waiting
+     * for another push.
+     */
+    var translucency: Translucency = Translucency(translucent = false, blurBehind = false, blurRadiusPx = 0)
+        private set
+
+    /** The compositing request the native side pushes through [onNativeTranslucency]. */
+    data class Translucency(val translucent: Boolean, val blurBehind: Boolean, val blurRadiusPx: Int)
+
+    /**
+     * The objects a change of [translucency] must reach: the bound host view
+     * applies the window and Activity half, the GPU band its surface format.
+     * A listener is fired with the current request as it registers, so a
+     * late mount never waits for another push.
+     */
+    private val translucencyListeners = java.util.concurrent.CopyOnWriteArrayList<(Translucency) -> Unit>()
+
+    /**
+     * Registers [listener] for the window's compositing requests, fired
+     * immediately with the current one. Public because the GPU band lives in
+     * another Gradle module.
+     */
+    fun addTranslucencyListener(listener: (Translucency) -> Unit) {
+        translucencyListeners.add(listener)
+        listener(translucency)
+    }
+
+    /** Drops [listener] — a host view detaches its listener when its window goes away. */
+    fun removeTranslucencyListener(listener: (Translucency) -> Unit) {
+        translucencyListeners.remove(listener)
+    }
+
     /** Forwards one system-back phase to the native session. */
     internal fun dispatchBack(phase: Int, edge: Int, progress: Double) {
         withNativePtr(NativeBridge::nativeBackEvent.name) { ptr ->
@@ -357,9 +440,18 @@ class HydrolysisSession internal constructor(
         frameScheduler.requestFrame("redraw-request")
     }
 
+    /**
+     * The native side asks for the soft keyboard from inside its own call.
+     * `showSoftInput` builds the input connection synchronously, and that
+     * connection's `nativeEditingState` pull would re-enter the session the
+     * call still holds borrowed — so the request defers to the outermost
+     * [exitNative] like a placement pull does, the latest request winning.
+     * Made at depth zero, it reaches the host view at once.
+     */
     @CalledFromNative
     fun onNativeSoftInput(visible: Boolean) {
-        hostView?.setSoftInputVisible(visible)
+        if (nativeDepth == 0) hostView?.setSoftInputVisible(visible)
+        else softInputPending = visible
     }
 
     @CalledFromNative
@@ -419,4 +511,33 @@ class HydrolysisSession internal constructor(
         backAvailable = available
         onBackAvailable?.invoke(available)
     }
+
+    /**
+     * The resolved window background's compositing request. Carries the same
+     * answer the surface's compositor planes already render by: translucent
+     * asks the window and surface to let behind-window content show, and a
+     * behind-window material asks the platform to blur it.
+     *
+     * The native side reports it from inside its frame. The listeners switch
+     * the Activity window and recreate the band's surface, whose callbacks
+     * call back into the session the frame still holds borrowed, so a change
+     * made under a native call reaches them from the outermost [exitNative],
+     * like a soft-input request.
+     */
+    @CalledFromNative
+    fun onNativeTranslucency(translucent: Boolean, blurBehind: Boolean, blurRadiusPx: Int) {
+        val next = Translucency(translucent, blurBehind, blurRadiusPx)
+        if (next == translucency) return
+        translucency = next
+        if (nativeDepth == 0) translucencyListeners.forEach { it(next) }
+        else translucencyPending = true
+    }
 }
+
+/**
+ * The configuration's night-mode flag (`UI_MODE_NIGHT_YES` under
+ * `UI_MODE_NIGHT_MASK`) — the colour-scheme input the host reports to the
+ * session at creation, at bind and on every configuration change.
+ */
+internal val Configuration.isNightMode: Boolean
+    get() = uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES

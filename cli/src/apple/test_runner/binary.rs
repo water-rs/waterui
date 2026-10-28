@@ -74,7 +74,12 @@ impl HarnessManifest {
         &self.executable
     }
 
-    fn parse(path: &Path, bytes: &[u8]) -> eyre::Result<Self> {
+    /// Parses the section's bytes; `Ok(None)` when the dictionary is not
+    /// an application manifest — it declares no `CFBundleExecutable`, the
+    /// key that makes a bundle launchable. Such a plist marks a spawned
+    /// binary instead (the `native` harness's `LSUIElement` manifest on
+    /// Catalyst), which every destination execs directly.
+    fn parse(path: &Path, bytes: &[u8]) -> eyre::Result<Option<Self>> {
         let value = plist::Value::from_reader(Cursor::new(bytes)).wrap_err_with(|| {
             format!(
                 "the __info_plist section of {} is not a plist",
@@ -87,23 +92,22 @@ impl HarnessManifest {
                 path.display()
             );
         };
-        let string = |key: &str| -> eyre::Result<String> {
-            dictionary
-                .get(key)
-                .and_then(plist::Value::as_string)
+        let string = |key: &str| dictionary.get(key).and_then(plist::Value::as_string);
+        let Some(executable) = string("CFBundleExecutable") else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            bytes: bytes.to_vec(),
+            bundle_id: string("CFBundleIdentifier")
                 .map(str::to_string)
                 .ok_or_else(|| {
                     eyre!(
-                        "the __info_plist section of {} has no `{key}` string",
+                        "the __info_plist section of {} has no `CFBundleIdentifier` string",
                         path.display()
                     )
-                })
-        };
-        Ok(Self {
-            bytes: bytes.to_vec(),
-            bundle_id: string("CFBundleIdentifier")?,
-            executable: string("CFBundleExecutable")?,
-        })
+                })?,
+            executable: executable.to_string(),
+        }))
     }
 }
 
@@ -120,13 +124,18 @@ impl TestBinary {
     /// Reads `LC_BUILD_VERSION` (platform, `minos`) and the optional
     /// `__TEXT,__info_plist` section with `object`. A fat or non-Mach-O
     /// file, or one without `LC_BUILD_VERSION`, is an error naming the
-    /// path.
+    /// path. The path is made absolute first: every location derived from
+    /// it — the staged bundle, the status file — reaches processes that do
+    /// not share the runner's working directory (a `LaunchServices` launch
+    /// starts at `/`).
     ///
     /// # Errors
     /// Returns an error when `path` cannot be read or is not a thin Mach-O
     /// carrying `LC_BUILD_VERSION`, or when an embedded manifest is not a
     /// plist dictionary with `CFBundleIdentifier` and `CFBundleExecutable`.
     pub fn read(path: &Path) -> eyre::Result<Self> {
+        let path = &std::fs::canonicalize(path)
+            .wrap_err_with(|| format!("failed to resolve the test binary {}", path.display()))?;
         let data = std::fs::read(path)
             .wrap_err_with(|| format!("failed to read the test binary {}", path.display()))?;
         let macho = MachOFile64::<Endianness>::parse(&*data).map_err(|error| {
@@ -176,10 +185,11 @@ impl TestBinary {
                 )
             })?
             .map(|bytes| HarnessManifest::parse(path, bytes))
-            .transpose()?;
+            .transpose()?
+            .flatten();
 
         Ok(Self {
-            path: path.to_path_buf(),
+            path: path.clone(),
             platform,
             min_os,
             manifest,

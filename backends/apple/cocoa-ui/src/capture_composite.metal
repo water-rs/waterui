@@ -96,12 +96,9 @@ static float3 srgb_decode(float3 encoded, constant CaptureCompositeConversion& c
     return copysign(curve, encoded);
 }
 
-fragment float4 capture_composite_fragment(
-    CaptureCompositeVertexOut input [[stage_in]],
-    texture2d<float> overlayTexture [[texture(0)]],
-    sampler overlaySampler [[sampler(0)]],
-    constant CaptureCompositeConversion& conversion [[buffer(0)]]) {
-    float4 color = overlayTexture.sample(overlaySampler, input.uv);
+// `color` — premultiplied, in the source colour `conversion` names — in
+// the colour `conversion` targets.
+static float4 convert(float4 color, constant CaptureCompositeConversion& conversion) {
     if (conversion.identity != 0) {
         return color;
     }
@@ -122,4 +119,82 @@ fragment float4 capture_composite_fragment(
         straight = srgb_encode(straight, conversion);
     }
     return float4(straight * color.a, color.a);
+}
+
+fragment float4 capture_composite_fragment(
+    CaptureCompositeVertexOut input [[stage_in]],
+    texture2d<float> overlayTexture [[texture(0)]],
+    sampler overlaySampler [[sampler(0)]],
+    constant CaptureCompositeConversion& conversion [[buffer(0)]]) {
+    return convert(overlayTexture.sample(overlaySampler, input.uv), conversion);
+}
+
+// # Ordered resolve
+//
+// The native raster cannot draw a GPU surface, so the capture measures how
+// the native tree composites one instead: besides the base raster — every
+// surface transparent — it rasterizes the tree with an opaque black and an
+// opaque white probe layer standing exactly where the surface's
+// presentation layer sits. Core Animation's compositing is affine in a
+// layer's premultiplied colour — `over`, group opacity, masks, clipping
+// coverage and antialiasing all scale or add it — so for a surface sample
+// `s` (premultiplied, alpha `a`) every output channel `c` is
+//
+//     R0 + a·(RB − R0) + s_c·(RW − RB)
+//
+// with `s_alpha = a`: the probes measure, per pixel, how much of the
+// surface the native content above it, its ancestors' group effects and
+// its clip let through, and how much of what lies below it the surface
+// covers. Surfaces whose destination rects overlap take distinct slots and
+// one raster per combination of their probe states; the resolve contracts
+// one slot at a time — the same weights, applied to three images that each
+// still vary in the remaining slots.
+//
+// The weights sum to one in every channel, so where a probe does not
+// reach — outside the surface's footprint — `RB = RW = R0` and the resolve
+// is exactly the native raster.
+
+// The per-draw resolve parameters, matching `ResolveParams` on the host —
+// `repr(C)`, `float2` pairs followed by one `uint`.
+struct CaptureResolveParams {
+    // Where the render target's pixel (0, 0) sits in the capture target.
+    float2 output_origin;
+    // Where `x0`'s pixel (0, 0) sits in the capture target.
+    float2 x0_origin;
+    // Where `xb`'s and `xw`'s pixel (0, 0) sits in the capture target.
+    float2 probe_origin;
+    // The surface texture coordinate of capture-target point (0, 0)…
+    float2 uv_offset;
+    // …and its derivatives along the target's x and y axes: the inverse of
+    // the surface's placement, rotation and scale included.
+    float2 uv_dx;
+    float2 uv_dy;
+    // Whether a surface is bound — without one the draw copies `x0`.
+    uint has_surface;
+};
+
+fragment float4 capture_resolve_fragment(
+    CaptureCompositeVertexOut input [[stage_in]],
+    texture2d<float> surfaceTexture [[texture(0)]],
+    texture2d<float> x0 [[texture(1)]],
+    texture2d<float> xb [[texture(2)]],
+    texture2d<float> xw [[texture(3)]],
+    sampler surfaceSampler [[sampler(0)]],
+    constant CaptureCompositeConversion& imageConversion [[buffer(0)]],
+    constant CaptureResolveParams& params [[buffer(1)]],
+    constant CaptureCompositeConversion& surfaceConversion [[buffer(2)]]) {
+    // The capture-target point this fragment's centre covers.
+    float2 point = input.position.xy + params.output_origin;
+    float4 base = convert(x0.read(uint2(point - params.x0_origin)), imageConversion);
+    if (params.has_surface == 0) {
+        return base;
+    }
+    uint2 probe = uint2(point - params.probe_origin);
+    float4 black = convert(xb.read(probe), imageConversion);
+    float4 white = convert(xw.read(probe), imageConversion);
+    float2 uv = params.uv_offset + point.x * params.uv_dx + point.y * params.uv_dy;
+    float4 surface = convert(surfaceTexture.sample(surfaceSampler, uv), surfaceConversion);
+    // `surface.a` multiplies the alpha channel's `white - black`, which is
+    // zero: both probes are opaque.
+    return base + surface.a * (black - base) + surface * (white - black);
 }

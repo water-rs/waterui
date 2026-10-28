@@ -1325,7 +1325,7 @@ fn composition_text(event: CompositionEvent) -> String {
     event.data().unwrap_or_default()
 }
 
-fn add_event_listener(
+pub fn add_event_listener(
     target: &web_sys::EventTarget,
     event_name: &str,
     handler: impl 'static + FnMut(Event),

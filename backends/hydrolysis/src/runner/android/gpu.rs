@@ -219,6 +219,9 @@ pub struct AndroidSurface {
     /// engine surface — valid while between surface generations too.
     width: u32,
     height: u32,
+    /// Whether the engine's planes blend with what lies behind the window —
+    /// `SurfaceControlTarget::transparent` at engine-surface creation.
+    transparent: bool,
     /// Demand belongs to the session and is reapplied to each attachment.
     refresh_demand: RefreshDemand,
 }
@@ -278,6 +281,7 @@ impl AndroidSurface {
             native_window: None,
             width: 0,
             height: 0,
+            transparent: false,
             refresh_demand: RefreshDemand::default(),
         }
     }
@@ -391,6 +395,7 @@ impl AndroidSurface {
                     .expect("attached Android window")
                     .window,
                 window_slot: &mut self.engine_window,
+                transparent: self.transparent,
             },
         )
     }
@@ -404,6 +409,17 @@ impl AndroidSurface {
         }
         self.detach();
         true
+    }
+
+    /// The compositing mode the next engine surface is created with; a live
+    /// window is dropped so the next frame rebuilds it — a `SurfaceControlTarget`'s
+    /// `transparent` is fixed at creation, like its size.
+    pub(crate) fn set_transparent(&mut self, transparent: bool) {
+        if self.transparent == transparent {
+            return;
+        }
+        self.transparent = transparent;
+        self.engine_window = None;
     }
 
     /// Holds content and interaction demand across attachments. An unchanged

@@ -136,6 +136,8 @@ futures = { workspace = true, optional = true }
 objc2 = { workspace = true, optional = true }
 objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSAnimation",
+    "NSAppearance",
+    "NSApplication",
     "NSEvent",
     "NSGraphics",
     "NSResponder",
@@ -315,6 +317,7 @@ web-sys = { version = "0.3", optional = true, features = [
     "IntersectionObserver",
     "IntersectionObserverEntry",
     "KeyboardEvent",
+    "MediaQueryList",
     "Navigator",
     "Node",
     "PointerEvent",

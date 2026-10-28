@@ -29,6 +29,7 @@ use nami::Signal;
 use ndk::looper::{FdEvent, ForeignLooper, ThreadLooper};
 use waterui::Environment;
 use waterui::cursor::CursorStyle;
+use waterui::theme::ColorScheme;
 use waterui::window::WindowState;
 use waterui_core::layout::LayoutDirection;
 use waterui_graphics::gpu::RedrawHandle;
@@ -317,6 +318,21 @@ impl HostBridge {
     fn set_back_navigation_available(&self, available: bool) {
         self.call(HostMethodId::BackAvailable, &[JValue::Bool(available)]);
     }
+
+    /// `session.onNativeTranslucency(translucent, blurBehind, blurRadiusPx)` —
+    /// the window's compositing request: a translucent window and surface
+    /// when `translucent` holds, the platform behind-window blur at
+    /// `blurRadiusPx` device pixels while `blurBehind` does.
+    fn set_translucency(&self, translucent: bool, blur_behind: bool, blur_radius_px: i32) {
+        self.call(
+            HostMethodId::Translucency,
+            &[
+                JValue::Bool(translucent),
+                JValue::Bool(blur_behind),
+                JValue::Int(blur_radius_px),
+            ],
+        );
+    }
 }
 
 /// The Kotlin host's window on the runner's side: host services only. The
@@ -359,6 +375,14 @@ pub struct AndroidHostWindow {
     /// report UI focus into; while it is held the IME channel belongs to the
     /// child and a stale cleared claim must not hide its keyboard.
     pub(crate) platform_view_focus: crate::platform_view::PlatformViewFocus,
+    /// The window's last compositing request: `translucent` composites the
+    /// window with what lies behind it, `blur_behind` is the behind-window
+    /// material level asking the compositor to blur that content — the pair
+    /// the host callback carries. The HWUI painter rejects behind-window
+    /// material outright, so the blur half exists only on the GPU build.
+    translucent: bool,
+    #[cfg(not(hydrolysis_hwui))]
+    blur_behind: Option<crate::renderer::material::BehindWindowLevel>,
     frame_transaction: FrameTransaction,
 }
 
@@ -437,6 +461,27 @@ impl AndroidHostWindow {
     pub(crate) const fn presentation_attached(&self) -> bool {
         self.metrics.width_px > 0 && self.metrics.height_px > 0
     }
+
+    /// Pushes the compositing request to the Kotlin host. Both halves ride
+    /// one callback: the window's translucency and its blur-behind ask
+    /// describe the same resolved background. The blur radius is the level's
+    /// measured σ converted to device pixels, then to the radius Android's
+    /// `setBackgroundBlurRadius` expects — Skia relates them as
+    /// `σ = radius·0.57735 + 0.5`.
+    fn sync_translucency(&self) {
+        #[cfg(hydrolysis_hwui)]
+        let (blur_behind, blur_radius_px) = (false, 0);
+        #[cfg(not(hydrolysis_hwui))]
+        let (blur_behind, blur_radius_px) = self.blur_behind.map_or((false, 0), |level| {
+            let sigma_px = f64::from(level.sigma()) * self.metrics.density;
+            (
+                true,
+                crate::num_cast::f64_as_i32(((sigma_px - 0.5) / 0.57735).round()),
+            )
+        });
+        self.bridge
+            .set_translucency(self.translucent, blur_behind, blur_radius_px);
+    }
 }
 
 impl PlatformWindow for AndroidHostWindow {
@@ -482,6 +527,21 @@ impl PlatformWindow for AndroidHostWindow {
     /// nothing the renderer could draw reaches the user.
     fn is_occluded(&self) -> bool {
         !self.started || !self.host_attached || !self.presentation_attached()
+    }
+
+    /// The translucent-window request, split at the painter boundary: the
+    /// GPU attachment's next engine surface is created with the request's
+    /// compositing mode, and the Kotlin host switches the Activity window
+    /// translucent. An unchanged request repeats nothing — the per-frame
+    /// application stays a comparison.
+    fn set_transparent(&mut self, transparent: bool) {
+        if self.translucent == transparent {
+            return;
+        }
+        self.translucent = transparent;
+        #[cfg(not(hydrolysis_hwui))]
+        self.surface.set_transparent(transparent);
+        self.sync_translucency();
     }
 
     fn request_redraw(&self) {
@@ -633,6 +693,18 @@ impl GpuSurfaceWindow for AndroidHostWindow {
     fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
         Some(self.content_redraw_handle())
     }
+
+    /// The compositor blur a behind-window material asks for — the host's
+    /// `Window.setBackgroundBlurRadius`, applied while the platform's
+    /// cross-window blur stays enabled. An unchanged request repeats
+    /// nothing.
+    fn set_blur_behind(&mut self, level: Option<crate::renderer::material::BehindWindowLevel>) {
+        if self.blur_behind == level {
+            return;
+        }
+        self.blur_behind = level;
+        self.sync_translucency();
+    }
 }
 
 /// Owns the `ALooper` registration that drains an
@@ -773,6 +845,9 @@ pub struct AndroidSession {
     /// direction-only change re-derives both regions
     /// (water-rs/waterui#1827).
     insets_direction: LayoutDirection,
+    /// The live colour-scheme signal the session's theme tokens resolve
+    /// against — `set_night_mode` writes it on the host's pushes.
+    color_scheme: nami::Binding<ColorScheme>,
     /// A frame reached the surface at least once; together with an idle
     /// `wants_next_frame` it arms the one-shot readiness log the device's
     /// idle-CPU sampling waits on.
@@ -882,6 +957,9 @@ struct SessionMounts {
     platform_view_focus: crate::platform_view::PlatformViewFocus,
     safe_area: nami::Binding<waterui_layout::padding::EdgeInsets>,
     keyboard_area: nami::Binding<waterui_layout::padding::EdgeInsets>,
+    /// The session's colour-scheme signal — the binding `install_theme_tokens`
+    /// resolved the default tokens over; `set_night_mode` writes it.
+    color_scheme: nami::Binding<ColorScheme>,
 }
 
 /// Builds the session's mount inputs: instantiates the app, layers the
@@ -898,6 +976,7 @@ struct SessionMounts {
 )]
 fn session_mounts(
     services: &'static UiThreadServices,
+    night: bool,
     #[cfg(hydrolysis_android_system_webview)] jni_env: &mut Env,
     #[cfg(hydrolysis_android_system_webview)] bridge: &HostBridge,
 ) -> Result<SessionMounts, JniError> {
@@ -925,7 +1004,16 @@ fn session_mounts(
     );
     menu_bar::register_menu_bar::<super::AndroidTextEngine>(&menu_bar, &env);
     env.insert(HydrolysisTextContextMenuMode::Overlay);
-    crate::theme::install_theme_tokens(&mut env, Some(&*style));
+    // The configuration's night mode is the colour-scheme signal: created
+    // with the real `uiMode` the create call carried and kept current by
+    // `nativeSetColorScheme` pushes, so the default tokens re-resolve on a
+    // theme flip the way macOS's appearance binding does (#1972).
+    let color_scheme = nami::binding(if night {
+        ColorScheme::Dark
+    } else {
+        ColorScheme::Light
+    });
+    crate::theme::install_theme_tokens(&mut env, Some(&*style), color_scheme.clone());
     let theme: Rc<dyn WidgetTheme> = style;
     let fonts = crate::text::fonts::native_collection(&env);
     fonts.clone().install(&mut env);
@@ -983,6 +1071,7 @@ fn session_mounts(
         platform_view_focus,
         safe_area,
         keyboard_area,
+        color_scheme,
     })
 }
 
@@ -997,6 +1086,7 @@ fn gpu_runtime_window(
     fonts: &waterui_text::FontCollection,
     window_id: crate::renderer::WindowId,
     painter: &JObject<'_>,
+    env: &Environment,
 ) -> Result<RuntimeWindow<AndroidHostWindow, super::AndroidTextEngine>, JniError> {
     if !painter.is_null() {
         return Err(JniError(
@@ -1014,6 +1104,7 @@ fn gpu_runtime_window(
         platform,
         renderer,
         RenderDiagnosticsConfig::from_env(),
+        env,
     ))
 }
 
@@ -1028,6 +1119,7 @@ fn hwui_runtime_window(
     platform: AndroidHostWindow,
     theme: Rc<dyn WidgetTheme>,
     window_id: crate::renderer::WindowId,
+    env: &Environment,
 ) -> Result<
     (
         super::hwui::HwuiWindow,
@@ -1058,6 +1150,7 @@ fn hwui_runtime_window(
             platform,
             renderer,
             RenderDiagnosticsConfig::from_env(),
+            env,
         ),
     ))
 }
@@ -1069,13 +1162,16 @@ impl AndroidSession {
     /// layers its environment over the process's.
     ///
     /// `metrics` is the host's snapshot at creation time — content size and
-    /// scale exist from the start, before the surface band attaches.
+    /// scale exist from the start, before the surface band attaches. `night`
+    /// is the configuration's real `uiMode` at the same instant, so the
+    /// colour-scheme signal never starts on a Light default.
     pub(crate) fn create(
         jni_env: &mut Env,
         vm: JavaVM,
         host_view: Global<JObject<'static>>,
         painter: &JObject<'_>,
         metrics: MetricsSnapshot,
+        night: bool,
         services: &'static UiThreadServices,
     ) -> Result<Box<Self>, JniError> {
         let bridge = HostBridge::new(jni_env, vm, host_view)?;
@@ -1095,8 +1191,10 @@ impl AndroidSession {
             platform_view_focus,
             safe_area,
             keyboard_area,
+            color_scheme,
         } = session_mounts(
             services,
+            night,
             #[cfg(hydrolysis_android_system_webview)]
             jni_env,
             #[cfg(hydrolysis_android_system_webview)]
@@ -1118,6 +1216,9 @@ impl AndroidSession {
             cursor_style: CursorStyle::default(),
             soft_input: None,
             platform_view_focus,
+            translucent: false,
+            #[cfg(not(hydrolysis_hwui))]
+            blur_behind: None,
             // The session mounts parked — hidden until `onStart` and the
             // surface attach report it visible — so the wake's gate opens
             // on the first occlusion sync, not at construction.
@@ -1125,10 +1226,11 @@ impl AndroidSession {
         };
         platform.apply_properties(&window);
         #[cfg(not(hydrolysis_hwui))]
-        let mut runtime = gpu_runtime_window(window, platform, theme, &fonts, window_id, painter)?;
+        let mut runtime =
+            gpu_runtime_window(window, platform, theme, &fonts, window_id, painter, &env)?;
         #[cfg(hydrolysis_hwui)]
         let (hwui, mut runtime) =
-            hwui_runtime_window(jni_env, painter, window, platform, theme, window_id)?;
+            hwui_runtime_window(jni_env, painter, window, platform, theme, window_id, &env)?;
         // The session mounts parked: the activity's `onStart` and the
         // surface band's attach are the reports that unpark it.
         runtime.set_hidden(runtime.platform.is_occluded());
@@ -1152,6 +1254,7 @@ impl AndroidSession {
             safe_area,
             keyboard_area,
             insets_direction: LayoutDirection::default(),
+            color_scheme,
             presented_once: Cell::new(false),
             ready_logged: Cell::new(false),
             back_navigation_available: false,
@@ -1231,6 +1334,22 @@ impl AndroidSession {
                 .surface
                 .set_hidden(self.runtime.platform.is_occluded());
             self.runtime.sync_occlusion_and_post_restore();
+        }
+    }
+
+    /// The host's configuration reported a night-mode value — at bind and
+    /// on every `onConfigurationChanged` dispatch. A moved value writes the
+    /// scheme binding; the token signals' subscribers re-resolve and their
+    /// frame signals schedule the repaint, so no explicit frame request is
+    /// needed, and an unchanged push sets nothing.
+    pub(crate) fn set_night_mode(&self, night: bool) {
+        let scheme = if night {
+            ColorScheme::Dark
+        } else {
+            ColorScheme::Light
+        };
+        if self.color_scheme.snapshot() != scheme {
+            self.color_scheme.set(scheme);
         }
     }
 

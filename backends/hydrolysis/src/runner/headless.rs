@@ -189,8 +189,8 @@ impl crate::platform::GpuSurfaceWindow for HeadlessPlatformWindow {
         }))
     }
 
-    fn set_blur_behind(&mut self, blur: bool) {
-        self.blur_behind.set(Some(blur));
+    fn set_blur_behind(&mut self, level: Option<crate::renderer::material::BehindWindowLevel>) {
+        self.blur_behind.set(Some(level.is_some()));
     }
 }
 
@@ -508,7 +508,13 @@ impl HeadlessRuntime {
             Rc::clone(&pending_window_queue),
         );
         env.insert(HydrolysisTextContextMenuMode::Overlay);
-        crate::theme::install_theme_tokens(&mut env, Some(&style));
+        // A headless host has no platform appearance: the scheme is Light
+        // unless the application installs its own.
+        crate::theme::install_theme_tokens(
+            &mut env,
+            Some(&style),
+            waterui::theme::ColorScheme::Light,
+        );
         let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
         // The application's fonts, built once: the platform's collection plus
         // the staged fonts directory, exactly as the windowed runners load
@@ -572,19 +578,21 @@ impl HeadlessRuntime {
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
+        let runtime = RuntimeWindow::new_gpu(
+            window,
+            platform,
+            renderer,
+            RenderDiagnosticsConfig {
+                enabled: false,
+                interval: Duration::from_secs(1),
+                slow_frame_threshold_override: None,
+            },
+            &env,
+        );
 
         Self {
             env,
-            runtime: RuntimeWindow::new_gpu(
-                window,
-                platform,
-                renderer,
-                RenderDiagnosticsConfig {
-                    enabled: false,
-                    interval: Duration::from_secs(1),
-                    slow_frame_threshold_override: None,
-                },
-            ),
+            runtime,
             pending_window_queue,
             popup_windows: Vec::new(),
             theme,
@@ -638,6 +646,7 @@ impl HeadlessRuntime {
                 interval: Duration::from_secs(1),
                 slow_frame_threshold_override: None,
             },
+            &self.env,
         )
     }
 

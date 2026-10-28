@@ -32,7 +32,9 @@ pub enum StatusFile {
     DeviceRelative(PathBuf),
 }
 
-fn unique_name() -> String {
+/// A launch-unique file name — collisions with a stale file from an
+/// earlier launch must never happen.
+pub fn unique_name() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_nanos());

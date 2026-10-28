@@ -80,6 +80,7 @@ impl SemanticWindow {
         fonts: &FontCollection,
         window_id: WindowId,
         family_resolution: FontFamilyResolution,
+        env: &Environment,
     ) -> Self {
         let mut core = SemanticCore::new(
             Instant::now(),
@@ -97,7 +98,7 @@ impl SemanticWindow {
             core.use_semantic_keyboard_activation();
             core.use_semantic_walk();
         }
-        let declaration_watches = subscribe_window_declaration_signals(&window, &core);
+        let declaration_watches = subscribe_window_declaration_signals(&window, env, &core);
         Self {
             window,
             core,
@@ -218,8 +219,9 @@ impl SemanticRuntime {
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // Framework tokens only: the semantic runtime has no `Style`, so no
         // style-package tokens ever install — widget structure, roles, labels
-        // and actions do not depend on one.
-        crate::theme::install_theme_tokens(&mut env, None);
+        // and actions do not depend on one. No platform appearance either: the
+        // scheme is Light unless the application installs its own.
+        crate::theme::install_theme_tokens(&mut env, None, waterui::theme::ColorScheme::Light);
         let fonts = build_fonts(&env);
         fonts.clone().install(&mut env);
 
@@ -257,9 +259,11 @@ impl SemanticRuntime {
             .expect("install_headless_window_managers seeds MenuShortcutRegistry")
             .mint_window_id();
         window.arm_close_requests(&env);
+        let semantic_window =
+            SemanticWindow::new(window, &fonts, window_id, family_resolution, &env);
         Self {
             env,
-            window: SemanticWindow::new(window, &fonts, window_id, family_resolution),
+            window: semantic_window,
             pending_window_queue,
             popup_windows: Vec::new(),
             fonts,
@@ -503,6 +507,7 @@ impl SemanticRuntime {
                 &fonts,
                 window_id,
                 self.family_resolution,
+                &self.env,
             ));
         }
     }

@@ -313,6 +313,36 @@ codesign)
 caffeinate)
     exit 0
     ;;
+# `open -n -W --env K=V --stdout <f> --stderr <f> <app> --args …`: the
+# Catalyst runner's LaunchServices launch. Writes the staged status to
+# the file WATERUI_NATIVE_TEST_STATUS names (unless NO_STATUS is set,
+# modeling an app that died before its trials concluded) and the canned
+# streams to the --stdout/--stderr files. WATERUI_FAKE_OPEN_EXIT is the
+# launcher status, WATERUI_FAKE_OPEN_STATUS the app's.
+open)
+    _status_path=""
+    _o_stdout=""
+    _o_stderr=""
+    _prev=""
+    for _arg in "$@"; do
+        case "$_prev" in
+            --env)
+                case "$_arg" in
+                    WATERUI_NATIVE_TEST_STATUS=*) _status_path="${_arg#*=}" ;;
+                esac
+                ;;
+            --stdout) _o_stdout="$_arg" ;;
+            --stderr) _o_stderr="$_arg" ;;
+        esac
+        _prev="$_arg"
+    done
+    if [ -z "${WATERUI_FAKE_OPEN_NO_STATUS-}" ] && [ -n "$_status_path" ]; then
+        printf '%s' "${WATERUI_FAKE_OPEN_STATUS:-0}" > "$_status_path"
+    fi
+    [ -n "$_o_stdout" ] && printf '%s\n' "${WATERUI_FAKE_OPEN_STDOUT-}" > "$_o_stdout"
+    [ -n "$_o_stderr" ] && printf '%s\n' "${WATERUI_FAKE_OPEN_STDERR-}" > "$_o_stderr"
+    exit "${WATERUI_FAKE_OPEN_EXIT:-0}"
+    ;;
 xcodebuild)
     case "$*" in
         -version | --version)
@@ -919,6 +949,12 @@ pkg-config)
     ;;
 *-clang | *-clang++* | clang | clang++ | ld | ld64)
     exit 0
+    ;;
+# A staged test binary a destination's exec route spawns directly —
+# `stage_binary` names it `harness-<hash>`: its own exit status passes
+# through.
+harness-*)
+    exit "${WATERUI_FAKE_EXEC_STATUS:-0}"
     ;;
 uname)
     case "$*" in

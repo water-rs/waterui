@@ -213,6 +213,17 @@ pub enum BehindWindowLevel {
 }
 
 impl BehindWindowLevel {
+    /// The level's measured Gaussian σ, in points — the blur the compositor
+    /// applies behind the window, from the same water-rs/waterui#1854 table
+    /// the within-window [`Treatment`]s read.
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+    pub(crate) const fn sigma(self) -> f32 {
+        match self {
+            Self::UltraThin => 22.5,
+            Self::Thin => 29.5,
+        }
+    }
+
     /// The tint the window composites over the desktop under `scheme`.
     pub(crate) const fn tint(self, scheme: ColorScheme) -> Tint {
         match (self, scheme) {
