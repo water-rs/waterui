@@ -3157,6 +3157,11 @@ mod macos_display_moves;
 #[cfg(all(hydrolysis_winit, target_os = "macos"))]
 pub mod macos_appearance;
 
+// Compiled under `test` on every host: the module's pure mapping seam is
+// covered off-device, while the zbus client inside stays Linux-gated.
+#[cfg(any(all(hydrolysis_winit, target_os = "linux"), test))]
+pub mod linux_appearance;
+
 #[cfg(all(hydrolysis_winit, any(target_os = "macos", target_os = "windows")))]
 pub mod native_menu_bar;
 

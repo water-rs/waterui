@@ -209,9 +209,7 @@ fn sync_system_color_scheme(
         winit::window::Theme::Dark => waterui::theme::ColorScheme::Dark,
         winit::window::Theme::Light => waterui::theme::ColorScheme::Light,
     };
-    if scheme.snapshot() != resolved {
-        scheme.set(resolved);
-    }
+    crate::theme::sync_color_scheme(scheme, resolved);
 }
 
 /// The window a `MenuItem::CloseWindow` request acts on: the window the
@@ -748,9 +746,11 @@ pub fn run(
     // loop runs. macOS observes `NSApp.effectiveAppearance` itself; Windows
     // writes winit's system theme into the binding — seeded where the loop
     // first activates, ahead of the first window mount, and again on each
-    // `WindowEvent::ThemeChanged`. Elsewhere the scheme is Light unless the
-    // application installs its own; Linux's source lands with
-    // water-rs/waterui#3546.
+    // `WindowEvent::ThemeChanged`. Linux follows the XDG desktop portal's
+    // `color-scheme` setting (`platform::linux_appearance`): the portal task
+    // runs on the local executor and its initial `ReadOne` resolves the
+    // binding before the held first mount proceeds. Elsewhere the scheme is
+    // Light unless the application installs its own.
     #[cfg(target_os = "macos")]
     let system_appearance = crate::platform::macos_appearance::SystemAppearance::observe();
     #[cfg(target_os = "macos")]
@@ -759,7 +759,17 @@ pub fn run(
     let system_color_scheme = nami::binding(waterui::theme::ColorScheme::Light);
     #[cfg(target_os = "windows")]
     let appearance = system_color_scheme.clone();
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    let linux_appearance =
+        crate::platform::linux_appearance::SystemAppearance::observe(&local_executor, {
+            let event_proxy = event_proxy.clone();
+            move || {
+                let _ = event_proxy.send_event(RunnerEvent::MountPendingWindows);
+            }
+        });
+    #[cfg(target_os = "linux")]
+    let appearance = linux_appearance.scheme();
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     let appearance = waterui::theme::ColorScheme::Light;
     crate::theme::install_theme_tokens(&mut env, Some(&style), appearance);
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
@@ -853,6 +863,8 @@ pub fn run(
         last_pointer_window: None,
         #[cfg(target_os = "windows")]
         system_color_scheme,
+        #[cfg(target_os = "linux")]
+        linux_appearance,
         termination,
         #[cfg(target_os = "windows")]
         session_end,
@@ -931,6 +943,13 @@ struct WinitRunner {
     /// their own issues.
     #[cfg(target_os = "windows")]
     system_color_scheme: nami::Binding<waterui::theme::ColorScheme>,
+    /// The XDG desktop portal colour-scheme subscription, owned for the
+    /// loop's lifetime: its `ReadOne`/`SettingChanged` feed writes the
+    /// scheme binding, and its initial-read gate is what
+    /// `mount_pending_windows` waits on before creating the first window.
+    /// Dropping the runner cancels the subscription.
+    #[cfg(target_os = "linux")]
+    linux_appearance: crate::platform::linux_appearance::SystemAppearance,
     /// The termination machine every quit path reports through: signals,
     /// the last window closing, `Quit` in the environment, Windows'
     /// `WM_QUERYENDSESSION`.
@@ -1396,6 +1415,16 @@ impl WinitRunner {
                 .system_theme()
                 .expect("winit reports the system theme on Windows"),
         );
+        // Linux: hold every mount until the portal's initial `ReadOne`
+        // resolved — the first window's first frame must already draw in
+        // the real scheme, never a Light placeholder corrected a frame
+        // later. The portal task is polled by the runnable-queue drains in
+        // the event callbacks, and posts `MountPendingWindows` when the
+        // read lands, so the held mounts are replayed, not lost.
+        #[cfg(target_os = "linux")]
+        if !self.linux_appearance.initial_read_done() {
+            return;
+        }
         let mut pending = mem::take(&mut self.pending_windows);
         pending.extend(self.pending_window_queue.borrow_mut().drain(..));
         for pending in pending {
