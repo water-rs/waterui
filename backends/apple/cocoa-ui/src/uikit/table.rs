@@ -869,6 +869,15 @@ impl TableView {
         self.ivars().flight.in_flight()
     }
 
+    /// Installs a stepped clock on this surface's scroll flights and
+    /// returns it — the native test suite's hand on flight time. Call it
+    /// before the surface's first flight.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn install_manual_scroll_clock(&self) -> Rc<crate::native_test::ManualScrollClock> {
+        self.ivars().flight.install_manual_clock()
+    }
+
     /// Runs `handler` whenever the scroll position changes, replacing the
     /// previous handler — `scrollViewDidScroll:` covers drags, flights and
     /// animated jumps alike.
