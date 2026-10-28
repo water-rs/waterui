@@ -6671,6 +6671,7 @@ impl GpuRenderer {
         inputs: &[projective::Inputs],
         mut prepared: FxHashMap<SurfaceId, Lowered>,
     ) -> Vec<Result<Lowered, RenderError>> {
+        let diagnostic_start = Instant::now();
         let coverage_options = self.coverage_options();
         let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
             .iter()
@@ -6771,7 +6772,21 @@ impl GpuRenderer {
         // (#169 A3): a dry run decides fit / repack / recycle before any
         // placement or upload happens, so a failed placement never
         // enqueues uploads into an atlas the same preparation abandons.
+        let lower_ms = diagnostic_start.elapsed().as_secs_f64() * 1e3;
+        let raster_count: usize = results
+            .iter()
+            .filter_map(|result| result.as_ref().ok())
+            .map(|lowered| lowered.pending.len())
+            .sum();
+        let commit_start = Instant::now();
         self.commit_rasters(pending, &mut results);
+        tracing::info!(
+            lower_ms,
+            commit_ms = commit_start.elapsed().as_secs_f64() * 1e3,
+            raster_count,
+            surface_count = pending.len(),
+            "diagnostic map preparation"
+        );
         results
     }
 
