@@ -13824,6 +13824,7 @@ dependencies = [
  "executor-core",
  "futures",
  "percent-encoding",
+ "robius-open",
  "serde",
  "serde_json",
  "suiteki",

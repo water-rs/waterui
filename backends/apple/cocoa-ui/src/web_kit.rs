@@ -1220,17 +1220,21 @@ impl WebViewController {
     /// # Panics
     ///
     /// When `url` is not a URL Foundation can parse.
-    pub fn load_url(&self, url: &str) {
+    ///
+    /// Returns whether the engine started a navigation — `loadRequest:`'s
+    /// answer, which the policy uses to tell the loads the application
+    /// issued from the page's own.
+    pub fn load_url(&self, url: &str) -> bool {
         let url = NSURL::URLWithString(&NSString::from_str(url))
             .expect("WebView received an invalid URL");
         // SAFETY: `url` is a live `NSURL`.
         let request = NSURLRequest::requestWithURL(&url);
-        self.load_request(&request);
+        self.load_request(&request)
     }
 
-    /// Loads `request`.
-    pub fn load_request(&self, request: &NSURLRequest) {
-        self.view.load_request(request);
+    /// Loads `request`, reporting whether the engine started a navigation.
+    pub fn load_request(&self, request: &NSURLRequest) -> bool {
+        self.view.load_request(request).is_some()
     }
 
     /// The active committed URL string.
@@ -1254,19 +1258,21 @@ impl WebViewController {
         self.view.can_go_forward()
     }
 
-    /// Navigates to the previous entry.
-    pub fn go_back(&self) {
-        self.view.go_back();
+    /// Navigates to the previous entry, reporting whether the engine
+    /// started a navigation — it does not when there is none.
+    pub fn go_back(&self) -> bool {
+        self.view.go_back().is_some()
     }
 
-    /// Navigates to the next entry.
-    pub fn go_forward(&self) {
-        self.view.go_forward();
+    /// Navigates to the next entry; see [`Self::go_back`].
+    pub fn go_forward(&self) -> bool {
+        self.view.go_forward().is_some()
     }
 
-    /// Reloads the current document.
-    pub fn reload(&self) {
-        self.view.reload();
+    /// Reloads the current document, reporting whether the engine started a
+    /// navigation.
+    pub fn reload(&self) -> bool {
+        self.view.reload().is_some()
     }
 
     /// Stops an in-flight load.

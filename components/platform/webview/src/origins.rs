@@ -50,7 +50,7 @@ impl OriginPolicy {
     pub fn new(origins: BridgeOrigins, initial: &Url) -> Self {
         Self {
             origins,
-            initial: origin_of(initial),
+            initial: serialized_origin(initial),
         }
     }
 
@@ -195,7 +195,7 @@ impl OriginRule {
         let origin = if url.is_local() {
             Some(Str::from_static("file://"))
         } else {
-            origin_of(url)
+            serialized_origin(url)
         };
         self.allows(origin.as_deref())
     }
@@ -242,18 +242,13 @@ impl OriginRule {
     }
 }
 
-/// Extracts `scheme://host[:port]`, or `None` when the URL has no origin to
-/// compare — a local path, a `data:` or `blob:` document, an opaque scheme.
-fn origin_of(url: &Url) -> Option<Str> {
-    if !url.is_web() {
-        return None;
-    }
-    let scheme = url.scheme()?;
-    let host = url.host()?;
-    Some(url.port().map_or_else(
-        || Str::from(format!("{scheme}://{host}")),
-        |port| Str::from(format!("{scheme}://{host}:{port}")),
-    ))
+/// The `scheme://host[:port]` serialization of the URL's [`Origin`], the
+/// form engines report for a frame — default port elided — or `None` when
+/// the origin is opaque.
+///
+/// [`Origin`]: waterui_url::Origin
+fn serialized_origin(url: &Url) -> Option<Str> {
+    url.origin().map(|origin| Str::from(origin.to_string()))
 }
 
 /// Accepted by [`WebViewOpen::bridge_origins`](crate::WebViewOpen::bridge_origins).
@@ -474,6 +469,22 @@ mod tests {
         let production = policy(BridgeOrigins::Initial, "https://app.example/");
         assert!(!production.allows_origin("https://app.example:8443"));
         assert!(production.allows_origin("https://app.example"));
+    }
+
+    /// Engines report an origin with its scheme's default port elided, so a
+    /// view opened at an explicit default port must still recognize its own
+    /// documents.
+    #[test]
+    fn an_explicit_default_port_is_the_origin_engines_report() {
+        let policy = policy(BridgeOrigins::Initial, "https://app.waterui.dev:443/start");
+        assert!(policy.allows_origin("https://app.waterui.dev"));
+        assert!(
+            policy.allows(
+                &"https://app.waterui.dev/next"
+                    .parse::<Url>()
+                    .expect("parses")
+            )
+        );
     }
 
     /// `file://` is how engines report a local document, and it has to match the

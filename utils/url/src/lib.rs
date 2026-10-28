@@ -33,11 +33,13 @@ mod error;
 #[cfg(all(feature = "remote", not(target_arch = "wasm32")))]
 mod fetch_cache;
 mod into_url;
+mod origin;
 mod parser;
 
 use core::str::FromStr;
 pub use error::ParseError;
 pub use into_url::IntoUrl;
+pub use origin::Origin;
 
 #[cfg(feature = "remote")]
 use core::error::Error;

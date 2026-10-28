@@ -79,6 +79,10 @@ pub use script::{
     raw_evaluation,
 };
 #[cfg(not(target_arch = "wasm32"))]
+mod navigation;
+#[cfg(not(target_arch = "wasm32"))]
+pub use navigation::{NavigationDecision, NavigationPolicy, NavigationRequest, stay_on_origin};
+#[cfg(not(target_arch = "wasm32"))]
 mod origins;
 #[cfg(not(target_arch = "wasm32"))]
 pub use origins::{BridgeOrigins, IntoBridgeOrigins, OriginPolicy, OriginRule};
@@ -455,6 +459,8 @@ impl WebView {
             state: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             bridge_origins: BridgeOrigins::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            navigation_policy: None,
         }
     }
 
@@ -493,6 +499,7 @@ impl WebView {
             event_watchers: Vec::new(),
             state: Vec::new(),
             bridge_origins: BridgeOrigins::default(),
+            navigation_policy: None,
         }
     }
 
@@ -856,6 +863,8 @@ pub struct WebViewOpen {
     state: Vec<state::PendingField>,
     #[cfg(not(target_arch = "wasm32"))]
     bridge_origins: BridgeOrigins,
+    #[cfg(not(target_arch = "wasm32"))]
+    navigation_policy: Option<NavigationPolicy>,
 }
 
 impl fmt::Debug for WebViewOpen {
@@ -872,7 +881,8 @@ impl fmt::Debug for WebViewOpen {
         #[cfg(not(target_arch = "wasm32"))]
         debug
             .field("state_fields", &self.state.len())
-            .field("bridge_origins", &self.bridge_origins);
+            .field("bridge_origins", &self.bridge_origins)
+            .field("navigation_policy", &self.navigation_policy.is_some());
         debug.finish()
     }
 }
@@ -998,6 +1008,29 @@ impl WebViewOpen {
         self
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Sets the policy deciding the navigations the page initiates.
+    ///
+    /// The engine asks synchronously — `WKWebView`'s
+    /// `decidePolicyForNavigationAction`, Android's `shouldOverrideUrlLoading`
+    /// — for link activations, `window.location` writes, form submissions,
+    /// `window.open` and subframe loads. Loads the application directs — the
+    /// target the view was opened at and every write to its URL signal —
+    /// are never consulted, and server redirects belong to
+    /// [`redirects_enabled`](Self::redirects_enabled), not this policy.
+    /// Calling it again replaces the earlier policy.
+    ///
+    /// Android's `WebView` never offers a `POST` form submission or an
+    /// `http(s)` subframe load to its hook, so on Android the policy does
+    /// not see those navigations.
+    pub fn navigation_policy(
+        mut self,
+        policy: impl Fn(&NavigationRequest) -> NavigationDecision + Send + Sync + 'static,
+    ) -> Self {
+        self.navigation_policy = Some(NavigationPolicy::new(policy));
+        self
+    }
+
     /// Observes web view events.
     ///
     /// The subscription lives as long as the web view, so there is no guard to
@@ -1065,6 +1098,8 @@ impl WebViewOpen {
             state,
             #[cfg(not(target_arch = "wasm32"))]
             bridge_origins,
+            #[cfg(not(target_arch = "wasm32"))]
+            navigation_policy,
         } = self;
         // Everything a document may receive before its first line of script
         // is resolved here, before the engine creates anything: the URL the
@@ -1105,6 +1140,7 @@ impl WebViewOpen {
             // For an asset-origin view `initial` is the resolved entry URL, so
             // `BridgeOrigins::Initial` narrows to the asset origin.
             bridge_origins: OriginPolicy::new(bridge_origins, &initial),
+            navigation_policy,
             scripts,
             state: mirror
                 .as_ref()
@@ -1266,6 +1302,32 @@ mod tests {
             watcher(Context::from(self.replacement.clone()));
             self.source.watch(move |context| watcher(context))
         }
+    }
+
+    /// `include_web!` installs `stay_on_origin` and an application's own
+    /// call has to win — the builder keeps the last policy it was given.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_later_navigation_policy_replaces_the_earlier_one() {
+        use super::{NavigationDecision, NavigationRequest, stay_on_origin};
+
+        let open = WebView::open("https://waterui.dev")
+            .navigation_policy(stay_on_origin)
+            .navigation_policy(|_| NavigationDecision::Cancel);
+        let request = NavigationRequest::new(
+            "https://waterui.dev/docs".parse().expect("a valid URL"),
+            Some("https://waterui.dev".parse().expect("a valid URL")),
+            true,
+            true,
+        );
+        // `stay_on_origin` would allow this same-origin navigation; the
+        // replacement does not.
+        assert!(
+            !open
+                .navigation_policy
+                .expect("a policy was configured")
+                .allows(&request)
+        );
     }
 
     #[test]

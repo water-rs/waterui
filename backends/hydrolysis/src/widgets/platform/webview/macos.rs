@@ -48,9 +48,9 @@ use objc2_web_kit::{
 use waterui_core::{Computed, Environment, Str};
 use waterui_webview::{
     ASSET_ORIGIN, ASSET_SCHEME, AssetResponse, AssetServer, BackendEvent, Cookie,
-    CustomWebViewController, DocumentScripts, OriginPolicy, ScriptInjectionTime, Url, UserScript,
-    WatcherGuard, WatcherSet, WebViewConfig, WebViewController, WebViewError, WebViewEvent,
-    WebViewHandle,
+    CustomWebViewController, DocumentScripts, NavigationPolicy, NavigationRequest, OriginPolicy,
+    ScriptInjectionTime, Url, UserScript, WatcherGuard, WatcherSet, WebViewConfig,
+    WebViewController, WebViewError, WebViewEvent, WebViewHandle,
     assets::{asset_target, dispatch},
     bridge,
 };
@@ -174,11 +174,23 @@ struct SharedState {
     /// frame navigation and installed only when its destination is admitted.
     bridge_admitted: Cell<bool>,
     transport_registered: Cell<bool>,
+    /// The policy deciding navigations the page initiates; `None` allows
+    /// them all.
+    navigation_policy: Option<NavigationPolicy>,
+    /// App-directed loads in flight: `go_to` and the history commands count
+    /// each navigation they start, and `decidePolicyForNavigationAction`
+    /// consumes one per action — the policy never sees a navigation the
+    /// application itself issued.
+    app_loads: Cell<usize>,
 }
 
 impl SharedState {
     /// The state of a view created with `bridge_origins` and `scripts`.
-    fn new(bridge_origins: OriginPolicy, scripts: DocumentScripts) -> Self {
+    fn new(
+        bridge_origins: OriginPolicy,
+        scripts: DocumentScripts,
+        navigation_policy: Option<NavigationPolicy>,
+    ) -> Self {
         Self {
             watchers: WatcherSet::new(),
             redirects_enabled: RefCell::new(Computed::new(true)),
@@ -188,6 +200,18 @@ impl SharedState {
             bridge_origins,
             bridge_admitted: Cell::new(false),
             transport_registered: Cell::new(false),
+            navigation_policy,
+            app_loads: Cell::new(0),
+        }
+    }
+
+    /// A load the application issued starts a navigation whose action
+    /// bypasses the policy — the decision callback consumes the token the
+    /// call left. `started` is the engine's answer, so a `go_back` with
+    /// nothing to go back to leaves none.
+    fn note_app_load(&self, started: bool) {
+        if started {
+            self.app_loads.set(self.app_loads.get() + 1);
         }
     }
 
@@ -322,11 +346,53 @@ define_class!(
             // main frame's bridge.
             // SAFETY: main-thread message sends to objects WebKit retains for
             // this call; see the module safety note.
-            let targets_main_frame = unsafe {
-                navigation_action
-                    .targetFrame()
-                    .is_some_and(|frame| frame.isMainFrame())
-            };
+            let target_frame = unsafe { navigation_action.targetFrame() };
+            // SAFETY: main-thread message send to an object WebKit retains for
+            // this call; see the module safety note.
+            let targets_main_frame = target_frame
+                .as_ref()
+                .is_some_and(|frame| unsafe { frame.isMainFrame() });
+            // A targetless action — `window.open` — would be a main-frame
+            // navigation where a backend reroutes it, so the policy is told
+            // it is one.
+            let is_main_frame = target_frame.as_ref().map_or(true, |frame| unsafe {
+                // SAFETY: same as above.
+                frame.isMainFrame()
+            });
+            let shared = &self.ivars().shared;
+            let app_directed = shared.app_loads.get() != 0;
+            shared
+                .app_loads
+                .set(shared.app_loads.get().saturating_sub(1));
+            if !app_directed && let Some(policy) = shared.navigation_policy.as_ref() {
+                // SAFETY: main-thread message sends to objects WebKit retains
+                // for this call; see the module safety note.
+                let url = unsafe {
+                    navigation_action
+                        .request()
+                        .URL()
+                        .and_then(|url| url.absoluteString())
+                }
+                .map(|url| url.to_string());
+                // SAFETY: main-thread message send to an object WebKit retains
+                // for this call; see the module safety note.
+                let user_initiated = unsafe {
+                    navigation_action.navigationType()
+                        == objc2_web_kit::WKNavigationType::LinkActivated
+                };
+                if let Some(url) = url.as_deref() {
+                    let request = NavigationRequest::new(
+                        SharedState::parse_url(url),
+                        SharedState::current_url(web_view).map(|url| SharedState::parse_url(&url)),
+                        is_main_frame,
+                        user_initiated,
+                    );
+                    if !policy.allows(&request) {
+                        decision_handler.call((WKNavigationActionPolicy::Cancel,));
+                        return;
+                    }
+                }
+            }
             if targets_main_frame {
                 // SAFETY: main-thread message sends to objects WebKit retains
                 // for this call; see the module safety note.
@@ -875,6 +941,7 @@ impl MacSystemWebViewHandle {
         let shared = Rc::new(SharedState::new(
             config.bridge_origins.clone(),
             DocumentScripts::new(&config),
+            config.navigation_policy.clone(),
         ));
         let delegate = WebViewDelegate::new(mtm, Rc::clone(&shared));
         // SAFETY: main-thread message send to an object this wrapper retains; see
@@ -1011,17 +1078,15 @@ impl WebViewHandle for MacSystemWebViewHandle {
     fn go_back(&self) {
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
-        unsafe {
-            self.inner.web_view.goBack();
-        }
+        let started = unsafe { self.inner.web_view.goBack() };
+        self.inner.shared.note_app_load(started.is_some());
     }
 
     fn go_forward(&self) {
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
-        unsafe {
-            self.inner.web_view.goForward();
-        }
+        let started = unsafe { self.inner.web_view.goForward() };
+        self.inner.shared.note_app_load(started.is_some());
     }
 
     fn go_to(&self, url: &Url) {
@@ -1030,9 +1095,8 @@ impl WebViewHandle for MacSystemWebViewHandle {
         let request = NSURLRequest::requestWithURL(&url);
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
-        unsafe {
-            self.inner.web_view.loadRequest(&request);
-        }
+        let started = unsafe { self.inner.web_view.loadRequest(&request) };
+        self.inner.shared.note_app_load(started.is_some());
     }
 
     fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
@@ -1076,9 +1140,8 @@ impl WebViewHandle for MacSystemWebViewHandle {
     fn refresh(&self) {
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
-        unsafe {
-            self.inner.web_view.reload();
-        }
+        let started = unsafe { self.inner.web_view.reload() };
+        self.inner.shared.note_app_load(started.is_some());
     }
 
     fn set_user_agent(&self, user_agent: &str) {
