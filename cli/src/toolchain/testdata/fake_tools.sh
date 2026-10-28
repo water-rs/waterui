@@ -306,6 +306,13 @@ cargo)
     esac
     exit 0
     ;;
+codesign)
+    exit 0
+    ;;
+# `caffeinate -d -u -w <pid>`: the display assertion the simulator runner holds.
+caffeinate)
+    exit 0
+    ;;
 xcodebuild)
     case "$*" in
         -version | --version)
@@ -340,14 +347,105 @@ xcrun)
         *--show-sdk-path)
             respond XCRUN_SDK_PATH
             ;;
-        "simctl list --json")
+        "simctl list --json" | "simctl list devices --json")
             respond XCRUN_SIMCTL_DEVICES
             ;;
-        "simctl delete unavailable" | "simctl create "*)
+        "simctl delete unavailable" | "simctl create "* | "simctl bootstatus "*)
             exit 0
+            ;;
+        "simctl spawn "*)
+            (respond_or_empty XCRUN_SIMCTL_SPAWN)
+            exit "${WATERUI_FAKE_SIMCTL_SPAWN_STATUS:-0}"
+            ;;
+        "simctl install "*)
+            exit 0
+            ;;
+        "simctl get_app_container "*)
+            respond XCRUN_SIMCTL_APP_CONTAINER
+            ;;
+        "simctl launch "*)
+            # launch --console --terminate-running-process <udid> <bundle> [args]
+            _bundle="$6"
+            printf '%s: 4242\n' "$_bundle"
+            (respond_or_empty XCRUN_SIMCTL_LAUNCH)
+            if [ -n "${SIMCTL_CHILD_WATERUI_NATIVE_TEST_STATUS-}" ]; then
+                printf '%s' "${WATERUI_FAKE_SIMCTL_APP_STATUS:-0}" \
+                    > "$SIMCTL_CHILD_WATERUI_NATIVE_TEST_STATUS"
+            fi
+            exit 0
+            ;;
+        "devicectl list devices --json-output -")
+            respond XCRUN_DEVICE_LIST
             ;;
         "devicectl device info processes "*)
             respond XCRUN_DEVICE_INFO_PROCESSES
+            ;;
+        "devicectl device info apps "*)
+            # --json-output <path> takes the report as a file; the runner
+            # parses it, never stdout.
+            _out=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --json-output) _out="$2"; shift 2 ;;
+                    *) shift ;;
+                esac
+            done
+            _report="${WATERUI_FAKE_DEVICE_INFO_APPS:-{}}"
+            if [ -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/XCRUN_DEVICE_INFO_APPS" ]; then
+                _report=""
+                while IFS= read -r _line || [ -n "$_line" ]; do
+                    _report="$_report$_line
+"
+                done < "${WATERUI_FAKE_RESPONSES}/XCRUN_DEVICE_INFO_APPS"
+            fi
+            printf '%s' "$_report" > "$_out"
+            exit 0
+            ;;
+        "devicectl device install app "*)
+            if [ -n "${WATERUI_FAKE_DEVICE_CONTAINER-}" ]; then
+                /bin/mkdir -p "$WATERUI_FAKE_DEVICE_CONTAINER/tmp" \
+                    "$WATERUI_FAKE_DEVICE_CONTAINER/Library"
+            fi
+            exit "${WATERUI_FAKE_DEVICE_INSTALL_STATUS:-0}"
+            ;;
+        "devicectl "--quiet" device process launch "* | "devicectl --quiet device process launch "*)
+            respond_or_empty XCRUN_DEVICE_LAUNCH
+            if [ -n "${DEVICECTL_CHILD_WATERUI_NATIVE_TEST_STATUS-}" ] \
+                && [ -n "${WATERUI_FAKE_DEVICE_CONTAINER-}" ]; then
+                printf '%s' "${WATERUI_FAKE_DEVICE_STATUS:-0}" \
+                    > "$WATERUI_FAKE_DEVICE_CONTAINER/$DEVICECTL_CHILD_WATERUI_NATIVE_TEST_STATUS"
+            fi
+            exit "${WATERUI_FAKE_DEVICE_LAUNCH_STATUS:-0}"
+            ;;
+        "devicectl device copy from "*)
+            _src=""; _dst=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --source) _src="$2"; shift 2 ;;
+                    --destination) _dst="$2"; shift 2 ;;
+                    *) shift ;;
+                esac
+            done
+            if [ -d "${WATERUI_FAKE_DEVICE_CONTAINER:?}/$_src" ]; then
+                /bin/cp -R "${WATERUI_FAKE_DEVICE_CONTAINER:?}/$_src" "$_dst" || exit 1
+            else
+                /bin/cp "${WATERUI_FAKE_DEVICE_CONTAINER:?}/$_src" "$_dst" || exit 1
+            fi
+            ;;
+        "devicectl device copy to "*)
+            _src=""; _dst=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --source) _src="$2"; shift 2 ;;
+                    --destination) _dst="$2"; shift 2 ;;
+                    *) shift ;;
+                esac
+            done
+            if [ -d "$_src" ]; then
+                /bin/cp -R "$_src" "${WATERUI_FAKE_DEVICE_CONTAINER:?}/$_dst"
+            else
+                /bin/cp "$_src" "${WATERUI_FAKE_DEVICE_CONTAINER:?}/$_dst"
+            fi
             ;;
         *)
             exit 1

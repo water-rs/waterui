@@ -508,7 +508,13 @@ impl HeadlessRuntime {
             Rc::clone(&pending_window_queue),
         );
         env.insert(HydrolysisTextContextMenuMode::Overlay);
-        crate::theme::install_theme_tokens(&mut env, Some(&style));
+        // A headless host has no platform appearance: the scheme is Light
+        // unless the application installs its own.
+        crate::theme::install_theme_tokens(
+            &mut env,
+            Some(&style),
+            waterui::theme::ColorScheme::Light,
+        );
         let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
         // The application's fonts, built once: the platform's collection plus
         // the staged fonts directory, exactly as the windowed runners load

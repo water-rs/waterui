@@ -189,7 +189,7 @@ libc = "0.2"
 [target.'cfg(unix)'.dependencies]
 # Process-group signalling for the `water run` web dev server (SIGTERM/SIGKILL
 # to the bundler tree the package manager re-execs).
-nix = { version = "0.31", features = ["process", "signal", "user"] }
+nix = { version = "0.31", features = ["fs", "process", "signal", "user"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # `.icns` encoding for hand-assembled app bundles. Only the macOS packaging path

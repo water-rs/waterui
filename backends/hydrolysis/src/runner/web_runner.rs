@@ -470,7 +470,13 @@ pub fn run(app: App, style: impl crate::Style) {
         // contribute their chords only — nothing renders.
         super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
         env.insert(HydrolysisTextContextMenuMode::Overlay);
-        crate::theme::install_theme_tokens(&mut env, Some(&style));
+        // The page's `prefers-color-scheme` is not observed yet: the scheme
+        // is Light unless the application installs its own.
+        crate::theme::install_theme_tokens(
+            &mut env,
+            Some(&style),
+            waterui::theme::ColorScheme::Light,
+        );
         let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
 
         // The application's fonts are fetched while the GPU adapter and device

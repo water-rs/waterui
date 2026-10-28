@@ -747,7 +747,7 @@ jobs:
       # device type and the newest iOS runtime out of the runner image's
       # own inventory (failing clearly when no iOS runtime is installed),
       # creates the device, and deletes it in the always() step below.
-      # nextest-ios-sim.sh requires WATERUI_IOS_SIM_UDID of a caller-owned
+      # `water test-runner simulator` requires WATERUI_IOS_SIM_UDID of a caller-owned
       # device, so nothing here may pick a simulator implicitly.
       - name: Create and boot the iOS simulator
         run: |

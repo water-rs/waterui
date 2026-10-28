@@ -162,6 +162,10 @@ pub struct RunOptions {
     /// If true, stream all native platform logs (`NSLog`, `print`, etc.), not just `WaterUI` logs.
     /// This filters by process ID instead of subsystem, which is noisier but includes all output.
     native_logs: bool,
+
+    /// Arguments appended after the bundle identifier on the launch command
+    /// line.
+    arguments: Vec<String>,
 }
 
 // Environment values are where credentials such as the inspector's session
@@ -178,6 +182,7 @@ impl std::fmt::Debug for RunOptions {
             )
             .field("log_level", &self.log_level)
             .field("native_logs", &self.native_logs)
+            .field("arguments", &self.arguments)
             .finish()
     }
 }
@@ -190,6 +195,7 @@ impl RunOptions {
             env_vars: HashMap::new(),
             log_level: None,
             native_logs: false,
+            arguments: Vec::new(),
         }
     }
 
@@ -246,6 +252,18 @@ impl RunOptions {
     #[must_use]
     pub const fn native_logs(&self) -> bool {
         self.native_logs
+    }
+
+    /// Append a launch argument, forwarded to the application after the
+    /// bundle identifier.
+    pub fn push_argument(&mut self, argument: String) {
+        self.arguments.push(argument);
+    }
+
+    /// The launch arguments.
+    #[must_use]
+    pub fn arguments(&self) -> &[String] {
+        &self.arguments
     }
 }
 

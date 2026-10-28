@@ -1509,15 +1509,10 @@ impl CapturableSurface for NativeFilterCapturable {
         objc2_metal::MTLPixelFormat::RGBA16Float
     }
 
-    fn content_bounds(&self, relative_to: &PlatformView) -> cocoa_ui::Rect {
-        let Some(owner) = self.owner.upgrade() else {
-            return cocoa_ui::Rect::ZERO;
-        };
-        cocoa_ui::view::convert_rect(
-            &owner.view,
-            cocoa_ui::view::bounds(&owner.view),
-            Some(relative_to),
-        )
+    /// The host layer the filters attach to — the capture texture is
+    /// that layer's filtered output, over its bounds.
+    fn presentation_layer(&self) -> Option<Retained<CALayer>> {
+        self.owner.upgrade().map(|owner| owner.layer.clone())
     }
 
     /// Native-pass suppression — direct `hidden` mutation on the host

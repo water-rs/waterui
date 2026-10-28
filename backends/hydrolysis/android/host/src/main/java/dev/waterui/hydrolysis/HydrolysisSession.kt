@@ -49,6 +49,13 @@ class HydrolysisSession internal constructor(
     /** A placement pull requested under a native call; the outermost [exitNative] runs it. */
     private var placementPullPending = false
 
+    /**
+     * A soft-input request made under a native call; the outermost
+     * [exitNative] applies the latest one — a later request replaces an
+     * earlier one inside the same outer call.
+     */
+    private var softInputPending: Boolean? = null
+
     /** [tearDown] has handed [livePtr] to `nativeDestroySession`. */
     private var destroyed = false
 
@@ -107,8 +114,10 @@ class HydrolysisSession internal constructor(
 
     /**
      * [withNativePtr]'s exit: the outermost return runs a pending teardown,
-     * else a pending placement pull. The pull opens its own [withNativePtr]
-     * scope, so this runs again at depth zero with the flag already cleared.
+     * else a pending placement pull, then the latest pending soft-input
+     * request. The pull opens its own [withNativePtr] scope, so this runs
+     * again at depth zero with the flag already cleared; a pending teardown
+     * wins and drops both deferred requests.
      */
     @PublishedApi
     internal fun exitNative() {
@@ -116,10 +125,17 @@ class HydrolysisSession internal constructor(
         if (nativeDepth != 0) return
         if (tearDownPending) {
             placementPullPending = false
+            softInputPending = null
             tearDown()
-        } else if (placementPullPending) {
-            placementPullPending = false
-            hostView?.platformViewRegistry?.publishIfPending()
+        } else {
+            if (placementPullPending) {
+                placementPullPending = false
+                hostView?.platformViewRegistry?.publishIfPending()
+            }
+            softInputPending?.let { visible ->
+                softInputPending = null
+                hostView?.setSoftInputVisible(visible)
+            }
         }
     }
 
@@ -394,9 +410,18 @@ class HydrolysisSession internal constructor(
         frameScheduler.requestFrame("redraw-request")
     }
 
+    /**
+     * The native side asks for the soft keyboard from inside its own call.
+     * `showSoftInput` builds the input connection synchronously, and that
+     * connection's `nativeEditingState` pull would re-enter the session the
+     * call still holds borrowed — so the request defers to the outermost
+     * [exitNative] like a placement pull does, the latest request winning.
+     * Made at depth zero, it reaches the host view at once.
+     */
     @CalledFromNative
     fun onNativeSoftInput(visible: Boolean) {
-        hostView?.setSoftInputVisible(visible)
+        if (nativeDepth == 0) hostView?.setSoftInputVisible(visible)
+        else softInputPending = visible
     }
 
     @CalledFromNative
