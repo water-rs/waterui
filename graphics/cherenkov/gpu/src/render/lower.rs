@@ -25,11 +25,11 @@ use crate::render::filter::FilterKey;
 use crate::render::glyph::{self, Atlas, FontData, MaskCell, PathEmit, PendingRaster, glyph_key};
 use crate::render::gpu_cov::CoverageLimit;
 use crate::render::instance::{
-    ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA, FLAG_BLEND_SRC, FLAG_HAS_CLIP,
-    FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance,
-    KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN, KIND_STROKE_DIST,
-    KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_LINEAR, PAINT_PROJECTIVE, PAINT_RADIAL, PAINT_SOLID,
-    PAINT_SWEEP, PAINT_TEXTURE, Shape, Stop, affine, blend_code,
+    BLEND_CODE_SHIFT, ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA, FLAG_BLEND_SRC,
+    FLAG_HAS_CLIP, FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION,
+    Globals, Instance, KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN,
+    KIND_STROKE_DIST, KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_LINEAR, PAINT_PROJECTIVE,
+    PAINT_RADIAL, PAINT_SOLID, PAINT_SWEEP, PAINT_TEXTURE, Shape, Stop, affine, blend_code,
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
@@ -3671,7 +3671,7 @@ impl<'a> Lowering<'a> {
         }
         let code = blend_code(blend);
         if code != 0 || cross {
-            inst.meta[3] |= code << 16;
+            inst.meta[3] |= code << BLEND_CODE_SHIFT;
             self.set_pipeline(PipelineKind::Replace);
         }
         self.set_source(Some(source));
@@ -4288,7 +4288,7 @@ impl<'a> Lowering<'a> {
         inst.grad[1] = y0 as f32;
         inst.meta[2] = self.frame.stops.len() as u32;
         self.frame.stops.extend(placement.record());
-        inst.meta[3] |= code << 16;
+        inst.meta[3] |= code << BLEND_CODE_SHIFT;
         self.set_pipeline(PipelineKind::Projective { replace: code != 0 });
         self.set_source(Some(Source::Projected(placement.key)));
         self.push_instance(&inst);

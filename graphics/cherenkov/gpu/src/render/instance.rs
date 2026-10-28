@@ -127,6 +127,17 @@ pub const ELLIPSE_TIER16_MIN_AREA: f64 = 4096.0;
 /// See [`ELLIPSE_TIER16_MIN_AREA`].
 pub const ELLIPSE_TIER32_MIN_AREA: f64 = 32768.0;
 
+/// Bit offset of a composite's [`blend_code`] in `meta[3]` of a
+/// `PAINT_TEXTURE` or `PAINT_PROJECTIVE` instance (eight bits wide; the
+/// WGSL reads `(meta_.w >> 16u) & 0xffu`).
+pub const BLEND_CODE_SHIFT: u32 = 16;
+
+/// The [`blend_code`] a `PAINT_TEXTURE` or `PAINT_PROJECTIVE` instance's
+/// `meta[3]` carries.
+pub const fn composite_blend_code(meta: u32) -> u32 {
+    (meta >> BLEND_CODE_SHIFT) & 0xff
+}
+
 /// The shader's blend-mode code for a [`cherenkov::BlendMode`]; `0` keeps the
 /// fixed-function source-over composite. Matches `blend_mode` in the WGSL.
 pub const fn blend_code(mode: cherenkov::BlendMode) -> u32 {
