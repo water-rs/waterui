@@ -178,6 +178,48 @@ class SessionTeardownTest {
         assertEquals(0, ShadowNativeBridge.deadlineQueries)
     }
 
+    /**
+     * #3319: `showSoftInput` builds the input connection synchronously, and
+     * its `nativeEditingState` pull would re-enter the session the frame
+     * still holds borrowed — so a soft-input request made inside a native
+     * call reaches the host view only when the outermost call returns, and
+     * only the latest request.
+     */
+    @Test
+    fun aSoftInputRequestInsideANativeCallReachesTheHostWhenItReturns() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(activity, onCloseRequested = {})
+        val host = SoftInputRecordingHostView(activity, session)
+        activity.setContentView(host)
+        ShadowNativeBridge.onFrame = {
+            session.onNativeSoftInput(true)
+            // A later request replaces the earlier one inside the frame.
+            session.onNativeSoftInput(false)
+            assertTrue(host.softInputRequests.isEmpty())
+            0L
+        }
+
+        session.onNativeRequestRedraw()
+        shadowOf(Looper.getMainLooper()).idleFor(FRAME_WINDOW)
+
+        assertEquals(listOf(false), host.softInputRequests)
+        session.destroy()
+    }
+
+    @Test
+    fun aSoftInputRequestOutsideANativeCallReachesTheHostAtOnce() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(activity, onCloseRequested = {})
+        val host = SoftInputRecordingHostView(activity, session)
+        activity.setContentView(host)
+
+        session.onNativeSoftInput(true)
+        session.onNativeSoftInput(false)
+
+        assertEquals(listOf(true, false), host.softInputRequests)
+        session.destroy()
+    }
+
     @Test
     fun childrenDetachBeforeTheDeferredTeardown() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
@@ -522,6 +564,16 @@ class RecordingHostView(context: Context, session: HydrolysisSession) :
     override fun requestFrame() {
         frameRequests += 1
         super.requestFrame()
+    }
+}
+
+/** A host view that records the soft-input requests the session sends it. */
+class SoftInputRecordingHostView(context: Context, session: HydrolysisSession) :
+    HydrolysisHostView(context, session) {
+    val softInputRequests = mutableListOf<Boolean>()
+
+    override fun setSoftInputVisible(visible: Boolean) {
+        softInputRequests += visible
     }
 }
 
