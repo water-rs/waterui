@@ -14,7 +14,8 @@ use crate::toolchain::Host;
 use super::lock::DestinationLock;
 use super::status::{StatusFile, TestStatus};
 use super::{
-    HarnessBundle, Invocation, MachOPlatform, STATUS_PATH_VARIABLE, TestDestination, forward_run,
+    HarnessBundle, Invocation, MachOPlatform, STATUS_PATH_VARIABLE, TestDestination, exit_code,
+    forward_run, pass_through_exit,
 };
 
 /// The simulator runner: the device comes from `WATERUI_IOS_SIM_UDID` —
@@ -114,15 +115,7 @@ impl TestDestination for IosSimulator {
                 .status()
                 .await
                 .wrap_err("failed to run simctl spawn")?;
-            // A signal-killed simctl ends the runner by that signal, as
-            // the old `exec` did — nextest reports a signal, not a code.
-            #[cfg(unix)]
-            if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status)
-                && let Ok(signal) = nix::sys::signal::Signal::try_from(signal)
-            {
-                nix::sys::signal::raise(signal).ok();
-            }
-            return Ok(TestStatus(exit_code(status)));
+            return Ok(pass_through_exit(status));
         }
 
         let manifest = binary
@@ -192,21 +185,6 @@ async fn installed_matches(
     let installed = Path::new(&container).join(executable);
     let staged = bundle.layout().executable_file(executable);
     Ok(installed.is_file() && std::fs::read(&installed).ok() == std::fs::read(&staged).ok())
-}
-
-/// The process status the spawned route passes through.
-fn exit_code(status: std::process::ExitStatus) -> u8 {
-    if let Some(code) = status.code() {
-        return u8::try_from(code).unwrap_or(1);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt as _;
-        if let Some(signal) = status.signal() {
-            return 128 + u8::try_from(signal).unwrap_or(0);
-        }
-    }
-    1
 }
 
 #[cfg(test)]

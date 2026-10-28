@@ -2,14 +2,17 @@
 //! Apple destinations.
 //!
 //! Each destination runs one test binary per invocation. A `--list`
-//! invocation or a binary without a `__TEXT,__info_plist` section takes the
-//! bare route where one exists; a marked binary is staged as `<binary>.app`
-//! (its `Info.plist` is the embedded manifest verbatim), signed for the
-//! destination, installed, and launched one case at a time. The launched
-//! app's stdout reaches the runner's stdout line-for-line — nextest parses
-//! it — and its stderr the runner's stderr; every diagnostic of the runner
-//! itself goes to stderr. The process exits with the status the harness
-//! wrote to `WATERUI_NATIVE_TEST_STATUS`, never the launcher's exit code.
+//! invocation or a binary without an application manifest — a
+//! `__TEXT,__info_plist` dictionary declaring `CFBundleExecutable` —
+//! takes the bare route where one exists; a marked binary is staged as
+//! `<binary>.app` (its `Info.plist` is the embedded manifest verbatim),
+//! signed for the destination, and launched one case at a time —
+//! installed on the simulator or the device, `open -n -W`'d through
+//! `LaunchServices` on Catalyst. The launched app's stdout reaches the
+//! runner's stdout line-for-line — nextest parses it — and its stderr
+//! the runner's stderr; every diagnostic of the runner itself goes to
+//! stderr. The process exits with the status the harness wrote to
+//! `WATERUI_NATIVE_TEST_STATUS`, never the launcher's exit code.
 //!
 //! # Device cleanup
 //!
@@ -21,6 +24,7 @@
 
 pub(crate) mod binary;
 mod bundle;
+mod catalyst;
 mod device;
 mod lock;
 mod simulator;
@@ -37,6 +41,7 @@ use crate::toolchain::Host;
 
 pub use binary::{HarnessManifest, MachOPlatform, TestBinary};
 pub use bundle::HarnessBundle;
+pub use catalyst::MacCatalyst;
 pub use device::{DeviceIdentity, IosDevice};
 pub use lock::{DestinationLock, LOCK_BOUND};
 pub use simulator::IosSimulator;
@@ -185,4 +190,33 @@ async fn forward_run(
     out.flush()?;
     err.flush()?;
     Ok(())
+}
+
+/// The status a directly-spawned test process passes through.
+///
+/// A signal-killed child ends the runner by that signal — nextest
+/// reports a signal, not a code — as the script `exec` did before.
+pub(crate) fn pass_through_exit(status: std::process::ExitStatus) -> TestStatus {
+    #[cfg(unix)]
+    if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status)
+        && let Ok(signal) = nix::sys::signal::Signal::try_from(signal)
+    {
+        nix::sys::signal::raise(signal).ok();
+    }
+    TestStatus(exit_code(status))
+}
+
+/// The exit code of a finished process, as a byte.
+pub(crate) fn exit_code(status: std::process::ExitStatus) -> u8 {
+    if let Some(code) = status.code() {
+        return u8::try_from(code).unwrap_or(1);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt as _;
+        if let Some(signal) = status.signal() {
+            return 128 + u8::try_from(signal).unwrap_or(0);
+        }
+    }
+    1
 }

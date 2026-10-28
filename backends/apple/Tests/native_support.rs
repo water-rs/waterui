@@ -12,6 +12,14 @@ use waterui::window::WindowManager;
 use waterui_backend_core::Environment;
 use waterui_backend_core::scroll::ANIMATED_ROW_SCROLL_APPROACH;
 
+/// The pump a case inside the harness application waits on: on iOS it is
+/// `uikit::native_test`'s — under Catalyst that is a real `AppKit`
+/// `nextEvent:`/`sendEvent:` turn, the only dispatch route `UIKit` has
+/// (water-rs/waterui#3358) — while `AppKit` keeps the bare run-loop turn.
+#[cfg(target_os = "ios")]
+pub use cocoa_ui::uikit::native_test::pump_main_until;
+/// `pump_main_until` for the `AppKit` harnesses.
+#[cfg(target_os = "macos")]
 pub use cocoa_ui::native_test::pump_main_until;
 
 /// The bound a case gives deferred main-queue work before it fails.
