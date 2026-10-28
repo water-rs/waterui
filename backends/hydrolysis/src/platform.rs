@@ -1473,6 +1473,9 @@ pub struct EngineAndroidTarget<'a> {
             crate::text::ParleyEngine,
         >,
     >,
+    /// Whether the window's planes composite with what lies behind it —
+    /// `SurfaceControlTarget::transparent` when the engine surface is created.
+    pub transparent: bool,
 }
 
 /// The window's platform safe area in logical units.
@@ -1709,10 +1712,11 @@ pub trait GpuSurfaceWindow: PlatformWindow {
         None
     }
 
-    /// Asks the compositor to blur what lies behind the window, or stops
-    /// asking. A target with no compositor blur keeps this default no-op.
-    fn set_blur_behind(&mut self, blur: bool) {
-        let _ = blur;
+    /// Asks the compositor to blur what lies behind the window at the
+    /// material level's measured blur, or stops asking (`None`). A target
+    /// with no compositor blur keeps this default no-op.
+    fn set_blur_behind(&mut self, level: Option<crate::renderer::material::BehindWindowLevel>) {
+        let _ = level;
     }
 
     /// Whether the host matches chrome of its own to the colour the
@@ -5555,7 +5559,8 @@ mod winit_impl {
             target_os = "windows",
             hydrolysis_wayland_platform
         ))]
-        fn set_blur_behind(&mut self, blur: bool) {
+        fn set_blur_behind(&mut self, level: Option<crate::renderer::material::BehindWindowLevel>) {
+            let blur = level.is_some();
             if self.blur_behind == blur {
                 return;
             }

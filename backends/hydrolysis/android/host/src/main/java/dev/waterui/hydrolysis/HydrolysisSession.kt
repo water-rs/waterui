@@ -338,6 +338,43 @@ class HydrolysisSession internal constructor(
     /** The activity's back callback, or none between bindings. */
     internal var onBackAvailable: ((Boolean) -> Unit)? = null
 
+    /**
+     * The window's compositing request the native side last reported:
+     * [translucent] composites the window and its surface with what lies
+     * behind it, [blurBehind] asks the platform to blur that content — a
+     * behind-window material implies both. Retained across host bindings so
+     * a view rebound after a configuration change applies it without waiting
+     * for another push.
+     */
+    var translucency: Translucency = Translucency(translucent = false, blurBehind = false, blurRadiusPx = 0)
+        private set
+
+    /** The compositing request the native side pushes through [onNativeTranslucency]. */
+    data class Translucency(val translucent: Boolean, val blurBehind: Boolean, val blurRadiusPx: Int)
+
+    /**
+     * The objects a change of [translucency] must reach: the bound host view
+     * applies the window and Activity half, the GPU band its surface format.
+     * A listener is fired with the current request as it registers, so a
+     * late mount never waits for another push.
+     */
+    private val translucencyListeners = java.util.concurrent.CopyOnWriteArrayList<(Translucency) -> Unit>()
+
+    /**
+     * Registers [listener] for the window's compositing requests, fired
+     * immediately with the current one. Public because the GPU band lives in
+     * another Gradle module.
+     */
+    fun addTranslucencyListener(listener: (Translucency) -> Unit) {
+        translucencyListeners.add(listener)
+        listener(translucency)
+    }
+
+    /** Drops [listener] — a host view detaches its listener when its window goes away. */
+    fun removeTranslucencyListener(listener: (Translucency) -> Unit) {
+        translucencyListeners.remove(listener)
+    }
+
     /** Forwards one system-back phase to the native session. */
     internal fun dispatchBack(phase: Int, edge: Int, progress: Double) {
         withNativePtr(NativeBridge::nativeBackEvent.name) { ptr ->
@@ -418,5 +455,19 @@ class HydrolysisSession internal constructor(
     fun onNativeBackAvailable(available: Boolean) {
         backAvailable = available
         onBackAvailable?.invoke(available)
+    }
+
+    /**
+     * The resolved window background's compositing request. Carries the same
+     * answer the surface's compositor planes already render by: translucent
+     * asks the window and surface to let behind-window content show, and a
+     * behind-window material asks the platform to blur it.
+     */
+    @CalledFromNative
+    fun onNativeTranslucency(translucent: Boolean, blurBehind: Boolean, blurRadiusPx: Int) {
+        val next = Translucency(translucent, blurBehind, blurRadiusPx)
+        if (next == translucency) return
+        translucency = next
+        translucencyListeners.forEach { it(next) }
     }
 }

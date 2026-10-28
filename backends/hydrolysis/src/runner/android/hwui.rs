@@ -128,10 +128,11 @@ impl HwuiWindow {
         runtime.platform.apply_properties(&runtime.window);
         let background = SurfaceBackground::of(&runtime.window, env);
         assert!(
-            !background.blurs_behind(),
+            background.behind_level().is_none(),
             "hydrolysis HWUI: behind-window material is unsupported \
              (water-rs/waterui#1899)"
         );
+        runtime.platform.set_transparent(background.transparent());
         runtime.renderer.set_window_backdrop(background.backdrop());
         pump_window_scene(runtime, env, drain);
         self.surface

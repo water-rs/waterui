@@ -189,8 +189,8 @@ impl crate::platform::GpuSurfaceWindow for HeadlessPlatformWindow {
         }))
     }
 
-    fn set_blur_behind(&mut self, blur: bool) {
-        self.blur_behind.set(Some(blur));
+    fn set_blur_behind(&mut self, level: Option<crate::renderer::material::BehindWindowLevel>) {
+        self.blur_behind.set(Some(level.is_some()));
     }
 }
 
