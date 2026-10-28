@@ -13,7 +13,7 @@
 use suiteki::Str;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::{AssetServer, OriginPolicy, ScriptInjectionTime, StateDeclarations};
+use crate::{AssetServer, NavigationPolicy, OriginPolicy, ScriptInjectionTime, StateDeclarations};
 
 /// Creation-time configuration for a web view.
 ///
@@ -35,6 +35,10 @@ pub struct WebViewConfig {
     /// Which documents may reach the bridge, for the view's whole life.
     pub bridge_origins: OriginPolicy,
     #[cfg(not(target_arch = "wasm32"))]
+    /// The policy that decides navigations the page initiates; `None`
+    /// allows them all.
+    pub navigation_policy: Option<NavigationPolicy>,
+    #[cfg(not(target_arch = "wasm32"))]
     /// The application's scripts, in the order they run. Keys are unique.
     pub scripts: Vec<UserScript>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -52,6 +56,8 @@ impl Default for WebViewConfig {
             #[cfg(not(target_arch = "wasm32"))]
             bridge_origins: OriginPolicy::deny_all(),
             #[cfg(not(target_arch = "wasm32"))]
+            navigation_policy: None,
+            #[cfg(not(target_arch = "wasm32"))]
             scripts: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             state: StateDeclarations::default(),
@@ -66,6 +72,10 @@ impl std::fmt::Debug for WebViewConfig {
         debug
             .field("asset_server", &self.asset_server.as_ref().map(|_| ".."))
             .field("bridge_origins", &self.bridge_origins)
+            .field(
+                "navigation_policy",
+                &self.navigation_policy.as_ref().map(|_| ".."),
+            )
             .field("scripts", &self.scripts)
             .field("state", &self.state);
         debug.finish()
