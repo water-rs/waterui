@@ -1782,15 +1782,10 @@ impl CapturableSurface for FilteredCapturable {
         output_pixel_format()
     }
 
-    fn content_bounds(&self, relative_to: &PlatformView) -> cocoa_ui::Rect {
-        let Some(state) = self.state.upgrade() else {
-            return cocoa_ui::Rect::ZERO;
-        };
-        cocoa_ui::view::convert_rect(
-            &state.output_view,
-            cocoa_ui::view::bounds(&state.output_view),
-            Some(relative_to),
-        )
+    fn presentation_layer(&self) -> Option<Retained<objc2_quartz_core::CALayer>> {
+        self.state
+            .upgrade()
+            .map(|state| state.presentation_layer.clone().into_super())
     }
 
     /// The window-level half of `canPresentNow` — a filtered output in a

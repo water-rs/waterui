@@ -1894,8 +1894,8 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         state_format(&self.state)
     }
 
-    fn content_bounds(&self, relative_to: &cocoa_ui::PlatformView) -> cocoa_ui::Rect {
-        self.view.bounds_in(relative_to)
+    fn presentation_layer(&self) -> Option<Retained<objc2_quartz_core::CALayer>> {
+        Some(self.view.presentation_layer().into_super())
     }
 
     fn can_present(&self) -> bool {
