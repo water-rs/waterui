@@ -241,7 +241,7 @@ mod embedded_menus {
             assert!(can_with_sender(&foreign, &key, None));
         }
         items.set(vec![command(&fired)]);
-        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || !can(&button, &key));
+        cocoa_ui::uikit::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || !can(&button, &key));
         assert!(!can(&button, &key));
         assert_eq!(button.armed_command_count(), 1);
         let rebuilt = commands(&button)
@@ -250,7 +250,7 @@ mod embedded_menus {
         fire(&button, &rebuilt);
         assert_eq!(fired.get(), 3);
         items.set(vec![]);
-        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
+        cocoa_ui::uikit::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
             button.armed_command_count() == 0
         });
         assert_eq!(button.armed_command_count(), 0);
@@ -260,14 +260,14 @@ mod embedded_menus {
         // The mount owns the widget tree: dropping it retires the scope
         // even while the button and its last command stay retained.
         items.set(vec![command(&fired)]);
-        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
+        cocoa_ui::uikit::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
             button.armed_command_count() == 1
         });
         let live = commands(&button)
             .pop()
             .expect("the repopulated shortcut is vended");
         drop(mount);
-        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
+        cocoa_ui::uikit::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
             button.armed_command_count() == 0
         });
         assert_eq!(button.armed_command_count(), 0);
@@ -360,7 +360,7 @@ mod embedded_menus {
             .pop()
             .expect("the repopulated shortcut is vended");
         drop(mount);
-        cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
+        cocoa_ui::uikit::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
             host.armed_command_count() == 0
         });
         assert_eq!(host.armed_command_count(), 0);
@@ -586,12 +586,12 @@ mod key_commands {
     use cocoa_ui::Rect;
     use cocoa_ui::Retained;
     use cocoa_ui::menu::{Command, KeyModifiers, MenuTreeNode};
-    use cocoa_ui::native_test::pump_main_until;
     use cocoa_ui::objc2_ui_kit::{
         UIAction, UIApplication, UIButton, UIContextMenuInteraction, UIKeyCommand,
         UIKeyModifierFlags, UIMenu, UIMenuElement, UIMenuElementAttributes, UIMenuElementState,
         UITextField, UIView, UIViewController, UIWindow,
     };
+    use cocoa_ui::uikit::native_test::pump_main_until;
     use cocoa_ui::uikit::{
         self, KeyCommands, Menu, MenuAction, MenuButton, MenuElement, native_test,
     };
@@ -1564,9 +1564,9 @@ mod text_selection_ios {
     use waterui::text::StyledStr;
 
     use cocoa_ui::geometry::Rect;
-    use cocoa_ui::native_test::pump_main_until;
     use cocoa_ui::objc2::MainThreadMarker;
     use cocoa_ui::uikit::native_test;
+    use cocoa_ui::uikit::native_test::pump_main_until;
     use waterui_apple::native_test_support::{
         MAIN_QUEUE_DEADLINE, mount_uikit_window, render_environment,
     };

@@ -11,8 +11,8 @@ use eyre::{Context as _, eyre};
 use smol::channel::Receiver;
 
 use waterui_cli::apple::test_runner::{
-    DeviceIdentity, ForwardedEnv, Invocation as RunnerInvocation, IosDevice, IosSimulator, Run,
-    TestArguments, TestBinary,
+    DeviceIdentity, ForwardedEnv, Invocation as RunnerInvocation, IosDevice, IosSimulator,
+    MacCatalyst, Run, TestArguments, TestBinary,
 };
 use waterui_cli::toolchain::Host;
 
@@ -37,6 +37,9 @@ enum Destination {
     /// the signing identity from `WATERUI_IOS_DEVICE_BUNDLE_ID` and
     /// `WATERUI_IOS_DEVICE_TEAM_ID`.
     Device(Invocation),
+    /// Mac Catalyst; the host Mac launches the staged `.app` through
+    /// `LaunchServices`.
+    Catalyst(Invocation),
 }
 
 #[derive(ClapArgs, Debug)]
@@ -97,6 +100,7 @@ pub async fn run(args: &Args, interrupts: Receiver<()>) -> eyre::Result<u8> {
                 .await?,
             ),
         ),
+        Destination::Catalyst(invocation) => (invocation, Box::new(MacCatalyst::new())),
     };
     let binary = TestBinary::read(&invocation.binary)?;
     let arguments = TestArguments::new(invocation.arguments.clone());

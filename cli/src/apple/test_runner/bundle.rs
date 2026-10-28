@@ -134,7 +134,12 @@ mod tests {
                 .exists()
         );
         assert_eq!(bundle.bundle_id(), "dev.waterui.tests");
-        assert_eq!(bundle.layout().app_path, path.with_extension("app"));
+        assert_eq!(
+            bundle.layout().app_path,
+            std::fs::canonicalize(&path)
+                .expect("canonical fixture path")
+                .with_extension("app")
+        );
 
         bundle
             .rewrite_identifier("cool.test.bench")

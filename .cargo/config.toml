@@ -37,8 +37,16 @@ rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 # the already-installed development profile for the identity
 # WATERUI_IOS_DEVICE_BUNDLE_ID / WATERUI_IOS_DEVICE_TEAM_ID name; the
 # runner never provisions or uninstalls.
+#
+# `aarch64-apple-ios-macabi` runs on the host Mac: a marked binary is
+# staged as a `.app` and launched through LaunchServices (`open -n -W`) —
+# a Catalyst UIApplication only connects its scene under a real
+# application launch — so it needs a GUI session.
 [target.aarch64-apple-ios-sim]
 runner = [".github/scripts/water-test-runner.sh", "simulator"]
 
 [target.aarch64-apple-ios]
 runner = [".github/scripts/water-test-runner.sh", "device"]
+
+[target.aarch64-apple-ios-macabi]
+runner = [".github/scripts/water-test-runner.sh", "catalyst"]

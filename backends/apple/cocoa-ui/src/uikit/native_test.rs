@@ -17,9 +17,12 @@
 //! The `water test-runner` target runner launches the process as an
 //! application: it wraps the test binary in an `.app` whose `Info.plist` is
 //! the one [`native_test_info_plist!`](crate::native_test_info_plist)
-//! embeds in the binary's `__TEXT,__info_plist` section. `simctl launch`
-//! and `devicectl ... --console` do not forward the application's exit
-//! status, so [`run`] writes it to the file the runner names in
+//! embeds in the binary's `__TEXT,__info_plist` section — flat and
+//! `simctl launch`'d on the simulator, installed and `devicectl`'d on a
+//! device, `Contents/` and `open -n -W`'d through `LaunchServices` on
+//! Catalyst, where only a real application launch hands `UIApplicationMain`
+//! a scene. None of the launchers forwards the application's exit status,
+//! so [`run`] writes it to the file the runner names in
 //! [`STATUS_PATH_VARIABLE`] before exiting. The device runner cannot name
 //! a host path, so a relative value is resolved against the application's
 //! home — its data container.
@@ -45,7 +48,43 @@ use super::window::{Window, application_is_active};
 use super::{ViewController, window_root};
 use crate::callback::guarded;
 use crate::geometry::Rect;
-use crate::native_test::pump_main_until;
+
+/// Pumps the harness application's main thread until `until` holds or
+/// `seconds` pass, and answers `until()`.
+///
+/// It turns the event source the platform's `UIKit` actually dispatches
+/// from, so the case's own awaited work — activation, event dispatch,
+/// main-queue blocks — keeps moving while it holds the main thread.
+///
+/// iOS delivers `UIKit`'s lifecycle and events push-style through
+/// `CFRunLoop` sources, so the bare turn services them. Under Catalyst
+/// `UIApplicationMain` hands the process to `AppKit`'s `-[NSApplication
+/// run]`, which dispatches by pulling `nextEvent:`/`sendEvent:` turns:
+/// scene connection and activation never happen inside a nested
+/// `CFRunLoop` turn, and every mid-case event wait would stall the same
+/// way (water-rs/waterui#3358). The bare `native` harnesses keep
+/// [`crate::native_test::pump_main_until`] — a spawned Catalyst process
+/// runs under [`catalyst::BackgroundApplication`](super::catalyst::BackgroundApplication)
+/// with no running `NSApplication` to pull events from.
+#[cfg(target_abi = "macabi")]
+pub fn pump_main_until(seconds: f64, until: impl Fn() -> bool) -> bool {
+    use objc2_foundation::NSDate;
+
+    let mtm =
+        MainThreadMarker::new().expect("the harness application's pump runs on the main thread");
+    let event_loop = super::catalyst::EventLoop::running(mtm);
+    let deadline = NSDate::dateWithTimeIntervalSinceNow(seconds);
+    while !until() && deadline.timeIntervalSinceNow() > 0.0 {
+        event_loop.turn(&NSDate::dateWithTimeIntervalSinceNow(0.02));
+    }
+    until()
+}
+
+/// `pump_main_until` on iOS — the `CFRunLoop` turn is sufficient where
+/// `UIKit` is push-driven; see the `macabi` variant for why the two
+/// differ.
+#[cfg(not(target_abi = "macabi"))]
+pub use crate::native_test::pump_main_until;
 
 const INFO_PLIST_LEN: usize = include_bytes!("native_test.plist").len();
 
@@ -57,10 +96,10 @@ pub const INFO_PLIST: [u8; INFO_PLIST_LEN] = *include_bytes!("native_test.plist"
 /// The environment variable naming the file [`run`] writes the process's
 /// exit status to.
 ///
-/// An absolute value names a host path (the simulator runner). A relative
-/// value is resolved against `NSHomeDirectory` — the application's data
-/// container — because the device runner can only name container-relative
-/// paths.
+/// An absolute value names a host path (the simulator and Catalyst
+/// runners). A relative value is resolved against `NSHomeDirectory` — the
+/// application's data container — because the device runner can only name
+/// container-relative paths.
 pub const STATUS_PATH_VARIABLE: &str = "WATERUI_NATIVE_TEST_STATUS";
 
 /// The bound the launched application gets to connect its window scene
