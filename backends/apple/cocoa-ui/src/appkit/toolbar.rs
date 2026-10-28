@@ -38,9 +38,9 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_app_kit::{
     NSControlSize, NSFont, NSImage, NSLayoutAttribute, NSLayoutConstraint, NSSearchToolbarItem,
     NSSplitViewController, NSSplitViewItem, NSSplitViewItemBehavior,
-    NSTitlebarAccessoryViewController, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
-    NSToolbarItem, NSToolbarItemIdentifier, NSTrackingSeparatorToolbarItem, NSView, NSWindow,
-    NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
+    NSTitlebarAccessoryViewController, NSTitlebarSeparatorStyle, NSToolbar, NSToolbarDelegate,
+    NSToolbarDisplayMode, NSToolbarItem, NSToolbarItemIdentifier, NSTrackingSeparatorToolbarItem,
+    NSView, NSWindow, NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{
@@ -415,6 +415,15 @@ impl WindowToolbar {
         toolbar.setAllowsUserCustomization(false);
         window.setToolbar(Some(&toolbar));
         window.setToolbarStyle(NSWindowToolbarStyle::Unified);
+        // `.automatic` resolves to the scroll-edge shadow under a unified
+        // toolbar — a hairline that draws only while content scrolls
+        // beneath the titlebar. This window's content sits below the
+        // toolbar through the safe area, so the shadow never appears;
+        // `SwiftUI`'s toolbar window draws the line unconditionally
+        // (water-rs/waterui#3590). The window's preference governs every
+        // titlebar section, a split view's sidebar included, so no
+        // per-item style is needed.
+        window.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::Line);
         window.setStyleMask(window.styleMask() | NSWindowStyleMask::FullSizeContentView);
         COORDINATORS.with(|map| {
             map.borrow_mut().insert(key, Weak::from_retained(&this));
