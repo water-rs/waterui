@@ -100,7 +100,7 @@ mod embedded_menus {
         UIApplication, UIButtonType, UIContextMenuConfiguration, UIContextMenuInteraction,
         UIKeyCommand, UIMenu, UIResponder, UIView,
     };
-    use cocoa_ui::uikit::{CocoaUiButton, HostView, KeyCommands};
+    use cocoa_ui::uikit::{CocoaUiButton, HostView, KeyCommands, ViewController};
     use cocoa_ui::{Retained, view};
     use libtest_mimic::Trial;
     use waterui::component::menu::{Command, Menu, MenuItem, Shortcut};
@@ -188,6 +188,25 @@ mod embedded_menus {
         }
     }
 
+    /// The window's root controller must have run a balanced appearance
+    /// story once the mount dropped: every `will` its `did`, and every
+    /// appearance a disappearance.
+    fn assert_appearance_balanced(controller: &ViewController) {
+        let counts = controller.appearance_counts();
+        assert_eq!(
+            counts.will_appear, counts.did_appear,
+            "viewWillAppear:/viewDidAppear: are unbalanced: {counts:?}"
+        );
+        assert_eq!(
+            counts.will_disappear, counts.did_disappear,
+            "viewWillDisappear:/viewDidDisappear: are unbalanced: {counts:?}"
+        );
+        assert_eq!(
+            counts.did_appear, counts.did_disappear,
+            "the controller's appearances and disappearances are unbalanced: {counts:?}"
+        );
+    }
+
     fn foreign_menu(scope: &KeyCommands) -> Retained<UIMenu> {
         cocoa_ui::uikit::menu(
             mtm(),
@@ -266,7 +285,11 @@ mod embedded_menus {
         let live = commands(&button)
             .pop()
             .expect("the repopulated shortcut is vended");
+        // Retain the controller so its counters outlive the mount whose
+        // drop drove the disappearance to completion.
+        let controller = mount.controller.retain();
         drop(mount);
+        assert_appearance_balanced(&controller);
         cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
             button.armed_command_count() == 0
         });
@@ -359,7 +382,11 @@ mod embedded_menus {
         let live = commands(&host)
             .pop()
             .expect("the repopulated shortcut is vended");
+        // Retain the controller so its counters outlive the mount whose
+        // drop drove the disappearance to completion.
+        let controller = mount.controller.retain();
         drop(mount);
+        assert_appearance_balanced(&controller);
         cocoa_ui::native_test::pump_main_until(MAIN_QUEUE_DEADLINE, || {
             host.armed_command_count() == 0
         });
