@@ -3291,6 +3291,7 @@ mod filtered {
     use std::sync::atomic::Ordering;
 
     use cocoa_ui::capture::CaptureError;
+    use cocoa_ui::objc2::rc::autoreleasepool;
     use libtest_mimic::Trial;
     use waterui_apple::native_test_support::ErrorLog;
     use waterui_apple::native_test_support::filtered::MountedFilteredSurface;
@@ -3371,32 +3372,48 @@ mod filtered {
     /// intrinsic measure the mount installed hold neither once pending
     /// submitted work has settled — and a remount on the same runtime
     /// presents again.
+    ///
+    /// The trials run inside one `applicationDidFinishLaunching:` callback
+    /// whose autorelease pool never drains, so the mount, its presented
+    /// frame and the unmount live inside a bounded `autoreleasepool` and
+    /// the release pump reads its probes inside one too — only the `Weak`
+    /// probes and the runtime escape, so a survivor names a real retainer,
+    /// never a pooled temporary.
     pub fn unmount_releases_the_state_and_view() -> Result<(), libtest_mimic::Failed> {
         let mtm = mtm();
-        let mounted = pollster::block_on(MountedFilteredSurface::mount(mtm))
-            .map_err(|error| format!("a mounted filtered surface: {error}"))?;
-        mounted.ensure_attached();
+        let ((state, view), runtime) = autoreleasepool(|_| {
+            let mounted = pollster::block_on(MountedFilteredSurface::mount(mtm))
+                .map_err(|error| format!("a mounted filtered surface: {error}"))?;
+            mounted.ensure_attached();
+            assert!(
+                pump_main_until(MAIN_QUEUE_DEADLINE, || mounted.frame_presented()),
+                "the filtered view presents its first frame"
+            );
+            let probes = mounted.release_probes();
+            Ok::<_, String>((probes, mounted.unmount()))
+        })?;
+
+        let released = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            autoreleasepool(|_| state.upgrade().is_none() && view.load().is_none())
+        });
         assert!(
-            pump_main_until(MAIN_QUEUE_DEADLINE, || mounted.frame_presented()),
-            "the filtered view presents its first frame"
+            released,
+            "the unmounted leaf's state and host view release with the shared runtime alive \
+             (FilteredState strong count {}, HostView alive: {})",
+            state.strong_count(),
+            autoreleasepool(|_| view.load().is_some()),
         );
 
-        let (state, view) = mounted.release_probes();
-        let runtime = mounted.unmount();
-        assert!(
-            pump_main_until(MAIN_QUEUE_DEADLINE, || {
-                state.upgrade().is_none() && view.load().is_none()
-            }),
-            "the unmounted leaf's state and host view release with the shared runtime alive"
-        );
-
-        let remounted = MountedFilteredSurface::mount_shared(mtm, runtime)
-            .map_err(|error| format!("a remounted filtered surface: {error}"))?;
-        remounted.ensure_attached();
-        assert!(
-            pump_main_until(MAIN_QUEUE_DEADLINE, || remounted.frame_presented()),
-            "a remounted filtered view presents again on the shared runtime"
-        );
+        autoreleasepool(|_| {
+            let remounted = MountedFilteredSurface::mount_shared(mtm, runtime)
+                .map_err(|error| format!("a remounted filtered surface: {error}"))?;
+            remounted.ensure_attached();
+            assert!(
+                pump_main_until(MAIN_QUEUE_DEADLINE, || remounted.frame_presented()),
+                "a remounted filtered view presents again on the shared runtime"
+            );
+            Ok::<_, String>(())
+        })?;
         Ok(())
     }
 
