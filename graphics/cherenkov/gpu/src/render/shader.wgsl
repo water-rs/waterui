@@ -1002,29 +1002,12 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
     var planes: JointPlanes;
     var nplanes = 0u;
     var joint = true;
+    // Share the outer distance graph across paint kinds so the driver
+    // compiles it once instead of inlining it into each branch.
+    var evaluate_shape = false;
     switch in.meta_.x {
         case KIND_STROKE_OFFSET: {
-            let outer = shape_eval(s, in.local, m, false);
-            cov = outer.cov;
-            planes[nplanes] = outer.planes.p[0];
-            nplanes += 1u;
-            if outer.planes.n == 2u {
-                planes[nplanes] = outer.planes.p[1];
-                nplanes += 1u;
-            }
-            if (flags & FLAG_HAS_INNER) != 0u {
-                let inner = shape_eval(instances[i].inner, in.local, m, false);
-                cov -= inner.cov;
-                // Outside the inner shape. A corner's outside is a union
-                // of half-planes — not the intersection a polygon clip
-                // expresses — so only a single-plane inner joins.
-                if inner.planes.n == 1u {
-                    planes[nplanes] = -inner.planes.p[0];
-                    nplanes += 1u;
-                } else {
-                    joint = false;
-                }
-            }
+            evaluate_shape = true;
         }
         case KIND_STROKE_DIST: {
             let sample = sdf_sample(s, in.local, false);
@@ -1045,14 +1028,7 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
         case KIND_SHADOW: {
             let sigma = in.params.x;
             if sigma < 0.25 {
-                let se = shape_eval(s, in.local, m, false);
-                cov = se.cov;
-                planes[nplanes] = se.planes.p[0];
-                nplanes += 1u;
-                if se.planes.n == 2u {
-                    planes[nplanes] = se.planes.p[1];
-                    nplanes += 1u;
-                }
+                evaluate_shape = true;
             } else {
                 cov = shadow(s, in.local, sigma);
                 joint = false;
@@ -1066,13 +1042,28 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
             cov = 1.0;
         }
         default: {
-            let de = shape_eval(s, in.local, m, false);
-            cov = de.cov;
-            planes[nplanes] = de.planes.p[0];
+            evaluate_shape = true;
+        }
+    }
+    if evaluate_shape {
+        let outer = shape_eval(s, in.local, m, false);
+        cov = outer.cov;
+        planes[nplanes] = outer.planes.p[0];
+        nplanes += 1u;
+        if outer.planes.n == 2u {
+            planes[nplanes] = outer.planes.p[1];
             nplanes += 1u;
-            if de.planes.n == 2u {
-                planes[nplanes] = de.planes.p[1];
+        }
+        if in.meta_.x == KIND_STROKE_OFFSET && (flags & FLAG_HAS_INNER) != 0u {
+            let inner = shape_eval(instances[i].inner, in.local, m, false);
+            cov -= inner.cov;
+            // Outside an inner corner is a union, not the intersection
+            // this polygon clip expresses; only a single plane joins.
+            if inner.planes.n == 1u {
+                planes[nplanes] = -inner.planes.p[0];
                 nplanes += 1u;
+            } else {
+                joint = false;
             }
         }
     }
