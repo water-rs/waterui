@@ -263,9 +263,20 @@ pub fn pumped_test_environment() -> Environment {
 }
 
 fn themed_test_environment() -> Environment {
+    test_environment_with_scheme(waterui::theme::ColorScheme::Light)
+}
+
+/// [`themed_test_environment`] with the installed colour scheme set to
+/// `scheme` — the same install the runners perform, so the default colour
+/// tokens are signals over it. A test passes a binding it owns when the
+/// point is that a scheme flip re-resolves them, the way a platform
+/// appearance flip does on a live runner.
+pub fn test_environment_with_scheme(
+    scheme: impl nami::signal::IntoComputed<waterui::theme::ColorScheme>,
+) -> Environment {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
     let mut env = Environment::new();
-    crate::testing::install_theme(&mut env);
+    crate::theme::install_theme_tokens(&mut env, None, scheme);
     crate::localization::install(&mut env);
     // The runners seed the chord table; a test that mounts menus resolves
     // shortcuts through the same path (water-rs/hydrolysis#247).
