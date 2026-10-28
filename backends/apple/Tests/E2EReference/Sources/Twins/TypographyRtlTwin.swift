@@ -100,11 +100,7 @@ struct TypographyRtlTwin: View {
       }
     }
     .padding(16)
-    #if os(iOS)
-      .background(Color(.secondarySystemBackground))
-    #else
-      .background(Color(.controlBackgroundColor))
-    #endif
+    .background(Color(.tertiarySystemFill))
     .environment(\.locale, Locale(identifier: locale))
     .environment(\.layoutDirection, direction)
   }
