@@ -218,8 +218,9 @@ impl SemanticRuntime {
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // Framework tokens only: the semantic runtime has no `Style`, so no
         // style-package tokens ever install — widget structure, roles, labels
-        // and actions do not depend on one.
-        crate::theme::install_theme_tokens(&mut env, None);
+        // and actions do not depend on one. No platform appearance either: the
+        // scheme is Light unless the application installs its own.
+        crate::theme::install_theme_tokens(&mut env, None, waterui::theme::ColorScheme::Light);
         let fonts = build_fonts(&env);
         fonts.clone().install(&mut env);
 

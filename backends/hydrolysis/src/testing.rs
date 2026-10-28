@@ -13,7 +13,7 @@ use waterui::Environment;
 /// *not* a [`crate::Style`]: it carries no widget theme, so tests that mount
 /// widgets on the rendered runtime must still supply a real style.
 pub fn install_theme(env: &mut Environment) {
-    crate::theme::install_theme_tokens(env, None);
+    crate::theme::install_theme_tokens(env, None, waterui::theme::ColorScheme::Light);
 }
 
 /// Returns the root directory Hydrolysis's own test artifacts are written

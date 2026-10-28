@@ -375,7 +375,9 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     // headless host renders no chrome, so there is no surface to draw.
     menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     env.insert(HydrolysisTextContextMenuMode::Overlay);
-    crate::theme::install_theme_tokens(&mut env, Some(&style));
+    // A headless host has no platform appearance: the scheme is Light
+    // unless the application installs its own.
+    crate::theme::install_theme_tokens(&mut env, Some(&style), waterui::theme::ColorScheme::Light);
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
     // The application's fonts, discovered once. Every window's renderer is
     // seeded from this collection, and a self-drawn component that typesets
