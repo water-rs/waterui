@@ -362,6 +362,9 @@ impl Compiler {
         let len = words(self.edges, size_of::<Vertical>())
             + words(self.height, size_of::<RowCells>())
             + self.height * (words(row, size_of::<Cell>()) + row.div_ceil(64));
+        // Firmware reserves only the required rows, without Vec's geometric growth slack.
+        #[cfg(feature = "bounded-bins")]
+        self.storage.reserve_exact(len - self.storage.len());
         self.storage.resize(len, MaybeUninit::uninit());
         let mut remaining = self.storage.as_mut_slice();
         // SAFETY: every table element has alignment at most u64.
