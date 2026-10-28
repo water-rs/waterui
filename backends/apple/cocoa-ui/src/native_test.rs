@@ -4,13 +4,7 @@
 use std::cell::Cell;
 use std::time::Duration;
 
-#[cfg(target_os = "macos")]
-use objc2::MainThreadMarker;
-#[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApplication, NSEventMask};
-#[cfg(not(target_os = "macos"))]
-use objc2_foundation::NSRunLoop;
-use objc2_foundation::{NSDate, NSDefaultRunLoopMode};
+use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRunLoop};
 
 use crate::PlatformView;
 use crate::scroll_flight::FlightClock;
@@ -25,37 +19,13 @@ use crate::scroll_flight::FlightClock;
 pub fn pump_main_until(seconds: f64, until: impl Fn() -> bool) -> bool {
     let deadline = NSDate::dateWithTimeIntervalSinceNow(seconds);
     while !until() && deadline.timeIntervalSinceNow() > 0.0 {
-        pump_turn(&NSDate::dateWithTimeIntervalSinceNow(0.02));
+        // SAFETY: `NSDefaultRunLoopMode` is a system-owned run-loop mode.
+        NSRunLoop::currentRunLoop().runMode_beforeDate(
+            unsafe { NSDefaultRunLoopMode },
+            &NSDate::dateWithTimeIntervalSinceNow(0.02),
+        );
     }
     until()
-}
-
-/// One turn of the main run loop, bounded by `until`. On macOS the turn
-/// waits on `NSApp`'s event queue and dispatches the event it dequeues:
-/// the cases run inside `applicationDidFinishLaunching`, before `NSApp`'s
-/// own loop, so activation and key-window changes reach the harness only
-/// through this dispatch.
-#[cfg(target_os = "macos")]
-fn pump_turn(until: &NSDate) {
-    let mtm = MainThreadMarker::new().expect("the native harness pumps on the main thread");
-    let app = NSApplication::sharedApplication(mtm);
-    // SAFETY: `NSDefaultRunLoopMode` is a system-owned run-loop mode.
-    let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
-        NSEventMask::Any,
-        Some(until),
-        unsafe { NSDefaultRunLoopMode },
-        true,
-    );
-    if let Some(event) = event {
-        app.sendEvent(&event);
-    }
-}
-
-/// One turn of the main run loop, bounded by `until`.
-#[cfg(not(target_os = "macos"))]
-fn pump_turn(until: &NSDate) {
-    // SAFETY: `NSDefaultRunLoopMode` is a system-owned run-loop mode.
-    NSRunLoop::currentRunLoop().runMode_beforeDate(unsafe { NSDefaultRunLoopMode }, until);
 }
 
 /// A scroll flight's clock under the test's hand.

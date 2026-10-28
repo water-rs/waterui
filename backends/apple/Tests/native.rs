@@ -442,10 +442,10 @@ mod appkit_input {
     use cocoa_ui::native_test::ManualScrollClock;
     use cocoa_ui::notification::{NotificationName, NotificationObserver, observe_object};
     use cocoa_ui::objc2_app_kit::{
-        NSEvent, NSEventModifierFlags, NSEventType, NSScrollView,
-        NSScrollViewDidLiveScrollNotification, NSView, NSWindow,
+        NSEvent, NSScrollView, NSScrollViewDidLiveScrollNotification,
+        NSStandardKeyBindingResponding, NSView, NSWindow,
     };
-    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize};
     use cocoa_ui::{MainThreadMarker, Retained};
     use objc2::runtime::AnyObject;
     use objc2::{MainThreadOnly, define_class, msg_send};
@@ -454,63 +454,20 @@ mod appkit_input {
         MAIN_QUEUE_DEADLINE, drain_main_queue, pump_main_until,
     };
 
-    /// A function key: its virtual key code and the `NS…FunctionKey`
-    /// character `AppKit` reports for it.
-    #[derive(Clone, Copy, Debug)]
-    pub struct FunctionKey {
-        key_code: u16,
-        character: u32,
-    }
-
-    /// `kVK_PageDown` / `NSPageDownFunctionKey`.
-    pub const PAGE_DOWN: FunctionKey = FunctionKey {
-        key_code: 0x79,
-        character: 0xF72D,
-    };
-
-    /// `kVK_End` / `NSEndFunctionKey`.
-    pub const END: FunctionKey = FunctionKey {
-        key_code: 0x77,
-        character: 0xF72B,
-    };
-
-    /// Keyboard events require the application and its target window to
-    /// participate in `AppKit`'s key-window lifecycle before a flight starts.
-    pub fn prepare_keyboard(window: &NSWindow) {
-        cocoa_ui::appkit::Application::shared(super::mtm()).activate();
-        window.makeKeyAndOrderFront(None);
-        assert!(
-            pump_main_until(MAIN_QUEUE_DEADLINE, || window.isKeyWindow()),
-            "the keyboard fixture must become the key window"
-        );
-    }
-
-    /// Presses `key` in `window`: a key-down `window.sendEvent` routes to
-    /// the first responder, the way the window server's event does.
-    pub fn press(window: &NSWindow, key: FunctionKey) {
-        assert!(
-            window.isKeyWindow(),
-            "keyboard events target the key window"
-        );
-        let characters = NSString::from_str(
-            &char::from_u32(key.character)
-                .expect("function-key characters are valid code points")
-                .to_string(),
-        );
-        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
-            NSEventType::KeyDown,
-            NSPoint::ZERO,
-            NSEventModifierFlags::Function,
-            0.0,
-            window.windowNumber(),
-            None,
-            &characters,
-            &characters,
-            false,
-            key.key_code,
-        )
-        .expect("AppKit builds a key-down event");
-        window.sendEvent(&event);
+    /// Sends `action` down `window`'s responder chain from its first
+    /// responder, the delivery `interpretKeyEvents` performs once a key
+    /// resolves to its binding. A key-down needs a key window to resolve,
+    /// and macOS's cooperative activation never makes a non-interactively
+    /// launched harness the active application, so the case starts at the
+    /// action: from there the scroll is `AppKit`'s own.
+    pub fn command(window: &NSWindow, action: objc2::runtime::Sel) {
+        let responder = window
+            .firstResponder()
+            .expect("the window has a first responder");
+        // SAFETY: `action` is a no-argument binding action; the chain's
+        // `doCommandBySelector:` forwarding is the mechanism
+        // `interpretKeyEvents` uses for resolved bindings.
+        unsafe { responder.doCommandBySelector(action) };
     }
 
     /// Scrolls `scroll_view` by `pixels` with a legacy mouse wheel: a
@@ -6879,9 +6836,9 @@ mod scroll {
         );
     }
 
-    /// The keyboard wins mid-flight: a page-down sent through the window
-    /// to a focused view in the document reaches the scroll view's
-    /// `pageDown:`, whose clip write is not the flight's own — the
+    /// The keyboard wins mid-flight: page-down's `pageDown:`, sent up the
+    /// responder chain from a focused view in the document, reaches the
+    /// scroll view, whose clip write is not the flight's own — the
     /// animation retires synchronously, and stepping the flight's clock
     /// past its original schedule proves the retired flight silent.
     #[cfg(target_os = "macos")]
@@ -6906,7 +6863,6 @@ mod scroll {
             window.makeFirstResponder(Some(responder)),
             "the focus target must take first responder"
         );
-        super::appkit_input::prepare_keyboard(&window);
         fixture.controller.animate_to(
             Point::new(0.0, 1000.0),
             Animation::linear(Duration::from_secs(2)),
@@ -6917,7 +6873,7 @@ mod scroll {
             fixture.surface.scroll_animation_in_flight() && before > 0.0,
             "the flight must be mid-way when page-down is pressed: offset {before}"
         );
-        super::appkit_input::press(&window, super::appkit_input::PAGE_DOWN);
+        super::appkit_input::command(&window, objc2::sel!(pageDown:));
         assert!(
             !fixture.surface.scroll_animation_in_flight(),
             "the keyboard's page-down must retire the flight"
@@ -7505,8 +7461,8 @@ mod list_scroll {
         );
     }
 
-    /// The keyboard wins mid-flight: `key`, sent through the window to the
-    /// focused table, scrolls the clip through a write that is not the
+    /// The keyboard wins mid-flight: the key's `action`, sent up the
+    /// responder chain from the focused table, scrolls the clip through a write that is not the
     /// flight's own — `pageDown:` on the scroll view, or the table's own
     /// `scrollToEndOfDocument:`, which posts no live-scroll notification —
     /// and the flight retires synchronously; stepping the flight's clock
@@ -7514,7 +7470,7 @@ mod list_scroll {
     #[cfg(target_os = "macos")]
     fn the_keyboard_takes_over_an_in_flight_animation(
         name: &'static str,
-        key: super::appkit_input::FunctionKey,
+        action: objc2::runtime::Sel,
     ) {
         use cocoa_ui::objc2_app_kit::NSResponder;
         use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
@@ -7528,7 +7484,6 @@ mod list_scroll {
             window.makeFirstResponder(Some(responder)),
             "the table must take first responder"
         );
-        super::appkit_input::prepare_keyboard(&window);
         fixture
             .controller
             .animate_to(150, Animation::linear(Duration::from_secs(2)));
@@ -7538,7 +7493,7 @@ mod list_scroll {
             "the row flight must be in progress when {name} is pressed"
         );
         let before = offset_y(&fixture);
-        super::appkit_input::press(&window, key);
+        super::appkit_input::command(&window, action);
         assert!(
             !fixture.table.scroll_animation_in_flight(),
             "{name} must retire the flight"
@@ -7691,14 +7646,17 @@ mod list_scroll {
                 Box::new(|| {
                     the_keyboard_takes_over_an_in_flight_animation(
                         "page-down",
-                        super::appkit_input::PAGE_DOWN,
+                        objc2::sel!(pageDown:),
                     );
                 }) as Box<dyn FnOnce() + Send>,
             ),
             (
                 "list_scroll::the_end_key_takes_over_an_in_flight_animation".to_owned(),
                 Box::new(|| {
-                    the_keyboard_takes_over_an_in_flight_animation("End", super::appkit_input::END);
+                    the_keyboard_takes_over_an_in_flight_animation(
+                        "End",
+                        objc2::sel!(scrollToEndOfDocument:),
+                    );
                 }),
             ),
             (
