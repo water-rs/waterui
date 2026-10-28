@@ -1241,8 +1241,13 @@ impl WinitRunner {
         let renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
         let closable = window.closable;
         window.arm_close_requests(&self.env);
-        let mut runtime =
-            RuntimeWindow::new_gpu(window, platform, renderer, self.render_diagnostics_config);
+        let mut runtime = RuntimeWindow::new_gpu(
+            window,
+            platform,
+            renderer,
+            self.render_diagnostics_config,
+            &self.env,
+        );
         runtime
             .renderer
             .set_window_id(crate::renderer::WindowId::Winit(runtime.platform.id()));

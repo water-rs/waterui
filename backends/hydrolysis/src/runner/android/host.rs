@@ -999,6 +999,7 @@ fn gpu_runtime_window(
     fonts: &waterui_text::FontCollection,
     window_id: crate::renderer::WindowId,
     painter: &JObject<'_>,
+    env: &Environment,
 ) -> Result<RuntimeWindow<AndroidHostWindow, super::AndroidTextEngine>, JniError> {
     if !painter.is_null() {
         return Err(JniError(
@@ -1016,6 +1017,7 @@ fn gpu_runtime_window(
         platform,
         renderer,
         RenderDiagnosticsConfig::from_env(),
+        env,
     ))
 }
 
@@ -1030,6 +1032,7 @@ fn hwui_runtime_window(
     platform: AndroidHostWindow,
     theme: Rc<dyn WidgetTheme>,
     window_id: crate::renderer::WindowId,
+    env: &Environment,
 ) -> Result<
     (
         super::hwui::HwuiWindow,
@@ -1060,6 +1063,7 @@ fn hwui_runtime_window(
             platform,
             renderer,
             RenderDiagnosticsConfig::from_env(),
+            env,
         ),
     ))
 }
@@ -1127,10 +1131,11 @@ impl AndroidSession {
         };
         platform.apply_properties(&window);
         #[cfg(not(hydrolysis_hwui))]
-        let mut runtime = gpu_runtime_window(window, platform, theme, &fonts, window_id, painter)?;
+        let mut runtime =
+            gpu_runtime_window(window, platform, theme, &fonts, window_id, painter, &env)?;
         #[cfg(hydrolysis_hwui)]
         let (hwui, mut runtime) =
-            hwui_runtime_window(jni_env, painter, window, platform, theme, window_id)?;
+            hwui_runtime_window(jni_env, painter, window, platform, theme, window_id, &env)?;
         // The session mounts parked: the activity's `onStart` and the
         // surface band's attach are the reports that unpark it.
         runtime.set_hidden(runtime.platform.is_occluded());

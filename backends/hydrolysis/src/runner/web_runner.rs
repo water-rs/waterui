@@ -533,7 +533,8 @@ pub fn run(app: App, style: impl crate::Style) {
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
-        let runtime = RuntimeWindow::new_gpu(window, platform, renderer, render_diagnostics_config);
+        let runtime =
+            RuntimeWindow::new_gpu(window, platform, renderer, render_diagnostics_config, &env);
         let accessibility_actions = Rc::new(RefCell::new(VecDeque::new()));
         let accessibility_bridge = WebAccessibilityBridge::new(
             Rc::clone(&accessibility_actions),

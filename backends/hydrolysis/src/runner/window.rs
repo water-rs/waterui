@@ -125,6 +125,7 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
         platform: P,
         renderer: HydrolysisRenderer<E>,
         render_diagnostics_config: RenderDiagnosticsConfig,
+        env: &Environment,
     ) -> Self {
         // The window's host wake, installed before any subscription can
         // record a request: from here on, a `Binding::set` outside a frame
@@ -132,7 +133,7 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
         // action — fires it on the none→some edge and schedules the frame
         // the request needs, by construction.
         renderer.install_host_wake(platform.frame_wake());
-        let declaration_watches = subscribe_window_declaration_signals(&window, &renderer);
+        let declaration_watches = subscribe_window_declaration_signals(&window, env, &renderer);
         Self {
             window,
             platform,
@@ -159,8 +160,9 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P, crate::text::ParleyEngine> {
         platform: P,
         renderer: HydrolysisRenderer<crate::text::ParleyEngine>,
         config: RenderDiagnosticsConfig,
+        env: &Environment,
     ) -> Self {
-        let mut runtime = Self::new(window, platform, renderer, config);
+        let mut runtime = Self::new(window, platform, renderer, config, env);
         if let Some(handle) = runtime.platform.gpu_surface_redraw_handle() {
             runtime.renderer.set_host_redraw_handle(handle);
         }

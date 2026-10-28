@@ -578,19 +578,21 @@ impl HeadlessRuntime {
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
+        let runtime = RuntimeWindow::new_gpu(
+            window,
+            platform,
+            renderer,
+            RenderDiagnosticsConfig {
+                enabled: false,
+                interval: Duration::from_secs(1),
+                slow_frame_threshold_override: None,
+            },
+            &env,
+        );
 
         Self {
             env,
-            runtime: RuntimeWindow::new_gpu(
-                window,
-                platform,
-                renderer,
-                RenderDiagnosticsConfig {
-                    enabled: false,
-                    interval: Duration::from_secs(1),
-                    slow_frame_threshold_override: None,
-                },
-            ),
+            runtime,
             pending_window_queue,
             popup_windows: Vec::new(),
             theme,
@@ -644,6 +646,7 @@ impl HeadlessRuntime {
                 interval: Duration::from_secs(1),
                 slow_frame_threshold_override: None,
             },
+            &self.env,
         )
     }
 

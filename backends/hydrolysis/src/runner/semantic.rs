@@ -80,6 +80,7 @@ impl SemanticWindow {
         fonts: &FontCollection,
         window_id: WindowId,
         family_resolution: FontFamilyResolution,
+        env: &Environment,
     ) -> Self {
         let mut core = SemanticCore::new(
             Instant::now(),
@@ -97,7 +98,7 @@ impl SemanticWindow {
             core.use_semantic_keyboard_activation();
             core.use_semantic_walk();
         }
-        let declaration_watches = subscribe_window_declaration_signals(&window, &core);
+        let declaration_watches = subscribe_window_declaration_signals(&window, env, &core);
         Self {
             window,
             core,
@@ -258,9 +259,11 @@ impl SemanticRuntime {
             .expect("install_headless_window_managers seeds MenuShortcutRegistry")
             .mint_window_id();
         window.arm_close_requests(&env);
+        let semantic_window =
+            SemanticWindow::new(window, &fonts, window_id, family_resolution, &env);
         Self {
             env,
-            window: SemanticWindow::new(window, &fonts, window_id, family_resolution),
+            window: semantic_window,
             pending_window_queue,
             popup_windows: Vec::new(),
             fonts,
@@ -504,6 +507,7 @@ impl SemanticRuntime {
                 &fonts,
                 window_id,
                 self.family_resolution,
+                &self.env,
             ));
         }
     }
