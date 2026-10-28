@@ -165,15 +165,20 @@ mod portal {
     /// step that failed.
     fn expected<T>(result: zbus::Result<T>, step: &str) -> zbus::Result<T> {
         result.map_err(|error| {
-            if !no_preference(&error) {
-                panic!("hydrolysis Linux appearance: {step} failed: {error}");
-            }
+            assert!(
+                no_preference(&error),
+                "hydrolysis Linux appearance: {step} failed: {error}"
+            );
             error
         })
     }
 
     /// The one task the whole client is: connect, subscribe, read once,
     /// then relay `SettingChanged` into the binding.
+    #[expect(
+        clippy::future_not_send,
+        reason = "spawned with spawn_local on the event-loop thread; it holds the runner's Rc state"
+    )]
     async fn watch(scheme: Binding<ColorScheme>, initial_read: Rc<Cell<bool>>, wake: impl Fn()) {
         // The match rule registers before the initial read so a change
         // landing between the two is queued by the daemon, not lost.
