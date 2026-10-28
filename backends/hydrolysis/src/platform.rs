@@ -3142,6 +3142,9 @@ impl GpuSurfaceWindow for OffscreenWindow {
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 mod web_impl;
 
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub mod web_appearance;
+
 #[cfg(hydrolysis_wayland_platform)]
 mod wayland_blur;
 
