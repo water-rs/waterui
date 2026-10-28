@@ -19,7 +19,6 @@
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use waterui_core::NativeView;
 use waterui_core::layout::StretchAxis;
@@ -92,14 +91,6 @@ impl NativeView for PlatformView {
     }
 }
 
-/// Stable ids for placements — allocated once per retained node, kept across
-/// relayouts so a resize re-places the same mounted view instead of remounting
-/// it. A structural replacement (a `Dynamic` rebuild) mints a fresh id.
-pub fn next_platform_view_id() -> u64 {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    NEXT.fetch_add(1, Ordering::Relaxed)
-}
-
 /// Where one embedded platform view sits, in the window's logical coordinate
 /// space.
 ///
@@ -147,7 +138,10 @@ pub struct PlatformViewPlacement {
 }
 
 /// The placements one retained tree produced — the single source of truth a
-/// host's platform-view registry mirrors.
+/// host's platform-view registry mirrors. The table also owns the placement
+/// id space: the host's registry keys mounted views by `id`, so an id is
+/// unique exactly within the table that publishes it, for the table's
+/// lifetime.
 ///
 /// A flush *records* the current frame's set; [`Self::publish`] promotes it as
 /// the authoritative set and marks the table dirty when it differs. Hosts
@@ -160,10 +154,24 @@ pub struct PlatformViewTable {
     current: Vec<PlatformViewPlacement>,
     /// The authoritative set — what the host is showing.
     published: Vec<PlatformViewPlacement>,
+    /// The last id [`Self::next_id`] minted (0 = none yet).
+    next_id: u64,
     dirty: bool,
 }
 
 impl PlatformViewTable {
+    /// Mints a placement id — stable for the retained node's life, kept
+    /// across relayouts so a resize re-places the same mounted view instead
+    /// of remounting it. A structural replacement (a `Dynamic` rebuild)
+    /// mints a fresh one.
+    pub const fn next_id(&mut self) -> u64 {
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .expect("a runtime cannot outlive 2^64 platform-view ids");
+        self.next_id
+    }
+
     /// Writes the frame's complete set wholesale — the retained path's
     /// frame-end record is idempotent: however many frame-end sites run
     /// in one presented frame (build plus refresh-after-build, say), each
@@ -230,6 +238,10 @@ impl PlatformViewFocus {
 /// a host inserts one at session create and [`PlatformView`] leaves record
 /// their frames into it.
 ///
+/// The sink is the runtime's platform-view service — the table it shares
+/// mints the placement ids, so every sink the process holds is an
+/// independent id space.
+///
 /// A leaf built under an environment without a sink panics at build —
 /// embedding platform views is a host capability, not a renderer default.
 #[derive(Clone, Debug)]
@@ -250,6 +262,12 @@ impl PlatformViewSink {
     #[must_use]
     pub const fn table(&self) -> &Rc<RefCell<PlatformViewTable>> {
         &self.table
+    }
+
+    /// Mints a placement id from this sink's table — unique for the
+    /// runtime that installed the sink.
+    pub(crate) fn next_id(&self) -> u64 {
+        self.table.borrow_mut().next_id()
     }
 }
 
