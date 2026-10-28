@@ -186,9 +186,7 @@ pub struct UIKitMount {
     pub host: cocoa_ui::Retained<cocoa_ui::uikit::HostView>,
     pub content: alloc::rc::Rc<crate::contract::Mounted>,
     pub window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
-    /// The window's root controller — a case retains it to read its
-    /// appearance counters after the mount has dropped.
-    pub controller: cocoa_ui::Retained<cocoa_ui::uikit::ViewController>,
+    controller: cocoa_ui::Retained<cocoa_ui::uikit::ViewController>,
     _keepalive: crate::contract::KeepAlive,
 }
 
@@ -202,21 +200,21 @@ impl Drop for UIKitMount {
         // as it always has.
         let scene_bound = self.window.windowScene().is_some();
         self.window.setHidden(true);
+        // Hiding alone delivers no disappearance; releasing the root does,
+        // ending on a later run-loop turn. The mount still owns the
+        // controller, so it lives until that disappearance has ended.
+        self.window.setRootViewController(None);
         if scene_bound {
-            // Hiding queues the disappearance the way showing queued the
-            // appearance: `viewDidDisappear:` lands on a later run-loop
-            // turn, and the root is released only once every appearance
-            // the controller received has ended.
             assert!(
                 pump_main_until(MAIN_QUEUE_DEADLINE, || {
                     let counts = self.controller.appearance_counts();
                     counts.did_disappear >= counts.did_appear
                 }),
                 "the root controller's viewDidDisappear: did not run within \
-                 {MAIN_QUEUE_DEADLINE}s of hiding its scene window"
+                 {MAIN_QUEUE_DEADLINE}s of releasing it: {:?}",
+                self.controller.appearance_counts()
             );
         }
-        self.window.setRootViewController(None);
     }
 }
 
