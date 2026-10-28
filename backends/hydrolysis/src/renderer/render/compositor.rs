@@ -296,7 +296,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
 
     /// Commits directly into the Android compositor target, without a
     /// host-acquired texture or a full-window presentation copy.
-    #[cfg(target_os = "android")]
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
     pub(crate) fn render_android_frame(
         &mut self,
         target: &FrameRenderTarget<'_>,
@@ -346,7 +346,10 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
     }
 
     /// The common completion path for engine-presented native windows.
-    #[cfg(any(target_os = "android", all(target_os = "macos", hydrolysis_winit)))]
+    #[cfg(any(
+        all(target_os = "android", not(hydrolysis_hwui)),
+        all(target_os = "macos", hydrolysis_winit)
+    ))]
     fn render_presented_window<S: crate::engine::EngineSurface>(
         &mut self,
         window: &mut CherenkovWindow<S, crate::text::ParleyEngine>,

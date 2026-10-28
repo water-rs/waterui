@@ -788,6 +788,7 @@ crate::engine::cfg_async_fn! {
     /// ([`GpuSurfaceFrame`]).
     ///
     /// Async on wasm32, where the engine render inside awaits the browser device.
+    #[cfg(not(hydrolysis_hwui))]
     pub(super) fn render_window<P: GpuSurfaceWindow>(
         runtime: &mut RuntimeWindow<P, crate::text::ParleyEngine>,
         env: &Environment,
@@ -1088,7 +1089,7 @@ pub struct SurfaceRenderResult {
 }
 
 impl SurfaceRenderResult {
-    #[cfg(target_os = "android")]
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
     pub(crate) const fn engine_presented(render: Duration) -> Self {
         Self {
             acquire: Duration::ZERO,
@@ -1109,7 +1110,7 @@ impl SurfaceRenderResult {
 pub trait GpuSurfaceFrame {
     /// Renders and presents one frame into the surface, reporting the
     /// stage durations.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
     fn render_frame(
         &mut self,
         renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
@@ -1131,7 +1132,7 @@ pub trait GpuSurfaceFrame {
 /// Every host-acquired surface renders through [`render_host_acquired_frame`];
 /// a live window reads no snapshot.
 impl<S: crate::platform::SurfaceProvider> GpuSurfaceFrame for S {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
     fn render_frame(
         &mut self,
         renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
@@ -1371,6 +1372,7 @@ impl GpuSurfaceFrame for crate::platform::BrowserSurface {
 )]
 pub(super) enum FrameReader {
     /// A live window: the display reads the presented surface.
+    #[cfg(not(hydrolysis_hwui))]
     Display,
     /// A headless capture: the harness reads the surface back as a snapshot.
     Snapshot,

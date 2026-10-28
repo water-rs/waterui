@@ -1463,7 +1463,7 @@ pub struct EngineWindowTarget<'a> {
 }
 
 /// Android's engine-presented window, owned by its `SurfaceView` attachment.
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
 pub struct EngineAndroidTarget<'a> {
     pub state: &'a std::rc::Rc<crate::engine::SharedEngineState>,
     pub window: &'a ndk::native_window::NativeWindow,

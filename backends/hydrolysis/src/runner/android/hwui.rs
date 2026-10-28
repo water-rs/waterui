@@ -96,7 +96,7 @@ impl HwuiWindow {
         let renderer = HydrolysisRenderer::with_engine(theme, text);
         let resources = Rc::new(
             crate::hwui::HwuiResources::over_jni(env, &sink_object, surface.encoder())
-                .map_err(|e| JniError(e.to_string()))?,
+                .map_err(JniError)?,
         );
         let painter = JniPainter::new(env, peer).map_err(JniError)?;
         let (mount, host) = renderer.mount_hwui(&surface, resources);
@@ -152,7 +152,7 @@ impl HwuiWindow {
         let animating = frame.content_animating || frame.sampling.rate.is_some();
         self.painter
             .replay(frame.words, frame.clear)
-            .map_err(|e| JniError(e.to_string()))?;
+            .map_err(JniError)?;
         sync_platform_input(runtime);
         if runtime.renderer.take_redraw_request() || animating || self.surface.has_pending() {
             runtime.request_redraw();

@@ -1016,7 +1016,10 @@ fn session_mounts(
     crate::theme::install_theme_tokens(&mut env, Some(&*style), color_scheme.clone());
     let theme: Rc<dyn WidgetTheme> = style;
     let fonts = crate::text::fonts::native_collection(&env);
+    #[cfg(not(hydrolysis_hwui))]
     fonts.clone().install(&mut env);
+    #[cfg(hydrolysis_hwui)]
+    fonts.install(&mut env);
     let shortcuts = env
         .get::<MenuShortcutRegistry<super::AndroidTextEngine>>()
         .expect("install_headless_window_managers seeds MenuShortcutRegistry")

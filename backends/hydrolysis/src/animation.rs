@@ -373,7 +373,7 @@ impl AnimationController {
 
     /// The range needed by currently running content, independent of how
     /// often the host happens to sample it.
-    #[cfg(any(target_os = "android", test))]
+    #[cfg(any(test, all(target_os = "android", not(hydrolysis_hwui))))]
     #[must_use]
     pub fn refresh_range(&self, now: Instant) -> Option<RefreshRange> {
         if self
