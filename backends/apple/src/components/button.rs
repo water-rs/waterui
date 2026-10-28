@@ -19,6 +19,8 @@ use waterui::graphics::color::WorkingColor;
 use waterui::reactive::{Computed, SignalExt};
 use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
+#[cfg(target_os = "macos")]
+use waterui::theme::color::MutedForeground;
 use waterui::theme::color::{Accent, AccentForeground, Foreground};
 use waterui::theme::install_color_signal;
 use waterui_backend_core::{AnyView, Environment};
@@ -113,7 +115,9 @@ fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingCo
 }
 
 /// The `AppKit` table: bordered titles draw in the primary label color;
-/// only link and borderless styles are accent-tinted.
+/// only link and borderless styles are accent-tinted. Inside the window
+/// toolbar a borderless label takes the toolbar's secondary label color
+/// instead, as `SwiftUI` draws it there.
 #[cfg(target_os = "macos")]
 fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingColor> {
     match style {
@@ -124,6 +128,9 @@ fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingCo
         | ButtonStyle::Bordered
         | ButtonStyle::Plain
         | ButtonStyle::Glass => Foreground.resolve(env).computed(),
+        ButtonStyle::Borderless if env.get::<crate::toolbar::ToolbarChrome>().is_some() => {
+            MutedForeground.resolve(env).computed()
+        }
         ButtonStyle::Link | ButtonStyle::Borderless => Accent.resolve(env).computed(),
         _ => panic!("unsupported WaterUI button style: {style:?}"),
     }
@@ -217,9 +224,6 @@ fn configure_button(
         ButtonStyle::Plain | ButtonStyle::Link | ButtonStyle::Borderless => {
             button.set_bordered(false);
             button.set_transparent(true);
-            // Chrome presenting this button keeps the link and borderless
-            // styles bare; plain is only unstyled, not chrome-less.
-            button.set_borderless(matches!(style, ButtonStyle::Link | ButtonStyle::Borderless));
         }
         _ => panic!("unsupported WaterUI button style: {style:?}"),
     }

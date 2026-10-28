@@ -38,9 +38,6 @@ pub struct ButtonIvars {
     link_cursor: Cell<bool>,
     /// Whether the button is currently pressed, for press-state callbacks.
     pressed: Cell<bool>,
-    /// Whether the owner declared the button chrome-less — the link and
-    /// borderless styles — so chrome presenting it keeps it bare too.
-    borderless: Cell<bool>,
     /// Called with `true` on `mouseDown:` and `false` on `mouseUp:`.
     press_handler: RefCell<Option<PressHandler>>,
 }
@@ -50,7 +47,6 @@ impl fmt::Debug for ButtonIvars {
         f.debug_struct("ButtonIvars")
             .field("link_cursor", &self.link_cursor.get())
             .field("pressed", &self.pressed.get())
-            .field("borderless", &self.borderless.get())
             .field("press_handler", &self.press_handler.borrow().is_some())
             .finish()
     }
@@ -145,19 +141,6 @@ impl Button {
     /// borderless buttons, whose own content is the only visible part.
     pub fn set_transparent(&self, transparent: bool) {
         self.setTransparent(transparent);
-    }
-
-    /// Records that the button's owner declared it chrome-less — the link
-    /// and borderless styles. Chrome that presents the button as a toolbar
-    /// item keeps it bare, reading [`Button::is_borderless`].
-    pub fn set_borderless(&self, borderless: bool) {
-        self.ivars().borderless.set(borderless);
-    }
-
-    /// Whether the button was declared chrome-less — [`Button::set_borderless`].
-    #[must_use]
-    pub fn is_borderless(&self) -> bool {
-        self.ivars().borderless.get()
     }
 
     /// The color a prominent bezel is filled with; `None` restores the

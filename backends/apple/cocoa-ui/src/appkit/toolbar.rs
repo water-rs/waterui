@@ -72,9 +72,11 @@ impl fmt::Debug for HostedItem {
 ///
 /// An action carrying an icon becomes a real `NSToolbarItem` — the icon in a
 /// capsule, the name in the overflow menu and tooltip. An action with no
-/// icon is hosted as the view it is: a text-only action like "Edit" is a
-/// bordered toolbar button showing its text, which is what the platform does
-/// too.
+/// icon is hosted as the view it is, inside the same capsule. Every action
+/// item is bordered whatever its content's own button style, which is how
+/// the platform presents toolbar items: `SwiftUI` marks each toolbar item
+/// `isBordered`, borderless and plain buttons included, and the toolbar
+/// draws its glass platter for exactly the bordered items.
 pub struct ToolbarChild {
     /// The action's rendered view, hosted when there is no icon.
     pub view: HostedItem,
@@ -82,9 +84,6 @@ pub struct ToolbarChild {
     pub icon: Option<Retained<NSImage>>,
     /// The action's title, for the overflow menu, palette and tooltip.
     pub label: String,
-    /// Whether the label's own button draws a bezel; a borderless button
-    /// stays bare in the toolbar.
-    pub bordered: bool,
     /// The handler the item runs when invoked — the same one the hosted
     /// view's own control would run.
     pub action: Option<Rc<dyn Fn()>>,
@@ -95,7 +94,6 @@ impl fmt::Debug for ToolbarChild {
         f.debug_struct("ToolbarChild")
             .field("label", &self.label)
             .field("has_icon", &self.icon.is_some())
-            .field("bordered", &self.bordered)
             .field("has_action", &self.action.is_some())
             .field("view", &self.view)
             .finish()
@@ -963,7 +961,8 @@ impl WindowToolbar {
         }
     }
 
-    /// Builds a toolbar item for one navigation action.
+    /// Builds a toolbar item for one navigation action, bordered so the
+    /// toolbar draws it in its glass capsule — see [`ToolbarChild`].
     fn action_item(
         &self,
         identifier: &NSToolbarItemIdentifier,
@@ -971,7 +970,7 @@ impl WindowToolbar {
     ) -> Retained<NSToolbarItem> {
         let Some(icon) = &action.icon else {
             let item = self.hosting_item(identifier, &action.view.view, Some(action.view.size));
-            item.setBordered(action.bordered);
+            item.setBordered(true);
             return item;
         };
         let item =
@@ -983,7 +982,7 @@ impl WindowToolbar {
         if !action.label.is_empty() {
             item.setToolTip(Some(&label));
         }
-        item.setBordered(action.bordered);
+        item.setBordered(true);
         // SAFETY: `self` implements `actionInvoked:`; the target is an assign
         // reference, not a retain cycle.
         unsafe { item.setTarget(Some(self.as_ref())) };
