@@ -674,6 +674,8 @@ type SeparatorHandler = Rc<dyn Fn(&TableRowView) -> (f64, f64)>;
 pub struct TableRowViewIvars {
     /// `(leading, trailing)` insets for the hairline; `None` draws none.
     separator: RefCell<Option<SeparatorHandler>>,
+    /// Whether the hairline paints — a section's last member draws none.
+    shows_separator: Cell<bool>,
 }
 
 impl fmt::Debug for TableRowViewIvars {
@@ -730,6 +732,9 @@ define_class!(
         fn draw_rect(&self, dirty_rect: NSRect) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), drawRect: dirty_rect] };
+            if !self.ivars().shows_separator.get() {
+                return;
+            }
             let Some(handler) = self.ivars().separator.borrow().as_ref().cloned() else {
                 return;
             };
@@ -765,6 +770,14 @@ impl TableRowView {
     pub fn set_separator_handler(&self, handler: Option<SeparatorHandler>) {
         self.ivars().separator.replace(handler);
         self.setNeedsDisplay(true);
+    }
+
+    /// Whether the row paints its separator. A changed answer marks the
+    /// row dirty so a gained or lost hairline redraws.
+    pub fn set_shows_separator(&self, shows: bool) {
+        if self.ivars().shows_separator.replace(shows) != shows {
+            self.setNeedsDisplay(true);
+        }
     }
 }
 
@@ -1169,15 +1182,15 @@ impl TableView {
         self.window().is_some()
     }
 
-    /// Runs `handler` once per row view currently materialized.
-    pub fn enumerate_row_views(&self, handler: impl Fn(&NSTableRowView) + 'static) {
-        let block = block2::RcBlock::new(
-            move |row_view: NonNull<NSTableRowView>, _index: NSInteger| {
+    /// Runs `handler` once per row view currently materialized, with the
+    /// row's index.
+    pub fn enumerate_row_views(&self, handler: impl Fn(usize, &NSTableRowView) + 'static) {
+        let block =
+            block2::RcBlock::new(move |row_view: NonNull<NSTableRowView>, index: NSInteger| {
                 // SAFETY: `AppKit` lends a live row view for the block's
                 // duration.
-                unsafe { handler(row_view.as_ref()) };
-            },
-        );
+                unsafe { handler(index.cast_unsigned(), row_view.as_ref()) };
+            });
         self.table_view()
             .enumerateAvailableRowViewsUsingBlock(&block);
     }
