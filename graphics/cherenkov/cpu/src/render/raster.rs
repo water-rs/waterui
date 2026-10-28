@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use cherenkov::FillRule;
 use cherenkov_simd::math::erf4;
 
-use crate::render::bins::{FrameIndex, FrameMeter};
+use crate::render::bins::{FrameIndex, FrameMeter, Selection, SelectionBuffer};
 use crate::render::lower::{
     BoxClip, CaptureItem, ClipMask, ClipRef, FrameFilter, IRect, Item, SampleEffect, SdfEffect,
     SdfKind, UnionSample,
@@ -77,7 +77,7 @@ struct Buffers {
     meter: Meter,
     /// Expanded-window query scratch: each `run` depth's item selection.
     /// Slots keep their capacity across sibling scopes and bands.
-    sel_items: Vec<Vec<usize>>,
+    sel_items: Vec<SelectionBuffer>,
     /// The capacity each charged slot has been accounted for, in
     /// cells — a selection's capacity only grows, so the delta is the
     /// heap growth. Index `sel_items.len()` is the outer Vec's charge.
@@ -562,11 +562,12 @@ impl Buffers {
     /// The `depth` slot's item-selection buffer, cleared for reuse.
     /// Charges growth of the retained bookkeeping heap — the slot Vec
     /// and the charge table — to `meter`.
-    fn take_sel_items(&mut self, depth: usize, meter: Option<&FrameMeter>) -> Vec<usize> {
+    fn take_sel_items(&mut self, depth: usize, meter: Option<&FrameMeter>) -> SelectionBuffer {
         if self.sel_items.len() <= depth {
-            self.sel_items.resize_with(depth + 1, Vec::new);
+            self.sel_items
+                .resize_with(depth + 1, SelectionBuffer::default);
             self.sel_charge.resize(depth + 1, 0);
-            let book = self.sel_items.capacity() * size_of::<Vec<usize>>()
+            let book = self.sel_items.capacity() * size_of::<SelectionBuffer>()
                 + self.sel_charge.capacity() * size_of::<usize>();
             if book > self.sel_items_charge {
                 sel_alloc((book - self.sel_items_charge) as u64, meter);
@@ -581,7 +582,12 @@ impl Buffers {
     /// Charges `buf`'s capacity growth on the `depth` slot to `meter`.
     /// Called right after the query fills `buf`, while the selection is
     /// live — before the recursive run or draw consumes it.
-    fn charge_sel_items(&mut self, depth: usize, buf: &Vec<usize>, meter: Option<&FrameMeter>) {
+    fn charge_sel_items(
+        &mut self,
+        depth: usize,
+        buf: &SelectionBuffer,
+        meter: Option<&FrameMeter>,
+    ) {
         let charged = &mut self.sel_charge[depth];
         if buf.capacity() > *charged {
             sel_alloc(
@@ -594,7 +600,7 @@ impl Buffers {
 
     /// Returns a selection to its slot: restores ownership only; the
     /// charge was taken when the buffer filled.
-    fn give_sel_items(&mut self, depth: usize, buf: Vec<usize>) {
+    fn give_sel_items(&mut self, depth: usize, buf: SelectionBuffer) {
         self.sel_items[depth] = buf;
     }
 }
@@ -2161,7 +2167,7 @@ fn shade_plain(
         level,
         items,
         index,
-        index.items(b),
+        index.items(b, items),
         items.len(),
         &mut band,
         acc,
@@ -2231,7 +2237,7 @@ fn shade_windowed(
         level,
         items,
         index,
-        &sel,
+        index.selected(&sel, items),
         last + 1,
         &mut band,
         acc,
@@ -2271,13 +2277,11 @@ fn shade_windowed(
     };
     // The aligned band's bins, restricted to the items after the last
     // top-level capture.
-    let all = index.items(y0 / BAND_H);
-    let start = all.partition_point(|&i| i <= last);
     run_at(
         level,
         items,
         index,
-        &all[start..],
+        index.items_after(y0 / BAND_H, items, last + 1),
         items.len(),
         &mut band,
         acc,
@@ -2614,7 +2618,7 @@ fn run_at(
     level: fearless_simd::Level,
     items: &[Item],
     index: &FrameIndex,
-    sel: &[usize],
+    sel: Selection<'_>,
     limit: usize,
     band: &mut Band<'_>,
     acc: &mut Compiler,
@@ -2643,7 +2647,7 @@ fn run<S: Simd>(
     simd: S,
     items: &[Item],
     index: &FrameIndex,
-    sel: &[usize],
+    sel: Selection<'_>,
     limit: usize,
     band: &mut Band<'_>,
     acc: &mut Compiler,
@@ -2658,7 +2662,7 @@ fn run<S: Simd>(
     // Item indexes below `skip` were consumed by a filter scope's
     // nested run.
     let mut skip = 0usize;
-    for &i in sel {
+    for i in sel {
         if i < skip {
             continue;
         }
@@ -2759,7 +2763,7 @@ fn run<S: Simd>(
                         ctx.level,
                         items,
                         index,
-                        &nested,
+                        index.selected(&nested, items),
                         scope_end,
                         &mut filter_band,
                         &mut filter_acc,
