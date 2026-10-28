@@ -20,9 +20,13 @@ use waterui::reactive::{Computed, SignalExt};
 use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
 #[cfg(target_os = "macos")]
+use waterui::text::font::{Body, ResolvedFont};
+#[cfg(target_os = "macos")]
 use waterui::theme::color::MutedForeground;
 use waterui::theme::color::{Accent, AccentForeground, Foreground};
 use waterui::theme::install_color_signal;
+#[cfg(target_os = "macos")]
+use waterui::theme::install_font_signal;
 use waterui_backend_core::{AnyView, Environment};
 use waterui_core::handler::BoxedAction;
 use waterui_core::interaction::Disabled;
@@ -136,6 +140,26 @@ fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingCo
     }
 }
 
+/// The label's `Body` slot: the environment's resolved body font resized to
+/// `size`'s own system font size. `AppKit` pairs each `NSControlSize` with a
+/// point size — 11 pt for small, 9 pt for mini — and `configure_button`
+/// resolves the same `NSControlSize` for the bezel. Weight, family and
+/// typography metrics keep the values the theme resolved.
+#[cfg(target_os = "macos")]
+fn label_font(env: &Environment, size: platform::NSControlSize) -> Computed<ResolvedFont> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "ResolvedFont is f32; AppKit's control-size point sizes are small exact values"
+    )]
+    let points = cocoa_ui::font::system_size_for_control_size(size) as f32;
+    Body.resolve(env)
+        .map(move |mut font| {
+            font.size = points;
+            font
+        })
+        .computed()
+}
+
 /// Whether the style draws chrome around its label — `AppKit`'s bezel, plus
 /// `Automatic`, which resolves to the bordered push bezel. Chrome-less
 /// styles pad nothing.
@@ -202,16 +226,9 @@ const fn ns_control_size(size: cocoa_ui::slider::ControlSize) -> platform::NSCon
 fn configure_button(
     button: &Button,
     style: ButtonStyle,
-    size: waterui::component::ControlSize,
+    size: platform::NSControlSize,
 ) -> (f32, f32) {
-    // `Button`'s documented default is `Small`; a bare button therefore
-    // draws at `regular` like a bare `NSButton`.
-    button
-        .control()
-        .setControlSize(ns_control_size(platform_control_size(
-            size,
-            waterui::component::ControlSize::Small,
-        )));
+    button.control().setControlSize(size);
     match style {
         ButtonStyle::Automatic | ButtonStyle::Bordered | ButtonStyle::BorderedProminent => {
             button.set_bordered(true);
@@ -294,6 +311,21 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let mut label_env = ctx.env().clone();
         install_color_signal::<Foreground>(&mut label_env, label_foreground(style, ctx.env()));
 
+        // `AppKit` pairs each control size with its own system font size; the
+        // label's default `Body` follows it. Another slot or an explicit font
+        // keeps what it resolves to.
+        #[cfg(target_os = "macos")]
+        let control_size = {
+            // `Button`'s documented default is `Small`; a bare button
+            // therefore draws at `regular` like a bare `NSButton`.
+            let size = ns_control_size(platform_control_size(
+                config.size,
+                waterui::component::ControlSize::Small,
+            ));
+            install_font_signal::<Body>(&mut label_env, label_font(ctx.env(), size));
+            size
+        };
+
         let container = HostView::new(mtm, cocoa_ui::Rect::ZERO);
         let button = Button::new(mtm);
         let label_container = HostView::new(mtm, cocoa_ui::Rect::ZERO);
@@ -303,7 +335,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         #[cfg(target_os = "ios")]
         let padding = configure_button(&button, style, mtm);
         #[cfg(target_os = "macos")]
-        let padding = configure_button(&button, style, config.size);
+        let padding = configure_button(&button, style, control_size);
 
         let accessibility_label = config.label.accessibility_label();
         let label_leaf = ctx.with_env(&label_env).render(AnyView::new(config.label));
