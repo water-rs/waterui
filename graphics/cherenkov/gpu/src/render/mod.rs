@@ -7268,6 +7268,9 @@ impl GpuRenderer {
                 prepare_ms = lowering.diagnostic_ms[0],
                 gpu_candidate_ms = lowering.diagnostic_ms[1],
                 cpu_leaf_ms = lowering.diagnostic_ms[2],
+                geometry_ms = lowering.diagnostic_ms[3],
+                resolve_ms = lowering.diagnostic_ms[4],
+                emit_ms = lowering.diagnostic_ms[5],
                 cpu_leaves = lowering.diagnostic_counts[0],
                 gpu_leaves = lowering.diagnostic_counts[1],
                 "diagnostic map leaf attribution"

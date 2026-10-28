@@ -1779,7 +1779,7 @@ pub struct Lowering<'a> {
     /// Path identities admitted during this lowering, before atlas commit.
     /// A second use must replay the admitted layout as well as its texels.
     pending_paths: FxHashMap<u64, u32>,
-    pub diagnostic_ms: [f64; 3],
+    pub diagnostic_ms: [f64; 6],
     pub diagnostic_counts: [u32; 2],
     pub commands_lowered: u32,
     pub layers_composed: u32,
@@ -1884,7 +1884,7 @@ impl<'a> Lowering<'a> {
             pending: Vec::new(),
             path_arena: Vec::new(),
             pending_paths: FxHashMap::default(),
-            diagnostic_ms: [0.0; 3],
+            diagnostic_ms: [0.0; 6],
             diagnostic_counts: [0; 2],
             commands_lowered: 0,
             layers_composed: 0,
@@ -5659,10 +5659,13 @@ impl<'a> Lowering<'a> {
         let (stored, pending) = 'stored: {
             let key = GeometryKey::new(content, rule, pl.raster);
             let digest = key.digest();
+            let diagnostic_start = std::time::Instant::now();
             let entry = geometry.entry(digest, key, || {
                 let local = shader_path.unwrap_or_else(|| make.take().expect("path factory")());
                 RetainedGeometry::new(local, pl.raster, rule)
             });
+            let geometry_ms = diagnostic_start.elapsed().as_secs_f64() * 1000.0;
+            self.diagnostic_ms[3] += geometry_ms;
             let (to_device, device_bbox) = entry.placed(Vec2::new(e, f));
             let Some(grid @ (x0, y0, ..)) =
                 path::grid(device_bbox, (f64::from(self.width), f64::from(self.height)))
@@ -5681,9 +5684,14 @@ impl<'a> Lowering<'a> {
                     None,
                 );
             };
+            let segment_count = entry.state.segments().0.len();
+            let diagnostic_start = std::time::Instant::now();
             entry.state.resolve();
+            let resolve_ms = diagnostic_start.elapsed().as_secs_f64() * 1000.0;
+            self.diagnostic_ms[4] += resolve_ms;
             let (segments, resolved_rule) = entry.state.segments();
             self.paths += 1;
+            let diagnostic_start = std::time::Instant::now();
             let (emit, cells, clipped) = path::emit_resolved(
                 segments,
                 to_device - Vec2::new(x0, y0),
@@ -5692,6 +5700,17 @@ impl<'a> Lowering<'a> {
                 self.raster_scratch,
                 &mut self.path_arena,
             )?;
+            let emit_ms = diagnostic_start.elapsed().as_secs_f64() * 1000.0;
+            self.diagnostic_ms[5] += emit_ms;
+            if geometry_ms + resolve_ms + emit_ms > 2.0 {
+                tracing::info!(
+                    segment_count,
+                    geometry_ms,
+                    resolve_ms,
+                    emit_ms,
+                    "diagnostic expensive CPU path"
+                );
+            }
             // Emission rects are relative to the placement offset; the
             // stored record keeps that frame and the digest hits return.
             let mut stored = emit.translated(-pl.offset.x, -pl.offset.y);
