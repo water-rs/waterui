@@ -3358,7 +3358,46 @@ mod filtered {
                 "filtered::a_view_collapsed_mid_capture_renders_transparent",
                 a_view_collapsed_mid_capture_renders_transparent,
             ),
+            Trial::test(
+                "filtered::unmount_releases_the_state_and_view",
+                unmount_releases_the_state_and_view,
+            ),
         ]
+    }
+
+    /// water-rs/waterui#1567: dropping the mounted leaf releases the
+    /// `FilteredState` and its `HostView` while the shared runtime lives
+    /// on — the layout, window, superview and backing handlers and the
+    /// intrinsic measure the mount installed hold neither once pending
+    /// submitted work has settled — and a remount on the same runtime
+    /// presents again.
+    pub fn unmount_releases_the_state_and_view() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedFilteredSurface::mount(mtm))
+            .map_err(|error| format!("a mounted filtered surface: {error}"))?;
+        mounted.ensure_attached();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || mounted.frame_presented()),
+            "the filtered view presents its first frame"
+        );
+
+        let (state, view) = mounted.release_probes();
+        let runtime = mounted.unmount();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                state.upgrade().is_none() && view.load().is_none()
+            }),
+            "the unmounted leaf's state and host view release with the shared runtime alive"
+        );
+
+        let remounted = MountedFilteredSurface::mount_shared(mtm, runtime)
+            .map_err(|error| format!("a remounted filtered surface: {error}"))?;
+        remounted.ensure_attached();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || remounted.frame_presented()),
+            "a remounted filtered view presents again on the shared runtime"
+        );
+        Ok(())
     }
 
     /// A parent capture that snapshots a filtered view while it has area,
