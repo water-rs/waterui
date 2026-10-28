@@ -424,6 +424,44 @@ fn the_platform_view_table_holds_each_view_once_after_n_frames() {
     assert_eq!(ids.len(), 2, "no view may record twice in one frame");
 }
 
+/// Two runtimes in one process mint placement ids independently: the id
+/// space lives in the sink each runtime installed, so the second runtime's
+/// first leaf takes the same first id instead of continuing the first
+/// runtime's count — the behaviour the process-global counter broke.
+#[test]
+fn each_runtime_mints_platform_view_ids_from_its_own_sink() {
+    let first_published_id = || {
+        let sink = PlatformViewSink::new();
+        let mut env = test_environment();
+        env.insert(sink.clone());
+        let builder = AnyViewBuilder::<AnyView>::new(|| {
+            AnyView::new(Native::new(PlatformView::new("probe")))
+        });
+        let mut runtime = HeadlessRuntime::new_for_tests(
+            env,
+            builder,
+            WINDOW.0,
+            WINDOW.1,
+            MinimalTestTheme::default(),
+        );
+        let pump = runtime.pump_at(true, Instant::now());
+        assert!(pump.profile.counters.rendered);
+        sink.table().borrow_mut().publish();
+        let placements = sink.table().borrow().placements().to_vec();
+        let [placement] = placements.as_slice() else {
+            panic!("the probe view is placed exactly once, got {placements:?}");
+        };
+        placement.id
+    };
+    let first = first_published_id();
+    let second = first_published_id();
+    assert_eq!(
+        first, second,
+        "each runtime's sink mints from its own first id, got {first} then {second}"
+    );
+    assert_eq!(first, 1, "a runtime's placement ids start at 1");
+}
+
 /// A platform view yields a press only where an interactive target is
 /// painted above it: a decorative layer covering the whole view leaves the
 /// view its press, and a button stacked over it takes the press inside its
