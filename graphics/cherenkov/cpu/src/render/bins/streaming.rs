@@ -51,11 +51,10 @@ impl Iterator for Selection<'_> {
 impl FrameIndex {
     #[expect(
         clippy::unused_self,
-        clippy::unnecessary_wraps,
         reason = "compile-time counterpart of the indexed scratch bound"
     )]
     pub const fn coverage_capacity(&self, _windowed: bool) -> Option<usize> {
-        Some(0)
+        None
     }
 
     pub const fn rebuild(&mut self, _items: &[Item], height: usize) {
