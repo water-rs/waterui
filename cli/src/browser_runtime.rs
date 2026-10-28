@@ -252,8 +252,9 @@ async fn stage_wpe(
         bail!("WPE runtime staging is Linux-only");
     }
     let architecture = wpe.target().architecture.to_string();
-    let manifest_url = runtime_manifest_url(configuration, wpe.webkit_version());
-    let manifest = download_manifest(&manifest_url).await?;
+    let release_tag = format!("wpe-runtime-{}-{}", wpe.webkit_version(), wpe.identity());
+    let manifest_url = runtime_manifest_url(configuration, wpe.webkit_version(), wpe.identity());
+    let manifest = download_manifest(&manifest_url, &release_tag).await?;
     // The artifact pin is the resolved package's declared WebKit version, not
     // a CLI-side default — the package's producer metadata is the pin.
     let artifact = select_artifact(
@@ -502,12 +503,15 @@ async fn remove_staged(layout: &RuntimeLayout) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn download_manifest(url: &str) -> eyre::Result<ArtifactManifest> {
+async fn download_manifest(url: &str, release_tag: &str) -> eyre::Result<ArtifactManifest> {
     let mut client = zenwave::client();
     let response = client.method(Method::GET, url)?.await?;
     if !response.status().is_success() {
+        // A 404 means this browsers revision's runtime has not been published
+        // yet — its `dev` push run is still in progress or failed — so the
+        // error names the tag the CLI looked for.
         bail!(
-            "browser runtime manifest returned HTTP {} from {url}",
+            "WPE runtime release {release_tag} returned HTTP {} for {url}",
             response.status()
         );
     }
@@ -896,14 +900,18 @@ async fn write_cef_sbom(path: &Path, version: &str, created: &str) -> eyre::Resu
     .await
 }
 
-/// The WPE runtime is built and published by the framework repository's
-/// `WPE Runtime` workflow on a `browser-wpe-runtime/v<version>` tag, so the
-/// manifest is bound to the WPE version this CLI expects, not to the CLI
-/// release.
-fn runtime_manifest_url(configuration: &SourceConfiguration, wpe_version: &str) -> String {
+/// The WPE runtime is built and published by water-rs/browsers on a
+/// `wpe-runtime-<version>-<identity>` tag, so the manifest is bound to the
+/// exact runtime the resolved package's producer metadata declares, not to
+/// the CLI release.
+fn runtime_manifest_url(
+    configuration: &SourceConfiguration,
+    wpe_version: &str,
+    identity: &str,
+) -> String {
     format!(
-        "{}/browser-wpe-runtime/v{}/browser-runtime-manifest.json",
-        configuration.release_base_url, wpe_version
+        "{}/wpe-runtime-{wpe_version}-{identity}/browser-runtime-manifest.json",
+        configuration.release_base_url
     )
 }
 
@@ -1032,11 +1040,8 @@ mod tests {
         let configuration: SourceConfiguration =
             toml::from_str(super::SOURCE_CONFIG).expect("source configuration must parse");
         assert_eq!(
-            runtime_manifest_url(&configuration, "2.52.5"),
-            format!(
-                "https://github.com/water-rs/waterui/releases/download/browser-wpe-runtime/v{}/browser-runtime-manifest.json",
-                "2.52.5"
-            )
+            runtime_manifest_url(&configuration, "2.54.2", "d6117ebfbc001792"),
+            "https://github.com/water-rs/browsers/releases/download/wpe-runtime-2.54.2-d6117ebfbc001792/browser-runtime-manifest.json"
         );
     }
 
