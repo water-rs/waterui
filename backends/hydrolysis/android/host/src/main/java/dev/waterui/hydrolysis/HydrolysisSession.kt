@@ -56,6 +56,12 @@ class HydrolysisSession internal constructor(
      */
     private var softInputPending: Boolean? = null
 
+    /**
+     * A [translucency] change made under a native call; the outermost
+     * [exitNative] delivers it to the listeners.
+     */
+    private var translucencyPending = false
+
     /** [tearDown] has handed [livePtr] to `nativeDestroySession`. */
     private var destroyed = false
 
@@ -115,9 +121,9 @@ class HydrolysisSession internal constructor(
     /**
      * [withNativePtr]'s exit: the outermost return runs a pending teardown,
      * else a pending placement pull, then the latest pending soft-input
-     * request. The pull opens its own [withNativePtr] scope, so this runs
-     * again at depth zero with the flag already cleared; a pending teardown
-     * wins and drops both deferred requests.
+     * request and translucency change. The pull opens its own [withNativePtr]
+     * scope, so this runs again at depth zero with the flag already cleared;
+     * a pending teardown wins and drops every deferred request.
      */
     @PublishedApi
     internal fun exitNative() {
@@ -126,6 +132,7 @@ class HydrolysisSession internal constructor(
         if (tearDownPending) {
             placementPullPending = false
             softInputPending = null
+            translucencyPending = false
             tearDown()
         } else {
             if (placementPullPending) {
@@ -135,6 +142,10 @@ class HydrolysisSession internal constructor(
             softInputPending?.let { visible ->
                 softInputPending = null
                 hostView?.setSoftInputVisible(visible)
+            }
+            if (translucencyPending) {
+                translucencyPending = false
+                translucencyListeners.forEach { it(translucency) }
             }
         }
     }
@@ -487,12 +498,19 @@ class HydrolysisSession internal constructor(
      * answer the surface's compositor planes already render by: translucent
      * asks the window and surface to let behind-window content show, and a
      * behind-window material asks the platform to blur it.
+     *
+     * The native side reports it from inside its frame. The listeners switch
+     * the Activity window and recreate the band's surface, whose callbacks
+     * call back into the session the frame still holds borrowed, so a change
+     * made under a native call reaches them from the outermost [exitNative],
+     * like a soft-input request.
      */
     @CalledFromNative
     fun onNativeTranslucency(translucent: Boolean, blurBehind: Boolean, blurRadiusPx: Int) {
         val next = Translucency(translucent, blurBehind, blurRadiusPx)
         if (next == translucency) return
         translucency = next
-        translucencyListeners.forEach { it(next) }
+        if (nativeDepth == 0) translucencyListeners.forEach { it(next) }
+        else translucencyPending = true
     }
 }
