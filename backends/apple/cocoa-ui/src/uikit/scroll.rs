@@ -359,6 +359,15 @@ impl ScrollView {
         self.ivars().flight.in_flight()
     }
 
+    /// Installs a stepped clock on this surface's scroll flights and
+    /// returns it — the native test suite's hand on flight time. Call it
+    /// before the surface's first flight.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn install_manual_scroll_clock(&self) -> Rc<crate::native_test::ManualScrollClock> {
+        self.ivars().flight.install_manual_clock()
+    }
+
     /// The insets `UIKit` currently applies around the canvas: safe-area and
     /// any content insets combined.
     #[must_use]

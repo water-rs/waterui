@@ -439,62 +439,38 @@ fn trial_each(named: Vec<(String, Box<dyn FnOnce() + Send>)>) -> Vec<Trial> {
 mod appkit_input {
     use std::cell::Cell;
     use std::rc::Rc;
+    use std::time::Duration;
 
     use cocoa_ui::display_link::FrameClock;
+    use cocoa_ui::native_test::ManualScrollClock;
     use cocoa_ui::notification::{NotificationName, NotificationObserver, observe_object};
     use cocoa_ui::objc2_app_kit::{
-        NSEvent, NSEventModifierFlags, NSEventType, NSScrollView,
-        NSScrollViewDidLiveScrollNotification, NSView, NSWindow,
+        NSEvent, NSScrollView, NSScrollViewDidLiveScrollNotification,
+        NSStandardKeyBindingResponding, NSView, NSWindow,
     };
-    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize};
     use cocoa_ui::{MainThreadMarker, Retained};
     use objc2::runtime::AnyObject;
     use objc2::{MainThreadOnly, define_class, msg_send};
     use objc2_core_graphics::{CGEvent, CGScrollEventUnit};
-    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
-
-    /// A function key: its virtual key code and the `NS…FunctionKey`
-    /// character `AppKit` reports for it.
-    #[derive(Clone, Copy, Debug)]
-    pub struct FunctionKey {
-        key_code: u16,
-        character: u32,
-    }
-
-    /// `kVK_PageDown` / `NSPageDownFunctionKey`.
-    pub const PAGE_DOWN: FunctionKey = FunctionKey {
-        key_code: 0x79,
-        character: 0xF72D,
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, drain_main_queue, pump_main_until,
     };
 
-    /// `kVK_End` / `NSEndFunctionKey`.
-    pub const END: FunctionKey = FunctionKey {
-        key_code: 0x77,
-        character: 0xF72B,
-    };
-
-    /// Presses `key` in `window`: a key-down `window.sendEvent` routes to
-    /// the first responder, the way the window server's event does.
-    pub fn press(window: &NSWindow, key: FunctionKey) {
-        let characters = NSString::from_str(
-            &char::from_u32(key.character)
-                .expect("function-key characters are valid code points")
-                .to_string(),
-        );
-        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
-            NSEventType::KeyDown,
-            NSPoint::ZERO,
-            NSEventModifierFlags::Function,
-            0.0,
-            window.windowNumber(),
-            None,
-            &characters,
-            &characters,
-            false,
-            key.key_code,
-        )
-        .expect("AppKit builds a key-down event");
-        window.sendEvent(&event);
+    /// Sends `action` down `window`'s responder chain from its first
+    /// responder, the delivery `interpretKeyEvents` performs once a key
+    /// resolves to its binding. A key-down needs a key window to resolve,
+    /// and macOS's cooperative activation never makes a non-interactively
+    /// launched harness the active application, so the case starts at the
+    /// action: from there the scroll is `AppKit`'s own.
+    pub fn command(window: &NSWindow, action: objc2::runtime::Sel) {
+        let responder = window
+            .firstResponder()
+            .expect("the window has a first responder");
+        // SAFETY: `action` is a no-argument binding action; the chain's
+        // `doCommandBySelector:` forwarding is the mechanism
+        // `interpretKeyEvents` uses for resolved bindings.
+        unsafe { responder.doCommandBySelector(action) };
     }
 
     /// Scrolls `scroll_view` by `pixels` with a legacy mouse wheel: a
@@ -599,51 +575,68 @@ mod appkit_input {
     /// Mid-flight, `AppKit` corrects the clip for a document growing by
     /// 500pt (`grow_document`), then for `window` growing and shrinking —
     /// none of which is user scrolling, so the flight to `target` must
-    /// keep running through each. Each change comes after the flight has
-    /// progressed another quarter of `target`; returns once it lands.
+    /// keep running through each. Each correction follows a stepped frame
+    /// of the surface's manual clock, and the final frame reaches the
+    /// schedule's end and lands the flight.
     pub fn assert_flight_survives_corrections(
         window: &NSWindow,
+        clock: &ManualScrollClock,
         target: f64,
         in_flight: impl Fn() -> bool,
         offset: impl Fn() -> f64,
         grow_document: impl FnOnce(),
     ) {
+        // The 2 s linear flight, stepped a frame at a time: a quarter-second
+        // frame before each of the three corrections and one after the last,
+        // all mid-schedule; the final frame reaches the schedule's end and
+        // lands. Every instant is a dyadic fraction, so the elapsed time is
+        // exact and the landing frame is the last one by construction.
+        const STEP: Duration = Duration::from_millis(250);
         let content = window.contentView().expect("the window has a content view");
         let size = content.frame().size;
-        let advance = |step: u32, what: &str| {
-            let reached = target * f64::from(step) / 4.0;
-            assert!(
-                pump_main_until(MAIN_QUEUE_DEADLINE, || offset() >= reached || !in_flight()),
-                "the flight must progress toward {target}"
-            );
+        let step = |when: &str| {
+            let previous = offset().to_bits();
+            clock.advance(STEP);
             assert!(
                 in_flight(),
-                "the flight must still be running before {what}: offset {}",
+                "the flight must still be running {when}: offset {}",
+                offset()
+            );
+            assert!(
+                offset().to_bits() != previous,
+                "the frame {when} must move the flight toward {target}: offset {}",
                 offset()
             );
         };
         let settle = |what: &str| {
             content.layoutSubtreeIfNeeded();
             assert!(
+                drain_main_queue(super::mtm()),
+                "the main queue must drain after {what}"
+            );
+            assert!(
                 in_flight(),
                 "{what} must not cancel the flight: offset {}",
                 offset()
             );
         };
-        advance(1, "the document growing");
+        step("before the document grows");
         grow_document();
         settle("the document growing");
-        advance(2, "a larger window");
+        step("before a larger window");
         window.setContentSize(NSSize::new(size.width + 120.0, size.height + 160.0));
         settle("a larger window");
-        advance(3, "a smaller window");
+        step("before a smaller window");
         window.setContentSize(NSSize::new(size.width - 120.0, size.height - 160.0));
         settle("a smaller window");
-        let samples = super::pump_flight(in_flight, offset);
+        step("after the last correction");
+        clock.advance(Duration::from_secs(1));
         assert!(
-            samples.len() > 1,
-            "the flight must still be running after the last correction: {samples:?}"
+            !in_flight(),
+            "the frame at the schedule's end must land the flight: offset {}",
+            offset()
         );
+        assert!(!clock.is_running(), "the landed flight must stop its clock");
     }
 
     impl FocusTarget {
@@ -2576,10 +2569,29 @@ mod gpu_surface {
 
     use super::mtm;
 
-    /// The registered trials — the settle-ordering and completion
-    /// coverage for the mounted-surface ownership contract.
+    fn an_owed_first_frame_pauses_when_hidden() -> Result<(), libtest_mimic::Failed> {
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm()))
+            .map_err(|error| format!("mount: {error}"))?;
+        mounted.ensure_attached();
+        let _ready = mounted.readiness_probe();
+        assert!(!mounted.frame_presented(), "the first frame is still owed");
+        assert!(
+            !mounted.link_paused(),
+            "the visible first frame is scheduled"
+        );
+        cocoa_ui::view::set_hidden(mounted.leaf.view(), true);
+        assert!(mounted.link_paused(), "hiding pauses an owed first frame");
+        cocoa_ui::view::set_hidden(mounted.leaf.view(), false);
+        assert!(!mounted.link_paused(), "showing resumes the owed frame");
+        Ok(())
+    }
+
     pub fn trials() -> Vec<Trial> {
         vec![
+            Trial::test(
+                "gpu_surface::an_owed_first_frame_pauses_when_hidden",
+                an_owed_first_frame_pauses_when_hidden,
+            ),
             Trial::test(
                 "gpu_surface::failed_render_settles_readiness_once",
                 failed_render_settles_readiness_once,
@@ -3286,10 +3298,45 @@ mod filtered {
 
     use super::mtm;
 
-    /// The registered trials — the failed-child settle contract and the
-    /// zero-bounds detach.
+    fn an_owed_first_frame_pauses_when_hidden() -> Result<(), libtest_mimic::Failed> {
+        // The gated setup keeps the link paused while the window orders in,
+        // so the real display link cannot take the owed first frame before
+        // the trial samples it.
+        let (mounted, gate) = pollster::block_on(MountedFilteredSurface::mount_gated(mtm()))
+            .map_err(|error| format!("mount: {error}"))?;
+        mounted.ensure_attached();
+        let _ready = mounted.readiness_probe();
+        assert!(
+            mounted.link_paused(),
+            "the pending effect setup holds the link"
+        );
+        gate.release();
+        // The setup's main-queue landing opens the link; the link's first
+        // update is a later run-loop source, so the pump samples the open
+        // link before any delivery.
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !mounted.link_paused()),
+            "the visible first frame is scheduled once the setup lands"
+        );
+        assert!(!mounted.frame_presented(), "the first frame is still owed");
+        cocoa_ui::view::set_hidden(mounted.leaf.view(), true);
+        assert!(mounted.link_paused(), "hiding pauses an owed first frame");
+        assert!(mounted.deliver_frame(1.0), "a queued drawable is available");
+        assert!(
+            !mounted.render_in_flight(),
+            "hidden delivery starts no capture"
+        );
+        cocoa_ui::view::set_hidden(mounted.leaf.view(), false);
+        assert!(!mounted.link_paused(), "showing resumes the owed frame");
+        Ok(())
+    }
+
     pub fn trials() -> Vec<Trial> {
         vec![
+            Trial::test(
+                "filtered::an_owed_first_frame_pauses_when_hidden",
+                an_owed_first_frame_pauses_when_hidden,
+            ),
             Trial::test(
                 "filtered::a_view_over_a_failed_child_settles_once",
                 a_view_over_a_failed_child_settles_once,
@@ -3780,8 +3827,8 @@ mod safe_area {
         UIBarPosition, UIBarPositioning, UIEdgeInsets, UIKeyboardAnimationCurveUserInfoKey,
         UIKeyboardAnimationDurationUserInfoKey, UIKeyboardFrameEndUserInfoKey,
         UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification,
-        UIKeyboardWillShowNotification, UINavigationBar, UINavigationController, UIScrollView,
-        UITabBar, UITextView, UIView,
+        UIKeyboardWillShowNotification, UILabel, UINavigationBar, UINavigationController,
+        UIScrollView, UITabBar, UITextView, UIView,
     };
     use cocoa_ui::uikit::view_controller::owning_controller;
     use cocoa_ui::uikit::{
@@ -4482,18 +4529,20 @@ mod safe_area {
         None
     }
 
-    /// The first view whose Objective-C class is literally `name` —
-    /// how a `UIToolbar` is found when the vendored `objc2-ui-kit`
-    /// carries no binding for the class.
-    fn find_class(
-        view: &PlatformView,
-        name: &'static std::ffi::CStr,
-    ) -> Option<Retained<PlatformView>> {
+    /// The first `UIKit`-owned label showing `text` — how a title bar
+    /// item is found: the bar draws the item's word itself, in a private
+    /// button inside the floating bar container under the host, so the
+    /// label carrying it is the item's only public surface. `WaterUI`'s own
+    /// `Label`s are skipped so a hosted copy of the word never matches.
+    fn find_bar_title(view: &PlatformView, text: &str) -> Option<Retained<PlatformView>> {
         for sub in view::subviews(view) {
-            if sub.class().name() == name {
+            if sub.downcast_ref::<Label>().is_none()
+                && let Some(label) = sub.downcast_ref::<UILabel>()
+                && label.text().map(|t| t.to_string()).as_deref() == Some(text)
+            {
                 return Some(sub);
             }
-            if let Some(found) = find_class(&sub, name) {
+            if let Some(found) = find_bar_title(&sub, text) {
                 return Some(found);
             }
         }
@@ -5863,9 +5912,9 @@ mod safe_area {
             ])),
         ));
         // iOS 26 draws the page's bottom bar as a floating glass capsule,
-        // not a `UIToolbar` — the item's own control is the bar's proof.
-        let item =
-            find_class(&mount.host, c"CocoaUiBarButton").expect("the page mounts its bar item");
+        // not a `UIToolbar`, and a text action is the bar's own title
+        // item — the word the bar draws is the item's proof.
+        let item = find_bar_title(&mount.host, "New").expect("the page mounts its bar item");
         let docked = window_frame(&item);
         assert!(
             docked.origin.y + docked.size.height > container_bottom(&mount) - 80.0,
@@ -5923,9 +5972,9 @@ mod safe_area {
         let tab_bar = find_view::<UITabBar>(&mount.host).expect("the tabs mount a UITabBar");
         pump_layout(&mount, || window_bottom(&tab_bar) > TOLERANCE);
         // iOS 26 draws the page's bottom bar as a floating glass capsule,
-        // not a `UIToolbar` — the item's own control is the bar's proof.
-        let item =
-            find_class(&mount.host, c"CocoaUiBarButton").expect("the page mounts its bar item");
+        // not a `UIToolbar`, and a text action is the bar's own title
+        // item — the word the bar draws is the item's proof.
+        let item = find_bar_title(&mount.host, "New").expect("the page mounts its bar item");
         let docked = window_frame(&item);
         assert!(
             docked.origin.y + docked.size.height > container_bottom(&mount) - 80.0,
@@ -6797,25 +6846,26 @@ mod scroll {
     /// The user's own wheel scroll wins mid-flight: a phase-less legacy
     /// wheel event sent through the surface's `scrollWheel:` makes
     /// `AppKit` post `NSScrollViewDidLiveScrollNotification`, the
-    /// animation retires, and the offset the wheel produced stands past
-    /// the flight's original end.
+    /// animation retires, and stepping the flight's clock past its
+    /// original schedule proves the retired flight silent — the offset
+    /// the wheel produced stands.
     #[cfg(target_os = "macos")]
     fn a_users_wheel_scroll_takes_over_an_in_flight_animation() {
-        use cocoa_ui::objc2_quartz_core::CACurrentMediaTime;
         use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
         let fixture = mounted();
+        let clock = fixture.surface.install_manual_scroll_clock();
         let (_observer, live_scrolls) =
             super::appkit_input::count_live_scrolls(super::mtm(), &fixture.surface);
         fixture.controller.animate_to(
             Point::new(0.0, 1000.0),
             Animation::linear(Duration::from_secs(2)),
         );
+        clock.advance(Duration::from_millis(500));
         assert!(
             fixture.surface.scroll_animation_in_flight(),
             "the flight must be in progress when the user's scroll starts"
         );
-        let flight_end = CACurrentMediaTime() + 2.0;
         let before = fixture.surface.content_offset().y;
         super::appkit_input::wheel(&fixture.surface, -40);
         assert!(
@@ -6826,12 +6876,16 @@ mod scroll {
             !fixture.surface.scroll_animation_in_flight(),
             "the user's wheel scroll must retire the flight"
         );
-        // Outlast the flight's original schedule: had it survived, its
-        // ticks would still be writing toward 1000 — the user's offset
-        // stands.
         assert!(
-            pump_main_until(MAIN_QUEUE_DEADLINE, || CACurrentMediaTime() >= flight_end),
-            "the flight's original schedule must elapse"
+            !clock.is_running(),
+            "the retired flight must stop its clock"
+        );
+        let wheeled = fixture.surface.content_offset().y;
+        clock.advance(Duration::from_secs(2));
+        assert_offset_eq(
+            fixture.surface.content_offset().y,
+            wheeled,
+            "the retired flight writes nothing past its original schedule",
         );
         let settled = fixture.surface.content_offset().y;
         assert!(
@@ -6841,18 +6895,18 @@ mod scroll {
         );
     }
 
-    /// The keyboard wins mid-flight: a page-down sent through the window
-    /// to a focused view in the document reaches the scroll view's
-    /// `pageDown:`, whose clip write is not the flight's own — the
-    /// animation retires synchronously and the paged offset stands past
-    /// the flight's original end.
+    /// The keyboard wins mid-flight: page-down's `pageDown:`, sent up the
+    /// responder chain from a focused view in the document, reaches the
+    /// scroll view, whose clip write is not the flight's own — the
+    /// animation retires synchronously, and stepping the flight's clock
+    /// past its original schedule proves the retired flight silent.
     #[cfg(target_os = "macos")]
     fn a_page_down_takes_over_an_in_flight_animation() {
         use cocoa_ui::objc2_app_kit::NSResponder;
-        use cocoa_ui::objc2_quartz_core::CACurrentMediaTime;
         use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
         let fixture = mounted();
+        let clock = fixture.surface.install_manual_scroll_clock();
         let window = fixture
             .surface
             .window()
@@ -6872,26 +6926,38 @@ mod scroll {
             Point::new(0.0, 1000.0),
             Animation::linear(Duration::from_secs(2)),
         );
-        let flight_end = CACurrentMediaTime() + 2.0;
+        clock.advance(Duration::from_millis(500));
         let before = fixture.surface.content_offset().y;
-        super::appkit_input::press(&window, super::appkit_input::PAGE_DOWN);
+        assert!(
+            fixture.surface.scroll_animation_in_flight() && before > 0.0,
+            "the flight must be mid-way when page-down is pressed: offset {before}"
+        );
+        super::appkit_input::command(&window, objc2::sel!(pageDown:));
         assert!(
             !fixture.surface.scroll_animation_in_flight(),
             "the keyboard's page-down must retire the flight"
         );
-        let paged = fixture.surface.content_offset().y;
         assert!(
-            paged > before,
-            "page-down scrolls the document: before {before}, after {paged}"
+            !clock.is_running(),
+            "the retired flight must stop its clock"
         );
-        assert!(
-            pump_main_until(MAIN_QUEUE_DEADLINE, || CACurrentMediaTime() >= flight_end),
-            "the flight's original schedule must elapse"
-        );
+        let pressed = fixture.surface.content_offset().y;
+        clock.advance(Duration::from_secs(2));
         assert_offset_eq(
             fixture.surface.content_offset().y,
-            paged,
-            "the paged offset stands — the retired flight never rewrites the model",
+            pressed,
+            "the retired flight writes nothing past its original schedule",
+        );
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                fixture.surface.content_offset().y > before
+            }),
+            "AppKit's animated page scroll must move the document past {before}"
+        );
+        let paged = fixture.surface.content_offset().y;
+        assert!(
+            (paged - 1000.0).abs() > 1.0,
+            "the retired flight never landed: {paged}"
         );
     }
 
@@ -6944,6 +7010,7 @@ mod scroll {
         use cocoa_ui::objc2_foundation::NSSize;
 
         let fixture = mounted();
+        let clock = fixture.surface.install_manual_scroll_clock();
         let window = fixture
             .surface
             .window()
@@ -6954,6 +7021,7 @@ mod scroll {
         );
         super::appkit_input::assert_flight_survives_corrections(
             &window,
+            &clock,
             1000.0,
             || fixture.surface.scroll_animation_in_flight(),
             || fixture.surface.content_offset().y,
@@ -7452,22 +7520,22 @@ mod list_scroll {
         );
     }
 
-    /// The keyboard wins mid-flight: `key`, sent through the window to the
-    /// focused table, scrolls the clip through a write that is not the
+    /// The keyboard wins mid-flight: the key's `action`, sent up the
+    /// responder chain from the focused table, scrolls the clip through a write that is not the
     /// flight's own — `pageDown:` on the scroll view, or the table's own
     /// `scrollToEndOfDocument:`, which posts no live-scroll notification —
-    /// and the flight retires synchronously; the keyed offset stands past
-    /// the flight's original end.
+    /// and the flight retires synchronously; stepping the flight's clock
+    /// past its original schedule proves the retired flight silent.
     #[cfg(target_os = "macos")]
     fn the_keyboard_takes_over_an_in_flight_animation(
         name: &'static str,
-        key: super::appkit_input::FunctionKey,
+        action: objc2::runtime::Sel,
     ) {
         use cocoa_ui::objc2_app_kit::NSResponder;
-        use cocoa_ui::objc2_quartz_core::CACurrentMediaTime;
         use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
         let fixture = mounted();
+        let clock = fixture.table.install_manual_scroll_clock();
         let table = fixture.table.table_view();
         let window = table.window().expect("the mounted list is in a window");
         let responder: &NSResponder = &table;
@@ -7478,26 +7546,33 @@ mod list_scroll {
         fixture
             .controller
             .animate_to(150, Animation::linear(Duration::from_secs(2)));
+        clock.advance(Duration::from_millis(500));
         assert!(
             fixture.table.scroll_animation_in_flight(),
             "the row flight must be in progress when {name} is pressed"
         );
-        let flight_end = CACurrentMediaTime() + 2.0;
-        super::appkit_input::press(&window, key);
+        let before = offset_y(&fixture);
+        super::appkit_input::command(&window, action);
         assert!(
             !fixture.table.scroll_animation_in_flight(),
             "{name} must retire the flight"
         );
-        let keyed = offset_y(&fixture);
         assert!(
-            pump_main_until(MAIN_QUEUE_DEADLINE, || CACurrentMediaTime() >= flight_end),
-            "the flight's original schedule must elapse"
+            !clock.is_running(),
+            "the retired flight must stop its clock"
         );
+        let pressed = offset_y(&fixture);
+        clock.advance(Duration::from_secs(2));
         assert_offset_eq(
             offset_y(&fixture),
-            keyed,
-            "the keyed offset stands — the retired flight never rewrites the model",
+            pressed,
+            "the retired flight writes nothing past its original schedule",
         );
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || offset_y(&fixture) > before),
+            "{name} must scroll the list past {before}"
+        );
+        let keyed = offset_y(&fixture);
         assert!(
             (keyed - row_top_offset(&fixture, 150)).abs() > 1.0,
             "the superseded flight never landed: {keyed}"
@@ -7542,6 +7617,7 @@ mod list_scroll {
     #[cfg(target_os = "macos")]
     fn appkit_corrections_keep_an_in_flight_animation() {
         let fixture = mounted();
+        let clock = fixture.table.install_manual_scroll_clock();
         let window = fixture
             .table
             .window()
@@ -7552,6 +7628,7 @@ mod list_scroll {
             .animate_to(TARGET, Animation::linear(Duration::from_secs(2)));
         super::appkit_input::assert_flight_survives_corrections(
             &window,
+            &clock,
             target,
             || fixture.table.scroll_animation_in_flight(),
             || offset_y(&fixture),
@@ -7628,14 +7705,17 @@ mod list_scroll {
                 Box::new(|| {
                     the_keyboard_takes_over_an_in_flight_animation(
                         "page-down",
-                        super::appkit_input::PAGE_DOWN,
+                        objc2::sel!(pageDown:),
                     );
                 }) as Box<dyn FnOnce() + Send>,
             ),
             (
                 "list_scroll::the_end_key_takes_over_an_in_flight_animation".to_owned(),
                 Box::new(|| {
-                    the_keyboard_takes_over_an_in_flight_animation("End", super::appkit_input::END);
+                    the_keyboard_takes_over_an_in_flight_animation(
+                        "End",
+                        objc2::sel!(scrollToEndOfDocument:),
+                    );
                 }),
             ),
             (
@@ -10385,6 +10465,13 @@ mod transition {
                     Ok(())
                 },
             ),
+            libtest_mimic::Trial::test(
+                "transition::an_insert_before_existing_members_paints_in_item_order",
+                || {
+                    an_insert_before_existing_members_paints_in_item_order();
+                    Ok(())
+                },
+            ),
         ]
         .into_iter()
         .chain(navigation_trials())
@@ -12062,6 +12149,44 @@ mod transition {
                 members.len() == 2 && members[1].2.origin.y.to_bits() == b_origin.to_bits()
             }),
             "siblings close the gap once the ghost completes"
+        );
+    }
+
+    /// #3509: a membership insertion before existing members lands at
+    /// the head of the slot sequence while its view mounts at the end —
+    /// the host's subview order (paint order) must still equal item
+    /// order, as the fixed path's `reconcile_subviews` keeps it.
+    pub fn an_insert_before_existing_members_paints_in_item_order() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
+            hstack((text(format!("row {}", row.id)), spacer())).size(200.0, 20.0)
+        }));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let container = member_container(leaf.view()).expect("the container holds the members");
+        autoreleasepool(|_| {
+            items.insert(0, Row { id: 0 });
+        });
+        assert!(
+            pump_main_until(2.0, || member_frames(&container).len() == 4),
+            "the inserted member joins"
+        );
+        // The subviews are the paint order, back to front; a vertical
+        // stack's item order is increasing y. The inserted row's frame
+        // leads — before the fix its view still painted above every
+        // member materialized earlier.
+        let paint_order: Vec<usize> = member_frames(&container)
+            .iter()
+            .map(|member| member.1)
+            .collect();
+        let item_order: Vec<usize> = members_by_origin(&container)
+            .iter()
+            .map(|member| member.1)
+            .collect();
+        assert_eq!(
+            paint_order, item_order,
+            "the host's subviews paint in item order"
         );
     }
 

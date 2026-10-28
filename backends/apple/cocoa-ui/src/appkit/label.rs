@@ -10,15 +10,24 @@
 
 use std::cell::{Cell, RefCell};
 use std::fmt;
+use std::ops::Range;
+use std::rc::Rc;
 
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSLineBreakMode, NSScreen, NSTextAlignment, NSTextField, NSTextFieldCell};
-use objc2_core_foundation::CGRect;
-use objc2_foundation::{NSAttributedString, NSEdgeInsets, NSObjectProtocol, NSString};
+use objc2_app_kit::{
+    NSAccessibility, NSAccessibilityElement, NSAccessibilityFrameInView, NSAccessibilityLinkRole,
+    NSLineBreakMode, NSScreen, NSTextAlignment, NSTextField, NSTextFieldCell, NSView,
+};
+use objc2_core_foundation::{CGPoint, CGRect};
+use objc2_foundation::{
+    NSArray, NSAttributedString, NSEdgeInsets, NSObjectProtocol, NSString, NSUnionRect,
+};
 
 use crate::callback::guarded;
-use crate::text::{TextMetrics, WrapWidth};
+use crate::geometry::{Point, Rect};
+use crate::text::{Layout, SpanLink, TextMetrics, WrapWidth};
 
 /// The text and line limit a [`Label`] measures with.
 ///
@@ -269,5 +278,198 @@ impl Label {
     fn invalidate_layout(&self) {
         self.invalidateIntrinsicContentSize();
         crate::view::invalidate_layout(self);
+    }
+
+    /// The rect the cell draws its text in, in bounds coordinates —
+    /// `drawingRectForBounds:` answers where the cell's interior goes.
+    fn text_rect(&self) -> CGRect {
+        self.cell()
+            .and_then(|cell| cell.downcast::<NSTextFieldCell>().ok())
+            .map_or_else(
+                || self.bounds(),
+                |cell| cell.drawingRectForBounds(self.bounds()),
+            )
+    }
+
+    /// The laid-out stack a hit test runs through: container width is the
+    /// drawing rect's, paragraph alignment the label's own.
+    fn layout(&self) -> Option<Layout> {
+        let text = self.source_text()?;
+        Some(Layout::new(
+            MainThreadMarker::from(self),
+            &text,
+            self.text_rect().size.width,
+            self.alignment(),
+            self.maximumNumberOfLines().cast_unsigned(),
+        ))
+    }
+
+    /// The UTF-16 character index a point in bounds coordinates hits —
+    /// `None` when it lands outside the text. The bounds' y axis runs up
+    /// while the layout's runs down from the text rect's top.
+    #[must_use]
+    pub fn character_index(&self, point: Point) -> Option<usize> {
+        let rect = self.text_rect();
+        self.layout()?.character_index(CGPoint::new(
+            point.x - rect.origin.x,
+            rect.origin.y + rect.size.height - point.y,
+        ))
+    }
+
+    /// The rectangles a UTF-16 `range` covers in bounds coordinates — one
+    /// per line fragment the range crosses.
+    #[must_use]
+    pub fn rects(&self, range: Range<usize>) -> Vec<Rect> {
+        let Some(layout) = self.layout() else {
+            return Vec::new();
+        };
+        let rect = self.text_rect();
+        let top = rect.origin.y + rect.size.height;
+        layout
+            .rects(range)
+            .into_iter()
+            .map(|container_rect| {
+                Rect::new(
+                    container_rect.origin.x + rect.origin.x,
+                    top - container_rect.origin.y - container_rect.size.height,
+                    container_rect.size.width,
+                    container_rect.size.height,
+                )
+            })
+            .collect()
+    }
+
+    /// Publishes one `Link` accessibility element per span as children of
+    /// the label — the way `AppKit` hangs `AXLink` elements off a text
+    /// element. An element's label is the span's text, its frame the span's
+    /// drawn rectangles, its press the span's action. An empty list clears
+    /// them.
+    ///
+    /// The label stays an accessibility element for its full text.
+    pub fn set_link_elements(&self, links: &[SpanLink<'_>]) {
+        let view: &NSView = self;
+        let element: &ProtocolObject<dyn NSAccessibility> = ProtocolObject::from_ref(view);
+        if links.is_empty() {
+            // SAFETY: `nil` restores the view's traversal children.
+            unsafe { element.setAccessibilityChildren(None) };
+            return;
+        }
+        let elements: Vec<Retained<AnyObject>> = links
+            .iter()
+            .map(|link| {
+                Retained::into_super(Retained::into_super(SpanElement::new(self, link))).into()
+            })
+            .collect();
+        let array = NSArray::from_retained_slice(&elements);
+        // SAFETY: every entry is an `NSAccessibilityElement`.
+        unsafe { element.setAccessibilityChildren(Some(&array)) };
+    }
+}
+
+/// What a [`SpanElement`] answers with: frames computed live — so a moved
+/// or resized label never leaves a stale rect — and the activation an
+/// assistive press runs. `frame` reports screen coordinates,
+/// `frame_in_parent` the label's.
+struct SpanElementIvars {
+    frame: Rc<dyn Fn() -> CGRect>,
+    frame_in_parent: Rc<dyn Fn() -> CGRect>,
+    activate: Rc<dyn Fn()>,
+}
+
+define_class!(
+    // SAFETY: `NSAccessibilityElement`'s designated initializer is `init`,
+    // which `SpanElement::new` calls, and the class does not implement
+    // `Drop`.
+    #[unsafe(super(NSAccessibilityElement))]
+    #[name = "CocoaUiSpanElement"]
+    #[ivars = SpanElementIvars]
+    struct SpanElement;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of an `NSAccessibilityElement`
+    // subclass.
+    unsafe impl NSObjectProtocol for SpanElement {}
+
+    impl SpanElement {
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame(&self) -> CGRect {
+            guarded("SpanElement accessibilityFrame", || (self.ivars().frame)())
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrameInParentSpace))]
+        fn accessibility_frame_in_parent_space(&self) -> CGRect {
+            guarded("SpanElement accessibilityFrameInParentSpace", || {
+                (self.ivars().frame_in_parent)()
+            })
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press(&self) -> bool {
+            guarded("SpanElement accessibilityPerformPress", || {
+                (self.ivars().activate)();
+                true
+            })
+        }
+    }
+);
+
+impl SpanElement {
+    /// One span's element: `Link` role, the span's text as its label, and
+    /// the label as its accessibility parent.
+    fn new(label: &Label, link: &SpanLink<'_>) -> Retained<Self> {
+        let weak = Weak::new(label);
+        let union = {
+            let range = link.range.clone();
+            let weak = weak.clone();
+            move || -> CGRect {
+                let Some(label) = weak.load() else {
+                    return CGRect::ZERO;
+                };
+                label
+                    .rects(range.clone())
+                    .into_iter()
+                    .map(CGRect::from)
+                    .reduce(|a, b| NSUnionRect(a, b))
+                    .unwrap_or(CGRect::ZERO)
+            }
+        };
+        let frame = {
+            let union = union.clone();
+            Rc::new(move || {
+                weak.load().map_or(CGRect::ZERO, |label| {
+                    NSAccessibilityFrameInView(&label, union())
+                })
+            })
+        };
+        let frame_in_parent = Rc::new(union);
+        let mtm = MainThreadMarker::from(label);
+        let this = mtm.alloc::<Self>().set_ivars(SpanElementIvars {
+            frame,
+            frame_in_parent,
+            activate: Rc::clone(&link.activate),
+        });
+        // SAFETY: `init` is the class's designated initializer.
+        let this: Retained<Self> = unsafe { msg_send![super(this), init] };
+        let element: &NSAccessibilityElement = &this;
+        let accessibility = ProtocolObject::<dyn NSAccessibility>::from_ref(element);
+        accessibility.setAccessibilityElement(true);
+        // SAFETY: the role constant is an immutable `NSString` `AppKit`
+        // exports.
+        accessibility.setAccessibilityRole(Some(unsafe { NSAccessibilityLinkRole }));
+        accessibility.setAccessibilityLabel(Some(&NSString::from_str(link.text)));
+        // SAFETY: the label is the element's accessibility parent — an
+        // `NSView` is a valid parent object.
+        unsafe {
+            accessibility.setAccessibilityParent(Some(AsRef::<AnyObject>::as_ref(label)));
+        }
+        this
+    }
+}
+
+impl fmt::Debug for SpanElement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SpanElement").finish_non_exhaustive()
     }
 }

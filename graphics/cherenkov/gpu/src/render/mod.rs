@@ -2709,8 +2709,8 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         )?;
         let scratch_format = scratch_wgpu(config.scratch_format);
         // Specialised fragment shaders from one source file, compiled
-        // at build time: the prepended `VARIANT` constant makes fs_main a
-        // constant-folded dispatch; the union module is not in this eager
+        // at build time with a statically selected fragment entry point;
+        // the union module is not in this eager
         // set (it materializes with the first union member). On Vulkan
         // and Metal these are the embedded passthrough binaries (#57).
         let shader_delivery = shaders::delivery(info.backend, &device)?;
@@ -3114,9 +3114,8 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         Some(&device),
     )?;
     let scratch_format = scratch_wgpu(config.scratch_format);
-    // Specialised fragment shaders from one source file: the prepended
-    // `VARIANT` constant makes fs_main a constant-folded dispatch; the
-    // union module is not in this eager set. WebGPU keeps WGSL (#57).
+    // Specialised fragment shaders with statically selected entry points;
+    // the union module is not in this eager set. WebGPU keeps WGSL (#57).
     let shader_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let shader_delivery = shaders::delivery(info.backend, &device)?;
     let modules = EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_programs(&device, v));

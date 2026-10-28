@@ -2653,7 +2653,6 @@ dependencies = [
 name = "widget-app"
 version = "0.0.0"
 dependencies = [
- "serde",
  "waterui",
 ]
 

@@ -14,14 +14,19 @@
 //! point requires a [`MainThreadMarker`], and all mutable state lives in
 //! objects created inside each call.
 
+use std::ops::Range;
+use std::rc::Rc;
+
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, rc::Retained};
 use objc2_core_foundation::{
-    CFRange, CFStringTokenizer, CFStringTokenizerTokenType, CGSize, kCFStringTokenizerUnitLineBreak,
+    CFRange, CFStringTokenizer, CFStringTokenizerTokenType, CGPoint, CGRect, CGSize,
+    kCFStringTokenizerUnitLineBreak,
 };
 use objc2_foundation::{
-    NSAttributedString, NSAttributedStringKey, NSCharacterSet, NSMutableAttributedString,
-    NSNotFound, NSNumber, NSRange, NSString, NSStringCompareOptions,
+    NSAttributedString, NSAttributedStringKey, NSCharacterSet, NSIntersectionRange,
+    NSIntersectionRect, NSMutableAttributedString, NSNotFound, NSNumber, NSPointInRect, NSRange,
+    NSString, NSStringCompareOptions,
 };
 
 use crate::font::Font;
@@ -32,28 +37,33 @@ mod platform {
     pub use objc2_app_kit::{
         NSAttributedStringNSExtendedStringDrawing, NSBackgroundColorAttributeName,
         NSColor as Color, NSFontAttributeName, NSForegroundColorAttributeName, NSKernAttributeName,
-        NSLayoutManager, NSParagraphStyleAttributeName, NSStrikethroughStyleAttributeName,
-        NSTextContainer, NSTextStorage, NSUnderlineStyleAttributeName,
+        NSLayoutManager, NSLineBreakMode, NSParagraphStyleAttributeName,
+        NSStrikethroughStyleAttributeName, NSTextAlignment, NSTextContainer, NSTextStorage,
+        NSUnderlineStyleAttributeName,
     };
-    pub use objc2_app_kit::{NSMutableParagraphStyle, NSStringDrawingOptions};
+    pub use objc2_app_kit::{NSMutableParagraphStyle, NSParagraphStyle, NSStringDrawingOptions};
 }
 #[cfg(target_os = "ios")]
 mod platform {
     pub use objc2_ui_kit::{
         NSAttributedStringNSExtendedStringDrawing, NSBackgroundColorAttributeName,
         NSFontAttributeName, NSForegroundColorAttributeName, NSKernAttributeName, NSLayoutManager,
-        NSParagraphStyleAttributeName, NSStrikethroughStyleAttributeName, NSTextContainer,
-        NSTextStorage, NSUnderlineStyleAttributeName, UIColor as Color,
+        NSLineBreakMode, NSParagraphStyleAttributeName, NSStrikethroughStyleAttributeName,
+        NSTextAlignment, NSTextContainer, NSTextStorage, NSUnderlineStyleAttributeName,
+        UIColor as Color,
     };
-    pub use objc2_ui_kit::{NSLineBreakStrategy, NSMutableParagraphStyle, NSStringDrawingOptions};
+    pub use objc2_ui_kit::{
+        NSLineBreakStrategy, NSMutableParagraphStyle, NSParagraphStyle, NSStringDrawingOptions,
+    };
 }
 #[cfg(target_os = "ios")]
 use platform::NSLineBreakStrategy;
 use platform::{
     Color, NSAttributedStringNSExtendedStringDrawing, NSBackgroundColorAttributeName,
     NSFontAttributeName, NSForegroundColorAttributeName, NSKernAttributeName, NSLayoutManager,
-    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSStrikethroughStyleAttributeName,
-    NSStringDrawingOptions, NSTextContainer, NSTextStorage, NSUnderlineStyleAttributeName,
+    NSLineBreakMode, NSMutableParagraphStyle, NSParagraphStyle, NSParagraphStyleAttributeName,
+    NSStrikethroughStyleAttributeName, NSStringDrawingOptions, NSTextAlignment, NSTextContainer,
+    NSTextStorage, NSUnderlineStyleAttributeName,
 };
 
 /// One run of text sharing a font, colors and decorations — what a
@@ -208,16 +218,22 @@ pub struct TextMetrics {
 }
 
 /// The `NSTextStorage`/`NSLayoutManager`/`NSTextContainer` stack one
-/// measurement runs through, laid out at `width` points.
+/// measurement or hit test runs through, laid out at `width` points.
 ///
 /// `NSLayoutManager`'s `textStorage` back-reference is `assign` — it does not
 /// retain the storage — so the storage is returned alongside the manager and
-/// callers must keep it alive for as long as they query the layout.
-fn layout(
+/// callers must keep it alive for as long as they query the layout. The stack
+/// is returned before layout is ensured: a caller adjusting the storage's
+/// attributes (see [`Layout`]) does so before the typesetter runs.
+fn stack(
     mtm: MainThreadMarker,
     text: &NSAttributedString,
     width: f64,
-) -> (Retained<NSTextStorage>, Retained<NSLayoutManager>) {
+) -> (
+    Retained<NSTextStorage>,
+    Retained<NSLayoutManager>,
+    Retained<NSTextContainer>,
+) {
     let storage = NSTextStorage::new();
     storage.setAttributedString(text);
     let layout_manager = NSLayoutManager::new();
@@ -232,8 +248,229 @@ fn layout(
         NSTextContainer::initWithSize(mtm.alloc::<NSTextContainer>(), CGSize::new(width, f64::MAX));
     container.setLineFragmentPadding(0.0);
     layout_manager.addTextContainer(&container);
+    (storage, layout_manager, container)
+}
+
+/// The `stack` triple with layout forced — what `measure` runs through.
+fn layout(
+    mtm: MainThreadMarker,
+    text: &NSAttributedString,
+    width: f64,
+) -> (Retained<NSTextStorage>, Retained<NSLayoutManager>) {
+    let (storage, layout_manager, container) = stack(mtm, text, width);
     layout_manager.ensureLayoutForTextContainer(&container);
     (storage, layout_manager)
+}
+
+/// Sets `alignment` on every paragraph of `storage` — the equivalent of
+/// what a label's `textAlignment`/`alignment` does to the attributed string
+/// it draws — preserving the other attributes each range's paragraph style
+/// carries.
+///
+/// Ranges without a paragraph style get a default one: a default
+/// `NSMutableParagraphStyle` matches the typesetter's behavior for
+/// attribute-free text, so only the alignment changes.
+fn apply_paragraph_alignment(storage: &NSTextStorage, alignment: NSTextAlignment) {
+    let mut location = 0;
+    let length = storage.length();
+    while location < length {
+        let mut effective = NSRange::new(location, 0);
+        // SAFETY: `effective` is stack storage the call writes.
+        let existing = unsafe {
+            storage.attribute_atIndex_effectiveRange(
+                NSParagraphStyleAttributeName,
+                location,
+                &raw mut effective,
+            )
+        };
+        let style = NSMutableParagraphStyle::new();
+        if let Some(existing) = existing {
+            style.setParagraphStyle(
+                existing
+                    .downcast::<NSParagraphStyle>()
+                    .expect("the paragraph-style attribute carries an NSParagraphStyle")
+                    .as_ref(),
+            );
+        }
+        style.setAlignment(alignment);
+        // SAFETY: `style` is an `NSParagraphStyle`, the documented type for
+        // this attribute.
+        unsafe {
+            storage.addAttribute_value_range(
+                NSParagraphStyleAttributeName,
+                style.as_ref(),
+                effective,
+            );
+        }
+        location = effective.location + effective.length;
+    }
+}
+
+/// A text stack kept alive for hit tests: the point-to-index and
+/// range-to-rects queries the label's tap and accessibility spans run.
+///
+/// Geometry here is container coordinates — y measured down from the top of
+/// the container — matching what `drawGlyphsForGlyphRange:` consumes; the
+/// label translates between its own bounds and this space.
+#[derive(Debug)]
+pub struct Layout {
+    /// Held, queried only for its length: the manager's `textStorage` is
+    /// `assign`, so the storage must outlive every query.
+    storage: Retained<NSTextStorage>,
+    manager: Retained<NSLayoutManager>,
+    container: Retained<NSTextContainer>,
+}
+
+impl Layout {
+    /// Lays `text` out at `width` points with `alignment` applied to every
+    /// paragraph — the same stack [`measure`] builds, plus the label's own
+    /// alignment so centered and trailing text hit-tests where it is drawn.
+    ///
+    /// A nonzero `line_limit` stops layout after that many lines and
+    /// truncates the last one's tail, as the label does when it draws: text
+    /// the label elides is neither hit nor covered by any rectangle.
+    #[must_use]
+    pub fn new(
+        mtm: MainThreadMarker,
+        text: &NSAttributedString,
+        width: f64,
+        alignment: NSTextAlignment,
+        line_limit: usize,
+    ) -> Self {
+        let (storage, manager, container) = stack(mtm, text, width);
+        apply_paragraph_alignment(&storage, alignment);
+        if line_limit > 0 {
+            container.setMaximumNumberOfLines(line_limit);
+            container.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+        }
+        manager.ensureLayoutForTextContainer(&container);
+        Self {
+            storage,
+            manager,
+            container,
+        }
+    }
+
+    /// The UTF-16 character index `point` hits, in container coordinates —
+    /// `None` when the point lands outside the text.
+    #[must_use]
+    pub fn character_index(&self, point: CGPoint) -> Option<usize> {
+        // SAFETY: a null fraction pointer skips the out parameter.
+        let index = unsafe {
+            self.manager
+                .characterIndexForPoint_inTextContainer_fractionOfDistanceBetweenInsertionPoints(
+                    point,
+                    &self.container,
+                    std::ptr::null_mut(),
+                )
+        };
+        if index == NSNotFound.cast_unsigned() || index >= self.storage.length() {
+            return None;
+        }
+        // The index lookup also answers for points in the slack past a
+        // line's end: only a point inside the character's own glyph bounds
+        // counts as a hit — a tap off the text fails the recognizer's gate.
+        let glyph = self.manager.glyphIndexForCharacterAtIndex(index);
+        self.visible_glyphs(glyph)?;
+        let bounds = self
+            .manager
+            .boundingRectForGlyphRange_inTextContainer(NSRange::new(glyph, 1), &self.container);
+        NSPointInRect(point, bounds).then_some(index)
+    }
+
+    /// The rectangles `range` covers, in container coordinates — one per
+    /// line fragment the range crosses, clipped to the fragment.
+    ///
+    /// `range` is in UTF-16 code units over the laid-out string and is
+    /// clamped to its length.
+    #[must_use]
+    pub fn rects(&self, range: Range<usize>) -> Vec<CGRect> {
+        let string_length = self.storage.length();
+        let start = range.start.min(string_length);
+        let range = NSRange::new(start, range.end.min(string_length) - start);
+        if range.length == 0 {
+            return Vec::new();
+        }
+        // SAFETY: a null actual-range pointer skips the out parameter.
+        let glyphs = unsafe {
+            self.manager
+                .glyphRangeForCharacterRange_actualCharacterRange(range, std::ptr::null_mut())
+        };
+        let mut rects = Vec::new();
+        let mut glyph = glyphs.location;
+        while glyph < glyphs.location + glyphs.length {
+            let mut line = NSRange::new(0, 0);
+            // SAFETY: `line` is a valid out pointer for the fragment's glyph range.
+            let line_rect = unsafe {
+                self.manager
+                    .lineFragmentRectForGlyphAtIndex_effectiveRange(glyph, &raw mut line)
+            };
+            // A glyph past the container's last line belongs to no fragment.
+            if line.length == 0 {
+                break;
+            }
+            if let Some(visible) = visible_glyphs(&self.manager, line) {
+                let covered = NSIntersectionRange(glyphs, visible);
+                if covered.length > 0 {
+                    let bounds = self
+                        .manager
+                        .boundingRectForGlyphRange_inTextContainer(covered, &self.container);
+                    rects.push(NSIntersectionRect(bounds, line_rect));
+                }
+            }
+            glyph = line.location + line.length;
+        }
+        rects
+    }
+
+    /// The visible part of the line fragment holding `glyph`, or `None` when
+    /// `glyph` itself is elided.
+    fn visible_glyphs(&self, glyph: usize) -> Option<NSRange> {
+        let mut line = NSRange::new(0, 0);
+        // SAFETY: `line` is a valid out pointer for the fragment's glyph range.
+        unsafe {
+            self.manager
+                .lineFragmentRectForGlyphAtIndex_effectiveRange(glyph, &raw mut line);
+        }
+        visible_glyphs(&self.manager, line).filter(|visible| {
+            (visible.location..visible.location + visible.length).contains(&glyph)
+        })
+    }
+}
+
+/// The glyphs of the line fragment `line` that are drawn — all of them,
+/// less the tail a line limit truncates — or `None` when none are.
+fn visible_glyphs(manager: &NSLayoutManager, line: NSRange) -> Option<NSRange> {
+    if line.length == 0 {
+        return None;
+    }
+    let truncated = manager.truncatedGlyphRangeInLineFragmentForGlyphAtIndex(line.location);
+    let end = if truncated.location == NSNotFound.cast_unsigned() {
+        line.location + line.length
+    } else {
+        truncated.location
+    };
+    (end > line.location).then(|| NSRange::new(line.location, end - line.location))
+}
+
+/// One interactive region of a label's text — the span a tap or an
+/// assistive activation can run.
+pub struct SpanLink<'a> {
+    /// The span's range over the label's plain text, in UTF-16 code units.
+    pub range: Range<usize>,
+    /// The text the region's accessibility element announces.
+    pub text: &'a str,
+    /// Runs when the region is activated.
+    pub activate: Rc<dyn Fn()>,
+}
+
+impl std::fmt::Debug for SpanLink<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpanLink")
+            .field("range", &self.range)
+            .field("text", &self.text)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The glyph index at which each laid-out line begins: a glyph's effective
