@@ -1510,13 +1510,14 @@ fn matrix_row<S: Simd>(simd: S, row: &[f32; 3], rgb: [f32x4<S>; 3]) -> f32x4<S> 
 
 /// `convert_packed` on four pixels at once, one channel per vector, so
 /// every lane of the transfer functions carries a pixel. Each pixel's
-/// arithmetic is `convert_packed`'s.
+/// arithmetic is `convert_packed`'s. Returns the converted channel planes
+/// for `f32x4::store_four_interleaved`.
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level"
 )]
 #[inline(always)]
-fn convert_quad<S: Simd, const ENCODE: bool>(simd: S, group: &mut [[f32; 4]; 4]) {
+fn convert_quad<S: Simd, const ENCODE: bool>(simd: S, group: &[[f32; 4]; 4]) -> [f32x4<S>; 4] {
     let [r, g, b, alpha] = f32x4::load_four_interleaved(simd, group.as_flattened());
     let straight = [
         simd.div_f32x4(r, alpha),
@@ -1544,13 +1545,12 @@ fn convert_quad<S: Simd, const ENCODE: bool>(simd: S, group: &mut [[f32; 4]; 4])
     };
     let zero = simd.splat_f32x4(0.0);
     let transparent = simd.simd_eq_f32x4(alpha, zero);
-    let out = [
+    [
         transparent.select(zero, simd.mul_f32x4(rgb[0], alpha)),
         transparent.select(zero, simd.mul_f32x4(rgb[1], alpha)),
         transparent.select(zero, simd.mul_f32x4(rgb[2], alpha)),
         transparent.select(zero, alpha),
-    ];
-    f32x4::store_four_interleaved(out, group.as_flattened_mut());
+    ]
 }
 
 #[expect(
@@ -1561,10 +1561,31 @@ fn convert_quad<S: Simd, const ENCODE: bool>(simd: S, group: &mut [[f32; 4]; 4])
 fn convert_span_in<S: Simd, const ENCODE: bool>(simd: S, pixels: &mut [[f32; 4]]) {
     let (chunks, tail) = pixels.as_chunks_mut::<4>();
     for group in chunks {
-        convert_quad::<S, ENCODE>(simd, group);
+        let out = convert_quad::<S, ENCODE>(simd, group);
+        f32x4::store_four_interleaved(out, group.as_flattened_mut());
     }
     for pixel in tail {
         *pixel = convert_packed::<S, ENCODE>(simd, *pixel);
+    }
+}
+
+/// `convert_span_in` reading `src` and writing `dst`, so a caller that
+/// must keep its source pixels converts without first copying them.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn convert_span_from<S: Simd, const ENCODE: bool>(simd: S, src: &[[f32; 4]], dst: &mut [[f32; 4]]) {
+    assert_eq!(src.len(), dst.len(), "conversion run length mismatch");
+    let (src_chunks, src_tail) = src.as_chunks::<4>();
+    let (dst_chunks, dst_tail) = dst.as_chunks_mut::<4>();
+    for (from, to) in src_chunks.iter().zip(dst_chunks) {
+        let out = convert_quad::<S, ENCODE>(simd, from);
+        f32x4::store_four_interleaved(out, to.as_flattened_mut());
+    }
+    for (from, to) in src_tail.iter().zip(dst_tail) {
+        *to = convert_packed::<S, ENCODE>(simd, *from);
     }
 }
 
@@ -1588,6 +1609,29 @@ pub fn convert_span<S: Simd>(
         convert_span_in::<S, true>(simd, pixels);
     } else {
         convert_span_in::<S, false>(simd, pixels);
+    }
+}
+
+/// Converts `src`, stored in the other blend space, into `to` in `dst`:
+/// `convert_span` out of place, with the same per-pixel arithmetic.
+///
+/// # Panics
+/// When `src` and `dst` are not the same length.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn convert_span_into<S: Simd>(
+    simd: S,
+    src: &[[f32; 4]],
+    dst: &mut [[f32; 4]],
+    to: cherenkov::BlendSpace,
+) {
+    if to == cherenkov::BlendSpace::SrgbEncoded {
+        convert_span_from::<S, true>(simd, src, dst);
+    } else {
+        convert_span_from::<S, false>(simd, src, dst);
     }
 }
 
@@ -1712,14 +1756,19 @@ pub fn composite_solid<S: Simd, C: Source>(
     space: cherenkov::BlendSpace,
 ) {
     cov.check_len(dst.len());
-    match (
-        space == cherenkov::BlendSpace::SrgbEncoded,
-        !matches!(clip.span, ClipSpan::Full),
-    ) {
-        (true, true) => composite_solid_in::<S, C, true, true>(simd, dst, cov, clip, color),
-        (true, false) => composite_solid_in::<S, C, true, false>(simd, dst, cov, clip, color),
-        (false, true) => composite_solid_in::<S, C, false, true>(simd, dst, cov, clip, color),
-        (false, false) => composite_solid_in::<S, C, false, false>(simd, dst, cov, clip, color),
+    // The space conversion divides out alpha, so the converted colour
+    // scaled by coverage is the converted coverage-scaled colour: one
+    // conversion serves every pixel of the span, and the loop itself is
+    // the same in either space.
+    let stored = if space == cherenkov::BlendSpace::SrgbEncoded {
+        convert_packed::<S, true>(simd, color)
+    } else {
+        color
+    };
+    if matches!(clip.span, ClipSpan::Full) {
+        composite_solid_in::<S, C, false>(simd, dst, cov, clip, stored);
+    } else {
+        composite_solid_in::<S, C, true>(simd, dst, cov, clip, stored);
     }
 }
 
@@ -1745,22 +1794,16 @@ fn store_solid_block<S: Simd>(planes: [f32x4<S>; 4], pixels: &mut [[f32; 4]; 4])
     reason = "compiled under the dispatched CPU level"
 )]
 #[inline(always)]
-fn composite_solid_in<S: Simd, C: Source, const SRGB: bool, const CLIPPED: bool>(
+fn composite_solid_in<S: Simd, C: Source, const CLIPPED: bool>(
     simd: S,
     dst: &mut [[f32; 4]],
     cov: C,
     clip: ClipRun<'_>,
-    color: [f32; 4],
+    stored: [f32; 4],
 ) {
-    let opaque = color[3] == 1.0;
-    // The space conversion divides out alpha, so the converted colour
-    // scaled by coverage is the converted coverage-scaled colour: one
-    // conversion serves every pixel of the span.
-    let stored = if SRGB {
-        convert_packed::<S, true>(simd, color)
-    } else {
-        color
-    };
+    // The conversion keeps alpha, so `stored` is opaque exactly when the
+    // paint colour is.
+    let opaque = stored[3] == 1.0;
     let stored_planes = [
         simd.splat_f32x4(stored[0]),
         simd.splat_f32x4(stored[1]),
@@ -3815,9 +3858,10 @@ impl Band<'_> {
         if !direct && !super::blend::is_destructive(blend.0) {
             // Every other operator leaves the destination unchanged for a
             // transparent source, so the clip coverage scales the source
-            // instead of bounding the whole composite. The destination
-            // moves into the blend space and back a span at a time, and
-            // only the pixels under a non-empty source take the result.
+            // instead of bounding the whole composite. Only the pixels
+            // under a non-empty source take the result. In a different
+            // blend space the destination converts into `blended` a span
+            // at a time and back; in its own space it blends in place.
             const SPAN: usize = 64;
             let mut source = [[0.0_f32; 4]; SPAN];
             let mut blended = [[0.0_f32; 4]; SPAN];
@@ -3842,14 +3886,22 @@ impl Band<'_> {
                     if !any {
                         continue;
                     }
+                    let (span, source) = (&mut dst_row[x0..x0 + n], &source[..n]);
+                    if src_space == dst_space {
+                        for (d, s) in span.iter_mut().zip(source) {
+                            if s.iter().any(|&channel| channel != 0.0) {
+                                *d = super::blend::blend(blend.0, *d, *s);
+                            }
+                        }
+                        continue;
+                    }
                     let blended = &mut blended[..n];
-                    blended.copy_from_slice(&dst_row[x0..x0 + n]);
-                    convert_span(simd, blended, dst_space, src_space);
-                    for (d, s) in blended.iter_mut().zip(&source[..n]) {
-                        *d = super::blend::blend(blend.0, *d, *s);
+                    convert_span_into(simd, span, blended, src_space);
+                    for (b, s) in blended.iter_mut().zip(source) {
+                        *b = super::blend::blend(blend.0, *b, *s);
                     }
                     convert_span(simd, blended, src_space, dst_space);
-                    for ((d, b), s) in dst_row[x0..x0 + n].iter_mut().zip(&*blended).zip(&source) {
+                    for ((d, b), s) in span.iter_mut().zip(&*blended).zip(source) {
                         if s.iter().any(|&channel| channel != 0.0) {
                             *d = *b;
                         }
