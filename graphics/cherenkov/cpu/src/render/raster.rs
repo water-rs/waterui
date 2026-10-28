@@ -24,8 +24,12 @@ use crate::render::shadow;
 use crate::render::tiles::EdgeTiles;
 use crate::{Band as BandOut, BandPixels};
 use cherenkov::OffscreenFormat;
-use fearless_simd::{Simd, SimdBase, SimdInterleaved, f32x4};
-use filtrate_core::space::{P3_TO_SRGB, SRGB_TO_P3, srgb_decode, srgb_encode};
+use cherenkov_simd::math::{exp4, ln4};
+use fearless_simd::{Select, Simd, SimdBase, SimdInterleaved, f32x4};
+use filtrate_core::space::{
+    P3_TO_SRGB, SRGB_ENCODED_BREAK, SRGB_GAMMA, SRGB_INVERSE_GAMMA, SRGB_LINEAR_BREAK, SRGB_OFFSET,
+    SRGB_SCALE, SRGB_SLOPE, SRGB_TO_P3,
+};
 use filtrate_core::{CpuFilterError, CpuImage, WorkingSpace};
 
 /// Rows per rasterization band.
@@ -680,8 +684,7 @@ fn shadow_run<S: Simd>(
     inv_sqrt2_sigma: f32,
     margin: f32,
     clip_mask: Option<ClipCoverage<'_>>,
-    color: &[f32; 4],
-    space: cherenkov::BlendSpace,
+    stored: &[f32; 4],
     (cx_lo, cx_hi): (usize, usize),
     run: &shadow::Run,
     integrals: &mut shadow::Integrals<S>,
@@ -742,8 +745,7 @@ fn shadow_run<S: Simd>(
                     if cc <= 0.0 {
                         continue;
                     }
-                    let src = shadow_src(color, cov, cc);
-                    dst[y * w + x] = src_over(dst[y * w + x], member(src, space));
+                    dst[y * w + x] = src_over(dst[y * w + x], shadow_src(stored, cov, cc));
                 }
             }
             x += 4;
@@ -758,8 +760,7 @@ fn shadow_run<S: Simd>(
             if cc <= 0.0 {
                 continue;
             }
-            let src = shadow_src(color, s, cc);
-            dst[y * w + x] = src_over(dst[y * w + x], member(src, space));
+            dst[y * w + x] = src_over(dst[y * w + x], shadow_src(stored, s, cc));
         }
     }
 }
@@ -1283,19 +1284,36 @@ fn capture_sample_level(capture: &Capture, x: f32, y: f32, level: f32) -> [f32; 
 }
 
 /// Convert a premultiplied pixel between linear and sRGB-encoded
-/// storage (`convert_pixel` in `paint.rs`).
-fn move_space(px: [f32; 4], from: cherenkov::BlendSpace, to: cherenkov::BlendSpace) -> [f32; 4] {
+/// storage.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn move_space<S: Simd>(
+    simd: S,
+    px: [f32; 4],
+    from: cherenkov::BlendSpace,
+    to: cherenkov::BlendSpace,
+) -> [f32; 4] {
     if from == to {
         px
+    } else if to == cherenkov::BlendSpace::SrgbEncoded {
+        convert_packed::<S, true>(simd, px)
     } else {
-        super::paint::convert_pixel(px, to == cherenkov::BlendSpace::SrgbEncoded)
+        convert_packed::<S, false>(simd, px)
     }
 }
 
 /// A member draw's linear premultiplied source in the level's storage
 /// space: members composite with each other in the level's space.
-fn member(px: [f32; 4], space: cherenkov::BlendSpace) -> [f32; 4] {
-    move_space(px, cherenkov::BlendSpace::Linear, space)
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn member<S: Simd>(simd: S, px: [f32; 4], space: cherenkov::BlendSpace) -> [f32; 4] {
+    move_space(simd, px, cherenkov::BlendSpace::Linear, space)
 }
 
 /// Composite `src` onto `dst` blending in `space`: each operand converts
@@ -1306,7 +1324,8 @@ fn member(px: [f32; 4], space: cherenkov::BlendSpace) -> [f32; 4] {
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn composite(
+fn composite<S: Simd>(
+    simd: S,
     mode: cherenkov::BlendMode,
     space: cherenkov::BlendSpace,
     dst_space: cherenkov::BlendSpace,
@@ -1315,10 +1334,11 @@ fn composite(
     src: [f32; 4],
 ) -> [f32; 4] {
     move_space(
+        simd,
         super::blend::blend(
             mode,
-            move_space(dst, dst_space, space),
-            move_space(src, src_space, space),
+            move_space(simd, dst, dst_space, space),
+            move_space(simd, src, src_space, space),
         ),
         space,
         dst_space,
@@ -1396,7 +1416,59 @@ fn matrix_pixel<S: Simd>(simd: S, m: &[[f32; 3]; 3], rgb: [f32; 4]) -> f32x4<S> 
     )
 }
 
-/// Converts one packed pixel with exact scalar transfer functions. Zero
+/// filtrate-core's `srgb_encode` on four channels: the sRGB curve of each
+/// linear magnitude, mirrored through zero, with `powf` evaluated as
+/// `exp(γ⁻¹·ln x)` under the dispatched level.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn srgb_encode4<S: Simd>(simd: S, linear: f32x4<S>) -> f32x4<S> {
+    let magnitude = simd.abs_f32x4(linear);
+    let power = exp4(
+        simd,
+        simd.mul_f32x4(ln4(simd, magnitude), simd.splat_f32x4(SRGB_INVERSE_GAMMA)),
+    );
+    let curve = simd.mul_add_f32x4(
+        power,
+        simd.splat_f32x4(SRGB_SCALE),
+        simd.splat_f32x4(-SRGB_OFFSET),
+    );
+    let line = simd.mul_f32x4(magnitude, simd.splat_f32x4(SRGB_SLOPE));
+    simd.copysign_f32x4(
+        simd.simd_gt_f32x4(magnitude, simd.splat_f32x4(SRGB_LINEAR_BREAK))
+            .select(curve, line),
+        linear,
+    )
+}
+
+/// filtrate-core's `srgb_decode` on four channels, the inverse of
+/// [`srgb_encode4`].
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn srgb_decode4<S: Simd>(simd: S, encoded: f32x4<S>) -> f32x4<S> {
+    let magnitude = simd.abs_f32x4(encoded);
+    let base = simd.div_f32x4(
+        simd.add_f32x4(magnitude, simd.splat_f32x4(SRGB_OFFSET)),
+        simd.splat_f32x4(SRGB_SCALE),
+    );
+    let curve = exp4(
+        simd,
+        simd.mul_f32x4(ln4(simd, base), simd.splat_f32x4(SRGB_GAMMA)),
+    );
+    let line = simd.div_f32x4(magnitude, simd.splat_f32x4(SRGB_SLOPE));
+    simd.copysign_f32x4(
+        simd.simd_gt_f32x4(magnitude, simd.splat_f32x4(SRGB_ENCODED_BREAK))
+            .select(curve, line),
+        encoded,
+    )
+}
+
+/// Converts one packed pixel with the vector transfer functions. Zero
 /// alpha returns before division or transfer evaluation; other alpha bits
 /// are retained unchanged.
 #[expect(
@@ -1416,30 +1488,92 @@ fn convert_packed<S: Simd, const ENCODE: bool>(simd: S, pixel: [f32; 4]) -> [f32
         )
         .to_array();
     let linear = if ENCODE {
-        let rgb = matrix_pixel(simd, &P3_TO_SRGB, straight).to_array();
-        f32x4::load_array(
-            simd,
-            [
-                srgb_encode(rgb[0]),
-                srgb_encode(rgb[1]),
-                srgb_encode(rgb[2]),
-                0.0,
-            ],
-        )
+        srgb_encode4(simd, matrix_pixel(simd, &P3_TO_SRGB, straight))
     } else {
         matrix_pixel(
             simd,
             &SRGB_TO_P3,
-            [
-                srgb_decode(straight[0]),
-                srgb_decode(straight[1]),
-                srgb_decode(straight[2]),
-                0.0,
-            ],
+            srgb_decode4(simd, f32x4::load_array(simd, straight)).to_array(),
         )
     };
     let out = simd.mul_f32x4(linear, simd.splat_f32x4(alpha)).to_array();
     [out[0], out[1], out[2], alpha]
+}
+
+/// `matrix_pixel` on four pixels held one channel per vector, with the
+/// same `(m0 * r + m1 * g) + m2 * b` order per output channel.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn matrix_quad<S: Simd>(simd: S, m: &[[f32; 3]; 3], rgb: [f32x4<S>; 3]) -> [f32x4<S>; 3] {
+    [
+        matrix_row(simd, &m[0], rgb),
+        matrix_row(simd, &m[1], rgb),
+        matrix_row(simd, &m[2], rgb),
+    ]
+}
+
+/// One output channel of [`matrix_quad`].
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn matrix_row<S: Simd>(simd: S, row: &[f32; 3], rgb: [f32x4<S>; 3]) -> f32x4<S> {
+    simd.add_f32x4(
+        simd.add_f32x4(
+            simd.mul_f32x4(simd.splat_f32x4(row[0]), rgb[0]),
+            simd.mul_f32x4(simd.splat_f32x4(row[1]), rgb[1]),
+        ),
+        simd.mul_f32x4(simd.splat_f32x4(row[2]), rgb[2]),
+    )
+}
+
+/// `convert_packed` on four pixels at once, one channel per vector, so
+/// every lane of the transfer functions carries a pixel. Each pixel's
+/// arithmetic is `convert_packed`'s. Returns the converted channel planes
+/// for `f32x4::store_four_interleaved`.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn convert_quad<S: Simd, const ENCODE: bool>(simd: S, group: &[[f32; 4]; 4]) -> [f32x4<S>; 4] {
+    let [r, g, b, alpha] = f32x4::load_four_interleaved(simd, group.as_flattened());
+    let straight = [
+        simd.div_f32x4(r, alpha),
+        simd.div_f32x4(g, alpha),
+        simd.div_f32x4(b, alpha),
+    ];
+    let rgb = if ENCODE {
+        let [r, g, b] = matrix_quad(simd, &P3_TO_SRGB, straight);
+        [
+            srgb_encode4(simd, r),
+            srgb_encode4(simd, g),
+            srgb_encode4(simd, b),
+        ]
+    } else {
+        let [r, g, b] = straight;
+        matrix_quad(
+            simd,
+            &SRGB_TO_P3,
+            [
+                srgb_decode4(simd, r),
+                srgb_decode4(simd, g),
+                srgb_decode4(simd, b),
+            ],
+        )
+    };
+    let zero = simd.splat_f32x4(0.0);
+    let transparent = simd.simd_eq_f32x4(alpha, zero);
+    [
+        transparent.select(zero, simd.mul_f32x4(rgb[0], alpha)),
+        transparent.select(zero, simd.mul_f32x4(rgb[1], alpha)),
+        transparent.select(zero, simd.mul_f32x4(rgb[2], alpha)),
+        transparent.select(zero, alpha),
+    ]
 }
 
 #[expect(
@@ -1450,13 +1584,31 @@ fn convert_packed<S: Simd, const ENCODE: bool>(simd: S, pixel: [f32; 4]) -> [f32
 fn convert_span_in<S: Simd, const ENCODE: bool>(simd: S, pixels: &mut [[f32; 4]]) {
     let (chunks, tail) = pixels.as_chunks_mut::<4>();
     for group in chunks {
-        group[0] = convert_packed::<S, ENCODE>(simd, group[0]);
-        group[1] = convert_packed::<S, ENCODE>(simd, group[1]);
-        group[2] = convert_packed::<S, ENCODE>(simd, group[2]);
-        group[3] = convert_packed::<S, ENCODE>(simd, group[3]);
+        let out = convert_quad::<S, ENCODE>(simd, group);
+        f32x4::store_four_interleaved(out, group.as_flattened_mut());
     }
     for pixel in tail {
         *pixel = convert_packed::<S, ENCODE>(simd, *pixel);
+    }
+}
+
+/// `convert_span_in` reading `src` and writing `dst`, so a caller that
+/// must keep its source pixels converts without first copying them.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn convert_span_from<S: Simd, const ENCODE: bool>(simd: S, src: &[[f32; 4]], dst: &mut [[f32; 4]]) {
+    assert_eq!(src.len(), dst.len(), "conversion run length mismatch");
+    let (src_chunks, src_tail) = src.as_chunks::<4>();
+    let (dst_chunks, dst_tail) = dst.as_chunks_mut::<4>();
+    for (from, to) in src_chunks.iter().zip(dst_chunks) {
+        let out = convert_quad::<S, ENCODE>(simd, from);
+        f32x4::store_four_interleaved(out, to.as_flattened_mut());
+    }
+    for (from, to) in src_tail.iter().zip(dst_tail) {
+        *to = convert_packed::<S, ENCODE>(simd, *from);
     }
 }
 
@@ -1480,6 +1632,29 @@ pub fn convert_span<S: Simd>(
         convert_span_in::<S, true>(simd, pixels);
     } else {
         convert_span_in::<S, false>(simd, pixels);
+    }
+}
+
+/// Converts `src`, stored in the other blend space, into `to` in `dst`:
+/// `convert_span` out of place, with the same per-pixel arithmetic.
+///
+/// # Panics
+/// When `src` and `dst` are not the same length.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn convert_span_into<S: Simd>(
+    simd: S,
+    src: &[[f32; 4]],
+    dst: &mut [[f32; 4]],
+    to: cherenkov::BlendSpace,
+) {
+    if to == cherenkov::BlendSpace::SrgbEncoded {
+        convert_span_from::<S, true>(simd, src, dst);
+    } else {
+        convert_span_from::<S, false>(simd, src, dst);
     }
 }
 
@@ -1604,14 +1779,19 @@ pub fn composite_solid<S: Simd, C: Source>(
     space: cherenkov::BlendSpace,
 ) {
     cov.check_len(dst.len());
-    match (
-        space == cherenkov::BlendSpace::SrgbEncoded,
-        !matches!(clip.span, ClipSpan::Full),
-    ) {
-        (true, true) => composite_solid_in::<S, C, true, true>(simd, dst, cov, clip, color),
-        (true, false) => composite_solid_in::<S, C, true, false>(simd, dst, cov, clip, color),
-        (false, true) => composite_solid_in::<S, C, false, true>(simd, dst, cov, clip, color),
-        (false, false) => composite_solid_in::<S, C, false, false>(simd, dst, cov, clip, color),
+    // The space conversion divides out alpha, so the converted colour
+    // scaled by coverage is the converted coverage-scaled colour: one
+    // conversion serves every pixel of the span, and the loop itself is
+    // the same in either space.
+    let stored = if space == cherenkov::BlendSpace::SrgbEncoded {
+        convert_packed::<S, true>(simd, color)
+    } else {
+        color
+    };
+    if matches!(clip.span, ClipSpan::Full) {
+        composite_solid_in::<S, C, false>(simd, dst, cov, clip, stored);
+    } else {
+        composite_solid_in::<S, C, true>(simd, dst, cov, clip, stored);
     }
 }
 
@@ -1637,19 +1817,16 @@ fn store_solid_block<S: Simd>(planes: [f32x4<S>; 4], pixels: &mut [[f32; 4]; 4])
     reason = "compiled under the dispatched CPU level"
 )]
 #[inline(always)]
-fn composite_solid_in<S: Simd, C: Source, const SRGB: bool, const CLIPPED: bool>(
+fn composite_solid_in<S: Simd, C: Source, const CLIPPED: bool>(
     simd: S,
     dst: &mut [[f32; 4]],
     cov: C,
     clip: ClipRun<'_>,
-    color: [f32; 4],
+    stored: [f32; 4],
 ) {
-    let opaque = color[3] == 1.0;
-    let stored = if SRGB {
-        convert_packed::<S, true>(simd, color)
-    } else {
-        color
-    };
+    // The conversion keeps alpha, so `stored` is opaque exactly when the
+    // paint colour is.
+    let opaque = stored[3] == 1.0;
     let stored_planes = [
         simd.splat_f32x4(stored[0]),
         simd.splat_f32x4(stored[1]),
@@ -1685,12 +1862,12 @@ fn composite_solid_in<S: Simd, C: Source, const SRGB: bool, const CLIPPED: bool>
             for lane in 0..4 {
                 let i = pos + lane;
                 let cc = if CLIPPED { clip.at(i) } else { 1.0 };
-                blend_packed::<S, SRGB>(simd, &mut dst[i], color, cov.at(i), cc);
+                blend_packed::<S, false>(simd, &mut dst[i], stored, cov.at(i), cc);
             }
             pos += 4;
         } else {
             let cc = if CLIPPED { clip.at(pos) } else { 1.0 };
-            blend_packed::<S, SRGB>(simd, &mut dst[pos], color, cov.at(pos), cc);
+            blend_packed::<S, false>(simd, &mut dst[pos], stored, cov.at(pos), cc);
             pos += 1;
         }
     }
@@ -2523,8 +2700,8 @@ fn run<S: Simd>(
                     continue;
                 };
                 band.composite_isolate(
-                    &plane.buf,
-                    plane.space,
+                    simd,
+                    (&plane.buf, plane.space),
                     *opacity,
                     *blend,
                     clips.prepare(
@@ -2611,8 +2788,8 @@ fn run<S: Simd>(
                 let first = (band.y0 - top) * band.w;
                 let central = &window[first..first + band.fb.len()];
                 band.composite_isolate(
-                    central,
-                    *space,
+                    simd,
+                    (central, *space),
                     *opacity,
                     *blend,
                     clips.prepare(
@@ -2658,6 +2835,7 @@ fn run<S: Simd>(
             } => {
                 if let Some(capture) = ctx.captures.get(group) {
                     band.sample(
+                        simd,
                         capture,
                         *bounds,
                         clips.prepare(
@@ -2705,7 +2883,7 @@ fn run<S: Simd>(
                     acc,
                     ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
                 );
-                band.project(stack, item, clip);
+                band.project(simd, stack, item, clip);
             }
             Item::Silhouette { slot, paint, clip } => {
                 band.glyph(
@@ -3393,8 +3571,7 @@ impl Band<'_> {
                                 inv_sqrt2_sigma,
                                 margin,
                                 clip_mask,
-                                color,
-                                space,
+                                &member(simd, *color, space),
                                 (cx_lo, cx_hi),
                                 &run,
                                 &mut integrals,
@@ -3415,8 +3592,7 @@ impl Band<'_> {
                         inv_sqrt2_sigma,
                         margin,
                         clip_mask,
-                        color,
-                        space,
+                        &member(simd, *color, space),
                         (cx_lo, cx_hi),
                         &run,
                         &mut integrals,
@@ -3443,8 +3619,9 @@ impl Band<'_> {
         reason = "compiled under the dispatched CPU level so mul_add is one instruction"
     )]
     #[inline(always)]
-    fn sample(
+    fn sample<S: Simd>(
         &mut self,
+        simd: S,
         capture: &Capture,
         bounds: IRect,
         clip: Option<ClipCoverage<'_>>,
@@ -3508,13 +3685,14 @@ impl Band<'_> {
                 // The sample at its coverage blends source-over in the
                 // group's member space: the canvas converts into it and
                 // the result back.
-                let src = move_space(c.map(|v| v * cc), capture.space, member_space);
+                let src = move_space(simd, c.map(|v| v * cc), capture.space, member_space);
                 let d = &mut dst[row + px];
                 *d = if member_space == space {
                     src_over(*d, src)
                 } else {
                     move_space(
-                        src_over(move_space(*d, space, member_space), src),
+                        simd,
+                        src_over(move_space(simd, *d, space, member_space), src),
                         member_space,
                         space,
                     )
@@ -3620,8 +3798,9 @@ impl Band<'_> {
         reason = "compiled under the dispatched CPU level so mul_add is one instruction"
     )]
     #[inline(always)]
-    fn project(
+    fn project<S: Simd>(
         &mut self,
+        simd: S,
         stack: &mut [Plane],
         item: &super::lower::ProjectItem,
         clip: Option<ClipCoverage<'_>>,
@@ -3644,59 +3823,108 @@ impl Band<'_> {
                 let src = sample.map(|v| v * item.opacity * cc);
                 let (dst, space) = top(&mut *self.fb, self.space, stack);
                 let i = (py - self.y0) * self.w + px;
-                dst[i] = src_over(dst[i], member(src, space));
+                dst[i] = src_over(dst[i], member(simd, src, space));
             }
         }
     }
 
     /// Composites the popped isolation buffer onto the buffer below:
-    /// the blend runs in the popped level's storage space (`src_space`),
-    /// which is its declared `blend_space` for a semantic level or the
-    /// parent's for a pass-through one — members already composited in
-    /// it.
+    /// the blend runs in the popped level's storage space (`src_space`,
+    /// paired with its buffer), which is its declared `blend_space` for a
+    /// semantic level or the parent's for a pass-through one — members
+    /// already composited in it.
     #[expect(
         clippy::inline_always,
         reason = "compiled under the dispatched CPU level so mul_add is one instruction"
     )]
     #[inline(always)]
-    fn composite_isolate(
+    fn composite_isolate<S: Simd>(
         &mut self,
-        scratch: &[[f32; 4]],
-        src_space: cherenkov::BlendSpace,
+        simd: S,
+        (scratch, src_space): (&[[f32; 4]], cherenkov::BlendSpace),
         opacity: f32,
         blend: (cherenkov::BlendMode, cherenkov::BlendSpace),
         clip: Option<ClipCoverage<'_>>,
         stack: &mut Vec<Plane>,
     ) {
         let (dst, dst_space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
+        let direct = blend.0 == cherenkov::BlendMode::Normal && src_space == dst_space;
+        if !direct && !super::blend::is_destructive(blend.0) {
+            // Every other operator leaves the destination unchanged for a
+            // transparent source, so the clip coverage scales the source
+            // instead of bounding the whole composite. Only the pixels
+            // under a non-empty source take the result. In a different
+            // blend space the destination converts into `blended` a span
+            // at a time and back; in its own space it blends in place.
+            const SPAN: usize = 64;
+            let mut source = [[0.0_f32; 4]; SPAN];
+            let mut blended = [[0.0_f32; 4]; SPAN];
+            for (row, (src_row, dst_row)) in scratch
+                .chunks_exact(self.w)
+                .zip(dst.chunks_exact_mut(self.w))
+                .enumerate()
+            {
+                let py = self.y0 + row;
+                for x0 in (0..self.w).step_by(SPAN) {
+                    let n = SPAN.min(self.w - x0);
+                    let mut any = false;
+                    for (j, s) in source[..n].iter_mut().enumerate() {
+                        let cc = clip_cov(clip, self.w, x0 + j, py);
+                        *s = if cc > 0.0 {
+                            src_row[x0 + j].map(|v| v * opacity * cc)
+                        } else {
+                            [0.0; 4]
+                        };
+                        any |= s.iter().any(|&channel| channel != 0.0);
+                    }
+                    if !any {
+                        continue;
+                    }
+                    let (span, source) = (&mut dst_row[x0..x0 + n], &source[..n]);
+                    if src_space == dst_space {
+                        for (d, s) in span.iter_mut().zip(source) {
+                            if s.iter().any(|&channel| channel != 0.0) {
+                                *d = super::blend::blend(blend.0, *d, *s);
+                            }
+                        }
+                        continue;
+                    }
+                    let blended = &mut blended[..n];
+                    convert_span_into(simd, span, blended, src_space);
+                    for (b, s) in blended.iter_mut().zip(source) {
+                        *b = super::blend::blend(blend.0, *b, *s);
+                    }
+                    convert_span(simd, blended, src_space, dst_space);
+                    for ((d, b), s) in span.iter_mut().zip(&*blended).zip(source) {
+                        if s.iter().any(|&channel| channel != 0.0) {
+                            *d = *b;
+                        }
+                    }
+                }
+            }
+            return;
+        }
         for (i, &src) in scratch.iter().enumerate() {
             let px = i % self.w;
             let py = self.y0 + i / self.w;
             let cc = clip_cov(clip, self.w, px, py);
-            if blend.0 == cherenkov::BlendMode::Normal && src_space == dst_space {
+            if direct {
                 let s = src.map(|v| v * opacity * cc);
                 dst[i] = src_over(dst[i], s);
-            } else if super::blend::is_destructive(blend.0) {
+            } else if cc > 0.0 {
                 // The clip limits the composite operation, including Clear
                 // and DestIn; multiplying only source alpha is not equivalent.
-                if cc > 0.0 {
-                    let source = src.map(|value| value * opacity);
-                    let result =
-                        composite(blend.0, src_space, dst_space, src_space, dst[i], source);
-                    dst[i] = if cc >= 1.0 {
-                        result
-                    } else {
-                        std::array::from_fn(|channel| {
-                            cc.mul_add(result[channel] - dst[i][channel], dst[i][channel])
-                        })
-                    };
-                }
-            } else if cc > 0.0 {
-                // Every other operator leaves the destination unchanged
-                // for a transparent source, so the clip coverage scales the
-                // source instead of bounding the whole composite.
-                let s = src.map(|v| v * opacity * cc);
-                dst[i] = composite(blend.0, src_space, dst_space, src_space, dst[i], s);
+                let source = src.map(|value| value * opacity);
+                let result = composite(
+                    simd, blend.0, src_space, dst_space, src_space, dst[i], source,
+                );
+                dst[i] = if cc >= 1.0 {
+                    result
+                } else {
+                    std::array::from_fn(|channel| {
+                        cc.mul_add(result[channel] - dst[i][channel], dst[i][channel])
+                    })
+                };
             }
         }
     }
@@ -3883,7 +4111,7 @@ mod tests {
 
     use super::{
         ClipCoverage, ClipRun, Edge, composite_solid, composite_span, convert_span, coverage_mask,
-        member, move_space, reduce_rows, src_over,
+        member, reduce_rows, src_over,
     };
     use crate::render::lower::IRect;
     use cherenkov::{BlendSpace, FillRule};
@@ -4094,7 +4322,11 @@ mod tests {
                                                 }
                                                 src_over(
                                                     dst0[i],
-                                                    member(src[i].map(|v| v * cov[i] * cc), space),
+                                                    member(
+                                                        simd,
+                                                        src[i].map(|v| v * cov[i] * cc),
+                                                        space,
+                                                    ),
                                                 )
                                             })
                                             .collect()
@@ -4143,13 +4375,25 @@ mod tests {
         check(fearless_simd::Fallback::new());
     }
 
-    /// `convert_span` is `move_space` per pixel, to within `assert_close`,
+    /// `convert_span` is filtrate-core's scalar `to_srgb`/`from_srgb` per
+    /// pixel, to within `assert_close`,
     /// in both directions and as the identity, over run lengths 0–67 and every
     /// start offset, on finite, negative, HDR, transparent and
     /// signed-zero values, under the detected level and the fallback
     /// token.
     #[test]
-    fn convert_span_matches_move_space() {
+    fn convert_span_matches_filtrate() {
+        fn reference(pixel: [f32; 4], from: BlendSpace, to: BlendSpace) -> [f32; 4] {
+            let mut pixel = [pixel];
+            if from != to {
+                if to == BlendSpace::SrgbEncoded {
+                    filtrate_core::space::to_srgb(&mut pixel);
+                } else {
+                    filtrate_core::space::from_srgb(&mut pixel);
+                }
+            }
+            pixel[0]
+        }
         fn check<S: fearless_simd::Simd>(simd: S) {
             let seeds: &[[f32; 4]] = &[
                 [0.2, 0.4, 0.6, 0.8],
@@ -4170,7 +4414,7 @@ mod tests {
                         let pixels: Vec<[f32; 4]> =
                             (0..len).map(|i| seeds[(i + x0) % seeds.len()]).collect();
                         let expected: Vec<[f32; 4]> =
-                            pixels.iter().map(|&p| move_space(p, from, to)).collect();
+                            pixels.iter().map(|&p| reference(p, from, to)).collect();
                         let mut out = pixels;
                         convert_span(simd, &mut out, from, to);
                         for (actual, want) in out.iter().zip(&expected) {

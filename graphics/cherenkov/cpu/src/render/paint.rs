@@ -10,23 +10,9 @@ use rustc_hash::FxHashMap;
 
 use cherenkov::RenderError;
 use fearless_simd::{Simd, SimdInterleaved, f32x4};
-use filtrate_core::space::{
-    P3_TO_SRGB, SRGB_TO_P3, from_srgb, srgb_decode, srgb_encode, to_srgb, transform,
-};
+use filtrate_core::space::{P3_TO_SRGB, SRGB_TO_P3, srgb_decode, srgb_encode, transform};
 
 use crate::names;
-
-/// Convert a premultiplied pixel between linear P3 and encoded sRGB —
-/// filtrate-core's `to_srgb`/`from_srgb` conversion on a single pixel.
-pub(super) fn convert_pixel(pixel: [f32; 4], encode: bool) -> [f32; 4] {
-    let mut pixel = [pixel];
-    if encode {
-        to_srgb(&mut pixel);
-    } else {
-        from_srgb(&mut pixel);
-    }
-    pixel[0]
-}
 
 /// A gradient stop in interpolation-space straight-alpha components.
 #[derive(Clone, Copy, Debug)]
