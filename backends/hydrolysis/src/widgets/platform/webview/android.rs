@@ -397,7 +397,7 @@ impl CustomWebViewController for AndroidSystemWebViewController {
             pending: RefCell::new(PendingCalls::default()),
             origin_rules,
             navigation: RefCell::new(NavigationTracker::default()),
-            navigation_policy: config.navigation_policy.clone(),
+            navigation_policy: config.navigation_policy,
         });
         let native_handle = Box::into_raw(Box::new(Rc::downgrade(&shared))) as jlong;
 

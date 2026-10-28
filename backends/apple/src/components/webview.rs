@@ -28,7 +28,6 @@ use alloc::vec::Vec;
 use core::cell::{Cell, OnceCell, RefCell};
 
 use cocoa_ui::{MainThreadMarker, web_kit};
-use objc2::rc::Retained;
 use waterui::Str;
 use waterui::reactive::watcher::BoxWatcherGuard;
 use waterui::reactive::{Computed, Signal};
@@ -395,8 +394,8 @@ impl Shared {
     /// `mainFrameNavigation`, so the policy never sees it or the redirects
     /// it follows. `None` starts nothing: a `go_back` with no previous
     /// entry leaves none.
-    fn app_load(&self, navigation: Option<Retained<web_kit::WKNavigation>>) {
-        if let Some(navigation) = navigation.as_deref() {
+    fn app_load(&self, navigation: Option<&web_kit::WKNavigation>) {
+        if let Some(navigation) = navigation {
             self.answered.answer(navigation);
         }
     }
@@ -440,7 +439,7 @@ impl Shared {
                 return web_kit::Policy::Cancel;
             }
             self.emit_will_navigate(&url, allow_repeat);
-            self.app_load(self.view().load_request(&info.request));
+            self.app_load(self.view().load_request(&info.request).as_deref());
             return web_kit::Policy::Cancel;
         }
         if !answered {
@@ -569,7 +568,7 @@ impl Shared {
             web_kit::Event::OpenRequest(request) => {
                 // The in-place reroute of an action `decide_action` already
                 // answered — the policy is not consulted twice.
-                self.app_load(self.view().load_request(&request));
+                self.app_load(self.view().load_request(&request).as_deref());
             }
         }
     }
@@ -577,16 +576,17 @@ impl Shared {
 
 impl WebViewHandle for WkWebViewHandle {
     fn go_back(&self) {
-        self.shared.app_load(self.controller().go_back());
+        self.shared.app_load(self.controller().go_back().as_deref());
     }
 
     fn go_forward(&self) {
-        self.shared.app_load(self.controller().go_forward());
+        self.shared
+            .app_load(self.controller().go_forward().as_deref());
     }
 
     fn go_to(&self, url: &Url) {
         self.shared
-            .app_load(self.controller().load_url(url.as_str()));
+            .app_load(self.controller().load_url(url.as_str()).as_deref());
     }
 
     fn stop(&self) {
@@ -594,7 +594,7 @@ impl WebViewHandle for WkWebViewHandle {
     }
 
     fn refresh(&self) {
-        self.shared.app_load(self.controller().reload());
+        self.shared.app_load(self.controller().reload().as_deref());
     }
 
     fn set_user_agent(&self, user_agent: &str) {

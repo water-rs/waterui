@@ -211,8 +211,8 @@ impl SharedState {
     /// `mainFrameNavigation`, so the policy never sees it or the redirects
     /// it follows. `None` starts nothing: a `goBack` with no previous
     /// entry leaves none.
-    fn note_app_load(&self, navigation: Option<Retained<WKNavigation>>) {
-        if let Some(navigation) = navigation.as_deref() {
+    fn note_app_load(&self, navigation: Option<&WKNavigation>) {
+        if let Some(navigation) = navigation {
             self.answered.answer(navigation);
         }
     }
@@ -357,7 +357,7 @@ define_class!(
             // A targetless action — `window.open` — would be a main-frame
             // navigation where a backend reroutes it, so the policy is told
             // it is one.
-            let is_main_frame = target_frame.as_ref().map_or(true, |frame| unsafe {
+            let is_main_frame = target_frame.as_ref().is_none_or(|frame| unsafe {
                 // SAFETY: same as above.
                 frame.isMainFrame()
             });
@@ -1094,14 +1094,14 @@ impl WebViewHandle for MacSystemWebViewHandle {
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
         let navigation = unsafe { self.inner.web_view.goBack() };
-        self.inner.shared.note_app_load(navigation);
+        self.inner.shared.note_app_load(navigation.as_deref());
     }
 
     fn go_forward(&self) {
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
         let navigation = unsafe { self.inner.web_view.goForward() };
-        self.inner.shared.note_app_load(navigation);
+        self.inner.shared.note_app_load(navigation.as_deref());
     }
 
     fn go_to(&self, url: &Url) {
@@ -1111,7 +1111,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
         let navigation = unsafe { self.inner.web_view.loadRequest(&request) };
-        self.inner.shared.note_app_load(navigation);
+        self.inner.shared.note_app_load(navigation.as_deref());
     }
 
     fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
@@ -1156,7 +1156,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
         let navigation = unsafe { self.inner.web_view.reload() };
-        self.inner.shared.note_app_load(navigation);
+        self.inner.shared.note_app_load(navigation.as_deref());
     }
 
     fn set_user_agent(&self, user_agent: &str) {
