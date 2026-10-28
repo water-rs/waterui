@@ -624,6 +624,15 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
             attachment: true,
         });
     }
+    specs.push(Spec {
+        name: "engine_tile_simple".into(),
+        source: format!("{}\n{}", specs[0].source, m.tile),
+        groups: bindings::ENGINE_GROUPS,
+        programs: &[],
+        metal: false,
+        merge_pair: None,
+        attachment: true,
+    });
     specs
 }
 
@@ -807,17 +816,17 @@ fn compile(
         .validate(&module)
         .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
     if spec.attachment && spirv {
-        let specialized = matches!(
-            spec.name.as_str(),
-            "engine_tile_glyph" | "engine_tile_composite"
-        );
+        let fragment = match spec.name.as_str() {
+            "engine_tile_simple" => Some("tile_simple"),
+            "engine_tile_glyph" | "engine_tile_composite" => Some("tile_full"),
+            _ => None,
+        };
         module.entry_points.retain(|entry| {
             entry.name == "vs_main"
-                || if specialized {
-                    entry.name == "tile_full"
-                } else {
-                    entry.name.starts_with("tile_")
-                }
+                || fragment.map_or_else(
+                    || entry.name.starts_with("tile_") && entry.name != "tile_simple",
+                    |name| entry.name == name,
+                )
         });
     }
     // Metal's attachment wrapper calls helper functions directly; its roots
@@ -967,7 +976,9 @@ fn write_spirv(out_dir: &Path, spec: &Spec, module: &naga::Module, info: &naga::
                     bindings::TILE_INPUT_BINDINGS,
                     source_index,
                     match spec.name.as_str() {
-                        "engine_tile_glyph" | "engine_tile_long" => [false, false],
+                        "engine_tile_simple" | "engine_tile_glyph" | "engine_tile_long" => {
+                            [false, false]
+                        }
                         "engine_tile_composite" => [false, true],
                         _ => [true, true],
                     },

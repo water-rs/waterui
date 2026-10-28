@@ -2041,7 +2041,7 @@ mod list_spacing {
     use waterui::reactive::binding;
     use waterui_apple::native_test_support::{
         MAIN_QUEUE_DEADLINE, drain_main_queue, mount_uikit_window, pump_main_until,
-        render_environment, spawned_window,
+        render_environment,
     };
 
     pub fn trials() -> Vec<libtest_mimic::Trial> {
@@ -2089,7 +2089,10 @@ mod list_spacing {
             mtm(),
             AnyView::new(NavigationStack::new(page)),
             &render_environment(),
-            spawned_window(mtm()),
+            cocoa_ui::uikit::native_test::window(
+                mtm(),
+                cocoa_ui::Rect::new(0.0, 0.0, 390.0, 844.0),
+            ),
         );
         let row = cocoa_ui::objc2_foundation::NSIndexPath::indexPathForRow_inSection(0, 0);
         assert!(

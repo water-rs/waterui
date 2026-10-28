@@ -230,10 +230,6 @@ jobs:
       - name: Set up modern bash
         uses: ./.github/actions/setup-bash
 
-      - name: Prepare comparison tools
-        uses: ./.github/actions/setup-e2e-tools
-        timeout-minutes: 1
-
       - name: Run iOS e2e examples
         env:
           PLATFORM: ios
@@ -327,10 +323,6 @@ jobs:
       # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
       - name: Set up modern bash
         uses: ./.github/actions/setup-bash
-
-      - name: Prepare comparison tools
-        uses: ./.github/actions/setup-e2e-tools
-        timeout-minutes: 1
 
       - name: Install the screenshot comparer
         uses: actions/download-artifact@v4

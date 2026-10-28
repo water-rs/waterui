@@ -399,6 +399,24 @@ fn rebuild_flat_layout(state: &mut Shared) {
     }
 }
 
+/// `AppKit`: re-resolves each materialized row's separator after a
+/// batched membership change — the update reuses the surviving row
+/// views, so a row that became or stopped being its section's last
+/// member needs its flag reset (water-rs/waterui#3592). The other paths
+/// re-ask `rowViewForRow:` through `reloadData`, which resolves the flag
+/// fresh.
+#[cfg(target_os = "macos")]
+fn refresh_separators(state: &Rc<RefCell<Shared>>, table: &TableView) {
+    table.enumerate_row_views({
+        let state = Rc::clone(state);
+        move |row, row_view| {
+            if let Some(row_view) = row_view.downcast_ref::<TableRowView>() {
+                row_view.set_shows_separator(state.borrow().shows_separator(row));
+            }
+        }
+    });
+}
+
 /// What one display row is: a live row's flat item index, or a removal
 /// ghost's key.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -958,6 +976,8 @@ impl Shared {
                         // deletes with no animation so only siblings
                         // close the gap.
                         table.apply_row_updates(&[index], &[], &[], &[], false);
+                        #[cfg(target_os = "macos")]
+                        refresh_separators(&state, &table);
                     },
                 );
             }),
@@ -975,6 +995,17 @@ impl Shared {
     #[cfg(target_os = "macos")]
     fn insets_for(&self, insets: Option<&EdgeInsets>) -> KitInsets {
         insets.map_or(self.theme_insets, kit_insets)
+    }
+
+    /// Whether the flat entry at `row` paints the hairline under it —
+    /// every member but its section's last, matching `SwiftUI`'s inset
+    /// list (water-rs/waterui#3592).
+    #[cfg(target_os = "macos")]
+    fn shows_separator(&self, row: usize) -> bool {
+        let member = |entry: Option<&FlatEntry>| {
+            matches!(entry, Some(FlatEntry::Row(_) | FlatEntry::Ghost(_)))
+        };
+        member(self.flat_layout.get(row)) && member(self.flat_layout.get(row + 1))
     }
 
     /// `id`'s flat index — linear, row lookups are short.
@@ -1224,6 +1255,7 @@ fn apply_contents_change(
                     .collect();
                 let moves = sequential_moves(&old_keys, &new_keys, &removed, &inserted);
                 table_inner.apply_row_updates(&deletes, &moves, &plain, &claimed, true);
+                refresh_separators(&state_inner, &table_inner);
             }
         } else {
             table_inner.reload_data();
@@ -2144,14 +2176,17 @@ mod platform_impl {
             }
         }
 
-        fn row_view(&self, table: &TableView, row: usize) -> Option<Retained<TableRowView>> {
-            let entry = *self.state.borrow().flat_layout.get(row)?;
-            if !matches!(entry, FlatEntry::Row(_) | FlatEntry::Ghost(_)) {
-                return None;
-            }
+        fn row_view(&self, _table: &TableView, row: usize) -> Option<Retained<TableRowView>> {
+            let shows_separator = {
+                let state = self.state.borrow();
+                let entry = *state.flat_layout.get(row)?;
+                if !matches!(entry, FlatEntry::Row(_) | FlatEntry::Ghost(_)) {
+                    return None;
+                }
+                state.shows_separator(row)
+            };
             let row_view = TableRowView::new(self.mtm);
-            let table_width = view::bounds(table).size.width;
-            let _ = table_width;
+            row_view.set_shows_separator(shows_separator);
             row_view.set_separator_handler(Some(Rc::new(|row_view| {
                 // `resolvedSeparatorLeading`: the leftmost text x inside
                 // the row's cell view — 16 + the insets' surplus over the

@@ -186,7 +186,7 @@ pub struct UIKitMount {
     pub host: cocoa_ui::Retained<cocoa_ui::uikit::HostView>,
     pub content: alloc::rc::Rc<crate::contract::Mounted>,
     pub window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
-    _controller: cocoa_ui::Retained<cocoa_ui::uikit::ViewController>,
+    controller: cocoa_ui::Retained<cocoa_ui::uikit::ViewController>,
     _keepalive: crate::contract::KeepAlive,
 }
 
@@ -194,8 +194,27 @@ pub struct UIKitMount {
 impl Drop for UIKitMount {
     fn drop(&mut self) {
         self.host.clear_handlers();
+        // Whether the window shows in a window scene — the same read
+        // `mount_uikit_window` gated its appearance wait on, taken before
+        // the window hides. A scene-less window releases its root at once,
+        // as it always has.
+        let scene_bound = self.window.windowScene().is_some();
         self.window.setHidden(true);
+        // Hiding alone delivers no disappearance; releasing the root does,
+        // ending on a later run-loop turn. The mount still owns the
+        // controller, so it lives until that disappearance has ended.
         self.window.setRootViewController(None);
+        if scene_bound {
+            assert!(
+                pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                    let counts = self.controller.appearance_counts();
+                    counts.did_disappear >= counts.did_appear
+                }),
+                "the root controller's viewDidDisappear: did not run within \
+                 {MAIN_QUEUE_DEADLINE}s of releasing it: {:?}",
+                self.controller.appearance_counts()
+            );
+        }
     }
 }
 
@@ -253,11 +272,26 @@ pub fn mount_uikit_window(
     let content = crate::embedding::mount_content(&host, view, &env, &mut keepalive);
     window.makeKeyAndVisible();
     window.layoutIfNeeded();
+    // A scene window opens an appearance transition only the run loop
+    // closes: `viewWillAppear:` lands inside `makeKeyAndVisible`, but
+    // `viewDidAppear:` waits for a later turn. Returning before it runs
+    // hands the case a mid-transition controller whose drop would cut
+    // the transition short. A scene-less window — the bare harness's
+    // spawned window — keeps the immediate return.
+    if window.windowScene().is_some() {
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                controller.appearance_counts().did_appear >= 1
+            }),
+            "the root controller's viewDidAppear: did not run within \
+             {MAIN_QUEUE_DEADLINE}s of showing its scene window"
+        );
+    }
     UIKitMount {
         host,
         content,
         window,
-        _controller: controller,
+        controller,
         _keepalive: keepalive,
     }
 }
