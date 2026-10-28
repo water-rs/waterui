@@ -312,6 +312,7 @@ impl AndroidCherenkovSurface {
         window: &ndk::native_window::NativeWindow,
         size: (u32, u32),
         wake: impl Fn() + Send + Sync + 'static,
+        transparent: bool,
     ) -> Self {
         use cherenkov_gpu::interop::android::{SurfaceControl, SurfaceControlTarget};
         // SAFETY: the host holds the live SurfaceView's ANativeWindow lease.
@@ -320,7 +321,10 @@ impl AndroidCherenkovSurface {
         let looper = ndk::looper::ForeignLooper::for_thread()
             .expect("hydrolysis android: surface creation requires the host Looper");
         let surface = engine
-            .surface(SurfaceControlTarget::new(parent, size, looper), wake)
+            .surface(
+                SurfaceControlTarget::new(parent, size, looper).transparent(transparent),
+                wake,
+            )
             .expect("hydrolysis android: failed to create the compositor surface");
         Self {
             core: SurfaceCore::new(engine, surface, size),
