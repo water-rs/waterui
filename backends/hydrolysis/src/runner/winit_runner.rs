@@ -192,6 +192,28 @@ const fn ends_event_loop(policy: LastWindowPolicy, open_windows: usize) -> bool 
     }
 }
 
+/// Writes the scheme `theme` reports into `scheme`, only when it moved.
+///
+/// Both winit reports reach the runner through this seam: the
+/// `ActiveEventLoop::system_theme` read where the loop first activates, and
+/// each `WindowEvent::ThemeChanged` payload afterwards. A report repeating
+/// the held scheme writes nothing, so the token slots never re-resolve for a
+/// report that moved nothing. (`ThemeChanged` arrives per window, so the
+/// repeat case is the common one.)
+#[cfg(any(target_os = "windows", test))]
+fn sync_system_color_scheme(
+    scheme: &nami::Binding<waterui::theme::ColorScheme>,
+    theme: winit::window::Theme,
+) {
+    let resolved = match theme {
+        winit::window::Theme::Dark => waterui::theme::ColorScheme::Dark,
+        winit::window::Theme::Light => waterui::theme::ColorScheme::Light,
+    };
+    if scheme.snapshot() != resolved {
+        scheme.set(resolved);
+    }
+}
+
 /// The window a `MenuItem::CloseWindow` request acts on: the window the
 /// dispatch invoked it for — a chord's dispatching window, a popup row's
 /// owner — resolved to its native id, provided it still lives. `None` when
@@ -723,13 +745,21 @@ pub fn run(
         MenuShortcutRegistry::default,
     );
     // The platform appearance feeds the colour scheme for as long as the
-    // loop runs. Only macOS observes it yet; elsewhere the scheme is Light
-    // unless the application installs its own.
+    // loop runs. macOS observes `NSApp.effectiveAppearance` itself; Windows
+    // writes winit's system theme into the binding — seeded where the loop
+    // first activates, ahead of the first window mount, and again on each
+    // `WindowEvent::ThemeChanged`. Elsewhere the scheme is Light unless the
+    // application installs its own; Linux's source lands with
+    // water-rs/waterui#3546.
     #[cfg(target_os = "macos")]
     let system_appearance = crate::platform::macos_appearance::SystemAppearance::observe();
     #[cfg(target_os = "macos")]
     let appearance = system_appearance.scheme();
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    let system_color_scheme = nami::binding(waterui::theme::ColorScheme::Light);
+    #[cfg(target_os = "windows")]
+    let appearance = system_color_scheme.clone();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let appearance = waterui::theme::ColorScheme::Light;
     crate::theme::install_theme_tokens(&mut env, Some(&style), appearance);
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
@@ -821,6 +851,8 @@ pub fn run(
         outside_pointer_presses: 0,
         focused_window: None,
         last_pointer_window: None,
+        #[cfg(target_os = "windows")]
+        system_color_scheme,
         termination,
         #[cfg(target_os = "windows")]
         session_end,
@@ -890,6 +922,15 @@ struct WinitRunner {
     /// pointer position, so for `MonitorSelector::Pointer` this window's
     /// monitor stands in for the pointer's home.
     last_pointer_window: Option<WindowId>,
+    /// The system colour scheme the theme tokens resolve against, owned for
+    /// the loop's lifetime: seeded from `ActiveEventLoop::system_theme`
+    /// where the loop first activates — ahead of the first window mount —
+    /// and written again on each `WindowEvent::ThemeChanged`, only when the
+    /// value moved. macOS feeds the same tokens through its own observer
+    /// (`platform::macos_appearance`); other platforms' sources land with
+    /// their own issues.
+    #[cfg(target_os = "windows")]
+    system_color_scheme: nami::Binding<waterui::theme::ColorScheme>,
     /// The termination machine every quit path reports through: signals,
     /// the last window closing, `Quit` in the environment, Windows'
     /// `WM_QUERYENDSESSION`.
@@ -1344,6 +1385,17 @@ impl WinitRunner {
 
     fn mount_pending_windows(&mut self, event_loop: &ActiveEventLoop) {
         self.start_main_thread_executor(event_loop);
+        // The same first-active point the executor install uses: the system
+        // theme is readable now, and seeding the binding here — ahead of
+        // every window creation — means no window's first frame ever
+        // resolves the placeholder the binding was created with.
+        #[cfg(target_os = "windows")]
+        sync_system_color_scheme(
+            &self.system_color_scheme,
+            event_loop
+                .system_theme()
+                .expect("winit reports the system theme on Windows"),
+        );
         let mut pending = mem::take(&mut self.pending_windows);
         pending.extend(self.pending_window_queue.borrow_mut().drain(..));
         for pending in pending {
@@ -1593,6 +1645,13 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
         match &event {
             WindowEvent::Focused(focused) => {
                 self.focused_window = focused.then_some(window_id);
+            }
+            // The system theme moved: winit re-reads it and reports only a
+            // real change, but repeats the event on every window — the
+            // write dedups against what the binding already holds.
+            #[cfg(target_os = "windows")]
+            WindowEvent::ThemeChanged(theme) => {
+                sync_system_color_scheme(&self.system_color_scheme, *theme);
             }
             WindowEvent::CursorMoved { .. }
             | WindowEvent::CursorEntered { .. }
@@ -1874,6 +1933,41 @@ mod tests {
             WindowButtons::all(),
             "a closable window keeps every title-bar button"
         );
+    }
+
+    /// A winit theme report writes the scheme binding only when the scheme
+    /// actually moved: `ThemeChanged` repeats on every window, and a write
+    /// repeating the held value would re-resolve every token slot for
+    /// nothing.
+    #[test]
+    fn theme_reports_write_the_scheme_only_on_a_move() {
+        use nami::Signal as _;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        use waterui::theme::ColorScheme;
+        use winit::window::Theme;
+
+        let scheme = binding(ColorScheme::Light);
+        let notifications = Rc::new(Cell::new(0_u32));
+        let _guard = scheme.watch({
+            let notifications = Rc::clone(&notifications);
+            move |_| notifications.set(notifications.get() + 1)
+        });
+
+        // A report matching the held value writes nothing.
+        super::sync_system_color_scheme(&scheme, Theme::Light);
+        assert_eq!(notifications.get(), 0);
+
+        super::sync_system_color_scheme(&scheme, Theme::Dark);
+        assert_eq!(scheme.snapshot(), ColorScheme::Dark);
+        assert_eq!(notifications.get(), 1);
+
+        super::sync_system_color_scheme(&scheme, Theme::Dark);
+        assert_eq!(notifications.get(), 1, "a repeated report writes nothing");
+
+        super::sync_system_color_scheme(&scheme, Theme::Light);
+        assert_eq!(scheme.snapshot(), ColorScheme::Light);
+        assert_eq!(notifications.get(), 2);
     }
 
     /// The window a Close Window request acts on is the window the
