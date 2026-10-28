@@ -132,7 +132,7 @@ pub fn install_frozen_surfaces(
     surfaces
         .into_iter()
         .map(|(view, frame, layer)| {
-            let frozen = cocoa_ui::capture::FrozenCapturable::new(&view, layer, frame, &device);
+            let frozen = cocoa_ui::capture::FrozenCapturable::new(layer, frame, &device);
             let surface: Rc<dyn cocoa_ui::capture::CapturableSurface> = frozen.clone();
             cocoa_ui::capture::capturable_slot(&view)
                 .expect("a capturable surface's view always carries the slot")

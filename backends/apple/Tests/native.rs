@@ -198,6 +198,7 @@ fn trials() -> Vec<Trial> {
             tests.extend(gpu_surface::trials());
             tests.extend(filtered::trials());
             tests.extend(capture_colour::trials());
+            tests.extend(capture_order::trials());
         }
     }
     #[cfg(target_os = "ios")]
@@ -3789,7 +3790,7 @@ mod capture_colour {
     /// The capturable surfaces resolved at `root`'s first depth, with
     /// the retained views that carry them — the GPU child's kit
     /// `SurfaceView` and the `HostView` the filtered output resolves on.
-    fn capturables(
+    pub fn capturables(
         root: &PlatformView,
     ) -> Vec<(
         Retained<PlatformView>,
@@ -3807,7 +3808,7 @@ mod capture_colour {
     /// column, 1 the filtered one. Only size and order identify the
     /// columns — their absolute origin is the window's — and `f64` frame
     /// values compare inside a half-point band.
-    fn column(root: &PlatformView, index: usize) -> Retained<PlatformView> {
+    pub fn column(root: &PlatformView, index: usize) -> Retained<PlatformView> {
         let mut columns = Vec::new();
         let mut queue = std::collections::VecDeque::from([view::retain_base(root)]);
         while let Some(candidate) = queue.pop_front() {
@@ -3834,7 +3835,7 @@ mod capture_colour {
         clippy::cast_possible_truncation,
         reason = "the oracle's f32 interchange format deliberately narrows its f64 colour maths"
     )]
-    fn linear_p3(texels: &[u8], width: u32, height: u32) -> cherenkov_oracle::F32Image {
+    pub fn linear_p3(texels: &[u8], width: u32, height: u32) -> cherenkov_oracle::F32Image {
         use cherenkov_oracle::color::{linear_srgb_to_linear_p3, srgb_decode};
         let pixels = texels
             .as_chunks::<4>()
@@ -3938,6 +3939,213 @@ mod capture_colour {
             linear_p3(&capture.pixels, capture.width, capture.height)
         });
         cherenkov_oracle::metrics::assert_images_match(&reference, &filtered);
+    }
+}
+
+/// #1771: a GPU surface keeps its place in the native tree inside a
+/// capture. The compositor once drew every resolved surface first and the
+/// whole native raster over it, so an opaque native ancestor background
+/// hid the GPU child and a translucent ancestor's group opacity never
+/// reached it. Each trial captures the same `200×200` column twice — at
+/// x=0 with the GPU child replaced by a native view of the same solid
+/// colour, at x=220 with the real GPU child — and asserts the oracle's
+/// same-pixels equivalence between the two captures.
+#[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
+mod capture_order {
+    use cocoa_ui::objc2::rc::autoreleasepool;
+    use libtest_mimic::Trial;
+    use waterui::Color;
+    use waterui::ViewExt;
+    use waterui::graphics::color::{Srgb, Working, WorkingColor};
+    use waterui::layout::{PinConstraints, PositionExt, absolute};
+    use waterui::prelude::text;
+    use waterui_apple::native_test_support::{capture_view_rgba, pump_main_until};
+    use waterui_backend_core::{AnyView, View};
+
+    use super::capture_colour::{capturables, column, linear_p3};
+    use super::mtm;
+    use super::transition::gpu_leaf;
+
+    /// The columns' pinned edge: `200×200` points each.
+    const COLUMN_EDGE: f64 = 200.0;
+
+    /// The gap between the two columns' leading edges.
+    const COLUMN_GAP: f64 = 20.0;
+
+    /// The GPU child's solid fill — the working colour both the GPU
+    /// surface and its native stand-in paint.
+    const CHILD: WorkingColor = WorkingColor::new([0.05, 0.25, 0.9, 1.0]);
+
+    /// The `capture_order::` trials.
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "capture_order::an_opaque_ancestor_background_keeps_its_gpu_child_and_foreground",
+                || {
+                    an_opaque_ancestor_background_keeps_its_gpu_child_and_foreground();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "capture_order::a_translucent_ancestor_composites_its_gpu_child_in_order",
+                || {
+                    a_translucent_ancestor_composites_its_gpu_child_in_order();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "capture_order::a_clipped_scaled_gpu_child_keeps_its_place",
+                || {
+                    a_clipped_scaled_gpu_child_keeps_its_place();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "capture_order::a_nested_filter_keeps_its_gpu_child_in_order",
+                || {
+                    a_nested_filter_keeps_its_gpu_child_in_order();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// The GPU child: a `MeshGradient` whose four corners are all
+    /// [`CHILD`] — a GPU surface of one solid colour.
+    fn gpu_child() -> AnyView {
+        use waterui::graphics::gradient::MeshGradient;
+        use waterui::reactive::constant;
+        AnyView::new(MeshGradient::new(2, 2, constant(vec![CHILD; 4])))
+    }
+
+    /// The GPU child's native stand-in: a [`CHILD`] colour view.
+    fn native_child() -> AnyView {
+        AnyView::new(Color::new(Working(CHILD)))
+    }
+
+    /// An opaque orange — the ancestor background that hid the child.
+    fn orange() -> Color {
+        Color::new(Srgb::new(1.0, 0.55, 0.0))
+    }
+
+    /// `child` under native foreground inside the column: the child at
+    /// (40,30)–(160,130), a half-transparent magenta strip across its
+    /// lower part and past both its sides, and an asymmetric label over
+    /// its top edge.
+    fn layered(child: AnyView) -> impl View {
+        absolute((
+            child.pin(
+                PinConstraints::new()
+                    .leading(40.0)
+                    .top(30.0)
+                    .width(120.0)
+                    .height(100.0),
+            ),
+            Color::new(Srgb::new(1.0, 0.0, 1.0)).opacity(0.5).pin(
+                PinConstraints::new()
+                    .leading(20.0)
+                    .top(90.0)
+                    .width(160.0)
+                    .height(30.0),
+            ),
+            text("GPU 1771 \u{2191}").pin(PinConstraints::new().leading(50.0).top(40.0)),
+        ))
+    }
+
+    /// Mounts the all-native `reference` column at x=0 and the GPU
+    /// `subject` column at x=220, waits until the `surfaces` capturable
+    /// surfaces the tree resolves have presented, captures both columns
+    /// through `capture_view_rgba` and asserts the oracle's same-pixels
+    /// equivalence of the subject to the reference.
+    fn assert_gpu_column_matches_native(reference: impl View, subject: impl View, surfaces: usize) {
+        let _mtm = mtm();
+        let pin = |leading: f64| {
+            PinConstraints::new()
+                .leading(leading)
+                .top(0.0)
+                .width(COLUMN_EDGE)
+                .height(COLUMN_EDGE)
+        };
+        let leaf = gpu_leaf(absolute((
+            reference.pin(pin(0.0)),
+            subject.pin(pin(COLUMN_EDGE + COLUMN_GAP)),
+        )));
+        let _window = super::mount_and_order_front(leaf.view());
+        let root = leaf.view();
+        assert!(
+            pump_main_until(10.0, || {
+                autoreleasepool(|_| {
+                    let entries = capturables(root);
+                    entries.len() == surfaces
+                        && entries
+                            .iter()
+                            .all(|(_, surface)| surface.has_presented_frame())
+                })
+            }),
+            "the GPU column's {surfaces} capturable surface(s) present"
+        );
+        let [reference, subject] = [0, 1].map(|index| {
+            let capture = capture_view_rgba(&column(root, index));
+            linear_p3(&capture.pixels, capture.width, capture.height)
+        });
+        cherenkov_oracle::metrics::assert_images_match(&reference, &subject);
+    }
+
+    /// An opaque ancestor background under the GPU child, native
+    /// foreground over it: the child shows between the two.
+    pub fn an_opaque_ancestor_background_keeps_its_gpu_child_and_foreground() {
+        let column = |child| layered(child).background(orange());
+        assert_gpu_column_matches_native(column(native_child()), column(gpu_child()), 1);
+    }
+
+    /// A half-transparent ancestor background under the GPU child, inside
+    /// an ancestor at 0.7 group opacity: the child takes the group's
+    /// opacity and covers the background.
+    pub fn a_translucent_ancestor_composites_its_gpu_child_in_order() {
+        let column = |child| {
+            layered(child)
+                .background(orange().opacity(0.5))
+                .opacity(0.7)
+        };
+        assert_gpu_column_matches_native(column(native_child()), column(gpu_child()), 1);
+    }
+
+    /// The opaque-background column scaled 1.6× about its centre — a
+    /// sublayer transform on `AppKit`, which view geometry does not see —
+    /// and clipped to a rounded rectangle: the child spans
+    /// (4,-12)–(196,148), so the column's top edge and rounded top-left
+    /// corner cut it.
+    pub fn a_clipped_scaled_gpu_child_keeps_its_place() {
+        use waterui::shape::RoundedRectangle;
+        let column = |child| {
+            layered(child)
+                .background(orange())
+                .scale(1.6, 1.6)
+                .clip(RoundedRectangle::new(0.2))
+        };
+        assert_gpu_column_matches_native(column(native_child()), column(gpu_child()), 1);
+    }
+
+    /// The opaque-background column at 0.8 group opacity inside a
+    /// capture-realized identity filter (`Brightness(0.0)` with a declared
+    /// `OutputSize::MatchInput`, which `native_filter::plan` declines):
+    /// the filter's own capture composites the GPU child it owns, and the
+    /// outer capture composites the filter's output. The reference column
+    /// is the same native column unfiltered.
+    pub fn a_nested_filter_keeps_its_gpu_child_in_order() {
+        use waterui::graphics::filtrate::filters::Brightness;
+        use waterui::graphics::{AnyEffect, FilteredView, OutputSize, ParamGuards};
+        let content = |child| layered(child).background(orange()).opacity(0.8);
+        // The reference column is unfiltered: the identity chain
+        // reproduces it (#3528), so only the GPU column runs the nested
+        // capture — the filtered output is its one resolved surface.
+        let filtered = FilteredView {
+            content: AnyView::new(content(gpu_child())),
+            effect: AnyEffect::filter(Brightness(0.0_f32)),
+            guards: ParamGuards::default(),
+        }
+        .output_size(OutputSize::MatchInput);
+        assert_gpu_column_matches_native(content(native_child()), filtered, 1);
     }
 }
 
