@@ -47,12 +47,19 @@ const fn blur_style(level: MaterialLevel) -> UIBlurEffectStyle {
     }
 }
 
+/// The within-window levels realize the `AppKit` material that carries
+/// `SwiftUI`'s recipe for the same thickness (backdrop tint and opacity,
+/// clamp colour and saturation, in both appearances): `Popover` is
+/// `regularMaterial`, `Menu` is `thickMaterial` and `Sidebar` is
+/// `ultraThickMaterial`. Under Reduce Transparency in the light appearance,
+/// `Menu`'s flat colour is darker than `thickMaterial`'s.
 #[cfg(target_os = "macos")]
 const fn material(level: MaterialLevel) -> NSVisualEffectMaterial {
     match level {
         MaterialLevel::UltraThin => NSVisualEffectMaterial::HUDWindow,
         MaterialLevel::Thin => NSVisualEffectMaterial::Titlebar,
-        MaterialLevel::Regular | MaterialLevel::Thick => NSVisualEffectMaterial::Menu,
+        MaterialLevel::Regular => NSVisualEffectMaterial::Popover,
+        MaterialLevel::Thick => NSVisualEffectMaterial::Menu,
         MaterialLevel::UltraThick => NSVisualEffectMaterial::Sidebar,
     }
 }
