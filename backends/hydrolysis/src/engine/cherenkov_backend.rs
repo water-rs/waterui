@@ -280,12 +280,12 @@ pub trait EngineSurface {
 }
 
 /// Android presents retained buffers directly through the system compositor.
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
 pub struct AndroidCherenkovSurface {
     core: SurfaceCore,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
 impl core::fmt::Debug for AndroidCherenkovSurface {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AndroidCherenkovSurface")
@@ -294,7 +294,7 @@ impl core::fmt::Debug for AndroidCherenkovSurface {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
 impl EngineSurface for AndroidCherenkovSurface {
     fn core(&self) -> &SurfaceCore {
         &self.core
@@ -305,7 +305,7 @@ impl EngineSurface for AndroidCherenkovSurface {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
 impl AndroidCherenkovSurface {
     pub(crate) fn new(
         engine: Rc<GpuEngine>,
