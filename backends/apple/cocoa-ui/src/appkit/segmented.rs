@@ -29,7 +29,7 @@ use objc2_app_kit::{
     NSControlSize, NSImage, NSSegmentDistribution, NSSegmentSwitchTracking, NSSegmentedControl,
 };
 use objc2_core_foundation::{CGRect, CGSize};
-use objc2_foundation::{NSObjectProtocol, NSString};
+use objc2_foundation::{NSCopying, NSObjectProtocol, NSString};
 
 use crate::callback::guarded;
 
@@ -46,6 +46,9 @@ pub struct Segment {
     pub enabled: bool,
     /// The segment's badge text, shown after the label.
     pub badge: Option<String>,
+    /// Whether the segment is the search tab — `SwiftUI`'s toolbar tab
+    /// picker draws it icon-only.
+    pub is_search: bool,
 }
 
 /// Called with the tapped segment's index.
@@ -133,21 +136,34 @@ impl SegmentedControl {
         self.setSegmentCount(segments.len().cast_signed());
         for (index, segment) in segments.iter().enumerate() {
             let index = index.cast_signed();
-            let label = segment.badge.as_ref().map_or_else(
-                || segment.label.clone(),
-                |badge| format!("{} ({badge})", segment.label),
-            );
-            self.setLabel_forSegment(&NSString::from_str(&label), index);
+            // `SwiftUI`'s toolbar tab picker draws a plain label — a
+            // badge never joins the title (water-rs/waterui#3591) — and
+            // an image only on the search tab, which is icon-only.
+            let label = if segment.is_search {
+                ""
+            } else {
+                &segment.label
+            };
+            self.setLabel_forSegment(&NSString::from_str(label), index);
             self.setEnabled_forSegment(segment.enabled, index);
-            if let Some(symbol) = &segment.symbol {
-                if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                    &NSString::from_str(symbol),
-                    None,
-                ) {
-                    self.setImage_forSegment(Some(&image), index);
-                }
-            } else if let Some(image) = &segment.image {
-                self.setImage_forSegment(Some(image), index);
+            let image = segment.is_search.then(|| {
+                segment
+                    .symbol
+                    .as_ref()
+                    .and_then(|symbol| {
+                        NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                            &NSString::from_str(symbol),
+                            None,
+                        )
+                    })
+                    .or_else(|| segment.image.clone())
+            });
+            if let Some(Some(image)) = image {
+                // The icon-only segment's accessible name is its label, on
+                // a copy so a shared caller image keeps its own description.
+                let image = image.copy();
+                image.setAccessibilityDescription(Some(&NSString::from_str(&segment.label)));
+                self.setImage_forSegment(Some(&image), index);
             }
         }
         self.sizeToFit();
