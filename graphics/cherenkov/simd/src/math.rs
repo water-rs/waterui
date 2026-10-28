@@ -1,5 +1,5 @@
 //! Vector math evaluated under the caller's dispatched target features.
-use fearless_simd::{Bytes, Select, Simd, SimdBase, SimdFloat, f32x4};
+use fearless_simd::{Bytes, Select, Simd, SimdBase, SimdFloat, f32x4, i32x4};
 
 /// Exponential under the dispatched SIMD level.
 ///
@@ -37,6 +37,42 @@ pub fn exp4<S: Simd>(simd: S, x: f32x4<S>) -> f32x4<S> {
     let result = x
         .simd_gt(simd.splat_f32x4(88.722_84))
         .select(simd.splat_f32x4(f32::INFINITY), result);
+    x.simd_eq(x).select(result, x)
+}
+
+/// Natural logarithm under the dispatched SIMD level.
+///
+/// Cephes' single-precision `logf`: the exponent split from a mantissa
+/// in `[√½, √2)`, a ninth-degree polynomial in `m − 1`, and `ln 2` added
+/// back in two parts. The domain is the positive normal floats, where the
+/// error is below 2e-7 of `max(1, |ln x|)`; `+∞` and NaN pass through.
+/// Zero, negative and subnormal inputs are outside the domain and give
+/// unspecified finite values, so callers select those lanes away.
+#[expect(clippy::inline_always, reason = "inherits dispatched target features")]
+#[inline(always)]
+pub fn ln4<S: Simd>(simd: S, x: f32x4<S>) -> f32x4<S> {
+    let splat = |v| simd.splat_f32x4(v);
+    let one = splat(1.0);
+    let bits = x.bitcast::<i32x4<S>>();
+    let exponent = simd.cvt_f32_i32x4(simd.shr_i32x4(bits, 23) - simd.splat_i32x4(126));
+    let mantissa = ((bits & 0x007f_ffff) | 0x3f00_0000).bitcast::<f32x4<S>>();
+    let small = mantissa.simd_lt(splat(core::f32::consts::FRAC_1_SQRT_2));
+    let exponent = exponent - small.select(one, splat(0.0));
+    let reduced = small.select(mantissa + mantissa - one, mantissa - one);
+    let squared = reduced * reduced;
+    let poly = splat(7.037_683_6e-2)
+        .mul_add(reduced, splat(-1.151_461e-1))
+        .mul_add(reduced, splat(1.167_699_9e-1))
+        .mul_add(reduced, splat(-1.242_014_1e-1))
+        .mul_add(reduced, splat(1.424_932_3e-1))
+        .mul_add(reduced, splat(-1.666_805_8e-1))
+        .mul_add(reduced, splat(2.000_071_4e-1))
+        .mul_add(reduced, splat(-2.499_999_4e-1))
+        .mul_add(reduced, splat(3.333_333e-1));
+    let tail = exponent.mul_add(splat(-2.121_944_4e-4), poly * reduced * squared);
+    let tail = squared.mul_add(splat(-0.5), tail);
+    let result = exponent.mul_add(splat(0.693_359_4), reduced + tail);
+    let result = x.simd_eq(splat(f32::INFINITY)).select(x, result);
     x.simd_eq(x).select(result, x)
 }
 
@@ -159,6 +195,24 @@ mod tests {
             let result = exp4(simd, x).to_array();
             assert_eq!(result[..3], [0.0, 1.0, f32::INFINITY]);
             assert!(result[3].is_nan());
+            // Every 4099th bit pattern over the positive normal floats.
+            let mut bits = f32::MIN_POSITIVE.to_bits();
+            while bits < f32::INFINITY.to_bits() {
+                let x = f32::from_bits(bits);
+                let actual = ln4(simd, simd.splat_f32x4(x))[0];
+                let expected = f64::from(x).ln();
+                assert!(
+                    (f64::from(actual) - expected).abs() < 2e-7 * expected.abs().max(1.0),
+                    "ln({x})={actual}, expected {expected}"
+                );
+                bits += 4099;
+            }
+            let result = ln4(
+                simd,
+                f32x4::load_array(simd, [f32::INFINITY, f32::NAN, 1.0, 1.0]),
+            );
+            assert_eq!(result[0], f32::INFINITY);
+            assert!(result[1].is_nan());
         }
         let native = crate::detect();
         let levels = [
