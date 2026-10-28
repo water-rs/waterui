@@ -224,7 +224,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, xcode-27, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
@@ -318,7 +318,7 @@ jobs:
       matrix:
         include:
           - name: macOS
-            os: macos-latest
+            os: xcode-27
             platform: macos
             backend: apple
           - name: Windows

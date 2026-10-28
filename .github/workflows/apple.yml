@@ -189,7 +189,7 @@ jobs:
     name: swift (${{ matrix.configuration }})
     needs: changes
     if: needs.changes.outputs.swift == 'true'
-    runs-on: macos-26
+    runs-on: xcode-27
     strategy:
       fail-fast: false
       matrix:
@@ -250,7 +250,7 @@ jobs:
   # target dir the explicit clippy legs use; the iOS legs override it.
   rust:
     name: rust
-    runs-on: macos-26
+    runs-on: xcode-27
     permissions:
       contents: read
       # Saves the replacement archives, then retires the superseded
