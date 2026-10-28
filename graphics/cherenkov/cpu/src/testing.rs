@@ -76,6 +76,16 @@ pub mod kernels {
     }
 
     /// `crate::render::composite_span` under `level`'s dispatch.
+    ///
+    /// Inlined into its caller, so a kernel benchmark counts one `Level`
+    /// match and the dispatched kernel, not a call into this function that
+    /// LLVM keeps or inlines depending on the size of the baseline
+    /// level's inline arm.
+    #[expect(
+        clippy::inline_always,
+        reason = "the per-call count must not depend on an inlining heuristic"
+    )]
+    #[inline(always)]
     pub fn composite_span(
         level: Level,
         dst: &mut [[f32; 4]],

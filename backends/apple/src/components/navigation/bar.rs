@@ -213,7 +213,9 @@ fn bar_title(view: &mut waterui_backend_core::AnyView, ctx: &RenderContext<'_>) 
 /// A semantic toolbar item rendered with its name and icon apart.
 ///
 /// iOS toolbar labels default to icon-only presentation. Explicit label
-/// preferences retain precedence over the toolbar environment.
+/// preferences retain precedence over the toolbar environment. On macOS the
+/// item renders under the window toolbar's environment, so its button
+/// styles resolve the way the toolbar draws them.
 fn bar_item(item: NavigationToolbarItem, ctx: &RenderContext<'_>) -> BarItem {
     #[cfg(target_os = "ios")]
     let toolbar_env = toolbar_environment(ctx.env());
@@ -230,7 +232,8 @@ fn bar_item(item: NavigationToolbarItem, ctx: &RenderContext<'_>) -> BarItem {
     };
     #[cfg(target_os = "macos")]
     let content = item.content;
-    #[cfg(target_os = "ios")]
+    #[cfg(target_os = "macos")]
+    let toolbar_env = crate::toolbar::toolbar_environment(ctx.env());
     let ctx = ctx.with_env(&toolbar_env);
 
     let leaf = ctx.render(content);

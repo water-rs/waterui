@@ -24,7 +24,7 @@ use objc2_app_kit::{
     NSAccessibility, NSBezelStyle, NSButton, NSButtonCell, NSColor, NSControl, NSCursor, NSEvent,
 };
 use objc2_core_foundation::CGRect;
-use objc2_foundation::{NSAttributedString, NSObjectProtocol, NSString};
+use objc2_foundation::{NSAttributedString, NSCopying, NSObjectProtocol, NSString};
 
 use crate::callback::guarded;
 use crate::geometry::Size;
@@ -38,9 +38,6 @@ pub struct ButtonIvars {
     link_cursor: Cell<bool>,
     /// Whether the button is currently pressed, for press-state callbacks.
     pressed: Cell<bool>,
-    /// Whether the owner declared the button chrome-less — the link and
-    /// borderless styles — so chrome presenting it keeps it bare too.
-    borderless: Cell<bool>,
     /// Called with `true` on `mouseDown:` and `false` on `mouseUp:`.
     press_handler: RefCell<Option<PressHandler>>,
 }
@@ -50,7 +47,6 @@ impl fmt::Debug for ButtonIvars {
         f.debug_struct("ButtonIvars")
             .field("link_cursor", &self.link_cursor.get())
             .field("pressed", &self.pressed.get())
-            .field("borderless", &self.borderless.get())
             .field("press_handler", &self.press_handler.borrow().is_some())
             .finish()
     }
@@ -147,19 +143,6 @@ impl Button {
         self.setTransparent(transparent);
     }
 
-    /// Records that the button's owner declared it chrome-less — the link
-    /// and borderless styles. Chrome that presents the button as a toolbar
-    /// item keeps it bare, reading [`Button::is_borderless`].
-    pub fn set_borderless(&self, borderless: bool) {
-        self.ivars().borderless.set(borderless);
-    }
-
-    /// Whether the button was declared chrome-less — [`Button::set_borderless`].
-    #[must_use]
-    pub fn is_borderless(&self) -> bool {
-        self.ivars().borderless.get()
-    }
-
     /// The color a prominent bezel is filled with; `None` restores the
     /// default.
     pub fn set_bezel_color(&self, color: Option<&NSColor>) {
@@ -207,21 +190,32 @@ impl Button {
     /// button cell's drawing rect for a reference-size button: the owning
     /// layout supplies this padding itself, like `NSButton`'s own layout.
     ///
+    /// The rect is asked of a detached copy of the cell, which carries the
+    /// bezel style and control size but no control view: a cell attached to
+    /// its button measures the button's current bounds instead of the rect
+    /// it is given, and a button being configured has none yet.
+    ///
     /// Meaningful only while the button is bordered.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the button has no `NSButtonCell`, which `NSButton`
+    /// always creates.
     #[must_use]
     pub fn content_padding(&self) -> (f64, f64) {
         let probe = CGRect::new(
             objc2_core_foundation::CGPoint::ZERO,
             objc2_core_foundation::CGSize::new(200.0, 24.0),
         );
-        let Some(cell) = self.cell() else {
-            return (0.0, 0.0);
-        };
-        // SAFETY: `downcast` on an `NSButton`'s cell, which is always an
-        // `NSButtonCell`.
-        let Ok(cell) = cell.downcast::<NSButtonCell>() else {
-            return (0.0, 0.0);
-        };
+        let cell = self
+            .cell()
+            .expect("an NSButton always has a cell")
+            .downcast::<NSButtonCell>()
+            .expect("an NSButton's cell is an NSButtonCell")
+            .copy();
+        // SAFETY: clearing the control view stores no reference, so nothing
+        // can dangle; the call runs on the main thread `self` is bound to.
+        unsafe { cell.setControlView(None) };
         let drawing = cell.drawingRectForBounds(probe);
         (drawing.origin.x, drawing.origin.y)
     }

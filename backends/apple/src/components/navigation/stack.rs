@@ -1248,8 +1248,8 @@ mod platform {
         /// control — `firstButton`'s `performClick` — and a `View` icon or
         /// no icon hosts the content itself.
         fn child(&self, entry: &Entry, item: &BarItem) -> ToolbarChild {
-            // The item's action and its chrome both come from the button
-            // inside it, the way `firstButton` informed `actionItem`.
+            // The item's action comes from the button inside it, the way
+            // `firstButton` informed `actionItem`.
             let button = first_button(item.leaf.view());
             let action = button.as_ref().map(|button| {
                 let button = button.clone();
@@ -1258,7 +1258,6 @@ mod platform {
                     unsafe { activate(button.control()) };
                 }) as Rc<dyn Fn()>
             });
-            let bordered = button.as_ref().is_none_or(|button| !button.is_borderless());
             let label = item
                 .title
                 .as_ref()
@@ -1275,7 +1274,6 @@ mod platform {
                         None,
                     ),
                     label,
-                    bordered,
                     action,
                 },
                 Some(BarItemIcon::View(icon)) => {
@@ -1291,7 +1289,6 @@ mod platform {
                         },
                         icon: Self::view_icon(self, entry, item, icon),
                         label,
-                        bordered,
                         action,
                     }
                 }
@@ -1302,7 +1299,6 @@ mod platform {
                     },
                     icon: None,
                     label,
-                    bordered,
                     action,
                 },
             }
