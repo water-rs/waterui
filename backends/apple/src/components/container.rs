@@ -635,6 +635,26 @@ fn lazy_size_that_fits(state: &mut ContainerState, proposal: ProposalSize) -> Si
     }
 }
 
+/// The host's subviews in paint order — every ghost host beneath the
+/// live children (§4.5), the materialized children in item order. An
+/// unmaterialized lazy member owns no view and takes no slot here.
+fn subview_order(state: &ContainerState) -> Vec<Retained<PlatformView>> {
+    state
+        .slots
+        .iter()
+        .filter_map(|slot| match slot {
+            Slot::Live(_) => None,
+            Slot::Ghost(key) => Some(view::retain_base(state.ghosts[&key].host())),
+        })
+        .chain(state.item_ids.iter().filter_map(|id| {
+            state
+                .rendered
+                .get(id)
+                .map(|child| view::retain_base(child.view()))
+        }))
+        .collect()
+}
+
 /// `syncChildren`: the id-keyed reconcile — the slot sequence first
 /// rebases every live id and ghost against the new order, departing
 /// members retire through [`depart_members`] (a declared, placed
@@ -664,25 +684,13 @@ fn sync_children(
     state.item_ids = ids;
     let inserted: HashSet<ItemId> = reconciled.inserted.into_iter().collect();
     let item_ids = state.item_ids.clone();
-    let mut ordered_views = Vec::with_capacity(item_ids.len());
     for (index, id) in item_ids.into_iter().enumerate() {
         if !state.rendered.contains_key(&id) {
             materialize(state, index, id, state.built && inserted.contains(&id));
         }
-        ordered_views.push(view::retain_base(state.rendered[&id].view()));
     }
     state.built = true;
-    // Ghost views paint beneath the live children.
-    let mut subviews: Vec<Retained<PlatformView>> = state
-        .slots
-        .iter()
-        .filter_map(|slot| match slot {
-            Slot::Live(_) => None,
-            Slot::Ghost(key) => Some(view::retain_base(state.ghosts[&key].host())),
-        })
-        .collect();
-    subviews.extend(ordered_views);
-    view::reconcile_subviews(&state.host, &subviews);
+    view::reconcile_subviews(&state.host, &subview_order(state));
     state.order = state.item_ids.clone();
     crate::measure_memo::invalidate();
     state.host.set_needs_layout();
@@ -988,6 +996,9 @@ fn place_ghost_member(
 fn perform_lazy_layout(state: &mut ContainerState) {
     let lazy = state.lazy.clone().expect("lazy path under a stack layout");
     if state.item_ids.is_empty() {
+        // No live members — only the ghosts a removal left behind, in
+        // slot order beneath them.
+        view::reconcile_subviews(&state.host, &subview_order(state));
         return;
     }
     let bounds = view::bounds(&state.host);
@@ -1085,6 +1096,11 @@ fn perform_lazy_layout(state: &mut ContainerState) {
         state.rendered.remove(&id);
         state.placed.remove(&id);
     }
+
+    // `materialize` appends every child it mounts at the end of the
+    // host's subviews; restore paint order to item order, as
+    // `sync_children` does for the fixed path (#3509).
+    view::reconcile_subviews(&state.host, &subview_order(state));
 
     if needs_invalidation {
         invalidate_virtual_layout(state);

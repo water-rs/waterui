@@ -10387,6 +10387,13 @@ mod transition {
                     Ok(())
                 },
             ),
+            libtest_mimic::Trial::test(
+                "transition::an_insert_before_existing_members_paints_in_item_order",
+                || {
+                    an_insert_before_existing_members_paints_in_item_order();
+                    Ok(())
+                },
+            ),
         ]
         .into_iter()
         .chain(navigation_trials())
@@ -12064,6 +12071,44 @@ mod transition {
                 members.len() == 2 && members[1].2.origin.y.to_bits() == b_origin.to_bits()
             }),
             "siblings close the gap once the ghost completes"
+        );
+    }
+
+    /// #3509: a membership insertion before existing members lands at
+    /// the head of the slot sequence while its view mounts at the end —
+    /// the host's subview order (paint order) must still equal item
+    /// order, as the fixed path's `reconcile_subviews` keeps it.
+    pub fn an_insert_before_existing_members_paints_in_item_order() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
+            hstack((text(format!("row {}", row.id)), spacer())).size(200.0, 20.0)
+        }));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let container = member_container(leaf.view()).expect("the container holds the members");
+        autoreleasepool(|_| {
+            items.insert(0, Row { id: 0 });
+        });
+        assert!(
+            pump_main_until(2.0, || member_frames(&container).len() == 4),
+            "the inserted member joins"
+        );
+        // The subviews are the paint order, back to front; a vertical
+        // stack's item order is increasing y. The inserted row's frame
+        // leads — before the fix its view still painted above every
+        // member materialized earlier.
+        let paint_order: Vec<usize> = member_frames(&container)
+            .iter()
+            .map(|member| member.1)
+            .collect();
+        let item_order: Vec<usize> = members_by_origin(&container)
+            .iter()
+            .map(|member| member.1)
+            .collect();
+        assert_eq!(
+            paint_order, item_order,
+            "the host's subviews paint in item order"
         );
     }
 
