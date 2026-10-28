@@ -71,7 +71,7 @@ pub struct RasterConfig {
     /// Positive worker count for the banded rasterizer. An explicit count
     /// takes precedence over `RAYON_NUM_THREADS`, which must also be positive.
     /// Otherwise Apple uses the highest-performance physical core class;
-    /// Android uses the highest-capacity class in the current CPU affinity;
+    /// Android counts allowed cores with at least half the maximum capacity;
     /// other native platforms use their available parallelism. Automatic
     /// discovery is unsupported on WebAssembly.
     pub threads: Option<usize>,
