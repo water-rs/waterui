@@ -227,6 +227,9 @@ struct BrowserRunner {
     fonts_arrived: Rc<Cell<bool>>,
     /// Schedules a frame — what an arriving face wakes the page with.
     wake: Rc<dyn Fn()>,
+    /// Held for its lifetime: the media-query listener keeps writing the
+    /// colour-scheme binding only while the runner holds the observation.
+    _appearance: crate::platform::web_appearance::SystemAppearance,
 }
 
 impl BrowserRunner {
@@ -470,13 +473,12 @@ pub fn run(app: App, style: impl crate::Style) {
         // contribute their chords only — nothing renders.
         super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
         env.insert(HydrolysisTextContextMenuMode::Overlay);
-        // The page's `prefers-color-scheme` is not observed yet: the scheme
-        // is Light unless the application installs its own.
-        crate::theme::install_theme_tokens(
-            &mut env,
-            Some(&style),
-            waterui::theme::ColorScheme::Light,
-        );
+        // The page's `prefers-color-scheme` media query is the host's
+        // appearance: `matches` seeds the scheme so the first frame already
+        // draws in it, and the query's `change` event writes each later
+        // one. The runner holds the observation for its lifetime.
+        let system_appearance = crate::platform::web_appearance::SystemAppearance::observe();
+        crate::theme::install_theme_tokens(&mut env, Some(&style), system_appearance.scheme());
         let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
 
         // The application's fonts are fetched while the GPU adapter and device
@@ -551,6 +553,7 @@ pub fn run(app: App, style: impl crate::Style) {
             deferred_fonts,
             fonts_arrived: Rc::new(Cell::new(false)),
             wake: browser_schedule,
+            _appearance: system_appearance,
         };
 
         let handle = Rc::new(BrowserRunnerHandle {

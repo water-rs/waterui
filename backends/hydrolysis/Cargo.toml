@@ -317,6 +317,7 @@ web-sys = { version = "0.3", optional = true, features = [
     "IntersectionObserver",
     "IntersectionObserverEntry",
     "KeyboardEvent",
+    "MediaQueryList",
     "Navigator",
     "Node",
     "PointerEvent",
