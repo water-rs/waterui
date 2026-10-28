@@ -168,8 +168,8 @@ pub struct TileOp {
     )]
     pub clear_region: [u32; 4],
     #[cfg_attr(
-        not(any(unix, test)),
-        expect(dead_code, reason = "read by native tile executors")
+        not(unix),
+        expect(dead_code, reason = "read by native tile executors; no test reads it")
     )]
     pub backdrop: Option<ReadKind>,
 }
