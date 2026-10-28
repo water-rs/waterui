@@ -722,7 +722,16 @@ pub fn run(
     let _ = env.get_or_insert_with::<MenuShortcutRegistry<crate::text::ParleyEngine>, _>(
         MenuShortcutRegistry::default,
     );
-    crate::theme::install_theme_tokens(&mut env, Some(&style));
+    // The platform appearance feeds the colour scheme for as long as the
+    // loop runs. Only macOS observes it yet; elsewhere the scheme is Light
+    // unless the application installs its own.
+    #[cfg(target_os = "macos")]
+    let system_appearance = crate::platform::macos_appearance::SystemAppearance::observe();
+    #[cfg(target_os = "macos")]
+    let appearance = system_appearance.scheme();
+    #[cfg(not(target_os = "macos"))]
+    let appearance = waterui::theme::ColorScheme::Light;
+    crate::theme::install_theme_tokens(&mut env, Some(&style), appearance);
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
     // The application's fonts, discovered once. Every window's renderer is
     // seeded from this collection, and a self-drawn component that typesets

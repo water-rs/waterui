@@ -239,3 +239,90 @@ fn reactive_color_scheme_rethemes_resolved_tokens() {
         "`Background` must follow the binding to the probe's dark colour",
     );
 }
+
+/// Counts how many times its body runs while recording the tokens it
+/// resolves — a rebuild of the probe would run it again.
+#[derive(Clone)]
+struct CountingProbe {
+    probe: TokenProbe,
+    builds: Rc<std::cell::Cell<u32>>,
+}
+
+impl View for CountingProbe {
+    fn body(self, env: &Environment) -> impl View {
+        self.builds.set(self.builds.get() + 1);
+        self.probe.body(env)
+    }
+}
+
+/// With no style, the framework default colours are signals over the
+/// installed scheme: flipping the application's scheme binding re-resolves
+/// the very token signals the view captured to the dark baseline, and the
+/// view's body does not run again.
+#[test]
+fn framework_defaults_follow_the_scheme_without_a_rebuild() {
+    let scheme = binding(ColorScheme::Light);
+    let mut app_env = Environment::new();
+    app_env.install(Theme::new().color_scheme(scheme.clone()));
+    let (probe, captured) = token_probe();
+    let builds = Rc::new(std::cell::Cell::new(0));
+    let counting = CountingProbe {
+        probe,
+        builds: Rc::clone(&builds),
+    };
+    let content = AnyViewBuilder::new(move || AnyView::new(counting.clone()));
+    let mut runtime = SemanticRuntime::new(
+        app_environment(app_env),
+        content,
+        64,
+        64,
+        FontFamilyResolution::Strict,
+    );
+    let _ = runtime.pump();
+
+    let resolved = |captured: &CapturedTokens| {
+        (
+            captured
+                .background
+                .as_ref()
+                .expect("a `Background` token must be installed")
+                .snapshot(),
+            captured
+                .foreground
+                .as_ref()
+                .expect("a `Foreground` token must be installed")
+                .snapshot(),
+        )
+    };
+    let (background, foreground) = resolved(&captured.borrow());
+    assert_resolved_eq(
+        background,
+        Srgb::from_u32(0xFF_FF_FF).resolve(),
+        "`Background` starts at the light default",
+    );
+    assert_resolved_eq(
+        foreground,
+        Srgb::from_u32(0x11_18_27).resolve(),
+        "`Foreground` starts at the light default",
+    );
+
+    scheme.set(ColorScheme::Dark);
+    let _ = runtime.pump();
+
+    let (background, foreground) = resolved(&captured.borrow());
+    assert_resolved_eq(
+        background,
+        Srgb::from_u32(0x11_18_27).resolve(),
+        "`Background` follows the scheme to the dark default",
+    );
+    assert_resolved_eq(
+        foreground,
+        Srgb::from_u32(0xF9_FA_FB).resolve(),
+        "`Foreground` follows the scheme to the dark default",
+    );
+    assert_eq!(
+        builds.get(),
+        1,
+        "a scheme change updates the bound tokens in place, never rebuilding the view"
+    );
+}

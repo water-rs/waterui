@@ -3147,6 +3147,9 @@ mod macos_display_link;
 #[cfg(all(hydrolysis_winit, target_os = "macos"))]
 mod macos_display_moves;
 
+#[cfg(all(hydrolysis_winit, target_os = "macos"))]
+pub mod macos_appearance;
+
 #[cfg(all(hydrolysis_winit, any(target_os = "macos", target_os = "windows")))]
 pub mod native_menu_bar;
 

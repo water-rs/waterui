@@ -925,7 +925,9 @@ fn session_mounts(
     );
     menu_bar::register_menu_bar::<super::AndroidTextEngine>(&menu_bar, &env);
     env.insert(HydrolysisTextContextMenuMode::Overlay);
-    crate::theme::install_theme_tokens(&mut env, Some(&*style));
+    // The configuration's night mode (`uiMode`) is not observed yet: the
+    // scheme is Light unless the application installs its own.
+    crate::theme::install_theme_tokens(&mut env, Some(&*style), waterui::theme::ColorScheme::Light);
     let theme: Rc<dyn WidgetTheme> = style;
     let fonts = crate::text::fonts::native_collection(&env);
     fonts.clone().install(&mut env);
