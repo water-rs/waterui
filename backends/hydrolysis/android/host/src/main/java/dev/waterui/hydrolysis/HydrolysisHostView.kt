@@ -677,7 +677,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
      * per frame: the input contract and candidate geometry travel on the
      * editing-state and cursor-anchor pushes.
      */
-    internal fun setSoftInputVisible(visible: Boolean) {
+    internal open fun setSoftInputVisible(visible: Boolean) {
         val imm =
             context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         if (visible) {
