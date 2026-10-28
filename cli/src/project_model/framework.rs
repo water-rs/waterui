@@ -2330,6 +2330,25 @@ pub(crate) fn checkout_member_packages(root: &Path) -> Result<Vec<CheckoutMember
     workspace_members(&mut Disk, root, &toml::from_slice(&manifest)?)
 }
 
+/// The `[patch]` tables that resolve the checkout's own dependency graph.
+///
+/// A crate rooted outside the checkout at `checkout` declares them: the
+/// checkout's root tables plus a path entry for every framework member, each
+/// path absolute. Cargo honours `[patch]` only at the root of the workspace it builds, so
+/// such a crate otherwise takes every split component the checkout pins to
+/// git — `waterkit-*`, `suiteki` — from crates.io instead, a graph the
+/// checkout's source was never compiled against.
+///
+/// # Errors
+/// Returns an error when the checkout's root manifest cannot be read or
+/// parsed, or declares no `[workspace]`.
+pub fn checkout_patch_tables(checkout: &Path) -> Result<PatchSet> {
+    let members = checkout_member_packages(checkout)?;
+    Ok(crate::templates::local_framework_patches(
+        checkout, checkout, &members,
+    )?)
+}
+
 /// Every package the `[workspace]` of `manifest`, the root manifest at
 /// `root`, declares a member: each `members` pattern names the directories
 /// whose `Cargo.toml` declares a package, less those an `exclude` pattern

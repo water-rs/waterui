@@ -606,12 +606,8 @@ mod tests {
         // (e.g. `waterui-image`) otherwise resolves registry copies of
         // framework crates, and every `View` becomes a different type on
         // either side.
-        let members = crate::project_model::framework::checkout_member_packages(&checkout)
-            .expect("the checkout's workspace members resolve");
-        let patches = crate::project_model::templates::local_framework_patches(
-            &checkout, &checkout, &members,
-        )
-        .expect("the framework patch set resolves");
+        let patches = crate::framework::checkout_patch_tables(&checkout)
+            .expect("the framework patch set resolves");
         let patch = toml::Value::try_from(&patches)
             .expect("the patch set serializes")
             .as_table()
