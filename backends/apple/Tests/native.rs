@@ -2569,10 +2569,29 @@ mod gpu_surface {
 
     use super::mtm;
 
-    /// The registered trials — the settle-ordering and completion
-    /// coverage for the mounted-surface ownership contract.
+    fn an_owed_first_frame_pauses_when_hidden() -> Result<(), libtest_mimic::Failed> {
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm()))
+            .map_err(|error| format!("mount: {error}"))?;
+        mounted.ensure_attached();
+        let _ready = mounted.readiness_probe();
+        assert!(!mounted.frame_presented(), "the first frame is still owed");
+        assert!(
+            !mounted.link_paused(),
+            "the visible first frame is scheduled"
+        );
+        cocoa_ui::view::set_hidden(mounted.leaf.view(), true);
+        assert!(mounted.link_paused(), "hiding pauses an owed first frame");
+        cocoa_ui::view::set_hidden(mounted.leaf.view(), false);
+        assert!(!mounted.link_paused(), "showing resumes the owed frame");
+        Ok(())
+    }
+
     pub fn trials() -> Vec<Trial> {
         vec![
+            Trial::test(
+                "gpu_surface::an_owed_first_frame_pauses_when_hidden",
+                an_owed_first_frame_pauses_when_hidden,
+            ),
             Trial::test(
                 "gpu_surface::failed_render_settles_readiness_once",
                 failed_render_settles_readiness_once,
@@ -3279,10 +3298,45 @@ mod filtered {
 
     use super::mtm;
 
-    /// The registered trials — the failed-child settle contract and the
-    /// zero-bounds detach.
+    fn an_owed_first_frame_pauses_when_hidden() -> Result<(), libtest_mimic::Failed> {
+        // The gated setup keeps the link paused while the window orders in,
+        // so the real display link cannot take the owed first frame before
+        // the trial samples it.
+        let (mounted, gate) = pollster::block_on(MountedFilteredSurface::mount_gated(mtm()))
+            .map_err(|error| format!("mount: {error}"))?;
+        mounted.ensure_attached();
+        let _ready = mounted.readiness_probe();
+        assert!(
+            mounted.link_paused(),
+            "the pending effect setup holds the link"
+        );
+        gate.release();
+        // The setup's main-queue landing opens the link; the link's first
+        // update is a later run-loop source, so the pump samples the open
+        // link before any delivery.
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !mounted.link_paused()),
+            "the visible first frame is scheduled once the setup lands"
+        );
+        assert!(!mounted.frame_presented(), "the first frame is still owed");
+        cocoa_ui::view::set_hidden(mounted.leaf.view(), true);
+        assert!(mounted.link_paused(), "hiding pauses an owed first frame");
+        assert!(mounted.deliver_frame(1.0), "a queued drawable is available");
+        assert!(
+            !mounted.render_in_flight(),
+            "hidden delivery starts no capture"
+        );
+        cocoa_ui::view::set_hidden(mounted.leaf.view(), false);
+        assert!(!mounted.link_paused(), "showing resumes the owed frame");
+        Ok(())
+    }
+
     pub fn trials() -> Vec<Trial> {
         vec![
+            Trial::test(
+                "filtered::an_owed_first_frame_pauses_when_hidden",
+                an_owed_first_frame_pauses_when_hidden,
+            ),
             Trial::test(
                 "filtered::a_view_over_a_failed_child_settles_once",
                 a_view_over_a_failed_child_settles_once,
