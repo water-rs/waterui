@@ -14,12 +14,15 @@
 //! `simctl spawn` runs without an application, keep their sceneless
 //! windows and never reach this module.
 //!
-//! The `.github/scripts/nextest-ios-sim.sh` target runner launches the
-//! process as an application: it wraps the test binary in an `.app` whose
-//! `Info.plist` is the one [`native_test_info_plist!`](crate::native_test_info_plist)
+//! The `water test-runner` target runner launches the process as an
+//! application: it wraps the test binary in an `.app` whose `Info.plist` is
+//! the one [`native_test_info_plist!`](crate::native_test_info_plist)
 //! embeds in the binary's `__TEXT,__info_plist` section. `simctl launch`
-//! does not forward the application's exit status, so [`run`] writes it to
-//! the file the runner names in [`STATUS_PATH_VARIABLE`] before exiting.
+//! and `devicectl ... --console` do not forward the application's exit
+//! status, so [`run`] writes it to the file the runner names in
+//! [`STATUS_PATH_VARIABLE`] before exiting. The device runner cannot name
+//! a host path, so a relative value is resolved against the application's
+//! home — its data container.
 //!
 //! # Safety
 //!
@@ -53,6 +56,11 @@ pub const INFO_PLIST: [u8; INFO_PLIST_LEN] = *include_bytes!("native_test.plist"
 
 /// The environment variable naming the file [`run`] writes the process's
 /// exit status to.
+///
+/// An absolute value names a host path (the simulator runner). A relative
+/// value is resolved against `NSHomeDirectory` — the application's data
+/// container — because the device runner can only name container-relative
+/// paths.
 pub const STATUS_PATH_VARIABLE: &str = "WATERUI_NATIVE_TEST_STATUS";
 
 /// The bound the launched application gets to connect its window scene
@@ -99,12 +107,20 @@ thread_local! {
 /// file cannot be written.
 pub fn run(arguments: Arguments, trials: impl FnOnce() -> Vec<Trial> + 'static) -> ! {
     if arguments.list {
-        libtest_mimic::run(&arguments, trials()).exit();
+        let conclusion = libtest_mimic::run(&arguments, trials());
+        // A `--list` launch must still report a status when the runner
+        // names one: a crash halfway through the list would otherwise hand
+        // nextest a truncated list and lose cases silently. The simulator's
+        // bare route lists without the variable, so that path is unchanged.
+        if let Some(status_path) = std::env::var_os(STATUS_PATH_VARIABLE) {
+            write_status(&conclusion, &status_path);
+        }
+        conclusion.exit();
     }
     let status_path = std::env::var_os(STATUS_PATH_VARIABLE).unwrap_or_else(|| {
         panic!(
             "{STATUS_PATH_VARIABLE} is unset — the harness application is launched by the \
-             nextest-ios-sim.sh target runner, which names the file its exit status goes to"
+             `water test-runner` target runner, which names the file its exit status goes to"
         )
     });
     let mtm = MainThreadMarker::new().expect("a harness's `main` runs on the main thread");
@@ -185,17 +201,31 @@ fn run_trials(arguments: &Arguments, trials: impl FnOnce() -> Vec<Trial>, status
         application_is_active()
     );
     let conclusion = libtest_mimic::run(arguments, trials());
+    write_status(&conclusion, status_path);
+    conclusion.exit();
+}
+
+/// The file the harness's exit status goes to: `value` as-is when
+/// absolute, else resolved against the application's home — its data
+/// container on iOS — which the device runner's relative status path names.
+fn resolve_status_path(value: &std::ffi::OsStr) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else {
+        std::path::PathBuf::from(objc2_foundation::NSHomeDirectory().to_string()).join(path)
+    }
+}
+
+/// Writes `conclusion`'s exit-status byte to the file `status_path` names.
+fn write_status(conclusion: &libtest_mimic::Conclusion, status_path: &OsString) {
+    let path = resolve_status_path(status_path);
     // `ExitCode` exposes no number on stable; recover the conclusion's by
     // comparison so the status file carries exactly the process's exit.
     let exit_code = conclusion.exit_code();
     let status = (0..=u8::MAX)
         .find(|&code| ExitCode::from(code) == exit_code)
         .expect("a libtest conclusion exits with a status byte");
-    std::fs::write(status_path, status.to_string()).unwrap_or_else(|error| {
-        panic!(
-            "writing the exit status to {}: {error}",
-            status_path.display()
-        )
-    });
-    conclusion.exit();
+    std::fs::write(&path, status.to_string())
+        .unwrap_or_else(|error| panic!("writing the exit status to {}: {error}", path.display()));
 }

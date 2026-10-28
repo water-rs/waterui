@@ -45,8 +45,6 @@ use crate::platform::{PackageOptions, TargetPlatform};
 use crate::project::Project;
 use crate::project_model::project_types::AppleBundleIdentifier;
 #[cfg(target_os = "macos")]
-use crate::utils::copy_file;
-#[cfg(target_os = "macos")]
 use smol::stream::StreamExt as _;
 
 /// One `#[widget]` declaration paired with its export symbol.
@@ -696,60 +694,14 @@ async fn sign_widget_appex(
         entitlements: &plist::Dictionary::new(),
         platform,
     };
-    let selection = match crate::apple::provisioning::select_development_profile(host, &request)
-        .await
-    {
-        Ok(selection) => selection,
-        Err(crate::apple::provisioning::SelectError::NoMatch(first)) => {
-            info!("{first}; asking xcodebuild to provision one");
-            crate::apple::provisioning::provision_via_xcodebuild(
-                host,
-                &request,
-                &backend_root.join("DerivedData/Provisioning"),
-                deployment_target,
-            )
-            .await?;
-            match crate::apple::provisioning::select_development_profile(host, &request).await {
-                Ok(selection) => selection,
-                Err(crate::apple::provisioning::SelectError::NoMatch(still)) => {
-                    bail!(
-                        "xcodebuild installed a profile but no installed profile qualifies: {still}"
-                    )
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Err(error) => return Err(error.into()),
-    };
-
-    copy_file(
-        &selection.path,
-        appex_layout.app_path.join("embedded.mobileprovision"),
-    )
-    .await?;
-
-    let entitlements = crate::apple::provisioning::signing_entitlements(
-        &selection.data,
-        &request,
-        &selection.app_id_prefix,
-    )?;
-    let appex_name = appex_layout.app_path.file_stem().map_or_else(
-        || "Widgets".to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    let xcent = appex_layout
-        .app_path
-        .with_file_name(format!("{appex_name}.xcent"));
-    app_bundle::write_entitlements(&xcent, entitlements).await?;
-    codesign_path(
+    app_bundle::sign_development_bundle(
         host,
-        &appex_layout.app_path,
-        &selection.identity,
-        Some(&xcent),
-        Some(widget_bundle_id),
+        appex_layout,
+        &request,
+        &backend_root.join("DerivedData/Provisioning"),
+        deployment_target,
     )
-    .await?;
-    Ok(())
+    .await
 }
 
 /// Renders `s` as a `Swift` string literal — control characters escape as

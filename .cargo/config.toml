@@ -22,10 +22,23 @@ IPHONEOS_DEPLOYMENT_TARGET = "27.0"
 [target.aarch64-linux-android]
 rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 
-# `cargo test --target aarch64-apple-ios-sim` and `cargo nextest run
-# --target aarch64-apple-ios-sim` hand each built test binary to this
-# runner, which executes it inside a booted iOS Simulator — a
-# cross-compiled artifact is never the test. The runner requires
-# WATERUI_IOS_SIM_UDID to name the simulator the caller owns.
+# `cargo test` and `cargo nextest run` on an Apple target hand each built
+# test binary to the runner below, which executes it on the destination —
+# a cross-compiled artifact is never the test. The wrapper execs the
+# `water test-runner` plumbing inside the `water` build `WATER_BIN` names
+# (required; cargo cannot expand variables and a `water` found on PATH can
+# be an older install than the checkout under test).
+#
+# `aarch64-apple-ios-sim` runs inside a booted iOS Simulator named by
+# WATERUI_IOS_SIM_UDID, which the caller owns and creates.
+#
+# `aarch64-apple-ios` runs on the paired physical device named by
+# WATERUI_IOS_DEVICE (a CoreDevice identifier, UDID, or name), signed with
+# the already-installed development profile for the identity
+# WATERUI_IOS_DEVICE_BUNDLE_ID / WATERUI_IOS_DEVICE_TEAM_ID name; the
+# runner never provisions or uninstalls.
 [target.aarch64-apple-ios-sim]
-runner = [".github/scripts/nextest-ios-sim.sh"]
+runner = [".github/scripts/water-test-runner.sh", "simulator"]
+
+[target.aarch64-apple-ios]
+runner = [".github/scripts/water-test-runner.sh", "device"]

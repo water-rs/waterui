@@ -348,6 +348,7 @@ fn physical_device_launch_command(
     let mut command = host.command("xcrun")?;
     command.args([
         "devicectl",
+        "--quiet",
         "device",
         "process",
         "launch",
@@ -357,6 +358,9 @@ fn physical_device_launch_command(
         "--console",
         bundle_id,
     ]);
+    for argument in options.arguments() {
+        command.arg(argument);
+    }
     for (key, _) in host.envs() {
         if key.as_encoded_bytes().starts_with(b"DEVICECTL_CHILD_") {
             command.env_remove(key);
@@ -373,7 +377,7 @@ fn physical_device_launch_command(
     Ok(command)
 }
 
-async fn install_device_app(
+pub(crate) async fn install_device_app(
     host: &Host,
     selector: &str,
     artifact_path: &Path,
@@ -403,6 +407,51 @@ async fn install_device_app(
         String::from_utf8_lossy(&output.stdout).trim(),
         String::from_utf8_lossy(&output.stderr).trim(),
     )))
+}
+
+impl ApplePhysicalDevice {
+    /// `devicectl device copy from` for the app's data container: pull
+    /// `source` (relative to the container root) to `destination` on the
+    /// host. A failed copy — the file is absent — is an error carrying
+    /// devicectl's stderr.
+    #[cfg(target_os = "macos")]
+    pub(crate) async fn copy_from_data_container(
+        &self,
+        host: &Host,
+        bundle_id: &str,
+        source: &str,
+        destination: &Path,
+    ) -> eyre::Result<()> {
+        let output = host
+            .command("xcrun")
+            .wrap_err("failed to run devicectl device copy from")?
+            .args([
+                "devicectl",
+                "device",
+                "copy",
+                "from",
+                "--device",
+                self.selector(),
+                "--domain-type",
+                "appDataContainer",
+                "--domain-identifier",
+                bundle_id,
+                "--source",
+                source,
+                "--destination",
+            ])
+            .arg(destination)
+            .output()
+            .await
+            .wrap_err("failed to run devicectl device copy from")?;
+        if !output.status.success() {
+            bail!(
+                "devicectl device copy from failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Find the app's pid on the device by its executable name.
@@ -675,6 +724,108 @@ async fn wait_for_console_status(
     }
 }
 
+impl ApplePhysicalDevice {
+    /// The `url` `devicectl` reports for the installed `bundle_id`, or
+    /// `None` when no such app is installed. Parsed from `--json-output`
+    /// — the human table is never scraped. `json_path` names the file the
+    /// command writes its report to.
+    ///
+    /// devicectl's `--json-output` writes its report to a file, and for an
+    /// installed app exposes only `bundleIdentifier`, `name` and `url`
+    /// (`file:///private/var/containers/Bundle/Application/<UUID>/<name>.app/`).
+    /// An overwrite install lands under a new UUID, so the URL changing is
+    /// how the test runner detects that something else installed the app.
+    #[cfg(target_os = "macos")]
+    pub(crate) async fn installed_app_url(
+        &self,
+        host: &Host,
+        bundle_id: &str,
+        json_path: &std::path::Path,
+    ) -> eyre::Result<Option<String>> {
+        let output = host
+            .output(
+                "xcrun",
+                [
+                    "devicectl",
+                    "device",
+                    "info",
+                    "apps",
+                    "--device",
+                    self.selector(),
+                    "--bundle-id",
+                    bundle_id,
+                    "--json-output",
+                    &json_path.to_string_lossy(),
+                ],
+            )
+            .await
+            .wrap_err("failed to query the device's installed applications")?;
+        if !output.status.success() {
+            bail!(
+                "devicectl device info apps failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let text = std::fs::read_to_string(json_path)
+            .wrap_err("devicectl wrote no --json-output report")?;
+        installed_app_url_from_json(&text, bundle_id)
+            .map_err(|error| eyre!("could not parse devicectl's app report: {error:#}: {text}"))
+    }
+
+    /// Launch an already-installed artifact with `--console`, streaming its
+    /// output and owning its stop path — the install-free half of
+    /// [`Device::run`]. `process_name` is the bundle's executable name —
+    /// the name `devicectl device process list` reports — used to find the
+    /// remote pid for an escalating stop.
+    pub(crate) fn launch_monitored(
+        &self,
+        host: &Host,
+        artifact: &Artifact,
+        options: &crate::device::RunOptions,
+        process_name: &str,
+    ) -> Result<Running, FailToRun> {
+        let bundle_id = artifact.bundle_id().to_string();
+        let process_name = process_name.to_string();
+
+        // `--console` attaches the app's standard streams to devicectl's and
+        // waits for the app to exit: one child gives stdout/stderr streaming,
+        // exit detection, and signal forwarding (a signal to devicectl is
+        // delivered to the app) in a single process.
+        let mut child = physical_device_launch_command(host, self.selector(), &bundle_id, options)
+            .and_then(|mut command| command.spawn())
+            .map_err(|error| FailToRun::Launch(eyre!("Failed to launch app: {error}")))?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .expect("stdout is piped for the devicectl console");
+        let stderr = child
+            .stderr
+            .take()
+            .expect("stderr is piped for the devicectl console");
+
+        let (running, sender, control) = Running::new();
+
+        let (panic_rx, eof_rx) = spawn_console_streams(stdout, stderr, &sender);
+        spawn(monitor_console_session(
+            child,
+            host.clone(),
+            self.selector().to_string(),
+            process_name,
+            ConsoleMonitorChannels {
+                control,
+                eof: eof_rx,
+                panic: panic_rx,
+            },
+            sender,
+            termination_grace(),
+        ))
+        .detach();
+
+        Ok(running)
+    }
+}
+
 impl Device for ApplePhysicalDevice {
     fn name(&self) -> &str {
         &self.name
@@ -710,8 +861,7 @@ impl Device for ApplePhysicalDevice {
             self.identifier
         );
         install_device_app(host, self.selector(), artifact.path()).await?;
-
-        let bundle_id = artifact.bundle_id().to_string();
+        // A `water run` bundle's stem is its CFBundleExecutable name.
         let process_name = artifact
             .path()
             .file_stem()
@@ -723,43 +873,7 @@ impl Device for ApplePhysicalDevice {
                 ))
             })?
             .to_string();
-
-        // `--console` attaches the app's standard streams to devicectl's and
-        // waits for the app to exit: one child gives stdout/stderr streaming,
-        // exit detection, and signal forwarding (a signal to devicectl is
-        // delivered to the app) in a single process.
-        let mut child = physical_device_launch_command(host, self.selector(), &bundle_id, &options)
-            .and_then(|mut command| command.spawn())
-            .map_err(|error| FailToRun::Launch(eyre!("Failed to launch app: {error}")))?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .expect("stdout is piped for the devicectl console");
-        let stderr = child
-            .stderr
-            .take()
-            .expect("stderr is piped for the devicectl console");
-
-        let (running, sender, control) = Running::new();
-
-        let (panic_rx, eof_rx) = spawn_console_streams(stdout, stderr, &sender);
-        spawn(monitor_console_session(
-            child,
-            host.clone(),
-            self.selector().to_string(),
-            process_name,
-            ConsoleMonitorChannels {
-                control,
-                eof: eof_rx,
-                panic: panic_rx,
-            },
-            sender,
-            termination_grace(),
-        ))
-        .detach();
-
-        Ok(running)
+        self.launch_monitored(host, &artifact, &options, &process_name)
     }
 
     async fn scan(host: &Host) -> eyre::Result<Vec<Self>> {
@@ -837,6 +951,37 @@ async fn stream_console(stream: impl smol::io::AsyncRead + Unpin, target: Consol
         }
     }
     let _ = target.eof.try_send(());
+}
+
+/// The `url` of `bundle_id` inside devicectl's `--json-output` report —
+/// the only parse the runner trusts, never the human table. The report's
+/// shape is `{"result": {"apps": [ … ]}}`; entries are matched on
+/// `bundleIdentifier` exactly.
+#[cfg(target_os = "macos")]
+fn installed_app_url_from_json(text: &str, bundle_id: &str) -> eyre::Result<Option<String>> {
+    #[derive(serde::Deserialize)]
+    struct Report {
+        result: ResultSection,
+    }
+    #[derive(serde::Deserialize)]
+    struct ResultSection {
+        #[serde(default)]
+        apps: Vec<App>,
+    }
+    #[derive(serde::Deserialize)]
+    struct App {
+        #[serde(rename = "bundleIdentifier")]
+        bundle_identifier: String,
+        url: Option<String>,
+    }
+
+    let report: Report = serde_json::from_str(text)?;
+    Ok(report
+        .result
+        .apps
+        .into_iter()
+        .find(|app| app.bundle_identifier == bundle_id)
+        .and_then(|app| app.url))
 }
 
 #[cfg(test)]
@@ -981,6 +1126,7 @@ mod tests {
             args,
             [
                 "devicectl",
+                "--quiet",
                 "device",
                 "process",
                 "launch",
