@@ -89,7 +89,7 @@ categories = ["gui"]
 # handoff.
 minimum-cli-version = "0.4.6"
 # Native Apple deployment targets, carried into every project's Cargo config.
-apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
+apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
 # The Android API floor the native runtime supports; the backend's Gradle
 # `minSdk` must agree.
 android-min-api-level = 31
