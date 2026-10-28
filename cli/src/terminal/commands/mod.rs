@@ -216,6 +216,8 @@ pub mod mcp;
 pub mod package;
 pub mod preview;
 pub mod run;
+#[cfg(target_os = "macos")]
+pub mod test_runner;
 pub mod update;
 pub mod web;
 

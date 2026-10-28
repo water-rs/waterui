@@ -3,7 +3,7 @@
 //! `UIKit` drives part of its machinery — the animation behind
 //! `UIScrollView.setContentOffset(_:animated: true)` among it — only from
 //! the application's update cycle, which the bare `simctl spawn`ed `native`
-//! suite never reaches. The `nextest-ios-sim.sh` target runner launches
+//! suite never reaches. The `water test-runner` target runner launches
 //! this binary into a real `UIApplication` with a connected window scene,
 //! one case per launch, from the bundle manifest embedded below;
 //! `cocoa_ui::uikit::native_test::run` refuses to start outside that

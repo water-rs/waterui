@@ -15,7 +15,7 @@
 #     and Tests/native_app.rs, behind the `native-test` feature) run inside
 #     the same booted device: `cargo nextest run --target
 #     aarch64-apple-ios-sim` hands every test binary to the
-#     `nextest-ios-sim.sh` target runner (`.cargo/config.toml`), so
+#     `water test-runner simulator` target runner (`.cargo/config.toml`), so
 #     UIKit-touching assertions execute natively on the platform rather
 #     than the host. Plain binaries are `simctl spawn`ed bare; the
 #     `native_app` harnesses are wrapped in a generated `.app` and launched
@@ -34,7 +34,7 @@
 #   <simulator-udid>  REQUIRED, as the second argument or through
 #              SIMULATOR_UDID — the UDID of a simulator the caller created
 #              and owns. The script never picks a device implicitly: the
-#              `nextest-ios-sim.sh` target runner requires a caller-owned
+#              `water test-runner simulator` target runner requires a caller-owned
 #              device so a run cannot land on a stale or foreign simulator.
 #
 # Prerequisites: the framework checkout (this repository — the backend is
@@ -57,6 +57,25 @@ fi
 # Boot if needed and wait for it to be ready; a no-op when already booted.
 xcrun simctl bootstatus "${simulator_udid}" -b
 
+# Resolve the CLI under test explicitly: WATER_BIN wins over PATH, and the
+# resolved path is logged, so an older install (e.g. `~/.cargo/bin/water`
+# shadowing a fresh build) is visible rather than silently driving the
+# run. The cargo target runner hands every test binary to `water
+# test-runner`, so the exact binary must be exported for it.
+water_bin="${WATER_BIN:-$(command -v water || true)}"
+[[ -n "${water_bin}" && -x "${water_bin}" ]] || {
+  echo "error: no water CLI on PATH; set WATER_BIN to the build under test" >&2
+  exit 1
+}
+water_bin="$(cd "$(dirname "${water_bin}")" && pwd)/$(basename "${water_bin}")"
+export WATER_BIN="${water_bin}"
+echo "run-ios-device-tests: water CLI is ${water_bin}"
+"${water_bin}" --version || {
+  echo "error: ${water_bin} could not report its version" >&2
+  exit 1
+}
+
+
 if [[ "${example}" != "none" ]]; then
   waterui_dir="${WATERUI_DIR:?WATERUI_DIR must name the framework checkout}"
   if [[ "${example}" == "ios_test_host" ]]; then
@@ -73,22 +92,6 @@ if [[ "${example}" != "none" ]]; then
   # placed `.app` BEFORE emitting the report, so the archive found there is
   # this run's artifact by the producer's own contract — no timestamp or
   # side-effect check can or needs to prove that.
-
-  # Resolve the CLI under test explicitly: WATER_BIN wins over PATH, and the
-  # resolved path is logged, so an older install (e.g. `~/.cargo/bin/water`
-  # shadowing a fresh build) is visible rather than silently driving the
-  # packaging step.
-  water_bin="${WATER_BIN:-$(command -v water || true)}"
-  [[ -n "${water_bin}" && -x "${water_bin}" ]] || {
-    echo "error: no water CLI on PATH; set WATER_BIN to the build under test" >&2
-    exit 1
-  }
-  water_bin="$(cd "$(dirname "${water_bin}")" && pwd)/$(basename "${water_bin}")"
-  echo "run-ios-device-tests: water CLI is ${water_bin}"
-  "${water_bin}" --version || {
-    echo "error: ${water_bin} could not report its version" >&2
-    exit 1
-  }
 
   package_log="$(mktemp)"
   "${water_bin}" package --platform ios-simulator --backend apple --debug --path "${example_path}" \
@@ -135,13 +138,14 @@ if [[ "${example}" != "none" ]]; then
     "${simulator_udid}" "${bundle_id}"
 fi
 
+export WATERUI_IOS_SIM_UDID="${simulator_udid}"
+
 # The reference host runs once on the same simulator and leaves its
 # measured values as JSON; the suite's native-layout assertions compare
 # against them through WATERUI_REFERENCE_METRICS, which the target runner
 # forwards into every test process, spawned or launched, as SIMCTL_CHILD_*.
 # Assigned before exporting: `export X="$(...)"` would mask the
 # substitution's exit status, so a failing reference build must fail here.
-export WATERUI_IOS_SIM_UDID="${simulator_udid}"
 reference_metrics="$("${repo_root}/.github/scripts/prepare-native-reference.sh" \
   "$(mktemp -d)/native-reference")"
 export WATERUI_REFERENCE_METRICS="${reference_metrics}"
@@ -154,4 +158,5 @@ export WATERUI_REFERENCE_METRICS="${reference_metrics}"
 # `native-test` forwards to cocoa-ui's so one flag selects both suites.
 cargo nextest run -p waterui-apple -p cocoa-ui --locked --features waterui-apple/native-test \
   --manifest-path "${repo_root}/Cargo.toml" \
-  --target aarch64-apple-ios-sim
+  --target aarch64-apple-ios-sim \
+  -E 'not test(/^device_only::/)'
