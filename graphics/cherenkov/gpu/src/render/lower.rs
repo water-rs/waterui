@@ -1779,6 +1779,8 @@ pub struct Lowering<'a> {
     /// Path identities admitted during this lowering, before atlas commit.
     /// A second use must replay the admitted layout as well as its texels.
     pending_paths: FxHashMap<u64, u32>,
+    pub diagnostic_ms: [f64; 3],
+    pub diagnostic_counts: [u32; 2],
     pub commands_lowered: u32,
     pub layers_composed: u32,
     /// Backdrop groups planned before lowering.
@@ -1882,6 +1884,8 @@ impl<'a> Lowering<'a> {
             pending: Vec::new(),
             path_arena: Vec::new(),
             pending_paths: FxHashMap::default(),
+            diagnostic_ms: [0.0; 3],
+            diagnostic_counts: [0; 2],
             commands_lowered: 0,
             layers_composed: 0,
             backdrops: FxHashMap::default(),
@@ -2268,6 +2272,7 @@ impl<'a> Lowering<'a> {
         caches: &mut FxHashMap<LayerId, ContentData>,
         glyphs: &GlyphContext<'_>,
     ) -> Result<(), RenderError> {
+        let diagnostic_start = std::time::Instant::now();
         for content in caches.values_mut() {
             let changed = content.retained.prepare(&mut super::prepared::Lowerer {
                 fonts: glyphs.fonts,
@@ -2276,6 +2281,7 @@ impl<'a> Lowering<'a> {
             })?;
             self.commands_lowered += changed;
         }
+        self.diagnostic_ms[0] += diagnostic_start.elapsed().as_secs_f64() * 1000.0;
         Ok(())
     }
 
@@ -4819,6 +4825,7 @@ impl<'a> Lowering<'a> {
         // An automatic-route GPU candidate emits through the coverage
         // path instead of CPU realization; the anchor it leaves behind
         // retains like any other leaf's instances (#3081).
+        let diagnostic_start = std::time::Instant::now();
         let emitted_gpu = self.compute.is_some()
             && self.coverage_route == path::CoverageRoute::Automatic
             && matches!(
@@ -4829,11 +4836,15 @@ impl<'a> Lowering<'a> {
                 }
             )
             && self.automatic_gpu_leaf(op, source, &mut storage.gpu_paths, index)?;
+        self.diagnostic_ms[1] += diagnostic_start.elapsed().as_secs_f64() * 1000.0;
+        self.diagnostic_counts[usize::from(emitted_gpu)] += 1;
+        let diagnostic_start = std::time::Instant::now();
         let realized = if emitted_gpu {
             Ok(None)
         } else {
             self.realize(op, cover, glyphs, source, &mut storage.geometry)
         };
+        self.diagnostic_ms[2] += diagnostic_start.elapsed().as_secs_f64() * 1000.0;
         self.transform = transform;
         let geometry = realized?;
         let stop_base = u32::try_from(first_stop).expect("stop count fits u32");

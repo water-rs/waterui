@@ -7264,6 +7264,14 @@ impl GpuRenderer {
                     &surf.plan,
                 )
             });
+            tracing::info!(
+                prepare_ms = lowering.diagnostic_ms[0],
+                gpu_candidate_ms = lowering.diagnostic_ms[1],
+                cpu_leaf_ms = lowering.diagnostic_ms[2],
+                cpu_leaves = lowering.diagnostic_counts[0],
+                gpu_leaves = lowering.diagnostic_counts[1],
+                "diagnostic map leaf attribution"
+            );
             lowered.commands += lowering.commands_lowered;
             lowered.layers = lowering.layers_composed;
             lowered.glyphs = lowering.glyphs_rasterized();
