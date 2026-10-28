@@ -24,7 +24,7 @@ use objc2_app_kit::{
     NSAccessibility, NSBezelStyle, NSButton, NSButtonCell, NSColor, NSControl, NSCursor, NSEvent,
 };
 use objc2_core_foundation::CGRect;
-use objc2_foundation::{NSAttributedString, NSObjectProtocol, NSString};
+use objc2_foundation::{NSAttributedString, NSCopying, NSObjectProtocol, NSString};
 
 use crate::callback::guarded;
 use crate::geometry::Size;
@@ -207,21 +207,32 @@ impl Button {
     /// button cell's drawing rect for a reference-size button: the owning
     /// layout supplies this padding itself, like `NSButton`'s own layout.
     ///
+    /// The rect is asked of a detached copy of the cell, which carries the
+    /// bezel style and control size but no control view: a cell attached to
+    /// its button measures the button's current bounds instead of the rect
+    /// it is given, and a button being configured has none yet.
+    ///
     /// Meaningful only while the button is bordered.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the button has no `NSButtonCell`, which `NSButton`
+    /// always creates.
     #[must_use]
     pub fn content_padding(&self) -> (f64, f64) {
         let probe = CGRect::new(
             objc2_core_foundation::CGPoint::ZERO,
             objc2_core_foundation::CGSize::new(200.0, 24.0),
         );
-        let Some(cell) = self.cell() else {
-            return (0.0, 0.0);
-        };
-        // SAFETY: `downcast` on an `NSButton`'s cell, which is always an
-        // `NSButtonCell`.
-        let Ok(cell) = cell.downcast::<NSButtonCell>() else {
-            return (0.0, 0.0);
-        };
+        let cell = self
+            .cell()
+            .expect("an NSButton always has a cell")
+            .downcast::<NSButtonCell>()
+            .expect("an NSButton's cell is an NSButtonCell")
+            .copy();
+        // SAFETY: clearing the control view stores no reference, so nothing
+        // can dangle; the call runs on the main thread `self` is bound to.
+        unsafe { cell.setControlView(None) };
         let drawing = cell.drawingRectForBounds(probe);
         (drawing.origin.x, drawing.origin.y)
     }
