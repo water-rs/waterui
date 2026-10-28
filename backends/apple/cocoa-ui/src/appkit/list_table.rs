@@ -63,6 +63,10 @@ use crate::scroll_flight::{FlightPlan, ScrollFlight};
 /// The table's content-bearing column identifier.
 const COLUMN_IDENTIFIER: &str = "content";
 
+/// The top space the list gains below the scroll view's edge — `SwiftUI`'s
+/// breathing room above the first row, which scrolls away with the rows.
+const TOP_CONTENT_INSET: f64 = 10.0;
+
 /// The data the wrapped `NSTableView` reads rows from — the list's model.
 ///
 /// All methods are called on the main thread. `rows`, `view_for_row`,
@@ -531,7 +535,7 @@ define_class!(
 impl TableView {
     /// A list-shaped table: one `content` column, no header, `fullWidth`
     /// rows, zero intercell spacing, text-background fill, autohiding
-    /// vertical scroller, and a 10pt top content inset that scrolls away.
+    /// vertical scroller, and a top content inset that scrolls away.
     #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(TableViewIvars::new(mtm));
@@ -566,7 +570,18 @@ impl TableView {
         this.setDrawsBackground(false);
         this.setAutomaticallyAdjustsContentInsets(false);
         this.setContentInsets(NSEdgeInsets {
-            top: 10.0,
+            top: TOP_CONTENT_INSET,
+            left: 0.0,
+            bottom: 0.0,
+            right: 0.0,
+        });
+        // `scrollerInsets` offsets the scroller from the scroll view's
+        // edge independently of `contentInsets`: negating the content
+        // inset keeps the scroller spanning the full height the way
+        // `SwiftUI`'s list scroller does, while the rows still gain the
+        // inset (water-rs/waterui#3588).
+        this.setScrollerInsets(NSEdgeInsets {
+            top: -TOP_CONTENT_INSET,
             left: 0.0,
             bottom: 0.0,
             right: 0.0,
