@@ -649,6 +649,7 @@ fn compact_log_level(line: &str) -> tracing::Level {
 /// followed by the exit monitor — everything `AppleSimulator::run` does
 /// after install, minus the `log stream` attachment a per-case runner does
 /// not need.
+#[cfg(target_os = "macos")]
 pub(crate) fn launch_simulator_app_monitored(
     host: &Host,
     udid: &str,
@@ -670,6 +671,7 @@ pub(crate) fn launch_simulator_app_monitored(
 }
 
 /// The `simctl launch --console` command both launch paths build.
+#[cfg(target_os = "macos")]
 fn simctl_launch_command(
     host: &Host,
     udid: &str,
@@ -707,6 +709,7 @@ fn simctl_launch_command(
 /// The test launch's owned child and the EOF handshakes of its two pipe
 /// forwarders — what [`spawn_simulator_test_monitor`] joins before it may
 /// report the run's end.
+#[cfg(target_os = "macos")]
 struct TestConsole {
     child: smol::process::Child,
     stdout_eof: smol::Task<()>,
@@ -720,6 +723,7 @@ struct TestConsole {
 /// strips the report whenever it arrives instead, and the returned task
 /// handles are the EOF handshake the monitor joins before reporting the
 /// run's end.
+#[cfg(target_os = "macos")]
 fn launch_test_app(
     host: &Host,
     udid: &str,
@@ -757,6 +761,7 @@ fn launch_test_app(
 /// Forward the test app's console output, stripping simctl's
 /// `<bundle id>: <pid>` report wherever it lands — at launch, or joined
 /// onto the last unterminated line at exit.
+#[cfg(target_os = "macos")]
 async fn forward_test_console(
     mut lines: smol::io::Lines<BufReader<smol::process::ChildStdout>>,
     bundle_id: String,
@@ -792,6 +797,7 @@ async fn forward_test_console(
 /// status file, so crash classification and panic-log scraping are waste —
 /// while keeping the same stop contract as
 /// [`spawn_simulator_exit_monitor`].
+#[cfg(target_os = "macos")]
 fn spawn_simulator_test_monitor(
     host: &Host,
     sender: Sender<DeviceEvent>,

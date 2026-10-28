@@ -414,6 +414,7 @@ impl ApplePhysicalDevice {
     /// `source` (relative to the container root) to `destination` on the
     /// host. A failed copy — the file is absent — is an error carrying
     /// devicectl's stderr.
+    #[cfg(target_os = "macos")]
     pub(crate) async fn copy_from_data_container(
         &self,
         host: &Host,
@@ -734,6 +735,7 @@ impl ApplePhysicalDevice {
     /// (`file:///private/var/containers/Bundle/Application/<UUID>/<name>.app/`).
     /// An overwrite install lands under a new UUID, so the URL changing is
     /// how the test runner detects that something else installed the app.
+    #[cfg(target_os = "macos")]
     pub(crate) async fn installed_app_url(
         &self,
         host: &Host,
@@ -955,6 +957,7 @@ async fn stream_console(stream: impl smol::io::AsyncRead + Unpin, target: Consol
 /// the only parse the runner trusts, never the human table. The report's
 /// shape is `{"result": {"apps": [ … ]}}`; entries are matched on
 /// `bundleIdentifier` exactly.
+#[cfg(target_os = "macos")]
 fn installed_app_url_from_json(text: &str, bundle_id: &str) -> eyre::Result<Option<String>> {
     #[derive(serde::Deserialize)]
     struct Report {
