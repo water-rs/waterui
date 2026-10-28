@@ -13823,6 +13823,8 @@ dependencies = [
  "cookie",
  "executor-core",
  "futures",
+ "objc2 0.6.5",
+ "objc2-web-kit",
  "percent-encoding",
  "robius-open",
  "serde",

@@ -28,16 +28,18 @@ use alloc::vec::Vec;
 use core::cell::{Cell, OnceCell, RefCell};
 
 use cocoa_ui::{MainThreadMarker, web_kit};
+use objc2::rc::Retained;
 use waterui::Str;
 use waterui::reactive::watcher::BoxWatcherGuard;
 use waterui::reactive::{Computed, Signal};
 use waterui_backend_core::Environment;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_webview::{
-    ASSET_HOST, ASSET_ORIGIN, ASSET_SCHEME, BackendEvent, Cookie, CustomWebViewController,
-    DOCUMENT_START_SCRIPT, DocumentScripts, NavigationPolicy, NavigationRequest, OriginPolicy,
-    ScriptInjectionTime, ScriptMessageHandler, Url, UserScript, WatcherGuard, WatcherSet,
-    WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, assets, bridge,
+    ASSET_HOST, ASSET_ORIGIN, ASSET_SCHEME, AnsweredNavigations, BackendEvent, Cookie,
+    CustomWebViewController, DOCUMENT_START_SCRIPT, DocumentScripts, NavigationPolicy,
+    NavigationRequest, OriginPolicy, ScriptInjectionTime, ScriptMessageHandler, Url, UserScript,
+    WatcherGuard, WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, assets,
+    bridge,
 };
 
 use crate::contract::NativeLeaf;
@@ -71,11 +73,12 @@ struct Shared {
     /// The policy deciding navigations the page initiates; `None` allows
     /// them all.
     navigation_policy: Option<NavigationPolicy>,
-    /// App-directed loads in flight: `go_to`, the history commands and the
-    /// in-place reroutes count each one started, and `decide_action`
-    /// consumes a token per action it answers — the policy never sees a
-    /// navigation the application itself issued.
-    app_loads: Cell<usize>,
+    /// Navigations the policy already answered: `go_to`, the history
+    /// commands, `reload` and the in-place reroutes record the
+    /// `WKNavigation` each one started, and every navigation the policy
+    /// allows joins them — the policy never sees a load the application
+    /// issued nor a redirect a decided navigation follows.
+    answered: AnsweredNavigations,
     /// The redirect signal and its guard, for `set_redirects_enabled`.
     redirects: RefCell<Option<(Computed<bool>, BoxWatcherGuard)>>,
     /// Whether the `__wateruiSend` script-message handler is registered —
@@ -327,7 +330,7 @@ impl WkWebViewHandle {
             // `WebViewWrapper`'s default: redirects allowed.
             redirects_enabled: Cell::new(true),
             navigation_policy,
-            app_loads: Cell::new(0),
+            answered: AnsweredNavigations::new(),
             redirects: RefCell::new(None),
             transport_registered: Cell::new(false),
             bridge_admitted: Cell::new(false),
@@ -387,13 +390,14 @@ impl WkWebViewHandle {
 
 /// `decidePolicyForNavigationAction`.
 impl Shared {
-    /// A load the application issued starts a navigation whose action
-    /// bypasses the policy — `decide_action` consumes the token the call
-    /// left. `started` is the engine's answer, so a `go_back` with nothing
-    /// to go back to leaves none.
-    fn app_load(&self, started: bool) {
-        if started {
-            self.app_loads.set(self.app_loads.get() + 1);
+    /// A load the application issued is recorded by the `WKNavigation` the
+    /// call returned — the same object its action later reports as
+    /// `mainFrameNavigation`, so the policy never sees it or the redirects
+    /// it follows. `None` starts nothing: a `go_back` with no previous
+    /// entry leaves none.
+    fn app_load(&self, navigation: Option<Retained<web_kit::WKNavigation>>) {
+        if let Some(navigation) = navigation.as_deref() {
+            self.answered.answer(navigation);
         }
     }
 
@@ -427,23 +431,28 @@ impl Shared {
                 | web_kit::NavigationType::FormSubmitted
                 | web_kit::NavigationType::FormResubmitted
         );
-        let app_directed = self.app_loads.get() != 0;
-        self.app_loads.set(self.app_loads.get().saturating_sub(1));
+        let answered = self.answered.is_answered(info.navigation.as_deref());
         let user_initiated = info.navigation_type == web_kit::NavigationType::LinkActivated;
         if !info.has_target_frame {
             // A targetless action lands in this view's main frame when it is
             // allowed — report it as one, before the in-place reroute.
-            if !app_directed && !self.policy_allows(action_url.as_deref(), true, user_initiated) {
+            if !answered && !self.policy_allows(action_url.as_deref(), true, user_initiated) {
                 return web_kit::Policy::Cancel;
             }
             self.emit_will_navigate(&url, allow_repeat);
             self.app_load(self.view().load_request(&info.request));
             return web_kit::Policy::Cancel;
         }
-        if !app_directed
-            && !self.policy_allows(action_url.as_deref(), info.target_is_main, user_initiated)
-        {
-            return web_kit::Policy::Cancel;
+        if !answered {
+            if !self.policy_allows(action_url.as_deref(), info.target_is_main, user_initiated) {
+                return web_kit::Policy::Cancel;
+            }
+            // An answer given is an answer kept: `WebKit` asks again for
+            // every server redirect the navigation follows, and each of
+            // those actions carries the same `mainFrameNavigation`.
+            if let Some(navigation) = info.navigation.as_deref() {
+                self.answered.answer(navigation);
+            }
         }
         if info.target_is_main {
             // Document-start scripts have to be chosen before the load
@@ -534,12 +543,9 @@ impl Shared {
                     self.view().stop_loading();
                     return;
                 }
-                // The document that commits is the redirect's target, which
-                // no `decidePolicyForNavigationAction` ever named — the
-                // callback does not run again for a server redirect — so
-                // admission is re-decided here, against where the load
-                // actually lands.
-                self.admit_document(&to);
+                // `WebKit` asks `decidePolicyForNavigationAction` again for
+                // every server redirect, so the document's admission was
+                // already re-decided there — only the events remain here.
                 self.emit_will_navigate(&to, true);
             }
             web_kit::Event::Finished => {

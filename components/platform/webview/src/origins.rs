@@ -46,8 +46,22 @@ pub struct OriginPolicy {
 
 impl OriginPolicy {
     /// Builds a policy for a view opened at `initial`.
+    ///
+    /// Each [`BridgeOrigins::Allowed`] entry is canonicalized through
+    /// [`Url::origin`], so the entry names an origin the way an engine
+    /// reports it — `https://A.dev:443` becomes `https://a.dev`.
+    ///
+    /// # Panics
+    ///
+    /// When an `Allowed` entry is not a URL with a tuple origin.
     #[must_use]
     pub fn new(origins: BridgeOrigins, initial: &Url) -> Self {
+        let origins = match origins {
+            BridgeOrigins::Allowed(entries) => {
+                BridgeOrigins::Allowed(entries.iter().map(allowed_origin).collect())
+            }
+            origins => origins,
+        };
         Self {
             origins,
             initial: serialized_origin(initial),
@@ -249,6 +263,25 @@ impl OriginRule {
 /// [`Origin`]: waterui_url::Origin
 fn serialized_origin(url: &Url) -> Option<Str> {
     url.origin().map(|origin| Str::from(origin.to_string()))
+}
+
+/// The `scheme://host[:port]` serialization a `BridgeOrigins::Allowed`
+/// entry names, canonicalized through [`Url::origin`] so it matches the
+/// form engines report.
+///
+/// # Panics
+///
+/// When `entry` is not a URL with a tuple origin — an allow list names
+/// origins, and a value that names none can never match.
+fn allowed_origin(entry: &Str) -> Str {
+    entry
+        .parse::<Url>()
+        .ok()
+        .and_then(|url| url.origin())
+        .map_or_else(
+            || panic!("a BridgeOrigins::Allowed entry must be a URL with an origin, got {entry:?}"),
+            |origin| Str::from(origin.to_string()),
+        )
 }
 
 /// Accepted by [`WebViewOpen::bridge_origins`](crate::WebViewOpen::bridge_origins).
@@ -469,6 +502,32 @@ mod tests {
         let production = policy(BridgeOrigins::Initial, "https://app.example/");
         assert!(!production.allows_origin("https://app.example:8443"));
         assert!(production.allows_origin("https://app.example"));
+    }
+
+    /// An allow-list entry is canonicalized through `Url::origin` at
+    /// construction, so an explicit default port or an uppercase host still
+    /// matches the origin an engine reports.
+    #[test]
+    fn allow_list_entries_are_canonicalized_to_their_origins() {
+        let policy = policy(
+            BridgeOrigins::Allowed(vec![
+                "HTTPS://APP.WATERUI.DEV:443".into(),
+                "http://localhost:3000/app".into(),
+            ]),
+            "https://app.waterui.dev",
+        );
+
+        assert!(policy.allows_origin("https://app.waterui.dev"));
+        assert!(policy.allows_origin("http://localhost:3000"));
+        assert!(!policy.allows_origin("https://other.waterui.dev"));
+        assert_eq!(
+            policy
+                .rules()
+                .iter()
+                .map(OriginRule::as_token)
+                .collect::<Vec<_>>(),
+            vec!["https://app.waterui.dev", "http://localhost:3000"]
+        );
     }
 
     /// Engines report an origin with its scheme's default port elided, so a

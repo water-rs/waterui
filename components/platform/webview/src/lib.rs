@@ -86,6 +86,10 @@ pub use navigation::{NavigationDecision, NavigationPolicy, NavigationRequest, st
 mod origins;
 #[cfg(not(target_arch = "wasm32"))]
 pub use origins::{BridgeOrigins, IntoBridgeOrigins, OriginPolicy, OriginRule};
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod webkit;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub use webkit::AnsweredNavigations;
 
 #[cfg(not(target_arch = "wasm32"))]
 /// An object whose methods and state are exposed to the page.
@@ -1023,6 +1027,12 @@ impl WebViewOpen {
     /// Android's `WebView` never offers a `POST` form submission or an
     /// `http(s)` subframe load to its hook, so on Android the policy does
     /// not see those navigations.
+    ///
+    /// On `WKWebView` a *subframe's* server redirect is offered to the
+    /// policy with `is_main_frame == false`: the engine re-asks the hook
+    /// for every redirect, and exposes no public signal marking a
+    /// subframe's action as one, so the policy sees it as an ordinary
+    /// subframe navigation.
     pub fn navigation_policy(
         mut self,
         policy: impl Fn(&NavigationRequest) -> NavigationDecision + Send + Sync + 'static,

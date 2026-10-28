@@ -33,6 +33,14 @@ tiny_http = { version = "0.12", optional = true }
 cookie = "0.18.2"
 robius-open.workspace = true
 
+# `AnsweredNavigations` holds weak `WKNavigation`s — the type exists only
+# where `WKWebView` does.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+objc2.workspace = true
+objc2-web-kit = { version = "0.3.2", default-features = false, features = [
+    "WKNavigation",
+] }
+
 [features]
 # The checks an engine's real-engine suite runs against the contracts this
 # crate states; assertions, so off by default and on in test binaries only.
