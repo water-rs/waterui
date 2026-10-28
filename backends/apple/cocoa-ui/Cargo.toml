@@ -114,6 +114,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSNull",
     "NSObjCRuntime",
     "NSOperation",
+    "NSPathUtilities",
     "NSProcessInfo",
     "NSIndexPath",
     "NSIndexSet",
