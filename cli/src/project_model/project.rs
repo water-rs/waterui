@@ -416,10 +416,19 @@ impl Project {
     /// variants invalidating each other whenever a developer alternates `water run`
     /// and `water package`.
     ///
+    /// Explicit Cargo target-directory environment overrides use Cargo's resolved
+    /// directory directly for compilation and artifact lookup. Without an override,
+    /// each linkage retains its managed shared cache.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the shared build-cache directory cannot be resolved.
+    /// Returns an error when Cargo metadata or the shared cache cannot be resolved.
     pub async fn water_target_dir(&self, linkage: RustLinkage) -> eyre::Result<PathBuf> {
+        if self.host().env("CARGO_TARGET_DIR").is_some()
+            || self.host().env("CARGO_BUILD_TARGET_DIR").is_some()
+        {
+            return self.target_dir().await;
+        }
         let variant = match linkage {
             RustLinkage::SharedRuntime => "shared",
             RustLinkage::Static => "static",
@@ -4912,6 +4921,37 @@ mod target_graph_tests {
         );
         machine.respond("CARGO_METADATA", &cargo_metadata_json(&root, &root));
         root
+    }
+
+    #[test]
+    fn explicit_cargo_target_directory_is_used_by_application_builds() {
+        for variable in ["CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR"] {
+            let machine = TestMachine::new();
+            let root = fixture(&machine);
+            let target = machine.root().join("external-target");
+            let mut metadata: serde_json::Value =
+                serde_json::from_str(&cargo_metadata_json(&root, &root)).unwrap();
+            metadata["target_directory"] = serde_json::json!(target);
+            machine.respond("CARGO_METADATA", &metadata.to_string());
+            let host = machine.host([(variable, target.as_os_str())]);
+            smol::block_on(async {
+                let project = Project::open_for_build(&host, &root, ManagedBackends::NONE)
+                    .await
+                    .unwrap();
+                for linkage in [
+                    crate::build::RustLinkage::Static,
+                    crate::build::RustLinkage::SharedRuntime,
+                ] {
+                    assert_eq!(project.water_target_dir(linkage).await.unwrap(), target);
+                }
+                assert!(
+                    !crate::water_dir::shared_target_dir_path(&host)
+                        .await
+                        .unwrap()
+                        .exists()
+                );
+            });
+        }
     }
 
     /// An online open would fetch the font instead of failing, so the strict
