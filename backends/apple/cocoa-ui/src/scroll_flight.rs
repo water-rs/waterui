@@ -31,13 +31,83 @@ use objc2_quartz_core::CACurrentMediaTime;
 use crate::PlatformView;
 use crate::display_link::FrameClock;
 use crate::geometry::Point;
+#[cfg(feature = "native-test")]
+use crate::native_test::ManualScrollClock;
+
+/// A flight's production clock: the surface's display link, with the
+/// flight's time read from the link's target timestamp inside a tick
+/// and from `CACurrentMediaTime` at a flight's start.
+struct DisplayClock(FrameClock);
+
+impl DisplayClock {
+    /// The timeline instant a flight begins at.
+    #[allow(clippy::unused_self)] // A clock's own time base, kept a method for the `FlightClock` seam.
+    fn begin_time(&self) -> f64 {
+        CACurrentMediaTime()
+    }
+    /// The timeline instant the frame being produced presents at.
+    fn tick_time(&self) -> f64 {
+        self.0
+            .current_target_timestamp()
+            .unwrap_or_else(|| CACurrentMediaTime())
+    }
+    /// Starts ticking for `view`'s current attachment.
+    fn start(&self, view: &PlatformView) {
+        self.0.start(view);
+    }
+    /// Stops ticking.
+    fn stop(&self) {
+        self.0.stop();
+    }
+    /// Whether ticks will arrive.
+    fn is_running(&self) -> bool {
+        self.0.is_running()
+    }
+}
+
+/// The time a [`ScrollFlight`] runs on and the frames that advance it:
+/// the display link on a real surface, a stepped clock in the native
+/// test suite.
+#[cfg(feature = "native-test")]
+pub trait FlightClock {
+    /// The timeline instant a flight begins at.
+    fn begin_time(&self) -> f64;
+    /// The timeline instant the frame being produced presents at; read
+    /// only from inside a tick.
+    fn tick_time(&self) -> f64;
+    /// Starts ticking for `view`'s current attachment.
+    fn start(&self, view: &PlatformView);
+    /// Stops ticking.
+    fn stop(&self);
+    /// Whether ticks will arrive.
+    fn is_running(&self) -> bool;
+}
+
+#[cfg(feature = "native-test")]
+impl FlightClock for DisplayClock {
+    fn begin_time(&self) -> f64 {
+        Self::begin_time(self)
+    }
+    fn tick_time(&self) -> f64 {
+        Self::tick_time(self)
+    }
+    fn start(&self, view: &PlatformView) {
+        Self::start(self, view);
+    }
+    fn stop(&self) {
+        Self::stop(self);
+    }
+    fn is_running(&self) -> bool {
+        Self::is_running(self)
+    }
+}
 
 /// A flight in progress: `from` eased toward `to` on `progress`, tick by
 /// tick, with the write the surface performs each frame.
 struct Flight {
     /// The offset the flight started from.
     from: Point,
-    /// `CACurrentMediaTime()` when the flight began.
+    /// The flight clock's `begin_time` when the flight began.
     start: f64,
     /// What the flight runs — target, landing, curve and write.
     plan: FlightPlan,
@@ -79,7 +149,13 @@ pub struct FlightPlan {
 /// callback from retiring a successor that parked mid-write.
 pub struct ScrollFlight {
     /// The clock driving clocked flights.
-    clock: FrameClock,
+    #[cfg(not(feature = "native-test"))]
+    clock: DisplayClock,
+    /// The clock driving clocked flights — swappable so the native suite
+    /// can install a [`ManualScrollClock`](crate::native_test::ManualScrollClock)
+    /// on a mounted surface.
+    #[cfg(feature = "native-test")]
+    clock: RefCell<Rc<dyn FlightClock>>,
     /// The flight being eased tick by tick, or `None`.
     flight: RefCell<Option<Flight>>,
     /// The monotonic token every start takes.
@@ -112,29 +188,47 @@ impl std::fmt::Debug for ScrollFlight {
 }
 
 impl ScrollFlight {
+    #[cfg(not(feature = "native-test"))]
+    const fn clock(&self) -> &DisplayClock {
+        &self.clock
+    }
+
+    #[cfg(feature = "native-test")]
+    fn clock(&self) -> Rc<dyn FlightClock> {
+        Rc::clone(&self.clock.borrow())
+    }
+
+    /// The frame callback a clock drives: one `tick` through the weak self,
+    /// so a clock never keeps its flight alive.
+    fn on_frame(weak: Weak<Self>) -> impl Fn() + 'static {
+        move || {
+            if let Some(this) = weak.upgrade() {
+                this.tick();
+            }
+        }
+    }
+
     /// Builds the shared state `Rc` — the frame callback ticks through the
     /// weak self, so surfaces drop their `Rc` without a cycle.
     #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Rc<Self> {
-        Rc::new_cyclic(|weak: &Weak<Self>| Self {
-            clock: FrameClock::new(mtm, {
-                let weak = weak.clone();
-                move || {
-                    if let Some(this) = weak.upgrade() {
-                        this.tick();
-                    }
-                }
-            }),
-            flight: RefCell::new(None),
-            generation: Cell::new(0),
-            #[cfg(target_os = "macos")]
-            weak_self: weak.clone(),
-            #[cfg(target_os = "macos")]
-            context_clip: RefCell::new(None),
-            #[cfg(target_os = "macos")]
-            context: Cell::new(0),
-            #[cfg(target_os = "macos")]
-            writing: Cell::new(false),
+        Rc::new_cyclic(|weak: &Weak<Self>| {
+            let clock = DisplayClock(FrameClock::new(mtm, Self::on_frame(weak.clone())));
+            #[cfg(feature = "native-test")]
+            let clock: RefCell<Rc<dyn FlightClock>> = RefCell::new(Rc::new(clock));
+            Self {
+                clock,
+                flight: RefCell::new(None),
+                generation: Cell::new(0),
+                #[cfg(target_os = "macos")]
+                weak_self: weak.clone(),
+                #[cfg(target_os = "macos")]
+                context_clip: RefCell::new(None),
+                #[cfg(target_os = "macos")]
+                context: Cell::new(0),
+                #[cfg(target_os = "macos")]
+                writing: Cell::new(false),
+            }
         })
     }
 
@@ -168,11 +262,11 @@ impl ScrollFlight {
         self.flight.borrow_mut().replace(Flight {
             from,
             plan,
-            start: CACurrentMediaTime(),
+            start: self.clock().begin_time(),
             generation,
         });
-        self.clock.start(view);
-        if !self.clock.is_running() {
+        self.clock().start(view);
+        if !self.clock().is_running() {
             let flight = self.flight.borrow_mut().take();
             if let Some(flight) = flight {
                 (flight.plan.land)();
@@ -186,7 +280,7 @@ impl ScrollFlight {
     /// current origin.
     pub fn cancel(&self) {
         self.flight.borrow_mut().take();
-        self.clock.stop();
+        self.clock().stop();
         #[cfg(target_os = "macos")]
         self.retire_context(false);
     }
@@ -234,14 +328,11 @@ impl ScrollFlight {
             /// The schedule ended: the surface's jump to the target.
             Land(Rc<dyn Fn()>),
         }
-        let now = self
-            .clock
-            .current_target_timestamp()
-            .unwrap_or_else(|| CACurrentMediaTime());
+        let now = self.clock().tick_time();
         let (action, generation) = {
             let slot = self.flight.borrow();
             let Some(flight) = slot.as_ref() else {
-                self.clock.stop();
+                self.clock().stop();
                 return;
             };
             let elapsed = (now - flight.start).max(0.0);
@@ -279,7 +370,7 @@ impl ScrollFlight {
                 {
                     slot.take();
                     drop(slot);
-                    self.clock.stop();
+                    self.clock().stop();
                 }
             }
         }
@@ -408,7 +499,10 @@ impl ScrollFlight {
 
     /// Runs `body` with every clip write it makes counted as the flight's
     /// own: the flight's [`clip_write`](Self::clip_write), and the kit
-    /// scroll views' `-[NSScrollView layout]`. On the scroll surface that
+    /// scroll views' `-[NSScrollView layout]` and `setFrameSize:` — a
+    /// resize re-tiles the clip, and a list's table resizes with it, so
+    /// the clip re-clamps to the new document frame through
+    /// `scrollToPoint:`. On the scroll surface that
     /// layout's content-inset update (`_updateTitlebarAdjacencyState` →
     /// `setContentInsets:`) rewrites the clip through `scrollToPoint:`
     /// when the window resizes — `AppKit`'s own correction, not the
@@ -602,5 +696,19 @@ impl ScrollFlight {
         #[cfg(target_os = "macos")]
         let animating = animating || self.context.get() != 0;
         animating
+    }
+
+    /// Swaps this surface's display-link clock for a [`ManualScrollClock`]
+    /// and hands the test its handle. Every later flight on the surface
+    /// begins at the manual clock's time and ticks only on its `advance`.
+    pub fn install_manual_clock(self: &Rc<Self>) -> Rc<ManualScrollClock> {
+        assert!(
+            !self.in_flight(),
+            "a manual clock is installed before the surface's first flight"
+        );
+        let clock = Rc::new(ManualScrollClock::new(Self::on_frame(Rc::downgrade(self))));
+        let erased: Rc<dyn FlightClock> = clock.clone();
+        *self.clock.borrow_mut() = erased;
+        clock
     }
 }

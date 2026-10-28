@@ -10,16 +10,24 @@
 
 use std::cell::{Cell, RefCell};
 use std::fmt;
+use std::ops::Range;
 use std::rc::Rc;
 
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
+use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_core_foundation::CGRect;
-use objc2_foundation::{NSAttributedString, NSObjectProtocol, NSString};
-use objc2_ui_kit::{NSLineBreakMode, NSTextAlignment, UILabel, UITraitEnvironment};
+use objc2_core_foundation::{CGPoint, CGRect};
+use objc2_foundation::{NSArray, NSAttributedString, NSObjectProtocol, NSString, NSUnionRect};
+use objc2_ui_kit::{
+    NSLineBreakMode, NSObjectUIAccessibility, NSTextAlignment,
+    UIAccessibilityConvertFrameToScreenCoordinates, UIAccessibilityElement,
+    UIAccessibilityLayoutChangedNotification, UIAccessibilityPostNotification,
+    UIAccessibilityTraitLink, UIAccessibilityTraits, UILabel, UITraitEnvironment,
+};
 
 use crate::callback::guarded;
-use crate::text::{TextMetrics, WrapWidth};
+use crate::geometry::{Point, Rect};
+use crate::text::{Layout, SpanLink, TextMetrics, WrapWidth};
 
 /// Runs after each text replacement, with the new plain string.
 type TextHandler = Rc<dyn Fn(&str)>;
@@ -38,6 +46,10 @@ pub struct LabelIvars {
     reported_width: Cell<f64>,
     /// Called with the new string after each replacement.
     text_handler: RefCell<Option<TextHandler>>,
+    /// The accessibility children the label answers with while its text has
+    /// tap spans — the full-text element, then one `Link` per span — or
+    /// `None`, when the label is an ordinary accessibility element.
+    link_elements: RefCell<Option<Retained<NSArray<AnyObject>>>>,
 }
 
 impl fmt::Debug for LabelIvars {
@@ -48,6 +60,7 @@ impl fmt::Debug for LabelIvars {
             .field("text_alignment", &self.text_alignment.get())
             .field("reported_width", &self.reported_width.get())
             .field("text_handler", &self.text_handler.borrow().is_some())
+            .field("link_elements", &self.link_elements.borrow().is_some())
             .finish()
     }
 }
@@ -67,6 +80,30 @@ define_class!(
     unsafe impl NSObjectProtocol for Label {}
 
     impl Label {
+        // While the text has tap spans the label is a container — its
+        // full text is the first child — so the answer overrides whatever
+        // an accessibility modifier set.
+        // SAFETY: see the module safety note.
+        #[unsafe(method(isAccessibilityElement))]
+        fn is_accessibility_element(&self) -> bool {
+            guarded("Label isAccessibilityElement", || {
+                self.ivars().link_elements.borrow().is_none()
+                    // SAFETY: see the module safety note.
+                    && unsafe { msg_send![super(self), isAccessibilityElement] }
+            })
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(accessibilityElements))]
+        fn accessibility_elements(&self) -> Option<Retained<NSArray<AnyObject>>> {
+            guarded("Label accessibilityElements", || {
+                self.ivars().link_elements.borrow().clone().or_else(|| {
+                    // SAFETY: see the module safety note.
+                    unsafe { msg_send![super(self), accessibilityElements] }
+                })
+            })
+        }
+
         // SAFETY: see the module safety note.
         #[unsafe(method_id(accessibilityValue))]
         fn accessibility_value(&self) -> Option<Retained<NSString>> {
@@ -150,6 +187,7 @@ impl Label {
             text_alignment: Cell::new(NSTextAlignment::Natural),
             reported_width: Cell::new(0.0),
             text_handler: RefCell::new(None),
+            link_elements: RefCell::new(None),
         });
         // SAFETY: `initWithFrame:` is `UILabel`'s designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };
@@ -258,5 +296,237 @@ impl Label {
     fn invalidate_layout(&self) {
         self.invalidateIntrinsicContentSize();
         crate::view::invalidate_layout(self);
+    }
+
+    /// The rect the label's text is drawn in, in bounds coordinates — the
+    /// same answer `drawTextInRect:` works from.
+    fn text_rect(&self) -> CGRect {
+        self.textRectForBounds_limitedToNumberOfLines(self.bounds(), self.numberOfLines())
+    }
+
+    /// The laid-out stack a hit test runs through: container width is the
+    /// text rect's, paragraph alignment the label's own.
+    fn layout(&self) -> Option<Layout> {
+        let text = self.source_text()?;
+        Some(Layout::new(
+            MainThreadMarker::from(self),
+            &text,
+            self.text_rect().size.width,
+            self.ivars().text_alignment.get(),
+            self.numberOfLines().cast_unsigned(),
+        ))
+    }
+
+    /// The UTF-16 character index a point in bounds coordinates hits —
+    /// `None` when it lands outside the text.
+    #[must_use]
+    pub fn character_index(&self, point: Point) -> Option<usize> {
+        let origin = self.text_rect().origin;
+        self.layout()?
+            .character_index(CGPoint::new(point.x - origin.x, point.y - origin.y))
+    }
+
+    /// The rectangles a UTF-16 `range` covers in bounds coordinates — one
+    /// per line fragment the range crosses.
+    #[must_use]
+    pub fn rects(&self, range: Range<usize>) -> Vec<Rect> {
+        let Some(layout) = self.layout() else {
+            return Vec::new();
+        };
+        let origin = self.text_rect().origin;
+        layout
+            .rects(range)
+            .into_iter()
+            .map(|rect| {
+                Rect::new(
+                    rect.origin.x + origin.x,
+                    rect.origin.y + origin.y,
+                    rect.size.width,
+                    rect.size.height,
+                )
+            })
+            .collect()
+    }
+
+    /// Makes the label an accessibility container of one element carrying
+    /// its full text — label, value, traits and frame read from the label —
+    /// followed by one `Link` element per span: its label the span's text,
+    /// its frame the span's drawn rectangles, its activation the span's
+    /// action. An empty list makes the label an ordinary element again.
+    pub fn set_link_elements(&self, links: &[SpanLink<'_>]) {
+        let elements = (!links.is_empty()).then(|| {
+            let text = TextElement::new(self);
+            let mut elements: Vec<Retained<AnyObject>> = Vec::with_capacity(links.len() + 1);
+            elements.push(Retained::into_super(Retained::into_super(text)).into());
+            for link in links {
+                let element = SpanElement::new(self, link);
+                elements.push(Retained::into_super(Retained::into_super(element)).into());
+            }
+            NSArray::from_retained_slice(&elements)
+        });
+        let had_links = self.ivars().link_elements.replace(elements).is_some();
+        if !had_links && links.is_empty() {
+            return;
+        }
+        // SAFETY: a null argument is the documented "layout changed" post.
+        unsafe {
+            UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, None);
+        }
+    }
+}
+
+define_class!(
+    // SAFETY: `UIAccessibilityElement`'s designated initializer is
+    // `initWithAccessibilityContainer:`, which `TextElement::new` calls,
+    // and the class does not implement `Drop`.
+    #[unsafe(super(UIAccessibilityElement))]
+    #[name = "CocoaUiTextElement"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = Weak<Label>]
+    /// A container label's full-text element: every answer is read live
+    /// from the label, so accessibility modifiers applied to the label keep
+    /// reaching assistive technologies.
+    struct TextElement;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of a `UIAccessibilityElement`
+    // subclass.
+    unsafe impl NSObjectProtocol for TextElement {}
+
+    impl TextElement {
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(accessibilityLabel))]
+        fn accessibility_label(&self) -> Option<Retained<NSString>> {
+            guarded("TextElement accessibilityLabel", || {
+                self.ivars().load()?.accessibilityLabel(self.mtm())
+            })
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(accessibilityValue))]
+        fn accessibility_value(&self) -> Option<Retained<NSString>> {
+            guarded("TextElement accessibilityValue", || {
+                self.ivars().load()?.accessibilityValue(self.mtm())
+            })
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityTraits))]
+        fn accessibility_traits(&self) -> UIAccessibilityTraits {
+            guarded("TextElement accessibilityTraits", || {
+                self.ivars()
+                    .load()
+                    .map_or(0, |label| label.accessibilityTraits(self.mtm()))
+            })
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame(&self) -> CGRect {
+            guarded("TextElement accessibilityFrame", || {
+                self.ivars().load().map_or(CGRect::ZERO, |label| {
+                    UIAccessibilityConvertFrameToScreenCoordinates(label.bounds(), &label)
+                })
+            })
+        }
+    }
+);
+
+impl TextElement {
+    fn new(label: &Label) -> Retained<Self> {
+        let mtm = MainThreadMarker::from(label);
+        let this = Self::alloc(mtm).set_ivars(Weak::new(label));
+        // SAFETY: `initWithAccessibilityContainer:` is the designated
+        // initializer; the label is a valid container.
+        let this: Retained<Self> =
+            unsafe { msg_send![super(this), initWithAccessibilityContainer: label] };
+        this.setIsAccessibilityElement(true);
+        this
+    }
+}
+
+impl fmt::Debug for TextElement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TextElement").finish_non_exhaustive()
+    }
+}
+
+/// What a [`SpanElement`] answers with: a screen-coordinate frame computed
+/// live — so a moved or resized label never leaves a stale rect — and the
+/// activation an assistive press runs.
+struct SpanElementIvars {
+    frame: Rc<dyn Fn() -> CGRect>,
+    activate: Rc<dyn Fn()>,
+}
+
+define_class!(
+    // SAFETY: `UIAccessibilityElement`'s designated initializer is
+    // `initWithAccessibilityContainer:`, which `SpanElement::new` calls,
+    // and the class does not implement `Drop`.
+    #[unsafe(super(UIAccessibilityElement))]
+    #[name = "CocoaUiSpanElement"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = SpanElementIvars]
+    struct SpanElement;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of a `UIAccessibilityElement`
+    // subclass.
+    unsafe impl NSObjectProtocol for SpanElement {}
+
+    impl SpanElement {
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame(&self) -> CGRect {
+            guarded("SpanElement accessibilityFrame", || (self.ivars().frame)())
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityActivate))]
+        fn accessibility_activate(&self) -> bool {
+            guarded("SpanElement accessibilityActivate", || {
+                (self.ivars().activate)();
+                true
+            })
+        }
+    }
+);
+
+impl SpanElement {
+    /// One span's element: `Link` traits, the span's text as its label, and
+    /// `label` as its accessibility container.
+    fn new(label: &Label, link: &SpanLink<'_>) -> Retained<Self> {
+        let mtm = MainThreadMarker::from(label);
+        let weak = Weak::new(label);
+        let range = link.range.clone();
+        let frame = Rc::new(move || {
+            let Some(label) = weak.load() else {
+                return CGRect::ZERO;
+            };
+            let union = label
+                .rects(range.clone())
+                .into_iter()
+                .map(CGRect::from)
+                .reduce(|a, b| NSUnionRect(a, b));
+            union.map_or(CGRect::ZERO, |rect| {
+                UIAccessibilityConvertFrameToScreenCoordinates(rect, &label)
+            })
+        });
+        let this = Self::alloc(mtm).set_ivars(SpanElementIvars {
+            frame,
+            activate: Rc::clone(&link.activate),
+        });
+        // SAFETY: `initWithAccessibilityContainer:` is the designated
+        // initializer; the label is a valid container.
+        let this: Retained<Self> =
+            unsafe { msg_send![super(this), initWithAccessibilityContainer: label] };
+        this.setAccessibilityLabel(Some(&NSString::from_str(link.text)));
+        // SAFETY: the trait constant is an immutable `u64` UIKit publishes.
+        this.setAccessibilityTraits(unsafe { UIAccessibilityTraitLink });
+        this
+    }
+}
+
+impl fmt::Debug for SpanElement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SpanElement").finish_non_exhaustive()
     }
 }

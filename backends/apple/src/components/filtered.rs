@@ -716,6 +716,12 @@ fn update_output_frame(state: &FilteredState) {
     }
 }
 
+/// An owed reveal frame does not permit drawing after the host is hidden.
+fn can_render_frame(state: &FilteredState) -> bool {
+    !presentation_occluded(&state.view)
+        || (state.first_paint_owed.get() && participates_in_first_paint_ready(state))
+}
+
 /// Whether the link may deliver frames — attached, effectively visible, in
 /// an active scene and with demand (an animating, owed or dirty frame). An
 /// in-flight frame, native-pass suppression, external rendering or a
@@ -732,7 +738,7 @@ fn update_link_demand(state: &Rc<FilteredState>) {
         && !state.frame_presentation_in_flight.get()
         && state.capture_suppression.get() == 0
         && state.external_count.get() == 0
-        && (!presentation_occluded(&state.view) || state.first_paint_owed.get());
+        && can_render_frame(state);
     if let Some(presenter) = state.presenter.borrow().as_ref() {
         presenter.set_paused(!demand);
     }
@@ -779,6 +785,12 @@ fn request_render_if_geometry_changed(state: &Rc<FilteredState>) {
 /// and its completion. Dropping it at any gate releases the lease without
 /// presenting and the next delivery answers the still-owed demand.
 fn render_frame(state: &Rc<FilteredState>, frame: DrawableFrame) {
+    if !can_render_frame(state) {
+        // A queued update can arrive after visibility suspended the link.
+        // Keep the owed work for the next visibility notification.
+        update_link_demand(state);
+        return;
+    }
     if state.park.is_held() {
         // A stale delivery — the link kept a queued update across the
         // park: nothing renders while the leaf waits out the
@@ -3158,7 +3170,7 @@ pub mod native_test {
         fn trim(&mut self) {}
     }
 
-    /// Holds a nested [`FillEffect`]'s setup until [`Self::release`].
+    /// Holds a [`FillEffect`]'s setup until [`Self::release`].
     pub struct SetupGate(RefCell<Option<oneshot::Sender<()>>>);
 
     impl fmt::Debug for SetupGate {
@@ -3311,6 +3323,33 @@ pub mod native_test {
             Self::mount_on(mtm, runtime, Vec::new())
         }
 
+        /// [`Self::mount`] with one [`FillEffect`] whose setup waits on the
+        /// returned gate: until the trial releases it, `effects_ready`
+        /// keeps the display link paused through attach and the window's
+        /// ordering, so no link-issued frame can consume demand the trial
+        /// set up first.
+        ///
+        /// # Errors
+        ///
+        /// When the runner has no GPU adapter.
+        #[expect(
+            clippy::future_not_send,
+            reason = "the mount is a main-thread fixture: Rc<FilteredState>, the MainThreadMarker and the Objective-C views stay on the trial's main thread"
+        )]
+        pub async fn mount_gated(mtm: MainThreadMarker) -> Result<(Self, SetupGate), String> {
+            let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
+            let (release, gate) = oneshot::channel();
+            let mounted = Self::mount_on(
+                mtm,
+                runtime,
+                vec![Box::new(FillEffect {
+                    gate: Some(gate),
+                    encodes: Arc::new(AtomicU32::new(0)),
+                })],
+            )?;
+            Ok((mounted, SetupGate(RefCell::new(Some(release)))))
+        }
+
         /// [`Self::mount`] with one [`FillEffect`] whose setup lands at
         /// once, so every frame fills the output with [`FILL`].
         ///
@@ -3411,8 +3450,9 @@ pub mod native_test {
         }
 
         /// Uses a real `AppKit`/`UIKit` window — the attach door's only
-        /// host requirement — then pumps the main queue until the leaf's
-        /// own setup lands and the link attaches.
+        /// host requirement — then pumps the main queue until the window
+        /// reports visible. The leaf's visibility watch attaches it on the
+        /// window's occlusion edge inside that pump.
         ///
         /// # Panics
         ///
@@ -3452,8 +3492,11 @@ pub mod native_test {
 
         /// Attaches through the production door: the fixture window makes
         /// the leaf presentable, `initialize_gpu` builds the real
-        /// `MetalPresenter`, and the main-queue pump lets the (empty)
-        /// effect setup land so `effects_ready` opens the link.
+        /// `MetalPresenter`, and the main-queue pump runs until the
+        /// Attached epoch is installed. An ungated effect setup may already
+        /// have landed — and the link delivered frames — while the window
+        /// was ordering in; a trial that must sample the link before its
+        /// first delivery mounts with [`Self::mount_gated`].
         ///
         /// # Panics
         ///

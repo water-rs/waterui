@@ -167,8 +167,12 @@ define_class!(
         // SAFETY: see the module safety note.
         #[unsafe(method(setFrameSize:))]
         fn set_frame_size_override(&self, new_size: NSSize) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), setFrameSize: new_size] };
+            // A resize re-tiles the clip and re-clamps it to the document —
+            // `AppKit`'s correction, never the user's scroll.
+            self.ivars().flight.own_writes(|| {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), setFrameSize: new_size] };
+            });
             guarded("ScrollView setFrameSize: visibility emit", || {
                 self.ivars().emitter.emit();
             });
@@ -396,6 +400,15 @@ impl ScrollView {
     #[must_use]
     pub fn scroll_animation_in_flight(&self) -> bool {
         self.ivars().flight.in_flight()
+    }
+
+    /// Installs a stepped clock on this surface's scroll flights and
+    /// returns it — the native test suite's hand on flight time. Call it
+    /// before the surface's first flight.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn install_manual_scroll_clock(&self) -> Rc<crate::native_test::ManualScrollClock> {
+        self.ivars().flight.install_manual_clock()
     }
 
     /// Runs `handler` after every `AppKit` layout pass, replacing the

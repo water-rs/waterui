@@ -58,7 +58,10 @@ VsOut tile_input(TileInput v, metal::float4 position, constant Globals& globals)
     metal::texture2d<float> mask_tex [[texture(4)]] \
     TILE_IMAGE_DECODE_PARAM
 
-#if defined(TILE_GLYPH)
+#if defined(TILE_LONG_GRADIENT)
+#define TILE_SHADE \
+    return { fs_full(tile_input(v, position, globals), globals, instances, stops, atlas, mask_tex) };
+#elif defined(TILE_GLYPH)
 #define TILE_SHADE \
     return { fs_full(tile_input(v, position, globals), globals, instances, atlas, mask_tex) };
 #elif defined(TILE_COMPOSITE_SOURCE_OVER)

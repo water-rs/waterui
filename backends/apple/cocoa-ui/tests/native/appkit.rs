@@ -62,6 +62,10 @@ pub fn trials() -> Vec<Trial> {
             a_label_draws_its_text_at_the_top_of_an_oversized_frame
         ),
         case!(
+            "appkit::label",
+            a_labels_hit_test_geometry_follows_its_layout
+        ),
+        case!(
             "appkit::visibility",
             a_windowed_view_is_presentable_until_clipped_or_hidden
         ),
@@ -1281,4 +1285,66 @@ fn a_fields_history_observation_retires_when_editing_moves() {
     );
 
     window.close();
+}
+
+/// The hit-test stack a span tap reads: each word's rectangles sit where
+/// the label lays the word out, a point inside a word maps to it, slack past
+/// the text maps nowhere, and a one-line limit elides the tail it truncates.
+fn a_labels_hit_test_geometry_follows_its_layout() {
+    let mtm = marker();
+    let label = Label::label_with_string(mtm, "alpha beta");
+    label.setFrame(cocoa_ui::objc2_foundation::NSRect::new(
+        cocoa_ui::objc2_foundation::NSPoint::new(0.0, 0.0),
+        cocoa_ui::objc2_foundation::NSSize::new(320.0, 240.0),
+    ));
+    let alpha = label.rects(0..5);
+    let beta = label.rects(6..10);
+    assert_eq!(alpha.len(), 1, "'alpha' lays out on one line: {alpha:?}");
+    assert_eq!(beta.len(), 1, "'beta' lays out on one line: {beta:?}");
+    let (alpha, beta) = (alpha[0], beta[0]);
+    assert!(
+        alpha.origin.x + alpha.size.width <= beta.origin.x,
+        "'alpha' {alpha:?} must precede 'beta' {beta:?}"
+    );
+    let center = |rect: cocoa_ui::geometry::Rect| {
+        cocoa_ui::Point::new(
+            rect.origin.x + rect.size.width / 2.0,
+            rect.origin.y + rect.size.height / 2.0,
+        )
+    };
+    assert!(
+        label.character_index(center(alpha)).is_some_and(|i| i < 5),
+        "the middle of 'alpha' must map inside it, got {:?}",
+        label.character_index(center(alpha)),
+    );
+    assert!(
+        label
+            .character_index(center(beta))
+            .is_some_and(|i| (6..10).contains(&i)),
+        "the middle of 'beta' must map inside it, got {:?}",
+        label.character_index(center(beta)),
+    );
+    assert_eq!(
+        label.character_index(cocoa_ui::Point::new(300.0, center(alpha).y)),
+        None,
+        "a point past the text must not map to a character"
+    );
+
+    // Narrower than the text on one line: the tail is truncated, and the
+    // elided word neither hits nor covers any rectangle.
+    label.set_line_limit(1);
+    label.setFrame(cocoa_ui::objc2_foundation::NSRect::new(
+        cocoa_ui::objc2_foundation::NSPoint::new(0.0, 0.0),
+        cocoa_ui::objc2_foundation::NSSize::new(alpha.size.width + 4.0, 240.0),
+    ));
+    assert!(
+        label.rects(6..10).is_empty(),
+        "the truncated 'beta' covers {:?}",
+        label.rects(6..10)
+    );
+    assert_ne!(
+        label.rects(0..5),
+        Vec::new(),
+        "the visible part of 'alpha' still covers a rectangle"
+    );
 }

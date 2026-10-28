@@ -19,10 +19,7 @@ fn steps(context: &WidgetContext) -> Timeline {
                 Shape::capsule().fill(Color::srgb(0.2, 0.6, 0.9)),
             )),
         ),
-        TimelineEntry::new(
-            Date::unix_timestamp(1_700_000_060.0),
-            text("second"),
-        ),
+        TimelineEntry::new(Date::unix_timestamp(1_700_000_060.0), text("second")),
     ])
     .policy(ReloadPolicy::After {
         date: Date::unix_timestamp(1_700_000_120.0),
@@ -39,9 +36,13 @@ fn now() -> impl WidgetContent {
     hstack((text("now"), Image::system("clock.fill")))
 }
 
-/// A serializable widget action — `#[widget_intent]` on the `impl`
-/// declares it; the extension decodes the payload and calls `perform`.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+/// A serializable widget action — `#[widget_intent]` on the type declares
+/// it; the extension decodes the payload and calls `perform`.
+#[waterui::widget_intent(
+    name = "Write record",
+    description = "Writes a value to the record file"
+)]
+#[derive(Debug)]
 pub struct WriteRecord {
     /// The owned record file the action writes.
     pub output_path: String,
@@ -49,8 +50,7 @@ pub struct WriteRecord {
     pub value: String,
 }
 
-#[waterui::widget_intent(name = "Write record", description = "Writes a value to the record file")]
-impl waterui::widgets::WidgetIntent for WriteRecord {
+impl WidgetIntent for WriteRecord {
     fn perform(self) {
         std::fs::write(&self.output_path, &self.value).expect("the record file writes");
     }

@@ -66,7 +66,7 @@ pub struct DeclaredWidget {
     pub symbol: String,
 }
 
-/// One declared `#[widget_intent]` impl — the record pairs its
+/// One declared `#[widget_intent]` action — the record pairs its
 /// `waterui_intent_<crate>_<hash>` export with its
 /// `waterui_meta_intent_<crate>_<hash>` record by the shared hash suffix.
 #[derive(Debug)]
