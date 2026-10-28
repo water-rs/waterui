@@ -77,7 +77,8 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
 
     /**
      * The retained tree's platform view under host pixel (`x`, `y`) — the
-     * HWUI painter's ordered hit test; `null` means content or nothing.
+     * HWUI painter's ordered hit test; `null` means no view is drawn there or
+     * an interactive target above it takes the point.
      */
     fun platformViewAt(x: Float, y: Float): Long? =
         checkNotNull(session) { "hydrolysis: platformViewAt needs a bound session" }

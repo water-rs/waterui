@@ -1073,19 +1073,18 @@ fn content_animation_demand_belongs_to_the_submitted_frame() {
     );
 }
 
-/// The shared mount commits through `HwuiTarget` end to end: a staged
-/// solid-red rectangle reaches the frame as a real `Fill` on the node's
-/// `RenderNode`, and a commit with no tree change reuses it, emitting no
-/// The native-view hit query follows the retained tree's paint order:
-/// a foreground layer's own content covers the point, the view behind it
-/// answers otherwise, and ancestor clip, scroll and transform all apply —
-/// and an invisible-opacity layer is not hit at all.
+/// The native-view hit query answers the topmost platform view drawn at the
+/// point, through ancestor clip, scroll and transform: a view in a later
+/// layer outranks one beneath it, self-drawn ink painted above a view never
+/// hides it (whether an interactive target does is the renderer's rule), and
+/// an invisible-opacity layer is not hit at all.
 #[test]
 fn tree_native_hit_follows_order_clip_scroll_and_transform() {
     let mut encoder = Encoder::new(34).unwrap();
     let root = encoder.tree().root();
     let native = LayerId::new(201);
-    let foreground = LayerId::new(202);
+    let decoration = LayerId::new(202);
+    let top = LayerId::new(203);
     encoder
         .commit(changes(vec![
             layer(LayerOp::Translation(root, prop(Vec2::new(40., 50.)))),
@@ -1099,13 +1098,13 @@ fn tree_native_hit_follows_order_clip_scroll_and_transform() {
                 parent: root,
                 child: native,
             }),
-            layer(LayerOp::Create(foreground)),
+            layer(LayerOp::Create(decoration)),
             layer(LayerOp::Push {
                 parent: root,
-                child: foreground,
+                child: decoration,
             }),
             layer(LayerOp::Content(
-                foreground,
+                decoration,
                 Some(ContentOp::Replace(plain_picture())),
             )),
         ]))
@@ -1119,8 +1118,8 @@ fn tree_native_hit_follows_order_clip_scroll_and_transform() {
     encoder.frame(now, 1.).unwrap();
     assert_eq!(
         encoder.platform_view_at(Point::new(43., 54.)).unwrap(),
-        None,
-        "foreground paints at local 5,7"
+        Some(9),
+        "the decoration's ink at local 5,7 does not hide the view beneath it"
     );
     assert_eq!(
         encoder.platform_view_at(Point::new(53., 64.)).unwrap(),
@@ -1134,17 +1133,27 @@ fn tree_native_hit_follows_order_clip_scroll_and_transform() {
     );
     encoder
         .commit(changes(vec![
-            layer(LayerOp::Detach {
+            layer(LayerOp::Create(top)),
+            layer(LayerOp::Push {
                 parent: root,
-                child: foreground,
+                child: top,
             }),
-            layer(LayerOp::Remove(foreground)),
         ]))
         .unwrap();
+    encoder.set_platform_views(&[
+        PlatformViewBinding::new(native, 9, Rect::new(0., 0., 20., 20.)),
+        PlatformViewBinding::new(top, 10, Rect::new(0., 0., 10., 10.)),
+    ]);
     encoder.frame(now, 1.).unwrap();
     assert_eq!(
         encoder.platform_view_at(Point::new(43., 54.)).unwrap(),
-        Some(9)
+        Some(10),
+        "the later layer's view outranks the one beneath it"
+    );
+    assert_eq!(
+        encoder.platform_view_at(Point::new(53., 64.)).unwrap(),
+        Some(9),
+        "outside the top view, the view beneath answers"
     );
     encoder
         .commit(changes(vec![layer(LayerOp::Opacity(native, prop(0.)))]))
@@ -1152,14 +1161,18 @@ fn tree_native_hit_follows_order_clip_scroll_and_transform() {
     encoder.frame(now, 1.).unwrap();
     assert_eq!(
         encoder.platform_view_at(Point::new(43., 54.)).unwrap(),
-        None
+        Some(10)
     );
     assert_eq!(
         encoder.platform_view_at(Point::new(53., 64.)).unwrap(),
-        None
+        None,
+        "an invisible layer's view is not hit"
     );
 }
 
+/// The shared mount commits through `HwuiTarget` end to end: a staged
+/// solid-red rectangle reaches the frame as a real `Fill` on the node's
+/// `RenderNode`, and a commit with no tree change reuses it, emitting no
 /// create, record or fill again.
 #[test]
 fn the_hwui_mount_commits_and_reuses_its_nodes() {

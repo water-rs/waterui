@@ -691,8 +691,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetVisible
 
 /// The retained tree's platform view under host pixel (`x`, `y`) — the
 /// ordered hit test the Kotlin host's gesture dispatch asks before latching
-/// a native gesture. `0` means content or nothing covers the point. HWUI
-/// builds only: the GPU path's slots own their own hit order.
+/// a native gesture. `0` means no view is drawn there or an interactive
+/// target painted above it takes the point; non-interactive content never
+/// blocks a view. HWUI builds only: the GPU path's slots own their own hit
+/// order.
 #[cfg(hydrolysis_hwui)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformViewHitTest<
@@ -704,12 +706,18 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformVi
     x: jfloat,
     y: jfloat,
 ) -> jlong {
+    use crate::platform::PlatformWindow as _;
+
     guard_val(&mut env, 0, |_env| {
-        let id = session(session_ptr)
-            .hwui
-            .surface
-            .encoder()
-            .platform_view_at(kurbo::Point::new(f64::from(x), f64::from(y)))
+        let session = session(session_ptr);
+        let id = session
+            .runtime
+            .renderer
+            .platform_view_hit(
+                session.hwui.surface.encoder(),
+                kurbo::Point::new(f64::from(x), f64::from(y)),
+                session.runtime.platform.scale_factor(),
+            )
             .map_err(|e| JniError(e.to_string()))?;
         Ok(id.map_or(0, |id| i64::from_ne_bytes(id.to_ne_bytes())))
     })

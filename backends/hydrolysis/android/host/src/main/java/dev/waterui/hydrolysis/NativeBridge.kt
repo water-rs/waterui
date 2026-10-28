@@ -170,8 +170,9 @@ object NativeBridge {
 
     /**
      * The retained tree's platform view under host pixel (`x`, `y`) — the
-     * HWUI painter's ordered hit test. `0` means content or nothing covers
-     * the point; any other value is a placement id.
+     * HWUI painter's ordered hit test. `0` means no view is drawn there or
+     * an interactive target painted above it takes the point; any other
+     * value is a placement id.
      */
     @JvmStatic external fun nativePlatformViewHitTest(sessionPtr: Long, x: Float, y: Float): Long
 
