@@ -246,6 +246,10 @@ objc2-core-media = { version = "0.3", default-features = false, features = [
     "CMTimeRange",
 ], optional = true }
 kurbo = { version = "0.13" }
+# The sRGB / Display P3 constants the capture compositor converts each
+# source into its target's colour with — the filter working space's own
+# definition, so the two cannot drift apart.
+filtrate-core = { workspace = true }
 wgpu = { version = "30.0.1", default-features = false }
 wgpu-hal = { version = "30.0.1", default-features = false, features = [
     "metal",

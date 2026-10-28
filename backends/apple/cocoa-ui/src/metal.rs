@@ -1,9 +1,9 @@
 //! Metal↔wgpu format and texture bridging for the GPU surfaces.
 //!
-//! [`metal_to_wgpu_format`], [`wgpu_to_metal_format`], [`color_space`] and
-//! [`import_texture`] are the bridge a renderer living in wgpu uses to draw
-//! into a Metal texture it does not own. Presentation lives in
-//! [`crate::metal_presenter`].
+//! [`metal_to_wgpu_format`], [`wgpu_to_metal_format`], [`color_space`],
+//! [`shader_color`] and [`import_texture`] are the bridge a renderer living
+//! in wgpu uses to draw into a Metal texture it does not own. Presentation
+//! lives in [`crate::metal_presenter`].
 //!
 //! # Safety
 //!
@@ -144,4 +144,53 @@ pub fn color_space(format: MTLPixelFormat) -> CFRetained<CGColorSpace> {
         unsafe { kCGColorSpaceSRGB }
     };
     CGColorSpace::with_name(Some(name)).expect("could not create the surface color space")
+}
+
+/// The primaries of the colour a texture of some format holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Primaries {
+    /// sRGB (BT.709) primaries, D65.
+    Srgb,
+    /// Display P3 primaries, D65.
+    DisplayP3,
+}
+
+/// The colour a shader sees when it samples a texture of some format, and
+/// must write for the store to hold that format's [`color_space`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShaderColor {
+    /// The primaries of the sampled values.
+    pub primaries: Primaries,
+    /// Whether the sampled values carry the sRGB transfer — `false` when
+    /// they are linear light.
+    pub encoded: bool,
+}
+
+/// The shader-side view of the colour space [`color_space`] tags `format` with.
+///
+/// Half-float pixels are linear extended Display P3. Plain 8-bit pixels
+/// hold sRGB-encoded values, sampled as stored. The `_sRGB` 8-bit formats
+/// hold the same sRGB-encoded bytes, but the texture unit decodes them on
+/// sample and encodes on store, so the shader sees linear sRGB.
+///
+/// # Panics
+///
+/// When `format` is not one a presentation or capture target uses.
+#[must_use]
+pub fn shader_color(format: MTLPixelFormat) -> ShaderColor {
+    match format {
+        MTLPixelFormat::RGBA16Float => ShaderColor {
+            primaries: Primaries::DisplayP3,
+            encoded: false,
+        },
+        MTLPixelFormat::BGRA8Unorm | MTLPixelFormat::RGBA8Unorm => ShaderColor {
+            primaries: Primaries::Srgb,
+            encoded: true,
+        },
+        MTLPixelFormat::BGRA8Unorm_sRGB | MTLPixelFormat::RGBA8Unorm_sRGB => ShaderColor {
+            primaries: Primaries::Srgb,
+            encoded: false,
+        },
+        other => panic!("{other:?} has no colour contract a presentation or capture uses"),
+    }
 }
