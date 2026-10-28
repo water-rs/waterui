@@ -65,7 +65,7 @@ env:
 jobs:
   prepare:
     name: prepare
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 30
     outputs:
       waterui_ref: ${{ steps.setup.outputs.waterui_ref }}
@@ -149,7 +149,7 @@ jobs:
     name: e2e-ios-${{ matrix.example }}
     if: inputs.platforms == 'ios' || inputs.platforms == 'both'
     needs: prepare
-    runs-on: macos-26
+    runs-on: xcode-27
     strategy:
       fail-fast: false
       matrix:
@@ -286,7 +286,7 @@ jobs:
     name: e2e-macos-${{ matrix.example }}
     if: inputs.platforms == 'macos' || inputs.platforms == 'both'
     needs: prepare
-    runs-on: macos-26
+    runs-on: xcode-27
     strategy:
       fail-fast: false
       matrix:

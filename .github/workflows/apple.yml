@@ -189,7 +189,7 @@ jobs:
     name: swift (${{ matrix.configuration }})
     needs: changes
     if: needs.changes.outputs.swift == 'true'
-    runs-on: macos-26
+    runs-on: xcode-27
     strategy:
       fail-fast: false
       matrix:
@@ -200,12 +200,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build
-          key: swiftpm-${{ matrix.configuration }}-${{ hashFiles('Package.swift', 'backends/apple/Sources/**', 'backends/apple/Tests/**', '.periphery.yml') }}
-          restore-keys: swiftpm-${{ matrix.configuration }}-
+          # `indexed`: a cache built without the index store would leave
+          # Periphery an index of only the files recompiled since.
+          key: swiftpm-indexed-${{ matrix.configuration }}-${{ hashFiles('Package.swift', 'backends/apple/Sources/**', 'backends/apple/Tests/**', '.periphery.yml') }}
+          restore-keys: swiftpm-indexed-${{ matrix.configuration }}-
+      # The debug build also writes the index store Periphery scans below.
       - name: Build
         run: >-
           swift build --configuration ${{ matrix.configuration }}
           -Xswiftc -warnings-as-errors
+          ${{ matrix.configuration == 'debug' && '--enable-index-store' || '' }}
       # iOS legs: SwiftPM generates the `waterui-apple-host` workspace and
       # scheme on demand. Build it for the supported ARM64 simulator and
       # device destinations; `ONLY_ACTIVE_ARCH`/`ARCHS` keeps the simulator
@@ -230,16 +234,21 @@ jobs:
           SWIFT_TREAT_WARNINGS_AS_ERRORS=YES
           CODE_SIGNING_ALLOWED=NO
       # Lives inside this job rather than its own: a separate job cost a
-      # whole macOS slot just to redo checkout and brew. Its scan build
-      # lands in `.build` and stays cached.
+      # whole macOS slot just to redo checkout and brew. It scans the index
+      # store the debug build wrote into `.build`.
       - name: Install Periphery
         if: matrix.configuration == 'debug'
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
         run: brew install periphery
+      # Periphery (last release 3.8.0, upstream archived) looks for the
+      # index store at SwiftPM's pre-6.4 location; SwiftPM 6.4 writes it
+      # under `out/Products/Debug/index/store`, so the scan names it.
       - name: Run Periphery
         if: matrix.configuration == 'debug'
-        run: periphery scan --config .periphery.yml
+        run: >-
+          periphery scan --config .periphery.yml --skip-build
+          --index-store-path .build/out/Products/Debug/index/store
 
   # One job for every target: the three clippy passes, the feature shapes,
   # the tests and the bench compile share one checkout, one toolchain
@@ -250,7 +259,7 @@ jobs:
   # target dir the explicit clippy legs use; the iOS legs override it.
   rust:
     name: rust
-    runs-on: macos-26
+    runs-on: xcode-27
     permissions:
       contents: read
       # Saves the replacement archives, then retires the superseded
@@ -333,7 +342,7 @@ jobs:
       # the `native`/`native_app`/`preview` harnesses stay out of
       # `--all-targets` on their own `required-features = ["native-test"]`,
       # which this leg does not enable — no macOS-only gate was involved.
-      # The `.cargo/config.toml` `[env]` table supplies the 26.0 deployment
+      # The `.cargo/config.toml` `[env]` table supplies the 27.0 deployment
       # floor cherenkov-gpu's build script asserts.
       - name: Clippy (Mac Catalyst)
         run: cargo clippy -p waterui-apple -p cocoa-ui --all-targets --locked --features swiftui --target aarch64-apple-ios-macabi --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"

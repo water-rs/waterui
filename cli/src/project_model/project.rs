@@ -4832,7 +4832,7 @@ mod target_graph_tests {
             let contents = std::fs::read_to_string(&config_path).unwrap();
             let mut config: toml_edit::DocumentMut = contents.parse().unwrap();
             for variable in ["MACOSX_DEPLOYMENT_TARGET", "IPHONEOS_DEPLOYMENT_TARGET"] {
-                assert_eq!(config["env"][variable].as_str(), Some("26.0"));
+                assert_eq!(config["env"][variable].as_str(), Some("27.0"));
             }
             config["env"]["USER_SETTING"] = toml_edit::value("keep me");
             config["build"] = toml_edit::Item::Table(toml_edit::Table::new());
@@ -4845,9 +4845,9 @@ mod target_graph_tests {
             std::fs::write(&config_path, config.to_string()).unwrap();
             let mut selection = toml::Value::try_from(framework).unwrap();
             selection["metadata"]["apple-deployment-targets"]["macos"] =
-                toml::Value::String("27.0".into());
-            selection["metadata"]["apple-deployment-targets"]["ios"] =
                 toml::Value::String("28.0".into());
+            selection["metadata"]["apple-deployment-targets"]["ios"] =
+                toml::Value::String("29.0".into());
             super::apply_channel_selection(&host, &root, selection.try_into().unwrap(), Vec::new())
                 .await
                 .unwrap();
@@ -4856,11 +4856,11 @@ mod target_graph_tests {
             let config: toml::Value = toml::from_str(&updated).unwrap();
             assert_eq!(
                 config["env"]["MACOSX_DEPLOYMENT_TARGET"].as_str(),
-                Some("27.0")
+                Some("28.0")
             );
             assert_eq!(
                 config["env"]["IPHONEOS_DEPLOYMENT_TARGET"].as_str(),
-                Some("28.0")
+                Some("29.0")
             );
             assert_eq!(config["env"]["USER_SETTING"].as_str(), Some("keep me"));
             assert_eq!(config["build"]["jobs"].as_integer(), Some(3));

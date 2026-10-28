@@ -3340,7 +3340,7 @@ pub(crate) mod test_fixtures {
             minimum_cli_version: None,
             rust_version: None,
             metadata: toml::toml! {
-                apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
+                apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
                 android-min-api-level = 31
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
@@ -3443,7 +3443,7 @@ pub(crate) mod test_fixtures {
             minimum_cli_version: None,
             rust_version: None,
             metadata: toml::toml! {
-                apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
+                apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
                 android-min-api-level = 31
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
