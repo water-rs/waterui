@@ -19,6 +19,9 @@ holding exactly one incoming call of it: a root nested inside it
 dumps within the span, so a sample sums the root's incoming edge and the
 allocator calls over every dump in its span. The k-th call is sample k;
 sample 2 is the gate's "second steady frame" and sample 3 its stability check.
+GPU geometry batches join before the lowering root returns. Their worker-root
+costs are added over the same dump span, with RAYON_NUM_THREADS=1 to include
+all batch work and allocation beneath that root in deterministic order.
 Only the first span may hold no complete call — the call in flight when
 instrumentation switched on — so any later skip is an error, never a silent
 shift of which frame is sampled.
@@ -509,7 +512,7 @@ def check_separated(command, out, prefix, sync=()):
                            'its pattern trie never reaches them from the options; reshape the patterns')
 
 
-def call_samples(out, prefix, symbol, after, count=3, allow_inflight=True):
+def call_samples(out, prefix, symbol, after, count=3, allow_inflight=True, workers=()):
     """The root's first `count` calls, each merged over the dumps of its span.
 
     One call is the span after the root's previous --dump-after up to its
@@ -532,6 +535,12 @@ def call_samples(out, prefix, symbol, after, count=3, allow_inflight=True):
         assert ncalls == 1, (prefix, symbol, number, [m['ncalls'] for m in found], 'a span must hold exactly one call')
         merged = {k: sum(m[k] for m in found)
                   for k in ('ir', 'ncalls', 'alloc_ir', 'mem_ir', 'mem_calls', 'rust_ir', *KINDS)}
+        worker_samples = [m for worker in workers for p in span if (m := measure(p, worker))]
+        for m in worker_samples:
+            for key in ('ir', 'alloc_ir', 'mem_ir', 'mem_calls', 'rust_ir', *KINDS):
+                merged[key] += m[key]
+        if workers:
+            merged['worker_calls'] = sum(m['ncalls'] for m in worker_samples)
         merged['path'] = str(span[-1])
         samples.append(merged)
         if len(samples) == count:
@@ -827,6 +836,9 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None, phases=No
     assert not [p for p in out.glob(prefix.name + '.*') if not p.name.endswith('.progress.log')], f'existing run: {prefix}'
     symbols = symbols_of(binary)
     roots = {phase: one_symbol(symbols, suffix, parts, tag, phase) for phase, (suffix, parts) in ROOTS.items()}
+    # The joined geometry batch finishes before lower_content returns. With
+    # one pool worker its entire computation is below this worker root.
+    workers = tuple(s for s in symbols if s.endswith('22prepare_geometry_batch') and 'cherenkov_gpu' in s)
     # Each profile owns its loader files; parallel scenes must not rewrite
     # a manifest while another process is loading it.
     layer_dir = out / (prefix.name + '.vk_layer')
@@ -836,7 +848,8 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None, phases=No
     runtime_dir.mkdir(mode=0o700, exist_ok=True)
     env = os.environ.copy()
     env.pop('VK_ICD_FILENAMES', None)
-    env.update(layer_env(layer_dir, icd), XDG_RUNTIME_DIR=str(runtime_dir), RUST_LOG='error')
+    env.update(layer_env(layer_dir, icd), XDG_RUNTIME_DIR=str(runtime_dir), RUST_LOG='error',
+               RAYON_NUM_THREADS=CPU_THREADS)
     command = ['valgrind', '--tool=callgrind', '--demangle=no', '--instr-atstart=no', '--separate-threads=no',
                *function_options(roots.values()),
                f'--callgrind-out-file={prefix}', str(binary), 'measure', '--engine', 'cherenkov',
@@ -854,11 +867,13 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None, phases=No
     result = {'tag': tag, 'scene': scene, 'leg': leg.name, 'binary': str(binary),
               'sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
               'icd': str(icd), 'icd_sha256': hashlib.sha256(icd.read_bytes()).hexdigest(),
-              'pause_at': pause_at, 'command': command, 'sample_mode': 'fresh' if fresh else 'retained'}
+              'pause_at': pause_at, 'command': command, 'worker_roots': workers,
+              'sample_mode': 'fresh' if fresh else 'retained'}
     for phase in phases:
         symbol = roots[phase]
         samples = call_samples(out, prefix.name, symbol, after[phase],
-                               count=1 if fresh else 3, allow_inflight=not fresh)
+                               count=1 if fresh else 3, allow_inflight=not fresh,
+                               workers=workers if phase == 'lower' else ())
         if fresh:
             assert len(samples) == 1, (tag, scene, phase, len(samples))
             result[phase] = {'root': symbol, 'first': samples[0]}

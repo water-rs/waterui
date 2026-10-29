@@ -41,6 +41,8 @@ mod message;
 mod resource;
 mod surface;
 mod text;
+#[cfg(feature = "workers")]
+pub mod workers;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

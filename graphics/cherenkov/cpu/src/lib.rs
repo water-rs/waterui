@@ -55,7 +55,6 @@ mod names;
 mod render;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
-mod topology;
 
 use cherenkov::{Backend, EngineError, Offscreen, OffscreenFormat};
 

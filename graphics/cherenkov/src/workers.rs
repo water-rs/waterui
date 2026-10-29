@@ -2,11 +2,15 @@
 
 use std::num::NonZeroUsize;
 
-use cherenkov::EngineError;
+use crate::EngineError;
 
-pub fn workers(explicit: Option<usize>) -> Result<NonZeroUsize, EngineError> {
+/// Resolve an explicit worker count or the platform performance-core count.
+///
+/// # Errors
+/// Returns an error for invalid configuration or unavailable CPU topology.
+pub fn count(explicit: Option<usize>) -> Result<NonZeroUsize, EngineError> {
     if let Some(count) = explicit {
-        return positive(count, "RasterConfig.threads");
+        return positive(count, "renderer worker count");
     }
     match std::env::var("RAYON_NUM_THREADS") {
         Ok(value) => {
@@ -122,7 +126,7 @@ fn automatic() -> Result<NonZeroUsize, EngineError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{performance_count, workers};
+    use super::{count, performance_count};
     use std::num::NonZeroUsize;
 
     #[test]
@@ -148,7 +152,7 @@ mod tests {
 
     #[test]
     fn explicit_worker_count_is_positive() {
-        assert!(workers(Some(0)).is_err());
-        assert_eq!(workers(Some(8)).expect("explicit count").get(), 8);
+        assert!(count(Some(0)).is_err());
+        assert_eq!(count(Some(8)).expect("explicit count").get(), 8);
     }
 }

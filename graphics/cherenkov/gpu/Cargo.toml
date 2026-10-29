@@ -11,8 +11,13 @@ keywords = ["graphics", "2d", "gpu", "wgpu", "rendering"]
 categories = ["graphics", "rendering"]
 
 [features]
+default = ["parallel"]
+parallel = ["dep:rayon", "cherenkov/workers"]
 # Harness-only YUV decode uniform and shader. Not part of `interop`.
 bench = []
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = { version = "1.12.0", default-features = false, optional = true }
 
 [dependencies]
 filtrate = { version = "0.2.1", path = "../../filtrate" }
