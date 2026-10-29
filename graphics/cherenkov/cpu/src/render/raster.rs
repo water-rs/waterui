@@ -1587,9 +1587,19 @@ fn convert_quad<S: Simd, const ENCODE: bool>(simd: S, group: &[[f32; 4]; 4]) -> 
     reason = "compiled under the dispatched CPU level"
 )]
 #[inline(always)]
+#[expect(
+    clippy::float_cmp,
+    reason = "reuse a converted colour only when every source channel is equal"
+)]
 fn convert_span_in<S: Simd, const ENCODE: bool>(simd: S, pixels: &mut [[f32; 4]]) {
     let (chunks, tail) = pixels.as_chunks_mut::<4>();
     for group in chunks {
+        // Solid fills and clear regions need one transfer evaluation, not
+        // four identical evaluations. Varying pixels retain the wide path.
+        if group[1] == group[0] && group[2] == group[0] && group[3] == group[0] {
+            *group = [convert_packed::<S, ENCODE>(simd, group[0]); 4];
+            continue;
+        }
         let out = convert_quad::<S, ENCODE>(simd, group);
         f32x4::store_four_interleaved(out, group.as_flattened_mut());
     }
@@ -4475,6 +4485,14 @@ mod tests {
                 (BlendSpace::SrgbEncoded, BlendSpace::SrgbEncoded),
             ];
             for (from, to) in spaces {
+                for &pixel in seeds {
+                    let mut out = [pixel; 17];
+                    convert_span(simd, &mut out, from, to);
+                    let expected = reference(pixel, from, to);
+                    for actual in out {
+                        assert_close(&actual, &expected);
+                    }
+                }
                 for x0 in 0..=7usize {
                     for len in 0..=67usize {
                         let pixels: Vec<[f32; 4]> =
