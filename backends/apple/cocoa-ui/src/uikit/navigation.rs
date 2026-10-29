@@ -27,15 +27,16 @@ use block2::RcBlock;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
-use objc2_foundation::{NSArray, NSObjectProtocol, NSString};
+use objc2_foundation::{NSArray, NSDictionary, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    UIBarButtonItem, UIBarButtonItemStyle, UIBarPosition, UIBarPositioning,
-    UIBarPositioningDelegate, UIButton, UIContentSizeCategoryAdjusting, UIControl, UIFont,
-    UIFontTextStyleBody, UIGestureRecognizer, UIGestureRecognizerDelegate, UINavigationBar,
-    UINavigationBarDelegate, UINavigationController, UINavigationControllerDelegate,
-    UINavigationItem, UINavigationItemLargeTitleDisplayMode, UISearchController,
-    UISearchResultsUpdating, UITransitionContextFromViewControllerKey, UIViewController,
-    UIViewControllerTransitionCoordinator, UIViewControllerTransitionCoordinatorContext,
+    NSForegroundColorAttributeName, UIBarButtonItem, UIBarButtonItemStyle, UIBarPosition,
+    UIBarPositioning, UIBarPositioningDelegate, UIButton, UIColor, UIContentSizeCategoryAdjusting,
+    UIControl, UIFont, UIFontTextStyleBody, UIGestureRecognizer, UIGestureRecognizerDelegate,
+    UINavigationBar, UINavigationBarAppearance, UINavigationBarDelegate, UINavigationController,
+    UINavigationControllerDelegate, UINavigationItem, UINavigationItemLargeTitleDisplayMode,
+    UISearchController, UISearchResultsUpdating, UITransitionContextFromViewControllerKey,
+    UIViewController, UIViewControllerTransitionCoordinator,
+    UIViewControllerTransitionCoordinatorContext,
 };
 
 /// `viewWillAppear:` listener, called with `UIKit`'s `animated` flag.
@@ -185,6 +186,15 @@ impl NavContentController {
     /// Runs `handler` each time the page's view disappears.
     pub fn set_disappear_handler(&self, handler: impl Fn() + 'static) {
         self.ivars().disappear.replace(Some(Rc::new(handler)));
+    }
+
+    /// Draws the page's title and large title in `color`, over the bar's
+    /// default background.
+    pub fn set_title_color(&self, color: &UIColor) {
+        // SAFETY: `navigationItem` is a `UIViewController` getter on the
+        // main thread; the returned item is owned by the controller.
+        let item: Retained<UINavigationItem> = unsafe { msg_send![self, navigationItem] };
+        TitleAppearances::new(self.mtm(), color, None).apply_to_item(&item);
     }
 
     /// The navigation item chrome this page installs.
@@ -615,11 +625,74 @@ pub fn bar_item(
     image_bar_item(mtm, image.as_deref(), action)
 }
 
+/// The three appearances (standard, compact, scroll-edge) that draw a
+/// bar's title and large title in `title`.
+///
+/// With no `background` the bar keeps `UIKit`'s default material, and the
+/// scroll-edge appearance keeps the transparent background `UIKit` gives a
+/// large-title bar at the top of its content. With a `background` every
+/// state draws that opaque colour, as a bar tint does.
+struct TitleAppearances {
+    standard: Retained<UINavigationBarAppearance>,
+    compact: Retained<UINavigationBarAppearance>,
+    scroll_edge: Retained<UINavigationBarAppearance>,
+}
+
+impl TitleAppearances {
+    fn new(mtm: MainThreadMarker, title: &UIColor, background: Option<&UIColor>) -> Self {
+        let appearance = |transparent: bool| {
+            let appearance = UINavigationBarAppearance::new(mtm);
+            match background {
+                Some(background) => {
+                    appearance.configureWithOpaqueBackground();
+                    appearance.setBackgroundColor(Some(background));
+                }
+                None if transparent => appearance.configureWithTransparentBackground(),
+                None => appearance.configureWithDefaultBackground(),
+            }
+            // SAFETY: `NSForegroundColorAttributeName` is an exported
+            // `NSAttributedStringKey` and its value is a `UIColor`, the
+            // attribute's documented type.
+            let attributes: Retained<NSDictionary<NSString, AnyObject>> = unsafe {
+                NSDictionary::from_slices(&[NSForegroundColorAttributeName], &[title.as_ref()])
+            };
+            // SAFETY: the dictionary maps the foreground-colour attribute
+            // to a colour, a valid text attribute set for both titles.
+            unsafe {
+                appearance.setTitleTextAttributes(&attributes);
+                appearance.setLargeTitleTextAttributes(&attributes);
+            }
+            appearance
+        };
+        Self {
+            standard: appearance(false),
+            compact: appearance(false),
+            scroll_edge: appearance(true),
+        }
+    }
+
+    fn apply_to_item(&self, item: &UINavigationItem) {
+        item.setStandardAppearance(Some(&self.standard));
+        item.setCompactAppearance(Some(&self.compact));
+        item.setScrollEdgeAppearance(Some(&self.scroll_edge));
+    }
+
+    fn apply_to_bar(&self, bar: &UINavigationBar) {
+        bar.setStandardAppearance(&self.standard);
+        bar.setCompactAppearance(Some(&self.compact));
+        bar.setScrollEdgeAppearance(Some(&self.scroll_edge));
+    }
+}
+
 /// A standalone `UINavigationBar` — the in-content bar
 /// when no `UINavigationController` hosts the page.
 pub struct NavBarIvars {
     /// The one item the bar shows.
     item: Retained<UINavigationItem>,
+    /// The colour of the title and large title, once the page sets one.
+    title_color: RefCell<Option<Retained<UIColor>>>,
+    /// The bar's background colour, when the page sets one.
+    bar_color: RefCell<Option<Retained<UIColor>>>,
 }
 
 impl fmt::Debug for NavBarIvars {
@@ -666,7 +739,11 @@ impl NavBar {
         // SAFETY: `UINavigationItem` initializes through `init`.
         let item: Retained<UINavigationItem> =
             unsafe { msg_send![mtm.alloc::<UINavigationItem>(), init] };
-        let this = Self::alloc(mtm).set_ivars(NavBarIvars { item });
+        let this = Self::alloc(mtm).set_ivars(NavBarIvars {
+            item,
+            title_color: RefCell::new(None),
+            bar_color: RefCell::new(None),
+        });
         // SAFETY: `init` is `UIView`'s designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         let items = NSArray::from_retained_slice(&[this.ivars().item.clone()]);
@@ -676,6 +753,29 @@ impl NavBar {
         // status-bar band.
         this.setDelegate(Some(ProtocolObject::from_ref(&*this)));
         this
+    }
+
+    /// Draws the title and large title in `color`, keeping the bar colour.
+    pub fn set_title_color(&self, color: &UIColor) {
+        self.ivars().title_color.replace(Some(color.retain()));
+        self.refresh_appearance();
+    }
+
+    /// Fills the bar with `color`.
+    pub fn set_bar_color(&self, color: &UIColor) {
+        self.setBarTintColor(Some(color));
+        self.ivars().bar_color.replace(Some(color.retain()));
+        self.refresh_appearance();
+    }
+
+    /// Installs the appearances for the title and bar colours set so far.
+    fn refresh_appearance(&self) {
+        let ivars = self.ivars();
+        let Some(title) = ivars.title_color.borrow().clone() else {
+            return;
+        };
+        let background = ivars.bar_color.borrow().clone();
+        TitleAppearances::new(self.mtm(), &title, background.as_deref()).apply_to_bar(self);
     }
 
     /// Applies a page's chrome to the bar's item — the subset of
