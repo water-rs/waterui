@@ -178,6 +178,14 @@ if [[ "${platform}" == "ios" ]]; then
   fi
   xcrun simctl bootstatus "${SIMULATOR_UDID}" -b
 
+  # An iOS capture is the whole display (macOS captures the app's own window),
+  # so a SpringBoard notification banner lands in the frame and reads as a
+  # divergence from the app's own baseline and from the SwiftUI twin. Booting
+  # out the delivery daemon stops every banner for this boot, so it runs after
+  # the reboot above.
+  xcrun simctl spawn "${SIMULATOR_UDID}" \
+    launchctl bootout system/com.apple.usernotificationsd 2>/dev/null || true
+
   # Pin the status bar for the whole shard — WaterUI and twin captures alike —
   # so the clock, battery and signal pixels compare equal on every shot. The
   # override persists until it is cleared at the end of the shard (the EXIT
