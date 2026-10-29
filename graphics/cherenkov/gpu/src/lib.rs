@@ -247,7 +247,14 @@ impl Default for GpuConfig {
             #[cfg(test)]
             coverage_route: None,
             device: None,
-            backends: wgpu::Backends::all(),
+            backends: if cfg!(all(
+                any(target_os = "android", target_os = "linux"),
+                not(feature = "gles")
+            )) {
+                wgpu::Backends::VULKAN
+            } else {
+                wgpu::Backends::all()
+            },
             power_preference: wgpu::PowerPreference::HighPerformance,
             timestamps: false,
             wait_timeout: std::time::Duration::from_secs(30),

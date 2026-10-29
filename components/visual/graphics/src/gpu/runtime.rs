@@ -214,8 +214,9 @@ impl SharedGpuContext {
         )
     )]
     pub async fn new(generation: u64) -> Result<Self, GpuRuntimeError> {
-        let instance =
-            Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        descriptor.backends &= cherenkov_gpu::GpuConfig::default().backends;
+        let instance = Instance::new(descriptor);
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
