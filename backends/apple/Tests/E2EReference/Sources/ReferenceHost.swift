@@ -173,6 +173,10 @@ func wuiSignalReferenceFirstPaint(presentation: WuiReferencePresentation) {
       // titlebar its own full-width hard pocket (water-rs/waterui#3697).
       // SwiftUI installs window.toolbar on first layout, so a window that
       // ends up without one drops the flags after a turn of the main loop.
+      // A toolbar installed into a window that is already full-size shrinks
+      // the frame to the content rect; the backend installs its toolbar
+      // before the flags and keeps the frame, so the host restores its size.
+      let frameSize = window.frame.size
       window.toolbarStyle = .unified
       window.styleMask.insert(.fullSizeContentView)
       window.center()
@@ -184,6 +188,12 @@ func wuiSignalReferenceFirstPaint(presentation: WuiReferencePresentation) {
         if window.toolbar == nil {
           window.styleMask.remove(.fullSizeContentView)
           window.toolbarStyle = .automatic
+        } else {
+          var frame = window.frame
+          let top = frame.maxY
+          frame.size = frameSize
+          frame.origin.y = top - frameSize.height
+          window.setFrame(frame, display: true)
         }
       }
     }
