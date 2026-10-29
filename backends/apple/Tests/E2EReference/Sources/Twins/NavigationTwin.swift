@@ -175,6 +175,11 @@ struct NavigationTwin: View {
       }
       .navigationTitle("Inbox")
       .navigationSubtitle("\(unreadCount) unread")
+      // The example declares `.large_title()`; the automatic mode is not
+      // that declaration.
+      #if os(iOS)
+        .navigationBarTitleDisplayMode(.large)
+      #endif
       // iOS 26's automatic placement inside TabView hoists the field toward
       // the tab-bar search slot and leaves an empty drawer stub; the
       // navigation-bar drawer is the field this twin is for. macOS has no
