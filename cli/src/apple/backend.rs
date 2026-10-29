@@ -484,6 +484,55 @@ mod tests {
             "a freshly scaffolded backend is not stale"
         );
     }
+    /// Both hosts launch through `cocoa_ui`'s `SceneDelegate`; the
+    /// single-scene Hydrolysis host differs only in not supporting multiple
+    /// scenes.
+    fn assert_scene_manifests(
+        ctx: &crate::templates::TemplateContext,
+        project: &Project,
+        bundle_id: &crate::project_types::AppleBundleIdentifier,
+    ) {
+        for (multiple_scenes, host) in [(true, "apple"), (false, "hydrolysis")] {
+            let dict = crate::apple::app_bundle::apple_info_plist(
+                &crate::apple::app_bundle::PlistApp {
+                    multiple_scenes,
+                    ..crate::apple::app_bundle::PlistApp::apple_backend(ctx)
+                },
+                project,
+                crate::platform::TargetPlatform::IOS,
+                "17.0",
+                "Water Example",
+                bundle_id,
+            );
+            let manifest = dict
+                .get("UIApplicationSceneManifest")
+                .and_then(plist::Value::as_dictionary)
+                .unwrap_or_else(|| panic!("the {host} host declares a scene manifest"));
+            assert_eq!(
+                manifest.get("UIApplicationSupportsMultipleScenes"),
+                Some(&plist::Value::Boolean(multiple_scenes)),
+                "{host} host scene support"
+            );
+            let delegate = manifest
+                .get("UISceneConfigurations")
+                .and_then(plist::Value::as_dictionary)
+                .and_then(|configurations| {
+                    configurations.get("UIWindowSceneSessionRoleApplication")
+                })
+                .and_then(plist::Value::as_array)
+                .and_then(|roles| roles.first())
+                .and_then(plist::Value::as_dictionary)
+                .and_then(|role| role.get("UISceneDelegateClassName"));
+            assert_eq!(
+                delegate,
+                Some(&plist::Value::String("SceneDelegate".to_string())),
+                "{host} host delegate class"
+            );
+            assert!(dict.contains_key("UILaunchScreen"));
+            assert!(dict.contains_key("UISupportedInterfaceOrientations"));
+        }
+    }
+
     /// The generated iOS `Info.plist` declares
     /// `CADisableMinimumFrameDurationOnPhone`: iOS caps `CADisplayLink` and
     /// `CAMetalLayer` presentation at 60 Hz on `ProMotion` iPhones without it
@@ -553,23 +602,7 @@ mod tests {
             );
         }
 
-        // A host that owns the `UIApplication` lifecycle (winit) declares no
-        // scene manifest, which UIKit would otherwise route the launch
-        // through, and keeps the rest of the mobile entries.
-        let winit = crate::apple::app_bundle::apple_info_plist(
-            &crate::apple::app_bundle::PlistApp {
-                scene_delegate: None,
-                ..crate::apple::app_bundle::PlistApp::apple_backend(&ctx)
-            },
-            &project,
-            crate::platform::TargetPlatform::IOS,
-            "17.0",
-            "Water Example",
-            &bundle_id,
-        );
-        assert!(!winit.contains_key("UIApplicationSceneManifest"));
-        assert!(winit.contains_key("UILaunchScreen"));
-        assert!(winit.contains_key("UISupportedInterfaceOrientations"));
+        assert_scene_manifests(&ctx, &project, &bundle_id);
 
         let macos = crate::apple::app_bundle::apple_info_plist(
             &crate::apple::app_bundle::PlistApp::apple_backend(&ctx),

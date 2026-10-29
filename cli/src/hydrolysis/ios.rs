@@ -1,8 +1,9 @@
-//! Hydrolysis on iOS: the winit runner packaged as a flat `.app`.
+//! Hydrolysis on iOS: the cocoa-ui `UIKit` host packaged as a flat `.app`.
 //!
-//! The executable is the generated launcher binary — winit owns the
-//! `UIApplication` lifecycle — so the bundle differs from the Apple backend's
-//! in what the host registers (no `UIScene` manifest) and nothing else. The
+//! The executable is the generated launcher binary — `cocoa_ui` owns the
+//! `UIApplication` lifecycle and launches through its `SceneDelegate` — so the
+//! bundle differs from the Apple backend's in the scene manifest declaring a
+//! single scene and nothing else. The
 //! bundle assembly, asset catalog, signing and install paths are the Apple
 //! backend's own: this module only supplies the inputs they take.
 
@@ -90,7 +91,7 @@ pub(super) async fn package_hydrolysis_ios(
             display_name: &project.manifest().package.name,
             launch: app_bundle::launch_template_entry(project)?,
             accessory: false,
-            scene_delegate: None,
+            multiple_scenes: false,
         },
         project,
         platform,

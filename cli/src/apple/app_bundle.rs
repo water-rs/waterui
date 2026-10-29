@@ -85,31 +85,30 @@ pub struct PlistApp<'a> {
     pub launch: LaunchTemplateEntry,
     /// Whether the macOS application is an accessory (no Dock icon).
     pub accessory: bool,
-    /// The `UIScene` delegate class a mobile bundle declares, when its host
-    /// drives the application through scenes. `None` for a host that owns
-    /// the `UIApplication` lifecycle itself, such as winit: `UIKit` launches a
-    /// scene-configured bundle through scenes only, so declaring a manifest
-    /// the host never implements leaves the window unattached.
-    pub scene_delegate: Option<&'a str>,
+    /// Whether the mobile bundle's `UIScene` manifest allows more than one
+    /// scene. Every host launches through `cocoa_ui`'s `SceneDelegate`; a
+    /// host that mounts a single scene declares it single.
+    pub multiple_scenes: bool,
 }
 
 impl<'a> PlistApp<'a> {
     /// The application the Apple backend's generated project describes: it
-    /// hosts every mobile bundle through its `SceneDelegate`.
+    /// hosts every mobile bundle through its `SceneDelegate`, one scene per
+    /// window.
     #[must_use]
     pub fn apple_backend(ctx: &'a TemplateContext) -> Self {
         Self {
             display_name: &ctx.app_display_name,
             launch: ctx.launch,
             accessory: ctx.accessory,
-            scene_delegate: Some(APPLE_BACKEND_SCENE_DELEGATE),
+            multiple_scenes: true,
         }
     }
 }
 
-/// The scene delegate class of the Apple backend (`cocoa_ui`'s
+/// The scene delegate class of every Apple host (`cocoa_ui`'s
 /// `SceneDelegate`).
-const APPLE_BACKEND_SCENE_DELEGATE: &str = "SceneDelegate";
+const COCOA_UI_SCENE_DELEGATE: &str = "SceneDelegate";
 
 /// The launch screen assets the project stages into its asset catalog, as
 /// the templates and the `Info.plist` name them.
@@ -239,11 +238,11 @@ fn apply_macos_plist_entries(dict: &mut plist::Dictionary, app: &PlistApp<'_>, p
     }
 }
 
-/// The `UIApplicationSceneManifest` naming `scene_delegate` as the delegate
-/// of the default window scene. The delegate class lives in the backend
-/// itself (`cocoa_ui`'s `SceneDelegate`), exactly as the generated Xcode
-/// project declared it.
-fn scene_manifest(scene_delegate: &str) -> plist::Dictionary {
+/// The `UIApplicationSceneManifest` naming `cocoa_ui`'s `SceneDelegate` as
+/// the delegate of the default window scene, exactly as the generated Xcode
+/// project declared it. `multiple_scenes` is the manifest's
+/// `UIApplicationSupportsMultipleScenes`.
+fn scene_manifest(multiple_scenes: bool) -> plist::Dictionary {
     let mut scene_configuration = plist::Dictionary::new();
     scene_configuration.insert(
         "UISceneConfigurationName".to_string(),
@@ -251,7 +250,7 @@ fn scene_manifest(scene_delegate: &str) -> plist::Dictionary {
     );
     scene_configuration.insert(
         "UISceneDelegateClassName".to_string(),
-        plist::Value::String(scene_delegate.to_string()),
+        plist::Value::String(COCOA_UI_SCENE_DELEGATE.to_string()),
     );
     let mut scene_configurations = plist::Dictionary::new();
     scene_configurations.insert(
@@ -261,7 +260,7 @@ fn scene_manifest(scene_delegate: &str) -> plist::Dictionary {
     let mut scene_manifest = plist::Dictionary::new();
     scene_manifest.insert(
         "UIApplicationSupportsMultipleScenes".to_string(),
-        plist::Value::Boolean(true),
+        plist::Value::Boolean(multiple_scenes),
     );
     scene_manifest.insert(
         "UISceneConfigurations".to_string(),
@@ -336,14 +335,12 @@ fn apply_mobile_plist_entries(
         ]),
     );
 
-    // UIKit refuses to launch a scene-configured application without the
-    // manifest; a host that owns the `UIApplication` lifecycle declares none.
-    if let Some(scene_delegate) = app.scene_delegate {
-        insert(
-            "UIApplicationSceneManifest",
-            plist::Value::Dictionary(scene_manifest(scene_delegate)),
-        );
-    }
+    // `cocoa_ui`'s `SceneDelegate` hosts every mobile bundle: UIKit launches
+    // it only through the scene manifest.
+    insert(
+        "UIApplicationSceneManifest",
+        plist::Value::Dictionary(scene_manifest(app.multiple_scenes)),
+    );
 
     let mut launch_screen = plist::Dictionary::new();
     if app.launch.has_background {
