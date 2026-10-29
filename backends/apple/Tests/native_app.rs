@@ -31,6 +31,12 @@ fn main() {
     // skips it.
     #[cfg(target_os = "macos")]
     let _display_awake = (!arguments.list).then(cocoa_ui::native_test::DisplayAwake::hold);
+    // A realized window spawns its tasks on the executors the
+    // application entry installs.
+    #[cfg(target_os = "ios")]
+    if !arguments.list {
+        waterui_apple::native_test_support::initialize_process();
+    }
     #[cfg(target_os = "ios")]
     cocoa_ui::uikit::native_test::run(arguments, trials);
     #[cfg(target_os = "macos")]
@@ -1496,19 +1502,31 @@ mod navigation {
     use waterui::prelude::text;
     use waterui::reactive::binding;
     use waterui::{Str, ViewExt as _};
-    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until, render};
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, content_frame, pump_main_until, realize_into_shown_scene, render,
+        render_environment,
+    };
 
     use super::mtm;
 
     /// The `navigation::` trials.
     pub fn trials() -> Vec<libtest_mimic::Trial> {
-        vec![libtest_mimic::Trial::test(
-            "navigation::a_split_detail_column_carries_navigation_item_chrome",
-            || {
-                a_split_detail_column_carries_navigation_item_chrome();
-                Ok(())
-            },
-        )]
+        vec![
+            libtest_mimic::Trial::test(
+                "navigation::a_split_detail_column_carries_navigation_item_chrome",
+                || {
+                    a_split_detail_column_carries_navigation_item_chrome();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_split_realized_into_a_shown_scene_collapses_at_window_size",
+                || {
+                    a_split_realized_into_a_shown_scene_collapses_at_window_size();
+                    Ok(())
+                },
+            ),
+        ]
     }
 
     /// The `UISplitViewController` a leaf's subtree lives under.
@@ -1528,9 +1546,14 @@ mod navigation {
 
     /// The compact split fixture includes both a platform symbol and a hosted SVG label.
     fn navigation_fixture() -> waterui_apple::contract::NativeLeaf {
+        render(navigation_fixture_view())
+    }
+
+    /// The fixture's view, for a mount that builds it itself.
+    fn navigation_fixture_view() -> impl waterui::View {
         let selection = binding(Some(0_i32));
         let query = binding(Str::default());
-        render(NavigationSplitView::new(
+        NavigationSplitView::new(
             &selection,
             || text("sidebar"),
             move |_id: i32| {
@@ -1554,7 +1577,7 @@ mod navigation {
                         ),
                     ]))
             },
-        ))
+        )
     }
 
     /// Native chrome must keep hosted icon and page content visible after collapse.
@@ -1732,6 +1755,139 @@ mod navigation {
             "the compact stack's visible bar keeps the large-title gate open"
         );
         assert_content_shown(&window, &item, &page);
+    }
+
+    /// The page root of the collapsed fixture under `split`, once the
+    /// compact stack holds the pushed column and the page is in a window.
+    fn collapsed_page(split: &UISplitViewController) -> Retained<UIViewController> {
+        let sidebar_nav = split
+            .viewControllerForColumn(UISplitViewControllerColumn::Primary)
+            .and_then(|controller| controller.downcast::<UINavigationController>().ok())
+            .expect("the sidebar column is a nav controller");
+        let detail_nav = split
+            .viewControllerForColumn(UISplitViewControllerColumn::Secondary)
+            .and_then(|controller| controller.downcast::<UINavigationController>().ok())
+            .expect("the detail column is a UINavigationController");
+        let page = detail_nav
+            .topViewController()
+            .expect("the column stack has a root page");
+        let settled = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            split.isCollapsed()
+                && sidebar_nav.viewControllers().count() == 2
+                && page.view().is_some_and(|view| view.window().is_some())
+        });
+        assert!(
+            settled,
+            "the split collapses onto the compact stack with its page in the window"
+        );
+        page
+    }
+
+    /// The page root's safe area when the fixture is mounted before its
+    /// window shows: the frame is set, then the window appears.
+    fn reference_page_insets() -> cocoa_ui::objc2_ui_kit::UIEdgeInsets {
+        let leaf = navigation_fixture();
+        let mtm = mtm();
+        let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+        let controller = UIViewController::new(mtm);
+        window.setRootViewController(Some(&controller));
+        let root_view = controller.view().expect("the controller's view is loaded");
+        let mounted = leaf.mount(&root_view);
+        view::set_frame(mounted.view(), view::bounds(&root_view));
+        window.makeKeyAndVisible();
+        window.layoutIfNeeded();
+        let split =
+            split_controller_in(&root_view).expect("the leaf mounts a UISplitViewController");
+        let page = collapsed_page(&split);
+        let insets = page.view().expect("page view").safeAreaInsets();
+        window.setHidden(true);
+        window.setRootViewController(None);
+        insets
+    }
+
+    /// Window content never sits in a live window unplaced
+    /// (water-rs/waterui#3744).
+    ///
+    /// A launch whose declaration lands after the scene's window displayed
+    /// realizes the content into a window that is already key, visible and
+    /// appeared. `windows::realize` used to add the content leaf and adopt
+    /// its controllers before the root host could place it, so the whole
+    /// tree — the split's collapse, the nested navigation stacks and the
+    /// search bar — laid out at 0x0 and `UIKit` kept the bottom inset it
+    /// derived there, leaving the page with an empty safe region. The
+    /// leaf must hold its content frame as soon as `realize` returns, and
+    /// the page must end with the safe area the same fixture gets when it
+    /// is mounted before the window shows.
+    fn a_split_realized_into_a_shown_scene_collapses_at_window_size() {
+        let reference = reference_page_insets();
+
+        let mtm = mtm();
+        let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+        let declaration = waterui::window::Window::new(
+            "Shown scene",
+            binding(waterui::window::WindowState::Normal),
+            navigation_fixture_view,
+        )
+        .background(waterui::window::WindowBackground::Color(
+            waterui::color::Color::srgb(255, 255, 255),
+        ));
+        let scene =
+            realize_into_shown_scene(mtm, &declaration, &render_environment(), window.clone());
+
+        // The invariant itself: before any run-loop turn, the leaf already
+        // holds the frame the root host resolves for it.
+        let root_view = view::retain_base(&*scene.root);
+        let leaf = view::subviews(&root_view)
+            .into_iter()
+            .next()
+            .expect("realize adds the content leaf to the root host");
+        let expected = content_frame(&scene.root, &leaf);
+        let frame = view::frame(&leaf);
+        assert!(
+            expected.size.width > 0.0 && expected.size.height > 0.0,
+            "the root host resolves a nonempty content frame: {expected:?}"
+        );
+        // The pre-join placement aligns to the 1x grid of a view with no
+        // window, so the comparison allows the half point that costs.
+        let near = |a: f64, b: f64| (a - b).abs() <= 0.5;
+        assert!(
+            near(frame.origin.x, expected.origin.x)
+                && near(frame.origin.y, expected.origin.y)
+                && near(frame.size.width, expected.size.width)
+                && near(frame.size.height, expected.size.height),
+            "the content leaf holds its content frame {expected:?} when realize returns, \
+             not {frame:?}"
+        );
+
+        let split =
+            split_controller_in(&root_view).expect("the leaf holds a UISplitViewController");
+        let page = collapsed_page(&split);
+        let page_view = page.view().expect("page view");
+        window.layoutIfNeeded();
+        let insets = page_view.safeAreaInsets();
+        let bounds = view::bounds(&page_view);
+        assert!(
+            insets.top + insets.bottom < bounds.size.height,
+            "the page root keeps a nonempty safe region: {insets:?} in {bounds:?}"
+        );
+        let near = |a: f64, b: f64| (a - b).abs() <= 0.5;
+        assert!(
+            near(insets.top, reference.top)
+                && near(insets.bottom, reference.bottom)
+                && near(insets.left, reference.left)
+                && near(insets.right, reference.right),
+            "the realized page's safe area {insets:?} matches the one the fixture gets \
+             mounted before its window shows: {reference:?}"
+        );
+
+        let detail_nav = split
+            .viewControllerForColumn(UISplitViewControllerColumn::Secondary)
+            .and_then(|controller| controller.downcast::<UINavigationController>().ok())
+            .expect("the detail column is a UINavigationController");
+        let top = detail_nav
+            .topViewController()
+            .expect("the column stack has a root page");
+        assert_content_shown(&window, &top.navigationItem(), &page);
     }
 }
 

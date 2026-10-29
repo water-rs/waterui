@@ -783,11 +783,11 @@ mod imp {
     /// A scene connected before its declaration landed: `UIKit` asks for a
     /// window eagerly at connection, so the platform objects exist already
     /// and the content arrives when [`declare`] runs.
-    struct Pending {
-        session_id: String,
-        window: Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
-        controller: Retained<ViewController>,
-        observation: ColorSchemeObservation,
+    pub struct Pending {
+        pub session_id: String,
+        pub window: Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+        pub controller: Retained<ViewController>,
+        pub observation: ColorSchemeObservation,
     }
 
     /// All declarations, observations and scene content belonging to one mount.
@@ -1012,7 +1012,7 @@ mod imp {
     /// Fills a connected scene's window with `declaration`'s content: the
     /// tree becomes one leaf laid out inside the controller's host view, at
     /// the safe-area-aware frame `content_frame` resolves.
-    fn realize(
+    pub fn realize(
         declaration: &Window,
         pending: Pending,
         env: &Environment,
@@ -1050,18 +1050,47 @@ mod imp {
         let leaf = crate::dispatch::dispatcher(env)
             .render(content, env, mtm)
             .expect("window content must render: no handler or fallback claims it");
-        host.add_subview(leaf.view());
-        // The declared root can carry view controllers — a tab bar or a
-        // navigation stack, often under a `HostView` wrapper. Without real
-        // containment `UIKit` never delivers `viewWillLayoutSubviews` or the
-        // appearance callbacks to them, so chrome that integrates in them
-        // (a `UISearchController`'s bar) collapses.
-        for controller in crate::contract::adopt_controllers(leaf.view()) {
-            cocoa_ui::uikit::view_controller::did_move_to_parent(&controller);
-        }
         let leaf_view = cocoa_ui::view::retain_base(leaf.view());
         #[cfg(feature = "gpu_surface")]
         let reveal_view = leaf_view.clone();
+
+        // The root host places the content before the content joins the live
+        // window and before any of its controllers is adopted
+        // (water-rs/waterui#3744).
+        crate::inspector::install(&host, env, &mut keepalive);
+        crate::embedding::place_then_join(
+            &host,
+            {
+                let leaf_view = leaf_view.clone();
+                move |host| {
+                    let host_view: &cocoa_ui::PlatformView = host;
+                    // SAFETY: `content_frame` borrows the views for the call;
+                    // `leaf_view` holds the retain for the host's lifetime.
+                    let frame = crate::native_layout::LayoutContext::of(host_view)
+                        .content_frame(&leaf_view);
+                    // The window's content rect is platform geometry on the
+                    // device-pixel grid; the content negotiates no proposal.
+                    crate::proposal::place(
+                        &leaf_view,
+                        frame,
+                        None,
+                        cocoa_ui::view::SubpixelOffset::ZERO,
+                    );
+                }
+            },
+            || {
+                host.add_subview(leaf.view());
+                // The declared root can carry view controllers — a tab bar or
+                // a navigation stack, often under a `HostView` wrapper.
+                // Without real containment `UIKit` never delivers
+                // `viewWillLayoutSubviews` or the appearance callbacks to
+                // them, so chrome that integrates in them (a
+                // `UISearchController`'s bar) collapses.
+                for controller in crate::contract::adopt_controllers(leaf.view()) {
+                    cocoa_ui::uikit::view_controller::did_move_to_parent(&controller);
+                }
+            },
+        );
 
         crate::first_paint::mark(&leaf_view, env);
 
@@ -1084,22 +1113,6 @@ mod imp {
             }));
         }
 
-        crate::inspector::install(&host, env, &mut keepalive);
-        host.set_layout_handler(move |host| {
-            let host_view: &cocoa_ui::PlatformView = host;
-            // SAFETY: `content_frame` borrows the views for the call;
-            // `leaf_view` holds the retain for the host's lifetime.
-            let frame =
-                crate::native_layout::LayoutContext::of(host_view).content_frame(&leaf_view);
-            // The window's content rect is platform geometry on the
-            // device-pixel grid; the content negotiates no proposal.
-            crate::proposal::place(
-                &leaf_view,
-                frame,
-                None,
-                cocoa_ui::view::SubpixelOffset::ZERO,
-            );
-        });
         keepalive.keep(leaf);
         keepalive.keep(pending.observation);
         keepalive.keep(SceneWindow(pending.window));
@@ -1147,6 +1160,8 @@ mod imp {
 #[cfg(target_os = "ios")]
 pub use imp::bind_background;
 pub use imp::install_manager;
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+pub use imp::{Pending, WindowHost, realize};
 #[cfg(target_os = "ios")]
 pub use imp::{Scenes, connect, connect_embedded, declare};
 #[cfg(target_os = "macos")]
