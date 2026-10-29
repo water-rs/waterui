@@ -94,8 +94,10 @@ pub enum CoverageRoute {
     Gpu,
 }
 
-/// Minimum flattened workload that amortizes GPU coverage dispatch.
+/// Source-count prefilter for ordinary paths.
 pub const GPU_ROUTE_MIN_ELEMENTS: usize = 4096;
+/// Minimum device-space workload considered alongside crossing density.
+pub const GPU_ROUTE_MIN_SEGMENTS: usize = 1024;
 
 /// Source element count used before device-space preparation.
 #[derive(Clone, Copy)]
@@ -138,7 +140,7 @@ impl Complexity {
         // Plain polylines keep the two-sided centerline cost estimate.
         // For round arcs, acos(1-x) >= sqrt(2*x) bounds the chord count
         // without expanding the outline. The compute stroker uses tolerance/2.
-        let expansion = if matches!(stroke.join, kurbo::Join::Round)
+        let (expansion, minimum) = if matches!(stroke.join, kurbo::Join::Round)
             || matches!(stroke.start_cap, kurbo::Cap::Round)
             || matches!(stroke.end_cap, kurbo::Cap::Round)
         {
@@ -147,11 +149,11 @@ impl Complexity {
             let arc = (std::f64::consts::FRAC_PI_2 * (half_width / tolerance).sqrt())
                 .ceil()
                 .max(1.0);
-            4.0_f64.mul_add(arc, 2.0)
+            (4.0_f64.mul_add(arc, 2.0), GPU_ROUTE_MIN_SEGMENTS)
         } else {
-            2.0
+            (2.0, GPU_ROUTE_MIN_ELEMENTS)
         };
-        elements as f64 * expansion >= GPU_ROUTE_MIN_ELEMENTS as f64
+        elements as f64 * expansion >= minimum as f64
     }
 }
 
@@ -558,7 +560,7 @@ impl GpuBound {
     /// A narrow visible clip does not reduce the CPU sweep over the full path.
     pub const fn prefers_gpu(&self) -> bool {
         let strips = self.grid_h.div_ceil(STRIP_H);
-        !self.empty && self.segments >= GPU_ROUTE_MIN_ELEMENTS && self.bins >= strips * 32
+        !self.empty && self.segments >= GPU_ROUTE_MIN_SEGMENTS && self.bins >= strips * 32
     }
 
     /// The same bound seen from a frame moved by the integer vector `by`:

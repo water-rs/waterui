@@ -4712,7 +4712,7 @@ impl<'a> Lowering<'a> {
             cached.insert(index, prepared);
         }
         let geometry = &cached.get(&index).expect("prepared GPU geometry").path;
-        if geometry.bound.segments < path::GPU_ROUTE_MIN_ELEMENTS {
+        if geometry.bound.segments < path::GPU_ROUTE_MIN_SEGMENTS {
             return Ok(false);
         }
         let prepared = geometry.placed(
