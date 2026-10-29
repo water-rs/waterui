@@ -10,6 +10,80 @@ committed. Produce them once per checkout with
 `python3 scenes/tools/generate.py` (its Python steps need
 `python3 -m pip install -r scenes/fonts/tools/requirements.txt`).
 
+## Reading a measure report
+
+`measure` renders offscreen: no frame reaches a compositor, so there is no
+present-to-present time. Each entry of `samples[]` is one frame's raw
+timing, and `percentiles` gives p50/p90/p99 of each field:
+
+- `encode_seconds`, `submit_seconds`, `gpu_wait_seconds` — host wall time
+  of encoding, of submission (rasterization included for CPU engines), and
+  of explicit GPU waits inside submission, which `submit_seconds` excludes.
+- `gpu_seconds`, `passes`, `phases` — GPU time from real timestamps, per
+  pass, and per render-thread phase; `null` or omitted where the backend
+  provides none, with `gpu_timing_unavailable` naming why. Never estimated.
+- `latency_seconds` — encode-to-completion wall time, present only under
+  `--wait-for-completion`, which finishes each frame before the next
+  encode.
+- `completed_seconds`, `completion_interval_seconds` — when the frame's
+  rendering completed, in host seconds since the measured window opened,
+  and the interval since the previous measured frame completed (`null` on
+  the first). The window opens on an idle GPU, so no warmup frame
+  completes inside it. The interval is the measured frame time. Its percentiles are
+  `percentiles.completion_interval_seconds`. Both fields are `null` when the
+  adapter has no completion signal, and `completion_unavailable` says why.
+
+By default frames are submitted asynchronously, so one frame's encode can
+overlap an earlier frame's GPU work. The stage fields therefore do not add
+up to a frame time, and the report never derives one from them. The
+pipelined frame time is `completion_interval_seconds`, measured from each
+adapter's own completion signal, which `completion_signal` names.
+
+Measuring completion leaves every timed interval as it would be without
+it. The frame loop arms each frame's signal in a separate adapter step
+that runs after `submit_seconds` (and, under `--wait-for-completion`,
+`latency_seconds`) has closed. Only a Skia Vulkan semaphore has to be
+attached inside submission, because Ganesh signals it with the frame's
+flush; creating and exporting it happen in that step. The signals:
+
+- CPU engines complete when their raster work ends inside submission.
+- The Cherenkov GPU and Vello hybrid adapters use wgpu's
+  `on_submitted_work_done`, registered once the frame's submit returns.
+  wgpu runs that callback only inside a later device poll or queue
+  submission, so the instant is an upper bound on completion. A GPU-bound
+  run sees completion while the engine waits on the device. A CPU-bound
+  run sees it when the next frame submits, so its intervals follow the
+  submission cadence.
+- Vello classic drains the GPU inside every submission to verify its
+  overflow feedback. Its frames never overlap, so the interval is a
+  serialized frame's cost plus the loop's overhead, not pipelined
+  throughput.
+- Skia Metal commits one empty command buffer on Graphite's queue once
+  each submit returns. The instant is when Metal ran that buffer's completed
+  handler. Metal completes a queue's buffers in commit order, so the
+  instant bounds the frame's completion from above. The marker costs one
+  empty commit per frame.
+- Skia Vulkan gives Ganesh a binary semaphore, created before the frame,
+  to signal with the frame's flush, then exports it as a Linux sync file.
+  The instant is the kernel's signal timestamp for that fence, read after
+  the run drains. A sync file the driver exports already signaled carries
+  no time, and the instant is then the export's return, an upper bound. A
+  driver that cannot export sync files reports `completion_unavailable`
+  instead.
+
+Under `--wait-for-completion` the interval is also measured, but each
+frame then waits for the one before it, so the interval tracks
+`latency_seconds`. The signal is armed only after that wait returns, so
+`latency_seconds` keeps its interval. The wgpu callback then runs in the
+per-frame drain that follows, and the Skia Metal marker is committed
+after the frame finished, so both instants fall after the wait's end. A
+Skia Vulkan sync file keeps its fence time unless the driver exports it
+already signaled, when the instant is again the export's return. The CPU
+engines and Vello classic record theirs inside submission, unaffected.
+Whether an engine keeps a frame rate is `--rate`'s
+`pacing` block (`achieved_hz`, `missed_deadlines`), and energy per frame
+is `--energy`, both described below.
+
 ## Native resolution
 
 `measure --native WxH` renders into a `W`×`H` surface — the device's own
@@ -40,8 +114,9 @@ frame counts:
         --corpus scenes/perf --frames 60 --warmup 5 --cpu 7 \
         --out-dir capacity-out
 
-A frame's seconds are `encode + submit`, raised to the frame's GPU time
-where the backend reports it. The per-scene report records each engine's
+Every probe runs with `--wait-for-completion`, so a frame's seconds are
+its `latency_seconds`: synchronous encode-to-completion time, not a
+pipelined-throughput estimate from stage times. The per-scene report records each engine's
 max sustained `k`, the p99 at `k` and at `k + 1`, and every probe.
 `--max-k` (default 1024) caps the doubling; `--native` retargets every
 probe exactly as for `measure`.

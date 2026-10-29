@@ -587,6 +587,13 @@ impl Outline {
 }
 
 impl OutlineRef<'_> {
+    pub fn gpu_candidate(self, complexity: path::Complexity, raster: Affine) -> bool {
+        match self {
+            Self::Fill { .. } => complexity.fill_candidate(),
+            Self::Stroke { stroke, .. } => complexity.stroke_candidate(stroke, raster),
+        }
+    }
+
     /// Semantic identity at the tolerance used to construct the outline.
     pub fn content(self, tolerance: f64) -> u64 {
         match self {
@@ -685,10 +692,10 @@ pub enum Op {
         local: Affine,
         /// The fill rule.
         rule: FillRule,
+        /// Source complexity used before device-space preparation.
+        complexity: path::Complexity,
         /// The outline builder.
         outline: Outline,
-        /// Whether the source has enough elements to consider GPU coverage.
-        gpu_candidate: bool,
         /// The resolved paint (identity local space — device pixels).
         paint: ResolvedPaint,
     },
@@ -882,7 +889,7 @@ impl Lowerer<'_> {
             ops.push(Op::Path {
                 local: ambient,
                 rule: *rule,
-                gpu_candidate: elements.len() >= path::GPU_ROUTE_MIN_ELEMENTS,
+                complexity: path::Complexity::of(elements),
                 outline: source.map_or_else(
                     || Outline::Fill {
                         elements: Arc::clone(elements),
@@ -971,8 +978,7 @@ impl Lowerer<'_> {
             ops.push(Op::Path {
                 local: ambient,
                 rule: FillRule::NonZero,
-                gpu_candidate: matches!(shape, ShapeData::Path { elements, .. }
-                    if path::stroke_gpu_candidate(elements.len(), stroke)),
+                complexity: path::Complexity::of_shape(shape),
                 outline: source.map_or_else(
                     || Outline::Stroke {
                         shape: shape.clone(),

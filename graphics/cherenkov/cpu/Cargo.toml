@@ -13,6 +13,8 @@ categories = ["graphics", "rendering", "embedded"]
 # `testing` feature uses: `testing::kernels`, no public API.
 [features]
 testing = []
+# Firmware rasterization trades geometry rescans for band-bounded bin scratch.
+bounded-bins = []
 
 [dependencies]
 arrayvec = "0.7"

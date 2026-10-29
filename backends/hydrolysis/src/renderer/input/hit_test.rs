@@ -239,7 +239,7 @@ pub struct ScrollTarget<E: crate::text::TextEngine> {
 pub struct NativeViewOcclusion {
     /// The hosted content's interaction key and runtime: focus requests
     /// for the key move platform focus into it.
-    #[cfg(hydrolysis_hosted)]
+    #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
     pub(crate) hosted: (InteractionKey, Rc<crate::hosted::HostedRuntime>),
     /// The subview's rect in window hit-test space.
     pub bounds: kurbo::Rect,
@@ -247,7 +247,7 @@ pub struct NativeViewOcclusion {
     /// paints above it.
     pub(crate) order: usize,
     /// Shared with the platform's view host. Rects are in window hit-test space.
-    #[cfg(hydrolysis_hosted)]
+    #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
     pub(crate) sink: crate::hosted::HostedOcclusion,
 }
 
@@ -1182,7 +1182,7 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
     /// Publishes, for each registered native subview, the rects where
     /// `WaterUI`-drawn interactive content sits above it.
     #[cfg_attr(
-        not(hydrolysis_hosted),
+        not(all(hydrolysis_hosted, hydrolysis_gpu)),
         expect(
             clippy::unused_self,
             clippy::missing_const_for_fn,
@@ -1190,9 +1190,9 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
         )
     )]
     fn publish_native_view_occlusion(&self, text_inputs: &[TextInputTarget<E>]) {
-        #[cfg(not(hydrolysis_hosted))]
+        #[cfg(not(all(hydrolysis_hosted, hydrolysis_gpu)))]
         let _ = text_inputs;
-        #[cfg(hydrolysis_hosted)]
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         for occlusion in &self.native_view_occlusions {
             let rects: Vec<kurbo::Rect> = self
                 .interactive_regions_above(occlusion.order, text_inputs)
@@ -1246,9 +1246,12 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
             .map_or(CursorStyle::Arrow, |target| target.style)
     }
 
+    /// Reconciles every hover target with the pointer. `None` means the
+    /// pointer left the window: no target contains it, so every active
+    /// hover ends and its exit handler runs.
     pub(crate) fn sync_hover_targets(
         &mut self,
-        point: kurbo::Point,
+        point: Option<kurbo::Point>,
         env: &Environment,
         dispatch_move: bool,
         now: Instant,
@@ -1261,7 +1264,7 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
             if !self.interaction.key_active(&target.slot.key) {
                 continue;
             }
-            let contains = target.bounds.contains(point);
+            let contains = point.is_some_and(|point| target.bounds.contains(point));
             let slot_hovering = self.interaction.hovering(&target.slot);
             if contains != slot_hovering {
                 self.interaction.set_hovering(&target.slot, contains);
@@ -1296,6 +1299,7 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
             }
             if contains
                 && dispatch_move
+                && let Some(point) = point
                 && let Some(on_move) = target.on_move.as_mut()
                 && (on_move.borrow_mut())(target.to_local * point, env)
             {
@@ -2464,7 +2468,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         drag_changed |= drag_hover_changed;
         refresh_requested |= drag_hover_changed;
         let hover = if pointer_kind == PointerKind::Mouse {
-            self.hit_test.sync_hover_targets(point, env, true, at)
+            self.hit_test.sync_hover_targets(Some(point), env, true, at)
         } else {
             HoverSync::default()
         };
@@ -2489,7 +2493,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub fn sync_pointer_hover_state(&mut self, x: f32, y: f32, env: &Environment) -> bool {
         let point = kurbo::Point::new(f64::from(x), f64::from(y));
         let at = self.frame_instant();
-        let hover = self.hit_test.sync_hover_targets(point, env, false, at);
+        let hover = self
+            .hit_test
+            .sync_hover_targets(Some(point), env, false, at);
         let changed = hover.handler_changed;
         self.hit_test.interaction.mark_hover_sync(&hover);
         tracing::trace!(
@@ -2676,6 +2682,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// semantic runtime's keyboard contract. Rendered runtimes keep the
     /// [`KeyboardActivation::PressRelease`] default.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) const fn use_semantic_keyboard_activation(&mut self) {
         self.hit_test.keyboard_activation = KeyboardActivation::Semantic;
     }
@@ -2686,6 +2693,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// no target is dead even when a frame happens to emit no pointer
     /// targets at all.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) const fn use_semantic_walk(&mut self) {
         self.semantic_walk = true;
     }
@@ -2830,7 +2838,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         #[cfg(feature = "accessibility")] node: Option<AccessibilityNodeId>,
         visible: bool,
     ) -> bool {
-        #[cfg(hydrolysis_hosted)]
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         if let Some(focus) = &focus {
             for (key, runtime) in self
                 .hit_test
@@ -3713,7 +3721,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ) -> bool {
         self.registries();
         if self.hit_test.active_pointer != Some((pointer_id, pointer_kind)) {
-            return false;
+            // A hovering mouse leaving the window holds no press, but its
+            // hover still ends.
+            return pointer_kind == PointerKind::Mouse && self.end_hover(env);
         }
         let at = self.frame_instant();
         let mut refresh_requested =
@@ -3743,43 +3753,17 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             .gesture_engine
             .handle_pointer_cancel(frame_instant, env);
         refresh_requested |= gesture_changed;
-        let mut hover_visual_changed = false;
-        let mut hover_chrome_keys = Vec::new();
-        let mut hover_paint_keys = Vec::new();
-        let hit_test = &mut self.core.hit_test;
-        for target in &mut hit_test.hover_targets {
-            if !hit_test.interaction.key_active(&target.slot.key) {
-                continue;
-            }
-            let hovering = hit_test.interaction.hovering(&target.slot);
-            if !hovering {
-                continue;
-            }
-            hit_test.interaction.set_hovering(&target.slot, false);
-            let paint = target.handles.as_ref().is_some_and(|handles| {
-                handles.set_hovering(false, at);
-                let repaint = handles.repaint().is_some();
-                hover_visual_changed |= repaint;
-                repaint
-            });
-            let chrome = target
-                .on_exit
-                .as_mut()
-                .is_some_and(|on_exit| (on_exit.borrow_mut())(env));
-            refresh_requested |= chrome;
-            if chrome {
-                hover_chrome_keys.push(target.slot.key.clone());
-            } else if paint {
-                hover_paint_keys.push(target.slot.key.clone());
-            }
-        }
-        self.hit_test
-            .interaction
-            .mark_owners(&hover_chrome_keys, Dirty::LAYOUT);
-        self.hit_test
-            .interaction
-            .mark_owners(&hover_paint_keys, Dirty::PAINT);
-        refresh_requested || hover_visual_changed
+        refresh_requested |= self.end_hover(env);
+        refresh_requested
+    }
+
+    /// Ends every active hover — the pointer left the window — running exit
+    /// handlers and clearing hover state; returns whether anything changed.
+    fn end_hover(&mut self, env: &Environment) -> bool {
+        let at = self.frame_instant();
+        let hover = self.hit_test.sync_hover_targets(None, env, false, at);
+        self.hit_test.interaction.mark_hover_sync(&hover);
+        hover.handler_changed || hover.visual_changed
     }
 
     /// Handles a scroll event at `(x, y)` with deltas `(dx, dy)`; `is_line_delta` selects line vs pixel units.

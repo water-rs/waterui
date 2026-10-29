@@ -36,7 +36,7 @@ use waterui_core::views::AnyViews;
 
 use crate::contract::{NativeLeaf, Renderer};
 use crate::dispatch::Dispatcher;
-use crate::proposal;
+use crate::proposal::{self, Placement};
 use crate::transition::ghost::Ghost;
 use crate::transition::live::{LiveChild, Removal};
 use crate::transition::slots::{FrozenPlacement, GhostKey, Slot, SlotSequence};
@@ -218,9 +218,9 @@ struct ContainerState {
     measured_cross: HashMap<ItemId, f64>,
     /// The cross-axis constraint the lazy measurements were taken under.
     last_cross: f64,
-    /// The proposal the parent layout selected when it placed this
-    /// container — `selectedProposal` in the Swift port.
-    selected: Cell<Option<ProposalSize>>,
+    /// How the parent layout placed this container: the proposal it
+    /// selected and the offset its pixel alignment left.
+    placement: Cell<Placement>,
     /// The live scroll-viewport observation.
     scroll: Option<ScrollObservation>,
     /// The guards `layout.watch_invalidation` returned — held, not read.
@@ -922,14 +922,10 @@ fn place_live_member(
     }
     let mounted = &state.rendered[&id];
 
-    // The virtualized child is natively hosted: its selected proposal
-    // is the offer it was measured with, not the frame it lands in.
-    proposal::deliver(mounted.view(), pass.child_proposal);
     let (mut measured, size, stretches) =
         measure_lazy_child_dimensions(mounted.layout(), pass.cross, pass.lazy);
     let (main, cross_axis) = main_cross(size, pass.lazy);
-    // The lazy path sets cursor-based frames directly — unpixel-snapped,
-    // as the baseline's `child.frame =` assignment does.
+    // The lazy path places cursor-based frames directly, pixel-aligned.
     let frame = member_frame(
         &pass.lazy.axis,
         pass.bounds,
@@ -938,7 +934,14 @@ fn place_live_member(
         stretches,
         pass.rtl,
     );
-    view::set_frame(mounted.view(), frame);
+    // The virtualized child is natively hosted: its selected proposal
+    // is the offer it was measured with, not the frame it lands in.
+    proposal::place(
+        mounted.view(),
+        frame,
+        Some(pass.child_proposal),
+        state.placement.get().offset,
+    );
     // What the member's ghost slot reports if it departs: this pass's
     // negotiated measurement, size replaced by the frame it landed in.
     #[expect(
@@ -987,7 +990,7 @@ fn place_ghost_member(
         _ => unreachable!("lazy stack axis is vertical or horizontal"),
     };
     let frame = member_frame(&pass.lazy.axis, pass.bounds, cursor, size, false, pass.rtl);
-    ghost.place(frame);
+    ghost.place(frame, state.placement.get().offset);
     main
 }
 
@@ -1108,7 +1111,7 @@ fn perform_lazy_layout(state: &mut ContainerState) {
 }
 
 /// `performLayout`: the non-lazy path — measure for a size answer first,
-/// then place, proposals before frames, frames pixel-snapped.
+/// then place, proposals before frames, frames pixel-aligned.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the layout contract is f32; kit geometry is f64"
@@ -1122,7 +1125,8 @@ fn perform_fixed_layout(state: &mut ContainerState) {
     // Placed by a Rust parent: the proposal it selected. Natively hosted:
     // the boundary offer for the rect this container fills. Measure and
     // place share it, as `measure_layout` does.
-    let proposal = state.selected.get().unwrap_or_else(|| {
+    let placed = state.placement.get();
+    let proposal = placed.proposal.unwrap_or_else(|| {
         ProposalSize::new(
             Some(bounds.size.width as f32),
             Some(bounds.size.height as f32),
@@ -1164,9 +1168,7 @@ fn perform_fixed_layout(state: &mut ContainerState) {
         match member {
             Member::Id { id, .. } => {
                 let child = &state.rendered[id];
-                // The negotiated proposal lands before the frame.
-                proposal::deliver(child.view(), placement.proposal);
-                view::set_frame(child.view(), frame);
+                proposal::place(child.view(), frame, Some(placement.proposal), placed.offset);
                 // What the member's ghost slot reports if it departs: this
                 // pass's negotiated measurement, size replaced by the
                 // frame it landed in.
@@ -1183,7 +1185,7 @@ fn perform_fixed_layout(state: &mut ContainerState) {
             Member::Ghost(key) => {
                 // A ghost paints at its slot — the same placement, so the
                 // outgoing pixels track the layout (§4.5).
-                state.ghosts[key].place(frame);
+                state.ghosts[key].place(frame, placed.offset);
             }
         }
     }
@@ -1290,7 +1292,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             measured_main: HashMap::new(),
             measured_cross: HashMap::new(),
             last_cross: -1.0,
-            selected: Cell::new(None),
+            placement: Cell::new(Placement::UNPLACED),
             scroll: None,
             layout_guards: Vec::new(),
         }));
@@ -1342,10 +1344,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let sink_guard = proposal::register_sink(&host, {
             let state = Rc::clone(&state);
             let host = host.clone();
-            move |selected| {
+            move |placement| {
                 let state = state.borrow();
-                if state.selected.get() != Some(selected) {
-                    state.selected.set(Some(selected));
+                if state.placement.get() != placement {
+                    state.placement.set(placement);
                     host.set_needs_layout();
                 }
             }

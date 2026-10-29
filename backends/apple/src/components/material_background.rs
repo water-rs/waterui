@@ -5,7 +5,10 @@
 //! measure, stretch, priority and the placement proposal all answer for the
 //! mounted child — holding the platform's effect view (`UIVisualEffectView`
 //! with a `UIBlurEffect` on `UIKit`, `NSVisualEffectView` on `AppKit`) plus
-//! the content as direct subviews. Each layout pass centers the effect and
+//! the content. On `AppKit` the content is a subview of the effect view, so
+//! text in a system label color draws vibrant, and a thick material follows
+//! the Reduce Transparency setting live; on `UIKit` both are direct
+//! subviews of the container. Each layout pass centers the effect and
 //! the content over the content's negotiated size: a width-constrained
 //! content keeps its narrower material column while the wrapper may be
 //! stamped wider.
@@ -22,7 +25,7 @@ use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
-use crate::proposal;
+use crate::proposal::{self, Placement};
 use crate::window_background::level;
 
 #[cfg(target_os = "macos")]
@@ -31,7 +34,7 @@ use cocoa_ui::appkit::HostView;
 use cocoa_ui::uikit::HostView;
 
 /// The leaf's live state: the mounted child and the effect view, plus the
-/// last placement proposal the wrapper was selected with — the offer the
+/// last placement the wrapper was given — its proposal is the offer the
 /// layout pass echoes back when the host stamps the frame without
 /// delivering a proposal.
 struct MaterialBackgroundState {
@@ -39,8 +42,8 @@ struct MaterialBackgroundState {
     child: Mounted,
     /// The effect view, stamped over the content's frame each layout.
     blur: Retained<PlatformView>,
-    /// The proposal selected for this wrapper, forwarded to the child.
-    last_proposal: Cell<ProposalSize>,
+    /// The placement given to this wrapper, forwarded to the child.
+    placement: Cell<Placement>,
 }
 
 impl core::fmt::Debug for MaterialBackgroundState {
@@ -90,18 +93,30 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let host = HostView::new(mtm, Rect::ZERO);
         let host_view: &PlatformView = &host;
 
-        let blur = material::material_view(mtm, level(metadata.value.0));
+        let material = material::material_view(mtm, level(metadata.value.0));
+        let blur = view::retain_base(material.view());
+
+        // The thick material's flat fill follows the system's Reduce
+        // Transparency setting live; the guard lives with the leaf.
+        #[cfg(target_os = "macos")]
+        let reduce_transparency = material.follow_system_reduce_transparency(mtm);
 
         // `wantsLayer = true`: `NSVisualEffectView` expects a layer-backed
         // host on `AppKit`.
         #[cfg(target_os = "macos")]
         let _backing_layer = cocoa_ui::shape::layer(host_view);
 
-        // The blur behind the content; both are direct subviews laid out by
-        // the layout handler, as `translatesAutoresizingMaskIntoConstraints`
-        // on `WuiMaterialBackground`.
+        // The blur behind the content, laid out by the layout handler, as
+        // `translatesAutoresizingMaskIntoConstraints` on
+        // `WuiMaterialBackground`. On `AppKit` the content is a subview of
+        // the effect view, so text drawn in a system label color is
+        // vibrant; `UIKit` keeps both as siblings.
         view::add_subview(host_view, &blur);
-        let mounted = ctx.render(metadata.content).mount(host_view);
+        #[cfg(target_os = "macos")]
+        let content_parent: &PlatformView = &blur;
+        #[cfg(target_os = "ios")]
+        let content_parent: &PlatformView = host_view;
+        let mounted = ctx.render(metadata.content).mount(content_parent);
         view::set_translates_autoresizing(&blur, true);
         view::set_translates_autoresizing(mounted.view(), true);
 
@@ -116,7 +131,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let state = Rc::new(MaterialBackgroundState {
             child: mounted,
             blur,
-            last_proposal: Cell::new(ProposalSize::UNSPECIFIED),
+            placement: Cell::new(Placement::UNPLACED),
         });
 
         // Scroll discovery traverses the content without changing the
@@ -138,7 +153,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
             )]
             move |host| {
                 let bounds = view::bounds(host);
-                let last = state.last_proposal.get();
+                let last = state
+                    .placement
+                    .get()
+                    .proposal
+                    .unwrap_or(ProposalSize::UNSPECIFIED);
                 let size = state
                     .child
                     .layout()
@@ -160,13 +179,13 @@ pub fn install(dispatcher: &mut Dispatcher) {
             }
         });
 
-        // `setPlacementProposal`: remember the selected offer and forward
-        // it to the content, as `WuiMaterialBackground.lastProposal`.
+        // `setPlacementProposal`: remember the placement and forward it to
+        // the content, as `WuiMaterialBackground.lastProposal`.
         let sink_guard = proposal::register_sink(host_view, {
             let state = Rc::clone(&state);
-            move |selected| {
-                state.last_proposal.set(selected);
-                proposal::deliver(state.child.view(), selected);
+            move |placement| {
+                state.placement.set(placement);
+                proposal::deliver(state.child.view(), placement);
             }
         });
 
@@ -177,6 +196,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
             },
         );
         leaf.keep(sink_guard);
+        #[cfg(target_os = "macos")]
+        leaf.keep(reduce_transparency);
         leaf.keep(state);
         leaf
     });

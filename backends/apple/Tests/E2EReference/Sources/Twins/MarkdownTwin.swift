@@ -39,7 +39,7 @@ struct MarkdownTwin: View {
                 Text("WaterUI supports rendering **Markdown** content natively across all platforms.")
 
                 heading("Text Formatting")
-                Text("You can use **bold**, *italic*, and `inline code` in your text. Combine them for ***bold italic*** text.")
+                Text(inlineCodeRuns("You can use **bold**, *italic*, and `inline code` in your text. Combine them for ***bold italic*** text."))
 
                 heading("Code Blocks")
                 Text("Here's a Rust example:")
@@ -166,6 +166,24 @@ struct MarkdownTwin: View {
         }
         .padding(14)
         .background(codeSurface)
+    }
+
+    /// The example's inline code: WaterUI's `inline_code_style`
+    /// monospaces the run over a `SurfaceVariant` fill
+    /// (components/foundation/text/src/styled.rs), which the markdown
+    /// initializer drops — paint it on the code presentation intent
+    /// (water-rs/waterui#3593).
+    private func inlineCodeRuns(_ source: String) -> AttributedString {
+        var attributed: AttributedString
+        do {
+            attributed = try AttributedString(markdown: source)
+        } catch {
+            preconditionFailure("inline-code markdown literal failed to parse: \(error)")
+        }
+        for run in attributed.runs where run.inlinePresentationIntent?.contains(.code) == true {
+            attributed[run.range].backgroundColor = .tertiarySystemFill
+        }
+        return attributed
     }
 
     /// `Color::new(SurfaceVariantColor)`: the Apple backend resolves the slot

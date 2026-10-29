@@ -57,6 +57,19 @@ fn stack_leaf(stack: NavigationStack<(), ()>, ctx: &RenderContext<'_>) -> Native
     leaf
 }
 
+/// What roots a split column's `UINavigationController`: always a
+/// `NavigationView`, either already built or still to be resolved from a
+/// selected destination. A plain view (the empty-selection placeholder)
+/// cannot be expressed, so it can never reach [`resolve_navigation_root`].
+#[cfg(target_os = "ios")]
+pub(super) enum ColumnRoot {
+    /// A navigation page the caller built.
+    Resolved(Box<waterui::navigation::NavigationView>),
+    /// A selected destination, resolved once the column's controller is
+    /// installed in its environment.
+    Destination(waterui_backend_core::AnyView),
+}
+
 /// The split-column leaf: `content` renders as the root page of a fresh
 /// [`platform::Stack`], and the returned `UINavigationController` is the
 /// column's `viewController`. A collapsed split then pushes the page onto
@@ -65,7 +78,7 @@ fn stack_leaf(stack: NavigationStack<(), ()>, ctx: &RenderContext<'_>) -> Native
 /// toolbar items — applies instead of drawing in-content.
 #[cfg(target_os = "ios")]
 pub(super) fn column_leaf(
-    content: waterui_backend_core::AnyView,
+    content: ColumnRoot,
     ctx: &RenderContext<'_>,
 ) -> (
     NativeLeaf,
@@ -79,7 +92,10 @@ pub(super) fn column_leaf(
     });
     env.insert(controller);
     driver.prepare(ctx, env.clone());
-    let root = resolve_navigation_root(content, &env);
+    let root = match content {
+        ColumnRoot::Resolved(root) => *root,
+        ColumnRoot::Destination(destination) => resolve_navigation_root(destination, &env),
+    };
     let mut leaf = driver.build(root);
     let nav = driver.nav();
     leaf.keep(driver);
@@ -193,9 +209,9 @@ mod platform {
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::Retained;
     use cocoa_ui::geometry::Rect as KitRect;
-    use cocoa_ui::objc2_ui_kit::{UIBarButtonItem, UIControlEvents};
+    use cocoa_ui::objc2_ui_kit::UIBarButtonItem;
     use cocoa_ui::uikit::{
-        HostView, LargeTitle, NavContentController, NavPage, NavSearch, bar_item, first_button,
+        HostView, LargeTitle, NavContentController, NavPage, NavSearch, bar_item,
     };
     use cocoa_ui::view;
     use waterui::Environment;
@@ -206,12 +222,11 @@ mod platform {
         NavigationTransaction, NavigationTransactionId, NavigationView,
     };
     use waterui::reactive::Signal;
-    use waterui_core::layout::ProposalSize;
 
     use crate::contract::{KeepAlive, NativeLeaf, RenderContext, Renderer};
     use crate::transition::live::LiveChild;
 
-    use super::super::bar::{BarItem, BarItemIcon, BarState, bar_item_frame, search_prompt};
+    use super::super::bar::{BarItem, BarState, bar_item_frame, search_prompt};
     use super::{Fill, Ghosts, Mount, Sink, is_claimed, page_transition, retire_page};
 
     /// A pending transaction: it completes when `UINavigationController`
@@ -561,63 +576,12 @@ mod platform {
         /// item is hosted as the item's custom view. The title signal feeds
         /// `accessibilityLabel`.
         fn button(&self, item: &BarItem, keep: &mut KeepAlive) -> Retained<UIBarButtonItem> {
-            let button = first_button(item.leaf.view());
-            let action = button.clone().map(|button| {
-                Rc::new(move || {
-                    button.sendActionsForControlEvents(UIControlEvents::PrimaryActionTriggered);
-                }) as Rc<dyn Fn()>
-            });
-            let object = match item.icon.as_ref() {
-                Some(BarItemIcon::System(name)) => bar_item(self.mtm, Some(name), None, action),
-                Some(BarItemIcon::View(icon)) => {
-                    // The declared icon draws inside the bar's chrome as a
-                    // template image the bar tints; a view that cannot
-                    // render stays hosted as the item's custom view.
-                    let size = icon
-                        .layout()
-                        .measure(ProposalSize {
-                            width: None,
-                            height: None,
-                        })
-                        .size;
-                    cocoa_ui::view::set_frame(
-                        icon.view(),
-                        cocoa_ui::geometry::Rect::new(
-                            0.0,
-                            0.0,
-                            f64::from(size.width),
-                            f64::from(size.height),
-                        ),
-                    );
-                    self.icon_item(item, icon, action, keep)
-                }
-                None => {
-                    // A `UIButton` whose configuration carries no title is
-                    // what the bar draws as an empty capsule. A single text
-                    // label becomes the title the bar draws itself; anything
-                    // else is hosted, and must arrive with a real frame
-                    // because the bar never lays a custom view out.
-                    crate::components::navigation::text_button_bar_item(item, action, self.mtm)
-                        .unwrap_or_else(|| {
-                            cocoa_ui::view::set_frame(item.leaf.view(), bar_item_frame(item));
-                            bar_item(self.mtm, None, Some(item.leaf.view()), None)
-                        })
-                }
-            };
-            // A bar item the chrome draws follows the button's enabled
-            // state — the programmatic `sendActions` the action runs
-            // ignores `isEnabled`, so the bar item is what disables it.
-            if let Some(button) = &button {
-                cocoa_ui::uikit::mirror_enabled(button, &object);
-            }
-            if let Some(title) = item.title.clone() {
-                let object = object.clone();
-                keep.bind(&title, move |title| {
-                    let text = title.to_plain().to_string();
-                    cocoa_ui::uikit::bar_item_accessibility_label(&object, &text);
-                });
-            }
-            object
+            crate::components::navigation::button_bar_item(
+                item,
+                keep,
+                self.mtm,
+                |icon, action, keep| self.icon_item(item, icon, action, keep),
+            )
         }
 
         /// A `View` icon under `gpu_surface`: the item is created at once
@@ -992,6 +956,12 @@ mod platform {
         /// handlers wired.
         pub(super) fn build(self: &Rc<Self>, root: NavigationView) -> NativeLeaf {
             let _ = self.self_weak.set(Rc::downgrade(self));
+            // The stack owns its pages' safe-area answer —
+            // `WuiSafeAreaManaging` in the baseline — so the window root
+            // hands it the whole window, not the safe-area rect: a page
+            // touches the edge the window-drawn bar sits on and receives
+            // that region as its container safe area (§7.1).
+            self.host.set_manages_safe_area(true);
             let driver = Rc::clone(self);
             self.host.set_layout_handler(move |host| {
                 driver.layout(host);
@@ -1027,10 +997,16 @@ mod platform {
             crate::primary_content::forward_current(&host, |host| {
                 cocoa_ui::view::subviews(host).into_iter().next()
             });
+            // The page resolves the region its top edge reached the way
+            // the window root does: `content_frame` hands a safe-area
+            // manager the bounds — a scroll surface reaches under the
+            // window-drawn bar and insets its own content — and anything
+            // else the safe-area rect (§7.1).
             host.set_layout_handler(|host| {
-                let rect = bounds(host);
+                let host_view: &NSView = host;
+                let context = crate::native_layout::LayoutContext::of(host_view);
                 for subview in cocoa_ui::view::subviews(host) {
-                    set_frame(&subview, rect);
+                    set_frame(&subview, context.content_frame(&subview));
                 }
             });
             let state = Rc::new(RefCell::new(core::mem::take(&mut view.state)));
@@ -1056,13 +1032,11 @@ mod platform {
             }
         }
 
-        /// Frames every entry inside `host`: each fills bounds minus the
-        /// titlebar's safe-area inset — `layoutEntries`.
+        /// Frames every entry inside `host`: each fills the bounds, so a
+        /// page touches the edge the window-drawn bar sits on —
+        /// `layoutEntries`.
         fn layout(&self, host: &HostView) {
-            let mut rect = bounds(host);
-            let inset = self.host.safe_area_insets().top;
-            rect.origin.y += inset;
-            rect.size.height -= inset;
+            let rect = bounds(host);
             for entry in self.entries.borrow().iter() {
                 cocoa_ui::view::set_frame(&entry.view, rect);
             }
@@ -1248,8 +1222,8 @@ mod platform {
         /// control — `firstButton`'s `performClick` — and a `View` icon or
         /// no icon hosts the content itself.
         fn child(&self, entry: &Entry, item: &BarItem) -> ToolbarChild {
-            // The item's action and its chrome both come from the button
-            // inside it, the way `firstButton` informed `actionItem`.
+            // The item's action comes from the button inside it, the way
+            // `firstButton` informed `actionItem`.
             let button = first_button(item.leaf.view());
             let action = button.as_ref().map(|button| {
                 let button = button.clone();
@@ -1258,7 +1232,6 @@ mod platform {
                     unsafe { activate(button.control()) };
                 }) as Rc<dyn Fn()>
             });
-            let bordered = button.as_ref().is_none_or(|button| !button.is_borderless());
             let label = item
                 .title
                 .as_ref()
@@ -1275,7 +1248,6 @@ mod platform {
                         None,
                     ),
                     label,
-                    bordered,
                     action,
                 },
                 Some(BarItemIcon::View(icon)) => {
@@ -1291,7 +1263,6 @@ mod platform {
                         },
                         icon: Self::view_icon(self, entry, item, icon),
                         label,
-                        bordered,
                         action,
                     }
                 }
@@ -1302,7 +1273,6 @@ mod platform {
                     },
                     icon: None,
                     label,
-                    bordered,
                     action,
                 },
             }

@@ -488,8 +488,8 @@ mod tests {
     }
 
     /// The `web_meta` fixture staged against the pinned framework: its sources
-    /// copied beside a manifest whose `waterui` dependency is the git pin this
-    /// crate's own manifest carries, so the revision lives in one place.
+    /// copied beside a manifest whose `waterui` dependency resolves the
+    /// enclosing checkout by path, so the revision lives in one place.
     ///
     /// The fixture lives under `target/test-fixtures/` rather than a tempdir:
     /// its `cargo build --lib` compiles the pinned framework's graph, which is
@@ -501,9 +501,7 @@ mod tests {
     ///
     /// The returned file handle is a held lock covering the fixture for the
     /// whole test: a second caller's restage waits rather than wiping `crate/`
-    /// under this one's build. `crate/Cargo.lock` survives the wipe on
-    /// purpose — it is a build artifact, not fixture content, and regenerating
-    /// it re-resolves the pinned git dependency on every retry.
+    /// under this one's build.
     fn web_meta_fixture() -> (PathBuf, std::fs::File) {
         let sources = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/web_meta");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures/web-meta");
@@ -530,21 +528,12 @@ mod tests {
             }
             .expect("a stale fixture entry is removable");
         }
-        // `crate/` itself is wiped too, except `Cargo.lock` — the one build
-        // artifact worth keeping across a restage.
+        // `crate/` itself is wiped too — its `Cargo.lock` is re-seeded from
+        // the checkout's below rather than kept, so a lock the first build
+        // resolved cannot pin the checkout's git-pinned split crates to a
+        // stale `dev` commit (#3577).
         if staged.is_dir() {
-            for entry in std::fs::read_dir(&staged).expect("the staged crate is readable") {
-                let path = entry.expect("a staged entry is readable").path();
-                if path == staged.join("Cargo.lock") {
-                    continue;
-                }
-                if path.is_dir() {
-                    std::fs::remove_dir_all(&path)
-                } else {
-                    std::fs::remove_file(&path)
-                }
-                .expect("a stale staged entry is removable");
-            }
+            std::fs::remove_dir_all(&staged).expect("the staged crate is removable");
         }
         fs_extra::dir::copy(
             &sources,
@@ -556,6 +545,39 @@ mod tests {
         .expect("the fixture sources copy");
         std::fs::write(staged.join("Cargo.toml"), web_meta_manifest())
             .expect("the manifest is written");
+        // The fixture is built with plain `cargo`, so the deployment targets
+        // its `Water.toml` declares reach the build the way they reach a
+        // project's own `cargo` commands: through the generated
+        // `.cargo/config.toml`.
+        let declared = crate::project::Manifest::parse(
+            &std::fs::read_to_string(staged.join("Water.toml")).expect("the fixture Water.toml"),
+        )
+        .expect("the fixture Water.toml parses")
+        .apple()
+        .deployment_targets()
+        .clone();
+        let cargo_config = futures_lite::future::block_on(async {
+            crate::framework::ResolvedFramework::for_local_checkout(
+                &crate::toolchain::Host::current(),
+                &crate::pinned_framework::checkout(),
+            )
+            .await
+            .expect("the pinned framework resolves")
+            .cargo_config(&staged, &declared)
+            .await
+            .expect("the fixture's deployment targets resolve")
+        });
+        std::fs::create_dir_all(staged.join(".cargo")).expect("the cargo config directory");
+        std::fs::write(staged.join(".cargo/config.toml"), cargo_config.to_string())
+            .expect("the cargo config is written");
+        // The staged lock starts from the checkout's — the fixture build
+        // runs without `--locked`, so Cargo prunes it to the fixture's graph
+        // while keeping every version the checkout records.
+        std::fs::copy(
+            crate::pinned_framework::checkout().join("Cargo.lock"),
+            staged.join("Cargo.lock"),
+        )
+        .expect("the fixture lock seeds from the checkout's");
         (fixture, restage_lock)
     }
 
@@ -606,12 +628,8 @@ mod tests {
         // (e.g. `waterui-image`) otherwise resolves registry copies of
         // framework crates, and every `View` becomes a different type on
         // either side.
-        let members = crate::project_model::framework::checkout_member_packages(&checkout)
-            .expect("the checkout's workspace members resolve");
-        let patches = crate::project_model::templates::local_framework_patches(
-            &checkout, &checkout, &members,
-        )
-        .expect("the framework patch set resolves");
+        let patches = crate::framework::checkout_patch_tables(&checkout)
+            .expect("the framework patch set resolves");
         let patch = toml::Value::try_from(&patches)
             .expect("the patch set serializes")
             .as_table()

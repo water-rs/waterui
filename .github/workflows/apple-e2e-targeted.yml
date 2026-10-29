@@ -198,7 +198,7 @@ jobs:
           path: cli-bin/bin
       - run: chmod +x cli-bin/bin/compare-screenshots
 
-      - name: Boot iOS simulator
+      - name: Select iOS simulator
         run: |
           set -euo pipefail
           simulator_udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')"
@@ -207,32 +207,10 @@ jobs:
             exit 1
           fi
           echo "SIMULATOR_UDID=${simulator_udid}" >> "${GITHUB_ENV}"
-          xcrun simctl boot "${simulator_udid}" || true
-          xcrun simctl bootstatus "${simulator_udid}" -b
-          # An iOS capture is the whole display (macOS captures the app's own
-          # window), so a SpringBoard notification banner lands in the frame and
-          # reads as a divergence from the app's own baseline and from the
-          # SwiftUI twin. Booting out the delivery daemon stops every banner for
-          # this boot; the device is created fresh per run, so nothing persists.
-          xcrun simctl spawn "${simulator_udid}" \
-            launchctl bootout system/com.apple.usernotificationsd 2>/dev/null || true
-          # The capture is compared pixel-by-pixel; pin the status bar so the
-          # clock and battery do not diff against the baseline.
-          xcrun simctl status_bar "${simulator_udid}" override \
-            --time "9:41" \
-            --batteryState charged \
-            --batteryLevel 100 \
-            --cellularMode active \
-            --cellularBars 4 \
-            --wifiBars 3
 
       # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
       - name: Set up modern bash
         uses: ./.github/actions/setup-bash
-
-      - name: Prepare comparison tools
-        uses: ./.github/actions/setup-e2e-tools
-        timeout-minutes: 1
 
       - name: Run iOS e2e examples
         env:
@@ -327,10 +305,6 @@ jobs:
       # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
       - name: Set up modern bash
         uses: ./.github/actions/setup-bash
-
-      - name: Prepare comparison tools
-        uses: ./.github/actions/setup-e2e-tools
-        timeout-minutes: 1
 
       - name: Install the screenshot comparer
         uses: actions/download-artifact@v4

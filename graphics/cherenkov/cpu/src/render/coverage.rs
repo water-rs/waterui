@@ -330,6 +330,7 @@ pub struct Compiler {
     height: usize,
     edges: usize,
     cells: Table<RowCells>,
+    #[cfg(not(feature = "bounded-bins"))]
     verticals: Table<Vertical>,
 }
 
@@ -341,6 +342,11 @@ impl Compiler {
 
     /// Reserves one allocation for a band or filter window.
     pub fn reserve(&mut self, width: usize, edges: usize, height: usize) {
+        #[cfg(feature = "bounded-bins")]
+        let edges = {
+            let _ = edges;
+            0
+        };
         if width <= self.width
             && height <= self.height
             && edges <= self.edges
@@ -356,6 +362,9 @@ impl Compiler {
         let len = words(self.edges, size_of::<Vertical>())
             + words(self.height, size_of::<RowCells>())
             + self.height * (words(row, size_of::<Cell>()) + row.div_ceil(64));
+        // Firmware reserves only the required rows, without Vec's geometric growth slack.
+        #[cfg(feature = "bounded-bins")]
+        self.storage.reserve_exact(len - self.storage.len());
         self.storage.resize(len, MaybeUninit::uninit());
         let mut remaining = self.storage.as_mut_slice();
         // SAFETY: every table element has alignment at most u64.
@@ -365,7 +374,10 @@ impl Compiler {
         // RowCells contains only non-owning tables and scalar state, so none
         // of the bound elements needs destruction before rebinding.
         unsafe {
-            self.verticals = Table::bind(&mut remaining, self.edges);
+            #[cfg(not(feature = "bounded-bins"))]
+            {
+                self.verticals = Table::bind(&mut remaining, self.edges);
+            }
             self.cells = Table::bind(&mut remaining, self.height);
             for _ in 0..self.height {
                 self.cells.push(RowCells {
@@ -388,6 +400,7 @@ impl Compiler {
     )]
     pub fn prepare(&mut self, source: &EdgeTiles, offset: Fixed, rows: Range<usize>, width: usize) {
         self.reserve(width, source.vertical_capacity(rows.len() > 16), rows.len());
+        #[cfg(not(feature = "bounded-bins"))]
         self.verticals.clear();
         for cells in &mut self.cells[..rows.len()] {
             cells.resize(width);
@@ -406,6 +419,7 @@ impl Compiler {
                 if x >= width as f64 * 65536.0 {
                     return;
                 }
+                #[cfg(not(feature = "bounded-bins"))]
                 self.verticals.push(Vertical {
                     x: x as i64,
                     top: ya,
@@ -441,7 +455,7 @@ impl Compiler {
                 next = row;
             }
         }
-        for edge in &*self.verticals {
+        let mut deposit = |edge: &Vertical| {
             let mut row = ((edge.top - top) / ONE) as usize;
             let mut a = edge.top;
             while a < edge.bottom {
@@ -450,7 +464,22 @@ impl Compiler {
                 row = self.cells[row].next;
                 a = top + row as i64 * ONE;
             }
+        };
+        #[cfg(not(feature = "bounded-bins"))]
+        for edge in &*self.verticals {
+            deposit(edge);
         }
+        #[cfg(feature = "bounded-bins")]
+        source.visit(top - oy, bottom - oy, |edge| {
+            if edge.slope == 0.0 && edge.x + (ox as f64) < width as f64 * 65536.0 {
+                deposit(&Vertical {
+                    x: (edge.x + ox as f64) as i64,
+                    top: (edge.top() + oy).max(top),
+                    bottom: (edge.bottom + oy).min(bottom),
+                    sign: edge.sign(),
+                });
+            }
+        });
     }
 
     pub fn rows(&mut self, height: usize, mut emit: impl FnMut(usize, Range<usize>, Run<'_>)) {
@@ -524,6 +553,26 @@ mod tests {
     use super::super::raster::Edge;
     use super::*;
     use cherenkov_oracle::metrics::assert_close;
+
+    #[cfg(feature = "bounded-bins")]
+    #[test]
+    fn band_scratch_does_not_grow_with_boundary_count() {
+        let mut compiler = Compiler::default();
+        let mut bytes = None;
+        for count in [2, 128, 8192] {
+            let edges: Vec<_> = (0..count)
+                .map(|i| {
+                    let x = i * ONE / count;
+                    IntegerEdge::new(x, 0, x, 16 * ONE)
+                })
+                .collect();
+            let source = EdgeTiles::from_boundaries(&edges);
+            compiler.prepare(&source, Fixed::new([0.25, 0.5]), 0..16, 64);
+            let allocated = compiler.heap_bytes();
+            assert_eq!(*bytes.get_or_insert(allocated), allocated);
+            compiler.rows(16, |_, _, _| {});
+        }
+    }
 
     #[expect(clippy::float_cmp, reason = "drop exactly horizontal test edges")]
     fn polygon(points: &[(f32, f32)]) -> Vec<Edge> {

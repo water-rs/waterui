@@ -26,6 +26,7 @@ impl<T> Default for Table<T> {
 unsafe impl<T: Send> Send for Table<T> {}
 
 impl<T> Table<T> {
+    #[cfg(not(feature = "bounded-bins"))]
     pub(super) const fn clear(&mut self) {
         self.len = 0;
     }

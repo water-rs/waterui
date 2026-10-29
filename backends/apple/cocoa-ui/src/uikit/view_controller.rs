@@ -7,6 +7,9 @@
 //! extends. Every override has the signature `UIViewController` declares, and
 //! `UIKit` calls them on the main thread.
 
+#[cfg(feature = "native-test")]
+use std::cell::Cell;
+
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_foundation::{NSBundle, NSObjectProtocol, NSString};
@@ -19,6 +22,33 @@ use crate::callback::guarded;
 #[derive(Debug)]
 pub struct ViewControllerIvars {
     view: Retained<HostView>,
+    /// The appearance deliveries `UIKit` has made — the counter the
+    /// `native-test` harness reads; a production controller records
+    /// nothing.
+    #[cfg(feature = "native-test")]
+    appearance: Cell<AppearanceCounts>,
+}
+
+/// How many times `UIKit` has delivered each appearance transition to a
+/// [`ViewController`] — `viewWillAppear:`, `viewDidAppear:`,
+/// `viewWillDisappear:` and `viewDidDisappear:`.
+///
+/// `native-test` only: `UIKit` ends an appearance transition on a later
+/// run-loop turn than the `will` that opened it, so a harness counts the
+/// deliveries to prove the transition ran to completion. A controller
+/// whose window is gone reports
+/// `will_appear == did_appear == will_disappear == did_disappear`.
+#[cfg(feature = "native-test")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AppearanceCounts {
+    /// `viewWillAppear:` deliveries.
+    pub will_appear: u32,
+    /// `viewDidAppear:` deliveries.
+    pub did_appear: u32,
+    /// `viewWillDisappear:` deliveries.
+    pub will_disappear: u32,
+    /// `viewDidDisappear:` deliveries.
+    pub did_disappear: u32,
 }
 
 define_class!(
@@ -54,6 +84,49 @@ define_class!(
             });
         }
 
+        // SAFETY: see the module safety note.
+        #[cfg(feature = "native-test")]
+        #[unsafe(method(viewWillAppear:))]
+        fn view_will_appear(&self, animated: bool) {
+            guarded("ViewController viewWillAppear:", || {
+                // SAFETY: see the module safety note.
+                let () = unsafe { msg_send![super(self), viewWillAppear: animated] };
+                self.count_appearance(|counts| counts.will_appear += 1);
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[cfg(feature = "native-test")]
+        #[unsafe(method(viewDidAppear:))]
+        fn view_did_appear(&self, animated: bool) {
+            guarded("ViewController viewDidAppear:", || {
+                // SAFETY: see the module safety note.
+                let () = unsafe { msg_send![super(self), viewDidAppear: animated] };
+                self.count_appearance(|counts| counts.did_appear += 1);
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[cfg(feature = "native-test")]
+        #[unsafe(method(viewWillDisappear:))]
+        fn view_will_disappear(&self, animated: bool) {
+            guarded("ViewController viewWillDisappear:", || {
+                // SAFETY: see the module safety note.
+                let () = unsafe { msg_send![super(self), viewWillDisappear: animated] };
+                self.count_appearance(|counts| counts.will_disappear += 1);
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[cfg(feature = "native-test")]
+        #[unsafe(method(viewDidDisappear:))]
+        fn view_did_disappear(&self, animated: bool) {
+            guarded("ViewController viewDidDisappear:", || {
+                // SAFETY: see the module safety note.
+                let () = unsafe { msg_send![super(self), viewDidDisappear: animated] };
+                self.count_appearance(|counts| counts.did_disappear += 1);
+            });
+        }
     }
 );
 
@@ -67,7 +140,11 @@ impl ViewController {
     /// [`window_root`]: crate::uikit::window_root
     #[must_use]
     pub fn new(mtm: MainThreadMarker, view: Retained<HostView>) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(ViewControllerIvars { view });
+        let this = Self::alloc(mtm).set_ivars(ViewControllerIvars {
+            view,
+            #[cfg(feature = "native-test")]
+            appearance: Cell::new(AppearanceCounts::default()),
+        });
         // SAFETY: `initWithNibName:bundle:` is `UIViewController`'s designated
         // initializer; no nib means the view comes from `loadView`.
         unsafe {
@@ -83,6 +160,23 @@ impl ViewController {
     #[must_use]
     pub fn host_view(&self) -> &HostView {
         &self.ivars().view
+    }
+
+    /// Bumps one counter in this controller's [`AppearanceCounts`].
+    #[cfg(feature = "native-test")]
+    fn count_appearance(&self, bump: impl FnOnce(&mut AppearanceCounts)) {
+        let mut counts = self.ivars().appearance.get();
+        bump(&mut counts);
+        self.ivars().appearance.set(counts);
+    }
+
+    /// How many of each appearance transition `UIKit` has delivered to
+    /// this controller — the `native-test` read a harness balances a
+    /// mount against.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn appearance_counts(&self) -> AppearanceCounts {
+        self.ivars().appearance.get()
     }
 }
 

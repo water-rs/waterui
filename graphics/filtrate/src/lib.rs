@@ -77,6 +77,8 @@ compile_error!(
 );
 
 mod aux_image;
+#[cfg(feature = "gpu")]
+mod compile;
 mod cpu;
 #[cfg(feature = "gpu")]
 pub mod effect;

@@ -748,13 +748,16 @@ pub struct HydrolysisAndroidBuild {
 pub async fn build(
     project: &Project,
     abi: AndroidAbi,
+    painter: HydrolysisAndroidPainter,
     options: BuildOptions,
     kotlin: &KotlinToolchain,
 ) -> eyre::Result<BuiltTarget> {
     prepare_for_build(project).await?;
-    Ok(build_prepared_into_jni_libs(project, abi, options, kotlin)
-        .await?
-        .built)
+    Ok(
+        build_prepared_into_jni_libs(project, abi, painter, options, kotlin)
+            .await?
+            .built,
+    )
 }
 
 /// [`build_prepared`] without extra features, then the cdylib staged where
@@ -767,10 +770,11 @@ pub async fn build(
 pub(crate) async fn build_prepared_into_jni_libs(
     project: &Project,
     abi: AndroidAbi,
+    painter: HydrolysisAndroidPainter,
     options: BuildOptions,
     kotlin: &KotlinToolchain,
 ) -> eyre::Result<HydrolysisAndroidBuild> {
-    let build = build_prepared(project, abi, options.clone(), &[], kotlin).await?;
+    let build = build_prepared(project, abi, painter, options.clone(), &[], kotlin).await?;
     copy_build_outputs(project, &options, abi, &build.context, &build.built).await?;
     Ok(build)
 }
@@ -790,12 +794,13 @@ pub(crate) async fn build_prepared_into_jni_libs(
 pub async fn build_with_features(
     project: &Project,
     abi: AndroidAbi,
+    painter: HydrolysisAndroidPainter,
     options: BuildOptions,
     features: &[&str],
     kotlin: &KotlinToolchain,
 ) -> eyre::Result<HydrolysisAndroidBuild> {
     prepare_for_build(project).await?;
-    build_prepared(project, abi, options, features, kotlin).await
+    build_prepared(project, abi, painter, options, features, kotlin).await
 }
 
 /// The ABI-independent prologue of [`build`]: validate the app's browser
@@ -843,6 +848,7 @@ pub(crate) async fn prepare_for_build(project: &Project) -> eyre::Result<()> {
 pub(crate) async fn build_prepared(
     project: &Project,
     abi: AndroidAbi,
+    painter: HydrolysisAndroidPainter,
     options: BuildOptions,
     features: &[&str],
     kotlin: &KotlinToolchain,
@@ -862,11 +868,14 @@ pub(crate) async fn build_prepared(
         .android_min_api_level()?;
     let context = resolve_android_build_context(host, abi, &triple, min_api_level, kotlin).await?;
 
+    // The painter's feature is the launcher's own `gpu`/`hwui` selection —
+    // the manifest routes it onto `hydrolysis` and `waterui`, so a `hwui`
+    // painter links no GPU stack at all.
     let rust_build = RustBuild::for_project(project, &backend_path, triple.clone())
         .with_crate_type_override("cdylib")
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG)
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
-        .with_features(features.iter().copied())
+        .with_features(std::iter::once(painter.name()).chain(features.iter().copied()))
         .with_envs(options.cargo_envs().iter().cloned())
         .with_envs(resolve_windows_arm64_llvm_envs(host).await?);
     let launcher_manifest = backend_path.join("Cargo.toml");

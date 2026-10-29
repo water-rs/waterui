@@ -456,6 +456,7 @@ async fn execute_build(
                     waterui_cli::hydrolysis::android::build(
                         &project,
                         abi,
+                        waterui_cli::hydrolysis::android::resolve_painter(&project, None),
                         context.build_options.clone(),
                         kotlin()?,
                     )

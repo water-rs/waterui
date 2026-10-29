@@ -78,6 +78,7 @@ pub struct IconOnlyButtonLabel;
 
 impl waterui::Plugin for IconOnlyButtonLabel {}
 
+#[cfg(hydrolysis_runtime)]
 use waterui::{
     Environment, Plugin,
     color::{Srgb, WorkingColor},
@@ -90,6 +91,7 @@ use waterui::{
 /// Not a theme: the opaque colour slots a bare application resolves when
 /// neither a style package nor the application installs its own. The scrim
 /// is the same in both schemes and is not part of it.
+#[cfg(hydrolysis_runtime)]
 struct Palette {
     background: u32,
     surface: u32,
@@ -109,6 +111,7 @@ struct Palette {
 }
 
 /// Dark content on light surfaces.
+#[cfg(hydrolysis_runtime)]
 const LIGHT: Palette = Palette {
     background: 0xFF_FF_FF,
     surface: 0xFF_FF_FF,
@@ -130,6 +133,7 @@ const LIGHT: Palette = Palette {
 /// Light content on dark surfaces, from the same neutral, blue, violet and
 /// red ramps as [`LIGHT`]: the fills lighten so they keep their contrast
 /// against the dark background, and the content drawn on them darkens.
+#[cfg(hydrolysis_runtime)]
 const DARK: Palette = Palette {
     background: 0x11_18_27,
     surface: 0x1F_29_37,
@@ -148,6 +152,7 @@ const DARK: Palette = Palette {
     error_foreground: 0x45_0A_0A,
 };
 
+#[cfg(hydrolysis_runtime)]
 const fn palette(scheme: ColorScheme) -> &'static Palette {
     match scheme {
         ColorScheme::Light => &LIGHT,
@@ -155,16 +160,35 @@ const fn palette(scheme: ColorScheme) -> &'static Palette {
     }
 }
 
+#[cfg(hydrolysis_runtime)]
 fn color(rgb: u32) -> WorkingColor {
     Srgb::from_u32(rgb).resolve()
 }
 
 /// One palette slot as a signal over `scheme`: a scheme change re-resolves
 /// exactly the views that read the slot.
+#[cfg(hydrolysis_runtime)]
 fn slot(scheme: &Computed<ColorScheme>, pick: fn(&Palette) -> u32) -> Computed<WorkingColor> {
     scheme
         .map(move |scheme| color(pick(palette(scheme))))
         .computed()
+}
+
+/// Writes `resolved` into `scheme`, only when it moved.
+///
+/// The host's appearance feeds reach the scheme binding through this seam —
+/// winit's theme reports on Windows, the portal's `color-scheme` on Linux —
+/// and a report repeating the held scheme writes nothing, so the token
+/// slots never re-resolve for a report that moved nothing.
+#[cfg(any(
+    test,
+    all(hydrolysis_winit, any(target_os = "windows", target_os = "linux"))
+))]
+pub(crate) fn sync_color_scheme(scheme: &nami::Binding<ColorScheme>, resolved: ColorScheme) {
+    use nami::Signal as _;
+    if scheme.snapshot() != resolved {
+        scheme.set(resolved);
+    }
 }
 
 /// Assembles the runtime environment's theme tokens in precedence order:
@@ -185,6 +209,7 @@ fn slot(scheme: &Computed<ColorScheme>, pick: fn(&Palette) -> u32) -> Computed<W
 /// colours binding `installed_color_scheme` — sees the application's
 /// installed values. The application's entries are then layered back on top,
 /// so a `Theme` it installed is never replaced.
+#[cfg(hydrolysis_runtime)]
 pub(crate) fn install_theme_tokens(
     env: &mut Environment,
     style: Option<&dyn crate::Style>,
@@ -229,6 +254,7 @@ pub(crate) fn install_theme_tokens(
 /// This is the `None`-style arm of `install_theme_tokens`. External test
 /// harnesses (`waterui-testing`) call this; the runners go through
 /// `install_theme_tokens`.
+#[cfg(hydrolysis_runtime)]
 pub fn install_default_tokens(env: &mut Environment) {
     install_theme_tokens(env, None, ColorScheme::Light);
 }

@@ -1,0 +1,12 @@
+[package]
+name = "web-meta"
+bundle_identifier = "dev.waterui.webmeta"
+
+# `include_web!` installs a navigation policy, which compiles only at Apple OS
+# 27 or newer.
+[apple.deployment-targets]
+macos = "27.0"
+ios = "27.0"
+tvos = "27.0"
+watchos = "27.0"
+visionos = "27.0"

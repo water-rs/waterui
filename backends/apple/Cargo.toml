@@ -291,7 +291,7 @@ ignored = ["cfg_aliases", "waterkit-build"]
 
 [dev-dependencies]
 block2 = { workspace = true }
-criterion = "0.8.2"
+divan = "0.1"
 pollster = { workspace = true }
 libtest-mimic = "0.8"
 serde_json = { workspace = true }

@@ -4,11 +4,12 @@ use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
 use waterui_core::{Environment, Native};
 use waterui_graphics::color::Color;
-use waterui_graphics::{
-    ExternalFrameView, FilteredView, GpuContentView, Gradient, SceneView, resolve_scene_proposal,
-};
+#[cfg(hydrolysis_gpu)]
+use waterui_graphics::{ExternalFrameView, GpuContentView};
+use waterui_graphics::{FilteredView, Gradient, SceneView, resolve_scene_proposal};
 use waterui_shape::{ResolvedMorphShape, ResolvedShape};
 
+#[cfg(hydrolysis_gpu)]
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<GpuContentView> {
     fn intrinsic(
         _state: &mut HydroState<E>,
@@ -34,6 +35,7 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<GpuContentView> {
     }
 }
 
+#[cfg(hydrolysis_gpu)]
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ExternalFrameView> {
     fn intrinsic(
         _state: &mut HydroState<E>,

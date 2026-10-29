@@ -833,10 +833,12 @@ async fn build_hydrolysis_web_bundle(
     // the build-cache collector's reach for the compile, the same guard
     // `RustBuild` holds for the native builds.
     let target_dir = project.water_target_dir(RustLinkage::Static).await?;
-    let _target_lease = crate::water_dir::lease_shared_target_dir(
-        &crate::water_dir::shared_target_dir(host).await?,
-    )
-    .await?;
+    let shared_root = crate::water_dir::shared_target_dir_path(host).await?;
+    let _target_lease = if target_dir.starts_with(&shared_root) {
+        Some(crate::water_dir::lease_shared_target_dir(&shared_root).await?)
+    } else {
+        None
+    };
 
     let mut wasm_pack_cmd = host.command(wasm_pack)?;
     let wasm_pack_cmd = command(&mut wasm_pack_cmd, host.std_output());

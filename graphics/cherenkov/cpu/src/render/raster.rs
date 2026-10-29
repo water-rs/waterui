@@ -12,8 +12,9 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cherenkov::FillRule;
+use cherenkov_simd::math::erf4;
 
-use crate::render::bins::{FrameIndex, FrameMeter};
+use crate::render::bins::{FrameIndex, FrameMeter, Selection, SelectionBuffer};
 use crate::render::lower::{
     BoxClip, CaptureItem, ClipMask, ClipRef, FrameFilter, IRect, Item, SampleEffect, SdfEffect,
     SdfKind, UnionSample,
@@ -23,8 +24,12 @@ use crate::render::shadow;
 use crate::render::tiles::EdgeTiles;
 use crate::{Band as BandOut, BandPixels};
 use cherenkov::OffscreenFormat;
-use fearless_simd::{Simd, SimdBase, SimdInterleaved, f32x4};
-use filtrate_core::space::{P3_TO_SRGB, SRGB_TO_P3, srgb_decode, srgb_encode};
+use cherenkov_simd::math::{exp4, ln4};
+use fearless_simd::{Select, Simd, SimdBase, SimdInterleaved, f32x4};
+use filtrate_core::space::{
+    P3_TO_SRGB, SRGB_ENCODED_BREAK, SRGB_GAMMA, SRGB_INVERSE_GAMMA, SRGB_LINEAR_BREAK, SRGB_OFFSET,
+    SRGB_SCALE, SRGB_SLOPE, SRGB_TO_P3,
+};
 use filtrate_core::{CpuFilterError, CpuImage, WorkingSpace};
 
 /// Rows per rasterization band.
@@ -72,7 +77,7 @@ struct Buffers {
     meter: Meter,
     /// Expanded-window query scratch: each `run` depth's item selection.
     /// Slots keep their capacity across sibling scopes and bands.
-    sel_items: Vec<Vec<usize>>,
+    sel_items: Vec<SelectionBuffer>,
     /// The capacity each charged slot has been accounted for, in
     /// cells — a selection's capacity only grows, so the delta is the
     /// heap growth. Index `sel_items.len()` is the outer Vec's charge.
@@ -557,11 +562,12 @@ impl Buffers {
     /// The `depth` slot's item-selection buffer, cleared for reuse.
     /// Charges growth of the retained bookkeeping heap — the slot Vec
     /// and the charge table — to `meter`.
-    fn take_sel_items(&mut self, depth: usize, meter: Option<&FrameMeter>) -> Vec<usize> {
+    fn take_sel_items(&mut self, depth: usize, meter: Option<&FrameMeter>) -> SelectionBuffer {
         if self.sel_items.len() <= depth {
-            self.sel_items.resize_with(depth + 1, Vec::new);
+            self.sel_items
+                .resize_with(depth + 1, SelectionBuffer::default);
             self.sel_charge.resize(depth + 1, 0);
-            let book = self.sel_items.capacity() * size_of::<Vec<usize>>()
+            let book = self.sel_items.capacity() * size_of::<SelectionBuffer>()
                 + self.sel_charge.capacity() * size_of::<usize>();
             if book > self.sel_items_charge {
                 sel_alloc((book - self.sel_items_charge) as u64, meter);
@@ -576,7 +582,12 @@ impl Buffers {
     /// Charges `buf`'s capacity growth on the `depth` slot to `meter`.
     /// Called right after the query fills `buf`, while the selection is
     /// live — before the recursive run or draw consumes it.
-    fn charge_sel_items(&mut self, depth: usize, buf: &Vec<usize>, meter: Option<&FrameMeter>) {
+    fn charge_sel_items(
+        &mut self,
+        depth: usize,
+        buf: &SelectionBuffer,
+        meter: Option<&FrameMeter>,
+    ) {
         let charged = &mut self.sel_charge[depth];
         if buf.capacity() > *charged {
             sel_alloc(
@@ -589,13 +600,10 @@ impl Buffers {
 
     /// Returns a selection to its slot: restores ownership only; the
     /// charge was taken when the buffer filled.
-    fn give_sel_items(&mut self, depth: usize, buf: Vec<usize>) {
+    fn give_sel_items(&mut self, depth: usize, buf: SelectionBuffer) {
         self.sel_items[depth] = buf;
     }
 }
-
-/// Sample count of the shadow y-quadrature (the GPU uses the same).
-const SHADOW_N: usize = 16;
 
 /// A directed edge in device space.
 #[derive(Clone, Copy, Debug)]
@@ -633,40 +641,6 @@ fn corner_inset(r: f32, dy: f32) -> f32 {
     r - (r * r - dd * dd).max(0.0).sqrt()
 }
 
-/// The shadow kernel's four-lane coverage at `x0`: one pixel centre per
-/// lane, each computed independently as `(x as f32 + 0.5) - cx`; a 1–3-lane
-/// tail pads with the first lane's valid centre and its outputs are never
-/// read.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "pixel indices and band offsets are far below 2^24"
-)]
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
-)]
-#[inline(always)]
-fn shadow_coverage4<S: Simd>(
-    simd: S,
-    cx: f32,
-    inv_sqrt2_sigma: f32,
-    x0: usize,
-    lanes: usize,
-    samples: &[shadow::Sample],
-) -> [f32; 4] {
-    let mut centres = [(x0 as f32 + 0.5) - cx; 4];
-    for (j, c) in centres.iter_mut().enumerate().take(lanes) {
-        *c = (x0 + j) as f32 + 0.5 - cx;
-    }
-    shadow::integral4(
-        simd,
-        f32x4::load_array(simd, centres),
-        inv_sqrt2_sigma,
-        samples,
-    )
-    .to_array()
-}
-
 /// The shadow's premultiplied source at coverage `cov` under clip `cc`.
 #[expect(
     clippy::inline_always,
@@ -683,11 +657,19 @@ fn shadow_src(color: &[f32; 4], cov: f32, cc: f32) -> [f32; 4] {
     ]
 }
 
-/// Composites the edge columns `from..to` of shadow row `y` — the columns
-/// whose x-integral does not saturate — under `clip_mask`.
+/// Composites a run of shadow rows (rows with the same x intervals): the
+/// edge columns, whose x integrals do not saturate, evaluate each
+/// interval once per four pixels for every row of the run; the interior
+/// columns between them take each row's weight sum. Writes are gated by
+/// `clip_mask`.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the row's shared context travels together"
+    reason = "the item's shared context travels together"
+)]
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    reason = "pixel indices and band offsets are far below 2^24"
 )]
 #[expect(
     clippy::option_if_let_else,
@@ -699,44 +681,93 @@ fn shadow_src(color: &[f32; 4], cov: f32, cc: f32) -> [f32; 4] {
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn shadow_edge<S: Simd>(
+fn shadow_run<S: Simd>(
     simd: S,
     dst: &mut [[f32; 4]],
     w: usize,
-    y: usize,
-    py: usize,
+    y0: usize,
     cx: f32,
     inv_sqrt2_sigma: f32,
+    margin: f32,
     clip_mask: Option<ClipCoverage<'_>>,
-    color: &[f32; 4],
-    space: cherenkov::BlendSpace,
-    from: usize,
-    to: usize,
-    samples: &[shadow::Sample],
+    stored: &[f32; 4],
+    (cx_lo, cx_hi): (usize, usize),
+    run: &shadow::Run,
+    integrals: &mut shadow::Integrals<S>,
 ) {
-    let mut x = from;
-    while x < to {
-        let lanes = (to - x).min(4);
-        for (j, cov) in shadow_coverage4(simd, cx, inv_sqrt2_sigma, x, lanes, samples)
-            .into_iter()
-            .enumerate()
-            .take(lanes)
-        {
-            if cov <= 0.0 {
-                continue;
+    // Interior columns: `px >= xlm + margin` saturates every
+    // `erf((xl-px)*is)` at -1 and `px <= xrm - margin` saturates every
+    // `erf((xr-px)*is)` at +1, so `cov = s` for all of them.
+    let x_in_lo = usize::try_from((cx + run.xlm + margin - 0.5).ceil() as i32)
+        .unwrap_or(0)
+        .clamp(cx_lo, cx_hi);
+    let x_in_hi = usize::try_from((cx + run.xrm - margin + 0.5).floor() as i32 + 1)
+        .unwrap_or(0)
+        .clamp(x_in_lo, cx_hi);
+    for (from, to) in [(cx_lo, x_in_lo), (x_in_hi, cx_hi)] {
+        let mut x = from;
+        while x < to {
+            // One pixel centre per lane, each `(x as f32 + 0.5) - cx`; a
+            // 1–3-lane tail pads with the first lane's centre and its
+            // outputs are never read.
+            let lanes = (to - x).min(4);
+            let mut centres = [(x as f32 + 0.5) - cx; 4];
+            for (j, c) in centres.iter_mut().enumerate().take(lanes) {
+                *c = (x + j) as f32 + 0.5 - cx;
             }
-            let x = x + j;
+            // The same saturation per group: columns at least `margin`
+            // inside every right (left) edge skip the right (left) `erf`.
+            let sides = match (
+                centres[0] < run.xlm + margin,
+                centres[lanes - 1] > run.xrm - margin,
+            ) {
+                (true, false) => shadow::Sides::Left,
+                (false, true) => shadow::Sides::Right,
+                _ => shadow::Sides::Both,
+            };
+            run.integrals4(
+                simd,
+                f32x4::load_array(simd, centres),
+                inv_sqrt2_sigma,
+                sides,
+                integrals,
+            );
+            for (i, (y, _)) in run.rows().enumerate() {
+                for (j, cov) in run
+                    .coverage4(simd, i, integrals)
+                    .to_array()
+                    .into_iter()
+                    .enumerate()
+                    .take(lanes)
+                {
+                    if cov <= 0.0 {
+                        continue;
+                    }
+                    let x = x + j;
+                    let cc = match clip_mask {
+                        Some(m) => clip_cov(Some(m), w, x, y0 + y),
+                        None => 1.0,
+                    };
+                    if cc <= 0.0 {
+                        continue;
+                    }
+                    dst[y * w + x] = src_over(dst[y * w + x], shadow_src(stored, cov, cc));
+                }
+            }
+            x += 4;
+        }
+    }
+    for (y, s) in run.rows() {
+        for x in x_in_lo..x_in_hi {
             let cc = match clip_mask {
-                Some(m) => clip_cov(Some(m), w, x, py),
+                Some(m) => clip_cov(Some(m), w, x, y0 + y),
                 None => 1.0,
             };
             if cc <= 0.0 {
                 continue;
             }
-            let src = shadow_src(color, cov, cc);
-            dst[y * w + x] = src_over(dst[y * w + x], member(src, space));
+            dst[y * w + x] = src_over(dst[y * w + x], shadow_src(stored, s, cc));
         }
-        x += 4;
     }
 }
 
@@ -1259,19 +1290,36 @@ fn capture_sample_level(capture: &Capture, x: f32, y: f32, level: f32) -> [f32; 
 }
 
 /// Convert a premultiplied pixel between linear and sRGB-encoded
-/// storage (`convert_pixel` in `paint.rs`).
-fn move_space(px: [f32; 4], from: cherenkov::BlendSpace, to: cherenkov::BlendSpace) -> [f32; 4] {
+/// storage.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn move_space<S: Simd>(
+    simd: S,
+    px: [f32; 4],
+    from: cherenkov::BlendSpace,
+    to: cherenkov::BlendSpace,
+) -> [f32; 4] {
     if from == to {
         px
+    } else if to == cherenkov::BlendSpace::SrgbEncoded {
+        convert_packed::<S, true>(simd, px)
     } else {
-        super::paint::convert_pixel(px, to == cherenkov::BlendSpace::SrgbEncoded)
+        convert_packed::<S, false>(simd, px)
     }
 }
 
 /// A member draw's linear premultiplied source in the level's storage
 /// space: members composite with each other in the level's space.
-fn member(px: [f32; 4], space: cherenkov::BlendSpace) -> [f32; 4] {
-    move_space(px, cherenkov::BlendSpace::Linear, space)
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn member<S: Simd>(simd: S, px: [f32; 4], space: cherenkov::BlendSpace) -> [f32; 4] {
+    move_space(simd, px, cherenkov::BlendSpace::Linear, space)
 }
 
 /// Composite `src` onto `dst` blending in `space`: each operand converts
@@ -1282,7 +1330,8 @@ fn member(px: [f32; 4], space: cherenkov::BlendSpace) -> [f32; 4] {
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn composite(
+fn composite<S: Simd>(
+    simd: S,
     mode: cherenkov::BlendMode,
     space: cherenkov::BlendSpace,
     dst_space: cherenkov::BlendSpace,
@@ -1291,10 +1340,11 @@ fn composite(
     src: [f32; 4],
 ) -> [f32; 4] {
     move_space(
+        simd,
         super::blend::blend(
             mode,
-            move_space(dst, dst_space, space),
-            move_space(src, src_space, space),
+            move_space(simd, dst, dst_space, space),
+            move_space(simd, src, src_space, space),
         ),
         space,
         dst_space,
@@ -1372,7 +1422,59 @@ fn matrix_pixel<S: Simd>(simd: S, m: &[[f32; 3]; 3], rgb: [f32; 4]) -> f32x4<S> 
     )
 }
 
-/// Converts one packed pixel with exact scalar transfer functions. Zero
+/// filtrate-core's `srgb_encode` on four channels: the sRGB curve of each
+/// linear magnitude, mirrored through zero, with `powf` evaluated as
+/// `exp(γ⁻¹·ln x)` under the dispatched level.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn srgb_encode4<S: Simd>(simd: S, linear: f32x4<S>) -> f32x4<S> {
+    let magnitude = simd.abs_f32x4(linear);
+    let power = exp4(
+        simd,
+        simd.mul_f32x4(ln4(simd, magnitude), simd.splat_f32x4(SRGB_INVERSE_GAMMA)),
+    );
+    let curve = simd.mul_add_f32x4(
+        power,
+        simd.splat_f32x4(SRGB_SCALE),
+        simd.splat_f32x4(-SRGB_OFFSET),
+    );
+    let line = simd.mul_f32x4(magnitude, simd.splat_f32x4(SRGB_SLOPE));
+    simd.copysign_f32x4(
+        simd.simd_gt_f32x4(magnitude, simd.splat_f32x4(SRGB_LINEAR_BREAK))
+            .select(curve, line),
+        linear,
+    )
+}
+
+/// filtrate-core's `srgb_decode` on four channels, the inverse of
+/// [`srgb_encode4`].
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn srgb_decode4<S: Simd>(simd: S, encoded: f32x4<S>) -> f32x4<S> {
+    let magnitude = simd.abs_f32x4(encoded);
+    let base = simd.div_f32x4(
+        simd.add_f32x4(magnitude, simd.splat_f32x4(SRGB_OFFSET)),
+        simd.splat_f32x4(SRGB_SCALE),
+    );
+    let curve = exp4(
+        simd,
+        simd.mul_f32x4(ln4(simd, base), simd.splat_f32x4(SRGB_GAMMA)),
+    );
+    let line = simd.div_f32x4(magnitude, simd.splat_f32x4(SRGB_SLOPE));
+    simd.copysign_f32x4(
+        simd.simd_gt_f32x4(magnitude, simd.splat_f32x4(SRGB_ENCODED_BREAK))
+            .select(curve, line),
+        encoded,
+    )
+}
+
+/// Converts one packed pixel with the vector transfer functions. Zero
 /// alpha returns before division or transfer evaluation; other alpha bits
 /// are retained unchanged.
 #[expect(
@@ -1392,30 +1494,92 @@ fn convert_packed<S: Simd, const ENCODE: bool>(simd: S, pixel: [f32; 4]) -> [f32
         )
         .to_array();
     let linear = if ENCODE {
-        let rgb = matrix_pixel(simd, &P3_TO_SRGB, straight).to_array();
-        f32x4::load_array(
-            simd,
-            [
-                srgb_encode(rgb[0]),
-                srgb_encode(rgb[1]),
-                srgb_encode(rgb[2]),
-                0.0,
-            ],
-        )
+        srgb_encode4(simd, matrix_pixel(simd, &P3_TO_SRGB, straight))
     } else {
         matrix_pixel(
             simd,
             &SRGB_TO_P3,
-            [
-                srgb_decode(straight[0]),
-                srgb_decode(straight[1]),
-                srgb_decode(straight[2]),
-                0.0,
-            ],
+            srgb_decode4(simd, f32x4::load_array(simd, straight)).to_array(),
         )
     };
     let out = simd.mul_f32x4(linear, simd.splat_f32x4(alpha)).to_array();
     [out[0], out[1], out[2], alpha]
+}
+
+/// `matrix_pixel` on four pixels held one channel per vector, with the
+/// same `(m0 * r + m1 * g) + m2 * b` order per output channel.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn matrix_quad<S: Simd>(simd: S, m: &[[f32; 3]; 3], rgb: [f32x4<S>; 3]) -> [f32x4<S>; 3] {
+    [
+        matrix_row(simd, &m[0], rgb),
+        matrix_row(simd, &m[1], rgb),
+        matrix_row(simd, &m[2], rgb),
+    ]
+}
+
+/// One output channel of [`matrix_quad`].
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn matrix_row<S: Simd>(simd: S, row: &[f32; 3], rgb: [f32x4<S>; 3]) -> f32x4<S> {
+    simd.add_f32x4(
+        simd.add_f32x4(
+            simd.mul_f32x4(simd.splat_f32x4(row[0]), rgb[0]),
+            simd.mul_f32x4(simd.splat_f32x4(row[1]), rgb[1]),
+        ),
+        simd.mul_f32x4(simd.splat_f32x4(row[2]), rgb[2]),
+    )
+}
+
+/// `convert_packed` on four pixels at once, one channel per vector, so
+/// every lane of the transfer functions carries a pixel. Each pixel's
+/// arithmetic is `convert_packed`'s. Returns the converted channel planes
+/// for `f32x4::store_four_interleaved`.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn convert_quad<S: Simd, const ENCODE: bool>(simd: S, group: &[[f32; 4]; 4]) -> [f32x4<S>; 4] {
+    let [r, g, b, alpha] = f32x4::load_four_interleaved(simd, group.as_flattened());
+    let straight = [
+        simd.div_f32x4(r, alpha),
+        simd.div_f32x4(g, alpha),
+        simd.div_f32x4(b, alpha),
+    ];
+    let rgb = if ENCODE {
+        let [r, g, b] = matrix_quad(simd, &P3_TO_SRGB, straight);
+        [
+            srgb_encode4(simd, r),
+            srgb_encode4(simd, g),
+            srgb_encode4(simd, b),
+        ]
+    } else {
+        let [r, g, b] = straight;
+        matrix_quad(
+            simd,
+            &SRGB_TO_P3,
+            [
+                srgb_decode4(simd, r),
+                srgb_decode4(simd, g),
+                srgb_decode4(simd, b),
+            ],
+        )
+    };
+    let zero = simd.splat_f32x4(0.0);
+    let transparent = simd.simd_eq_f32x4(alpha, zero);
+    [
+        transparent.select(zero, simd.mul_f32x4(rgb[0], alpha)),
+        transparent.select(zero, simd.mul_f32x4(rgb[1], alpha)),
+        transparent.select(zero, simd.mul_f32x4(rgb[2], alpha)),
+        transparent.select(zero, alpha),
+    ]
 }
 
 #[expect(
@@ -1423,16 +1587,44 @@ fn convert_packed<S: Simd, const ENCODE: bool>(simd: S, pixel: [f32; 4]) -> [f32
     reason = "compiled under the dispatched CPU level"
 )]
 #[inline(always)]
+#[expect(
+    clippy::float_cmp,
+    reason = "reuse a converted colour only when every source channel is equal"
+)]
 fn convert_span_in<S: Simd, const ENCODE: bool>(simd: S, pixels: &mut [[f32; 4]]) {
     let (chunks, tail) = pixels.as_chunks_mut::<4>();
     for group in chunks {
-        group[0] = convert_packed::<S, ENCODE>(simd, group[0]);
-        group[1] = convert_packed::<S, ENCODE>(simd, group[1]);
-        group[2] = convert_packed::<S, ENCODE>(simd, group[2]);
-        group[3] = convert_packed::<S, ENCODE>(simd, group[3]);
+        // Solid fills and clear regions need one transfer evaluation, not
+        // four identical evaluations. Varying pixels retain the wide path.
+        if group[1] == group[0] && group[2] == group[0] && group[3] == group[0] {
+            *group = [convert_packed::<S, ENCODE>(simd, group[0]); 4];
+            continue;
+        }
+        let out = convert_quad::<S, ENCODE>(simd, group);
+        f32x4::store_four_interleaved(out, group.as_flattened_mut());
     }
     for pixel in tail {
         *pixel = convert_packed::<S, ENCODE>(simd, *pixel);
+    }
+}
+
+/// `convert_span_in` reading `src` and writing `dst`, so a caller that
+/// must keep its source pixels converts without first copying them.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn convert_span_from<S: Simd, const ENCODE: bool>(simd: S, src: &[[f32; 4]], dst: &mut [[f32; 4]]) {
+    assert_eq!(src.len(), dst.len(), "conversion run length mismatch");
+    let (src_chunks, src_tail) = src.as_chunks::<4>();
+    let (dst_chunks, dst_tail) = dst.as_chunks_mut::<4>();
+    for (from, to) in src_chunks.iter().zip(dst_chunks) {
+        let out = convert_quad::<S, ENCODE>(simd, from);
+        f32x4::store_four_interleaved(out, to.as_flattened_mut());
+    }
+    for (from, to) in src_tail.iter().zip(dst_tail) {
+        *to = convert_packed::<S, ENCODE>(simd, *from);
     }
 }
 
@@ -1456,6 +1648,29 @@ pub fn convert_span<S: Simd>(
         convert_span_in::<S, true>(simd, pixels);
     } else {
         convert_span_in::<S, false>(simd, pixels);
+    }
+}
+
+/// Converts `src`, stored in the other blend space, into `to` in `dst`:
+/// `convert_span` out of place, with the same per-pixel arithmetic.
+///
+/// # Panics
+/// When `src` and `dst` are not the same length.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn convert_span_into<S: Simd>(
+    simd: S,
+    src: &[[f32; 4]],
+    dst: &mut [[f32; 4]],
+    to: cherenkov::BlendSpace,
+) {
+    if to == cherenkov::BlendSpace::SrgbEncoded {
+        convert_span_from::<S, true>(simd, src, dst);
+    } else {
+        convert_span_from::<S, false>(simd, src, dst);
     }
 }
 
@@ -1580,14 +1795,19 @@ pub fn composite_solid<S: Simd, C: Source>(
     space: cherenkov::BlendSpace,
 ) {
     cov.check_len(dst.len());
-    match (
-        space == cherenkov::BlendSpace::SrgbEncoded,
-        !matches!(clip.span, ClipSpan::Full),
-    ) {
-        (true, true) => composite_solid_in::<S, C, true, true>(simd, dst, cov, clip, color),
-        (true, false) => composite_solid_in::<S, C, true, false>(simd, dst, cov, clip, color),
-        (false, true) => composite_solid_in::<S, C, false, true>(simd, dst, cov, clip, color),
-        (false, false) => composite_solid_in::<S, C, false, false>(simd, dst, cov, clip, color),
+    // The space conversion divides out alpha, so the converted colour
+    // scaled by coverage is the converted coverage-scaled colour: one
+    // conversion serves every pixel of the span, and the loop itself is
+    // the same in either space.
+    let stored = if space == cherenkov::BlendSpace::SrgbEncoded {
+        convert_packed::<S, true>(simd, color)
+    } else {
+        color
+    };
+    if matches!(clip.span, ClipSpan::Full) {
+        composite_solid_in::<S, C, false>(simd, dst, cov, clip, stored);
+    } else {
+        composite_solid_in::<S, C, true>(simd, dst, cov, clip, stored);
     }
 }
 
@@ -1613,19 +1833,16 @@ fn store_solid_block<S: Simd>(planes: [f32x4<S>; 4], pixels: &mut [[f32; 4]; 4])
     reason = "compiled under the dispatched CPU level"
 )]
 #[inline(always)]
-fn composite_solid_in<S: Simd, C: Source, const SRGB: bool, const CLIPPED: bool>(
+fn composite_solid_in<S: Simd, C: Source, const CLIPPED: bool>(
     simd: S,
     dst: &mut [[f32; 4]],
     cov: C,
     clip: ClipRun<'_>,
-    color: [f32; 4],
+    stored: [f32; 4],
 ) {
-    let opaque = color[3] == 1.0;
-    let stored = if SRGB {
-        convert_packed::<S, true>(simd, color)
-    } else {
-        color
-    };
+    // The conversion keeps alpha, so `stored` is opaque exactly when the
+    // paint colour is.
+    let opaque = stored[3] == 1.0;
     let stored_planes = [
         simd.splat_f32x4(stored[0]),
         simd.splat_f32x4(stored[1]),
@@ -1661,12 +1878,12 @@ fn composite_solid_in<S: Simd, C: Source, const SRGB: bool, const CLIPPED: bool>
             for lane in 0..4 {
                 let i = pos + lane;
                 let cc = if CLIPPED { clip.at(i) } else { 1.0 };
-                blend_packed::<S, SRGB>(simd, &mut dst[i], color, cov.at(i), cc);
+                blend_packed::<S, false>(simd, &mut dst[i], stored, cov.at(i), cc);
             }
             pos += 4;
         } else {
             let cc = if CLIPPED { clip.at(pos) } else { 1.0 };
-            blend_packed::<S, SRGB>(simd, &mut dst[pos], color, cov.at(pos), cc);
+            blend_packed::<S, false>(simd, &mut dst[pos], stored, cov.at(pos), cc);
             pos += 1;
         }
     }
@@ -1770,6 +1987,59 @@ fn kept_rows(union: &IRect, reach: usize, band: (usize, usize), h: usize) -> (us
     (kept0, kept1)
 }
 
+/// A band's working background; the public output remains linear P3.
+/// When every root composite is normal sRGB, keep that working space
+/// through the band instead of converting the destination at every group.
+/// Backdrop captures and filter windows retain their linear root canvas.
+#[derive(Clone, Copy)]
+struct Background {
+    color: [f32; 4],
+    space: cherenkov::BlendSpace,
+}
+
+impl Background {
+    fn new(
+        level: fearless_simd::Level,
+        items: &[Item],
+        clear: [f32; 4],
+        has_backdrop: bool,
+    ) -> Self {
+        use cherenkov::{BlendMode, BlendSpace};
+        let linear = Self {
+            color: clear,
+            space: BlendSpace::Linear,
+        };
+        if has_backdrop || items.is_empty() {
+            return linear;
+        }
+        let mut depth = 0;
+        for item in items {
+            match item {
+                Item::PushIsolate { space } => {
+                    if depth == 0 && *space != BlendSpace::SrgbEncoded {
+                        return linear;
+                    }
+                    depth += 1;
+                }
+                Item::PopIsolate { blend, .. } => {
+                    depth -= 1;
+                    if depth == 0 && *blend != (BlendMode::Normal, BlendSpace::SrgbEncoded) {
+                        return linear;
+                    }
+                }
+                Item::PushFilter { .. } => return linear,
+                _ if depth == 0 => return linear,
+                _ => {}
+            }
+        }
+        Self {
+            color: cherenkov_simd::dispatch!(level, simd =>
+                move_space(simd, clear, BlendSpace::Linear, BlendSpace::SrgbEncoded)),
+            space: BlendSpace::SrgbEncoded,
+        }
+    }
+}
+
 /// Shades one band of `slice` rows (`w * bh` pixels, cleared first),
 /// starting at device row `y0`.
 ///
@@ -1790,7 +2060,7 @@ fn shade(
     level: fearless_simd::Level,
     items: &[Item],
     index: &FrameIndex,
-    clear: [f32; 4],
+    background: Background,
     slice: &mut [[f32; 4]],
     w: usize,
     y0: usize,
@@ -1805,7 +2075,7 @@ fn shade(
         scratch.buffers.give_color(capture.buf);
     }
     scratch.buffers.meter.reset();
-    slice.fill(clear);
+    slice.fill(background.color);
     let surface = (y0, y0 + bh);
     // A surface that used no backdrop group cannot contain a `Capture`,
     // so the scan is skipped outright.
@@ -1835,7 +2105,7 @@ fn shade(
             level,
             items,
             index,
-            clear,
+            background.color,
             slice,
             w,
             surface,
@@ -1851,6 +2121,7 @@ fn shade(
             items,
             index,
             slice,
+            background.space,
             w,
             surface,
             h,
@@ -1869,6 +2140,10 @@ fn shade(
             (scratch.buffers.meter.delta_peak() * size_of::<[f32; 4]>()) as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
+    }
+    if result.is_ok() && background.space != cherenkov::BlendSpace::Linear {
+        cherenkov_simd::dispatch!(level, simd => convert_span(
+            simd, slice, background.space, cherenkov::BlendSpace::Linear));
     }
     result
 }
@@ -1941,6 +2216,7 @@ fn shade_plain(
     items: &[Item],
     index: &FrameIndex,
     slice: &mut [[f32; 4]],
+    space: cherenkov::BlendSpace,
     w: usize,
     surface: (usize, usize),
     h: usize,
@@ -1954,13 +2230,13 @@ fn shade_plain(
         fb: slice,
         w,
         y0,
-        space: cherenkov::BlendSpace::Linear,
+        space,
     };
     run_at(
         level,
         items,
         index,
-        index.items(b),
+        index.items(b, items),
         items.len(),
         &mut band,
         acc,
@@ -2030,7 +2306,7 @@ fn shade_windowed(
         level,
         items,
         index,
-        &sel,
+        index.selected(&sel, items),
         last + 1,
         &mut band,
         acc,
@@ -2070,13 +2346,11 @@ fn shade_windowed(
     };
     // The aligned band's bins, restricted to the items after the last
     // top-level capture.
-    let all = index.items(y0 / BAND_H);
-    let start = all.partition_point(|&i| i <= last);
     run_at(
         level,
         items,
         index,
-        &all[start..],
+        index.items_after(y0 / BAND_H, items, last + 1),
         items.len(),
         &mut band,
         acc,
@@ -2229,6 +2503,7 @@ pub fn render_bands(
     let meter = &*meter;
     let index = &*index;
     let stats = stats(items);
+    let background = Background::new(level, items, clear, has_backdrop);
     for_each_band(
         fb,
         w,
@@ -2241,7 +2516,7 @@ pub fn render_bands(
                 level,
                 items,
                 index,
-                clear,
+                background,
                 band,
                 w,
                 y0,
@@ -2280,6 +2555,7 @@ pub fn render_bands_f16(
     let meter = &*meter;
     let index = &*index;
     let stats = stats(items);
+    let background = Background::new(level, items, clear, has_backdrop);
     for_each_band(
         out,
         w,
@@ -2293,7 +2569,7 @@ pub fn render_bands_f16(
                 level,
                 items,
                 index,
-                clear,
+                background,
                 &mut band_px,
                 w,
                 y0,
@@ -2335,6 +2611,7 @@ pub fn render_bands_stream(
     meter: &mut FrameMeter,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     let stats = stats(items);
+    let background = Background::new(level, items, clear, has_backdrop);
     let (w, h) = size;
     meter.record_index(index.heap_bytes());
     let meter = &*meter;
@@ -2347,7 +2624,7 @@ pub fn render_bands_stream(
             level,
             items,
             index,
-            clear,
+            background,
             &mut band_px[..w * bh],
             w,
             y0,
@@ -2413,7 +2690,7 @@ fn run_at(
     level: fearless_simd::Level,
     items: &[Item],
     index: &FrameIndex,
-    sel: &[usize],
+    sel: Selection<'_>,
     limit: usize,
     band: &mut Band<'_>,
     acc: &mut Compiler,
@@ -2442,7 +2719,7 @@ fn run<S: Simd>(
     simd: S,
     items: &[Item],
     index: &FrameIndex,
-    sel: &[usize],
+    sel: Selection<'_>,
     limit: usize,
     band: &mut Band<'_>,
     acc: &mut Compiler,
@@ -2457,7 +2734,7 @@ fn run<S: Simd>(
     // Item indexes below `skip` were consumed by a filter scope's
     // nested run.
     let mut skip = 0usize;
-    for &i in sel {
+    for i in sel {
         if i < skip {
             continue;
         }
@@ -2499,8 +2776,8 @@ fn run<S: Simd>(
                     continue;
                 };
                 band.composite_isolate(
-                    &plane.buf,
-                    plane.space,
+                    simd,
+                    (&plane.buf, plane.space),
                     *opacity,
                     *blend,
                     clips.prepare(
@@ -2558,7 +2835,7 @@ fn run<S: Simd>(
                         ctx.level,
                         items,
                         index,
-                        &nested,
+                        index.selected(&nested, items),
                         scope_end,
                         &mut filter_band,
                         &mut filter_acc,
@@ -2587,8 +2864,8 @@ fn run<S: Simd>(
                 let first = (band.y0 - top) * band.w;
                 let central = &window[first..first + band.fb.len()];
                 band.composite_isolate(
-                    central,
-                    *space,
+                    simd,
+                    (central, *space),
                     *opacity,
                     *blend,
                     clips.prepare(
@@ -2634,6 +2911,7 @@ fn run<S: Simd>(
             } => {
                 if let Some(capture) = ctx.captures.get(group) {
                     band.sample(
+                        simd,
                         capture,
                         *bounds,
                         clips.prepare(
@@ -2681,7 +2959,7 @@ fn run<S: Simd>(
                     acc,
                     ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
                 );
-                band.project(stack, item, clip);
+                band.project(simd, stack, item, clip);
             }
             Item::Silhouette { slot, paint, clip } => {
                 band.glyph(
@@ -3198,14 +3476,11 @@ impl Band<'_> {
     /// `bbox` ∩ band.
     #[expect(
         clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::float_cmp,
         clippy::suboptimal_flops,
         clippy::too_many_arguments,
         clippy::too_many_lines,
-        reason = "pixel indices and band offsets are far below 2^24; the \
-                  flat-row test is intentionally exact and the quadrature \
-                  weights mirror the reference formula"
+        reason = "pixel indices and band offsets are far below 2^24 and \
+                  the quadrature weights mirror the reference formula"
     )]
     #[expect(
         clippy::inline_always,
@@ -3259,32 +3534,28 @@ impl Band<'_> {
         if cx_lo >= cx_hi && clip_mask.is_none() {
             return;
         }
-        // The 16 y-quadrature samples and their `gaussian*step` weights
-        // are per item, not per pixel.
-        let step = 6.0 * sigma / SHADOW_N as f32;
-        let mut dy = [0.0_f32; SHADOW_N];
-        let mut gw = [0.0_f32; SHADOW_N];
-        for (i, (d, w)) in dy.iter_mut().zip(gw.iter_mut()).enumerate() {
-            *d = (i as f32 + 0.5) * step - 3.0 * sigma;
-            *w = gaussian(*d, sigma) * step;
-        }
+        // The y quadrature the GPU shader uses (`shadow` in
+        // gpu/src/render/shader.wgsl): per row, the ±3σ window clipped to
+        // the box's ±half[1], one analytic `erf` sample for the straight
+        // band |y| <= hy - rmax inside the window, and an 8-node
+        // Gauss–Legendre rule (`shadow::GL8`) over each corner band the
+        // window reaches.
+        let rmax = radii.iter().copied().fold(0.0_f32, f32::max);
+        let band = (half[1] - rmax).max(0.0);
         // Per row the quadrature's x-integral saturates except near the
-        // left/right edges: `erf` reaches ±1 within `MARGIN` of an edge,
-        // so interior columns all evaluate to the same `S` (the sum of
+        // left/right edges: `erf` reaches ±1 within `margin` of an edge,
+        // so interior columns all evaluate to the same `s` (the sum of
         // in-box sample weights) and only the two edge bands pay the
-        // 32-`erf` sum. For `sigma`-wide margins the tail error is
-        // `erf(5)-1 < 1e-11`.
+        // per-sample `erf` sum. For `sigma`-wide margins the tail error
+        // is `erf(5)-1 < 1e-11`.
         let margin = 5.0 * sigma * std::f32::consts::SQRT_2;
-        // Flat rows — every sample has zero corner inset — share the
-        // straight-wall x-integral, one `erf` pair per column computed
-        // once for the whole item.
-        let mut x_term: Option<Vec<f32>> = None;
-        let flat_sample = [shadow::Sample {
-            left: -half[0],
-            right: half[0],
-            weight: 1.0,
-        }];
-        let mut samples = [shadow::Sample::default(); SHADOW_N];
+        // Consecutive rows with the same x intervals — every row whose
+        // window misses the corner bands, and every row whose window
+        // covers a whole corner band — form a run that shares the
+        // intervals' x integrals; only the weights differ per row.
+        let mut samples = [shadow::Sample::default(); shadow::MAX_SAMPLES];
+        let mut run = shadow::Run::new();
+        let mut integrals = shadow::Integrals::new();
         // The per-pixel quadrature runs inside `vectorize` so it compiles
         // under the dispatched level's target features — a second closure
         // on this path (a `map_or` or `get_or_insert_with` body) would be
@@ -3293,135 +3564,114 @@ impl Band<'_> {
             #[inline(always)]
             || {
                 for y in y_lo..y_hi {
-                    let py_i = self.y0 + y;
-                    let py = py_i as f32 + 0.5 - cy;
+                    let py = (self.y0 + y) as f32 + 0.5 - cy;
+                    // The row's y window: `py ± 3σ` clipped to the box.
+                    let lo = (py - 3.0 * sigma).max(-half[1]);
+                    let hi = (py + 3.0 * sigma).min(half[1]);
+                    if hi <= lo {
+                        continue;
+                    }
                     // The row's sample table: left/right x-edges per in-box
                     // sample, their weights, the interior-coverage sum `s`, and
                     // the most-inset edges bounding the interior zone.
                     let mut n = 0_usize;
                     let mut s = 0.0_f32;
-                    let mut flat = true;
                     let (mut xlm, mut xrm) = (f32::MIN, f32::MAX);
-                    for (d, w) in dy.iter().zip(gw.iter()) {
-                        let yi = py + d;
-                        if yi.abs() > half[1] {
+                    // The window's straight-band part is one sample whose
+                    // weight is the Gaussian's exact integral over it.
+                    let ya = lo.max(-band);
+                    let yb = hi.min(band);
+                    if yb > ya {
+                        let ends = erf4(
+                            simd,
+                            f32x4::load_array(
+                                simd,
+                                [
+                                    (yb - py) * inv_sqrt2_sigma,
+                                    (ya - py) * inv_sqrt2_sigma,
+                                    0.0,
+                                    0.0,
+                                ],
+                            ),
+                        )
+                        .to_array();
+                        samples[n] = shadow::Sample {
+                            left: -half[0],
+                            right: half[0],
+                            weight: 0.5 * (ends[0] - ends[1]),
+                        };
+                        (xlm, xrm) = (-half[0], half[0]);
+                        s += samples[n].weight;
+                        n += 1;
+                    }
+                    // Each corner band the window reaches gets the
+                    // shader's 8-node Gauss–Legendre rule; a node's x
+                    // edges come from the corner inset at its row.
+                    for (a, b, rl, rr) in [
+                        (lo, hi.min(-band), radii[0], radii[1]),
+                        (lo.max(band), hi, radii[3], radii[2]),
+                    ] {
+                        if b <= a {
                             continue;
                         }
-                        let (rl, rr) = if yi < 0.0 {
-                            (radii[0], radii[1])
-                        } else {
-                            (radii[3], radii[2])
-                        };
-                        let ay = yi.abs();
-                        samples[n] = shadow::Sample {
-                            left: -half[0] + corner_inset(rl, ay - (half[1] - rl)),
-                            right: half[0] - corner_inset(rr, ay - (half[1] - rr)),
-                            weight: *w,
-                        };
-                        flat &= samples[n].left == -half[0] && samples[n].right == half[0];
-                        xlm = xlm.max(samples[n].left);
-                        xrm = xrm.min(samples[n].right);
-                        s += w;
-                        n += 1;
+                        let mid = a.midpoint(b);
+                        let hw = 0.5 * (b - a);
+                        for (node, w) in shadow::GL8 {
+                            for sign in [-1.0_f32, 1.0] {
+                                let yi = mid + sign * hw * node;
+                                let ay = yi.abs();
+                                samples[n] = shadow::Sample {
+                                    left: -half[0] + corner_inset(rl, ay - (half[1] - rl)),
+                                    right: half[0] - corner_inset(rr, ay - (half[1] - rr)),
+                                    weight: w * hw * gaussian(yi - py, sigma),
+                                };
+                                xlm = xlm.max(samples[n].left);
+                                xrm = xrm.min(samples[n].right);
+                                s += samples[n].weight;
+                                n += 1;
+                            }
+                        }
                     }
                     if n == 0 || s <= 0.0 {
                         continue;
                     }
-                    let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
-                    if flat {
-                        // Separable: `cov = x_term[px] * s` across the row.
-                        if x_term.is_none() {
-                            let mut term = Vec::with_capacity(cx_hi - cx_lo);
-                            let mut x = cx_lo;
-                            while x < cx_hi {
-                                let lanes = (cx_hi - x).min(4);
-                                for cov in shadow_coverage4(
-                                    simd,
-                                    cx,
-                                    inv_sqrt2_sigma,
-                                    x,
-                                    lanes,
-                                    &flat_sample,
-                                )
-                                .into_iter()
-                                .take(lanes)
-                                {
-                                    term.push(cov);
-                                }
-                                x += 4;
-                            }
-                            x_term = Some(term);
+                    if !run.continues(y, &samples[..n]) {
+                        if !run.is_empty() {
+                            let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
+                            shadow_run(
+                                simd,
+                                dst,
+                                self.w,
+                                self.y0,
+                                cx,
+                                inv_sqrt2_sigma,
+                                margin,
+                                clip_mask,
+                                &member(simd, *color, space),
+                                (cx_lo, cx_hi),
+                                &run,
+                                &mut integrals,
+                            );
                         }
-                        let Some(t) = x_term.as_deref() else {
-                            unreachable!("x_term is filled above")
-                        };
-                        for x in cx_lo..cx_hi {
-                            let cov = t[x - cx_lo] * s;
-                            if cov <= 0.0 {
-                                continue;
-                            }
-                            let cc = match clip_mask {
-                                Some(m) => clip_cov(Some(m), self.w, x, py_i),
-                                None => 1.0,
-                            };
-                            if cc <= 0.0 {
-                                continue;
-                            }
-                            let src = shadow_src(color, cov, cc);
-                            dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
-                        }
-                        continue;
+                        run.start(y, &samples[..n], xlm, xrm);
                     }
-                    // Interior columns: `px >= xlm + margin` saturates every
-                    // `erf((xl-px)*is)` at -1 and `px <= xrm - margin` saturates
-                    // every `erf((xr-px)*is)` at +1, so `cov = s` for all of them.
-                    let x_in_lo = usize::try_from((cx + xlm + margin - 0.5).ceil() as i32)
-                        .unwrap_or(0)
-                        .clamp(cx_lo, cx_hi);
-                    let x_in_hi = usize::try_from((cx + xrm - margin + 0.5).floor() as i32 + 1)
-                        .unwrap_or(0)
-                        .clamp(x_in_lo, cx_hi);
+                    run.push(s, &samples[..n]);
+                }
+                if !run.is_empty() {
                     let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
-                    shadow_edge(
+                    shadow_run(
                         simd,
                         dst,
                         self.w,
-                        y,
-                        py_i,
+                        self.y0,
                         cx,
                         inv_sqrt2_sigma,
+                        margin,
                         clip_mask,
-                        color,
-                        space,
-                        cx_lo,
-                        x_in_lo,
-                        &samples[..n],
-                    );
-                    for x in x_in_lo..x_in_hi {
-                        let cc = match clip_mask {
-                            Some(m) => clip_cov(Some(m), self.w, x, py_i),
-                            None => 1.0,
-                        };
-                        if cc <= 0.0 {
-                            continue;
-                        }
-                        let src = shadow_src(color, s, cc);
-                        dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
-                    }
-                    shadow_edge(
-                        simd,
-                        dst,
-                        self.w,
-                        y,
-                        py_i,
-                        cx,
-                        inv_sqrt2_sigma,
-                        clip_mask,
-                        color,
-                        space,
-                        x_in_hi,
-                        cx_hi,
-                        &samples[..n],
+                        &member(simd, *color, space),
+                        (cx_lo, cx_hi),
+                        &run,
+                        &mut integrals,
                     );
                 }
             },
@@ -3445,8 +3695,9 @@ impl Band<'_> {
         reason = "compiled under the dispatched CPU level so mul_add is one instruction"
     )]
     #[inline(always)]
-    fn sample(
+    fn sample<S: Simd>(
         &mut self,
+        simd: S,
         capture: &Capture,
         bounds: IRect,
         clip: Option<ClipCoverage<'_>>,
@@ -3510,13 +3761,14 @@ impl Band<'_> {
                 // The sample at its coverage blends source-over in the
                 // group's member space: the canvas converts into it and
                 // the result back.
-                let src = move_space(c.map(|v| v * cc), capture.space, member_space);
+                let src = move_space(simd, c.map(|v| v * cc), capture.space, member_space);
                 let d = &mut dst[row + px];
                 *d = if member_space == space {
                     src_over(*d, src)
                 } else {
                     move_space(
-                        src_over(move_space(*d, space, member_space), src),
+                        simd,
+                        src_over(move_space(simd, *d, space, member_space), src),
                         member_space,
                         space,
                     )
@@ -3622,8 +3874,9 @@ impl Band<'_> {
         reason = "compiled under the dispatched CPU level so mul_add is one instruction"
     )]
     #[inline(always)]
-    fn project(
+    fn project<S: Simd>(
         &mut self,
+        simd: S,
         stack: &mut [Plane],
         item: &super::lower::ProjectItem,
         clip: Option<ClipCoverage<'_>>,
@@ -3646,59 +3899,108 @@ impl Band<'_> {
                 let src = sample.map(|v| v * item.opacity * cc);
                 let (dst, space) = top(&mut *self.fb, self.space, stack);
                 let i = (py - self.y0) * self.w + px;
-                dst[i] = src_over(dst[i], member(src, space));
+                dst[i] = src_over(dst[i], member(simd, src, space));
             }
         }
     }
 
     /// Composites the popped isolation buffer onto the buffer below:
-    /// the blend runs in the popped level's storage space (`src_space`),
-    /// which is its declared `blend_space` for a semantic level or the
-    /// parent's for a pass-through one — members already composited in
-    /// it.
+    /// the blend runs in the popped level's storage space (`src_space`,
+    /// paired with its buffer), which is its declared `blend_space` for a
+    /// semantic level or the parent's for a pass-through one — members
+    /// already composited in it.
     #[expect(
         clippy::inline_always,
         reason = "compiled under the dispatched CPU level so mul_add is one instruction"
     )]
     #[inline(always)]
-    fn composite_isolate(
+    fn composite_isolate<S: Simd>(
         &mut self,
-        scratch: &[[f32; 4]],
-        src_space: cherenkov::BlendSpace,
+        simd: S,
+        (scratch, src_space): (&[[f32; 4]], cherenkov::BlendSpace),
         opacity: f32,
         blend: (cherenkov::BlendMode, cherenkov::BlendSpace),
         clip: Option<ClipCoverage<'_>>,
         stack: &mut Vec<Plane>,
     ) {
         let (dst, dst_space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
+        let direct = blend.0 == cherenkov::BlendMode::Normal && src_space == dst_space;
+        if !direct && !super::blend::is_destructive(blend.0) {
+            // Every other operator leaves the destination unchanged for a
+            // transparent source, so the clip coverage scales the source
+            // instead of bounding the whole composite. Only the pixels
+            // under a non-empty source take the result. In a different
+            // blend space the destination converts into `blended` a span
+            // at a time and back; in its own space it blends in place.
+            const SPAN: usize = 64;
+            let mut source = [[0.0_f32; 4]; SPAN];
+            let mut blended = [[0.0_f32; 4]; SPAN];
+            for (row, (src_row, dst_row)) in scratch
+                .chunks_exact(self.w)
+                .zip(dst.chunks_exact_mut(self.w))
+                .enumerate()
+            {
+                let py = self.y0 + row;
+                for x0 in (0..self.w).step_by(SPAN) {
+                    let n = SPAN.min(self.w - x0);
+                    let mut any = false;
+                    for (j, s) in source[..n].iter_mut().enumerate() {
+                        let cc = clip_cov(clip, self.w, x0 + j, py);
+                        *s = if cc > 0.0 {
+                            src_row[x0 + j].map(|v| v * opacity * cc)
+                        } else {
+                            [0.0; 4]
+                        };
+                        any |= s.iter().any(|&channel| channel != 0.0);
+                    }
+                    if !any {
+                        continue;
+                    }
+                    let (span, source) = (&mut dst_row[x0..x0 + n], &source[..n]);
+                    if src_space == dst_space {
+                        for (d, s) in span.iter_mut().zip(source) {
+                            if s.iter().any(|&channel| channel != 0.0) {
+                                *d = super::blend::blend(blend.0, *d, *s);
+                            }
+                        }
+                        continue;
+                    }
+                    let blended = &mut blended[..n];
+                    convert_span_into(simd, span, blended, src_space);
+                    for (b, s) in blended.iter_mut().zip(source) {
+                        *b = super::blend::blend(blend.0, *b, *s);
+                    }
+                    convert_span(simd, blended, src_space, dst_space);
+                    for ((d, b), s) in span.iter_mut().zip(&*blended).zip(source) {
+                        if s.iter().any(|&channel| channel != 0.0) {
+                            *d = *b;
+                        }
+                    }
+                }
+            }
+            return;
+        }
         for (i, &src) in scratch.iter().enumerate() {
             let px = i % self.w;
             let py = self.y0 + i / self.w;
             let cc = clip_cov(clip, self.w, px, py);
-            if blend.0 == cherenkov::BlendMode::Normal && src_space == dst_space {
+            if direct {
                 let s = src.map(|v| v * opacity * cc);
                 dst[i] = src_over(dst[i], s);
-            } else if super::blend::is_destructive(blend.0) {
+            } else if cc > 0.0 {
                 // The clip limits the composite operation, including Clear
                 // and DestIn; multiplying only source alpha is not equivalent.
-                if cc > 0.0 {
-                    let source = src.map(|value| value * opacity);
-                    let result =
-                        composite(blend.0, src_space, dst_space, src_space, dst[i], source);
-                    dst[i] = if cc >= 1.0 {
-                        result
-                    } else {
-                        std::array::from_fn(|channel| {
-                            cc.mul_add(result[channel] - dst[i][channel], dst[i][channel])
-                        })
-                    };
-                }
-            } else if cc > 0.0 {
-                // Every other operator leaves the destination unchanged
-                // for a transparent source, so the clip coverage scales the
-                // source instead of bounding the whole composite.
-                let s = src.map(|v| v * opacity * cc);
-                dst[i] = composite(blend.0, src_space, dst_space, src_space, dst[i], s);
+                let source = src.map(|value| value * opacity);
+                let result = composite(
+                    simd, blend.0, src_space, dst_space, src_space, dst[i], source,
+                );
+                dst[i] = if cc >= 1.0 {
+                    result
+                } else {
+                    std::array::from_fn(|channel| {
+                        cc.mul_add(result[channel] - dst[i][channel], dst[i][channel])
+                    })
+                };
             }
         }
     }
@@ -3885,7 +4187,7 @@ mod tests {
 
     use super::{
         ClipCoverage, ClipRun, Edge, composite_solid, composite_span, convert_span, coverage_mask,
-        member, move_space, reduce_rows, src_over,
+        member, reduce_rows, src_over,
     };
     use crate::render::lower::IRect;
     use cherenkov::{BlendSpace, FillRule};
@@ -4096,7 +4398,11 @@ mod tests {
                                                 }
                                                 src_over(
                                                     dst0[i],
-                                                    member(src[i].map(|v| v * cov[i] * cc), space),
+                                                    member(
+                                                        simd,
+                                                        src[i].map(|v| v * cov[i] * cc),
+                                                        space,
+                                                    ),
                                                 )
                                             })
                                             .collect()
@@ -4145,13 +4451,25 @@ mod tests {
         check(fearless_simd::Fallback::new());
     }
 
-    /// `convert_span` is `move_space` per pixel, to within `assert_close`,
+    /// `convert_span` is filtrate-core's scalar `to_srgb`/`from_srgb` per
+    /// pixel, to within `assert_close`,
     /// in both directions and as the identity, over run lengths 0–67 and every
     /// start offset, on finite, negative, HDR, transparent and
     /// signed-zero values, under the detected level and the fallback
     /// token.
     #[test]
-    fn convert_span_matches_move_space() {
+    fn convert_span_matches_filtrate() {
+        fn reference(pixel: [f32; 4], from: BlendSpace, to: BlendSpace) -> [f32; 4] {
+            let mut pixel = [pixel];
+            if from != to {
+                if to == BlendSpace::SrgbEncoded {
+                    filtrate_core::space::to_srgb(&mut pixel);
+                } else {
+                    filtrate_core::space::from_srgb(&mut pixel);
+                }
+            }
+            pixel[0]
+        }
         fn check<S: fearless_simd::Simd>(simd: S) {
             let seeds: &[[f32; 4]] = &[
                 [0.2, 0.4, 0.6, 0.8],
@@ -4167,12 +4485,20 @@ mod tests {
                 (BlendSpace::SrgbEncoded, BlendSpace::SrgbEncoded),
             ];
             for (from, to) in spaces {
+                for &pixel in seeds {
+                    let mut out = [pixel; 17];
+                    convert_span(simd, &mut out, from, to);
+                    let expected = reference(pixel, from, to);
+                    for actual in out {
+                        assert_close(&actual, &expected);
+                    }
+                }
                 for x0 in 0..=7usize {
                     for len in 0..=67usize {
                         let pixels: Vec<[f32; 4]> =
                             (0..len).map(|i| seeds[(i + x0) % seeds.len()]).collect();
                         let expected: Vec<[f32; 4]> =
-                            pixels.iter().map(|&p| move_space(p, from, to)).collect();
+                            pixels.iter().map(|&p| reference(p, from, to)).collect();
                         let mut out = pixels;
                         convert_span(simd, &mut out, from, to);
                         for (actual, want) in out.iter().zip(&expected) {

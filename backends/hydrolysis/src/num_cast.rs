@@ -41,6 +41,10 @@ pub const fn usize_as_f64(v: usize) -> f64 {
     clippy::cast_precision_loss,
     reason = "the widened values are pixel extents, far below 2^24"
 )]
+#[cfg_attr(
+    hydrolysis_hwui,
+    expect(dead_code, reason = "a GPU-painter-only cast under pure HWUI")
+)]
 pub const fn u32_as_f32(v: u32) -> f32 {
     v as f32
 }
@@ -50,6 +54,10 @@ pub const fn u32_as_f32(v: u32) -> f32 {
 #[expect(
     clippy::cast_precision_loss,
     reason = "the widened values are counts, far below 2^53"
+)]
+#[cfg_attr(
+    hydrolysis_hwui,
+    expect(dead_code, reason = "a GPU-painter-only cast under pure HWUI")
 )]
 pub const fn u64_as_f64(v: u64) -> f64 {
     v as f64
@@ -75,6 +83,10 @@ pub const fn usize_as_f32(v: usize) -> f32 {
     clippy::cast_sign_loss,
     reason = "layout/pixel coordinates are non-negative and within u32 range; saturating truncation is the intended conversion"
 )]
+#[cfg_attr(
+    hydrolysis_hwui,
+    expect(dead_code, reason = "a GPU-painter-only cast under pure HWUI")
+)]
 pub const fn f64_as_u32(v: f64) -> u32 {
     v as u32
 }
@@ -87,6 +99,10 @@ pub const fn f64_as_u32(v: f64) -> u32 {
     reason = "layout/pixel coordinates are non-negative and within u32 range; saturating truncation is the intended conversion"
 )]
 #[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg_attr(
+    hydrolysis_hwui,
+    expect(dead_code, reason = "a GPU-painter-only cast under pure HWUI")
+)]
 pub const fn f32_as_u32(v: f32) -> u32 {
     v as u32
 }
@@ -121,6 +137,10 @@ pub const fn f64_as_usize(v: f64) -> usize {
     reason = "the values are pixel extents within i32 range; saturating truncation is the intended conversion"
 )]
 #[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg_attr(
+    hydrolysis_hwui,
+    expect(dead_code, reason = "a GPU-painter-only cast under pure HWUI")
+)]
 pub const fn f32_as_i32(v: f32) -> i32 {
     v as i32
 }
@@ -157,6 +177,10 @@ pub const fn f32_as_u64(v: f32) -> u64 {
     clippy::cast_possible_truncation,
     reason = "the values are byte counts and sizes that fit the target's usize; truncation can only fire on 32-bit targets"
 )]
+#[cfg_attr(
+    hydrolysis_hwui,
+    expect(dead_code, reason = "a GPU-painter-only cast under pure HWUI")
+)]
 pub const fn u64_as_usize(v: u64) -> usize {
     v as usize
 }
@@ -173,6 +197,10 @@ pub const fn u64_as_u32(v: u64) -> u32 {
 
 /// Truncates a `u128` to `u64`; the values fit `u64` (hash/identifier widths).
 #[expect(clippy::cast_possible_truncation, reason = "the values fit u64")]
+#[cfg_attr(
+    hydrolysis_hwui,
+    expect(dead_code, reason = "a GPU-painter-only cast under pure HWUI")
+)]
 pub const fn u128_as_u64(v: u128) -> u64 {
     v as u64
 }

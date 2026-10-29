@@ -19,7 +19,7 @@ waterui-core.workspace = true
 
 [features]
 default = ["gpu"]
-gpu = ["waterui/gpu"]
+gpu = ["hydrolysis/gpu", "waterui/gpu"]
 hwui = ["hydrolysis/hwui"]
 
 [target.'cfg(target_os = "android")'.dependencies]

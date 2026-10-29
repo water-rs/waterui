@@ -36,6 +36,8 @@ pub struct VelloClassic {
     prepared: Option<Prepared>,
     lowered: Option<Lowered<Brush>>,
     counters: Counters,
+    /// When the last submit's final completion wait returned.
+    completed: crate::ObservedCompletion,
 }
 
 /// The GPU and renderer state do not format.
@@ -80,6 +82,7 @@ impl VelloClassic {
             prepared: None,
             lowered: None,
             counters: Counters::default(),
+            completed: crate::ObservedCompletion::default(),
         })
     }
 }
@@ -206,6 +209,8 @@ struct RenderAttempt {
     ticket: Option<BumpReadback>,
     gpu_seconds: Option<f64>,
     wait_seconds: f64,
+    /// When the completion wait returned: the attempt's rendering is done.
+    completed: Instant,
 }
 
 fn render_measured(
@@ -220,7 +225,8 @@ fn render_measured(
         .map_err(|e| BenchError::Gpu(format!("vello render: {e}")))?;
     let wait_at = Instant::now();
     wait(gpu, None, "the Vello classic render and overflow feedback")?;
-    let wait_seconds = wait_at.elapsed().as_secs_f64();
+    let completed = Instant::now();
+    let wait_seconds = completed.duration_since(wait_at).as_secs_f64();
     // Each attempt is drained here, so at most this attempt's profiler frame
     // is pending. render_to_texture may already have collected it.
     let profile = renderer.profile_result.take().or_else(|| {
@@ -256,6 +262,7 @@ fn render_measured(
         ticket,
         gpu_seconds,
         wait_seconds,
+        completed,
     })
 }
 
@@ -423,6 +430,7 @@ impl Engine for VelloClassic {
                 .map(|(total, seconds)| total + seconds);
             gpu_wait_seconds += attempt.wait_seconds;
         }
+        self.completed.record(attempt.completed);
         let render_seconds = render_at.elapsed().as_secs_f64();
         let readback_at = Instant::now();
         let image = if readback_flag {
@@ -439,6 +447,17 @@ impl Engine for VelloClassic {
             render_seconds: Some(render_seconds),
             readback_seconds: readback_flag.then(|| readback_at.elapsed().as_secs_f64()),
         })
+    }
+
+    fn completion_signal(&self) -> crate::CompletionSignal {
+        crate::CompletionSignal::Measured(
+            "the host instant the device wait inside submit returned for the frame's final render \
+             attempt; submit drains the GPU to verify overflow feedback, so frames never overlap",
+        )
+    }
+
+    fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+        self.completed.take(Self::NAME)
     }
 
     fn wait_idle(&mut self) -> Result<(), BenchError> {

@@ -17,8 +17,91 @@ use waterui_cli::apple::widgets::{declared_intents, declared_widgets};
 use waterui_cli::artifact_symbols::ArtifactSymbols;
 use waterui_cli::toolchain::Host;
 
-fn fixture_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/widget_app")
+/// The staged fixture's `Cargo.toml`.
+///
+/// The fixture builds the enclosing checkout's framework source, so it must
+/// resolve the checkout's dependency graph: the checkout's `[patch]` tables
+/// (Cargo reads them only at the root of the workspace it builds) beside a
+/// lock seeded from the checkout's own. A standalone manifest takes every
+/// split component the checkout pins to git from crates.io instead.
+#[derive(serde::Serialize)]
+struct FixtureManifest {
+    package: FixturePackage,
+    workspace: toml::Table,
+    lib: FixtureLib,
+    dependencies: std::collections::BTreeMap<&'static str, FixtureDependency>,
+    patch: toml::Value,
+}
+
+#[derive(serde::Serialize)]
+struct FixturePackage {
+    name: &'static str,
+    version: &'static str,
+    edition: &'static str,
+}
+
+/// The artifact shape Apple packaging reads: every object — the app's own
+/// `waterui_widget_*`/`waterui_meta_widget_*` emission and `waterui-widgets`'
+/// Swift-sources record — merged into one archive.
+#[derive(serde::Serialize)]
+struct FixtureLib {
+    path: PathBuf,
+    #[serde(rename = "crate-type")]
+    crate_type: [&'static str; 1],
+}
+
+/// `widgets` alone: the declaration path carries no renderer dependencies.
+#[derive(serde::Serialize)]
+struct FixtureDependency {
+    path: PathBuf,
+    #[serde(rename = "default-features")]
+    default_features: bool,
+    features: [&'static str; 1],
+}
+
+/// Stage the fixture crate in a fresh directory under `target_dir`: its
+/// manifest roots the committed sources at the checkout's patch set, and its
+/// lock starts from the checkout's, which Cargo prunes to the fixture's graph.
+fn stage_fixture(workspace: &Path, target_dir: &Path) -> tempfile::TempDir {
+    let staging = target_dir.join("test-fixtures");
+    std::fs::create_dir_all(&staging).expect("the fixture staging directory is creatable");
+    let staged = tempfile::tempdir_in(&staging).expect("a staged fixture directory");
+    let patches = waterui_cli::framework::checkout_patch_tables(workspace)
+        .expect("the checkout's patch set resolves");
+    let manifest = FixtureManifest {
+        package: FixturePackage {
+            name: "widget-app",
+            version: "0.0.0",
+            edition: "2024",
+        },
+        workspace: toml::Table::new(),
+        lib: FixtureLib {
+            path: Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/widget_app/src/lib.rs"),
+            crate_type: ["staticlib"],
+        },
+        dependencies: std::iter::once((
+            "waterui",
+            FixtureDependency {
+                path: workspace.to_path_buf(),
+                default_features: false,
+                features: ["widgets"],
+            },
+        ))
+        .collect(),
+        patch: toml::Value::try_from(&patches).expect("the patch set serializes"),
+    };
+    std::fs::write(
+        staged.path().join("Cargo.toml"),
+        toml::to_string(&manifest).expect("the fixture manifest serializes"),
+    )
+    .expect("write the staged fixture manifest");
+    std::fs::copy(
+        workspace.join("Cargo.lock"),
+        staged.path().join("Cargo.lock"),
+    )
+    .expect("seed the fixture lock from the checkout's");
+    staged
 }
 
 struct WidgetFixture {
@@ -47,16 +130,17 @@ fn build_fixture(profile: &str) -> WidgetFixture {
         let metadata: cargo_metadata::Metadata =
             serde_json::from_slice(&metadata.stdout).expect("Cargo metadata decodes");
         let target_dir = metadata.target_directory.into_std_path_buf();
+        let staged = stage_fixture(workspace, &target_dir);
+        // Not `--locked`: Cargo prunes the seeded checkout lock to the
+        // fixture's graph, which keeps every version the checkout pins.
         let output = host
-            .with_cwd(fixture_dir())
+            .with_cwd(staged.path())
             .with_env("CARGO_TARGET_DIR", &target_dir)
             .output_within(
                 env!("CARGO"),
                 [
                     "rustc",
                     "--lib",
-                    "--offline",
-                    "--locked",
                     "--profile",
                     profile,
                     "--message-format=json-render-diagnostics",

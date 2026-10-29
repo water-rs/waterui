@@ -282,11 +282,11 @@ pub struct Mirror {
     /// device's lazily allocated memory types.
     eligible: Eligible,
     /// The tile modules, `[family][self]` with families short, long
-    /// gradient, image source, clipped glyph and span composite (see [`family`]):
+    /// gradient, image source, clipped glyph, span composite and simple (see [`family`]):
     /// `engine_tile{,_long,_image}.spv` for a draw sourcing another slot,
     /// `engine_tile{,_long,_image}_self.spv` for a draw sourcing its own
     /// slot.
-    modules: [[vk::ShaderModule; 2]; 5],
+    modules: [[vk::ShaderModule; 2]; 6],
     set_layouts: [vk::DescriptorSetLayout; 3],
     layout: vk::PipelineLayout,
     cache: vk::PipelineCache,
@@ -1284,10 +1284,11 @@ fn raw(buffer: vk::Buffer) -> u64 {
 }
 
 /// The tile module family a pipeline key's engine variant draws through:
-/// 0 for the short module (variants 0–3), 1 for long gradients (4), 2 for
-/// image sources (6), solid clipped glyphs (7), and span composites (8).
+/// Short paint, long gradients, images, glyphs, composites and simple paint
+/// occupy the six module families in that order.
 const fn family(variant: u8) -> usize {
     match variant {
+        0 => 5,
         4 => 1,
         6 => 2,
         7 => 3,
@@ -1306,7 +1307,7 @@ fn raw_view(view: vk::ImageView) -> u64 {
 #[derive(Default)]
 struct Built {
     /// `[family][self]` — see [`Mirror::modules`].
-    modules: [[vk::ShaderModule; 2]; 5],
+    modules: [[vk::ShaderModule; 2]; 6],
     set_layouts: [vk::DescriptorSetLayout; 3],
     layout: vk::PipelineLayout,
     cache: vk::PipelineCache,
@@ -1336,6 +1337,8 @@ impl Built {
             spirv::TILE_GLYPH_SELF,
             spirv::TILE_COMPOSITE,
             spirv::TILE_COMPOSITE_SELF,
+            spirv::TILE_SIMPLE,
+            spirv::TILE_SIMPLE_SELF,
         ];
         for (slot, bytes) in self.modules.iter_mut().flatten().zip(blobs) {
             *slot = create_module(bytes)?;

@@ -91,7 +91,7 @@ mod build_controls;
 mod build_views;
 mod collection;
 mod flush;
-#[cfg(hydrolysis_hosted)]
+#[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
 mod hosted;
 mod layout;
 mod nodes;
@@ -177,10 +177,12 @@ pub enum RenderNode<E: crate::text::TextEngine> {
     SceneView(Box<SceneViewNode<E>>),
     /// An embedded `GpuContentView` leaf owning its `GpuContentRuntime`
     /// directly (no cursor-bound slot), composited through an `Rc`-carrying layer.
+    #[cfg(hydrolysis_gpu)]
     GpuContent(Box<GpuContentNode<E>>),
     /// An `ExternalFrameView` leaf owning its `ExternalFrameRuntime`,
     /// composited through a keyed engine layer that presents the frames its
     /// source publishes.
+    #[cfg(hydrolysis_gpu)]
     ExternalFrame(Box<ExternalFrameNode<E>>),
     /// A `FilteredView` wrapper owning its `FilteredRuntime` (the engine
     /// `Filter`) and recursing into its child node — the child mounts inside
@@ -236,7 +238,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Collection(node) => &node.core,
             Self::LazyStack(node) => &node.core,
             Self::SceneView(node) => &node.core,
+            #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => &node.core,
+            #[cfg(hydrolysis_gpu)]
             Self::ExternalFrame(node) => &node.core,
             Self::Filtered(node) => &node.core,
             Self::Dynamic(node) => &node.core,
@@ -255,12 +259,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     fn for_each_child(&self, f: &mut impl FnMut(&NodeCore<E>, &Self)) {
         let own = self.core();
         match self {
-            Self::Color(_)
-            | Self::Text(_)
-            | Self::Widget(_)
-            | Self::SceneView(_)
-            | Self::GpuContent(_)
-            | Self::ExternalFrame(_) => {}
+            Self::Color(_) | Self::Text(_) | Self::Widget(_) | Self::SceneView(_) => {}
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(_) | Self::ExternalFrame(_) => {}
             Self::Container(node) => {
                 for child in &node.children {
                     f(own, child);
@@ -322,6 +323,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// reaches widget-attached `RetainedSubview` roots too — navigation
     /// pages, lazy items and overlay content — so nothing keeps a stale
     /// mount.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn unmount(&self) {
         self.core().cell.unmount_subtree();
     }
@@ -356,7 +358,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Container(node) => Some(node.accessibility_identity.clone()),
             Self::Scroll(node) => Some(node.accessibility_identity.clone()),
             Self::SceneView(node) => Some(node.accessibility_identity.clone()),
+            #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => Some(node.accessibility_identity.clone()),
+            #[cfg(hydrolysis_gpu)]
             Self::ExternalFrame(node) => Some(node.accessibility_identity.clone()),
             Self::Collection(node) => Some(node.accessibility_identity.clone()),
             Self::LazyStack(node) => Some(node.accessibility_identity.clone()),

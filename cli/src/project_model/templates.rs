@@ -6022,6 +6022,17 @@ pub mod hydrolysis {
             bins,
             profile: super::generated_profiles(ctx.project_packages.as_ref())?,
             features: BTreeMap::from([
+                // The Android painters: `water build`/`run`/`package` enable
+                // the resolved painter's feature on the launcher, mirroring
+                // the test-app's wiring — `gpu` links the Cherenkov GPU
+                // attachment and the GPU-capable `waterui`, `hwui` the
+                // platform `RenderNode` target and no GPU stack. Off Android
+                // the features select nothing the desktop build lacks.
+                (
+                    "gpu".to_string(),
+                    vec!["hydrolysis/gpu".to_string(), "waterui/gpu".to_string()],
+                ),
+                ("hwui".to_string(), vec!["hydrolysis/hwui".to_string()]),
                 // The preview runtime module compiles under the feature
                 // alone — it no longer consumes the `waterui-preview`
                 // support-app crate.
@@ -6261,6 +6272,9 @@ pub mod hydrolysis {
                     .with_default_features(false),
                 ),
             ),
+            // No `gpu` here: the GPU stack reaches `waterui` through the
+            // launcher's `gpu` feature, so a `hwui` painter build links a
+            // `waterui` without it.
             (
                 "waterui".to_string(),
                 GeneratedDependencyValue::detailed(
@@ -6268,7 +6282,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "waterui",
-                            &["gpu"],
+                            &[],
                             NativeBackendDependencySource::WateruiRoot,
                         ),
                     )?

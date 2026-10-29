@@ -89,7 +89,13 @@ categories = ["gui"]
 # handoff.
 minimum-cli-version = "0.4.6"
 # Native Apple deployment targets, carried into every project's Cargo config.
-apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
+apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
+# The Apple deployment targets a project that bundles a web frontend declares:
+# `include_web!` installs a navigation policy, which needs `WKNavigationAction.
+# mainFrameNavigation`, public from OS 27. `water create` writes these under
+# `[apple.deployment-targets]` in `Water.toml`; the webview crate's tests check
+# them against the version its navigation-policy gate requires.
+web-frontend-apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
 # The Android API floor the native runtime supports; the backend's Gradle
 # `minSdk` must agree.
 android-min-api-level = 31
@@ -269,6 +275,7 @@ waterui-icons-native = { version = "0.5.1", path = "components/icon/native" }
 waterui-locale = { version = "0.5.1", path = "utils/locale" }
 waterui-map = { version = "0.5.1", path = "components/data/map" }
 waterui-meta = { version = "0.5.1", path = "utils/meta" }
+waterui-apple-os = { version = "0.5.1", path = "utils/apple-os" }
 waterkit-location = "0.2"
 waterkit-screen = "0.2"
 waterkit-audio = { version = "0.2", default-features = false }

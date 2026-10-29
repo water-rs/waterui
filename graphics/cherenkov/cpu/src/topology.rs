@@ -84,28 +84,26 @@ fn automatic() -> Result<NonZeroUsize, EngineError> {
             .map_err(|error| EngineError::Backend(format!("{path}: {error}")))?;
         capacities.push(positive(capacity, &path)?);
     }
-    fastest_count(capacities)
+    performance_count(&capacities)
 }
 
 #[cfg(any(target_os = "android", test))]
-fn fastest_count(
-    capacities: impl IntoIterator<Item = NonZeroUsize>,
-) -> Result<NonZeroUsize, EngineError> {
-    let mut maximum = 0;
-    let mut count = 0;
-    for capacity in capacities {
-        match capacity.get().cmp(&maximum) {
-            std::cmp::Ordering::Greater => {
-                maximum = capacity.get();
-                count = 1;
-            }
-            std::cmp::Ordering::Equal => count += 1,
-            std::cmp::Ordering::Less => {}
-        }
-    }
+fn performance_count(capacities: &[NonZeroUsize]) -> Result<NonZeroUsize, EngineError> {
+    let maximum = capacities
+        .iter()
+        .map(|capacity| capacity.get())
+        .max()
+        .unwrap_or(0);
+    // Include big cores alongside a prime core, not only the fastest class.
+    // Half the peak capacity keeps slow cores out of the raster pool while
+    // allowing the scheduler to place workers freely within the allowed set.
+    let minimum = maximum.div_ceil(2);
     positive(
-        count,
-        "number of CPUs in the highest allowed capacity class",
+        capacities
+            .iter()
+            .filter(|capacity| capacity.get() >= minimum)
+            .count(),
+        "number of CPUs with at least half the maximum allowed capacity",
     )
 }
 
@@ -124,25 +122,28 @@ fn automatic() -> Result<NonZeroUsize, EngineError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{fastest_count, workers};
+    use super::{performance_count, workers};
     use std::num::NonZeroUsize;
 
     #[test]
-    fn highest_capacity_class() {
+    fn performance_capacity_classes() {
         for (capacities, expected) in [
             (vec![512, 512, 512, 512], 4),
-            (vec![512, 512, 768, 768, 1024], 1),
-            (vec![1024, 512, 1024, 768], 2),
+            (vec![188, 188, 188, 188, 731, 731, 731, 1024], 4),
+            (vec![1024, 512, 1024, 768], 4),
+            (vec![188, 188, 731, 731], 2),
+            (vec![511, 512, 1024], 2),
         ] {
-            let count = fastest_count(
-                capacities
+            let count = performance_count(
+                &capacities
                     .into_iter()
-                    .map(|capacity| NonZeroUsize::new(capacity).expect("positive test capacity")),
+                    .map(|capacity| NonZeroUsize::new(capacity).expect("positive test capacity"))
+                    .collect::<Vec<_>>(),
             )
             .expect("nonempty CPU set");
             assert_eq!(count.get(), expected);
         }
-        assert!(fastest_count([]).is_err());
+        assert!(performance_count(&[]).is_err());
     }
 
     #[test]

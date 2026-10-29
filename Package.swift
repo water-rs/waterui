@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
   name: "waterui-apple-host",
-  platforms: [.iOS(.v27), .macOS(.v27)],
+  platforms: [.iOS(.v26), .macOS(.v26)],
   products: [.library(name: "WaterUI", targets: ["WaterUI"])],
   targets: [
     .target(

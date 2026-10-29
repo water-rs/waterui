@@ -11,7 +11,7 @@
 //! choreography (inner dot scale/opacity plus outer ring color), and
 //! free-running repeating/timeline phases for indeterminate indicators.
 
-use cherenkov::RefreshRange;
+use cherenkov_record::RefreshRange;
 use cherenkov_record::tree::RATE_FAST;
 use core::time::Duration;
 use std::cell::RefCell;
@@ -373,7 +373,7 @@ impl AnimationController {
 
     /// The range needed by currently running content, independent of how
     /// often the host happens to sample it.
-    #[cfg(any(test, all(target_os = "android", not(hydrolysis_hwui))))]
+    #[cfg(any(test, all(target_os = "android", hydrolysis_gpu_painter)))]
     #[must_use]
     pub fn refresh_range(&self, now: Instant) -> Option<RefreshRange> {
         if self

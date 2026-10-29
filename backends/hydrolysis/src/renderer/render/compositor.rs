@@ -221,7 +221,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         let rendered = crate::engine::engine_await!(window.surface.render());
         self.take_applied_filter_metrics();
         self.cherenkov_window = Some(window);
-        self.engine_next = Some(rendered?);
+        self.engine_next = Some(rendered?.into());
         let content_range = self.cherenkov_window.as_ref().expect("rendered window").surface.content_range();
         Ok(EngineFrame { headroom, content_range })
     }
@@ -370,7 +370,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         }
         #[cfg(not(feature = "frame-profile"))]
         let _ = target;
-        self.engine_next = Some(rendered?);
+        self.engine_next = Some(rendered?.into());
         Ok(())
     }
 
@@ -436,7 +436,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         let rendered = window.surface.render().await;
         self.take_applied_filter_metrics();
         *window_slot = Some(window);
-        self.engine_next = Some(rendered?);
+        self.engine_next = Some(rendered?.into());
         Ok(())
     }
 

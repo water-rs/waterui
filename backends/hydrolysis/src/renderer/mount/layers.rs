@@ -283,6 +283,7 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
         clippy::unnecessary_wraps,
         reason = "a join resolver answers `Option` because a member may be absent; a material member is always its node's frame layer"
     )]
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) const fn frame_layer(layers: &Self, _: LayerId) -> Option<&Layer> {
         Some(layers.frame())
     }
@@ -358,6 +359,7 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
 
     /// The member layer `id` names — a `ChromeMaterial` member anywhere
     /// in this node's lists — the layer a rebuilt chrome group re-points.
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn member_layer(&self, id: LayerId) -> Option<&Layer> {
         self.members
             .iter()
@@ -450,6 +452,7 @@ pub struct CommitCx<'m, 'tx, 's, T: LayerTarget<E>, E: crate::text::TextEngine> 
     scope_anchors: &'m mut ScopeAnchors<E>,
     graveyard: &'m mut Vec<Box<dyn Any>>,
     stats: &'m mut MountStats,
+    #[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
     wakes: &'m mut dyn FnMut(&Rc<NodeCell<E>>) -> ProducerWake,
 }
 
@@ -844,6 +847,7 @@ fn node_want<'a, E: crate::text::TextEngine>(
 /// `Affine::scale(scale_factor)`), so the display scale lives in
 /// `transform` and must not be multiplied in again
 /// (water-rs/waterui#2935).
+#[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
 fn gpu_content_pixels(transform: kurbo::Affine, bounds: kurbo::Rect) -> (u32, u32) {
     let [a, b, c, d, _, _] = transform.as_coeffs();
     let x_scale = a.hypot(b);
@@ -860,6 +864,7 @@ fn gpu_content_pixels(transform: kurbo::Affine, bounds: kurbo::Rect) -> (u32, u3
     size
 }
 
+#[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
 fn install_transform(bounds: kurbo::Rect, pixels: (u32, u32)) -> kurbo::Affine {
     kurbo::Affine::translate((bounds.x0, bounds.y0))
         * kurbo::Affine::scale_non_uniform(
@@ -1239,18 +1244,20 @@ fn commit_producer<T: LayerTarget<E>, E: crate::text::TextEngine>(
     producer: Option<&ProducerContent>,
 ) -> Option<HeldResources> {
     match producer {
-        #[cfg(hydrolysis_hosted)]
+        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         Some(ProducerContent::Hosted { runtime, bounds }) => {
             mount_hosted(cx, layers, runtime, *bounds);
         }
         Some(ProducerContent::Scene(source)) => {
             return Some(mount_scene(cx, cell, &layers.frame, source));
         }
+        #[cfg(hydrolysis_gpu)]
         Some(ProducerContent::Gpu {
             runtime,
             bounds,
             visible,
         }) => mount_gpu(cx, cell, layers, runtime, *bounds, *visible),
+        #[cfg(hydrolysis_gpu)]
         Some(ProducerContent::External {
             runtime,
             bounds,
@@ -1306,6 +1313,7 @@ fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
 }
 
 /// Ensures the node's install layer; returns whether it was just created.
+#[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
 fn ensure_install<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     layers: &mut NodeLayers<E>,
@@ -1321,7 +1329,7 @@ fn ensure_install<T: LayerTarget<E>, E: crate::text::TextEngine>(
 
 /// Binds hosted content to the install layer at the node's extent; the
 /// engine places the platform object from the layer tree's geometry.
-#[cfg(hydrolysis_hosted)]
+#[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
 fn mount_hosted<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     layers: &mut NodeLayers<E>,
@@ -1347,6 +1355,7 @@ fn mount_hosted<T: LayerTarget<E>, E: crate::text::TextEngine>(
 }
 
 /// Binds a GPU producer to the install layer at the node's pixel size.
+#[cfg(hydrolysis_gpu)]
 fn mount_gpu<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     cell: &Rc<NodeCell<E>>,
@@ -1382,6 +1391,7 @@ fn mount_gpu<T: LayerTarget<E>, E: crate::text::TextEngine>(
 }
 
 /// Starts or ticks an external-frame source on the install layer.
+#[cfg(hydrolysis_gpu)]
 fn mount_external<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     cell: &Rc<NodeCell<E>>,

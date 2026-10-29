@@ -27,7 +27,7 @@
 //! host's instrumentation invokes it through `PreviewBridge`'s JNI calls.
 
 mod accessibility;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 mod gpu;
 mod host;
 #[cfg(hydrolysis_hwui)]
@@ -52,7 +52,7 @@ pub use preview::register_preview;
 /// they can never disagree.
 #[cfg(hydrolysis_hwui)]
 pub(super) type AndroidTextEngine = crate::text::HwuiTextEngine<crate::hwui::text::JniTextProvider>;
-#[cfg(not(hydrolysis_hwui))]
+#[cfg(hydrolysis_gpu_painter)]
 pub(super) type AndroidTextEngine = crate::text::ParleyEngine;
 
 /// The app factory the Kotlin host instantiates per session create.

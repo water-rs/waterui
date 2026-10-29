@@ -1432,16 +1432,17 @@ mod host_tests {
     }
 
     /// Stage the project the machine's working directory holds: a
-    /// `Water.toml`, and a `cargo` whose `metadata` resolves the graph naming
-    /// exactly `crates`.
+    /// `Water.toml`, and a `cargo` whose `metadata` resolves a root `app`
+    /// package with a normal dependency edge to each of `crates`.
     fn stage_project(machine: &TestMachine, crates: &[&str]) {
+        const ROOT: &str = "app";
         machine.install("cargo");
         machine.file("Water.toml", "");
         let id = |name: &str| {
             format!("registry+https://github.com/rust-lang/crates.io-index#{name}@0.0.0")
         };
-        let packages: Vec<_> = crates
-            .iter()
+        let packages: Vec<_> = std::iter::once(&ROOT)
+            .chain(crates)
             .map(|name| {
                 serde_json::json!({
                     "name": name,
@@ -1471,22 +1472,37 @@ mod host_tests {
                 })
             })
             .collect();
-        let nodes: Vec<_> = crates
+        let root_deps: Vec<_> = crates
             .iter()
             .map(|name| {
                 serde_json::json!({
-                    "id": id(name),
-                    "dependencies": [],
-                    "deps": [],
-                    "features": []
+                    "name": name,
+                    "pkg": id(name),
+                    "dep_kinds": [{ "kind": null, "target": null }]
                 })
             })
             .collect();
+        let crate_ids: Vec<_> = crates.iter().map(|name| id(name)).collect();
+        let nodes: Vec<_> = std::iter::once(serde_json::json!({
+            "id": id(ROOT),
+            "dependencies": crate_ids,
+            "deps": root_deps,
+            "features": []
+        }))
+        .chain(crates.iter().map(|name| {
+            serde_json::json!({
+                "id": id(name),
+                "dependencies": [],
+                "deps": [],
+                "features": []
+            })
+        }))
+        .collect();
         let metadata = serde_json::json!({
             "packages": packages,
-            "workspace_members": [],
-            "workspace_default_members": [],
-            "resolve": { "nodes": nodes, "root": null },
+            "workspace_members": [id(ROOT)],
+            "workspace_default_members": [id(ROOT)],
+            "resolve": { "nodes": nodes, "root": id(ROOT) },
             "target_directory": "/target",
             "version": 1,
             "workspace_root": "/",

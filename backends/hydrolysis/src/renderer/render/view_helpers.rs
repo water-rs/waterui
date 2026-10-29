@@ -645,8 +645,13 @@ fn normalize_layout_view_with_budget(
         navigation.bar.subtitle =
             normalize_layout_view_with_budget(navigation.bar.subtitle, env, remaining);
         for item in &mut navigation.bar.toolbar.items {
+            // Normalization resolves a label against the environment, so the
+            // bar scope has to wrap the item before it runs.
             item.content = normalize_layout_view_with_budget(
-                core::mem::take(&mut item.content),
+                crate::widgets::nav::navigation::toolbar_item_view(
+                    core::mem::take(&mut item.content),
+                    env,
+                ),
                 env,
                 remaining,
             );
@@ -1007,6 +1012,7 @@ pub fn working_color_to_rgba8(color: waterui_graphics::draw::WorkingColor) -> [u
     ]
 }
 
+#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
 pub fn rgba8_to_peniko(color: [u8; 4]) -> peniko::Color {
     peniko::Color::new([
         f32::from(color[0]) / 255.0,

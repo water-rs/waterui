@@ -2333,7 +2333,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
 
     /// Environment every cargo compilation gets before caller-provided
     /// `self.envs` (which therefore still overrides it): the managed tools'
-    /// `PATH` entry, and the framework's deployment-target floor when
+    /// `PATH` entry, and the project's effective deployment target when
     /// `self.triple` names an Apple platform — the triple is the compilation
     /// target whether the build crosses or the host is the Apple target
     /// itself.
@@ -2342,6 +2342,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         if let Some(project) = &self.project
             && let Some((key, value)) = crate::apple::platform::apple_deployment_target_env(
                 project.resolved_framework().await?,
+                project.manifest().apple().deployment_targets(),
                 &self.triple,
             )?
         {

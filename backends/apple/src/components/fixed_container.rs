@@ -24,7 +24,7 @@ use waterui_core::layout::{
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
-use crate::proposal;
+use crate::proposal::{self, Placement};
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{HitTest, HostView};
@@ -32,17 +32,17 @@ use cocoa_ui::appkit::{HitTest, HostView};
 use cocoa_ui::uikit::{HitTest, HostView};
 
 /// The leaf's live state: the layout engine, the mounted children, and the
-/// proposal a Rust parent last selected for the container.
+/// placement a Rust parent last gave the container.
 struct FixedState {
     /// The `FixedContainer`'s layout object.
     layout: Box<dyn Layout>,
     /// The rendered children, in layout order.
     children: Vec<Mounted>,
-    /// The proposal the parent layout selected when it placed this
-    /// container — `selectedProposal` in the Swift port. `None` while no
-    /// Rust parent has placed us: the container builds its own bounded offer
-    /// from the rect it fills.
-    selected: Cell<Option<ProposalSize>>,
+    /// How the parent layout placed this container: the proposal it
+    /// selected — `None` while no Rust parent has placed us, and the
+    /// container builds its own bounded offer from the rect it fills — and
+    /// the offset its pixel alignment left.
+    placement: Cell<Placement>,
     /// The host view, for layout invalidation inside watchers.
     host: Retained<HostView>,
 }
@@ -91,7 +91,7 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
         let state = state.borrow();
         // Placed by a Rust parent: the proposal it selected. Natively hosted:
         // the boundary offer for the rect this container fills.
-        let proposal = state.selected.get().unwrap_or_else(|| {
+        let proposal = state.placement.get().proposal.unwrap_or_else(|| {
             ProposalSize::new(
                 Some(safe_rect.size.width as f32),
                 Some(safe_rect.size.height as f32),
@@ -139,11 +139,12 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
             frame,
             state.host.background_slot() == Some(index),
         );
-        // The negotiated proposal lands before the frame: a container child
-        // that lays out on the frame change already holds its selected
-        // proposal, and a proposal change alone still marks it for relayout.
-        proposal::deliver(child.view(), placement.proposal);
-        view::set_frame(child.view(), frame);
+        proposal::place(
+            child.view(),
+            frame,
+            Some(placement.proposal),
+            state.placement.get().offset,
+        );
     }
 }
 
@@ -228,7 +229,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let state = Rc::new(RefCell::new(FixedState {
             layout,
             children,
-            selected: Cell::new(None),
+            placement: Cell::new(Placement::UNPLACED),
             host: host.clone(),
         }));
 
@@ -278,16 +279,17 @@ pub fn install(dispatcher: &mut Dispatcher) {
             }
         });
 
-        // The proposal a Rust parent selected invalidates placement even
-        // when the frame does not move — equal bounds under a different
-        // offer can produce a different child layout.
+        // The placement a Rust parent gave invalidates layout even when the
+        // frame does not move — equal bounds under a different offer can
+        // produce a different child layout, and under a different offset a
+        // different pixel alignment of the children.
         let sink_guard = proposal::register_sink(&host, {
             let state = Rc::clone(&state);
             let host = host.clone();
-            move |selected| {
+            move |placement| {
                 let state = state.borrow();
-                if state.selected.get() != Some(selected) {
-                    state.selected.set(Some(selected));
+                if state.placement.get() != placement {
+                    state.placement.set(placement);
                     host.set_needs_layout();
                 }
             }

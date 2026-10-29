@@ -1482,10 +1482,10 @@ struct GlyphResources<'a> {
 
 /// Cell origins and raster resolutions produced by one deferred raster.
 enum PendingOrigin {
-    /// Cell origins — one for a glyph, one per cell for a path
-    /// emission — and the shelves the admission's cells live on, so
-    /// patched emissions can reference the bands (#119).
-    Cells(Vec<(u32, u32)>, Vec<u32>),
+    /// A glyph's single origin and optional shelf.
+    Glyph((u32, u32), Option<u32>),
+    /// An admitted path whose cells and shelves remain pinned in the atlas.
+    Path(u64),
     /// A clip mask's cell origin.
     Mask([f32; 2]),
     /// A GPU-routed path: its compute record index (issue #2543).
@@ -2372,6 +2372,20 @@ fn create_pipeline(
     format: wgpu::TextureFormat,
     mode: CoveragePass,
 ) -> Result<wgpu::RenderPipeline, EngineError> {
+    let pipeline = compile_pipeline(device, layout, cache, programs, format, mode)?;
+    persist_pipeline_cache(cache, config);
+    Ok(pipeline)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn compile_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    cache: Option<&wgpu::PipelineCache>,
+    programs: &shaders::EnginePrograms,
+    format: wgpu::TextureFormat,
+    mode: CoveragePass,
+) -> Result<wgpu::RenderPipeline, EngineError> {
     let program = &programs[mode.program()];
     let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2406,7 +2420,6 @@ fn create_pipeline(
     if let Some(error) = pollster::block_on(error_scope.pop()) {
         return Err(EngineError::Backend(format!("{error}")));
     }
-    persist_pipeline_cache(cache, config);
     Ok(pipeline)
 }
 
@@ -2749,32 +2762,56 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         // at the first draw that needs it (#170 B3). The coverage pair
         // follows the same policy via `coverage_pipeline`.
         if let Some(modules) = &modules {
-            for format in [WORKING_FORMAT, scratch_format] {
-                let slot = format_slot(format);
-                for replace in [false, true] {
-                    for (variant, module) in EAGER_CORE_VARIANTS.iter().zip(modules) {
-                        let cell = &mut pipelines[slot][usize::from(replace)][*variant];
-                        if cell.is_none() {
-                            *cell = Some(create_pipeline(
-                                &device,
-                                &config,
-                                &pipeline_layout,
-                                pipeline_cache.as_ref(),
-                                module,
-                                format,
-                                CoveragePass::Painter(replace),
-                            )?);
+            // Each shader family compiles independently. Keep formats and blend
+            // modes within a family serial so they reuse the shared driver cache.
+            // The four workers exist only during initialization; drawing never
+            // waits for background compilation or substitutes another pipeline.
+            let compiled = std::thread::scope(|scope| {
+                let workers = std::array::from_fn::<_, 4, _>(|index| {
+                    let variant = EAGER_CORE_VARIANTS[index];
+                    let module = &modules[index];
+                    let (device, layout, cache) =
+                        (&device, &pipeline_layout, pipeline_cache.as_ref());
+                    scope.spawn(move || {
+                        let mut compiled = Vec::new();
+                        for format in [WORKING_FORMAT, scratch_format]
+                            .into_iter()
+                            .enumerate()
+                            .filter_map(|(index, format)| {
+                                (index == 0 || format != WORKING_FORMAT).then_some(format)
+                            })
+                        {
+                            for replace in [false, true] {
+                                let pipeline = compile_pipeline(
+                                    device,
+                                    layout,
+                                    cache,
+                                    module,
+                                    format,
+                                    CoveragePass::Painter(replace),
+                                )?;
+                                compiled.push((format_slot(format), replace, pipeline));
+                            }
                         }
-                    }
+                        Ok::<_, EngineError>((variant, compiled))
+                    })
+                });
+                workers
+                    .into_iter()
+                    .map(|worker| worker.join().expect("pipeline compiler panicked"))
+                    .collect::<Result<Vec<_>, EngineError>>()
+            })?;
+            for (variant, compiled) in compiled {
+                for (slot, replace, pipeline) in compiled {
+                    pipelines[slot][usize::from(replace)][variant] = Some(pipeline);
                 }
             }
             for (cell, phase) in coverage_pipelines[format_slot(WORKING_FORMAT)][0]
                 .iter_mut()
                 .zip([CoveragePhase::Opaque, CoveragePhase::Partial])
             {
-                *cell = Some(create_pipeline(
+                *cell = Some(compile_pipeline(
                     &device,
-                    &config,
                     &pipeline_layout,
                     pipeline_cache.as_ref(),
                     &modules[0],
@@ -2782,6 +2819,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                     CoveragePass::Coverage(phase),
                 )?);
             }
+            persist_pipeline_cache(pipeline_cache.as_ref(), &config);
         }
         // The pipelines own their compiled programs. Drop only the temporary
         // compilation cache here; configured disk caches keep their existing
@@ -7768,12 +7806,22 @@ impl GpuRenderer {
                 range.gpu = Some(index);
             }
         }
-        let cell_origin = |p: u32, c: u32| {
-            let PendingOrigin::Cells(cells, _) = &origins[p as usize] else {
-                unreachable!("cell patch must reference cell raster");
-            };
-            let (x, y) = cells[c as usize];
-            [x as f32, y as f32]
+        // Admissions can move the atlas's map entries. Borrow only after
+        // the whole batch is placed; its touched shelves remain pinned.
+        let paths: Vec<_> = origins
+            .iter()
+            .map(|origin| match origin {
+                PendingOrigin::Path(key) => Some(self.atlas.path(*key).expect("just stored")),
+                _ => None,
+            })
+            .collect();
+        let cell_origin = |p: u32, c: u32| match &origins[p as usize] {
+            PendingOrigin::Glyph((x, y), _) => [*x as f32, *y as f32],
+            PendingOrigin::Path(_) => {
+                let cell = &paths[p as usize].expect("admitted path").cells[c as usize];
+                [f32::from(cell.x), f32::from(cell.y)]
+            }
+            _ => unreachable!("cell patch must reference cell raster"),
         };
         for content in surf.layers.values_mut() {
             let (_, emissions) = content.retained.prepared();
@@ -7791,19 +7839,30 @@ impl GpuRenderer {
                 // tail (#119).
                 if emission.refs & lower::DEFERRED_REFS != 0 || !emission.pending_cells_empty() {
                     let first = content.storage.refs.len();
+                    let mut previous_pending = None;
                     for i in emission.pending_cells() {
                         let (inst, p, c) = lowered.emission_patches[i];
                         let local = inst - emission.cell_inst_base();
                         content.storage.instances[emission.instances.start + local as usize].uv
                             [..2]
                             .copy_from_slice(&cell_origin(p, c));
-                        if let PendingOrigin::Cells(_, bands) = &origins[p as usize] {
+                        // Path cell patches are consecutive. Register their
+                        // complete shelf set once instead of once per cell.
+                        if previous_pending != Some(p) {
+                            let bands = match &origins[p as usize] {
+                                PendingOrigin::Glyph(_, slot) => slot.as_slice(),
+                                PendingOrigin::Path(_) => self.atlas.emit_slot_arena(
+                                    paths[p as usize].expect("admitted path").slots.clone(),
+                                ),
+                                _ => unreachable!("cell patch must reference cell raster"),
+                            };
                             content.storage.refs.extend(
                                 bands
                                     .iter()
                                     .map(|&slot| (slot, self.atlas.shelf_epoch(slot))),
                             );
                         }
+                        previous_pending = Some(p);
                     }
                     // Glyph cells record no slot at emit time: the shelf
                     // each stored UV samples is recovered here instead
@@ -7869,9 +7928,7 @@ impl GpuRenderer {
                 let out = self
                     .atlas
                     .place_glyph(key, left, top, w, h, texels, writes)
-                    .map(|(origin, shelf)| {
-                        PendingOrigin::Cells(vec![origin], shelf.into_iter().collect())
-                    })
+                    .map(|(origin, shelf)| PendingOrigin::Glyph(origin, shelf))
                     .ok_or(RenderError::AtlasFull)?;
                 if !hit && w == 0 {
                     diag::atlas_cell(&self.device, (0, 0, 0, 0));
@@ -7882,12 +7939,7 @@ impl GpuRenderer {
                 self.atlas
                     .place_path(key, emit, cells, arena, writes)
                     .ok_or(RenderError::AtlasFull)?;
-                Ok(PendingOrigin::Cells(
-                    self.atlas.path_origins(key).expect("just stored"),
-                    self.atlas
-                        .emit_slot_arena(self.atlas.path(key).expect("just stored").slots.clone())
-                        .to_vec(),
-                ))
+                Ok(PendingOrigin::Path(key))
             }
             PendingRaster::Mask {
                 key,

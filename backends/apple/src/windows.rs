@@ -273,6 +273,7 @@ mod imp {
         let host = HostView::new(mtm, window.content_rect());
         host.add_subview(leaf.view());
         let leaf_view = cocoa_ui::view::retain_base(leaf.view());
+        let leaf_content = leaf_view.clone();
         #[cfg(feature = "gpu_surface")]
         let reveal_view = leaf_view.clone();
 
@@ -286,7 +287,14 @@ mod imp {
             // `leaf_view` holds the retain for the host's lifetime.
             let frame =
                 crate::native_layout::LayoutContext::of(host_view).content_frame(&leaf_view);
-            cocoa_ui::view::set_frame(&leaf_view, frame);
+            // The window's content rect is platform geometry on the
+            // device-pixel grid; the content negotiates no proposal.
+            crate::proposal::place(
+                &leaf_view,
+                frame,
+                None,
+                cocoa_ui::view::SubpixelOffset::ZERO,
+            );
         });
         window.set_content_view(&host);
         keepalive.keep(leaf);
@@ -299,16 +307,30 @@ mod imp {
         // window's content view, which WaterUI owns here — behind the
         // content.
         let background = declaration.resolved_background(env);
-        wire_background(&window, &host, &mut keepalive, &background, env, mtm);
+        wire_background(
+            &window,
+            &host,
+            &leaf_content,
+            &mut keepalive,
+            &background,
+            env,
+            mtm,
+        );
 
         // The declared toolbar goes through the window's one `NSToolbar`:
         // each child becomes an `NSToolbarItem`, which is what gives it the
         // system's capsule, spacing and overflow.
         if let Some(toolbar) = declaration.toolbar {
+            let toolbar_env = crate::toolbar::toolbar_environment(env);
             let toolbar_leaf = crate::dispatch::dispatcher(env)
-                .render(toolbar, env, mtm)
+                .render(toolbar, &toolbar_env, mtm)
                 .expect("window toolbar must render: no handler or fallback claims it");
-            install_toolbar(window.native(), toolbar_leaf.view(), env, &mut keepalive);
+            install_toolbar(
+                window.native(),
+                toolbar_leaf.view(),
+                &toolbar_env,
+                &mut keepalive,
+            );
             keepalive.keep(toolbar_leaf);
         }
 
@@ -624,16 +646,17 @@ mod imp {
     /// `observeWindowBackground`'s wiring: the resolved background applies
     /// now and follows every change — a colour to the window, a material as
     /// the effect view filling `container`, the WaterUI-owned view holding
-    /// the window's content, behind that content.
+    /// the window's content, with `content` mounted inside it.
     fn wire_background(
         window: &Rc<cocoa_ui::appkit::Window>,
         container: &cocoa_ui::PlatformView,
+        content: &cocoa_ui::PlatformView,
         keepalive: &mut KeepAlive,
         resolved: &Computed<ResolvedWindowBackground>,
         env: &Environment,
         mtm: MainThreadMarker,
     ) {
-        crate::window_background::bind(keepalive, container, resolved, env, mtm, {
+        crate::window_background::bind(keepalive, container, content, resolved, env, mtm, {
             let window = window.clone();
             move |color| apply_background(&window, color)
         });
@@ -673,36 +696,45 @@ mod imp {
     /// `bindWindowBackground` for an embedded root: `resolved` paints the
     /// host-provided view's own layer background — the embedder owns the
     /// window, so no window property is touched — while a material still
-    /// gets its effect view behind the root's content.
+    /// gets its effect view behind the root's content, `content` mounted in it.
     pub fn bind_background(
         keepalive: &mut KeepAlive,
         host: &cocoa_ui::PlatformView,
+        content: &cocoa_ui::PlatformView,
         resolved: &Computed<ResolvedWindowBackground>,
         env: &Environment,
         mtm: MainThreadMarker,
     ) {
         let painted = cocoa_ui::view::retain_base(host);
         painted.setWantsLayer(true);
-        crate::window_background::bind(keepalive, host, resolved, env, mtm, move |color| {
-            let [red, green, blue, alpha] = color.components;
-            let rgba = cocoa_ui::appkit::colors::extended_linear_display_p3(
-                f64::from(red),
-                f64::from(green),
-                f64::from(blue),
-                f64::from(alpha),
-            );
-            let layer = painted
-                .layer()
-                .expect("a layer-backed view always answers `layer`");
-            // SAFETY: `layer` is the view's live backing layer; the `CGColor`
-            // `color.CGColor` produces outlives the call.
-            unsafe {
-                let _: () = objc2::msg_send![
-                    &*layer,
-                    setBackgroundColor: core::ptr::NonNull::from(&*rgba.CGColor())
-                ];
-            }
-        });
+        crate::window_background::bind(
+            keepalive,
+            host,
+            content,
+            resolved,
+            env,
+            mtm,
+            move |color| {
+                let [red, green, blue, alpha] = color.components;
+                let rgba = cocoa_ui::appkit::colors::extended_linear_display_p3(
+                    f64::from(red),
+                    f64::from(green),
+                    f64::from(blue),
+                    f64::from(alpha),
+                );
+                let layer = painted
+                    .layer()
+                    .expect("a layer-backed view always answers `layer`");
+                // SAFETY: `layer` is the view's live backing layer; the `CGColor`
+                // `color.CGColor` produces outlives the call.
+                unsafe {
+                    let _: () = objc2::msg_send![
+                        &*layer,
+                        setBackgroundColor: core::ptr::NonNull::from(&*rgba.CGColor())
+                    ];
+                }
+            },
+        );
     }
 
     fn mtm() -> MainThreadMarker {
@@ -1059,7 +1091,14 @@ mod imp {
             // `leaf_view` holds the retain for the host's lifetime.
             let frame =
                 crate::native_layout::LayoutContext::of(host_view).content_frame(&leaf_view);
-            cocoa_ui::view::set_frame(&leaf_view, frame);
+            // The window's content rect is platform geometry on the
+            // device-pixel grid; the content negotiates no proposal.
+            crate::proposal::place(
+                &leaf_view,
+                frame,
+                None,
+                cocoa_ui::view::SubpixelOffset::ZERO,
+            );
         });
         keepalive.keep(leaf);
         keepalive.keep(pending.observation);

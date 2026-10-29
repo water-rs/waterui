@@ -4180,6 +4180,43 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
     approx::assert_relative_eq!(draws[0].y0, -2.0);
 }
 
+/// A tab's `badge` count draws the theme's count badge on the item; a tab
+/// without one, or with a zero count, draws none (water-rs/waterui#3709).
+#[test]
+fn tab_badge_draws_only_for_a_nonzero_count() {
+    let env = test_environment();
+    let log = env
+        .get::<BadgeDrawLog>()
+        .expect("badge draw log is installed")
+        .clone();
+    let bounds = Rect::new(0.0, 0.0, 480.0, 480.0);
+    // The renderer retains tab state by node, so each variant captures on a
+    // fresh renderer.
+    let capture = |badge: Option<i32>| {
+        log.0.borrow_mut().clear();
+        let inbox = Tab::new("Inbox", || NavigationView::new("Inbox", text("One")));
+        let inbox = match badge {
+            Some(count) => inbox.badge(count),
+            None => inbox,
+        };
+        let tab_items = waterui_core::views::SharedAnyViews::new(vec![inbox]);
+        let snapshot = waterui_core::views::Views::snapshot(&tab_items);
+        let first = waterui_core::views::ViewSnapshot::get_id(&snapshot, 0)
+            .expect("a non-empty tab set reports an id");
+        let tabs = TabsLayout::new(Binding::container(first), tab_items);
+        let mut renderer = test_renderer_with_theme(MinimalTestTheme {
+            badge_draws: Rc::clone(&log.0),
+            ..Default::default()
+        });
+        capture_root_window(&mut renderer, tabs, &env, bounds);
+        log.0.borrow().len()
+    };
+
+    assert_eq!(capture(None), 0, "an unbadged tab draws no badge");
+    assert_eq!(capture(Some(0)), 0, "a zero count draws no badge");
+    assert_eq!(capture(Some(3)), 1, "a counted tab draws one count badge");
+}
+
 /// water-rs/hydrolysis#51: after the single-child collapse the surviving
 /// element reports the labelled container's resolved extent — the size it
 /// answered to the placement proposal, centred on the assigned frame — not

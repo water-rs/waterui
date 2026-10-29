@@ -829,6 +829,7 @@ async fn build_and_run(
         &build_plan,
         build_options(&config).with_progress(shell.build_progress()),
         kotlin_toolchain,
+        config.painter,
     ))
     .await?;
 
@@ -1016,6 +1017,7 @@ async fn build_for_backend(
     plan: &BuildPlan,
     build_options: BuildOptions,
     kotlin_toolchain: Option<&waterui_cli::android::KotlinToolchain>,
+    painter: HydrolysisAndroidPainter,
 ) -> Result<waterui_cli::build::BuiltTarget> {
     let kotlin = || {
         kotlin_toolchain.ok_or_else(|| {
@@ -1036,6 +1038,7 @@ async fn build_for_backend(
                 Box::pin(hydrolysis_android::build(
                     project,
                     abi,
+                    painter,
                     build_options,
                     kotlin()?,
                 ))

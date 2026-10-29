@@ -91,7 +91,7 @@ pub use key_commands::KeyCommands;
 pub use menu::{Menu, MenuAction, MenuButton, MenuElement, edit_menu};
 mod picker;
 mod pointer;
-pub use picker::Picker;
+pub use picker::{Picker, WHEEL_ROW_HEIGHT};
 pub mod toggle;
 pub use label::Label;
 mod slider;
@@ -116,6 +116,8 @@ pub use stepper::Stepper;
 pub use table::{SectionKind, TableCell, TableHeaderFooterView, TableSource, TableView};
 pub use tabs::{TabContentController, TabSpec, TabsController};
 pub use text_field::{SecureField, TextField};
+#[cfg(feature = "native-test")]
+pub use view_controller::AppearanceCounts;
 pub use view_controller::ViewController;
 pub(crate) use window::shared_application;
 pub use window::{Window, application_is_active, main_screen_scale, window_of};
