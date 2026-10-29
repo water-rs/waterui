@@ -60,9 +60,19 @@ fn as_view(scroll: &ScrollSurface) -> &PlatformView {
 /// their existing behaviour (the content's minimum and intrinsic extent).
 /// The one content measure under that content proposal serves the
 /// non-scrolling answer and an unspecified scrolling-axis extent together.
+///
+/// `reservation` is what the platform's scrollers take out of the frame
+/// beside the viewport ([`scroller_reservation`]). The content is offered
+/// the viewport — the offer less the reservation — and every answer derived
+/// from the content adds the reservation back, so the viewport, not the
+/// frame, holds the content's answer: a hugging scroll beside a legacy
+/// `AppKit` scroller is the scroller's width wider than its content, the
+/// way `NSScrollView`'s own `frameSizeForContentSize:` and `SwiftUI`'s
+/// `ScrollView` size it (water-rs/waterui#3597).
 fn scroll_min_size(
     axis: Axis,
     proposal: ProposalSize,
+    reservation: Size,
     measure_content: impl Fn(ProposalSize) -> Size,
 ) -> Size {
     // A `0` proposal measures the content's minimum: clamp a non-finite or
@@ -83,36 +93,45 @@ fn scroll_min_size(
             offer
         }
     };
+    // The viewport an offer leaves once the scrollers took their share.
+    let viewport =
+        |offer: Option<f32>, reserved: f32| offer.map(|offer| (offer - reserved).max(0.0));
     match axis {
         Axis::Vertical => {
             // The §6 content proposal for a vertical scroll: the width offer
             // on the content, its height free.
-            let measured = measure_content(ProposalSize::new(proposal.width, None));
+            let measured = measure_content(ProposalSize::new(
+                viewport(proposal.width, reservation.width),
+                None,
+            ));
             Size::new(
                 match proposal.width {
-                    Some(0.0) => minimum(measured.width),
-                    Some(offer) => cross(measured.width, offer),
-                    None => measured.width,
+                    Some(0.0) => minimum(measured.width) + reservation.width,
+                    Some(offer) => cross(measured.width + reservation.width, offer),
+                    None => measured.width + reservation.width,
                 },
                 match proposal.height {
                     Some(0.0) => 0.0,
                     Some(height) => height,
-                    None => measured.height,
+                    None => measured.height + reservation.height,
                 },
             )
         }
         Axis::Horizontal => {
-            let measured = measure_content(ProposalSize::new(None, proposal.height));
+            let measured = measure_content(ProposalSize::new(
+                None,
+                viewport(proposal.height, reservation.height),
+            ));
             Size::new(
                 match proposal.width {
                     Some(0.0) => 0.0,
                     Some(width) => width,
-                    None => measured.width,
+                    None => measured.width + reservation.width,
                 },
                 match proposal.height {
-                    Some(0.0) => minimum(measured.height),
-                    Some(offer) => cross(measured.height, offer),
-                    None => measured.height,
+                    Some(0.0) => minimum(measured.height) + reservation.height,
+                    Some(offer) => cross(measured.height + reservation.height, offer),
+                    None => measured.height + reservation.height,
                 },
             )
         }
@@ -126,12 +145,12 @@ fn scroll_min_size(
                 match proposal.width {
                     Some(0.0) => 0.0,
                     Some(width) => width,
-                    None => measured.map_or(0.0, |measured| measured.width),
+                    None => measured.map_or(0.0, |measured| measured.width + reservation.width),
                 },
                 match proposal.height {
                     Some(0.0) => 0.0,
                     Some(height) => height,
-                    None => measured.map_or(0.0, |measured| measured.height),
+                    None => measured.map_or(0.0, |measured| measured.height + reservation.height),
                 },
             )
         }
@@ -230,6 +249,9 @@ struct ScrollContent {
 /// The leaf's layout face: the scroll's own proposal answers.
 struct ScrollSubView {
     content: Rc<ScrollContent>,
+    /// Read for the scrollers' reservation at every measure, since the
+    /// scroller style can change while the scroll is mounted.
+    surface: Retained<ScrollSurface>,
 }
 
 impl SubView for ScrollSubView {
@@ -238,6 +260,7 @@ impl SubView for ScrollSubView {
         ViewDimensions::new(scroll_min_size(
             self.content.axis,
             proposal,
+            scroller_reservation(&self.surface),
             |content_proposal| child.layout().measure(content_proposal).size,
         ))
     }
@@ -252,6 +275,26 @@ impl SubView for ScrollSubView {
     fn priority(&self) -> i32 {
         0
     }
+}
+
+/// The extent `AppKit`'s scrollers take out of the scroll's frame beside
+/// the viewport — the legacy scroller's track, nothing for overlay
+/// scrollers — as a layout size.
+#[cfg(target_os = "macos")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "kit geometry is f64; layout proposals are f32"
+)]
+fn scroller_reservation(scroll: &ScrollSurface) -> Size {
+    let reserved = scroll.scroller_reservation();
+    Size::new(reserved.width as f32, reserved.height as f32)
+}
+
+/// `UIKit`'s scroll indicators float over the content and reserve none of
+/// the frame.
+#[cfg(target_os = "ios")]
+const fn scroller_reservation(_scroll: &ScrollSurface) -> Size {
+    Size::zero()
 }
 
 /// The scroll surface's viewport as a layout size.
@@ -471,14 +514,22 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
     });
 
     // `AppKit` retiles when a scroller appears or disappears; a clip area
-    // the content has not been laid out against asks for another pass.
+    // the content has not been laid out against asks for another pass. A
+    // scroller style change (the system's "Show scroll bars" setting) also
+    // changes the reservation the scroll's own answer carries, so the
+    // ancestors negotiate the scroll's frame again.
     #[cfg(target_os = "macos")]
     scroll.set_tile_handler({
         // The same strong capture and the same release boundary as the
         // layout handler above.
         let content = Rc::clone(&content);
+        let reservation = Cell::new(scroller_reservation(&scroll));
         move |scroll| {
-            if layout_viewport(scroll) != content.laid_out_viewport.get() {
+            let reserved = scroller_reservation(scroll);
+            if reserved != reservation.replace(reserved) {
+                crate::measure_memo::invalidate();
+                cocoa_ui::view::invalidate_layout(as_view(scroll));
+            } else if layout_viewport(scroll) != content.laid_out_viewport.get() {
                 scroll.set_needs_layout();
                 crate::measure_memo::invalidate();
             }
@@ -502,6 +553,7 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
         as_view(&scroll),
         ScrollSubView {
             content: Rc::clone(&content),
+            surface: Retained::clone(&scroll),
         },
     );
     leaf.keep(sink_guard);
@@ -685,6 +737,14 @@ mod tests {
         Size::new(402.0, 600.0)
     }
 
+    /// Scrollers that float over the content: overlay `AppKit` scrollers
+    /// and `UIKit` indicators.
+    const NO_SCROLLERS: Size = Size::zero();
+
+    /// A legacy `AppKit` vertical scroller: a regular scroller's 17 pt
+    /// track beside the viewport on macOS 26.
+    const LEGACY_VERTICAL_SCROLLER: Size = Size::new(17.0, 0.0);
+
     /// A toolbar band over the top of a surface, as the kit's content insets
     /// carry it.
     fn toolbar_inset() -> cocoa_ui::EdgeInsets {
@@ -782,6 +842,7 @@ mod tests {
         let size = scroll_min_size(
             Axis::Vertical,
             ProposalSize::new(Some(0.0), Some(600.0)),
+            NO_SCROLLERS,
             paragraph,
         );
         assert_eq!(size, Size::new(48.0, 600.0));
@@ -792,6 +853,7 @@ mod tests {
         let size = scroll_min_size(
             Axis::Vertical,
             ProposalSize::new(Some(402.0), Some(0.0)),
+            NO_SCROLLERS,
             paragraph,
         );
         assert_eq!(size, Size::new(402.0, 0.0));
@@ -802,6 +864,7 @@ mod tests {
         let size = scroll_min_size(
             Axis::Horizontal,
             ProposalSize::new(Some(402.0), Some(0.0)),
+            NO_SCROLLERS,
             |proposal| {
                 if proposal.height == Some(0.0) {
                     Size::new(900.0, 32.0)
@@ -822,13 +885,17 @@ mod tests {
         let size = scroll_min_size(
             Axis::Vertical,
             ProposalSize::new(None, Some(80.0)),
+            NO_SCROLLERS,
             paragraph,
         );
         assert_eq!(size, Size::new(2200.0, 80.0));
 
-        let twin = scroll_min_size(Axis::Vertical, ProposalSize::new(None, Some(80.0)), |_| {
-            Size::new(60.0, 300.0)
-        });
+        let twin = scroll_min_size(
+            Axis::Vertical,
+            ProposalSize::new(None, Some(80.0)),
+            NO_SCROLLERS,
+            |_| Size::new(60.0, 300.0),
+        );
         assert_eq!(twin, Size::new(60.0, 80.0));
     }
 
@@ -846,6 +913,7 @@ mod tests {
         let size = scroll_min_size(
             Axis::Horizontal,
             ProposalSize::new(Some(240.0), Some(160.0)),
+            NO_SCROLLERS,
             chip_row,
         );
         assert_eq!(size, Size::new(240.0, 28.0));
@@ -858,6 +926,7 @@ mod tests {
         let size = scroll_min_size(
             Axis::Vertical,
             ProposalSize::new(Some(240.0), Some(160.0)),
+            NO_SCROLLERS,
             |proposal| Size::new(28.0, proposal.height.unwrap_or(328.5)),
         );
         assert_eq!(size, Size::new(28.0, 160.0));
@@ -871,18 +940,21 @@ mod tests {
         let clamped = scroll_min_size(
             Axis::Horizontal,
             ProposalSize::new(Some(240.0), Some(10.0)),
+            NO_SCROLLERS,
             chip_row,
         );
         assert_eq!(clamped, Size::new(240.0, 10.0));
         let floor = scroll_min_size(
             Axis::Horizontal,
             ProposalSize::new(Some(240.0), Some(0.0)),
+            NO_SCROLLERS,
             chip_row,
         );
         assert_eq!(floor, Size::new(240.0, 28.0));
         let intrinsic = scroll_min_size(
             Axis::Horizontal,
             ProposalSize::new(Some(240.0), None),
+            NO_SCROLLERS,
             chip_row,
         );
         assert_eq!(intrinsic, Size::new(240.0, 28.0));
@@ -891,6 +963,7 @@ mod tests {
         let unspecified = scroll_min_size(
             Axis::Horizontal,
             ProposalSize::new(None, Some(160.0)),
+            NO_SCROLLERS,
             chip_row,
         );
         assert_eq!(unspecified, Size::new(328.5, 28.0));
@@ -904,6 +977,7 @@ mod tests {
         let size = scroll_min_size(
             Axis::Vertical,
             ProposalSize::new(Some(240.0), Some(160.0)),
+            NO_SCROLLERS,
             paragraph,
         );
         assert_eq!(size, Size::new(240.0, 160.0));
@@ -918,9 +992,50 @@ mod tests {
         let size = scroll_min_size(
             Axis::Vertical,
             ProposalSize::new(Some(240.0), None),
+            NO_SCROLLERS,
             paragraph,
         );
         assert_eq!(size, Size::new(240.0, 200.0));
+    }
+
+    /// water-rs/waterui#3597: beside a legacy scroller the viewport, not
+    /// the frame, holds the content's answer. A caption 535 pt wide hugs
+    /// into a 552 pt scroll — `frameSizeForContentSize:` of 535 under a
+    /// legacy scroller — and is offered the 783 pt viewport an 800 pt offer
+    /// leaves, so it never wraps against the scroller.
+    #[test]
+    fn a_legacy_scroller_widens_the_hug_by_its_track() {
+        let offered = core::cell::Cell::new(None);
+        let size = scroll_min_size(
+            Axis::Vertical,
+            ProposalSize::new(Some(800.0), Some(600.0)),
+            LEGACY_VERTICAL_SCROLLER,
+            |proposal| {
+                offered.set(proposal.width);
+                Size::new(
+                    proposal.width.map_or(535.0, |width| width.min(535.0)),
+                    900.0,
+                )
+            },
+        );
+        assert_eq!(size, Size::new(552.0, 600.0));
+        assert_eq!(offered.get(), Some(783.0));
+        // Filling content still fills the offer, scroller included.
+        let filled = scroll_min_size(
+            Axis::Vertical,
+            ProposalSize::new(Some(240.0), Some(160.0)),
+            LEGACY_VERTICAL_SCROLLER,
+            paragraph,
+        );
+        assert_eq!(filled, Size::new(240.0, 160.0));
+        // The unspecified width is the content's ideal plus the track.
+        let ideal = scroll_min_size(
+            Axis::Vertical,
+            ProposalSize::new(None, Some(160.0)),
+            LEGACY_VERTICAL_SCROLLER,
+            paragraph,
+        );
+        assert_eq!(ideal, Size::new(2217.0, 160.0));
     }
 
     /// `Axis::All` is unchanged: it fills a fully finite offer.
@@ -929,6 +1044,7 @@ mod tests {
         let size = scroll_min_size(
             Axis::All,
             ProposalSize::new(Some(240.0), Some(160.0)),
+            NO_SCROLLERS,
             chip_row,
         );
         assert_eq!(size, Size::new(240.0, 160.0));

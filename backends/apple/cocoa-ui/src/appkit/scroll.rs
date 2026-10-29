@@ -24,7 +24,7 @@ use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSClipView, NSScrollView, NSView, NSViewNoIntrinsicMetric};
+use objc2_app_kit::{NSClipView, NSScrollView, NSScroller, NSView, NSViewNoIntrinsicMetric};
 use objc2_foundation::{NSEdgeInsets, NSObjectProtocol, NSPoint, NSRect, NSSize};
 
 use crate::callback::guarded;
@@ -391,6 +391,45 @@ impl ScrollView {
     #[must_use]
     pub fn clip_view(&self) -> Retained<NSClipView> {
         self.contentView()
+    }
+
+    /// The extent this view's scrollers take out of its frame beside the
+    /// clip view: `AppKit`'s own `frameSizeForContentSize:…` conversion of
+    /// an empty content under this view's scrollers, border and current
+    /// scroller style. Legacy scrollers reserve their track (17 pt for a
+    /// regular scroller on macOS 26); overlay scrollers float over the
+    /// content and reserve nothing.
+    #[must_use]
+    pub fn scroller_reservation(&self) -> Size {
+        let vertical = self
+            .hasVerticalScroller()
+            .then(|| self.verticalScroller())
+            .flatten();
+        let horizontal = self
+            .hasHorizontalScroller()
+            .then(|| self.horizontalScroller())
+            .flatten();
+        let Some(control_size) = vertical
+            .as_deref()
+            .or(horizontal.as_deref())
+            .map(NSScroller::controlSize)
+        else {
+            return Size::ZERO;
+        };
+        // SAFETY: both classes are the classes of this view's own
+        // installed scrollers, so they are `NSScroller` subclasses.
+        unsafe {
+            NSScrollView::frameSizeForContentSize_horizontalScrollerClass_verticalScrollerClass_borderType_controlSize_scrollerStyle(
+                NSSize::ZERO,
+                horizontal.as_deref().map(|scroller| scroller.class()),
+                vertical.as_deref().map(|scroller| scroller.class()),
+                self.borderType(),
+                control_size,
+                self.scrollerStyle(),
+                MainThreadMarker::from(self),
+            )
+        }
+        .into()
     }
 
     /// The size of the visible scroll area — the clip view's bounds.
