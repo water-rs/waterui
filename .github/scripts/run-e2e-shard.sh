@@ -163,6 +163,21 @@ if ! compare_tool="$(command -v compare-screenshots)" || [[ ! -x "${compare_tool
   exit 1
 fi
 
+# Temporary diagnostics for #3608 (status bar sometimes shows only the
+# battery): every simctl probe is bounded and never fails the shard.
+status_diag_bounded() {
+  local label="$1"
+  shift
+  local at
+  at="$("${command_deadline}" deadline --seconds 30)" || return 0
+  "${command_deadline}" run --label "diag3608:${label}" \
+    --deadline-at "${at}" --receipt "${receipts_file}" \
+    --max-seconds 20 -- "$@" 2>&1 || echo "(${label} exited $?)"
+}
+status_diag_list() {
+  status_diag_bounded status-bar-list xcrun simctl status_bar "${SIMULATOR_UDID}" list
+}
+
 if [[ "${platform}" == "ios" ]]; then
   # A `simctl launch` opens the app over whatever is currently frontmost, and
   # iOS answers with the status-bar "back to <app>" breadcrumb — pixels the
@@ -199,6 +214,11 @@ if [[ "${platform}" == "ios" ]]; then
     echo "::error::Failed to set the status bar override on ${SIMULATOR_UDID}."
     exit 1
   fi
+  {
+    echo "override applied at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "--- status_bar list right after override ---"
+    status_diag_list
+  } > "${logs_dir}/ios-${shard_index}-status-bar-override.txt" 2>&1
   trap 'xcrun simctl status_bar "${SIMULATOR_UDID}" clear >/dev/null 2>&1 || true' EXIT
 fi
 
@@ -247,10 +267,27 @@ capture_frame() {
     # Removing the prior file first means a command that exits 0 without
     # writing cannot let a stale frame pass as this capture.
     rm -f "${target}"
+    local diag3608="${logs_dir}/ios-${example}-status-bar-diag.txt"
+    {
+      echo "=== screenshot ${target##*/} start $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+      echo "--- status_bar list before ---"
+      status_diag_list
+    } >> "${diag3608}" 2>&1
+    local shot_rc=0
     "${command_deadline}" run --label "capture:simctl-io-screenshot" \
       --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
       --max-seconds "${COMMAND_BOUND_S}" \
-      -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${target}" >/dev/null || return
+      -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${target}" >/dev/null || shot_rc=$?
+    {
+      echo "=== screenshot end $(date -u +%Y-%m-%dT%H:%M:%SZ) rc=${shot_rc} ==="
+      echo "--- status_bar list after ---"
+      status_diag_list
+      echo "--- SpringBoard status log, last 2m ---"
+      status_diag_bounded springboard-log xcrun simctl spawn "${SIMULATOR_UDID}" log show \
+        --last 2m --style compact \
+        --predicate 'process == "SpringBoard" AND (eventMessage CONTAINS[c] "status" OR subsystem CONTAINS[c] "StatusBar")'
+    } >> "${diag3608}" 2>&1
+    [[ "${shot_rc}" -eq 0 ]] || return "${shot_rc}"
   else
     local window_id
     window_id="$("${command_deadline}" run --label "capture:window-id" \
@@ -957,7 +994,11 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       > "${marker_log}" 2>/dev/null &
     stream_pid=$!
     sleep 1
+    echo "app launch at $(date -u +%Y-%m-%dT%H:%M:%SZ) (override log: ios-${shard_index}-status-bar-override.txt)" \
+      >> "${logs_dir}/ios-${example}-status-bar-diag.txt"
     app_pid="$(xcrun simctl launch "${SIMULATOR_UDID}" "${bundle_id}" | awk -F': ' '{print $2}')"
+    echo "app launched at $(date -u +%Y-%m-%dT%H:%M:%SZ) pid=${app_pid}" \
+      >> "${logs_dir}/ios-${example}-status-bar-diag.txt"
     if [[ -z "${app_pid}" ]]; then
       kill "${stream_pid}" 2>/dev/null || true
       echo "::error::${example} packaged app failed to launch in the simulator."
