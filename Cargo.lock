@@ -4675,6 +4675,7 @@ dependencies = [
  "waterkit-clipboard",
  "waterkit-menu",
  "waterui",
+ "waterui-apple-menu",
  "waterui-assets",
  "waterui-backend-core",
  "waterui-canvas",
@@ -12657,6 +12658,7 @@ dependencies = [
  "waterkit-audio",
  "waterkit-build",
  "waterui",
+ "waterui-apple-menu",
  "waterui-backend-core",
  "waterui-core",
  "waterui-graphics",
@@ -12667,6 +12669,17 @@ dependencies = [
  "waterui-video",
  "waterui-webview",
  "wgpu-hal",
+]
+
+[[package]]
+name = "waterui-apple-menu"
+version = "0.1.0"
+dependencies = [
+ "cocoa-ui",
+ "nami",
+ "tracing",
+ "waterui-controls",
+ "waterui-core",
 ]
 
 [[package]]

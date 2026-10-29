@@ -14,7 +14,7 @@ use cocoa_ui::menu::MenuTreeNode;
     any(feature = "menu", feature = "context_menu", feature = "text_field")
 ))]
 use waterui::component::menu::CloseWindowChord;
-use waterui::component::menu::{CommandRole, ResolvedCommand, ResolvedMenuItem, Shortcut};
+use waterui::component::menu::{CommandRole, ResolvedCommand, ResolvedMenuItem};
 use waterui::reactive::Signal;
 #[cfg(feature = "menu")]
 use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
@@ -82,28 +82,12 @@ pub(super) fn collect_item_watchers(
     }
 }
 
-/// The key equivalent and modifier set a `Shortcut` describes; no shortcut
-/// is the empty pair.
-fn shortcut_parts(shortcut: &Shortcut) -> (String, cocoa_ui::menu::KeyModifiers) {
-    use cocoa_ui::menu::KeyModifiers;
-    let modifiers = [
-        (shortcut.modifiers.command(), KeyModifiers::COMMAND),
-        (shortcut.modifiers.option(), KeyModifiers::OPTION),
-        (shortcut.modifiers.shift(), KeyModifiers::SHIFT),
-        (shortcut.modifiers.control(), KeyModifiers::CONTROL),
-    ]
-    .into_iter()
-    .filter(|(held, _)| *held)
-    .fold(KeyModifiers::empty(), |flags, (_, native)| flags | native);
-    (crate::menus::key_equivalent_for(&shortcut.key), modifiers)
-}
-
 /// A `ResolvedCommand` as a kit `Command` — every presentation field
 /// snapshotted; the shortcut's key equivalent travels cross-platform.
 fn kit_command(command: &ResolvedCommand) -> KitCommand {
     let (key_equivalent, modifiers) = command.shortcut.as_ref().map_or_else(
         || (String::new(), cocoa_ui::menu::KeyModifiers::empty()),
-        shortcut_parts,
+        waterui_apple_menu::shortcut_parts,
     );
     KitCommand {
         label: item_title(&command.label.content.snapshot()),
@@ -146,7 +130,7 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<M
             }
             ResolvedMenuItem::CloseWindow => {
                 #[cfg(target_os = "macos")]
-                nodes.push(crate::menus::standard_close_window_node(
+                nodes.push(waterui_apple_menu::standard_close_window_node(
                     CloseWindowChord::of(env).as_ref(),
                 ));
             }

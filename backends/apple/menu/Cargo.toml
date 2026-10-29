@@ -1,0 +1,22 @@
+[package]
+name = "waterui-apple-menu"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Projects WaterUI menus onto the native menu tree of cocoa-ui, for the Apple and Hydrolysis hosts"
+keywords = ["menu", "appkit", "uikit"]
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+waterui-controls.workspace = true
+waterui-core.workspace = true
+nami.workspace = true
+tracing.workspace = true
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+cocoa-ui = { path = "../cocoa-ui", version = "0.1.0", default-features = false }

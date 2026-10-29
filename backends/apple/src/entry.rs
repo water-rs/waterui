@@ -217,7 +217,7 @@ mod imp {
     struct Launch {
         app: Option<Box<dyn FnOnce(Environment) -> App>>,
         env: *mut Environment,
-        declared: crate::menus::Declared,
+        declared: waterui_apple_menu::ios::Declared,
         scenes: crate::scene_registry::Registration<crate::windows::Scenes>,
         _theme: Rc<ThemeSignals>,
         _locale: Box<dyn Any>,
@@ -260,7 +260,7 @@ mod imp {
         // `installMenuBar`: `declared` feeds the `build_menus` handler the
         // delegate registered at launch; the watch rebuilds on every change.
         // The guard lives for the process.
-        core::mem::forget(crate::menus::install_declared(
+        core::mem::forget(waterui_apple_menu::ios::install_declared(
             &parts.menu_bar,
             &app_env,
             &launch.declared,
@@ -284,8 +284,8 @@ mod imp {
 
         // Filled by `prepared`: `build_menus` can fire before `app(env)`
         // runs, so the declared menus sit behind this slot.
-        let declared = crate::menus::declared();
-        let build_menus = crate::menus::build_handler(Rc::clone(&declared));
+        let declared = waterui_apple_menu::ios::declared();
+        let build_menus = waterui_apple_menu::ios::build_handler(Rc::clone(&declared));
         let scenes = env
             .get::<crate::scene_registry::SceneRegistry<crate::windows::Scenes>>()
             .expect("application owns scene routing")

@@ -18,6 +18,7 @@ mod host;
 mod insets;
 mod scene;
 
+use std::any::Any;
 use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -28,6 +29,7 @@ use cocoa_ui::uikit::{self, ApplicationHandlers, Window, WindowScene};
 use executor_core::{LocalExecutor as _, Task as _};
 use waterui::app::App;
 use waterui::theme::ColorScheme;
+use waterui_apple_menu::ios::{Declared, build_handler, declared, install_declared};
 use waterui_core::Environment;
 
 use super::session::AppleExecutor;
@@ -88,6 +90,11 @@ struct UiKitApplication {
     color_scheme: nami::Binding<ColorScheme>,
     process: OnceCell<Rc<Process>>,
     scenes: RefCell<BTreeMap<String, Rc<UiKitScene>>>,
+    /// What the `build_menus` handler reads: the resolved menu bar and the
+    /// environment its actions run under, filled by launch.
+    menus: Declared,
+    /// Keeps the menu bar's change watch alive for the process.
+    menu_watch: RefCell<Option<Box<dyn Any>>>,
 }
 
 impl UiKitApplication {
@@ -135,6 +142,16 @@ impl UiKitApplication {
             style,
             self.color_scheme.clone(),
             &pending_window_queue,
+        );
+
+        // The iPadOS main menu is built from the environment the chords above
+        // were registered under, so its actions run with the application
+        // environment as the macOS winit bar's do. `UIKit` builds the menu
+        // after launch returns; the rebuild request covers a build that ran
+        // before this fill.
+        *self.menu_watch.borrow_mut() = Some(install_declared(&menu_bar, &env, &self.menus));
+        uikit::request_main_menu_rebuild(
+            MainThreadMarker::new().expect("launch runs on the main thread"),
         );
 
         let application = Rc::clone(self);
@@ -243,6 +260,7 @@ pub(in crate::runner) fn run(
 
     let mut services = Environment::new();
     waterui::inspector::install(&mut services, inspector);
+    let menus = declared();
     let application = Rc::new(UiKitApplication {
         executor,
         launch: RefCell::new(Some(Launch {
@@ -254,11 +272,14 @@ pub(in crate::runner) fn run(
         color_scheme: nami::binding(framework_scheme(uikit::current_scheme())),
         process: OnceCell::new(),
         scenes: RefCell::new(BTreeMap::new()),
+        menus: Rc::clone(&menus),
+        menu_watch: RefCell::new(None),
     });
     let handlers = ApplicationHandlers::new({
         let application = Rc::clone(&application);
         move |scene| application.connect(scene)
     })
+    .build_menus(build_handler(menus))
     .did_finish_launching({
         let application = Rc::clone(&application);
         move |_| application.did_finish_launching()

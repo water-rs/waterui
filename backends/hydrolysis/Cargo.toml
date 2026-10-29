@@ -81,6 +81,9 @@ accesskit_winit = { version = "0.34.1", optional = true }
 # `accessibility` feature.
 [target.'cfg(target_os = "ios")'.dependencies]
 cocoa-ui = { path = "../apple/cocoa-ui", version = "0.1.0", default-features = false, features = ["tracing"] }
+# The WaterUI menu to native menu projection, shared with the Apple backend: the
+# iPadOS main menu and its `UIKeyCommand`s are built through it.
+waterui-apple-menu = { path = "../apple/menu", version = "0.1.0" }
 accesskit_ios = { version = "0.2.2", default-features = false, optional = true }
 # Routes a panic's message and location through `tracing`, so it reaches the
 # unified log on a device whose stderr nothing reads.
