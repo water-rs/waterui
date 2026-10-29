@@ -1549,12 +1549,12 @@ fn spawn_setup(state: &Rc<FilteredState>) {
                     input_format: PRESENTATION_FORMAT,
                     output_format: PRESENTATION_FORMAT,
                 };
+                // Each effect compiles its pipelines independently, off the
+                // main thread; the chain's setups run together.
                 std::panic::AssertUnwindSafe(async {
-                    for effect in &mut effects {
-                        effect
-                            .setup(&ctx)
-                            .await
-                            .unwrap_or_else(|error| panic!("filtered setup failed: {error}"));
+                    let setups = effects.iter_mut().map(|effect| effect.setup(&ctx));
+                    for outcome in futures::future::join_all(setups).await {
+                        outcome.unwrap_or_else(|error| panic!("filtered setup failed: {error}"));
                     }
                 })
                 .catch_unwind()
