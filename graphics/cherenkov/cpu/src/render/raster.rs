@@ -1977,6 +1977,59 @@ fn kept_rows(union: &IRect, reach: usize, band: (usize, usize), h: usize) -> (us
     (kept0, kept1)
 }
 
+/// A band's working background; the public output remains linear P3.
+/// When every root composite is normal sRGB, keep that working space
+/// through the band instead of converting the destination at every group.
+/// Backdrop captures and filter windows retain their linear root canvas.
+#[derive(Clone, Copy)]
+struct Background {
+    color: [f32; 4],
+    space: cherenkov::BlendSpace,
+}
+
+impl Background {
+    fn new(
+        level: fearless_simd::Level,
+        items: &[Item],
+        clear: [f32; 4],
+        has_backdrop: bool,
+    ) -> Self {
+        use cherenkov::{BlendMode, BlendSpace};
+        let linear = Self {
+            color: clear,
+            space: BlendSpace::Linear,
+        };
+        if has_backdrop || items.is_empty() {
+            return linear;
+        }
+        let mut depth = 0;
+        for item in items {
+            match item {
+                Item::PushIsolate { space } => {
+                    if depth == 0 && *space != BlendSpace::SrgbEncoded {
+                        return linear;
+                    }
+                    depth += 1;
+                }
+                Item::PopIsolate { blend, .. } => {
+                    depth -= 1;
+                    if depth == 0 && *blend != (BlendMode::Normal, BlendSpace::SrgbEncoded) {
+                        return linear;
+                    }
+                }
+                Item::PushFilter { .. } => return linear,
+                _ if depth == 0 => return linear,
+                _ => {}
+            }
+        }
+        Self {
+            color: cherenkov_simd::dispatch!(level, simd =>
+                move_space(simd, clear, BlendSpace::Linear, BlendSpace::SrgbEncoded)),
+            space: BlendSpace::SrgbEncoded,
+        }
+    }
+}
+
 /// Shades one band of `slice` rows (`w * bh` pixels, cleared first),
 /// starting at device row `y0`.
 ///
@@ -1997,7 +2050,7 @@ fn shade(
     level: fearless_simd::Level,
     items: &[Item],
     index: &FrameIndex,
-    clear: [f32; 4],
+    background: Background,
     slice: &mut [[f32; 4]],
     w: usize,
     y0: usize,
@@ -2012,7 +2065,7 @@ fn shade(
         scratch.buffers.give_color(capture.buf);
     }
     scratch.buffers.meter.reset();
-    slice.fill(clear);
+    slice.fill(background.color);
     let surface = (y0, y0 + bh);
     // A surface that used no backdrop group cannot contain a `Capture`,
     // so the scan is skipped outright.
@@ -2042,7 +2095,7 @@ fn shade(
             level,
             items,
             index,
-            clear,
+            background.color,
             slice,
             w,
             surface,
@@ -2058,6 +2111,7 @@ fn shade(
             items,
             index,
             slice,
+            background.space,
             w,
             surface,
             h,
@@ -2076,6 +2130,10 @@ fn shade(
             (scratch.buffers.meter.delta_peak() * size_of::<[f32; 4]>()) as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
+    }
+    if result.is_ok() && background.space != cherenkov::BlendSpace::Linear {
+        cherenkov_simd::dispatch!(level, simd => convert_span(
+            simd, slice, background.space, cherenkov::BlendSpace::Linear));
     }
     result
 }
@@ -2148,6 +2206,7 @@ fn shade_plain(
     items: &[Item],
     index: &FrameIndex,
     slice: &mut [[f32; 4]],
+    space: cherenkov::BlendSpace,
     w: usize,
     surface: (usize, usize),
     h: usize,
@@ -2161,7 +2220,7 @@ fn shade_plain(
         fb: slice,
         w,
         y0,
-        space: cherenkov::BlendSpace::Linear,
+        space,
     };
     run_at(
         level,
@@ -2434,6 +2493,7 @@ pub fn render_bands(
     let meter = &*meter;
     let index = &*index;
     let stats = stats(items);
+    let background = Background::new(level, items, clear, has_backdrop);
     for_each_band(
         fb,
         w,
@@ -2446,7 +2506,7 @@ pub fn render_bands(
                 level,
                 items,
                 index,
-                clear,
+                background,
                 band,
                 w,
                 y0,
@@ -2485,6 +2545,7 @@ pub fn render_bands_f16(
     let meter = &*meter;
     let index = &*index;
     let stats = stats(items);
+    let background = Background::new(level, items, clear, has_backdrop);
     for_each_band(
         out,
         w,
@@ -2498,7 +2559,7 @@ pub fn render_bands_f16(
                 level,
                 items,
                 index,
-                clear,
+                background,
                 &mut band_px,
                 w,
                 y0,
@@ -2540,6 +2601,7 @@ pub fn render_bands_stream(
     meter: &mut FrameMeter,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     let stats = stats(items);
+    let background = Background::new(level, items, clear, has_backdrop);
     let (w, h) = size;
     meter.record_index(index.heap_bytes());
     let meter = &*meter;
@@ -2552,7 +2614,7 @@ pub fn render_bands_stream(
             level,
             items,
             index,
-            clear,
+            background,
             &mut band_px[..w * bh],
             w,
             y0,
