@@ -413,6 +413,27 @@ impl ScrollView {
         self.contentView().bounds().origin.into()
     }
 
+    /// The insets the surface applies around its content — the safe-area
+    /// bands [`layout_with_safe_area_insets`] set as `contentInsets`, the
+    /// `AppKit` counterpart of `UIKit`'s adjusted content inset. At rest
+    /// at its top the clip's bounds origin is the negated inset.
+    #[must_use]
+    pub fn adjusted_content_inset(&self) -> EdgeInsets {
+        self.contentInsets().into()
+    }
+
+    /// The scrollable canvas: the document view's frame size.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the document view was removed; the kit always installs one.
+    #[must_use]
+    pub fn content_extent(&self) -> Size {
+        self.documentView()
+            .map(|document| crate::view::frame(&document).size)
+            .expect("the kit scroll view always installs its document")
+    }
+
     /// Jumps the scroll position to `point`, top-left origin — superseding
     /// any scroll animation in flight. The shared jump clamps `point` to
     /// the clip's scrollable bounds first, so a target past the end lands
