@@ -90,7 +90,8 @@ impl JniResources {
             sink,
             limits: ImageLimits {
                 max_dimension: dimension,
-                max_texels: u64::from(dimension) * u64::from(dimension),
+                max_bytes: u64::from(dimension) * u64::from(dimension) * 4,
+                ..ImageLimits::UNLIMITED
             },
             font_bytes,
             system_font,

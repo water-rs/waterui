@@ -87,13 +87,21 @@ struct FormTwin: View {
       Text("Manual Form Controls").font(.subheadline)
       Text("Building forms manually with individual controls")
       textField("Username", prompt: "Enter your username")
+      textField("Bio", prompt: "Tell us about yourself", lineLimit: 3)
       toggle("Enable Feature", isOn: false)
       stepper("Item Count", value: 5, range: 0 ... 100, step: 5)
       labeledSlider("Progress", value: 0.5)
-      ProgressView(value: 0.5)
+      // `progress(value)` keeps `Progress::new`'s default label and its
+      // percentage value label.
+      ProgressView(value: 0.5) {
+        Text("Please wait...")
+      } currentValueLabel: {
+        Text("50%")
+      }
       wuiDivider()
       Text("Manual Controls Preview:").fontWeight(.bold)
       Text("Username: ")
+      Text("Bio: ")
       Text("Feature Enabled: false")
       Text("Count: 5")
       Text("Progress: 0.5")
@@ -113,10 +121,14 @@ struct FormTwin: View {
     VStack(spacing: 10) { fields() }
   }
 
-  private func textField(_ label: String, prompt: String) -> some View {
+  private func textField(_ label: String, prompt: String, lineLimit: Int? = nil) -> some View {
     VStack(alignment: .leading, spacing: 4) {
       Text(label)
-      TextField(prompt, text: .constant(""))
+      if let lineLimit {
+        TextField(prompt, text: .constant(""), axis: .vertical).lineLimit(lineLimit)
+      } else {
+        TextField(prompt, text: .constant(""))
+      }
     }
   }
 

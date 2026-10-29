@@ -46,6 +46,11 @@ fn main() {
     // `AppKit`/`UIKit` objects may only be built on the real main thread;
     // `run` executes sequentially in the calling thread at one thread.
     args.test_threads = Some(1);
+    // The precondition the GPU suites rely on for their whole run: an
+    // awake display — a sleeping one presents nothing (#3529). `--list`
+    // mounts nothing and skips it.
+    #[cfg(target_os = "macos")]
+    let _display_awake = (!args.list).then(cocoa_ui::native_test::DisplayAwake::hold);
     // Process-global startup (executors, tracing dispatcher) installs
     // once here on the same true main thread the trials run on — the
     // gpu-surface fixture mounts through it.
@@ -114,6 +119,42 @@ fn embedding_trials() -> Vec<Trial> {
     ]
 }
 
+/// The macOS `navigation::` window-chrome trials — kept beside `trials`
+/// so the registrars stay one-per-line.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+fn navigation_trials() -> Vec<Trial> {
+    vec![
+        Trial::test(
+            "navigation::a_searchable_page_rests_its_field_in_the_titlebar_row",
+            || {
+                navigation::a_searchable_page_rests_its_field_in_the_titlebar_row();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space",
+            || {
+                navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::a_toolbar_tab_picker_uses_the_extra_large_metrics",
+            || {
+                navigation::a_toolbar_tab_picker_uses_the_extra_large_metrics();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_labels_default_to_icons_and_preserve_explicit_titles",
+            || {
+                navigation::toolbar_labels_default_to_icons_and_preserve_explicit_titles();
+                Ok(())
+            },
+        ),
+    ]
+}
+
 fn trials() -> Vec<Trial> {
     let mut tests = base_trials();
     #[cfg(all(target_os = "macos", feature = "native-test"))]
@@ -129,6 +170,7 @@ fn trials() -> Vec<Trial> {
             }),
         ]);
         tests.extend(embedding_trials());
+        tests.extend(navigation_trials());
         tests.extend([
             Trial::test(
                 "menus::the_window_menu_opens_with_the_standard_close_item",
@@ -152,27 +194,6 @@ fn trials() -> Vec<Trial> {
                     Ok(())
                 },
             ),
-            Trial::test(
-                "navigation::a_searchable_page_rests_its_field_in_the_titlebar_row",
-                || {
-                    navigation::a_searchable_page_rests_its_field_in_the_titlebar_row();
-                    Ok(())
-                },
-            ),
-            Trial::test(
-                "navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space",
-                || {
-                    navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space();
-                    Ok(())
-                },
-            ),
-            Trial::test(
-                "navigation::a_toolbar_tab_picker_uses_the_extra_large_metrics",
-                || {
-                    navigation::a_toolbar_tab_picker_uses_the_extra_large_metrics();
-                    Ok(())
-                },
-            ),
             Trial::test("split::a_sidebar_list_takes_the_source_list_chrome", || {
                 split::a_sidebar_list_takes_the_source_list_chrome();
                 Ok(())
@@ -186,10 +207,14 @@ fn trials() -> Vec<Trial> {
         tests.extend(gesture_ax::trials());
         tests.extend(a11y_extent::trials());
         tests.extend(gesture_events::trials());
+        #[cfg(all(feature = "scale", feature = "rotation"))]
+        tests.extend(transform_modifiers::trials());
         #[cfg(feature = "gpu_surface")]
         {
             tests.extend(gpu_surface::trials());
             tests.extend(filtered::trials());
+            tests.extend(capture_colour::trials());
+            tests.extend(capture_order::trials());
         }
     }
     #[cfg(target_os = "ios")]
@@ -201,6 +226,7 @@ fn trials() -> Vec<Trial> {
         tests.extend(offset::trials());
     }
     tests.extend(migration::trials());
+    tests.extend(transition::trials());
     tests.extend(owner_lifetimes::trials());
     tests.extend(scroll::trials());
     tests.extend(list_scroll::trials());
@@ -436,62 +462,38 @@ fn trial_each(named: Vec<(String, Box<dyn FnOnce() + Send>)>) -> Vec<Trial> {
 mod appkit_input {
     use std::cell::Cell;
     use std::rc::Rc;
+    use std::time::Duration;
 
     use cocoa_ui::display_link::FrameClock;
+    use cocoa_ui::native_test::ManualScrollClock;
     use cocoa_ui::notification::{NotificationName, NotificationObserver, observe_object};
     use cocoa_ui::objc2_app_kit::{
-        NSEvent, NSEventModifierFlags, NSEventType, NSScrollView,
-        NSScrollViewDidLiveScrollNotification, NSView, NSWindow,
+        NSEvent, NSScrollView, NSScrollViewDidLiveScrollNotification,
+        NSStandardKeyBindingResponding, NSView, NSWindow,
     };
-    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize};
     use cocoa_ui::{MainThreadMarker, Retained};
     use objc2::runtime::AnyObject;
     use objc2::{MainThreadOnly, define_class, msg_send};
     use objc2_core_graphics::{CGEvent, CGScrollEventUnit};
-    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
-
-    /// A function key: its virtual key code and the `NS…FunctionKey`
-    /// character `AppKit` reports for it.
-    #[derive(Clone, Copy, Debug)]
-    pub struct FunctionKey {
-        key_code: u16,
-        character: u32,
-    }
-
-    /// `kVK_PageDown` / `NSPageDownFunctionKey`.
-    pub const PAGE_DOWN: FunctionKey = FunctionKey {
-        key_code: 0x79,
-        character: 0xF72D,
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, drain_main_queue, pump_main_until,
     };
 
-    /// `kVK_End` / `NSEndFunctionKey`.
-    pub const END: FunctionKey = FunctionKey {
-        key_code: 0x77,
-        character: 0xF72B,
-    };
-
-    /// Presses `key` in `window`: a key-down `window.sendEvent` routes to
-    /// the first responder, the way the window server's event does.
-    pub fn press(window: &NSWindow, key: FunctionKey) {
-        let characters = NSString::from_str(
-            &char::from_u32(key.character)
-                .expect("function-key characters are valid code points")
-                .to_string(),
-        );
-        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
-            NSEventType::KeyDown,
-            NSPoint::ZERO,
-            NSEventModifierFlags::Function,
-            0.0,
-            window.windowNumber(),
-            None,
-            &characters,
-            &characters,
-            false,
-            key.key_code,
-        )
-        .expect("AppKit builds a key-down event");
-        window.sendEvent(&event);
+    /// Sends `action` down `window`'s responder chain from its first
+    /// responder, the delivery `interpretKeyEvents` performs once a key
+    /// resolves to its binding. A key-down needs a key window to resolve,
+    /// and macOS's cooperative activation never makes a non-interactively
+    /// launched harness the active application, so the case starts at the
+    /// action: from there the scroll is `AppKit`'s own.
+    pub fn command(window: &NSWindow, action: objc2::runtime::Sel) {
+        let responder = window
+            .firstResponder()
+            .expect("the window has a first responder");
+        // SAFETY: `action` is a no-argument binding action; the chain's
+        // `doCommandBySelector:` forwarding is the mechanism
+        // `interpretKeyEvents` uses for resolved bindings.
+        unsafe { responder.doCommandBySelector(action) };
     }
 
     /// Scrolls `scroll_view` by `pixels` with a legacy mouse wheel: a
@@ -596,51 +598,68 @@ mod appkit_input {
     /// Mid-flight, `AppKit` corrects the clip for a document growing by
     /// 500pt (`grow_document`), then for `window` growing and shrinking —
     /// none of which is user scrolling, so the flight to `target` must
-    /// keep running through each. Each change comes after the flight has
-    /// progressed another quarter of `target`; returns once it lands.
+    /// keep running through each. Each correction follows a stepped frame
+    /// of the surface's manual clock, and the final frame reaches the
+    /// schedule's end and lands the flight.
     pub fn assert_flight_survives_corrections(
         window: &NSWindow,
+        clock: &ManualScrollClock,
         target: f64,
         in_flight: impl Fn() -> bool,
         offset: impl Fn() -> f64,
         grow_document: impl FnOnce(),
     ) {
+        // The 2 s linear flight, stepped a frame at a time: a quarter-second
+        // frame before each of the three corrections and one after the last,
+        // all mid-schedule; the final frame reaches the schedule's end and
+        // lands. Every instant is a dyadic fraction, so the elapsed time is
+        // exact and the landing frame is the last one by construction.
+        const STEP: Duration = Duration::from_millis(250);
         let content = window.contentView().expect("the window has a content view");
         let size = content.frame().size;
-        let advance = |step: u32, what: &str| {
-            let reached = target * f64::from(step) / 4.0;
-            assert!(
-                pump_main_until(MAIN_QUEUE_DEADLINE, || offset() >= reached || !in_flight()),
-                "the flight must progress toward {target}"
-            );
+        let step = |when: &str| {
+            let previous = offset().to_bits();
+            clock.advance(STEP);
             assert!(
                 in_flight(),
-                "the flight must still be running before {what}: offset {}",
+                "the flight must still be running {when}: offset {}",
+                offset()
+            );
+            assert!(
+                offset().to_bits() != previous,
+                "the frame {when} must move the flight toward {target}: offset {}",
                 offset()
             );
         };
         let settle = |what: &str| {
             content.layoutSubtreeIfNeeded();
             assert!(
+                drain_main_queue(super::mtm()),
+                "the main queue must drain after {what}"
+            );
+            assert!(
                 in_flight(),
                 "{what} must not cancel the flight: offset {}",
                 offset()
             );
         };
-        advance(1, "the document growing");
+        step("before the document grows");
         grow_document();
         settle("the document growing");
-        advance(2, "a larger window");
+        step("before a larger window");
         window.setContentSize(NSSize::new(size.width + 120.0, size.height + 160.0));
         settle("a larger window");
-        advance(3, "a smaller window");
+        step("before a smaller window");
         window.setContentSize(NSSize::new(size.width - 120.0, size.height - 160.0));
         settle("a smaller window");
-        let samples = super::pump_flight(in_flight, offset);
+        step("after the last correction");
+        clock.advance(Duration::from_secs(1));
         assert!(
-            samples.len() > 1,
-            "the flight must still be running after the last correction: {samples:?}"
+            !in_flight(),
+            "the frame at the schedule's end must land the flight: offset {}",
+            offset()
         );
+        assert!(!clock.is_running(), "the landed flight must stop its clock");
     }
 
     impl FocusTarget {
@@ -2478,6 +2497,72 @@ mod navigation {
         );
     }
 
+    /// A navigation page's toolbar labels present icon-only by default, so
+    /// an icon action's hosted item is exactly its icon wide and the
+    /// toolbar draws its capsule around the icon alone — while an explicit
+    /// title-and-icon preference keeps its title.
+    pub fn toolbar_labels_default_to_icons_and_preserve_explicit_titles() {
+        use waterui::component::{ButtonStyle, button, label};
+        use waterui::icon::SystemIcon;
+        use waterui::navigation::NavigationStack;
+        use waterui_core::layout::ProposalSize;
+
+        const LEADING: &str = "dev.cocoaui.navigation.leading";
+        const TRAILING: &str = "dev.cocoaui.navigation.trailing";
+
+        let icon = || SystemIcon::new("plus");
+        let icon_leaf = resolve::render(icon());
+        let icon_width = f64::from(
+            icon_leaf
+                .layout()
+                .measure(ProposalSize::UNSPECIFIED)
+                .size
+                .width,
+        );
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
+                vec![
+                    NavigationToolbarItem::new(
+                        NavigationToolbarPlacement::TopBarLeading,
+                        button(label("").icon(icon())).style(ButtonStyle::Borderless),
+                    ),
+                    NavigationToolbarItem::new(
+                        NavigationToolbarPlacement::TopBarTrailing,
+                        button(label("Keep title").icon(icon()).title_and_icon())
+                            .style(ButtonStyle::Borderless),
+                    ),
+                ],
+            )),
+        ));
+        let window = leaf::attach(mtm(), leaf.view());
+        let hosted_width = |identifier: &str| {
+            window.native().toolbar().and_then(|toolbar| {
+                toolbar
+                    .items()
+                    .iter()
+                    .find(|item| item.itemIdentifier().to_string() == identifier)
+                    .and_then(|item| item.view())
+                    .map(|view| view.frame().size.width)
+            })
+        };
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                hosted_width(LEADING).is_some() && hosted_width(TRAILING).is_some()
+            }),
+            "the page offers both actions to the window toolbar"
+        );
+        let automatic = hosted_width(LEADING).expect("the default action is hosted");
+        assert!(
+            (automatic - icon_width).abs() < 0.5,
+            "automatic toolbar label width {automatic} must equal icon width {icon_width} without empty-title spacing"
+        );
+        let explicit = hosted_width(TRAILING).expect("the explicit action is hosted");
+        assert!(
+            explicit > icon_width + 8.0,
+            "an explicit title-and-icon preference keeps its title, got {explicit}"
+        );
+    }
+
     /// The segmented control the window toolbar is hosting, when it has one.
     fn toolbar_segmented(
         window: &cocoa_ui::appkit::Window,
@@ -2573,10 +2658,29 @@ mod gpu_surface {
 
     use super::mtm;
 
-    /// The registered trials — the settle-ordering and completion
-    /// coverage for the mounted-surface ownership contract.
+    fn an_owed_first_frame_pauses_when_hidden() -> Result<(), libtest_mimic::Failed> {
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm()))
+            .map_err(|error| format!("mount: {error}"))?;
+        mounted.ensure_attached();
+        let _ready = mounted.readiness_probe();
+        assert!(!mounted.frame_presented(), "the first frame is still owed");
+        assert!(
+            !mounted.link_paused(),
+            "the visible first frame is scheduled"
+        );
+        cocoa_ui::view::set_hidden(mounted.leaf.view(), true);
+        assert!(mounted.link_paused(), "hiding pauses an owed first frame");
+        cocoa_ui::view::set_hidden(mounted.leaf.view(), false);
+        assert!(!mounted.link_paused(), "showing resumes the owed frame");
+        Ok(())
+    }
+
     pub fn trials() -> Vec<Trial> {
         vec![
+            Trial::test(
+                "gpu_surface::an_owed_first_frame_pauses_when_hidden",
+                an_owed_first_frame_pauses_when_hidden,
+            ),
             Trial::test(
                 "gpu_surface::failed_render_settles_readiness_once",
                 failed_render_settles_readiness_once,
@@ -3275,6 +3379,7 @@ mod filtered {
     use std::sync::atomic::Ordering;
 
     use cocoa_ui::capture::CaptureError;
+    use cocoa_ui::objc2::rc::autoreleasepool;
     use libtest_mimic::Trial;
     use waterui_apple::native_test_support::ErrorLog;
     use waterui_apple::native_test_support::filtered::MountedFilteredSurface;
@@ -3283,10 +3388,45 @@ mod filtered {
 
     use super::mtm;
 
-    /// The registered trials — the failed-child settle contract and the
-    /// zero-bounds detach.
+    fn an_owed_first_frame_pauses_when_hidden() -> Result<(), libtest_mimic::Failed> {
+        // The gated setup keeps the link paused while the window orders in,
+        // so the real display link cannot take the owed first frame before
+        // the trial samples it.
+        let (mounted, gate) = pollster::block_on(MountedFilteredSurface::mount_gated(mtm()))
+            .map_err(|error| format!("mount: {error}"))?;
+        mounted.ensure_attached();
+        let _ready = mounted.readiness_probe();
+        assert!(
+            mounted.link_paused(),
+            "the pending effect setup holds the link"
+        );
+        gate.release();
+        // The setup's main-queue landing opens the link; the link's first
+        // update is a later run-loop source, so the pump samples the open
+        // link before any delivery.
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !mounted.link_paused()),
+            "the visible first frame is scheduled once the setup lands"
+        );
+        assert!(!mounted.frame_presented(), "the first frame is still owed");
+        cocoa_ui::view::set_hidden(mounted.leaf.view(), true);
+        assert!(mounted.link_paused(), "hiding pauses an owed first frame");
+        assert!(mounted.deliver_frame(1.0), "a queued drawable is available");
+        assert!(
+            !mounted.render_in_flight(),
+            "hidden delivery starts no capture"
+        );
+        cocoa_ui::view::set_hidden(mounted.leaf.view(), false);
+        assert!(!mounted.link_paused(), "showing resumes the owed frame");
+        Ok(())
+    }
+
     pub fn trials() -> Vec<Trial> {
         vec![
+            Trial::test(
+                "filtered::an_owed_first_frame_pauses_when_hidden",
+                an_owed_first_frame_pauses_when_hidden,
+            ),
             Trial::test(
                 "filtered::a_view_over_a_failed_child_settles_once",
                 a_view_over_a_failed_child_settles_once,
@@ -3307,7 +3447,62 @@ mod filtered {
                 "filtered::a_view_collapsed_mid_capture_renders_transparent",
                 a_view_collapsed_mid_capture_renders_transparent,
             ),
+            Trial::test(
+                "filtered::unmount_releases_the_state_and_view",
+                unmount_releases_the_state_and_view,
+            ),
         ]
+    }
+
+    /// water-rs/waterui#1567: dropping the mounted leaf releases the
+    /// `FilteredState` and its `HostView` while the shared runtime lives
+    /// on — the layout, window, superview and backing handlers and the
+    /// intrinsic measure the mount installed hold neither once pending
+    /// submitted work has settled — and a remount on the same runtime
+    /// presents again.
+    ///
+    /// The trials run inside one `applicationDidFinishLaunching:` callback
+    /// whose autorelease pool never drains, so the mount, its presented
+    /// frame and the unmount live inside a bounded `autoreleasepool` and
+    /// the release pump reads its probes inside one too — only the `Weak`
+    /// probes and the runtime escape, so a survivor names a real retainer,
+    /// never a pooled temporary.
+    pub fn unmount_releases_the_state_and_view() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let ((state, view), runtime) = autoreleasepool(|_| {
+            let mounted = pollster::block_on(MountedFilteredSurface::mount(mtm))
+                .map_err(|error| format!("a mounted filtered surface: {error}"))?;
+            mounted.ensure_attached();
+            assert!(
+                pump_main_until(MAIN_QUEUE_DEADLINE, || mounted.frame_presented()),
+                "the filtered view presents its first frame"
+            );
+            let probes = mounted.release_probes();
+            Ok::<_, String>((probes, mounted.unmount()))
+        })?;
+
+        let released = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            autoreleasepool(|_| state.upgrade().is_none() && view.load().is_none())
+        });
+        assert!(
+            released,
+            "the unmounted leaf's state and host view release with the shared runtime alive \
+             (FilteredState strong count {}, HostView alive: {})",
+            state.strong_count(),
+            autoreleasepool(|_| view.load().is_some()),
+        );
+
+        autoreleasepool(|_| {
+            let remounted = MountedFilteredSurface::mount_shared(mtm, runtime)
+                .map_err(|error| format!("a remounted filtered surface: {error}"))?;
+            remounted.ensure_attached();
+            assert!(
+                pump_main_until(MAIN_QUEUE_DEADLINE, || remounted.frame_presented()),
+                "a remounted filtered view presents again on the shared runtime"
+            );
+            Ok::<_, String>(())
+        })?;
+        Ok(())
     }
 
     /// A parent capture that snapshots a filtered view while it has area,
@@ -3601,6 +3796,441 @@ mod filtered {
     }
 }
 
+/// #3528: a `FilteredView` whose chain declines the native realizations
+/// composites through `capture.rs` — the compositor once stored every
+/// source's sampled values unconverted, so an identity chain's half-float
+/// linear-P3 output read back darker and hue-shifted. The trial captures
+/// the same column rendered plain and under the identity chain and
+/// measures the difference with the oracle's LDR-FLIP.
+#[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
+mod capture_colour {
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::rc::autoreleasepool;
+    use cocoa_ui::view;
+    use libtest_mimic::Trial;
+    use waterui_apple::native_test_support::{capture_view_rgba, pump_main_until};
+
+    use super::transition::{gpu_leaf, gpu_picture};
+    use super::{HostView, PlatformView, Retained, mtm};
+
+    /// The columns' pinned edge: `200×200` points each.
+    const COLUMN_EDGE: f64 = 200.0;
+
+    /// The gap between the two columns' leading edges.
+    const COLUMN_GAP: f64 = 20.0;
+
+    /// The `capture_colour::` trials.
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "capture_colour::a_capture_realized_identity_filter_preserves_colour",
+            || {
+                a_capture_realized_identity_filter_preserves_colour();
+                Ok(())
+            },
+        )]
+    }
+
+    /// The asymmetric marker rectangle, (40,20)–(140,120) in the
+    /// column's flipped `200×200` space.
+    fn marker_rect() -> waterui::layout::PinConstraints {
+        waterui::layout::PinConstraints::new()
+            .leading(40.0)
+            .top(20.0)
+            .width(100.0)
+            .height(100.0)
+    }
+
+    /// One `200×200` column: a `MeshGradient` GPU surface at the marker
+    /// rectangle, a half-transparent magenta native rectangle over it,
+    /// an opaque black notch at the marker's top-left corner and an
+    /// asymmetric label — GPU content, translucent and opaque native
+    /// raster, and text in one column, so the comparison covers every
+    /// source kind the capture compositor converts.
+    fn column_subtree() -> impl waterui_backend_core::View {
+        use waterui::Color;
+        use waterui::ViewExt;
+        use waterui::graphics::color::Srgb;
+        use waterui::layout::{PinConstraints, PositionExt, absolute};
+        use waterui::prelude::text;
+        absolute((
+            gpu_picture().pin(marker_rect()),
+            Color::new(Srgb::new(1.0, 0.0, 1.0))
+                .opacity(0.5)
+                .pin(marker_rect()),
+            Color::new(Srgb::new(0.0, 0.0, 0.0)).pin(
+                PinConstraints::new()
+                    .leading(40.0)
+                    .top(20.0)
+                    .width(20.0)
+                    .height(20.0),
+            ),
+            text("Fg 3528 \u{2191}").pin(PinConstraints::new().leading(10.0).top(140.0)),
+        ))
+    }
+
+    /// The capturable surfaces resolved at `root`'s first depth, with
+    /// the retained views that carry them — the GPU child's kit
+    /// `SurfaceView` and the `HostView` the filtered output resolves on.
+    pub fn capturables(
+        root: &PlatformView,
+    ) -> Vec<(
+        Retained<PlatformView>,
+        Rc<dyn cocoa_ui::capture::CapturableSurface>,
+    )> {
+        let mut entries = Vec::new();
+        cocoa_ui::capture::for_each_capturable(root, &mut |surface_view, surface| {
+            entries.push((view::retain_base(surface_view), Rc::clone(surface)));
+        });
+        entries
+    }
+
+    /// The outermost `200×200` views of `root`'s subtree ordered by their
+    /// leading edge in `root`'s coordinates: `index` 0 is the uncaptured
+    /// column, 1 the filtered one. Only size and order identify the
+    /// columns — their absolute origin is the window's — and `f64` frame
+    /// values compare inside a half-point band.
+    pub fn column(root: &PlatformView, index: usize) -> Retained<PlatformView> {
+        let mut columns = Vec::new();
+        let mut queue = std::collections::VecDeque::from([view::retain_base(root)]);
+        while let Some(candidate) = queue.pop_front() {
+            let frame = view::convert_rect(&candidate, view::bounds(&candidate), Some(root));
+            if (frame.size.width - COLUMN_EDGE).abs() < 0.5
+                && (frame.size.height - COLUMN_EDGE).abs() < 0.5
+            {
+                columns.push((frame.origin.x, candidate));
+            } else {
+                queue.extend(view::subviews(&candidate));
+            }
+        }
+        columns.sort_by(|a, b| a.0.total_cmp(&b.0));
+        columns
+            .into_iter()
+            .nth(index)
+            .unwrap_or_else(|| panic!("no 200×200 column {index}"))
+            .1
+    }
+
+    /// A capture's premultiplied sRGB-encoded RGBA8 texels as the
+    /// oracle's premultiplied linear-P3 interchange image.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the oracle's f32 interchange format deliberately narrows its f64 colour maths"
+    )]
+    pub fn linear_p3(texels: &[u8], width: u32, height: u32) -> cherenkov_oracle::F32Image {
+        use cherenkov_oracle::color::{linear_srgb_to_linear_p3, srgb_decode};
+        let pixels = texels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| {
+                let alpha = f64::from(p[3]) / 255.0;
+                if alpha == 0.0 {
+                    return [0.0; 4];
+                }
+                let [r, g, b] = linear_srgb_to_linear_p3(
+                    [p[0], p[1], p[2]].map(|c| srgb_decode(f64::from(c) / 255.0 / alpha)),
+                );
+                [r * alpha, g * alpha, b * alpha, alpha].map(|c| c as f32)
+            })
+            .collect();
+        cherenkov_oracle::F32Image {
+            width,
+            height,
+            pixels,
+        }
+    }
+
+    /// `a_capture_realized_identity_filter_preserves_colour` — #3528's
+    /// reproduction: the same `200×200` column uncaptured at x=0 and under
+    /// a capture-realized identity chain (`Brightness(0.0)` with a
+    /// declared `OutputSize::MatchInput`, which `native_filter::plan`
+    /// declines) at x=220. Both columns read back through
+    /// `capture_view_rgba` — the `capture_rgba` path the issue's numbers
+    /// came from — and must match under the oracle's same-pixels limits.
+    pub fn a_capture_realized_identity_filter_preserves_colour() {
+        use waterui::graphics::filtrate::filters::Brightness;
+        use waterui::graphics::{AnyEffect, FilteredView, OutputSize, ParamGuards};
+        use waterui::layout::{PinConstraints, PositionExt, absolute};
+        use waterui_backend_core::AnyView;
+
+        let _mtm = mtm();
+        let column_pin = |leading: f64| {
+            PinConstraints::new()
+                .leading(leading)
+                .top(0.0)
+                .width(COLUMN_EDGE)
+                .height(COLUMN_EDGE)
+        };
+        let filtered = FilteredView {
+            content: AnyView::new(column_subtree()),
+            effect: AnyEffect::filter(Brightness(0.0_f32)),
+            guards: ParamGuards::default(),
+        }
+        .output_size(OutputSize::MatchInput);
+        let leaf = gpu_leaf(absolute((
+            column_subtree().pin(column_pin(0.0)),
+            filtered.pin(column_pin(COLUMN_EDGE + COLUMN_GAP)),
+        )));
+        let _window = super::mount_and_order_front(leaf.view());
+        let root = leaf.view();
+
+        assert!(
+            pump_main_until(10.0, || {
+                autoreleasepool(|_| {
+                    let entries = capturables(root);
+                    entries.len() == 2
+                        && entries
+                            .iter()
+                            .all(|(_, surface)| surface.has_presented_frame())
+                })
+            }),
+            "the reference GPU surface and the filtered output both present"
+        );
+
+        // Realization check: the capture realization hides its unfiltered
+        // content view and never arms `layerUsesCoreImageFilters` — a
+        // `CIFilter` realization keeps the content visible on a Core
+        // Image-filtered layer, so these assertions pin the case to the
+        // path under test.
+        let filtered_host = capturables(root)
+            .into_iter()
+            .find_map(|(host, _)| host.downcast_ref::<HostView>().is_some().then_some(host))
+            .expect("the filtered output resolves on its host view");
+        assert!(
+            view::subviews(&filtered_host)
+                .iter()
+                .any(|child| view::is_hidden(child)),
+            "the capture realization hides its unfiltered content"
+        );
+        assert!(
+            !filtered_host.layerUsesCoreImageFilters(),
+            "the identity chain took the capture realization, not the CIFilter one"
+        );
+
+        assert_columns_match(root);
+    }
+
+    /// Captures both `200×200` columns of `root` through
+    /// `capture_view_rgba` and asserts the oracle's same-pixels equivalence
+    /// between them. The unconverted composite #3528 fixed scored a mean
+    /// FLIP of 0.34 here; the converting one scores 0.0002.
+    fn assert_columns_match(root: &PlatformView) {
+        let [reference, filtered] = [0, 1].map(|index| {
+            let capture = capture_view_rgba(&column(root, index));
+            linear_p3(&capture.pixels, capture.width, capture.height)
+        });
+        cherenkov_oracle::metrics::assert_images_match(&reference, &filtered);
+    }
+}
+
+/// #1771: a GPU surface keeps its place in the native tree inside a
+/// capture. The compositor once drew every resolved surface first and the
+/// whole native raster over it, so an opaque native ancestor background
+/// hid the GPU child and a translucent ancestor's group opacity never
+/// reached it. Each trial captures the same `200×200` column twice — at
+/// x=0 with the GPU child replaced by a native view of the same solid
+/// colour, at x=220 with the real GPU child — and asserts the oracle's
+/// same-pixels equivalence between the two captures.
+#[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
+mod capture_order {
+    use cocoa_ui::objc2::rc::autoreleasepool;
+    use libtest_mimic::Trial;
+    use waterui::Color;
+    use waterui::ViewExt;
+    use waterui::graphics::color::{Srgb, Working, WorkingColor};
+    use waterui::layout::{PinConstraints, PositionExt, absolute};
+    use waterui::prelude::text;
+    use waterui_apple::native_test_support::{capture_view_rgba, pump_main_until};
+    use waterui_backend_core::{AnyView, View};
+
+    use super::capture_colour::{capturables, column, linear_p3};
+    use super::mtm;
+    use super::transition::gpu_leaf;
+
+    /// The columns' pinned edge: `200×200` points each.
+    const COLUMN_EDGE: f64 = 200.0;
+
+    /// The gap between the two columns' leading edges.
+    const COLUMN_GAP: f64 = 20.0;
+
+    /// The GPU child's solid fill — the working colour both the GPU
+    /// surface and its native stand-in paint.
+    const CHILD: WorkingColor = WorkingColor::new([0.05, 0.25, 0.9, 1.0]);
+
+    /// The `capture_order::` trials.
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "capture_order::an_opaque_ancestor_background_keeps_its_gpu_child_and_foreground",
+                || {
+                    an_opaque_ancestor_background_keeps_its_gpu_child_and_foreground();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "capture_order::a_translucent_ancestor_composites_its_gpu_child_in_order",
+                || {
+                    a_translucent_ancestor_composites_its_gpu_child_in_order();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "capture_order::a_clipped_scaled_gpu_child_keeps_its_place",
+                || {
+                    a_clipped_scaled_gpu_child_keeps_its_place();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "capture_order::a_nested_filter_keeps_its_gpu_child_in_order",
+                || {
+                    a_nested_filter_keeps_its_gpu_child_in_order();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// The GPU child: a `MeshGradient` whose four corners are all
+    /// [`CHILD`] — a GPU surface of one solid colour.
+    fn gpu_child() -> AnyView {
+        use waterui::graphics::gradient::MeshGradient;
+        use waterui::reactive::constant;
+        AnyView::new(MeshGradient::new(2, 2, constant(vec![CHILD; 4])))
+    }
+
+    /// The GPU child's native stand-in: a [`CHILD`] colour view.
+    fn native_child() -> AnyView {
+        AnyView::new(Color::new(Working(CHILD)))
+    }
+
+    /// An opaque orange — the ancestor background that hid the child.
+    fn orange() -> Color {
+        Color::new(Srgb::new(1.0, 0.55, 0.0))
+    }
+
+    /// `child` under native foreground inside the column: the child at
+    /// (40,30)–(160,130), a half-transparent magenta strip across its
+    /// lower part and past both its sides, and an asymmetric label over
+    /// its top edge.
+    fn layered(child: AnyView) -> impl View {
+        absolute((
+            child.pin(
+                PinConstraints::new()
+                    .leading(40.0)
+                    .top(30.0)
+                    .width(120.0)
+                    .height(100.0),
+            ),
+            Color::new(Srgb::new(1.0, 0.0, 1.0)).opacity(0.5).pin(
+                PinConstraints::new()
+                    .leading(20.0)
+                    .top(90.0)
+                    .width(160.0)
+                    .height(30.0),
+            ),
+            text("GPU 1771 \u{2191}").pin(PinConstraints::new().leading(50.0).top(40.0)),
+        ))
+    }
+
+    /// Mounts the all-native `reference` column at x=0 and the GPU
+    /// `subject` column at x=220, waits until the `surfaces` capturable
+    /// surfaces the tree resolves have presented, captures both columns
+    /// through `capture_view_rgba` and asserts the oracle's same-pixels
+    /// equivalence of the subject to the reference.
+    fn assert_gpu_column_matches_native(reference: impl View, subject: impl View, surfaces: usize) {
+        let _mtm = mtm();
+        let pin = |leading: f64| {
+            PinConstraints::new()
+                .leading(leading)
+                .top(0.0)
+                .width(COLUMN_EDGE)
+                .height(COLUMN_EDGE)
+        };
+        let leaf = gpu_leaf(absolute((
+            reference.pin(pin(0.0)),
+            subject.pin(pin(COLUMN_EDGE + COLUMN_GAP)),
+        )));
+        let _window = super::mount_and_order_front(leaf.view());
+        let root = leaf.view();
+        assert!(
+            pump_main_until(10.0, || {
+                autoreleasepool(|_| {
+                    let entries = capturables(root);
+                    entries.len() == surfaces
+                        && entries
+                            .iter()
+                            .all(|(_, surface)| surface.has_presented_frame())
+                })
+            }),
+            "the GPU column's {surfaces} capturable surface(s) present"
+        );
+        let [reference, subject] = [0, 1].map(|index| {
+            let capture = capture_view_rgba(&column(root, index));
+            linear_p3(&capture.pixels, capture.width, capture.height)
+        });
+        cherenkov_oracle::metrics::assert_images_match(&reference, &subject);
+    }
+
+    /// An opaque ancestor background under the GPU child, native
+    /// foreground over it: the child shows between the two.
+    pub fn an_opaque_ancestor_background_keeps_its_gpu_child_and_foreground() {
+        let column = |child| layered(child).background(orange());
+        assert_gpu_column_matches_native(column(native_child()), column(gpu_child()), 1);
+    }
+
+    /// A half-transparent ancestor background under the GPU child, inside
+    /// an ancestor at 0.7 group opacity: the child takes the group's
+    /// opacity and covers the background.
+    pub fn a_translucent_ancestor_composites_its_gpu_child_in_order() {
+        let column = |child| {
+            layered(child)
+                .background(orange().opacity(0.5))
+                .opacity(0.7)
+        };
+        assert_gpu_column_matches_native(column(native_child()), column(gpu_child()), 1);
+    }
+
+    /// The opaque-background column scaled 1.6× about its centre — a
+    /// sublayer transform on `AppKit`, which view geometry does not see —
+    /// and clipped to a rounded rectangle: the child spans
+    /// (4,-12)–(196,148), so the column's top edge and rounded top-left
+    /// corner cut it.
+    pub fn a_clipped_scaled_gpu_child_keeps_its_place() {
+        use waterui::shape::RoundedRectangle;
+        let column = |child| {
+            layered(child)
+                .background(orange())
+                .scale(1.6, 1.6)
+                .clip(RoundedRectangle::new(0.2))
+        };
+        assert_gpu_column_matches_native(column(native_child()), column(gpu_child()), 1);
+    }
+
+    /// The opaque-background column at 0.8 group opacity inside a
+    /// capture-realized identity filter (`Brightness(0.0)` with a declared
+    /// `OutputSize::MatchInput`, which `native_filter::plan` declines):
+    /// the filter's own capture composites the GPU child it owns, and the
+    /// outer capture composites the filter's output. The reference column
+    /// is the same native column unfiltered.
+    pub fn a_nested_filter_keeps_its_gpu_child_in_order() {
+        use waterui::graphics::filtrate::filters::Brightness;
+        use waterui::graphics::{AnyEffect, FilteredView, OutputSize, ParamGuards};
+        let content = |child| layered(child).background(orange()).opacity(0.8);
+        // The reference column is unfiltered: the identity chain
+        // reproduces it (#3528), so only the GPU column runs the nested
+        // capture — the filtered output is its one resolved surface.
+        let filtered = FilteredView {
+            content: AnyView::new(content(gpu_child())),
+            effect: AnyEffect::filter(Brightness(0.0_f32)),
+            guards: ParamGuards::default(),
+        }
+        .output_size(OutputSize::MatchInput);
+        assert_gpu_column_matches_native(content(native_child()), filtered, 1);
+    }
+}
+
 /// `ViewController` boundary semantics (#1689): under real `UIKit`
 /// containment — a `UIViewController` parent, `addChild`/`didMove`, a
 /// native container smaller than the window — an embedded controller's
@@ -3777,8 +4407,8 @@ mod safe_area {
         UIBarPosition, UIBarPositioning, UIEdgeInsets, UIKeyboardAnimationCurveUserInfoKey,
         UIKeyboardAnimationDurationUserInfoKey, UIKeyboardFrameEndUserInfoKey,
         UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification,
-        UIKeyboardWillShowNotification, UINavigationBar, UINavigationController, UIScrollView,
-        UITabBar, UITextView, UIView,
+        UIKeyboardWillShowNotification, UILabel, UINavigationBar, UINavigationController,
+        UIScrollView, UITabBar, UITextView, UIView,
     };
     use cocoa_ui::uikit::view_controller::owning_controller;
     use cocoa_ui::uikit::{
@@ -4479,18 +5109,20 @@ mod safe_area {
         None
     }
 
-    /// The first view whose Objective-C class is literally `name` —
-    /// how a `UIToolbar` is found when the vendored `objc2-ui-kit`
-    /// carries no binding for the class.
-    fn find_class(
-        view: &PlatformView,
-        name: &'static std::ffi::CStr,
-    ) -> Option<Retained<PlatformView>> {
+    /// The first `UIKit`-owned label showing `text` — how a title bar
+    /// item is found: the bar draws the item's word itself, in a private
+    /// button inside the floating bar container under the host, so the
+    /// label carrying it is the item's only public surface. `WaterUI`'s own
+    /// `Label`s are skipped so a hosted copy of the word never matches.
+    fn find_bar_title(view: &PlatformView, text: &str) -> Option<Retained<PlatformView>> {
         for sub in view::subviews(view) {
-            if sub.class().name() == name {
+            if sub.downcast_ref::<Label>().is_none()
+                && let Some(label) = sub.downcast_ref::<UILabel>()
+                && label.text().map(|t| t.to_string()).as_deref() == Some(text)
+            {
                 return Some(sub);
             }
-            if let Some(found) = find_class(&sub, name) {
+            if let Some(found) = find_bar_title(&sub, text) {
                 return Some(found);
             }
         }
@@ -5860,9 +6492,9 @@ mod safe_area {
             ])),
         ));
         // iOS 26 draws the page's bottom bar as a floating glass capsule,
-        // not a `UIToolbar` — the item's own control is the bar's proof.
-        let item =
-            find_class(&mount.host, c"CocoaUiBarButton").expect("the page mounts its bar item");
+        // not a `UIToolbar`, and a text action is the bar's own title
+        // item — the word the bar draws is the item's proof.
+        let item = find_bar_title(&mount.host, "New").expect("the page mounts its bar item");
         let docked = window_frame(&item);
         assert!(
             docked.origin.y + docked.size.height > container_bottom(&mount) - 80.0,
@@ -5920,9 +6552,9 @@ mod safe_area {
         let tab_bar = find_view::<UITabBar>(&mount.host).expect("the tabs mount a UITabBar");
         pump_layout(&mount, || window_bottom(&tab_bar) > TOLERANCE);
         // iOS 26 draws the page's bottom bar as a floating glass capsule,
-        // not a `UIToolbar` — the item's own control is the bar's proof.
-        let item =
-            find_class(&mount.host, c"CocoaUiBarButton").expect("the page mounts its bar item");
+        // not a `UIToolbar`, and a text action is the bar's own title
+        // item — the word the bar draws is the item's proof.
+        let item = find_bar_title(&mount.host, "New").expect("the page mounts its bar item");
         let docked = window_frame(&item);
         assert!(
             docked.origin.y + docked.size.height > container_bottom(&mount) - 80.0,
@@ -6794,25 +7426,26 @@ mod scroll {
     /// The user's own wheel scroll wins mid-flight: a phase-less legacy
     /// wheel event sent through the surface's `scrollWheel:` makes
     /// `AppKit` post `NSScrollViewDidLiveScrollNotification`, the
-    /// animation retires, and the offset the wheel produced stands past
-    /// the flight's original end.
+    /// animation retires, and stepping the flight's clock past its
+    /// original schedule proves the retired flight silent — the offset
+    /// the wheel produced stands.
     #[cfg(target_os = "macos")]
     fn a_users_wheel_scroll_takes_over_an_in_flight_animation() {
-        use cocoa_ui::objc2_quartz_core::CACurrentMediaTime;
         use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
         let fixture = mounted();
+        let clock = fixture.surface.install_manual_scroll_clock();
         let (_observer, live_scrolls) =
             super::appkit_input::count_live_scrolls(super::mtm(), &fixture.surface);
         fixture.controller.animate_to(
             Point::new(0.0, 1000.0),
             Animation::linear(Duration::from_secs(2)),
         );
+        clock.advance(Duration::from_millis(500));
         assert!(
             fixture.surface.scroll_animation_in_flight(),
             "the flight must be in progress when the user's scroll starts"
         );
-        let flight_end = CACurrentMediaTime() + 2.0;
         let before = fixture.surface.content_offset().y;
         super::appkit_input::wheel(&fixture.surface, -40);
         assert!(
@@ -6823,12 +7456,16 @@ mod scroll {
             !fixture.surface.scroll_animation_in_flight(),
             "the user's wheel scroll must retire the flight"
         );
-        // Outlast the flight's original schedule: had it survived, its
-        // ticks would still be writing toward 1000 — the user's offset
-        // stands.
         assert!(
-            pump_main_until(MAIN_QUEUE_DEADLINE, || CACurrentMediaTime() >= flight_end),
-            "the flight's original schedule must elapse"
+            !clock.is_running(),
+            "the retired flight must stop its clock"
+        );
+        let wheeled = fixture.surface.content_offset().y;
+        clock.advance(Duration::from_secs(2));
+        assert_offset_eq(
+            fixture.surface.content_offset().y,
+            wheeled,
+            "the retired flight writes nothing past its original schedule",
         );
         let settled = fixture.surface.content_offset().y;
         assert!(
@@ -6838,18 +7475,18 @@ mod scroll {
         );
     }
 
-    /// The keyboard wins mid-flight: a page-down sent through the window
-    /// to a focused view in the document reaches the scroll view's
-    /// `pageDown:`, whose clip write is not the flight's own — the
-    /// animation retires synchronously and the paged offset stands past
-    /// the flight's original end.
+    /// The keyboard wins mid-flight: page-down's `pageDown:`, sent up the
+    /// responder chain from a focused view in the document, reaches the
+    /// scroll view, whose clip write is not the flight's own — the
+    /// animation retires synchronously, and stepping the flight's clock
+    /// past its original schedule proves the retired flight silent.
     #[cfg(target_os = "macos")]
     fn a_page_down_takes_over_an_in_flight_animation() {
         use cocoa_ui::objc2_app_kit::NSResponder;
-        use cocoa_ui::objc2_quartz_core::CACurrentMediaTime;
         use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
         let fixture = mounted();
+        let clock = fixture.surface.install_manual_scroll_clock();
         let window = fixture
             .surface
             .window()
@@ -6869,26 +7506,38 @@ mod scroll {
             Point::new(0.0, 1000.0),
             Animation::linear(Duration::from_secs(2)),
         );
-        let flight_end = CACurrentMediaTime() + 2.0;
+        clock.advance(Duration::from_millis(500));
         let before = fixture.surface.content_offset().y;
-        super::appkit_input::press(&window, super::appkit_input::PAGE_DOWN);
+        assert!(
+            fixture.surface.scroll_animation_in_flight() && before > 0.0,
+            "the flight must be mid-way when page-down is pressed: offset {before}"
+        );
+        super::appkit_input::command(&window, objc2::sel!(pageDown:));
         assert!(
             !fixture.surface.scroll_animation_in_flight(),
             "the keyboard's page-down must retire the flight"
         );
-        let paged = fixture.surface.content_offset().y;
         assert!(
-            paged > before,
-            "page-down scrolls the document: before {before}, after {paged}"
+            !clock.is_running(),
+            "the retired flight must stop its clock"
         );
-        assert!(
-            pump_main_until(MAIN_QUEUE_DEADLINE, || CACurrentMediaTime() >= flight_end),
-            "the flight's original schedule must elapse"
-        );
+        let pressed = fixture.surface.content_offset().y;
+        clock.advance(Duration::from_secs(2));
         assert_offset_eq(
             fixture.surface.content_offset().y,
-            paged,
-            "the paged offset stands — the retired flight never rewrites the model",
+            pressed,
+            "the retired flight writes nothing past its original schedule",
+        );
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                fixture.surface.content_offset().y > before
+            }),
+            "AppKit's animated page scroll must move the document past {before}"
+        );
+        let paged = fixture.surface.content_offset().y;
+        assert!(
+            (paged - 1000.0).abs() > 1.0,
+            "the retired flight never landed: {paged}"
         );
     }
 
@@ -6941,6 +7590,7 @@ mod scroll {
         use cocoa_ui::objc2_foundation::NSSize;
 
         let fixture = mounted();
+        let clock = fixture.surface.install_manual_scroll_clock();
         let window = fixture
             .surface
             .window()
@@ -6951,6 +7601,7 @@ mod scroll {
         );
         super::appkit_input::assert_flight_survives_corrections(
             &window,
+            &clock,
             1000.0,
             || fixture.surface.scroll_animation_in_flight(),
             || fixture.surface.content_offset().y,
@@ -7449,22 +8100,22 @@ mod list_scroll {
         );
     }
 
-    /// The keyboard wins mid-flight: `key`, sent through the window to the
-    /// focused table, scrolls the clip through a write that is not the
+    /// The keyboard wins mid-flight: the key's `action`, sent up the
+    /// responder chain from the focused table, scrolls the clip through a write that is not the
     /// flight's own — `pageDown:` on the scroll view, or the table's own
     /// `scrollToEndOfDocument:`, which posts no live-scroll notification —
-    /// and the flight retires synchronously; the keyed offset stands past
-    /// the flight's original end.
+    /// and the flight retires synchronously; stepping the flight's clock
+    /// past its original schedule proves the retired flight silent.
     #[cfg(target_os = "macos")]
     fn the_keyboard_takes_over_an_in_flight_animation(
         name: &'static str,
-        key: super::appkit_input::FunctionKey,
+        action: objc2::runtime::Sel,
     ) {
         use cocoa_ui::objc2_app_kit::NSResponder;
-        use cocoa_ui::objc2_quartz_core::CACurrentMediaTime;
         use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
         let fixture = mounted();
+        let clock = fixture.table.install_manual_scroll_clock();
         let table = fixture.table.table_view();
         let window = table.window().expect("the mounted list is in a window");
         let responder: &NSResponder = &table;
@@ -7475,26 +8126,33 @@ mod list_scroll {
         fixture
             .controller
             .animate_to(150, Animation::linear(Duration::from_secs(2)));
+        clock.advance(Duration::from_millis(500));
         assert!(
             fixture.table.scroll_animation_in_flight(),
             "the row flight must be in progress when {name} is pressed"
         );
-        let flight_end = CACurrentMediaTime() + 2.0;
-        super::appkit_input::press(&window, key);
+        let before = offset_y(&fixture);
+        super::appkit_input::command(&window, action);
         assert!(
             !fixture.table.scroll_animation_in_flight(),
             "{name} must retire the flight"
         );
-        let keyed = offset_y(&fixture);
         assert!(
-            pump_main_until(MAIN_QUEUE_DEADLINE, || CACurrentMediaTime() >= flight_end),
-            "the flight's original schedule must elapse"
+            !clock.is_running(),
+            "the retired flight must stop its clock"
         );
+        let pressed = offset_y(&fixture);
+        clock.advance(Duration::from_secs(2));
         assert_offset_eq(
             offset_y(&fixture),
-            keyed,
-            "the keyed offset stands — the retired flight never rewrites the model",
+            pressed,
+            "the retired flight writes nothing past its original schedule",
         );
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || offset_y(&fixture) > before),
+            "{name} must scroll the list past {before}"
+        );
+        let keyed = offset_y(&fixture);
         assert!(
             (keyed - row_top_offset(&fixture, 150)).abs() > 1.0,
             "the superseded flight never landed: {keyed}"
@@ -7539,6 +8197,7 @@ mod list_scroll {
     #[cfg(target_os = "macos")]
     fn appkit_corrections_keep_an_in_flight_animation() {
         let fixture = mounted();
+        let clock = fixture.table.install_manual_scroll_clock();
         let window = fixture
             .table
             .window()
@@ -7549,6 +8208,7 @@ mod list_scroll {
             .animate_to(TARGET, Animation::linear(Duration::from_secs(2)));
         super::appkit_input::assert_flight_survives_corrections(
             &window,
+            &clock,
             target,
             || fixture.table.scroll_animation_in_flight(),
             || offset_y(&fixture),
@@ -7625,14 +8285,17 @@ mod list_scroll {
                 Box::new(|| {
                     the_keyboard_takes_over_an_in_flight_animation(
                         "page-down",
-                        super::appkit_input::PAGE_DOWN,
+                        objc2::sel!(pageDown:),
                     );
                 }) as Box<dyn FnOnce() + Send>,
             ),
             (
                 "list_scroll::the_end_key_takes_over_an_in_flight_animation".to_owned(),
                 Box::new(|| {
-                    the_keyboard_takes_over_an_in_flight_animation("End", super::appkit_input::END);
+                    the_keyboard_takes_over_an_in_flight_animation(
+                        "End",
+                        objc2::sel!(scrollToEndOfDocument:),
+                    );
                 }),
             ),
             (
@@ -10202,5 +10865,3545 @@ mod text_selection {
         assert_eq!(field.string(), "ZZ");
 
         window.close();
+    }
+}
+
+/// §4.5 structural transitions: a removed `Dynamic` child leaves the
+/// semantic tree at once — watchers and retained values die with the
+/// leaf — while a declared removal keeps the outgoing view alive as a
+/// non-interactive ghost beneath the new child until the clock ends.
+mod transition {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    use waterui::Identifiable;
+    use waterui::ViewExt;
+    use waterui::animation::Animation;
+    use waterui::component::Dynamic;
+    use waterui::component::label::label;
+    use waterui::component::lazy::Lazy;
+    use waterui::prelude::{VStack, hstack, spacer, text, vstack};
+    use waterui::reactive::collection::List as ReactiveList;
+    use waterui::views::ForEach;
+    use waterui_apple::contract::Mounted;
+    use waterui_apple::native_test_support::pump_main_until;
+    use waterui_backend_core::AnyView;
+    use waterui_core::Metadata;
+    use waterui_core::metadata::Retain;
+    use waterui_core::transition::{PropertyTransition, Transition, TransitionSpec};
+
+    use cocoa_ui::objc2::rc::{Weak, autoreleasepool};
+    use cocoa_ui::view;
+
+    use super::Retained;
+    use super::leaf::TestSubView;
+    use super::{HostView, Label, PlatformView, mtm};
+
+    /// The Stage 1 retirement trials — registered through
+    /// `transition::trials()` like the other suites' registrars.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "transition::retired_host_is_outside_hit_testing_and_accessibility",
+                || {
+                    retired_host_is_outside_hit_testing_and_accessibility();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::mounted_drop_under_retired_host_keeps_views",
+                || {
+                    mounted_drop_under_retired_host_keeps_views();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test("transition::unowned_declaration_panics_at_mount", || {
+                unowned_declaration_panics_at_mount();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test(
+                "transition::a_replaced_child_semantics_die_while_its_view_ghosts",
+                || {
+                    a_replaced_child_semantics_die_while_its_view_ghosts();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::removed_descendants_die_but_their_views_stay_in_the_ghost",
+                || {
+                    removed_descendants_die_but_their_views_stay_in_the_ghost();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::opacity_composes_with_the_contents_own_opacity",
+                || {
+                    opacity_composes_with_the_contents_own_opacity();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::scale_composes_with_the_contents_own_scale",
+                || {
+                    scale_composes_with_the_contents_own_scale();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::combined_transition_samples_every_frame",
+                || {
+                    combined_transition_samples_every_frame();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test("transition::adopted_conditional_claims_each_child", || {
+                adopted_conditional_claims_each_child();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test(
+                "transition::the_contents_own_claim_beats_the_adopted_one",
+                || {
+                    the_contents_own_claim_beats_the_adopted_one();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test("transition::initial_build_plays_no_insertion", || {
+                initial_build_plays_no_insertion();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test(
+                "transition::zero_duration_removal_detaches_at_once",
+                || {
+                    zero_duration_removal_detaches_at_once();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::ghost_completion_does_not_need_the_site",
+                || {
+                    ghost_completion_does_not_need_the_site();
+                    Ok(())
+                },
+            ),
+        ]
+        .into_iter()
+        .chain(collection_trials())
+        .collect()
+    }
+
+    /// The Stage 3 collection trials (§8.2).
+    fn collection_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "transition::collection_ghost_keeps_its_last_placement",
+                || {
+                    collection_ghost_keeps_its_last_placement();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test("transition::ghosts_rebase_across_later_edits", || {
+                ghosts_rebase_across_later_edits();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test(
+                "transition::reinsertion_creates_a_fresh_instance_beside_the_ghost",
+                || {
+                    reinsertion_creates_a_fresh_instance_beside_the_ghost();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::unplaced_lazy_row_releases_immediately",
+                || {
+                    unplaced_lazy_row_releases_immediately();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test("transition::siblings_close_the_gap_at_completion", || {
+                siblings_close_the_gap_at_completion();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test(
+                "transition::list_ghost_row_keeps_its_frozen_height",
+                || {
+                    list_ghost_row_keeps_its_frozen_height();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::list_ghost_row_is_not_selectable_or_accessible",
+                || {
+                    list_ghost_row_is_not_selectable_or_accessible();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::list_claimed_insertion_plays_without_row_animation",
+                || {
+                    list_claimed_insertion_plays_without_row_animation();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::an_insert_before_existing_members_paints_in_item_order",
+                || {
+                    an_insert_before_existing_members_paints_in_item_order();
+                    Ok(())
+                },
+            ),
+        ]
+        .into_iter()
+        .chain(navigation_trials())
+        .collect()
+    }
+
+    /// The Stage 5 navigation trials (§8.2): a page root's
+    /// `.transition(...)` replaces the stack's own push/pop animation.
+    fn navigation_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "transition::navigation_claimed_pop_ghosts_above_the_new_top",
+                || {
+                    navigation_claimed_pop_ghosts_above_the_new_top();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::navigation_claimed_push_replaces_the_stack_animation",
+                || {
+                    navigation_claimed_push_replaces_the_stack_animation();
+                    Ok(())
+                },
+            ),
+        ]
+        .into_iter()
+        .chain(overlay_trials())
+        .chain(frozen_trials())
+        .chain(blur_trials())
+        .chain(pixel_trials())
+        .collect()
+    }
+
+    /// The Stage 6 anchored-overlay trials (§8.2): a dismissal keeps the
+    /// presentation container — the `NSPanel` on `AppKit`, the passthrough
+    /// host on `UIKit` — painting, inert to input, until the removal
+    /// transition completes; a re-present during the exit is a fresh
+    /// instance beside it (§5.6).
+    fn overlay_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "transition::overlay_dismiss_keeps_the_panel_until_the_ghost_completes",
+                || {
+                    overlay_dismiss_keeps_the_panel_until_the_ghost_completes();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::overlay_reopen_during_exit_is_a_fresh_instance",
+                || {
+                    overlay_reopen_during_exit_is_a_fresh_instance();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// An anchor view whose overlay body root declares an opacity
+    /// removal: `shown` drives present/dismiss, and `Manual` dismissal
+    /// keeps outside interaction out of the assertion.
+    fn claimed_overlay() -> (
+        waterui::reactive::Binding<bool>,
+        waterui_apple::contract::NativeLeaf,
+    ) {
+        use waterui::metadata::anchored_overlay::{AnchoredOverlay, Dismissal};
+        let shown = waterui::reactive::binding(false);
+        let leaf = super::resolve::render(
+            text("anchor").anchored_overlay(
+                AnchoredOverlay::new(&shown, move || {
+                    Metadata::new(
+                        text("pop"),
+                        TransitionSpec::new(PropertyTransition::opacity())
+                            .with_animation(Animation::linear(Duration::from_millis(300))),
+                    )
+                })
+                .dismissal(Dismissal::Manual),
+            ),
+        );
+        (shown, leaf)
+    }
+
+    /// The passthrough containers a window currently holds: the
+    /// full-window `HostView`s that are not the anchor's own leaf view —
+    /// `UIKit`'s presentation surface for the overlay (§5.6).
+    #[cfg(target_os = "ios")]
+    fn passthrough_hosts(
+        window: &PlatformView,
+        anchor_view: &PlatformView,
+    ) -> Vec<Retained<PlatformView>> {
+        view::subviews(window)
+            .into_iter()
+            .filter(|sub| {
+                !std::ptr::eq(&raw const **sub, std::ptr::from_ref(anchor_view))
+                    && sub.downcast_ref::<HostView>().is_some()
+            })
+            .collect()
+    }
+
+    /// The child windows a window holds — `AppKit`'s presentation
+    /// surface for the overlay is a borderless `NSPanel`, and a fresh
+    /// harness window's children are all ours (§5.6).
+    #[cfg(target_os = "macos")]
+    fn panels_of(
+        window: &cocoa_ui::objc2_app_kit::NSWindow,
+    ) -> Vec<Retained<cocoa_ui::objc2_app_kit::NSWindow>> {
+        window
+            .childWindows()
+            .map_or_else(Vec::new, |children| children.to_vec())
+    }
+
+    /// A dismissal ghosts the overlay out of the semantic tree while the
+    /// presentation container keeps painting until the removal transition
+    /// completes (§8.2): `AppKit` keeps the panel visible and transparent
+    /// to mouse events; `UIKit` keeps the passthrough host in the window
+    /// but retired, so nothing inside answers a hit test.
+    pub fn overlay_dismiss_keeps_the_panel_until_the_ghost_completes() {
+        let _mtm = mtm();
+        let (shown, leaf) = claimed_overlay();
+        #[cfg(target_os = "ios")]
+        let window = super::mount_and_order_front(leaf.view());
+        #[cfg(target_os = "macos")]
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| shown.set(true));
+        #[cfg(target_os = "ios")]
+        let weak = {
+            let window_view: &PlatformView = &window;
+            assert!(
+                pump_main_until(5.0, || {
+                    autoreleasepool(|_| !passthrough_hosts(window_view, leaf.view()).is_empty())
+                }),
+                "the overlay presents its passthrough host"
+            );
+            autoreleasepool(|_| {
+                let host = passthrough_hosts(window_view, leaf.view())
+                    .into_iter()
+                    .next()
+                    .expect("the passthrough host is in the window");
+                Weak::new(&*host)
+            })
+        };
+        #[cfg(target_os = "macos")]
+        let weak = {
+            let parent = cocoa_ui::appkit::window_of(leaf.view()).expect("anchor in a window");
+            assert!(
+                pump_main_until(5.0, || {
+                    autoreleasepool(|_| !panels_of(&parent).is_empty())
+                }),
+                "the overlay presents its panel"
+            );
+            autoreleasepool(|_| {
+                let panel = panels_of(&parent)
+                    .into_iter()
+                    .next()
+                    .expect("the panel is a child window");
+                Weak::new(&*panel)
+            })
+        };
+        autoreleasepool(|_| shown.set(false));
+        #[cfg(target_os = "ios")]
+        autoreleasepool(|_| {
+            let window_view: &PlatformView = &window;
+            let host = passthrough_hosts(window_view, leaf.view())
+                .into_iter()
+                .next()
+                .expect("the passthrough host stays for the exit");
+            assert!(
+                host.downcast_ref::<HostView>()
+                    .is_some_and(HostView::is_retired),
+                "the exiting container is retired — not hit-testable"
+            );
+            let bounds = view::bounds(&host);
+            let hit = host.hitTest_withEvent(
+                objc2_core_foundation::CGPoint::new(
+                    bounds.size.width / 2.0,
+                    bounds.size.height / 2.0,
+                ),
+                None,
+            );
+            assert!(hit.is_none(), "the exiting container yields no hit");
+        });
+        #[cfg(target_os = "macos")]
+        autoreleasepool(|_| {
+            let parent = cocoa_ui::appkit::window_of(leaf.view()).expect("anchor in a window");
+            let panel = panels_of(&parent)
+                .into_iter()
+                .next()
+                .expect("the panel stays for the exit");
+            assert!(
+                panel.ignoresMouseEvents(),
+                "the exiting panel is transparent to mouse events"
+            );
+            assert!(panel.isVisible(), "the exiting panel keeps painting");
+        });
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| weak.load().is_none())),
+            "the completion closes the container"
+        );
+    }
+
+    /// A re-present while the previous exit is still running is a fresh
+    /// instance beside the ghost: two presentation containers coexist —
+    /// the new one hit-testable, the exiting one inert — until the old
+    /// removal completes and its container leaves (§8.2).
+    pub fn overlay_reopen_during_exit_is_a_fresh_instance() {
+        let _mtm = mtm();
+        let (shown, leaf) = claimed_overlay();
+        #[cfg(target_os = "ios")]
+        {
+            let window = super::mount_and_order_front(leaf.view());
+            let window_view: &PlatformView = &window;
+            reopen_ios(&shown, &leaf, window_view);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _window = super::mount_and_order_front(leaf.view());
+            reopen_macos(&shown, &leaf);
+        }
+    }
+
+    /// The `UIKit` half: two passthrough hosts coexist — the fresh one
+    /// live, the exiting one retired — until the old removal completes.
+    #[cfg(target_os = "ios")]
+    fn reopen_ios(
+        shown: &waterui::reactive::Binding<bool>,
+        leaf: &waterui_apple::contract::NativeLeaf,
+        window: &PlatformView,
+    ) {
+        autoreleasepool(|_| shown.set(true));
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| passthrough_hosts(window, leaf.view()).len() == 1)
+            }),
+            "the first presentation lands"
+        );
+        let old_weak = autoreleasepool(|_| {
+            let host = passthrough_hosts(window, leaf.view())
+                .into_iter()
+                .next()
+                .expect("the first passthrough host");
+            Weak::new(&*host)
+        });
+        autoreleasepool(|_| {
+            shown.set(false);
+            shown.set(true);
+        });
+        let (count, retired) = autoreleasepool(|_| {
+            let hosts = passthrough_hosts(window, leaf.view());
+            (
+                hosts.len(),
+                hosts
+                    .iter()
+                    .filter(|host| {
+                        host.downcast_ref::<HostView>()
+                            .is_some_and(HostView::is_retired)
+                    })
+                    .count(),
+            )
+        });
+        assert_eq!(
+            (count, retired),
+            (2, 1),
+            "the re-present adds a fresh container beside the exiting one"
+        );
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| old_weak.load().is_none())),
+            "the old exit completes on its own clock"
+        );
+        autoreleasepool(|_| {
+            assert_eq!(
+                passthrough_hosts(window, leaf.view()).len(),
+                1,
+                "only the fresh presentation remains"
+            );
+        });
+    }
+
+    /// The `AppKit` half: two child panels coexist — the fresh one
+    /// interactive, the exiting one ignoring mouse events — until the
+    /// old removal completes.
+    #[cfg(target_os = "macos")]
+    fn reopen_macos(
+        shown: &waterui::reactive::Binding<bool>,
+        leaf: &waterui_apple::contract::NativeLeaf,
+    ) {
+        let parent = cocoa_ui::appkit::window_of(leaf.view()).expect("anchor in a window");
+        autoreleasepool(|_| shown.set(true));
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| panels_of(&parent).len() == 1)),
+            "the first presentation lands"
+        );
+        let old_weak = autoreleasepool(|_| {
+            let panel = panels_of(&parent)
+                .into_iter()
+                .next()
+                .expect("the first panel");
+            Weak::new(&*panel)
+        });
+        autoreleasepool(|_| {
+            shown.set(false);
+            shown.set(true);
+        });
+        let (count, ignored) = autoreleasepool(|_| {
+            let panels = panels_of(&parent);
+            (
+                panels.len(),
+                panels.iter().filter(|p| p.ignoresMouseEvents()).count(),
+            )
+        });
+        assert_eq!(
+            (count, ignored),
+            (2, 1),
+            "the re-present adds a fresh panel beside the exiting one"
+        );
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| old_weak.load().is_none())),
+            "the old exit completes on its own clock"
+        );
+        autoreleasepool(|_| {
+            assert_eq!(
+                panels_of(&parent).len(),
+                1,
+                "only the fresh presentation remains"
+            );
+        });
+    }
+
+    /// The `UINavigationController` owning a view in the subtree,
+    /// depth-first — either the view's own controller is the nav
+    /// controller, or the page controller answers one.
+    #[cfg(target_os = "ios")]
+    fn nav_controller_in(
+        view: &PlatformView,
+    ) -> Option<Retained<cocoa_ui::objc2_ui_kit::UINavigationController>> {
+        use cocoa_ui::uikit::view_controller::owning_controller;
+        if let Some(controller) = owning_controller(view) {
+            if let Ok(nav) = controller.clone().downcast() {
+                return Some(nav);
+            }
+            if let Some(nav) = controller.navigationController() {
+                return Some(nav);
+            }
+        }
+        for sub in view::subviews(view) {
+            if let Some(found) = nav_controller_in(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// A path-driven stack whose pushed page carries a page-root
+    /// `.transition(...)`: `path.push`/`path.pop` drive the model
+    /// transactions the trials assert on.
+    fn claimed_stack() -> (
+        waterui::navigation::NavigationPath<i32>,
+        waterui_apple::contract::NativeLeaf,
+    ) {
+        use waterui::navigation::{NavigationPath, NavigationStack, NavigationView};
+        let path = NavigationPath::<i32>::new();
+        let leaf = super::resolve::render(
+            NavigationStack::with_path(path.clone(), NavigationView::new("Root", text("root")))
+                .destination(|_route: i32| {
+                    NavigationView::new(
+                        "Detail",
+                        Metadata::new(
+                            text("detail"),
+                            TransitionSpec::new(PropertyTransition::opacity())
+                                .with_animation(Animation::linear(Duration::from_millis(150))),
+                        ),
+                    )
+                }),
+        );
+        (path, leaf)
+    }
+
+    /// A claimed page pushed then popped through the model: the pop is
+    /// unanimated and the outgoing page's transition host is reparented
+    /// into `nav.view` directly beneath the navigation bar — above the new
+    /// top, as Hydrolysis paints the moving page over the stationary one —
+    /// at the frame it occupied inside its controller's view, staying
+    /// until the removal transition's clock releases it (§5.5). On
+    /// `AppKit` the ghost is the stack host's top subview at the entry's
+    /// last frame.
+    pub fn navigation_claimed_pop_ghosts_above_the_new_top() {
+        let _mtm = mtm();
+        let (path, leaf) = claimed_stack();
+        let _window = super::mount_and_order_front(leaf.view());
+        #[cfg(target_os = "ios")]
+        pop_ghost_ios(&path, &leaf);
+        #[cfg(target_os = "macos")]
+        pop_ghost_macos(&path, &leaf);
+    }
+
+    /// The `UIKit` half of the claimed-pop assertion: the subview of
+    /// `nav.view` directly beneath the navigation bar is the outgoing
+    /// page's retired transition host.
+    #[cfg(target_os = "ios")]
+    fn pop_ghost_ios(
+        path: &waterui::navigation::NavigationPath<i32>,
+        leaf: &waterui_apple::contract::NativeLeaf,
+    ) {
+        let nav = nav_controller_in(leaf.view()).expect("the stack mounts a navigation controller");
+        autoreleasepool(|_| path.push(1));
+        assert!(
+            pump_main_until(5.0, || nav.viewControllers().count() == 2),
+            "the push installs the claimed page"
+        );
+        let nav_view = nav.view().expect("the navigation controller's view");
+        let (page_ptr, page_frame, weak) = autoreleasepool(|_| {
+            let top = nav.topViewController().expect("the pushed page is top");
+            let page_view = top.view().expect("the page's view");
+            let host = view::subviews(&page_view)
+                .into_iter()
+                .next()
+                .expect("a claimed page mounts inside a transition host");
+            (
+                std::ptr::from_ref(&*host),
+                view::convert_rect(&host, view::bounds(&host), Some(&nav_view)),
+                Weak::new(&*host),
+            )
+        });
+        // The subview directly beneath the navigation bar.
+        let beneath_bar = || {
+            let bar = nav.navigationBar();
+            let subs = view::subviews(&nav_view);
+            let index = subs
+                .iter()
+                .position(|sub| std::ptr::eq(&raw const **sub, (&raw const *bar).cast()))
+                .expect("the navigation bar is a subview of nav.view");
+            index.checked_sub(1).map(|below| subs[below].clone())
+        };
+        let _ = autoreleasepool(|_| path.pop());
+        let landed = pump_main_until(5.0, || {
+            autoreleasepool(|_| {
+                nav.viewControllers().count() == 1
+                    && beneath_bar().is_some_and(|sub| std::ptr::eq(&raw const *sub, page_ptr))
+            })
+        });
+        let (count, subs) = autoreleasepool(|_| {
+            (
+                nav.viewControllers().count(),
+                view::subviews(&nav_view)
+                    .iter()
+                    .map(|sub| {
+                        (
+                            std::ptr::eq(&raw const **sub, page_ptr),
+                            sub.class().name().to_string_lossy().into_owned(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        });
+        assert!(
+            landed,
+            "the pop leaves the claimed page's ghost above the root, beneath the bar: \
+             {count} controllers, nav.view subviews {subs:?}"
+        );
+        autoreleasepool(|_| {
+            let ghost = &beneath_bar().expect("the ghost sits beneath the bar");
+            assert!(
+                ghost
+                    .downcast_ref::<HostView>()
+                    .is_some_and(HostView::is_retired),
+                "the ghost host retired at the pop"
+            );
+            let frame = view::frame(ghost);
+            assert_eq!(
+                (
+                    frame.origin.x,
+                    frame.origin.y,
+                    frame.size.width,
+                    frame.size.height
+                ),
+                (
+                    page_frame.origin.x,
+                    page_frame.origin.y,
+                    page_frame.size.width,
+                    page_frame.size.height
+                ),
+                "the ghost keeps the page's last frame in nav.view"
+            );
+        });
+        assert!(
+            pump_main_until(5.0, || weak.load().is_none()),
+            "the completion releases the ghost's visuals"
+        );
+    }
+
+    /// The `AppKit` half: the entries are direct subviews of the stack
+    /// host, and a claimed pop retires the top entry's transition host
+    /// above the remaining pages — the host's top subview, at the entry's
+    /// last frame.
+    #[cfg(target_os = "macos")]
+    fn pop_ghost_macos(
+        path: &waterui::navigation::NavigationPath<i32>,
+        leaf: &waterui_apple::contract::NativeLeaf,
+    ) {
+        let host = view::retain_base(leaf.view());
+        autoreleasepool(|_| path.push(1));
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| view::subviews(&host).len() == 2)
+            }),
+            "the push installs the claimed page"
+        );
+        let (page_ptr, entry_frame, weak) = autoreleasepool(|_| {
+            let entry = view::subviews(&host)
+                .into_iter()
+                .next_back()
+                .expect("the pushed page's entry view");
+            let ghost = view::subviews(&entry)
+                .into_iter()
+                .next()
+                .expect("a claimed page mounts inside a transition host");
+            (
+                std::ptr::from_ref(&*ghost),
+                view::frame(&entry),
+                Weak::new(&*ghost),
+            )
+        });
+        let _ = autoreleasepool(|_| path.pop());
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| {
+                    view::subviews(&host)
+                        .last()
+                        .is_some_and(|sub| std::ptr::eq(&raw const **sub, page_ptr))
+                })
+            }),
+            "the pop leaves the claimed page's ghost above the root"
+        );
+        autoreleasepool(|_| {
+            let ghost = view::subviews(&host)
+                .pop()
+                .expect("the ghost is the host's top subview");
+            let ghost = &ghost;
+            assert!(
+                ghost
+                    .downcast_ref::<HostView>()
+                    .is_some_and(HostView::is_retired),
+                "the ghost host retired at the pop"
+            );
+            let frame = view::frame(ghost);
+            assert_eq!(
+                (
+                    frame.origin.x,
+                    frame.origin.y,
+                    frame.size.width,
+                    frame.size.height
+                ),
+                (
+                    entry_frame.origin.x,
+                    entry_frame.origin.y,
+                    entry_frame.size.width,
+                    entry_frame.size.height
+                ),
+                "the ghost keeps the entry's last frame in the stack host"
+            );
+        });
+        assert!(
+            pump_main_until(5.0, || weak.load().is_none()),
+            "the completion releases the ghost's visuals"
+        );
+    }
+
+    /// A claimed page pushed through the model: the stack's own push
+    /// animation is skipped — `UIKit` reports no transition coordinator
+    /// and `AppKit` skips its fade — while the page's transition host
+    /// ramps its own insertion instead (§5.5).
+    pub fn navigation_claimed_push_replaces_the_stack_animation() {
+        let _mtm = mtm();
+        let (path, leaf) = claimed_stack();
+        let _window = super::mount_and_order_front(leaf.view());
+        let mid_ramp = Cell::new(false);
+        #[cfg(target_os = "ios")]
+        push_unanimated_ios(&path, &leaf, &mid_ramp);
+        #[cfg(target_os = "macos")]
+        push_unanimated_macos(&path, &leaf, &mid_ramp);
+        assert!(
+            mid_ramp.get(),
+            "the page host's alpha ramped through its own transition"
+        );
+    }
+
+    /// `UIKit`: the claimed push installs without a transition
+    /// coordinator and the page host's alpha ramps mid-flight.
+    #[cfg(target_os = "ios")]
+    fn push_unanimated_ios(
+        path: &waterui::navigation::NavigationPath<i32>,
+        leaf: &waterui_apple::contract::NativeLeaf,
+        mid_ramp: &Cell<bool>,
+    ) {
+        let nav = nav_controller_in(leaf.view()).expect("the stack mounts a navigation controller");
+        autoreleasepool(|_| path.push(1));
+        assert!(
+            pump_main_until(5.0, || nav.viewControllers().count() == 2),
+            "the push installs the claimed page"
+        );
+        assert!(
+            nav.transitionCoordinator().is_none(),
+            "a claimed push is not the stack's animated transition"
+        );
+        let done = pump_main_until(5.0, || {
+            autoreleasepool(|_| {
+                let top = nav.topViewController().expect("the pushed page is top");
+                let host = view::subviews(&top.view().expect("view"))
+                    .into_iter()
+                    .next()
+                    .expect("a claimed page mounts inside a transition host");
+                let alpha = view::alpha(&host);
+                if alpha > 0.0 && alpha < 1.0 {
+                    mid_ramp.set(true);
+                }
+                alpha >= 1.0
+            })
+        });
+        assert!(done, "the insertion transition completes");
+    }
+
+    /// `AppKit`: the claimed push's entry host alpha ramps — the stack
+    /// fade never ran for it.
+    #[cfg(target_os = "macos")]
+    fn push_unanimated_macos(
+        path: &waterui::navigation::NavigationPath<i32>,
+        leaf: &waterui_apple::contract::NativeLeaf,
+        mid_ramp: &Cell<bool>,
+    ) {
+        let host = view::retain_base(leaf.view());
+        autoreleasepool(|_| path.push(1));
+        let done = pump_main_until(5.0, || {
+            autoreleasepool(|_| {
+                let subviews = view::subviews(&host);
+                if subviews.len() < 2 {
+                    return false;
+                }
+                let alpha = subviews.last().map_or(1.0, |entry| {
+                    view::subviews(entry)
+                        .first()
+                        .map_or(1.0, |page| view::alpha(page))
+                });
+                if alpha > 0.0 && alpha < 1.0 {
+                    mid_ramp.set(true);
+                }
+                alpha >= 1.0
+            })
+        });
+        assert!(done, "the insertion transition completes");
+    }
+
+    /// A flag whose drop proves the leaf's keepalive ended — the same
+    /// lifetime every watcher and subscription shares.
+    struct Died(Rc<Cell<bool>>);
+
+    impl Drop for Died {
+        fn drop(&mut self) {
+            self.0.set(true);
+        }
+    }
+
+    /// The outgoing child's leaf dies at replacement — the `Retain` probe
+    /// proves every subscription ended — while its view is retained as a
+    /// ghost beneath the incoming child until the transition clock
+    /// releases it. The new child is untouched.
+    pub fn a_replaced_child_semantics_die_while_its_view_ghosts() {
+        let _mtm = mtm();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        let _window = super::mount_and_order_front(leaf.view());
+
+        let died = Rc::new(Cell::new(false));
+        // The update path autoreleases `subviews` arrays that retain the
+        // tree in the caller's pool — without these pools the weak probe
+        // could never see the release.
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(
+                Metadata::new(label("gone"), Retain::new(Died(Rc::clone(&died)))),
+                TransitionSpec::new(PropertyTransition::opacity())
+                    .with_animation(Animation::linear(Duration::from_millis(60))),
+            ));
+        });
+        let ghost_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
+        let live_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
+        let weak = autoreleasepool(|_| {
+            let subviews = view::subviews(leaf.view());
+            assert_eq!(subviews.len(), 1, "the child mounts inside the host");
+            ghost_ptr.set(std::ptr::from_ref(&*subviews[0]));
+            Weak::new(&*subviews[0])
+        });
+
+        autoreleasepool(|_| handler.set(label("here")));
+        // The semantic boundary: the old leaf — its watchers, guards and
+        // retained values — is dead immediately.
+        assert!(died.get(), "the removed leaf's keepalive ended at removal");
+        // Its view lives on as the ghost, painted beneath the new child.
+        assert!(weak.load().is_some(), "the ghost retains the outgoing view");
+        autoreleasepool(|_| {
+            let subviews = view::subviews(leaf.view());
+            assert_eq!(subviews.len(), 2, "ghost beneath the live child");
+            assert_eq!(
+                std::ptr::from_ref(&*subviews[0]),
+                ghost_ptr.get(),
+                "the ghost paints at the bottom of the host"
+            );
+            assert_ne!(
+                std::ptr::from_ref(&*subviews[1]),
+                ghost_ptr.get(),
+                "the new child mounts on top"
+            );
+            live_ptr.set(std::ptr::from_ref(&*subviews[1]));
+        });
+
+        // The clock releases the ghost when the animation ends — the
+        // window is ordered, so the frame clock ticks.
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| view::subviews(leaf.view()).len() == 1)
+            }),
+            "the completion detaches the ghost when the transition completes"
+        );
+        assert!(
+            pump_main_until(1.0, || weak.load().is_none()),
+            "the ghost releases the outgoing view"
+        );
+        let (count, first) = autoreleasepool(|_| {
+            let remaining = view::subviews(leaf.view());
+            (remaining.len(), std::ptr::from_ref(&*remaining[0]))
+        });
+        assert_eq!(
+            (count, first),
+            (1, live_ptr.get()),
+            "only the live child remains"
+        );
+    }
+
+    /// A retired host's subtree is a ghost: hit testing skips it whole,
+    /// it reports no accessibility membership, and the inspector's
+    /// published tree has no node inside it.
+    pub fn retired_host_is_outside_hit_testing_and_accessibility() {
+        use waterui_apple::native_test_support::inspector_tree;
+
+        let mtm = mtm();
+        let site = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        let _window = super::mount_and_order_front(&site);
+        let live = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let ghost = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let label = Label::new(mtm);
+        // The live child covers the bottom half; the ghost, added last,
+        // covers the top half above it.
+        view::add_subview(&site, &live);
+        view::set_frame(&live, cocoa_ui::Rect::new(0.0, 50.0, 200.0, 50.0));
+        view::add_subview(&ghost, &label);
+        view::add_subview(&site, &ghost);
+        view::set_frame(&ghost, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 50.0));
+        view::set_frame(&label, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 50.0));
+        let site_ptr = std::ptr::from_ref(&*site).addr() as u64;
+        let ghost_ptr = std::ptr::from_ref(&*ghost).addr() as u64;
+        let label_ptr = std::ptr::from_ref(&*label).addr() as u64;
+        ghost.retire();
+
+        #[cfg(target_os = "macos")]
+        {
+            // `hitTest:` reads the point in the superview's coordinates.
+            let site_view: &PlatformView = &site;
+            let superview = view::superview(site_view).expect("the site is in a window");
+            let inside_ghost =
+                view::convert_point(site_view, cocoa_ui::Point::new(25.0, 25.0), &superview);
+            let hit = site.hitTest(inside_ghost.into());
+            assert!(
+                hit.as_deref()
+                    .is_some_and(|hit| std::ptr::from_ref(hit).addr() as u64 == site_ptr),
+                "the retired host yields no hit inside its subtree"
+            );
+            let inside_live =
+                view::convert_point(site_view, cocoa_ui::Point::new(25.0, 75.0), &superview);
+            let hit = site.hitTest(inside_live.into());
+            assert!(
+                hit.as_deref()
+                    .is_some_and(|hit| std::ptr::from_ref(hit).addr() as u64 != ghost_ptr),
+                "the live child answers hits beneath the ghost's frame"
+            );
+            autoreleasepool(|_| {
+                use cocoa_ui::objc2::msg_send;
+                use cocoa_ui::objc2_foundation::NSArray;
+                // SAFETY: the query answers an object array.
+                let children: Option<Retained<NSArray>> =
+                    unsafe { msg_send![&site, accessibilityChildren] };
+                if let Some(children) = children {
+                    for index in 0..children.count() {
+                        let child = children.objectAtIndex(index);
+                        let ptr = std::ptr::from_ref(&*child).addr() as u64;
+                        assert!(
+                            ptr != ghost_ptr && ptr != label_ptr,
+                            "the site's accessibility children exclude the ghost"
+                        );
+                    }
+                }
+                // SAFETY: the query answers an object array.
+                let ghost_children: Option<Retained<NSArray>> =
+                    unsafe { msg_send![&ghost, accessibilityChildren] };
+                assert_eq!(
+                    ghost_children.map_or(0, |children| children.count()),
+                    0,
+                    "a retired host reports no accessibility children"
+                );
+                // SAFETY: `isAccessibilityElement` is a plain getter.
+                let is_element: bool = unsafe { msg_send![&ghost, isAccessibilityElement] };
+                assert!(!is_element, "a retired host is no accessibility element");
+            });
+        }
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility;
+            // `hitTest:withEvent:` reads the point in the receiver's
+            // bounds coordinates.
+            let hit = site.hitTest_withEvent(objc2_core_foundation::CGPoint::new(25.0, 25.0), None);
+            assert!(
+                hit.as_deref()
+                    .is_some_and(|hit| std::ptr::from_ref(hit).addr() as u64 == site_ptr),
+                "the retired host yields no hit inside its subtree"
+            );
+            assert!(
+                ghost.accessibilityElementsHidden(mtm),
+                "a retired host hides its subtree from accessibility"
+            );
+            let _ = label_ptr;
+        }
+
+        // The inspector's published tree has no node for the ghost
+        // subtree.
+        for node in inspector_tree(&site) {
+            assert_ne!(node.id.0, ghost_ptr, "the ghost is outside the tree");
+            assert_ne!(
+                node.id.0, label_ptr,
+                "the ghost's content is outside the tree"
+            );
+        }
+    }
+
+    /// Dropping a `Mounted` inside a retired host leaves the child's
+    /// superview untouched — the retired host owns the visuals now. The
+    /// same drop under an unretired parent detaches, as before.
+    pub fn mounted_drop_under_retired_host_keeps_views() {
+        let mtm = mtm();
+        let parent = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        let child = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let mounted = waterui_apple::contract::NativeLeaf::new(&*child, TestSubView).mount(&parent);
+        let child_view = view::retain_base(mounted.view());
+        parent.retire();
+        drop(mounted);
+        assert!(
+            view::superview(&child_view).is_some(),
+            "the retired host keeps the child's view"
+        );
+
+        let live_parent = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        let live_child = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let mounted =
+            waterui_apple::contract::NativeLeaf::new(&*live_child, TestSubView).mount(&live_parent);
+        let child_view = view::retain_base(mounted.view());
+        drop(mounted);
+        assert!(
+            view::superview(&child_view).is_none(),
+            "an unretired parent detaches the child's view"
+        );
+    }
+
+    /// A `.transition(...)` beneath another modifier has no structural
+    /// owner: rendering `content.transition(..).padding(..)` and mounting
+    /// it directly panics in a debug build, naming the missing owner.
+    pub fn unowned_declaration_panics_at_mount() {
+        use waterui::ViewExt as _;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let leaf = super::resolve::render(
+                Metadata::new(
+                    label("unowned"),
+                    TransitionSpec::new(PropertyTransition::opacity()),
+                )
+                .padding(),
+            );
+            let parent = HostView::new(mtm(), cocoa_ui::Rect::ZERO);
+            let _mounted = leaf.mount(&parent);
+        }));
+        let Err(payload) = outcome else {
+            panic!("an unowned `.transition(...)` declaration mounted");
+        };
+        let message = payload.downcast_ref::<String>().map_or_else(
+            || {
+                payload
+                    .downcast_ref::<&'static str>()
+                    .copied()
+                    .unwrap_or_default()
+            },
+            String::as_str,
+        );
+        assert!(
+            message.contains("no structural transition owner"),
+            "unexpected panic message: {message}"
+        );
+    }
+
+    /// The transition host of `leaf`'s dynamic — its single subview.
+    fn transition_host(child: &Mounted) -> Retained<PlatformView> {
+        autoreleasepool(|_| {
+            view::subviews(child.view())
+                .into_iter()
+                .next()
+                .expect("the dynamic holds one child")
+        })
+    }
+
+    /// The content root a transition host frames — its single child.
+    fn content_of(host: &PlatformView) -> Retained<PlatformView> {
+        autoreleasepool(|_| {
+            view::subviews(host)
+                .into_iter()
+                .next()
+                .expect("the transition host frames one content view")
+        })
+    }
+
+    /// The x-scale `outer` applies to its single child `inner`: `m11` of
+    /// `outer`'s layer `sublayerTransform` on macOS — where the transition
+    /// host and the scale modifier both put it — and `a` of `inner`'s own
+    /// `CGAffineTransform` on iOS.
+    fn scale_through(outer: &PlatformView, inner: &PlatformView) -> f64 {
+        autoreleasepool(|_| {
+            #[cfg(target_os = "macos")]
+            {
+                let _ = inner;
+                let layer = view::layer(outer).expect("a layer-backed view");
+                layer.sublayerTransform().m11
+            }
+            #[cfg(target_os = "ios")]
+            {
+                let _ = outer;
+                inner.transform().a
+            }
+        })
+    }
+
+    /// The transition's scale pivots at the host's centre: the host
+    /// layer's `sublayerTransform` maps the bounds centre to itself. iOS
+    /// needs no check — `UIView.transform` applies about the centre.
+    #[cfg(target_os = "macos")]
+    fn assert_centre_fixed(host: &PlatformView) {
+        autoreleasepool(|_| {
+            let size = view::bounds(host).size;
+            let (cx, cy) = (size.width * 0.5, size.height * 0.5);
+            let t = view::layer(host)
+                .expect("a layer-backed host")
+                .sublayerTransform();
+            let x = cy.mul_add(t.m21, cx.mul_add(t.m11, t.m41));
+            let y = cy.mul_add(t.m22, cx.mul_add(t.m12, t.m42));
+            assert!(
+                (x - cx).abs() < 1e-6 && (y - cy).abs() < 1e-6,
+                "the transition pivots at the centre ({cx}, {cy}), mapped to ({x}, {y})"
+            );
+        });
+    }
+
+    /// Removing a `Dynamic` child kills its semantics but not its views:
+    /// every `Retain` in the outgoing subtree drops while every view
+    /// stays in the ghost — descendants too, not just the root
+    /// (§8.2).
+    pub fn removed_descendants_die_but_their_views_stay_in_the_ghost() {
+        let _mtm = mtm();
+        let d1 = Rc::new(Cell::new(false));
+        let d2 = Rc::new(Cell::new(false));
+        let (nested, nested_view) = Dynamic::new();
+        nested.set(Metadata::new(
+            label("inner"),
+            Retain::new(Died(Rc::clone(&d2))),
+        ));
+        let child = vstack((
+            Metadata::new(label("first"), Retain::new(Died(Rc::clone(&d1)))),
+            nested_view,
+        ));
+        let (handler, view) = Dynamic::new();
+        handler.set(Metadata::new(
+            child,
+            TransitionSpec::new(PropertyTransition::opacity())
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+        ));
+        // Every kit call below runs in its own pool: the update path
+        // autoreleases `subviews` arrays that retain the tree, and the weak
+        // probe sees the release only once they drain.
+        let (mounted, window) = autoreleasepool(|_| {
+            let leaf = super::resolve::render(view);
+            let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+            let window = super::mount_and_order_front(mounted.view());
+            (mounted, window)
+        });
+        assert!(!d1.get() && !d2.get(), "the mounted child's Retains live");
+        autoreleasepool(|_| handler.set(label("after")));
+        assert!(d1.get(), "the removed child's Retain dies at the swap");
+        assert!(d2.get(), "the nested Dynamic's Retain dies at the swap");
+        let weak: Weak<PlatformView> = autoreleasepool(|_| {
+            let ghost = transition_host(&mounted);
+            let content = content_of(&ghost);
+            let descendant = view::subviews(&content)
+                .into_iter()
+                .next()
+                .expect("the ghost keeps the stack's children");
+            assert!(
+                view::superview(&descendant).is_some(),
+                "the removed descendant's view stays in the ghost"
+            );
+            Weak::from(&descendant)
+        });
+        let completed = pump_main_until(2.0, || {
+            autoreleasepool(|_| view::subviews(mounted.view()).len() == 1)
+        });
+        assert!(completed, "the ghost completes on the frame clock");
+        assert!(
+            pump_main_until(1.0, || weak.load().is_none()),
+            "the ghost releases every view"
+        );
+        drop(window);
+    }
+
+    /// `PropertyTransition::opacity()` samples the transition host's
+    /// alpha — the content's own `.opacity` is never touched (§8.2).
+    pub fn opacity_composes_with_the_contents_own_opacity() {
+        let _mtm = mtm();
+        let (handler, view) = Dynamic::new();
+        handler.set(label("before"));
+        let leaf = super::resolve::render(view);
+        let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+        let window = super::mount_and_order_front(mounted.view());
+        handler.set(Metadata::new(
+            label("coming").opacity(0.5),
+            TransitionSpec::new(PropertyTransition::opacity())
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+        ));
+        autoreleasepool(|_| {
+            let host = transition_host(&mounted);
+            let content = content_of(&host);
+            let mid = pump_main_until(2.0, || {
+                let alpha = view::alpha(&host);
+                alpha > 0.0 && alpha < 1.0
+            });
+            assert!(mid, "the insertion samples the host's alpha mid-flight");
+            assert!(
+                (view::alpha(&content) - 0.5).abs() < 1e-6,
+                "the content's own opacity is untouched"
+            );
+            let settled = pump_main_until(2.0, || (view::alpha(&host) - 1.0).abs() < 1e-6);
+            assert!(settled, "the insertion completes to full alpha");
+            assert!((view::alpha(&content) - 0.5).abs() < 1e-6);
+        });
+        drop(window);
+    }
+
+    /// `PropertyTransition::scale` samples the transition child's
+    /// transform — the content's own `.scale` is never touched (§8.2).
+    pub fn scale_composes_with_the_contents_own_scale() {
+        let _mtm = mtm();
+        let (handler, view) = Dynamic::new();
+        handler.set(label("before"));
+        let leaf = super::resolve::render(view);
+        let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+        let window = super::mount_and_order_front(mounted.view());
+        handler.set(Metadata::new(
+            label("coming").scale(0.5, 0.5),
+            TransitionSpec::new(PropertyTransition::scale(0.5))
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+        ));
+        autoreleasepool(|_| {
+            let host = transition_host(&mounted);
+            let transition_child = content_of(&host);
+            let inner = view::subviews(&transition_child)
+                .into_iter()
+                .next()
+                .expect("the scale wrapper holds its child");
+            let mid = pump_main_until(2.0, || {
+                let scale = scale_through(&host, &transition_child);
+                scale > 0.5 && scale < 1.0
+            });
+            assert!(mid, "the insertion samples the transition child's scale");
+            #[cfg(target_os = "macos")]
+            assert_centre_fixed(&host);
+            let own = scale_through(&transition_child, &inner);
+            assert!(
+                (own - 0.5).abs() < 1e-6,
+                "the content's own scale is untouched mid-flight, read {own}"
+            );
+            let settled = pump_main_until(2.0, || {
+                (scale_through(&host, &transition_child) - 1.0).abs() < 1e-6
+            });
+            assert!(settled, "the insertion completes to the identity");
+            let own = scale_through(&transition_child, &inner);
+            assert!(
+                (own - 0.5).abs() < 1e-6,
+                "the content's own scale is untouched at rest, read {own}"
+            );
+        });
+        drop(window);
+    }
+
+    /// A combined transition samples every property on every tick: the
+    /// host alpha and the transition child's scale share one clock's
+    /// progress, within a point sample's tolerance (§8.2).
+    pub fn combined_transition_samples_every_frame() {
+        let _mtm = mtm();
+        let (handler, view) = Dynamic::new();
+        handler.set(label("before"));
+        let leaf = super::resolve::render(view);
+        let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+        let window = super::mount_and_order_front(mounted.view());
+        handler.set(Metadata::new(
+            label("coming"),
+            TransitionSpec::new(
+                PropertyTransition::opacity().combined(PropertyTransition::scale(0.5)),
+            )
+            .with_animation(Animation::linear(Duration::from_millis(120))),
+        ));
+        autoreleasepool(|_| {
+            let host = transition_host(&mounted);
+            let transition_child = content_of(&host);
+            let shared = Cell::new(false);
+            let mid = pump_main_until(2.0, || {
+                let alpha = view::alpha(&host);
+                let scale = scale_through(&host, &transition_child);
+                if alpha > 0.0 && alpha < 1.0 {
+                    // Insertion progress implied by the scale sample.
+                    let progress = 2.0 * (1.0 - scale);
+                    assert!(
+                        (alpha - (1.0 - progress)).abs() < 1e-3,
+                        "alpha {alpha} and scale {scale} share one progress"
+                    );
+                    shared.set(true);
+                }
+                shared.get()
+            });
+            assert!(mid, "a combined tick landed mid-flight");
+        });
+        drop(window);
+    }
+
+    /// `.transition(...)` directly on a `Dynamic` adopts into the
+    /// conditional: each child it swaps carries the claim — the swap
+    /// ghosts the outgoing child while the `Dynamic` host itself is
+    /// never retired (§5.1, §8.2).
+    pub fn adopted_conditional_claims_each_child() {
+        let _mtm = mtm();
+        let (handler, view) = Dynamic::new();
+        let leaf_view = Metadata::new(
+            view,
+            TransitionSpec::new(PropertyTransition::opacity())
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+        );
+        let leaf = super::resolve::render(leaf_view);
+        let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+        let window = super::mount_and_order_front(mounted.view());
+        handler.set(label("a"));
+        handler.set(label("b"));
+        autoreleasepool(|_| {
+            let host = mounted
+                .view()
+                .downcast_ref::<HostView>()
+                .expect("a HostView");
+            assert!(
+                !host.is_retired(),
+                "the conditional's own mount never transitions"
+            );
+            assert_eq!(
+                view::subviews(mounted.view()).len(),
+                2,
+                "the adopted claim ghosts the outgoing child"
+            );
+            let completed = pump_main_until(2.0, || view::subviews(mounted.view()).len() == 1);
+            assert!(completed, "the adopted ghost completes");
+        });
+        drop(window);
+    }
+
+    /// A child's own `.transition(...)` declaration wins over the claim
+    /// the conditional adopted: the outgoing child ghosts on its own
+    /// scale, the host alpha is untouched (§5.1, §8.2).
+    pub fn the_contents_own_claim_beats_the_adopted_one() {
+        let _mtm = mtm();
+        let (handler, view) = Dynamic::new();
+        let leaf_view = Metadata::new(
+            view,
+            TransitionSpec::new(PropertyTransition::opacity())
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+        );
+        let leaf = super::resolve::render(leaf_view);
+        let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+        let window = super::mount_and_order_front(mounted.view());
+        handler.set(Metadata::new(
+            label("a"),
+            TransitionSpec::new(PropertyTransition::scale(0.5))
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+        ));
+        handler.set(label("b"));
+        autoreleasepool(|_| {
+            let host = transition_host(&mounted);
+            let transition_child = content_of(&host);
+            let mid = pump_main_until(2.0, || scale_through(&host, &transition_child) < 1.0);
+            assert!(mid, "the child's own claim drives the ghost");
+            assert!(
+                (view::alpha(&host) - 1.0).abs() < 1e-6,
+                "the adopted opacity never applies to a claimed child"
+            );
+        });
+        drop(window);
+    }
+
+    /// The first-mounted child of a conditional is a mount, not an
+    /// insertion: its transition host starts fully present (§5.2, §8.2).
+    pub fn initial_build_plays_no_insertion() {
+        let _mtm = mtm();
+        let (handler, view) = Dynamic::new();
+        let leaf = super::resolve::render(view);
+        let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+        let window = super::mount_and_order_front(mounted.view());
+        handler.set(Metadata::new(
+            label("a"),
+            TransitionSpec::new(PropertyTransition::opacity())
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+        ));
+        autoreleasepool(|_| {
+            let host = transition_host(&mounted);
+            assert!(
+                (view::alpha(&host) - 1.0).abs() < 1e-6,
+                "the initial child presents at full alpha before any pump"
+            );
+        });
+        drop(window);
+    }
+
+    /// A zero-duration removal completes at `start`: the outgoing
+    /// instance detaches in the same turn, with no ghost at all
+    /// (§1.5, §8.2).
+    pub fn zero_duration_removal_detaches_at_once() {
+        let _mtm = mtm();
+        let (handler, view) = Dynamic::new();
+        handler.set(Metadata::new(
+            label("a"),
+            TransitionSpec::new(PropertyTransition::opacity())
+                .with_animation(Animation::linear(Duration::ZERO)),
+        ));
+        let leaf = super::resolve::render(view);
+        let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+        let window = super::mount_and_order_front(mounted.view());
+        handler.set(label("b"));
+        autoreleasepool(|_| {
+            assert_eq!(
+                view::subviews(mounted.view()).len(),
+                1,
+                "a zero-duration removal leaves no ghost behind"
+            );
+        });
+        drop(window);
+    }
+
+    /// Completing a ghost needs nothing the site owns: dropping the
+    /// `Dynamic` leaf cancels the run through the window handler's
+    /// path, and a live site still sees the ordinary completion
+    /// (§1.5, §8.2).
+    pub fn ghost_completion_does_not_need_the_site() {
+        let _mtm = mtm();
+        let (handler, view) = Dynamic::new();
+        handler.set(Metadata::new(
+            label("a"),
+            TransitionSpec::new(PropertyTransition::opacity())
+                .with_animation(Animation::linear(Duration::from_millis(60))),
+        ));
+        // Every kit call below runs in its own pool: the update path
+        // autoreleases `subviews` arrays that retain the tree, and the weak
+        // probe sees the release only once they drain.
+        let (mounted, window) = autoreleasepool(|_| {
+            let leaf = super::resolve::render(view);
+            let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+            let window = super::mount_and_order_front(mounted.view());
+            (mounted, window)
+        });
+        autoreleasepool(|_| handler.set(label("b")));
+        let weak: Weak<PlatformView> = autoreleasepool(|_| {
+            let ghost = transition_host(&mounted);
+            Weak::from(&ghost)
+        });
+        autoreleasepool(|_| drop(mounted));
+        let cancelled = pump_main_until(2.0, || weak.load().is_none());
+        assert!(
+            cancelled,
+            "the site's drop cancels the ghost within one pump"
+        );
+
+        // With the site live, the ghost completes through `on_complete`.
+        let (handler2, view2) = Dynamic::new();
+        handler2.set(Metadata::new(
+            label("a"),
+            TransitionSpec::new(PropertyTransition::opacity())
+                .with_animation(Animation::linear(Duration::from_millis(30))),
+        ));
+        let leaf2 = super::resolve::render(view2);
+        let mounted2 = leaf2.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
+        let window2 = super::mount_and_order_front(mounted2.view());
+        handler2.set(label("b"));
+        autoreleasepool(|_| {
+            let completed = pump_main_until(2.0, || view::subviews(mounted2.view()).len() == 1);
+            assert!(completed, "the ghost completes through on_complete");
+        });
+        drop(window2);
+        drop(window);
+    }
+
+    /// A stable-id row for the `ForEach` memberships the collection
+    /// trials edit.
+    #[derive(Clone, Copy, Identifiable)]
+    struct Row {
+        #[id]
+        id: u64,
+    }
+
+    /// The `Died` flags a row generator records, in render order, keyed
+    /// by the row's collection id — reinsertion shows as a second entry.
+    type DiedFlags = Rc<RefCell<Vec<(u64, Rc<Cell<bool>>)>>>;
+
+    /// A 200 ms linear opacity declaration — long enough for a
+    /// mid-flight membership edit.
+    fn row_spec() -> TransitionSpec {
+        TransitionSpec::new(PropertyTransition::opacity())
+            .with_animation(Animation::linear(Duration::from_millis(200)))
+    }
+
+    /// The container's members as (is ghost, pointer, frame) triples in
+    /// subview order — ghost hosts paint beneath the live members.
+    fn member_frames(container: &PlatformView) -> Vec<(bool, usize, cocoa_ui::Rect)> {
+        autoreleasepool(|_| {
+            view::subviews(container)
+                .iter()
+                .map(|member| {
+                    (
+                        member
+                            .downcast_ref::<HostView>()
+                            .is_some_and(HostView::is_retired),
+                        Retained::as_ptr(member) as usize,
+                        view::frame(member),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    /// The members sorted by frame origin — the member order layout
+    /// produced, independent of subview z-order.
+    fn members_by_origin(container: &PlatformView) -> Vec<(bool, usize, cocoa_ui::Rect)> {
+        let mut members = member_frames(container);
+        members.sort_by(|a, b| a.2.origin.y.total_cmp(&b.2.origin.y));
+        members
+    }
+
+    /// True while any descendant of `view` is a retired host — the sign
+    /// a ghost exists.
+    fn has_retired_descendant(view: &PlatformView) -> bool {
+        autoreleasepool(|_| {
+            view::subviews(view).iter().any(|subview| {
+                subview
+                    .downcast_ref::<HostView>()
+                    .is_some_and(HostView::is_retired)
+                    || has_retired_descendant(subview)
+            })
+        })
+    }
+
+    /// The host that directly owns the member views: `VStack::for_each`
+    /// wraps its container in an environment host and `Lazy::vstack`
+    /// nests it in scroll chrome, so in both cases the container is the
+    /// first descendant with more than two direct subviews.
+    fn member_container(view: &PlatformView) -> Option<Retained<PlatformView>> {
+        autoreleasepool(|_| {
+            let subviews = view::subviews(view);
+            if subviews.len() > 2 {
+                return Some(view::retain_base(view));
+            }
+            subviews
+                .iter()
+                .find_map(|subview| member_container(subview))
+        })
+    }
+
+    /// The ghost slot reports exactly the member's last placed frame —
+    /// bit-equal, since it is copied — and a mid-flight width change
+    /// re-measures live members but never the ghost.
+    pub fn collection_ghost_keeps_its_last_placement() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
+            let height = match row.id % 3 {
+                0 => 20.0,
+                1 => 4.0,
+                _ => 12.0,
+            };
+            Metadata::new(
+                // The spacer stretches the row across the container's
+                // width, so a wider container re-measures it.
+                hstack((text(format!("row {}", row.id)), spacer())).padding_vertical(height),
+                row_spec(),
+            )
+        }));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let container = member_container(leaf.view()).expect("the container holds the members");
+        let (b_size, c_origin) = {
+            let members = member_frames(&container);
+            assert_eq!(members.len(), 3, "three members mounted");
+            (members[1].2.size, members[2].2.origin)
+        };
+        autoreleasepool(|_| {
+            let _ = items.remove(1);
+        });
+        assert!(
+            pump_main_until(2.0, || member_frames(&container).iter().any(|m| m.0)),
+            "the removed member ghosts"
+        );
+        let members = member_frames(&container);
+        assert_eq!(members.len(), 3);
+        let (ghost, _, frame) = members[0];
+        assert!(ghost, "the ghost leads the subviews at the bottom");
+        assert_eq!(
+            (frame.size.width.to_bits(), frame.size.height.to_bits()),
+            (b_size.width.to_bits(), b_size.height.to_bits()),
+            "the ghost's frame is the member's last placement, bit-equal"
+        );
+        assert_eq!(
+            members[2].2.origin.y.to_bits(),
+            c_origin.y.to_bits(),
+            "the surviving member's origin is unchanged while the slot holds"
+        );
+        // A mid-flight width change re-measures live members; the ghost
+        // keeps its frozen size. The container takes the new bounds
+        // directly — its `with` wrapper would only forward them anyway.
+        let live_width = members[2].2.size.width;
+        autoreleasepool(|_| {
+            let mut frame = view::frame(&container);
+            frame.size.width += 80.0;
+            view::set_frame(&container, frame);
+            view::layout_immediately(&container);
+        });
+        let resized = member_frames(&container);
+        assert!(
+            resized[2].2.size.width > live_width,
+            "the live member re-measured at the new width"
+        );
+        let (ghost, _, ghost_frame) = resized[0];
+        assert!(ghost, "the ghost still leads the subviews");
+        assert_eq!(
+            (
+                ghost_frame.size.width.to_bits(),
+                ghost_frame.size.height.to_bits()
+            ),
+            (b_size.width.to_bits(), b_size.height.to_bits()),
+            "the ghost's size is frozen — never re-measured"
+        );
+    }
+
+    /// A ghost re-anchors on every edit: it stays after the nearest
+    /// preceding live id, or at the head when none survives — and a head
+    /// ghost stays ahead of an insertion at the head, as in Hydrolysis.
+    pub fn ghosts_rebase_across_later_edits() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        // Only row 2 claims a transition — an anchor that ghosts would
+        // make "first" ambiguous.
+        let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
+            let content = hstack((text(format!("row {}", row.id)), spacer())).size(200.0, 20.0);
+            if row.id == 2 {
+                AnyView::new(Metadata::new(content, row_spec()))
+            } else {
+                AnyView::new(content)
+            }
+        }));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let container = member_container(leaf.view()).expect("the container holds the members");
+        autoreleasepool(|_| {
+            let _ = items.remove(1);
+        });
+        assert!(
+            pump_main_until(2.0, || member_frames(&container).iter().any(|m| m.0)),
+            "the removed member ghosts"
+        );
+        autoreleasepool(|_| {
+            let _ = items.remove(0);
+        });
+        // With its anchor gone the ghost sits first.
+        let members = member_frames(&container);
+        assert_eq!(members.len(), 2);
+        let (ghost, _, ghost_frame) = members[0];
+        assert!(ghost, "the ghost leads the subviews");
+        assert!(
+            ghost_frame.origin.y < members[1].2.origin.y,
+            "the head-anchored ghost sits first"
+        );
+        // The surviving member's identity, to name it after the insert.
+        let c_ptr = members
+            .iter()
+            .find(|m| !m.0)
+            .expect("the survivor is live")
+            .1;
+        // Inserting at the head keeps the head ghost first.
+        autoreleasepool(|_| {
+            items.insert(0, Row { id: 4 });
+        });
+        assert!(
+            pump_main_until(2.0, || member_frames(&container).len() == 3),
+            "the inserted member joins"
+        );
+        let members = members_by_origin(&container);
+        assert_eq!(members.len(), 3);
+        // By frame origin: the head ghost first, then the inserted
+        // member, then the survivor.
+        assert!(
+            members[0].0 && !members[1].0 && !members[2].0,
+            "member order by frame origin is ghost(B), D, C: {members:?}"
+        );
+        assert_eq!(members[2].1, c_ptr, "the survivor keeps the tail slot");
+        assert_ne!(
+            members[1].1, c_ptr,
+            "the member after the ghost is the fresh insertion, not the survivor"
+        );
+    }
+
+    /// Re-adding an id whose exit is still in flight joins a fresh live
+    /// instance — new semantics, new insertion — while the old ghost
+    /// completes on its own clock.
+    pub fn reinsertion_creates_a_fresh_instance_beside_the_ghost() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let flags: DiedFlags = Rc::new(RefCell::new(Vec::new()));
+        let leaf = super::resolve::render(VStack::for_each(items.clone(), {
+            let flags = Rc::clone(&flags);
+            move |row: Row| {
+                let died = Rc::new(Cell::new(false));
+                flags.borrow_mut().push((row.id, Rc::clone(&died)));
+                Metadata::new(
+                    Metadata::new(
+                        hstack((text(format!("row {}", row.id)), spacer())).size(200.0, 20.0),
+                        Retain::new(Died(died)),
+                    ),
+                    row_spec(),
+                )
+            }
+        }));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let container = member_container(leaf.view()).expect("the container holds the members");
+        let old_died = flags
+            .borrow()
+            .iter()
+            .find(|(id, _)| *id == 2)
+            .map(|(_, died)| Rc::clone(died))
+            .expect("row 2 rendered");
+        autoreleasepool(|_| {
+            let _ = items.remove(1);
+        });
+        assert!(
+            old_died.get(),
+            "the removed instance's semantics end at once"
+        );
+        assert!(
+            pump_main_until(2.0, || member_frames(&container).iter().any(|m| m.0)),
+            "the removed member ghosts"
+        );
+        // The same id comes back mid-flight.
+        autoreleasepool(|_| {
+            items.insert(1, Row { id: 2 });
+        });
+        assert!(
+            pump_main_until(2.0, || member_frames(&container).len() == 4),
+            "the reinserted member joins beside the ghost"
+        );
+        let members = member_frames(&container);
+        assert_eq!(members.len(), 4, "the ghost beside three live members");
+        assert!(members[0].0, "the ghost paints beneath the live members");
+        let new_died = flags
+            .borrow()
+            .iter()
+            .rfind(|(id, _)| *id == 2)
+            .map(|(_, died)| Rc::clone(died))
+            .expect("row 2 re-rendered");
+        assert!(
+            !new_died.get(),
+            "the reinserted instance is a fresh live member"
+        );
+        assert!(
+            !members
+                .iter()
+                .filter(|m| !m.0)
+                .any(|m| m.2.size.height.to_bits() != 20.0f64.to_bits()),
+            "the live members keep their frames"
+        );
+    }
+
+    /// A lazy row that never materialized releases at once: removing it
+    /// creates no ghost host, and the container's extent reflows on the
+    /// next pass.
+    pub fn unplaced_lazy_row_releases_immediately() {
+        let _mtm = mtm();
+        let rows: Vec<Row> = (0..40).map(|id| Row { id }).collect();
+        let mut items = ReactiveList::from(rows);
+        let leaf = super::resolve::render(Lazy::vstack(ForEach::new(items.clone(), |row: Row| {
+            Metadata::new(
+                hstack((text(format!("row {}", row.id)), spacer())).size(300.0, 30.0),
+                row_spec(),
+            )
+        })));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let (container, height) = {
+            let container =
+                member_container(leaf.view()).expect("the lazy container materialized rows");
+            let count = autoreleasepool(|_| view::subviews(&container).len());
+            assert!(
+                count < 40,
+                "the window virtualizes: {count} materialized of 40"
+            );
+            let height = view::frame(&container).size.height;
+            (container, height)
+        };
+        // A row past the window plus overscan never materialized.
+        autoreleasepool(|_| {
+            let _ = items.remove(39);
+        });
+        assert!(
+            !pump_main_until(0.5, || has_retired_descendant(leaf.view())),
+            "an unmaterialized row leaves no ghost"
+        );
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        assert!(
+            view::frame(&container).size.height < height,
+            "the membership reflowed to one fewer row"
+        );
+    }
+
+    /// The ghost's slot holds the gap until the clock ends — siblings
+    /// move into it only when `on_complete` releases the slot.
+    pub fn siblings_close_the_gap_at_completion() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        // Only the middle row claims a transition.
+        let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
+            let height = match row.id {
+                1 => 10.0,
+                2 => 30.0,
+                _ => 20.0,
+            };
+            let content = hstack((text(format!("row {}", row.id)), spacer())).size(200.0, height);
+            if row.id == 2 {
+                AnyView::new(Metadata::new(content, row_spec()))
+            } else {
+                AnyView::new(content)
+            }
+        }));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let container = member_container(leaf.view()).expect("the container holds the members");
+        let b_origin = member_frames(&container)[1].2.origin.y;
+        autoreleasepool(|_| {
+            let _ = items.remove(1);
+        });
+        assert!(
+            pump_main_until(2.0, || member_frames(&container).iter().any(|m| m.0)),
+            "the removed member ghosts"
+        );
+        // Completion drops the ghost and the slot; the trailing member's
+        // origin lands exactly where the removed member began.
+        assert!(
+            pump_main_until(3.0, || {
+                autoreleasepool(|_| view::layout_immediately(leaf.view()));
+                let members = member_frames(&container);
+                members.len() == 2 && members[1].2.origin.y.to_bits() == b_origin.to_bits()
+            }),
+            "siblings close the gap once the ghost completes"
+        );
+    }
+
+    /// #3509: a membership insertion before existing members lands at
+    /// the head of the slot sequence while its view mounts at the end —
+    /// the host's subview order (paint order) must still equal item
+    /// order, as the fixed path's `reconcile_subviews` keeps it.
+    pub fn an_insert_before_existing_members_paints_in_item_order() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
+            hstack((text(format!("row {}", row.id)), spacer())).size(200.0, 20.0)
+        }));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let container = member_container(leaf.view()).expect("the container holds the members");
+        autoreleasepool(|_| {
+            items.insert(0, Row { id: 0 });
+        });
+        assert!(
+            pump_main_until(2.0, || member_frames(&container).len() == 4),
+            "the inserted member joins"
+        );
+        // The subviews are the paint order, back to front; a vertical
+        // stack's item order is increasing y. The inserted row's frame
+        // leads — before the fix its view still painted above every
+        // member materialized earlier.
+        let paint_order: Vec<usize> = member_frames(&container)
+            .iter()
+            .map(|member| member.1)
+            .collect();
+        let item_order: Vec<usize> = members_by_origin(&container)
+            .iter()
+            .map(|member| member.1)
+            .collect();
+        assert_eq!(
+            paint_order, item_order,
+            "the host's subviews paint in item order"
+        );
+    }
+
+    /// The list's table inside `view`'s subtree, `view` included —
+    /// the table may be the leaf's own view or nested under it.
+    fn find_table(view: &PlatformView) -> Option<Retained<PlatformView>> {
+        if table_is(view) {
+            return Some(view::retain_base(view));
+        }
+        view::subviews(view).iter().find_map(|sub| find_table(sub))
+    }
+
+    #[cfg(target_os = "ios")]
+    fn table_is(view: &PlatformView) -> bool {
+        view.downcast_ref::<cocoa_ui::uikit::TableView>().is_some()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn table_is(view: &PlatformView) -> bool {
+        view.downcast_ref::<cocoa_ui::appkit::ListTableView>()
+            .is_some()
+    }
+
+    /// The table's displayed row count — ghosts included.
+    fn table_row_count(table: &PlatformView) -> usize {
+        autoreleasepool(|_| {
+            #[cfg(target_os = "ios")]
+            // SAFETY: `numberOfRowsInSection:` is safe on a `UITableView`.
+            unsafe {
+                objc2::msg_send![table, numberOfRowsInSection: 0usize]
+            }
+            #[cfg(target_os = "macos")]
+            {
+                table
+                    .downcast_ref::<cocoa_ui::appkit::ListTableView>()
+                    .expect("the list mounts a ListTableView")
+                    .row_count()
+            }
+        })
+    }
+
+    /// Display row `row`'s height — the frozen-height check.
+    fn table_row_height(table: &PlatformView, row: usize) -> f64 {
+        autoreleasepool(|_| {
+            #[cfg(target_os = "ios")]
+            {
+                let table = table
+                    .downcast_ref::<cocoa_ui::uikit::TableView>()
+                    .expect("the list mounts a UITableView");
+                let index = |row| cocoa_ui::uikit::IndexPath { section: 0, row };
+                // Contiguous rows: a row's height is the distance to the
+                // previous row's bottom edge.
+                assert!(
+                    row > 0,
+                    "the height read needs the previous row's bottom edge"
+                );
+                table.row_bottom(index(row)) - table.row_bottom(index(row - 1))
+            }
+            #[cfg(target_os = "macos")]
+            {
+                table
+                    .downcast_ref::<cocoa_ui::appkit::ListTableView>()
+                    .expect("the list mounts a ListTableView")
+                    .rect_of_row(row)
+                    .size
+                    .height
+            }
+        })
+    }
+
+    /// Whether the table's delegate allows `row` to be selected —
+    /// `tableView:willSelectRowAtIndexPath:` on `UIKit`,
+    /// `tableView:shouldSelectRow:` on `AppKit`.
+    fn row_selectable(table: &PlatformView, row: usize) -> bool {
+        autoreleasepool(|_| {
+            #[cfg(target_os = "ios")]
+            // SAFETY: the table's delegate answers the selection
+            // callbacks on the main thread.
+            unsafe {
+                use cocoa_ui::objc2_foundation::NSIndexPath;
+                use objc2::runtime::AnyObject;
+                let delegate: Option<Retained<AnyObject>> = objc2::msg_send![table, delegate];
+                let delegate = delegate.expect("the table carries a source delegate");
+                // `NSIndexPath` stores its components in order — section
+                // 0, then `row`.
+                let mut components = [0usize, row];
+                let index = NSIndexPath::indexPathWithIndexes_length(components.as_mut_ptr(), 2);
+                let answer: Option<Retained<NSIndexPath>> = objc2::msg_send![
+                    &*delegate,
+                    tableView: table,
+                    willSelectRowAtIndexPath: &*index
+                ];
+                answer.is_some()
+            }
+            #[cfg(target_os = "macos")]
+            {
+                use objc2::runtime::AnyObject;
+                let inner = table
+                    .downcast_ref::<cocoa_ui::appkit::ListTableView>()
+                    .expect("the list mounts a ListTableView")
+                    .table_view();
+                // SAFETY: the table's delegate answers the selection
+                // callbacks on the main thread.
+                unsafe {
+                    let delegate: Option<Retained<AnyObject>> = objc2::msg_send![&*inner, delegate];
+                    let delegate = delegate.expect("the table carries a source delegate");
+                    objc2::msg_send![
+                        &*delegate,
+                        tableView: &*inner,
+                        shouldSelectRow: row.cast_signed()
+                    ]
+                }
+            }
+        })
+    }
+
+    /// The content the table materialized at `row` — a ghost row answers
+    /// its retired host; a live row its `LiveChild` view.
+    fn cell_content(table: &PlatformView, row: usize) -> Option<Retained<PlatformView>> {
+        autoreleasepool(|_| {
+            #[cfg(target_os = "ios")]
+            {
+                use cocoa_ui::objc2_foundation::NSArray;
+                use cocoa_ui::objc2_ui_kit::UITableViewCell;
+                use cocoa_ui::uikit::TableCell;
+                let table_view = table
+                    .downcast_ref::<cocoa_ui::uikit::TableView>()
+                    .expect("the list mounts a UITableView");
+                // SAFETY: `visibleCells` is safe on a `UITableView`.
+                let cells: Option<Retained<NSArray<UITableViewCell>>> =
+                    unsafe { objc2::msg_send![table_view, visibleCells] };
+                cells.and_then(|cells| {
+                    cells.iter().find_map(|cell| {
+                        let cell = cell.downcast_ref::<TableCell>()?;
+                        let index = table_view.index_path_for_cell(cell)?;
+                        (index.section == 0 && index.row == row)
+                            .then(|| cell.content().map(|content| view::retain_base(&content)))
+                            .flatten()
+                    })
+                })
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let inner = table
+                    .downcast_ref::<cocoa_ui::appkit::ListTableView>()
+                    .expect("the list mounts a ListTableView")
+                    .table_view();
+                // A row the table has not applied yet has no cell — the
+                // contents notification lands on a later turn — and
+                // `viewAtColumn:row:makeIfNecessary:` raises on it.
+                if row.cast_signed() >= inner.numberOfRows() {
+                    return None;
+                }
+                // SAFETY: `viewAtColumn:row:makeIfNecessary:` is safe on an
+                // `NSTableView` on the main thread for a row inside
+                // `numberOfRows`, checked above.
+                let container: Option<Retained<PlatformView>> = unsafe {
+                    objc2::msg_send![
+                        &*inner,
+                        viewAtColumn: 0isize,
+                        row: row.cast_signed(),
+                        makeIfNecessary: true
+                    ]
+                };
+                container.and_then(|container| {
+                    container
+                        .downcast_ref::<cocoa_ui::appkit::RowContainer>()
+                        .and_then(|container| {
+                            container
+                                .content()
+                                .map(|content| view::retain_base(&content))
+                        })
+                })
+            }
+        })
+    }
+
+    /// Whether `view` is out of the accessibility tree — the retired
+    /// host's own mark.
+    fn accessibility_hidden(view: &PlatformView) -> bool {
+        #[cfg(target_os = "ios")]
+        // SAFETY: `accessibilityElementsHidden` is safe on a `UIView`.
+        unsafe {
+            objc2::msg_send![view, accessibilityElementsHidden]
+        }
+        #[cfg(target_os = "macos")]
+        // SAFETY: `isAccessibilityElement` is safe on an `NSView`.
+        unsafe {
+            !objc2::msg_send![view, isAccessibilityElement]
+        }
+    }
+
+    /// A single-selection list whose every row claims the row transition
+    /// — fixed-height rows, so the frozen height is a real contract.
+    fn row_list(items: &ReactiveList<Row>) -> AnyView {
+        use waterui::component::list::{List, ListItem};
+        use waterui::reactive::binding;
+        AnyView::new(
+            List::for_each(items.clone(), |row: Row| {
+                let content = hstack((text(format!("row {}", row.id)), spacer())).size(200.0, 44.0);
+                ListItem::new(Metadata::new(content, row_spec()))
+            })
+            .selection(&binding(Option::<u64>::None)),
+        )
+    }
+
+    /// §8 row 4: removing a claimed row ghosts it at its frozen measured
+    /// height — the table's row count holds through the exit,
+    /// `heightForRow`/`heightOfRow` at the ghost's row answers the removed
+    /// row's last measurement, and completion deletes the row.
+    pub fn list_ghost_row_keeps_its_frozen_height() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let leaf = super::resolve::render(row_list(&items));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let table = autoreleasepool(|_| find_table(leaf.view()).expect("the list mounts a table"));
+        let before = table_row_height(&table, 1);
+        assert_eq!(table_row_count(&table), 3, "three live rows mounted");
+        autoreleasepool(|_| {
+            let _ = items.remove(1);
+        });
+        assert_eq!(
+            table_row_count(&table),
+            3,
+            "the ghost holds the removed row's slot",
+        );
+        assert_eq!(
+            table_row_height(&table, 1).to_bits(),
+            before.to_bits(),
+            "the ghost row keeps the removed row's measured height",
+        );
+        assert!(
+            pump_main_until(3.0, || table_row_count(&table) == 2),
+            "the ghost row deletes when its transition completes",
+        );
+    }
+
+    /// §8 row 4: `willSelectRow`/`shouldSelectRow` refuse the ghost index,
+    /// and the ghost cell's content is the retired host — out of the
+    /// accessibility tree.
+    pub fn list_ghost_row_is_not_selectable_or_accessible() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let leaf = super::resolve::render(row_list(&items));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let table = autoreleasepool(|_| find_table(leaf.view()).expect("the list mounts a table"));
+        autoreleasepool(|_| {
+            let _ = items.remove(1);
+        });
+        assert!(
+            pump_main_until(2.0, || !row_selectable(&table, 1)),
+            "the ghost row is not selectable",
+        );
+        assert!(row_selectable(&table, 0), "a live row stays selectable");
+        let hidden = autoreleasepool(|_| {
+            cell_content(&table, 1).is_some_and(|content| {
+                content
+                    .downcast_ref::<HostView>()
+                    .is_some_and(HostView::is_retired)
+                    && accessibility_hidden(&content)
+            })
+        });
+        assert!(
+            hidden,
+            "the ghost cell's retired host stays out of the accessibility tree",
+        );
+    }
+
+    /// §8 row 4: a claimed insertion materializes its row at once — the
+    /// batch animates it with `None` — while the mounted `LiveChild`'s
+    /// own transition ramps the host alpha from the absent sample.
+    pub fn list_claimed_insertion_plays_without_row_animation() {
+        let _mtm = mtm();
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let leaf = super::resolve::render(row_list(&items));
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| view::layout_immediately(leaf.view()));
+        let table = autoreleasepool(|_| find_table(leaf.view()).expect("the list mounts a table"));
+        autoreleasepool(|_| {
+            items.push(Row { id: 4 });
+        });
+        // The inserted row's cell is configured immediately — the table
+        // adds it with no row animation — while the transition host's
+        // alpha ramps up from the absent sample.
+        let saw_ramp = Cell::new(false);
+        assert!(
+            pump_main_until(3.0, || {
+                autoreleasepool(|_| {
+                    let Some(host) = cell_content(&table, 3) else {
+                        return false;
+                    };
+                    let alpha = view::alpha(&host);
+                    saw_ramp.set(saw_ramp.get() || alpha < 1.0);
+                    alpha >= 1.0
+                })
+            }),
+            "the inserted row's transition plays to full opacity",
+        );
+        assert!(
+            saw_ramp.get(),
+            "the host alpha ramped from the absent sample — the row itself was inserted without animation",
+        );
+    }
+
+    /// The Stage 8 blur trials (§8.2): `PropertyTransition::blur` runs
+    /// through the filtered GPU pipeline — a live capture for the
+    /// insertion, the frozen exit capture for the removal, one lazy
+    /// effect per instance.
+    #[cfg(feature = "gpu_surface")]
+    fn blur_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "transition::blur_insertion_renders_through_the_live_effect",
+                || {
+                    blur_insertion_renders_through_the_live_effect();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::blur_removal_renders_from_the_frozen_capture",
+                || {
+                    blur_removal_renders_from_the_frozen_capture();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::blur_returning_to_zero_keeps_one_effect",
+                || {
+                    blur_returning_to_zero_keeps_one_effect();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// The Stage 9 pixel trials (§8.2): `captures_content` transitions
+    /// run through the retired window overlay — a frozen capture for the
+    /// removal, a live capture for the insertion — publishing a
+    /// `TransitionFrame` every tick.
+    #[cfg(feature = "gpu_surface")]
+    fn pixel_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "transition::a_pixel_removal_freezes_into_the_window_overlay",
+                || {
+                    a_pixel_removal_freezes_into_the_window_overlay();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::a_pixel_insertion_captures_live_content_in_the_overlay",
+                || {
+                    a_pixel_insertion_captures_live_content_in_the_overlay();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::pixel_frame_follows_the_slot_while_scrolling",
+                || {
+                    pixel_frame_follows_the_slot_while_scrolling();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// The Stage 7 frozen-frame trials (§8.2): retirement installs a
+    /// `FrozenCapturable` into each armed surface's capturable slot.
+    fn frozen_trials() -> Vec<libtest_mimic::Trial> {
+        let mut trials = Vec::new();
+        #[cfg(feature = "gpu_surface")]
+        trials.extend(vec![
+            libtest_mimic::Trial::test(
+                "transition::gpu_surface_ghost_keeps_its_last_frame",
+                || {
+                    gpu_surface_ghost_keeps_its_last_frame();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test("transition::filtered_ghost_keeps_its_last_frame", || {
+                filtered_ghost_keeps_its_last_frame();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test(
+                "transition::ghost_inside_a_live_filter_still_resolves",
+                || {
+                    ghost_inside_a_live_filter_still_resolves();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "transition::unarmed_surfaces_stay_framebuffer_only",
+                || {
+                    unarmed_surfaces_stay_framebuffer_only();
+                    Ok(())
+                },
+            ),
+        ]);
+        trials
+    }
+
+    /// Every capturable surface inside `root` — (view pointer, resolved
+    /// surface) pairs in walk order.
+    #[cfg(feature = "gpu_surface")]
+    fn capturables_in(
+        root: &PlatformView,
+    ) -> Vec<(usize, Rc<dyn cocoa_ui::capture::CapturableSurface>)> {
+        let mut entries = Vec::new();
+        cocoa_ui::capture::for_each_capturable(root, &mut |view, surface| {
+            entries.push((std::ptr::from_ref(view).addr(), Rc::clone(surface)));
+        });
+        entries
+    }
+
+    /// Capturable surfaces resolved at every depth of `root`'s subtree —
+    /// the enclosing filter's view: `for_each_capturable` prunes at a
+    /// resolved surface since its own producer composites it, but that
+    /// producer's *content* — the subtree under it — is walked by the
+    /// enclosing capture, so a nested surface still answers its slot.
+    #[cfg(feature = "gpu_surface")]
+    fn capturables_deep(
+        root: &PlatformView,
+    ) -> Vec<(usize, Rc<dyn cocoa_ui::capture::CapturableSurface>)> {
+        fn walk(
+            view: &PlatformView,
+            entries: &mut Vec<(usize, Rc<dyn cocoa_ui::capture::CapturableSurface>)>,
+        ) {
+            if let Some(surface) = cocoa_ui::capture::resolve_capturable(view) {
+                entries.push((std::ptr::from_ref(view).addr(), Rc::clone(&surface)));
+            }
+            for subview in cocoa_ui::view::subviews(view) {
+                walk(&subview, entries);
+            }
+        }
+        let mut entries = Vec::new();
+        walk(root, &mut entries);
+        entries
+    }
+
+    /// The retained view carrying `root`'s first resolved capturable —
+    /// the surface's own view, never the leaf it renders under.
+    #[cfg(feature = "gpu_surface")]
+    fn capturable_view(root: &PlatformView) -> Option<Retained<PlatformView>> {
+        let mut found = None;
+        cocoa_ui::capture::for_each_capturable(root, &mut |view, _| {
+            found.get_or_insert_with(|| view::retain_base(view));
+        });
+        found
+    }
+
+    /// Mounts `view` under a GPU-equipped environment — the runtime,
+    /// scene engine, filter pipelines and `PresentationTime` the
+    /// `gpu_runtime::prepare` production path installs.
+    #[cfg(feature = "gpu_surface")]
+    pub fn gpu_leaf(view: impl waterui_backend_core::View) -> waterui_apple::contract::NativeLeaf {
+        // The filtered leaf's `AnyEffect::build` binds through the local
+        // executor — `initialize_process` only runs on macOS, so install
+        // the plain main-queue answer here the way the webview trials do.
+        let _ = executor_core::try_init_local_executor(
+            native_executor::NativeMainExecutor::new()
+                .expect("the native suite runs on the process's main thread"),
+        );
+        let mut env = super::resolve::env();
+        let runtime = waterui_apple::native_test_support::block_on_main(
+            30.0,
+            waterui_graphics::gpu::GpuRuntime::new(),
+        )
+        .expect("the harness provides a GPU runtime");
+        waterui_apple::native_test_support::install_gpu(&mut env, runtime);
+        waterui_apple::dispatch::render(waterui_backend_core::AnyView::new(view), &env)
+    }
+
+    /// A `MeshGradient` mounts the `SceneView` GPU surface leaf the
+    /// frozen-frame trials arm.
+    #[cfg(feature = "gpu_surface")]
+    pub fn gpu_picture() -> impl waterui_backend_core::View {
+        use waterui::graphics::color::WorkingColor;
+        use waterui::graphics::gradient::MeshGradient;
+        use waterui::reactive::constant;
+        // Four distinct corners, so a review PNG tells the frozen frame
+        // from a blank or cleared one.
+        MeshGradient::new(
+            2,
+            2,
+            constant(vec![
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+                WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+                WorkingColor::new([1.0, 1.0, 0.0, 1.0]),
+            ]),
+        )
+    }
+
+    /// A blurred label mounts the `FilteredView` GPU filter chain.
+    #[cfg(feature = "gpu_surface")]
+    fn filtered_label() -> impl waterui_backend_core::View {
+        use waterui::view::FilterViewExt;
+        label("filtered").blur(2.0)
+    }
+
+    /// The exit spec the frozen trials use — long enough to keep the
+    /// ghost live across a capture and several pumps.
+    #[cfg(feature = "gpu_surface")]
+    fn frozen_spec() -> TransitionSpec {
+        TransitionSpec::new(PropertyTransition::opacity())
+            .with_animation(Animation::linear(Duration::from_millis(400)))
+    }
+
+    /// Writes the window's captured pixels to `<dir>/<name>.png`
+    /// through the harness's own `capture_rgba` — visual review only;
+    /// nothing asserts on pixel values.
+    #[cfg(feature = "gpu_surface")]
+    fn export_window_png(view: &PlatformView, dir: &str, name: &str) {
+        let captured = waterui_apple::native_test_support::capture_view_rgba(view);
+        let image = cocoa_ui::bitmap::image_from_rgba(
+            &captured.pixels,
+            captured.width as usize,
+            captured.height as usize,
+        )
+        .expect("the captured pixels make a CGImage");
+        #[cfg(target_os = "ios")]
+        let data = cocoa_ui::objc2_ui_kit::UIImage::imageWithCGImage(&image)
+            .png_representation()
+            .expect("PNG encoding succeeds")
+            .to_vec();
+        #[cfg(target_os = "macos")]
+        let data = {
+            use cocoa_ui::objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep};
+            use cocoa_ui::objc2_foundation::NSDictionary;
+            let rep = NSBitmapImageRep::initWithCGImage(
+                <NSBitmapImageRep as cocoa_ui::objc2::AllocAnyThread>::alloc(),
+                &image,
+            );
+            // SAFETY: PNG encoding of a live bitmap rep.
+            unsafe {
+                rep.representationUsingType_properties(
+                    NSBitmapImageFileType::PNG,
+                    &NSDictionary::<cocoa_ui::objc2_foundation::NSString>::new(),
+                )
+            }
+            .expect("PNG encoding succeeds")
+            .to_vec()
+        };
+        std::fs::create_dir_all(dir).expect("the review directory creates");
+        std::fs::write(format!("{dir}/{name}.png"), data).expect("the review PNG writes");
+    }
+
+    /// `gpu_surface_ghost_keeps_its_last_frame` — a GPU surface under a
+    /// `.transition(opacity)` mounts its last presented frame into a
+    /// `FrozenCapturable` at removal (§8.2): the live capturable's Rc
+    /// dies with the leaf, the slot resolves to a frozen stand-in that
+    /// answers `has_presented_frame` and never `can_present`, and the
+    /// ghost's completion releases it.
+    #[cfg(feature = "gpu_surface")]
+    pub fn gpu_surface_ghost_keeps_its_last_frame() {
+        let _mtm = mtm();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(gpu_picture(), frozen_spec()));
+        });
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                capturables_in(leaf.view())
+                    .iter()
+                    .any(|(_, surface)| surface.has_presented_frame())
+            })),
+            "the GPU surface presents before removal"
+        );
+        let live = autoreleasepool(|_| {
+            let entries = capturables_in(leaf.view());
+            assert_eq!(entries.len(), 1, "one capturable surface in the subtree");
+            Rc::downgrade(&entries[0].1)
+        });
+        autoreleasepool(|_| handler.set(label("gone")));
+        assert!(
+            live.upgrade().is_none(),
+            "the removal dropped the live capturable with the leaf"
+        );
+        autoreleasepool(|_| {
+            let entries = capturables_in(leaf.view());
+            assert_eq!(entries.len(), 1, "the ghost keeps one resolved surface");
+            assert!(
+                entries[0].1.has_presented_frame(),
+                "the frozen surface reports the frame it last presented"
+            );
+            assert!(
+                !entries[0].1.can_present(),
+                "a frozen surface never presents itself"
+            );
+        });
+        export_window_png(
+            leaf.view(),
+            "/tmp/1472-stage7",
+            "gpu_surface_ghost_keeps_its_last_frame",
+        );
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| capturables_in(leaf.view()).is_empty())
+            }),
+            "the ghost's completion releases the frozen surface"
+        );
+    }
+
+    /// `filtered_ghost_keeps_its_last_frame` — the same hand-off for a
+    /// `FilteredView` GPU surface: retirement installs the frozen
+    /// stand-in and the ghost answers `has_presented_frame` until it
+    /// completes.
+    #[cfg(feature = "gpu_surface")]
+    pub fn filtered_ghost_keeps_its_last_frame() {
+        let _mtm = mtm();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(filtered_label(), frozen_spec()));
+        });
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                capturables_in(leaf.view())
+                    .iter()
+                    .any(|(_, surface)| surface.has_presented_frame())
+            })),
+            "the filtered surface presents before removal"
+        );
+        let live = autoreleasepool(|_| {
+            let entries = capturables_in(leaf.view());
+            assert_eq!(
+                entries.len(),
+                1,
+                "the filtered chain is one capturable surface"
+            );
+            Rc::downgrade(&entries[0].1)
+        });
+        autoreleasepool(|_| handler.set(label("gone")));
+        assert!(
+            live.upgrade().is_none(),
+            "the removal dropped the live capturable with the leaf"
+        );
+        autoreleasepool(|_| {
+            let entries = capturables_in(leaf.view());
+            assert_eq!(entries.len(), 1, "the ghost keeps one resolved surface");
+            assert!(
+                entries[0].1.has_presented_frame(),
+                "the frozen surface reports the frame it last presented"
+            );
+            assert!(
+                !entries[0].1.can_present(),
+                "a frozen surface never presents itself"
+            );
+        });
+        export_window_png(
+            leaf.view(),
+            "/tmp/1472-stage7",
+            "filtered_ghost_keeps_its_last_frame",
+        );
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| capturables_in(leaf.view()).is_empty())
+            }),
+            "the ghost's completion releases the frozen surface"
+        );
+    }
+
+    /// `ghost_inside_a_live_filter_still_resolves` — a GPU surface ghost
+    /// inside a still-live `FilteredView` chain: the frozen stand-in
+    /// resolves through `for_each_capturable` while the enclosing filter
+    /// keeps presenting — the enclosing capture's resolve keeps finding
+    /// the ghost's surfaces instead of an unresolved Metal layer.
+    #[cfg(feature = "gpu_surface")]
+    pub fn ghost_inside_a_live_filter_still_resolves() {
+        use waterui::view::FilterViewExt;
+        let _mtm = mtm();
+        let (handler, dynamic) = Dynamic::new();
+        let (outer, wrapper) = Dynamic::new();
+        let leaf = gpu_leaf(wrapper);
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| {
+            outer.set(dynamic.blur(2.0));
+            handler.set(Metadata::new(gpu_picture(), frozen_spec()));
+        });
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                capturables_in(leaf.view())
+                    .iter()
+                    .any(|(_, surface)| surface.has_presented_frame())
+            })),
+            "the surface inside the filter presents before removal"
+        );
+        autoreleasepool(|_| handler.set(label("gone")));
+        autoreleasepool(|_| {
+            let entries = capturables_deep(leaf.view());
+            assert_eq!(
+                entries.len(),
+                2,
+                "the live filter and the ghost's frozen surface both resolve"
+            );
+            let mut live: Vec<_> = entries
+                .iter()
+                .filter(|(_, surface)| surface.can_present())
+                .collect();
+            let mut frozen: Vec<_> = entries
+                .iter()
+                .filter(|(_, surface)| !surface.can_present())
+                .collect();
+            assert_eq!(
+                live.len(),
+                1,
+                "the enclosing filter keeps its live producer"
+            );
+            assert_eq!(frozen.len(), 1, "the ghost resolves a frozen surface");
+            assert!(
+                live[0].1.has_presented_frame(),
+                "the filter keeps presenting"
+            );
+            assert!(
+                frozen[0].1.has_presented_frame(),
+                "the ghost surface keeps its last frame"
+            );
+            live.clear();
+            frozen.clear();
+        });
+        export_window_png(
+            leaf.view(),
+            "/tmp/1472-stage7",
+            "ghost_inside_a_live_filter_still_resolves",
+        );
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                capturables_deep(leaf.view())
+                    .iter()
+                    .all(|(_, surface)| surface.can_present())
+            })),
+            "the ghost's completion leaves only the live filter resolving"
+        );
+    }
+
+    /// `unarmed_surfaces_stay_framebuffer_only` — the arming switch is
+    /// exactly `SnapshotDemand`: outside a declaration the layer stays
+    /// framebuffer-only; inside one it becomes readable.
+    #[cfg(feature = "gpu_surface")]
+    pub fn unarmed_surfaces_stay_framebuffer_only() {
+        #[cfg(target_os = "macos")]
+        use cocoa_ui::appkit::surface_view::SurfaceView;
+        #[cfg(target_os = "ios")]
+        use cocoa_ui::uikit::surface_view::SurfaceView;
+
+        let _mtm = mtm();
+        let leaf = gpu_leaf(gpu_picture());
+        let _window = super::mount_and_order_front(leaf.view());
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                capturables_in(leaf.view())
+                    .iter()
+                    .any(|(_, surface)| surface.has_presented_frame())
+            })),
+            "the unarmed surface presents"
+        );
+        autoreleasepool(|_| {
+            let view = capturable_view(leaf.view()).expect("the surface resolves");
+            let surface = view
+                .downcast_ref::<SurfaceView>()
+                .expect("a GPU surface mounts the kit surface view");
+            assert!(
+                surface.presentation_layer().framebufferOnly(),
+                "an unarmed surface keeps framebuffer-only drawables"
+            );
+        });
+
+        let (handler, dynamic) = Dynamic::new();
+        handler.set(Metadata::new(gpu_picture(), frozen_spec()));
+        let leaf = gpu_leaf(dynamic);
+        let _window = super::mount_and_order_front(leaf.view());
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                capturables_in(leaf.view())
+                    .iter()
+                    .any(|(_, surface)| surface.has_presented_frame())
+            })),
+            "the armed surface presents"
+        );
+        autoreleasepool(|_| {
+            let view = capturable_view(leaf.view()).expect("the surface resolves");
+            let surface = view
+                .downcast_ref::<SurfaceView>()
+                .expect("a GPU surface mounts the kit surface view");
+            assert!(
+                !surface.presentation_layer().framebufferOnly(),
+                "an armed surface's drawables are readable"
+            );
+        });
+    }
+
+    /// A blur spec — long enough to watch the effect live mid-flight.
+    #[cfg(feature = "gpu_surface")]
+    /// Sharp edges over the GPU gradient: a review PNG shows whether
+    /// the frame is blurred, which a smooth gradient alone cannot.
+    #[cfg(feature = "gpu_surface")]
+    fn blur_picture() -> impl waterui_backend_core::View {
+        use waterui::prelude::{text, vstack};
+        vstack((text("BLUR").size(96.0), gpu_picture()))
+    }
+
+    fn blur_spec() -> TransitionSpec {
+        TransitionSpec::new(PropertyTransition::blur(8.0))
+            .with_animation(Animation::linear(Duration::from_millis(400)))
+    }
+
+    /// `blur_insertion_renders_through_the_live_effect` — a
+    /// `.transition(blur)` insertion mounts the content's own view
+    /// inside the transition host and adds the `LiveEffect`'s output as
+    /// a sibling (§8.2): mid-flight the host carries both, the content
+    /// view is never reparented, and completion removes the output —
+    /// the same content pointer remains.
+    #[cfg(feature = "gpu_surface")]
+    pub fn blur_insertion_renders_through_the_live_effect() {
+        let _mtm = mtm();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| handler.set(label("before")));
+        assert!(
+            pump_main_until(3.0, || {
+                autoreleasepool(|_| !view::subviews(leaf.view()).is_empty())
+            }),
+            "the first child mounts"
+        );
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(blur_picture(), blur_spec()));
+        });
+        let host_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
+        let content_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
+        // Mid-flight the host carries the content view plus the effect's
+        // output view.
+        assert!(
+            pump_main_until(3.0, || {
+                autoreleasepool(|_| {
+                    let Some(host) = view::subviews(leaf.view()).into_iter().next() else {
+                        return false;
+                    };
+                    let subviews = view::subviews(&host);
+                    if subviews.len() == 2 {
+                        host_ptr.set(std::ptr::from_ref(&*host));
+                        content_ptr.set(std::ptr::from_ref(&*subviews[0]));
+                    }
+                    subviews.len() == 2
+                })
+            }),
+            "the live effect's output joins the transition host"
+        );
+        export_window_png(
+            leaf.view(),
+            "/tmp/1472-stage8",
+            "blur_insertion_renders_through_the_live_effect",
+        );
+        // Completion: the output leaves and the content view is the same
+        // pointer — it was never reparented.
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| {
+                    let Some(host) = view::subviews(leaf.view()).into_iter().next() else {
+                        return false;
+                    };
+                    let subviews = view::subviews(&host);
+                    subviews.len() == 1 && std::ptr::from_ref(&*subviews[0]) == content_ptr.get()
+                })
+            }),
+            "the effect's output leaves at completion and the content view stays"
+        );
+    }
+
+    /// `blur_removal_renders_from_the_frozen_capture` — a blur removal
+    /// ghosts the retired subtree: the ghost host gains the
+    /// `FrozenEffect`'s output view, and the retired root is hidden only
+    /// after the effect's first present (§8.2) — never at attach, so no
+    /// frame shows a gap.
+    #[cfg(feature = "gpu_surface")]
+    pub fn blur_removal_renders_from_the_frozen_capture() {
+        let _mtm = mtm();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(blur_picture(), blur_spec()));
+        });
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                capturables_in(leaf.view())
+                    .iter()
+                    .any(|(_, surface)| surface.has_presented_frame())
+            })),
+            "the GPU surface presents before removal"
+        );
+        let host_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
+        let root_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
+        autoreleasepool(|_| {
+            let host = view::subviews(leaf.view())
+                .into_iter()
+                .next()
+                .expect("the transition host mounts");
+            host_ptr.set(std::ptr::from_ref(&*host));
+            root_ptr.set(std::ptr::from_ref(
+                &*view::subviews(&host).into_iter().next().expect("content"),
+            ));
+        });
+        autoreleasepool(|_| handler.set(label("gone")));
+        // The root is still visible right at removal — it hides only
+        // when the effect's first frame lands.
+        let root_view = autoreleasepool(|_| {
+            let host = view::subviews(leaf.view())
+                .into_iter()
+                .find(|v| std::ptr::from_ref(&**v) == host_ptr.get())
+                .expect("the ghost host remains under the dynamic");
+            let subviews = view::subviews(&host);
+            assert_eq!(subviews.len(), 1, "the ghost starts with just the root");
+            let root = view::retain_base(&*subviews[0]);
+            assert_eq!(
+                std::ptr::from_ref(&*root),
+                root_ptr.get(),
+                "the retired root is the outgoing content view"
+            );
+            assert!(
+                !view::is_hidden(&root),
+                "the retired root is visible until the effect's first present"
+            );
+            root
+        });
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| view::is_hidden(&root_view))),
+            "the first blurred frame hides the retired root"
+        );
+        autoreleasepool(|_| {
+            let host = view::superview(&root_view).expect("the root stays in the ghost host");
+            assert_eq!(
+                view::subviews(&host).len(),
+                2,
+                "the frozen effect's output joined the ghost host"
+            );
+        });
+        // Mid-ramp: the removal blur grows from 0, so the frame the
+        // effect first presents is barely blurred.
+        pump_main_until(0.2, || false);
+        export_window_png(
+            leaf.view(),
+            "/tmp/1472-stage8",
+            "blur_removal_renders_from_the_frozen_capture",
+        );
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| view::subviews(leaf.view()).len() == 1)
+            }),
+            "the ghost's completion detaches it"
+        );
+    }
+
+    /// `blur_returning_to_zero_keeps_one_effect` — a transition whose
+    /// sampled blur rises and returns to zero inside one instance
+    /// creates exactly one effect view, lazily on the first nonzero
+    /// sample, and keeps it until the instance ends (§8.2).
+    #[cfg(feature = "gpu_surface")]
+    pub fn blur_returning_to_zero_keeps_one_effect() {
+        use waterui_core::transition::{
+            Transition, TransitionGeometry, TransitionPhase, TransitionProperties,
+        };
+        /// Blur `0 → 8 → 0` across the middle of the progress ramp —
+        /// nonzero only for `progress ∈ (1/6, 5/6)`, so the transition
+        /// still runs a while after the radius reaches 0 again.
+        struct PulseBlur;
+        impl Transition for PulseBlur {
+            fn properties(
+                &self,
+                _phase: TransitionPhase,
+                progress: f32,
+                _geometry: TransitionGeometry,
+            ) -> TransitionProperties {
+                let mut properties = TransitionProperties::IDENTITY;
+                properties.blur = 8.0 * (1.0 - 3.0f32.mul_add(progress, -1.5).abs()).max(0.0);
+                properties
+            }
+        }
+        let _mtm = mtm();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        let _window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| handler.set(label("before")));
+        assert!(
+            pump_main_until(3.0, || {
+                autoreleasepool(|_| !view::subviews(leaf.view()).is_empty())
+            }),
+            "the first child mounts"
+        );
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(
+                label("pulse"),
+                TransitionSpec::new(PulseBlur)
+                    .with_animation(Animation::linear(Duration::from_millis(400))),
+            ));
+        });
+        let first_effect: Cell<*const PlatformView> = Cell::new(std::ptr::null());
+        let saw_effect = Cell::new(false);
+        let recreated = Cell::new(false);
+        // Watch every pump until the insertion completes: the effect
+        // view appears once, never changes pointer — including across
+        // the ramp's return to zero — and leaves at the end. Completion
+        // reads "the effect was seen and is gone" so the pump does not
+        // close on the pre-effect window.
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| {
+                    let Some(host) = view::subviews(leaf.view()).into_iter().next() else {
+                        return false;
+                    };
+                    let subviews = view::subviews(&host);
+                    assert!(
+                        subviews.len() <= 2,
+                        "the host never carries more than content plus one effect"
+                    );
+                    if subviews.len() == 2 {
+                        saw_effect.set(true);
+                        let ptr = std::ptr::from_ref(&*subviews[1]);
+                        if first_effect.get().is_null() {
+                            first_effect.set(ptr);
+                        } else {
+                            recreated.set(recreated.get() || ptr != first_effect.get());
+                        }
+                    }
+                    saw_effect.get() && subviews.len() == 1
+                })
+            }),
+            "the insertion transition completes"
+        );
+        assert!(
+            !first_effect.get().is_null(),
+            "the effect was created during the nonzero-blur ramp"
+        );
+        assert!(
+            !recreated.get(),
+            "one effect view served the whole ramp — none was recreated at zero"
+        );
+        export_window_png(
+            leaf.view(),
+            "/tmp/1472-stage8",
+            "blur_returning_to_zero_keeps_one_effect",
+        );
+    }
+    /// A `captures_content` transition whose body is a tinted shader over
+    /// the content — the PNG review distinguishes the effect output from
+    /// the live pixels — and that stashes the published
+    /// `Computed<TransitionFrame>` for the assertions (§8.2).
+    #[cfg(feature = "gpu_surface")]
+    struct PixelProbe {
+        /// The frame signal the body's `TransitionContext` published.
+        frame: Rc<
+            RefCell<Option<waterui::reactive::Computed<waterui_core::transition::TransitionFrame>>>,
+        >,
+    }
+
+    #[cfg(feature = "gpu_surface")]
+    impl Transition for PixelProbe {
+        fn captures_content(&self, _phase: waterui_core::transition::TransitionPhase) -> bool {
+            true
+        }
+
+        fn body(
+            &self,
+            content: AnyView,
+            transition_context: waterui_core::transition::TransitionContext,
+        ) -> impl waterui_backend_core::View {
+            *self.frame.borrow_mut() = Some(transition_context.frame);
+            let shader =
+                waterui::graphics::filtrate::ShaderEffect::new(include_str!("pixel_probe.wgsl"))
+                    .expect("the probe shader is valid WGSL");
+            waterui::graphics::WithEffect::new(content, shader)
+        }
+    }
+
+    /// A pixel probe's frame cell plus its spec — a 400 ms linear ramp
+    /// keeps the transition observable across several pumps.
+    #[cfg(feature = "gpu_surface")]
+    fn pixel_probe() -> (
+        Rc<RefCell<Option<waterui::reactive::Computed<waterui_core::transition::TransitionFrame>>>>,
+        TransitionSpec,
+    ) {
+        let frame = Rc::new(RefCell::new(None));
+        let spec = TransitionSpec::new(PixelProbe {
+            frame: Rc::clone(&frame),
+        })
+        .with_animation(Animation::linear(Duration::from_millis(400)));
+        (frame, spec)
+    }
+
+    /// The retired overlay host the pixel transition added directly to
+    /// the window — `None` while the effect has not mounted. It is the
+    /// topmost retired host: on `AppKit` the content view is the site
+    /// itself, whose retired ghost sits beneath the live child.
+    #[cfg(feature = "gpu_surface")]
+    fn retired_overlay(window: &super::AttachedWindow) -> Option<Retained<PlatformView>> {
+        #[cfg(target_os = "macos")]
+        let parent = window
+            .native()
+            .contentView()
+            .expect("the window has a content view");
+        #[cfg(target_os = "ios")]
+        let parent = {
+            let view: &PlatformView = window;
+            view::retain_base(view)
+        };
+        view::subviews(&parent).into_iter().rev().find(|sub| {
+            sub.downcast_ref::<HostView>()
+                .is_some_and(HostView::is_retired)
+        })
+    }
+
+    /// The `NSScrollView`/`UIScrollView` a subtree scrolls in — `view`
+    /// itself first, then depth-first: on `AppKit` the scroll view is the
+    /// window's content view.
+    #[cfg(feature = "gpu_surface")]
+    fn scroll_view_in(view: &PlatformView) -> Option<Retained<PlatformView>> {
+        #[cfg(target_os = "macos")]
+        let is_scroll = view
+            .downcast_ref::<cocoa_ui::objc2_app_kit::NSScrollView>()
+            .is_some();
+        #[cfg(target_os = "ios")]
+        let is_scroll = view
+            .downcast_ref::<cocoa_ui::objc2_ui_kit::UIScrollView>()
+            .is_some();
+        if is_scroll {
+            return Some(view::retain_base(view));
+        }
+        view::subviews(view)
+            .iter()
+            .find_map(|sub| scroll_view_in(sub))
+    }
+
+    /// The view the review PNGs capture mid-flight: the retired window
+    /// overlay the pixel effect presents in.
+    #[cfg(feature = "gpu_surface")]
+    fn review_root(window: &super::AttachedWindow) -> Retained<PlatformView> {
+        retired_overlay(window).expect("a pixel transition in flight has its overlay")
+    }
+
+    /// Pumps until a GPU surface under `site` has presented — the frame a
+    /// later removal freezes.
+    #[cfg(feature = "gpu_surface")]
+    fn await_gpu_presented(site: &PlatformView) {
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                capturables_in(site)
+                    .iter()
+                    .any(|(_, surface)| surface.has_presented_frame())
+            })),
+            "the claimed child's GPU surface presents before removal"
+        );
+    }
+
+    /// The retired ghost host under `site`, once the pixel effect's first
+    /// present has hidden its root.
+    #[cfg(feature = "gpu_surface")]
+    fn await_pixel_present(site: &PlatformView) -> Retained<PlatformView> {
+        let ghost = autoreleasepool(|_| {
+            view::subviews(site)
+                .into_iter()
+                .find(|sub| {
+                    sub.downcast_ref::<HostView>()
+                        .is_some_and(HostView::is_retired)
+                })
+                .expect("the retired ghost host stays under the site")
+        });
+        let root = autoreleasepool(|_| {
+            view::subviews(&ghost)
+                .into_iter()
+                .next()
+                .expect("the ghost host keeps its root")
+        });
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| view::is_hidden(&root))),
+            "the pixel effect presents in the overlay and hides the retired root"
+        );
+        ghost
+    }
+
+    /// The published frame's `source` — reads the stashed `Computed`.
+    #[cfg(feature = "gpu_surface")]
+    fn published_source(
+        frame: &RefCell<
+            Option<waterui::reactive::Computed<waterui_core::transition::TransitionFrame>>,
+        >,
+    ) -> waterui_core::layout::Rect {
+        use waterui::reactive::Signal as _;
+        frame
+            .borrow()
+            .as_ref()
+            .expect("the transition body published a frame")
+            .snapshot()
+            .source
+    }
+
+    /// `a_pixel_removal_freezes_into_the_window_overlay` — a
+    /// `captures_content` removal: the window gains a retired overlay
+    /// host, the published `TransitionFrame.source` tracks the ghost
+    /// host's window rect — including a mid-flight move — and completion
+    /// releases the overlay, the effect and the retired root (§8.2).
+    #[cfg(feature = "gpu_surface")]
+    pub fn a_pixel_removal_freezes_into_the_window_overlay() {
+        let _mtm = mtm();
+        let (probe_frame, spec) = pixel_probe();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        let window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(blur_picture(), spec));
+        });
+        await_gpu_presented(leaf.view());
+        autoreleasepool(|_| handler.set(label("gone")));
+        // The frozen capture lands and the effect mounts in the window
+        // overlay — the ghost stays beneath the live child.
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(
+                |_| retired_overlay(&window).is_some()
+            )),
+            "the retired window overlay mounts the effect"
+        );
+        // The published source is the ghost host's window rect, top-left.
+        let ghost = await_pixel_present(leaf.view());
+        let expected = autoreleasepool(|_| view::bounds_in_window(&ghost));
+        let published = published_source(&probe_frame);
+        assert!(
+            (f64::from(published.x()) - expected.origin.x).abs() < 0.5
+                && (f64::from(published.y()) - {
+                    #[cfg(target_os = "macos")]
+                    {
+                        let overlay = retired_overlay(&window).expect("overlay");
+                        view::bounds(&overlay).size.height
+                            - expected.origin.y
+                            - expected.size.height
+                    }
+                    #[cfg(target_os = "ios")]
+                    {
+                        expected.origin.y
+                    }
+                })
+                .abs()
+                    < 0.5,
+            "the published source {published:?} matches the host's window rect {expected:?}"
+        );
+        // The site moving mid-flight republishes `source`: shift the
+        // dynamic's host and the next tick reports the new rect.
+        let moved = autoreleasepool(|_| {
+            let mut frame = view::frame(leaf.view());
+            frame.origin.x += 24.0;
+            frame.origin.y += 12.0;
+            view::set_frame(leaf.view(), frame);
+            frame
+        });
+        let _ = moved;
+        assert!(
+            pump_main_until(3.0, || {
+                let published = published_source(&probe_frame);
+                autoreleasepool(|_| {
+                    let expected = view::bounds_in_window(&ghost);
+                    (f64::from(published.x()) - expected.origin.x).abs() < 0.5
+                })
+            }),
+            "the published frame follows the moved site"
+        );
+        export_window_png(
+            &review_root(&window),
+            "/tmp/1472-stage9",
+            "a_pixel_removal_freezes_into_the_window_overlay",
+        );
+        // Completion releases the overlay and the ghost host.
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| {
+                    retired_overlay(&window).is_none() && view::subviews(leaf.view()).len() == 1
+                })
+            }),
+            "the overlay and ghost release at completion"
+        );
+    }
+
+    /// `a_pixel_insertion_captures_live_content_in_the_overlay` — a
+    /// `captures_content` insertion: the content mounts live inside the
+    /// transition host and is never reparented while the live-capture
+    /// effect presents through the retired window overlay (§8.2).
+    #[cfg(feature = "gpu_surface")]
+    pub fn a_pixel_insertion_captures_live_content_in_the_overlay() {
+        let _mtm = mtm();
+        let (_frame, spec) = pixel_probe();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        let window = super::mount_and_order_front(leaf.view());
+        autoreleasepool(|_| handler.set(label("before")));
+        assert!(
+            pump_main_until(3.0, || {
+                autoreleasepool(|_| !view::subviews(leaf.view()).is_empty())
+            }),
+            "the first child mounts"
+        );
+        let died = Rc::new(Cell::new(false));
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(
+                Metadata::new(blur_picture(), Retain::new(Died(Rc::clone(&died)))),
+                spec,
+            ));
+        });
+        // The claimed child mounts inside the transition host — its
+        // content view keeps that parent while the effect lives in the
+        // window overlay.
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(
+                |_| retired_overlay(&window).is_some()
+            )),
+            "the retired window overlay mounts the live effect"
+        );
+        let content = autoreleasepool(|_| {
+            let host = view::subviews(leaf.view())
+                .into_iter()
+                .next()
+                .expect("the transition host mounts");
+            let content = view::subviews(&host)
+                .into_iter()
+                .next()
+                .expect("the content view stays mounted");
+            let parent = view::superview(&content).expect("the content has a parent");
+            assert!(
+                std::ptr::from_ref(&*parent) == std::ptr::from_ref(&*host),
+                "the content view was never reparented into the overlay"
+            );
+            content
+        });
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| view::is_hidden(&content))),
+            "the presented effect hides the captured content"
+        );
+        autoreleasepool(|_| {
+            let host = view::superview(&content).expect("the content has a parent");
+            let grandparent = view::superview(&host).expect("the host has a parent");
+            assert!(
+                std::ptr::from_ref(&*grandparent) == std::ptr::from_ref(leaf.view()),
+                "the content view was never reparented into the overlay"
+            );
+        });
+        export_window_png(
+            &review_root(&window),
+            "/tmp/1472-stage9",
+            "a_pixel_insertion_captures_live_content_in_the_overlay",
+        );
+        // Completion: the overlay leaves and the content shows again —
+        // its `Retain` never died, since semantics stayed live.
+        assert!(
+            pump_main_until(5.0, || {
+                autoreleasepool(|_| {
+                    retired_overlay(&window).is_none() && {
+                        let host = view::subviews(leaf.view()).into_iter().next();
+                        host.is_some_and(|host| {
+                            view::subviews(&host)
+                                .into_iter()
+                                .next()
+                                .is_some_and(|content| !view::is_hidden(&content))
+                        })
+                    }
+                })
+            }),
+            "the overlay releases and the content reveals at completion"
+        );
+        assert!(
+            !died.get(),
+            "the content's semantics stayed live through the insertion"
+        );
+    }
+
+    /// The scroll distance the frame-follow trial applies.
+    #[cfg(feature = "gpu_surface")]
+    const SCROLL_DELTA: f64 = 48.0;
+
+    /// `pixel_frame_follows_the_slot_while_scrolling` — a pixel removal
+    /// inside a scroll view: the claimed child mounts inside a real
+    /// `UIScrollView`/`NSScrollView` document, and scrolling mid-flight
+    /// moves the published `source.origin` by the scroll delta (§8.2).
+    #[cfg(feature = "gpu_surface")]
+    pub fn pixel_frame_follows_the_slot_while_scrolling() {
+        let _mtm = mtm();
+        let (probe_frame, spec) = pixel_probe();
+        let (handler, dynamic) = Dynamic::new();
+        let leaf = gpu_leaf(dynamic);
+        // The site lives inside a scroll view sized beyond the window:
+        // the claimed child gets a nonzero slot at once and the ghost's
+        // window rect moves with the content offset.
+        #[cfg(target_os = "macos")]
+        let window = {
+            use cocoa_ui::objc2::{MainThreadOnly, msg_send};
+            use cocoa_ui::objc2_app_kit::NSScrollView;
+            // SAFETY: plain `NSScrollView` init on the main thread.
+            let scroll: Retained<NSScrollView> =
+                unsafe { msg_send![NSScrollView::alloc(mtm()), init] };
+            let window = super::mount_and_order_front(&scroll);
+            // A flipped document, as every WaterUI scroll content is: a
+            // larger clip origin scrolls the content up.
+            let document = HostView::new(mtm(), cocoa_ui::Rect::new(0.0, 0.0, 390.0, 1200.0));
+            scroll.setDocumentView(Some(&document));
+            view::add_subview(&document, leaf.view());
+            view::set_frame(leaf.view(), cocoa_ui::Rect::new(0.0, 0.0, 390.0, 1200.0));
+            window
+        };
+        #[cfg(target_os = "ios")]
+        let window = {
+            use cocoa_ui::objc2::{MainThreadOnly, msg_send};
+            use cocoa_ui::objc2_ui_kit::UIScrollView;
+            // SAFETY: plain `UIScrollView` init on the main thread.
+            let scroll: Retained<UIScrollView> =
+                unsafe { msg_send![UIScrollView::alloc(mtm()), init] };
+            let window = super::mount_and_order_front(&scroll);
+            let scroll_view: &PlatformView = &scroll;
+            view::add_subview(scroll_view, leaf.view());
+            view::set_frame(leaf.view(), cocoa_ui::Rect::new(0.0, 0.0, 390.0, 1200.0));
+            scroll.setContentSize(cocoa_ui::objc2_core_foundation::CGSize::new(390.0, 1200.0));
+            window
+        };
+        autoreleasepool(|_| {
+            handler.set(Metadata::new(blur_picture(), spec));
+        });
+        await_gpu_presented(leaf.view());
+        autoreleasepool(|_| handler.set(label("gone")));
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(
+                |_| retired_overlay(&window).is_some()
+            )),
+            "the retired window overlay mounts the effect"
+        );
+        await_pixel_present(leaf.view());
+        let before = published_source(&probe_frame);
+        // Scroll: the ghost's slot moves with the document, and the next
+        // tick republishes it.
+        autoreleasepool(|_| {
+            #[cfg(target_os = "macos")]
+            {
+                use cocoa_ui::objc2_app_kit::NSScrollView;
+                let content = window.native().contentView().expect("content");
+                let scroll_view = scroll_view_in(&content).expect("the NSScrollView");
+                let scroll = scroll_view.downcast_ref::<NSScrollView>().expect("scroll");
+                let clip = scroll.contentView();
+                let mut origin = clip.bounds().origin;
+                origin.y += SCROLL_DELTA;
+                clip.scrollToPoint(origin);
+                scroll.reflectScrolledClipView(&clip);
+            }
+            #[cfg(target_os = "ios")]
+            {
+                use cocoa_ui::objc2_ui_kit::UIScrollView;
+                let window_view: &PlatformView = &window;
+                let scroll_view = scroll_view_in(window_view).expect("the UIScrollView");
+                let scroll = scroll_view.downcast_ref::<UIScrollView>().expect("scroll");
+                let mut offset = scroll.contentOffset();
+                offset.y += SCROLL_DELTA;
+                scroll.setContentOffset_animated(offset, false);
+            }
+        });
+        assert!(
+            pump_main_until(3.0, || {
+                let after = published_source(&probe_frame);
+                (f64::from(before.y() - after.y()) - SCROLL_DELTA).abs() < 1.0
+            }),
+            "the published source.origin moves by the scroll delta"
+        );
+        export_window_png(
+            &review_root(&window),
+            "/tmp/1472-stage9",
+            "pixel_frame_follows_the_slot_while_scrolling",
+        );
+    }
+}
+
+/// `scale`/`rotation` on `AppKit`: the modifier's transform lives on the
+/// wrapper layer's `sublayerTransform`, the one layer transform
+/// `AppKit`'s display-time geometry sync does not rewrite (#3504). After
+/// `displayIfNeeded` the anchored matrix must still be there, and a
+/// wrapper resize must recompute it for the new bounds size.
+#[cfg(all(target_os = "macos", feature = "scale", feature = "rotation"))]
+mod transform_modifiers {
+    use cocoa_ui::objc2::msg_send;
+    use cocoa_ui::objc2::rc::autoreleasepool;
+    use cocoa_ui::objc2_quartz_core::CATransform3D;
+    use cocoa_ui::{PlatformView, Point, Rect, Retained, layer, view};
+    use libtest_mimic::Trial;
+    use waterui::ViewExt as _;
+    use waterui::component::label::label;
+    use waterui::style::Anchor;
+    use waterui_apple::contract::NativeLeaf;
+    use waterui_apple::native_test_support::pump_main_until;
+    use waterui_backend_core::View;
+
+    use super::AttachedWindow;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "transform_modifiers::scale_survives_display_and_resize",
+                || {
+                    scale_survives_display_and_resize();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "transform_modifiers::rotation_survives_display_and_resize",
+                || {
+                    rotation_survives_display_and_resize();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// `T(−A) · M · T(A)` expanded element-wise — the case's own
+    /// arithmetic, not the production `concat` path it verifies. For an
+    /// affine `m` the 2×2 part passes through while the translation row
+    /// becomes `A − A·M + t` — what the anchor-maps-to-itself contract
+    /// resolves to.
+    fn expected(m: CATransform3D, anchor: Point, size: cocoa_ui::Size) -> CATransform3D {
+        let ax = anchor.x * size.width;
+        let ay = anchor.y * size.height;
+        CATransform3D {
+            m41: ay.mul_add(-m.m21, ax.mul_add(1.0 - m.m11, m.m41)),
+            m42: ax.mul_add(-m.m12, ay.mul_add(1.0 - m.m22, m.m42)),
+            m43: ay.mul_add(-m.m23, ax.mul_add(-m.m13, m.m43)),
+            ..m
+        }
+    }
+
+    /// All sixteen elements of two `CATransform3D`s within 1e-6 — the
+    /// anchored math's exactness is the point, the tolerance covers only
+    /// float representation.
+    fn assert_transform_close(actual: CATransform3D, expected: CATransform3D, what: &str) {
+        let flatten = |t: &CATransform3D| {
+            [
+                t.m11, t.m12, t.m13, t.m14, t.m21, t.m22, t.m23, t.m24, t.m31, t.m32, t.m33, t.m34,
+                t.m41, t.m42, t.m43, t.m44,
+            ]
+        };
+        for (i, (a, e)) in flatten(&actual).iter().zip(flatten(&expected)).enumerate() {
+            assert!(
+                (a - e).abs() < 1e-6,
+                "{what}: m{}{} differs — {a} vs {e}",
+                i / 4 + 1,
+                i % 4 + 1
+            );
+        }
+    }
+
+    /// Renders `view` and orders its window in — the leaf and window must
+    /// outlive the case's assertions.
+    fn mount(view: impl View) -> (NativeLeaf, Retained<PlatformView>, AttachedWindow) {
+        let leaf = autoreleasepool(|_| super::resolve::render(view));
+        let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
+        let window = autoreleasepool(|_| super::mount_and_order_front(&wrapper));
+        (leaf, wrapper, window)
+    }
+
+    /// `NSWindow.layoutIfNeeded` + `displayIfNeeded`, then a bounded
+    /// run-loop turn — the sequence that used to reset the content
+    /// layer's transform.
+    fn layout_display_pump(wrapper: &PlatformView) {
+        autoreleasepool(|_| {
+            let window = view::window(wrapper).expect("the wrapper is in a window");
+            // SAFETY: documented `NSWindow` layout/display entry points on
+            // the main thread the harness provides.
+            unsafe {
+                let () = msg_send![&window, layoutIfNeeded];
+                let () = msg_send![&window, displayIfNeeded];
+            }
+        });
+        pump_main_until(0.1, || false);
+    }
+
+    /// The wrapper layer's `sublayerTransform` as it stands now.
+    fn sublayer_transform(wrapper: &PlatformView) -> CATransform3D {
+        autoreleasepool(|_| {
+            layer::layer_of(wrapper)
+                .expect("a transform modifier's wrapper is layer-backed")
+                .sublayerTransform()
+        })
+    }
+
+    /// The display–resize–display sequence both cases run: the transform
+    /// survives the sync `displayIfNeeded` performs and follows the new
+    /// bounds size after `resize`.
+    fn assert_survives_display_and_resize(
+        wrapper: &Retained<PlatformView>,
+        m: CATransform3D,
+        anchor: Point,
+        resize: Rect,
+    ) {
+        layout_display_pump(wrapper);
+        let size = autoreleasepool(|_| view::bounds(wrapper).size);
+        assert_transform_close(
+            sublayer_transform(wrapper),
+            expected(m, anchor, size),
+            "after display",
+        );
+
+        autoreleasepool(|_| view::set_frame(wrapper, resize));
+        layout_display_pump(wrapper);
+        let size = autoreleasepool(|_| view::bounds(wrapper).size);
+        assert_transform_close(
+            sublayer_transform(wrapper),
+            expected(m, anchor, size),
+            "after resize",
+        );
+    }
+
+    /// `.scale(0.5, 0.5)` at the default centre anchor (#3504's own
+    /// reproduction): `m11`/`m22` stay `0.5` after display, and the
+    /// anchor's translation term tracks the wrapper's new size.
+    fn scale_survives_display_and_resize() {
+        let (_leaf, wrapper, _window) = mount(label("coming").scale(0.5, 0.5));
+        assert_survives_display_and_resize(
+            &wrapper,
+            CATransform3D::new_scale(0.5, 0.5, 1.0),
+            Point::new(0.5, 0.5),
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
+    }
+
+    /// `.rotation_from(30, …)` at a non-centre anchor: the rotation matrix
+    /// and its anchor translation both survive display, and a quarter-x
+    /// three-quarter-y anchor recomputes for the new size.
+    fn rotation_survives_display_and_resize() {
+        let (_leaf, wrapper, _window) =
+            mount(label("coming").rotation_from(30.0, Anchor::new(0.25, 0.75)));
+        assert_survives_display_and_resize(
+            &wrapper,
+            CATransform3D::new_rotation(30f64.to_radians(), 0.0, 0.0, 1.0),
+            Point::new(0.25, 0.75),
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
     }
 }

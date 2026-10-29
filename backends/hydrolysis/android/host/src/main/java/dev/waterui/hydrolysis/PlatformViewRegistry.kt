@@ -304,7 +304,8 @@ class PlatformViewRegistry internal constructor(
     internal fun coversPixel(x: Float, y: Float): Boolean {
         orderedContent?.let { content ->
             // The retained tree decides: the pixel is a platform hit only
-            // when its topmost entry under it is a platform view.
+            // when a platform view is drawn there and no interactive target
+            // above it takes the point.
             val id = content.platformViewAt(x, y) ?: return false
             return slotAt(id, x, y) != null
         }

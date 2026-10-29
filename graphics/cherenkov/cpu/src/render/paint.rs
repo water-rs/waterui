@@ -10,23 +10,9 @@ use rustc_hash::FxHashMap;
 
 use cherenkov::RenderError;
 use fearless_simd::{Simd, SimdInterleaved, f32x4};
-use filtrate_core::space::{
-    P3_TO_SRGB, SRGB_TO_P3, from_srgb, srgb_decode, srgb_encode, to_srgb, transform,
-};
+use filtrate_core::space::{P3_TO_SRGB, SRGB_TO_P3, srgb_decode, srgb_encode, transform};
 
 use crate::names;
-
-/// Convert a premultiplied pixel between linear P3 and encoded sRGB —
-/// filtrate-core's `to_srgb`/`from_srgb` conversion on a single pixel.
-pub(super) fn convert_pixel(pixel: [f32; 4], encode: bool) -> [f32; 4] {
-    let mut pixel = [pixel];
-    if encode {
-        to_srgb(&mut pixel);
-    } else {
-        from_srgb(&mut pixel);
-    }
-    pixel[0]
-}
 
 /// A gradient stop in interpolation-space straight-alpha components.
 #[derive(Clone, Copy, Debug)]
@@ -863,7 +849,7 @@ fn radial_at(outer: &PaintData, params: &RadialPaint, mut x: f32, mut y: f32) ->
 #[cfg(test)]
 fn atan2_f32(y: f32, x: f32) -> f32 {
     let simd = fearless_simd::Fallback::new();
-    super::gradient::atan2_span(simd, simd.splat_f32x4(y), simd.splat_f32x4(x))[0]
+    cherenkov_simd::math::atan2(simd, simd.splat_f32x4(y), simd.splat_f32x4(x))[0]
 }
 
 /// The sweep leaf's scalar reference: `outer`'s transform chain, then
@@ -1499,7 +1485,7 @@ mod tests {
                     extend: cherenkov_scene::Extend::Pad,
                     interpolation: cherenkov_scene::ColorSpace::default(),
                 };
-                fearless_simd::dispatch!(crate::Level::new(), simd => check(simd, &paint, &oracle, scale));
+                cherenkov_simd::dispatch!(cherenkov_simd::detect(), simd => check(simd, &paint, &oracle, scale));
                 check(fearless_simd::Fallback::new(), &paint, &oracle, scale);
             }
         }
@@ -1804,7 +1790,7 @@ mod tests {
             .chain(sweep_cases())
             .chain(image_cases())
         {
-            fearless_simd::dispatch!(crate::Level::new(), simd => check(simd, &paint));
+            cherenkov_simd::dispatch!(cherenkov_simd::detect(), simd => check(simd, &paint));
             check(fearless_simd::Fallback::new(), &paint);
         }
     }
@@ -1835,7 +1821,7 @@ mod tests {
         {
             for x0 in 0..=7usize {
                 for len in 0..=67usize {
-                    fearless_simd::dispatch!(crate::Level::new(), simd => check(
+                    cherenkov_simd::dispatch!(cherenkov_simd::detect(), simd => check(
                         simd, &paint, x0, len
                     ));
                     check(fearless_simd::Fallback::new(), &paint, x0, len);
@@ -1866,7 +1852,7 @@ mod tests {
         for paint in sweep_cases() {
             for x0 in 0..=7usize {
                 for len in 0..=67usize {
-                    fearless_simd::dispatch!(crate::Level::new(), simd => check(
+                    cherenkov_simd::dispatch!(cherenkov_simd::detect(), simd => check(
                         simd, &paint, x0, len
                     ));
                     check(fearless_simd::Fallback::new(), &paint, x0, len);

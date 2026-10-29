@@ -38,6 +38,9 @@ belong to water-rs/waterui.
   headroom, extended output), and that pass is measured against the oracle
   too (#100). An engine or target that cannot carry the colours is reported
   as unsupported, never compared on a clipped image.
+- **Blend inputs keep float precision.** An intermediate image a
+  non-`Normal` blend reads is never stored in a compact 8-bit format, and
+  no memory or performance optimisation overrides this (water-rs/waterui#3458).
 - **Visual review is done by eye.** Images are reviewed by looking at them,
   never by pixel-count, brightness or dominant-colour heuristics.
 - **Fail fast.** An unsupported case returns an explicit `Unsupported` error,

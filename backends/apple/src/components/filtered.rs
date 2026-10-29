@@ -78,7 +78,7 @@ struct PresentWork {
 /// Marks a value as crossing the GPU-completion → main-queue boundary; the
 /// wrapped object is only dereferenced once the work item lands on the main
 /// thread, where every receiver was created.
-struct Sendable<T>(T);
+pub struct Sendable<T>(pub T);
 
 impl<T> Sendable<T> {
     /// Reads the wrapped value — method access keeps closure captures on the
@@ -140,9 +140,13 @@ pub struct FilteredState {
     view: Retained<HostView>,
     /// The output presentation view.
     output_view: Retained<PlatformView>,
-    /// The hidden content view the capture reads — the same view
-    /// `capture` was built over, framed with the output in one pass.
-    content_view: Retained<PlatformView>,
+    /// Where the pipeline reads its input — a `ViewCapture` over a
+    /// content view, or an already-realized frame.
+    input: FilteredInput,
+    /// Runs once on the first presented frame — a transition effect's
+    /// "hide the content it replaces" hook. `None` for the mounted
+    /// leaf, whose content is hidden at build.
+    first_present: RefCell<Option<Box<dyn FnOnce()>>>,
     /// The presentation `CAMetalLayer` — a sublayer of `output_view`'s
     /// backing layer, persistent across presenters: the link is
     /// per-attach, the layer is not.
@@ -183,7 +187,8 @@ pub struct FilteredState {
     presenter: RefCell<Option<MetalPresenter>>,
     /// Issues each link frame into this leaf's render path.
     frame_sink: Rc<dyn Fn(DrawableFrame)>,
-    /// `captureTexture`.
+    /// `captureTexture` — the live-capture input target; unused by a
+    /// frozen input, whose texture is the input.
     capture_texture: RefCell<Option<Retained<MetalTexture>>>,
     /// `framePresentationInFlight`.
     frame_presentation_in_flight: Cell<bool>,
@@ -227,11 +232,6 @@ pub struct FilteredState {
     /// First-paint waiters — `readyCompletions` in waker form; they answer
     /// on actual screen presentation only.
     ready_waiters: RefCell<Vec<std::task::Waker>>,
-    /// The hidden content leaf's mount — read for measurement only;
-    /// `content_view` carries its geometry.
-    mounted: RefCell<Option<Mounted>>,
-    /// The `ViewCapture` pipeline — `capturePipeline`.
-    capture: Rc<cocoa_ui::capture::ViewCapture>,
     /// Nested native-pass suppression scopes — counted so overlapping
     /// captures keep the presentation layer hidden until the last one ends.
     capture_suppression: Cell<usize>,
@@ -259,6 +259,10 @@ pub struct FilteredState {
     /// The in-flight effect setup. Stored so dropping the state cancels a
     /// setup parked on `context_after` instead of leaking the future.
     setup_task: RefCell<Option<executor_core::AnyLocalExecutorTask<()>>>,
+    /// Armed by `SnapshotDemand` at render: the last presented frame's
+    /// frozen copy for a transition's retirement hand-off (§2.1). `None`
+    /// for an unarmed surface — its drawables stay framebuffer-only.
+    armed: Option<crate::frozen_frame::SharedFrozenFrameSlot>,
 }
 
 impl fmt::Debug for FilteredState {
@@ -270,10 +274,49 @@ impl fmt::Debug for FilteredState {
     }
 }
 
+/// Where a filtered leaf reads its input frame (the design's
+/// `EffectInput`, renamed here because `filtrate::EffectInput` already
+/// names the executor's per-frame input).
+///
+/// The mounted leaf and a transition's live effect both run
+/// `ViewCapture` over a real content view on every presented frame;
+/// the removal ghost's frozen effect reads one already-realized
+/// texture — its input is done, so there is nothing to capture.
+enum FilteredInput {
+    /// A `ViewCapture` over a content view.
+    Captured {
+        /// The capture pipeline — the content's raster and its
+        /// external surfaces.
+        capture: Rc<cocoa_ui::capture::ViewCapture>,
+        /// The view the capture reads — hidden by the mounted leaf at
+        /// build, by a transition effect only when its first frame
+        /// presents.
+        content_view: Retained<PlatformView>,
+        /// Who frames and lays out the content view.
+        owner: ContentOwner,
+    },
+    /// An already-realized frame — the removal ghost's one-shot
+    /// capture of the retired subtree.
+    Frozen {
+        /// The private texture the first effect reads.
+        texture: Retained<MetalTexture>,
+    },
+}
+
+/// Who owns a captured content view's geometry.
+enum ContentOwner {
+    /// A filtered leaf over its own child: the output frames the content
+    /// and measurement delegates to the mount's layout face when there is
+    /// one.
+    Leaf(Option<Mounted>),
+    /// A transition effect over a sibling the transition host lays out.
+    Effect,
+}
+
 /// The host bounds in physical pixels, rounded up: a positive extent in
 /// points always covers at least one device pixel, so "positive in points"
 /// and "non-zero in pixels" are one predicate.
-fn pixel_size(view: &PlatformView, scale: f64) -> (u32, u32) {
+pub fn pixel_size(view: &PlatformView, scale: f64) -> (u32, u32) {
     let bounds = cocoa_ui::view::bounds(view);
     #[expect(
         clippy::cast_possible_truncation,
@@ -460,6 +503,7 @@ fn attach_if_needed(
     let presenter = MetalPresenter::new(
         state.presentation_layer.clone(),
         Rc::clone(&state.frame_sink),
+        state.armed.is_some(),
     );
     presenter.set_device(&crate::gpu_runtime::raw_metal_device(context));
     presenter.set_drawable_size(cocoa_ui::metal_presenter::drawable_size(width, height));
@@ -512,6 +556,33 @@ fn detach_if_needed(state: &FilteredState) {
     state.output_revealed.set(false);
 }
 
+/// A private-storage effect input in the presentation format — the
+/// allocation `ensureCaptureTexture` performs, minus the state write.
+/// The transition ghost's one-shot capture targets this; `ViewCapture`
+/// rasterizes into it and the filtered leaf renders it as `frozen_input`.
+pub fn new_capture_input(
+    context: &SharedGpuContext,
+    width: u32,
+    height: u32,
+) -> Retained<MetalTexture> {
+    // SAFETY: creates a valid descriptor; Metal validates the arguments.
+    let descriptor = unsafe {
+        objc2_metal::MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+            output_pixel_format(),
+            width as usize,
+            height as usize,
+            false,
+        )
+    };
+    descriptor.setUsage(
+        objc2_metal::MTLTextureUsage::ShaderRead | objc2_metal::MTLTextureUsage::RenderTarget,
+    );
+    descriptor.setStorageMode(objc2_metal::MTLStorageMode::Private);
+    crate::gpu_runtime::raw_metal_device(context)
+        .newTextureWithDescriptor(&descriptor)
+        .expect("Failed to create the filtered-content capture texture")
+}
+
 /// `ensureCaptureTexture` — a private-storage render target in the
 /// presentation format, reallocated on size change, allocated on the
 /// explicit live `context` the caller bound this generation to.
@@ -529,22 +600,7 @@ fn ensure_capture_texture(
     {
         return texture.clone();
     }
-    // SAFETY: creates a valid descriptor; Metal validates the arguments.
-    let descriptor = unsafe {
-        objc2_metal::MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-            pixel_format,
-            width as usize,
-            height as usize,
-            false,
-        )
-    };
-    descriptor.setUsage(
-        objc2_metal::MTLTextureUsage::ShaderRead | objc2_metal::MTLTextureUsage::RenderTarget,
-    );
-    descriptor.setStorageMode(objc2_metal::MTLStorageMode::Private);
-    let texture = crate::gpu_runtime::raw_metal_device(context)
-        .newTextureWithDescriptor(&descriptor)
-        .expect("Failed to create the filtered-content capture texture");
+    let texture = new_capture_input(context, width, height);
     *state.capture_texture.borrow_mut() = Some(texture.clone());
     texture
 }
@@ -606,7 +662,11 @@ fn attach(state: &Rc<FilteredState>) {
     ensure_filtered_generation(state, &context);
     let (width, height) = pixel_size(&state.view, state.current_scale.get());
     attach_if_needed(state, &context, width, height);
-    let _ = ensure_capture_texture(state, &context, width, height);
+    // A frozen input needs no capture texture — its texture is the
+    // input and the capture path never runs.
+    if let FilteredInput::Captured { .. } = &state.input {
+        let _ = ensure_capture_texture(state, &context, width, height);
+    }
 }
 
 /// `updateOutputLayerFrame` — the hidden content view, the output view,
@@ -621,7 +681,16 @@ fn update_output_frame(state: &FilteredState) {
         .collapsed
         .set(bounds.size.width <= 0.0 || bounds.size.height <= 0.0);
     cocoa_ui::core_animation::without_animation(|| {
-        cocoa_ui::view::set_frame(&state.content_view, bounds);
+        // A leaf-owned content view is framed here; a transition
+        // effect's content belongs to its own host's layout.
+        if let FilteredInput::Captured {
+            content_view,
+            owner: ContentOwner::Leaf(_),
+            ..
+        } = &state.input
+        {
+            cocoa_ui::view::set_frame(content_view, bounds);
+        }
         cocoa_ui::view::set_frame(&state.output_view, bounds);
         if let Some(layer) = cocoa_ui::view::layer(&state.output_view) {
             cocoa_ui::core_animation::set_frame(&layer, bounds);
@@ -647,6 +716,12 @@ fn update_output_frame(state: &FilteredState) {
     }
 }
 
+/// An owed reveal frame does not permit drawing after the host is hidden.
+fn can_render_frame(state: &FilteredState) -> bool {
+    !presentation_occluded(&state.view)
+        || (state.first_paint_owed.get() && participates_in_first_paint_ready(state))
+}
+
 /// Whether the link may deliver frames — attached, effectively visible, in
 /// an active scene and with demand (an animating, owed or dirty frame). An
 /// in-flight frame, native-pass suppression, external rendering or a
@@ -663,7 +738,7 @@ fn update_link_demand(state: &Rc<FilteredState>) {
         && !state.frame_presentation_in_flight.get()
         && state.capture_suppression.get() == 0
         && state.external_count.get() == 0
-        && (!presentation_occluded(&state.view) || state.first_paint_owed.get());
+        && can_render_frame(state);
     if let Some(presenter) = state.presenter.borrow().as_ref() {
         presenter.set_paused(!demand);
     }
@@ -678,7 +753,7 @@ fn update_link_demand(state: &Rc<FilteredState>) {
 /// answered by the next drawable delivery, at most one display interval
 /// later. While an external capture owns this output, the request goes to
 /// the capture's redraw hook instead and the link stays suspended.
-fn request_render(state: &Rc<FilteredState>) {
+pub fn request_render(state: &Rc<FilteredState>) {
     state.needs_render.set(true);
     if state.external_count.get() > 0 {
         if let Some(on_redraw) = state.external_redraw.borrow().as_ref() {
@@ -710,6 +785,12 @@ fn request_render_if_geometry_changed(state: &Rc<FilteredState>) {
 /// and its completion. Dropping it at any gate releases the lease without
 /// presenting and the next delivery answers the still-owed demand.
 fn render_frame(state: &Rc<FilteredState>, frame: DrawableFrame) {
+    if !can_render_frame(state) {
+        // A queued update can arrive after visibility suspended the link.
+        // Keep the owed work for the next visibility notification.
+        update_link_demand(state);
+        return;
+    }
     if state.park.is_held() {
         // A stale delivery — the link kept a queued update across the
         // park: nothing renders while the leaf waits out the
@@ -746,6 +827,22 @@ fn render_frame(state: &Rc<FilteredState>, frame: DrawableFrame) {
     // A frame in flight pauses the link: `deliver_update` returns early
     // while the lease is held, so nothing else stops the next vsync.
     update_link_demand(state);
+    if let FilteredInput::Frozen { texture } = &state.input {
+        // A frozen input is the frame already: no capture pass runs —
+        // the lease, encode and presentation contract are unchanged.
+        let work = PresentWork {
+            frame,
+            context,
+            input: texture.clone(),
+            width,
+            height,
+        };
+        finish_prepared_frame(state, work);
+        return;
+    }
+    let FilteredInput::Captured { capture, .. } = &state.input else {
+        unreachable!("the frozen input returns above")
+    };
     let input = ensure_capture_texture(state, &context, width, height);
     let generation = context.generation();
     let work = PresentWork {
@@ -759,19 +856,17 @@ fn render_frame(state: &Rc<FilteredState>, frame: DrawableFrame) {
     let weak = Sendable(Rc::downgrade(state));
     // The capture completion is `Fn` — the work crosses it inside a slot.
     let work = std::sync::Mutex::new(Some(Sendable(work)));
-    state
-        .capture
-        .capture(&capture_input, generation, move |outcome| {
-            if let Some(state) = weak.get().upgrade() {
-                let work = work.lock().expect("capture fires once").take();
-                if let Some(work) = work {
-                    finish_captured_frame(&state, work.0, &outcome);
-                }
+    capture.capture(&capture_input, generation, move |outcome| {
+        if let Some(state) = weak.get().upgrade() {
+            let work = work.lock().expect("capture fires once").take();
+            if let Some(work) = work {
+                finish_captured_frame(&state, work.0, &outcome);
             }
-            // A dropped state's slot drops the frame here — the lease releases
-            // unpresented on the main thread the completion contract
-            // guarantees.
-        });
+        }
+        // A dropped state's slot drops the frame here — the lease releases
+        // unpresented on the main thread the completion contract
+        // guarantees.
+    });
 }
 
 /// `finishCapturedFrame`.
@@ -905,9 +1000,11 @@ fn submit_external(
     context: &Arc<SharedGpuContext>,
     encoder: wgpu::CommandEncoder,
     completion: SurfaceCaptureCompletion,
+    frozen: Option<crate::frozen_frame::FrozenFrame>,
 ) {
     let weak = Sendable(Rc::downgrade(state));
     let completion = std::sync::Mutex::new(Some(completion));
+    let mut frozen = frozen.map(Sendable);
     let submitted_context = context.clone();
     crate::gpu_completion::submit_with_completion(
         cocoa_ui::MainThreadMarker::new()
@@ -920,22 +1017,32 @@ fn submit_external(
                 let Some(completion) = completion else {
                     return;
                 };
-                match result {
-                    Err(_) => {
-                        // The fence settled on a dead queue: no
-                        // usable pixels to composite — deferred,
-                        // and the publication watch re-arms the
-                        // redraw.
-                        if let Some(state) = weak.get().upgrade() {
-                            park_for_publication(&state, submitted_context.generation());
+                let frozen = frozen.take().map(|Sendable(copy)| copy);
+                if result.is_err() {
+                    // The fence settled on a dead queue: no
+                    // usable pixels to composite — deferred,
+                    // and the publication watch re-arms the
+                    // redraw.
+                    if let Some(state) = weak.get().upgrade() {
+                        if let (Some(armed), Some(copy)) = (state.armed.as_ref(), frozen) {
+                            armed.recycle(copy);
                         }
-                        completion(Err(CaptureError::Deferred));
+                        park_for_publication(&state, submitted_context.generation());
                     }
+                    completion(Err(CaptureError::Deferred));
+                } else {
                     // Offscreen capture completion is not a
                     // `PresentedFrame` receipt —
                     // productive-generation accounting consumes
-                    // on-screen receipts only.
-                    Ok(()) => completion(Ok(())),
+                    // on-screen receipts only. An externally rendered
+                    // surface's screen pixels are what its capture
+                    // composed — the `Ok` arm is the promotion gate.
+                    if let Some(state) = weak.get().upgrade()
+                        && let (Some(armed), Some(copy)) = (state.armed.as_ref(), frozen)
+                    {
+                        armed.promote(copy);
+                    }
+                    completion(Ok(()));
                 }
             });
         },
@@ -971,22 +1078,24 @@ fn render_transparent(
         })],
         ..Default::default()
     }));
-    submit_external(state, context, encoder, completion);
+    submit_external(state, context, encoder, completion, None);
 }
 
 /// The per-frame effect encode shared by the screen drawable and the
-/// external-capture destination: `input` feeds effect 0, intermediates
-/// chain the rest, the last pass lands in `output`. All textures are
-/// `width`×`height` `PRESENTATION_FORMAT`.
+/// external-capture destination: `input` feeds effect 0 at its own
+/// `input_size` — a frozen transition input is smaller than the output —
+/// intermediates chain the rest at `output` size, the last pass lands in
+/// `output`. All textures are `PRESENTATION_FORMAT`.
 fn encode_effects(
     state: &FilteredState,
     context: &SharedGpuContext,
     input_texture: &wgpu::Texture,
+    input_size: (u32, u32),
     output_texture: &wgpu::Texture,
-    width: u32,
-    height: u32,
+    output_size: (u32, u32),
     timing: EffectFrameTiming,
 ) -> (bool, wgpu::CommandEncoder) {
+    let (output_width, output_height) = output_size;
     let device = context.device();
     let queue = context.queue();
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1004,8 +1113,8 @@ fn encode_effects(
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("FilteredView Intermediate"),
                 size: wgpu::Extent3d {
-                    width,
-                    height,
+                    width: output_width,
+                    height: output_height,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -1031,6 +1140,10 @@ fn encode_effects(
         } else {
             &intermediates[index]
         };
+        // Effect 0 sees the input texture's real dimensions — a frozen
+        // transition input is the captured slot, not the output frame —
+        // and every later pass sees the output size it renders into.
+        let (input_width, input_height) = if index == 0 { input_size } else { output_size };
         let input = EffectInput {
             device,
             queue,
@@ -1040,8 +1153,8 @@ fn encode_effects(
                 ..Default::default()
             }),
             format: PRESENTATION_FORMAT,
-            width,
-            height,
+            width: input_width,
+            height: input_height,
             timing,
             shape: ShapeTextures::default(),
         };
@@ -1055,8 +1168,8 @@ fn encode_effects(
                 ..Default::default()
             }),
             format: PRESENTATION_FORMAT,
-            width,
-            height,
+            width: output_width,
+            height: output_height,
         };
         needs_redraw |= effect
             .encode_render(&input, &output, &mut encoder)
@@ -1135,16 +1248,28 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
         return;
     }
     let (_output_width, _output_height) = (work.width, work.height);
-    let input_texture =
-        imported_input(state, &context, work.input.clone(), work.width, work.height);
-    state.input_size.set((work.width, work.height));
+    // The input's real pixel dims — a frozen transition input is the
+    // captured slot, smaller than the drawable the effects render into.
+    let input_size = (
+        u32::try_from(work.input.width()).unwrap_or(u32::MAX),
+        u32::try_from(work.input.height()).unwrap_or(u32::MAX),
+    );
+    let input_texture = imported_input(
+        state,
+        &context,
+        work.input.clone(),
+        input_size.0,
+        input_size.1,
+    );
+    state.input_size.set(input_size);
 
     // The drawable's own texture is the output — imported
     // `RENDER_ATTACHMENT` only: the framebuffer-only drawable is rendered
     // into, never sampled or copied.
     // SAFETY: `frame.texture()` is the drawable's live texture — the lease
     // inside `work` outlives the import; the format and the drawable's
-    // actual texture dimensions describe it.
+    // actual texture dimensions describe it. An armed surface declares
+    // `COPY_SRC` so its frozen-frame copy reads what the effects wrote.
     let output_wgpu_texture = unsafe {
         cocoa_ui::metal::import_texture(
             context.device(),
@@ -1152,7 +1277,12 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
             PRESENTATION_FORMAT,
             work.width,
             work.height,
-            wgpu::TextureUsages::RENDER_ATTACHMENT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | if state.armed.is_some() {
+                    wgpu::TextureUsages::COPY_SRC
+                } else {
+                    wgpu::TextureUsages::empty()
+                },
             wgpu::TextureUses::COLOR_TARGET,
             "FilteredView Presentation Drawable",
         )
@@ -1167,31 +1297,59 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
         }
         frame_clock.tick()
     };
-    let (needs_redraw, encoder) = encode_effects(
+    let (needs_redraw, mut encoder) = encode_effects(
         state,
         &context,
         &input_texture,
+        input_size,
         &output_wgpu_texture,
-        work.width,
-        work.height,
+        (work.width, work.height),
         timing,
     );
+    // An armed surface copies the just-written drawable into its frozen
+    // slot inside this same submission — GPU→GPU, ordered after the
+    // effects on the shared queue; the settle promotes it only on a
+    // real `PresentedFrame` receipt.
+    let frozen = state.armed.as_ref().map(|armed| {
+        armed.encode_copy(
+            &context,
+            &output_wgpu_texture,
+            (work.width, work.height),
+            &mut encoder,
+        )
+    });
     drop(input_texture);
     drop(output_wgpu_texture);
 
     // `observeGpuCaptureFence`: the frame — and its drawable lease — stay
     // in flight until the fence.
     state.frame_presentation_in_flight.set(true);
+    submit_prepared_frame(state, &context, encoder, work, needs_redraw, frozen);
+}
+
+/// Submits the prepared frame's encoder and registers the fence's
+/// main-queue settle — the armed surface's frozen copy rides the same
+/// submission and the settle promotes it only on a `PresentedFrame`
+/// receipt.
+fn submit_prepared_frame(
+    state: &Rc<FilteredState>,
+    context: &Arc<SharedGpuContext>,
+    encoder: wgpu::CommandEncoder,
+    work: PresentWork,
+    needs_redraw: bool,
+    frozen: Option<crate::frozen_frame::FrozenFrame>,
+) {
     let weak = Sendable(Rc::downgrade(state));
     // The `take` call on the slot captures the `Sendable` as a whole
     // binding — a field projection would unwrap it before the `Send`
     // contract can apply.
     let mut work_slot = Some(Sendable(work));
+    let mut frozen = frozen.map(Sendable);
     let submitted_context = context.clone();
     crate::gpu_completion::submit_with_completion(
         cocoa_ui::MainThreadMarker::new().expect("FilteredView frames render on the main thread"),
         encoder,
-        &context,
+        context,
         move |result| {
             // `on_submitted_work_done` closures can run on any thread that
             // maintains the device — hop to the main queue before touching
@@ -1203,6 +1361,7 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
                     return;
                 };
                 let Sendable(work) = work_slot.take().expect("the fence fires once");
+                let frozen = frozen.take().map(|Sendable(copy)| copy);
                 state.frame_presentation_in_flight.set(false);
                 state.render_in_flight.set(false);
                 match result {
@@ -1211,11 +1370,20 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
                         // fence settled on a dead queue and the drawable
                         // holds no ready pixels. Park until the rebuilt
                         // context publishes instead of revealing it.
+                        if let (Some(armed), Some(copy)) = (state.armed.as_ref(), frozen) {
+                            armed.recycle(copy);
+                        }
                         state.needs_render.set(true);
                         park_for_publication(&state, submitted_context.generation());
                     }
                     Ok(()) => {
-                        finish_presented_frame(&state, work, needs_redraw, &submitted_context);
+                        finish_presented_frame(
+                            &state,
+                            work,
+                            needs_redraw,
+                            &submitted_context,
+                            frozen,
+                        );
                     }
                 }
             });
@@ -1232,14 +1400,24 @@ fn finish_presented_frame(
     work: PresentWork,
     needs_redraw: bool,
     submitted_context: &SharedGpuContext,
+    frozen: Option<crate::frozen_frame::FrozenFrame>,
 ) {
+    // Every arm but the presented one recycles the copy target — the
+    // frame's pixels never reached the screen.
+    let settle_copy = |frozen: Option<crate::frozen_frame::FrozenFrame>| {
+        if let (Some(armed), Some(copy)) = (state.armed.as_ref(), frozen) {
+            armed.recycle(copy);
+        }
+    };
     if state.detach_after_capture.get() {
+        settle_copy(frozen);
         state.detach_after_capture.set(false);
         detach_if_needed(state);
         complete_ready(state);
         return;
     }
     if state.pending_dynamic_range.borrow_mut().take().is_some() {
+        settle_copy(frozen);
         detach_if_needed(state);
         initialize_gpu(state);
         request_render(state);
@@ -1265,6 +1443,7 @@ fn finish_presented_frame(
     let Some(_receipt) = presented else {
         // Stale, resized or unpresentable: the lease settles unpresented
         // and the frame stays owed.
+        settle_copy(frozen);
         state.needs_render.set(true);
         update_link_demand(state);
         return;
@@ -1272,6 +1451,11 @@ fn finish_presented_frame(
     // A presented frame makes this generation productive — the runtime's
     // unproductive-loss detector keys on it.
     submitted_context.note_frame_presented();
+    // The frame's pixels reached the screen — the copy becomes the
+    // surface's frozen frame.
+    if let (Some(armed), Some(copy)) = (state.armed.as_ref(), frozen) {
+        armed.promote(copy);
+    }
     reveal_output(state);
     crate::invalidation::invalidate_rendered_content(&state.view);
     state
@@ -1295,6 +1479,11 @@ fn reveal_output(state: &FilteredState) {
     state.first_paint_owed.set(false);
     state.output_revealed.set(true);
     cocoa_ui::view::set_hidden(&state.output_view, false);
+    // A transition effect's hook — the hidden-content reveal lands only
+    // once real pixels are on screen, so no frame shows a gap.
+    if let Some(first_present) = state.first_present.borrow_mut().take() {
+        first_present();
+    }
 }
 
 fn hide_output(state: &FilteredState) {
@@ -1471,7 +1660,14 @@ fn refresh_visibility_watch(state: &Rc<FilteredState>) {
 /// lay the content out, then ensure GPU state and a pending frame.
 fn on_layout(state: &Rc<FilteredState>) {
     update_output_frame(state);
-    cocoa_ui::view::layout_immediately(&state.content_view);
+    if let FilteredInput::Captured {
+        content_view,
+        owner: ContentOwner::Leaf(_),
+        ..
+    } = &state.input
+    {
+        cocoa_ui::view::layout_immediately(content_view);
+    }
     initialize_gpu(state);
     request_render_if_geometry_changed(state);
 }
@@ -1488,28 +1684,40 @@ impl fmt::Debug for FilteredSubView {
     }
 }
 
+impl FilteredSubView {
+    /// The leaf-owned content mount — `None` for every input a leaf
+    /// never mounted (a transition effect has no layout face to begin
+    /// with).
+    fn mounted(&self) -> Option<&Mounted> {
+        match &self.state.input {
+            FilteredInput::Captured {
+                owner: ContentOwner::Leaf(mounted),
+                ..
+            } => mounted.as_ref(),
+            FilteredInput::Captured {
+                owner: ContentOwner::Effect,
+                ..
+            }
+            | FilteredInput::Frozen { .. } => None,
+        }
+    }
+}
+
 impl SubView for FilteredSubView {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        self.state.mounted.borrow().as_ref().map_or_else(
+        self.mounted().map_or_else(
             || ViewDimensions::new(Size::new(0.0, 0.0)),
             |m| m.layout().measure(proposal),
         )
     }
 
     fn stretch_axis(&self) -> StretchAxis {
-        self.state
-            .mounted
-            .borrow()
-            .as_ref()
+        self.mounted()
             .map_or(StretchAxis::None, |m| m.layout().stretch_axis())
     }
 
     fn priority(&self) -> i32 {
-        self.state
-            .mounted
-            .borrow()
-            .as_ref()
-            .map_or(0, |m| m.layout().priority())
+        self.mounted().map_or(0, |m| m.layout().priority())
     }
 }
 
@@ -1574,15 +1782,10 @@ impl CapturableSurface for FilteredCapturable {
         output_pixel_format()
     }
 
-    fn content_bounds(&self, relative_to: &PlatformView) -> cocoa_ui::Rect {
-        let Some(state) = self.state.upgrade() else {
-            return cocoa_ui::Rect::ZERO;
-        };
-        cocoa_ui::view::convert_rect(
-            &state.output_view,
-            cocoa_ui::view::bounds(&state.output_view),
-            Some(relative_to),
-        )
+    fn presentation_layer(&self) -> Option<Retained<objc2_quartz_core::CALayer>> {
+        self.state
+            .upgrade()
+            .map(|state| state.presentation_layer.clone().into_super())
     }
 
     /// The window-level half of `canPresentNow` — a filtered output in a
@@ -1714,7 +1917,12 @@ impl CapturableSurface for FilteredCapturable {
                 PRESENTATION_FORMAT,
                 width,
                 height,
-                wgpu::TextureUsages::RENDER_ATTACHMENT,
+                wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | if state.armed.is_some() {
+                        wgpu::TextureUsages::COPY_SRC
+                    } else {
+                        wgpu::TextureUsages::empty()
+                    },
                 wgpu::TextureUses::COLOR_TARGET,
                 "FilteredView External Output",
             )
@@ -1796,8 +2004,50 @@ impl CapturableSurface for FilteredCapturable {
             }
             ExternalRender::Effects(target) => target.output,
         };
+        // `armed` crosses the capture callback's thread hop below —
+        // the `Option<Sendable>` slot keeps the whole cell Send where a
+        // field projection inside the closure would capture the raw Rc.
+        let armed = state.armed.clone();
+        let armed_for_copy = armed.clone().map(Sendable);
         if !effects_ready(&state) {
             completion(Err(CaptureError::Deferred));
+            return;
+        }
+        if let FilteredInput::Frozen { texture } = &state.input {
+            // A frozen input answers the external render without a
+            // capture pass: the parent's target is the output, the
+            // frozen texture feeds effect 0 at its own dimensions.
+            let frozen = texture.clone();
+            let input_size = (
+                u32::try_from(frozen.width()).unwrap_or(u32::MAX),
+                u32::try_from(frozen.height()).unwrap_or(u32::MAX),
+            );
+            let input = imported_input(&state, &context, frozen, input_size.0, input_size.1);
+            let timing = {
+                let mut frame_clock = state.frame_clock.borrow_mut();
+                if state.timeline_parked.replace(false) {
+                    let _ = frame_clock.tick();
+                }
+                frame_clock.tick()
+            };
+            let (needs_redraw, mut encoder) = encode_effects(
+                &state,
+                &context,
+                &input,
+                input_size,
+                &output,
+                (width, height),
+                timing,
+            );
+            let frozen = armed
+                .as_ref()
+                .map(|armed| armed.encode_copy(&context, &output, (width, height), &mut encoder));
+            drop(input);
+            drop(output);
+            if needs_redraw {
+                request_render(&state);
+            }
+            submit_external(&state, &context, encoder, completion, frozen);
             return;
         }
         let input_native = ensure_capture_texture(&state, &context, width, height);
@@ -1809,85 +2059,120 @@ impl CapturableSurface for FilteredCapturable {
         let output_slot = std::sync::Mutex::new(Some(output));
         let input_slot = std::sync::Mutex::new(Some(input));
         let submitted = std::sync::Mutex::new(Some(context.clone()));
-        state
-            .capture
-            .capture(&input_native, context.generation(), move |outcome| {
-                let completion = completion.lock().expect("capture completion lock").take();
-                let Some(completion) = completion else {
+        let FilteredInput::Captured { capture, .. } = &state.input else {
+            unreachable!("the frozen input returns above")
+        };
+        capture.capture(&input_native, context.generation(), move |outcome| {
+            let completion = completion.lock().expect("capture completion lock").take();
+            let Some(completion) = completion else {
+                return;
+            };
+            let Some(state) = weak.get().upgrade() else {
+                completion(Err(CaptureError::Deferred));
+                return;
+            };
+            let output = output_slot
+                .lock()
+                .expect("external render fires once")
+                .take();
+            let input = input_slot
+                .lock()
+                .expect("external render fires once")
+                .take();
+            let context = submitted.lock().expect("external render fires once").take();
+            let (Some(output), Some(input), Some(context)) = (output, input, context) else {
+                completion(Err(CaptureError::Deferred));
+                return;
+            };
+            match outcome {
+                Err(CaptureError::Failed(error)) => {
+                    // A failed child settles this capture with its
+                    // typed failure — the outcome is terminal on the
+                    // child's context: the parent answers it once and
+                    // does not keep deferring for a redraw the failed
+                    // context never issues. The leaf settles failed
+                    // with it — one failure record, onscreen and
+                    // external scheduling alike gate on it, and the
+                    // shared settle resolves readiness so a first-paint
+                    // waiter on this path is woken too.
+                    settle_capture_failure(&state, context.generation(), &error);
+                    completion(Err(CaptureError::Failed(error)));
                     return;
-                };
-                let Some(state) = weak.get().upgrade() else {
-                    completion(Err(CaptureError::Deferred));
-                    return;
-                };
-                let output = output_slot
-                    .lock()
-                    .expect("external render fires once")
-                    .take();
-                let input = input_slot
-                    .lock()
-                    .expect("external render fires once")
-                    .take();
-                let context = submitted.lock().expect("external render fires once").take();
-                let (Some(output), Some(input), Some(context)) = (output, input, context) else {
-                    completion(Err(CaptureError::Deferred));
-                    return;
-                };
-                match outcome {
-                    Err(CaptureError::Failed(error)) => {
-                        // A failed child settles this capture with its
-                        // typed failure — the outcome is terminal on the
-                        // child's context: the parent answers it once and
-                        // does not keep deferring for a redraw the failed
-                        // context never issues. The leaf settles failed
-                        // with it — one failure record, onscreen and
-                        // external scheduling alike gate on it, and the
-                        // shared settle resolves readiness so a first-paint
-                        // waiter on this path is woken too.
-                        settle_capture_failure(&state, context.generation(), &error);
-                        completion(Err(CaptureError::Failed(error)));
-                        return;
-                    }
-                    Err(CaptureError::Deferred) => {
-                        // The deferred frame produced no pixels — the fence
-                        // reports it once; the child's readiness replays through
-                        // the redraw contract, not a retry.
-                        completion(Err(CaptureError::Deferred));
-                        if context.device_lost_reason().is_some() {
-                            park_for_publication(&state, context.generation());
-                        }
-                        return;
-                    }
-                    Ok(()) => {}
                 }
-                if context.device_lost_reason().is_some()
-                    || state.runtime.context().generation() != context.generation()
-                    || !effects_ready(&state)
-                {
-                    // Lost mid-capture or superseded — nothing encodes onto a
-                    // generation this target was never prepared for.
+                Err(CaptureError::Deferred) => {
+                    // The deferred frame produced no pixels — the fence
+                    // reports it once; the child's readiness replays through
+                    // the redraw contract, not a retry.
                     completion(Err(CaptureError::Deferred));
                     if context.device_lost_reason().is_some() {
                         park_for_publication(&state, context.generation());
                     }
                     return;
                 }
-                let timing = {
-                    let mut frame_clock = state.frame_clock.borrow_mut();
-                    if state.timeline_parked.replace(false) {
-                        let _ = frame_clock.tick();
-                    }
-                    frame_clock.tick()
-                };
-                let (needs_redraw, encoder) =
-                    encode_effects(&state, &context, &input, &output, width, height, timing);
-                drop(input);
-                drop(output);
-                if needs_redraw {
-                    request_render(&state);
+                Ok(()) => {}
+            }
+            if context.device_lost_reason().is_some()
+                || state.runtime.context().generation() != context.generation()
+                || !effects_ready(&state)
+            {
+                // Lost mid-capture or superseded — nothing encodes onto a
+                // generation this target was never prepared for.
+                completion(Err(CaptureError::Deferred));
+                if context.device_lost_reason().is_some() {
+                    park_for_publication(&state, context.generation());
                 }
-                submit_external(&state, &context, encoder, completion);
+                return;
+            }
+            let timing = {
+                let mut frame_clock = state.frame_clock.borrow_mut();
+                if state.timeline_parked.replace(false) {
+                    let _ = frame_clock.tick();
+                }
+                frame_clock.tick()
+            };
+            let (needs_redraw, mut encoder) = encode_effects(
+                &state,
+                &context,
+                &input,
+                (width, height),
+                &output,
+                (width, height),
+                timing,
+            );
+            let frozen = armed_for_copy.as_ref().map(|Sendable(armed)| {
+                armed.encode_copy(&context, &output, (width, height), &mut encoder)
             });
+            drop(input);
+            drop(output);
+            if needs_redraw {
+                request_render(&state);
+            }
+            submit_external(&state, &context, encoder, completion, frozen);
+        });
+    }
+
+    /// The armed slot's last presented frame plus the presentation
+    /// layer — the retirement hand-off. An unarmed surface mounts no
+    /// frozen stand-in and answers `None`.
+    fn take_frozen_frame(
+        &self,
+    ) -> (
+        Option<cocoa_ui::capture::FrozenSurface>,
+        Retained<CAMetalLayer>,
+    ) {
+        let state = self
+            .state
+            .upgrade()
+            .expect("retirement takes the frozen frame while the filtered view is live");
+        let armed = state.armed.as_ref().expect(
+            "a filtered view inside a retiring transition subtree renders under SnapshotDemand",
+        );
+        (
+            armed
+                .take()
+                .map(crate::frozen_frame::FrozenFrame::into_surface),
+            state.presentation_layer.clone(),
+        )
     }
 
     /// The readiness-participation query the first-frame collect walk
@@ -1930,8 +2215,14 @@ impl CapturableSurface for FilteredCapturable {
 /// Dropping clears the filter's registrations and shuts the capture and
 /// render state down — `deinit`.
 struct FilteredGuard {
+    /// The host carrying the capturable slot — cleared on drop.
     view: Retained<HostView>,
+    /// The render state.
     state: Rc<FilteredState>,
+    /// Where the invalidation sink was registered — `output_parent`
+    /// for a live effect (the sink must see the sibling content), the
+    /// host itself for the mounted leaf, `None` for a frozen effect.
+    sink: Option<Retained<PlatformView>>,
 }
 
 impl fmt::Debug for FilteredGuard {
@@ -1942,9 +2233,17 @@ impl fmt::Debug for FilteredGuard {
 
 impl Drop for FilteredGuard {
     fn drop(&mut self) {
-        crate::invalidation::unregister_sink(&self.view);
+        // The mounted leaf's `Drop` clears the slots already — this is
+        // a no-op then — while a transition effect's host has no leaf
+        // and needs it here.
+        self.view.clear_handlers();
+        if let Some(sink) = &self.sink {
+            crate::invalidation::unregister_sink(sink);
+        }
         self.view.capturable_slot().clear();
-        self.state.capture.shutdown();
+        if let FilteredInput::Captured { capture, .. } = &self.state.input {
+            capture.shutdown();
+        }
         self.state.park.clear();
         detach_if_needed(&self.state);
     }
@@ -1983,6 +2282,43 @@ fn fuse_enclosed_filters(
     }
 }
 
+/// Peels the chain `body` forms into `(effect, guards)` pairs in
+/// presentation order — `fuse_enclosed_filters`'s walk without a
+/// `RenderContext`, for the shape `TransitionState::body(AnyView::new(()),
+/// frame)` produces under a `captures_content` transition: a chain of
+/// `Native<FilteredView>` terminating at the empty `Native<()>` the
+/// backend passed in. Anything else is a user-triggerable violation of
+/// the transition contract; a release build reports it once and answers
+/// `None`, so the caller ends the transition (§10).
+fn effects_from_body(
+    mut body: AnyView,
+    env: &waterui_backend_core::Environment,
+) -> Option<Vec<(AnyEffect, ParamGuards)>> {
+    let mut effects = Vec::new();
+    loop {
+        while !is_native_boundary(&body) {
+            body = AnyView::new(body.body(env));
+        }
+        match body.downcast::<waterui_core::Native<FilteredView>>() {
+            Ok(inner) => {
+                let inner = (*inner).into_inner();
+                body = inner.content;
+                effects.push((inner.effect, inner.guards));
+            }
+            Err(body) => {
+                if body.downcast::<waterui_core::Native<()>>().is_ok() {
+                    return Some(effects);
+                }
+                crate::transition::transition_violation!(
+                    "waterui-apple: a `captures_content` transition's body must expand to a \
+                     `FilteredView` chain over the empty content"
+                );
+                return None;
+            }
+        }
+    }
+}
+
 /// Installs the `filtered` handler — `applied_filter` and `view_effect`
 /// collapse into one leaf under the cutover's `Native<FilteredView>`.
 #[allow(clippy::too_many_lines)]
@@ -1993,9 +2329,17 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // `NativeFilteredView` on AppKit: a complete native `CIFilter`
         // plan mounts the content visibly on `CALayer.filters` — no
         // capture, no GPU setup (#1748). Any unmapped stage, GPU effect or
-        // output-size policy falls through to the capture path.
+        // output-size policy falls through to the capture path. A chain
+        // under a transition declaration always takes the GPU
+        // realization: a `CAFilter`-backed native filter cannot hand off
+        // a frozen GPU frame (§2.2, maintainer decision 10).
         #[cfg(all(target_os = "macos", feature = "applied_filter"))]
-        if let Some(plan) = crate::components::native_filter::plan(&chained) {
+        if ctx
+            .env()
+            .get::<crate::transition::SnapshotDemand>()
+            .is_none()
+            && let Some(plan) = crate::components::native_filter::plan(&chained)
+        {
             return crate::components::native_filter::mount(mtm, ctx, content, chained, &plan);
         }
         let runtime = crate::gpu_runtime::runtime(ctx.env());
@@ -2022,6 +2366,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             Some(mounted),
             effects,
             guard_list,
+            ctx.env(),
         )
         .leaf
     });
@@ -2062,12 +2407,12 @@ struct FilteredParts {
 }
 
 /// The mount construction `install`'s handler performs once the child is
-/// mounted into the host view: hidden-content wiring, the output view and
-/// presentation layer, the render state, the handlers, the capturable
-/// slot and the keep-alive assembly.
+/// mounted into the host view: the hidden-content wiring, the shared
+/// [`wire_filtered_state`] construction, the invalidation sink and the
+/// keep-alive assembly.
 #[expect(
-    clippy::too_many_lines,
-    reason = "the mount's wiring is one linear construction sequence"
+    clippy::too_many_arguments,
+    reason = "the mount's wiring inputs are each distinct construction inputs"
 )]
 fn build_filtered_parts(
     mtm: MainThreadMarker,
@@ -2077,8 +2422,8 @@ fn build_filtered_parts(
     mounted: Option<Mounted>,
     effects: Vec<Box<dyn ErasedEffect>>,
     guard_list: Vec<ParamGuards>,
+    env: &waterui_backend_core::Environment,
 ) -> FilteredParts {
-    let GpuServices { runtime, pipelines } = services;
     // `setupContentView`/`hideUnfilteredContent`: the unfiltered child
     // sits underneath and hidden — hidden as a *view*, because
     // `cacheDisplay` walks the view tree and ignores a hidden backing
@@ -2088,6 +2433,69 @@ fn build_filtered_parts(
     #[cfg(target_os = "macos")]
     cocoa_ui::view::ensure_layer_backed(&child_view);
     cocoa_ui::view::set_hidden(&child_view, true);
+    let input = FilteredInput::Captured {
+        capture: Rc::new(cocoa_ui::capture::ViewCapture::new(mtm, child_view.clone())),
+        content_view: child_view,
+        owner: ContentOwner::Leaf(mounted),
+    };
+    let (state, mut guard, capturable) =
+        wire_filtered_state(mtm, services, view, input, effects, env);
+
+    // `WuiRenderedContentInvalidationSink` — an invalidated descendant
+    // redraws the capture and invalidates upward.
+    let sink_callback: Rc<dyn Fn()> = Rc::new({
+        let weak = Rc::downgrade(&state);
+        move || {
+            if let Some(state) = weak.upgrade() {
+                state.content_changed_since_capture.set(true);
+                request_render(&state);
+                crate::invalidation::invalidate_rendered_content(&state.view);
+            }
+        }
+    });
+    crate::invalidation::register_sink(view, sink_callback);
+    guard.sink = Some(cocoa_ui::view::retain_base(view));
+
+    let mut leaf = NativeLeaf::new(
+        view,
+        FilteredSubView {
+            state: state.clone(),
+        },
+    );
+    leaf.keep(view.clone());
+    leaf.keep(state.clone());
+    leaf.keep(capturable.clone());
+    leaf.keep(guard);
+    for guards in guard_list {
+        leaf.keep(guards);
+    }
+    FilteredParts {
+        leaf,
+        state,
+        view: view.clone(),
+        capturable,
+    }
+}
+
+/// The construction the mounted leaf and the transition effect runtimes
+/// share — the output view and presentation layer, the render state,
+/// its handlers and the capturable slot. The invalidation sink is the
+/// caller's: a live effect registers it on the output's parent (the
+/// sink must see the sibling content), the mounted leaf on its own
+/// host, a frozen effect nowhere.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the mount's wiring is one linear construction sequence"
+)]
+fn wire_filtered_state(
+    mtm: MainThreadMarker,
+    services: GpuServices,
+    view: &Retained<HostView>,
+    input: FilteredInput,
+    effects: Vec<Box<dyn ErasedEffect>>,
+    env: &waterui_backend_core::Environment,
+) -> (Rc<FilteredState>, FilteredGuard, Rc<dyn CapturableSurface>) {
+    let GpuServices { runtime, pipelines } = services;
 
     // `setupOutputView`: a layer-backed sibling drawn last. Its
     // presentation is the `CAMetalLayer` sublayer the
@@ -2146,11 +2554,21 @@ fn build_filtered_parts(
                 }
             }
         });
-        let capture = Rc::new(cocoa_ui::capture::ViewCapture::new(mtm, child_view.clone()));
+        // `capturePipeline.onRedraw` — a surface's redraw request is a
+        // render request.
+        if let FilteredInput::Captured { capture, .. } = &input {
+            let weak = weak.clone();
+            capture.set_on_redraw(move || {
+                if let Some(state) = weak.upgrade() {
+                    request_render(&state);
+                }
+            });
+        }
         FilteredState {
             view: view.clone(),
             output_view: output_view.clone(),
-            content_view: child_view.clone(),
+            input,
+            first_present: RefCell::new(None),
             presentation_layer: presentation_layer.clone(),
             device: RefCell::new(device),
             effects: Rc::new(RefCell::new(None)),
@@ -2178,8 +2596,6 @@ fn build_filtered_parts(
             laid_out_geometry: RefCell::new(None),
             content_changed_since_capture: Cell::new(false),
             ready_waiters: RefCell::new(Vec::new()),
-            mounted: RefCell::new(mounted),
-            capture,
             capture_suppression: Cell::new(0),
             external_count: Cell::new(0),
             external_redraw: RefCell::new(None),
@@ -2190,6 +2606,9 @@ fn build_filtered_parts(
             visibility_watch: RefCell::new(None),
             gpu_generation: Cell::new(Some(gpu_context.generation())),
             setup_task: RefCell::new(None),
+            armed: env
+                .get::<crate::transition::SnapshotDemand>()
+                .map(|_| Rc::new(crate::frozen_frame::FrozenFrameSlot::new())),
         }
     });
     *state.effects.borrow_mut() = Some(effects);
@@ -2206,38 +2625,36 @@ fn build_filtered_parts(
         effect.set_redraw_callback(Arc::clone(&callback));
     }
 
-    // `capturePipeline.onRedraw`.
+    // `FilteredState` retains this view, so a handler capturing the
+    // state would close an `Rc<FilteredState> → HostView → handler`
+    // ownership cycle (water-rs/waterui#1567). The handlers hold the
+    // state weakly instead: a callback the platform still delivers to a
+    // view that outlived its mount does nothing on a failed upgrade —
+    // the weak-reference contract, not a fallback.
     {
         let weak = Rc::downgrade(&state);
-        state.capture.set_on_redraw(move || {
+        view.set_layout_handler(move |_| {
             if let Some(state) = weak.upgrade() {
-                request_render(&state);
+                on_layout(&state);
             }
         });
     }
-
-    // The view retains its handlers and the state retains the view —
-    // the `Rc<FilteredState> → HostView → handler → Rc<FilteredState>`
-    // cycle (WaterUI #1567) is broken by the leaf's `Drop`, which
-    // clears every handler slot when the leaf is released.
     {
-        let state = Rc::clone(&state);
-        view.set_layout_handler(move |_| {
-            on_layout(&state);
-        });
-    }
-    {
-        let state = Rc::clone(&state);
+        let weak = Rc::downgrade(&state);
         view.set_window_handler(move |_| {
-            handle_window_change(&state);
+            if let Some(state) = weak.upgrade() {
+                handle_window_change(&state);
+            }
         });
     }
     {
         // A reparent inside the window moves the ancestor chain the
         // visibility watch subscribed to.
-        let state = Rc::clone(&state);
+        let weak = Rc::downgrade(&state);
         view.set_superview_handler(move |_| {
-            if cocoa_ui::view::window(&state.view).is_some() {
+            if let Some(state) = weak.upgrade()
+                && cocoa_ui::view::window(&state.view).is_some()
+            {
                 refresh_visibility_watch(&state);
                 update_link_demand(&state);
             }
@@ -2245,13 +2662,14 @@ fn build_filtered_parts(
     }
     #[cfg(target_os = "macos")]
     {
-        let state = Rc::clone(&state);
+        let weak = Rc::downgrade(&state);
         view.set_backing_changed_handler(move |_| {
-            if cocoa_ui::view::window(&state.view).is_none() {
-                return;
+            if let Some(state) = weak.upgrade()
+                && cocoa_ui::view::window(&state.view).is_some()
+            {
+                initialize_gpu(&state);
+                request_render(&state);
             }
-            initialize_gpu(&state);
-            request_render(&state);
         });
     }
     #[cfg(target_os = "ios")]
@@ -2260,20 +2678,6 @@ fn build_filtered_parts(
         // surfaces scale changes through layout/window transitions.
     }
 
-    // `WuiRenderedContentInvalidationSink` — an invalidated descendant
-    // redraws the capture and invalidates upward.
-    let sink_callback: Rc<dyn Fn()> = Rc::new({
-        let weak = Rc::downgrade(&state);
-        move || {
-            if let Some(state) = weak.upgrade() {
-                state.content_changed_since_capture.set(true);
-                request_render(&state);
-                crate::invalidation::invalidate_rendered_content(&state.view);
-            }
-        }
-    });
-    crate::invalidation::register_sink(view, sink_callback);
-
     // This output is itself a capturable surface — stored on its own
     // view and removed by the mount guard.
     let capturable: Rc<dyn CapturableSurface> = Rc::new(FilteredCapturable {
@@ -2281,28 +2685,296 @@ fn build_filtered_parts(
     });
     view.capturable_slot().install(&capturable);
 
-    let filter_guard = FilteredGuard {
+    let guard = FilteredGuard {
         view: view.clone(),
-        state: state.clone(),
+        state: Rc::clone(&state),
+        sink: None,
     };
-    let mut leaf = NativeLeaf::new(
-        view,
-        FilteredSubView {
-            state: state.clone(),
-        },
-    );
-    leaf.keep(view.clone());
-    leaf.keep(state.clone());
-    leaf.keep(capturable.clone());
-    leaf.keep(filter_guard);
-    for guards in guard_list {
-        leaf.keep(guards);
+    (state, guard, capturable)
+}
+
+/// The runtime and pipeline caches `env`'s GPU installation hands
+/// every filtered realization — the same values `install` reads.
+fn services(env: &waterui_backend_core::Environment) -> GpuServices {
+    GpuServices {
+        runtime: crate::gpu_runtime::runtime(env),
+        pipelines: crate::gpu_runtime::filter_pipelines(env),
     }
-    FilteredParts {
-        leaf,
-        state,
-        view: view.clone(),
-        capturable,
+}
+
+/// A transition's blur effect over an already-realized input — the
+/// removal ghost's one-shot frozen capture of the retired subtree
+/// (§2.4). It owns the whole filtered pipeline minus a `NativeLeaf`:
+/// the output host is added to the ghost host as a plain subview over
+/// the retired root.
+pub struct FrozenEffect {
+    /// The output host — a subview of the ghost host, covering the slot.
+    view: Retained<HostView>,
+    /// The render state — `input` is [`FilteredInput::Frozen`].
+    state: Rc<FilteredState>,
+    /// The output's capturable face — kept while the effect lives, so
+    /// an enclosing capture resolves it instead of the Metal layer.
+    capturable: Rc<dyn CapturableSurface>,
+    /// The subscriptions feeding the effect's reactive parameters —
+    /// kept while the effect lives; dropping freezes the radius.
+    guards: Vec<ParamGuards>,
+    /// The teardown — clears the capturable slot and the presenter.
+    guard: FilteredGuard,
+}
+
+impl fmt::Debug for FrozenEffect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FrozenEffect")
+            .field("presented", &self.capturable.has_presented_frame())
+            .field("guards", &self.guards.len())
+            .field("guard", &self.guard)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FrozenEffect {
+    /// The blur realization (§2.6): one `filtrate::filters::Blur` fed
+    /// by `radius` over the frozen `input` frame.
+    pub fn blur(
+        radius: waterui_core::reactive::Binding<f32>,
+        env: &waterui_backend_core::Environment,
+        input: Retained<MetalTexture>,
+    ) -> Self {
+        let mut guards = ParamGuards::default();
+        let effect = AnyEffect::filter(waterui_graphics::filtrate::filters::Blur(
+            guards.bind(radius),
+        ));
+        Self::new(
+            Vec::from([(effect, guards)]),
+            FilteredInput::Frozen { texture: input },
+            env,
+        )
+    }
+
+    /// A `captures_content` transition's effect over the frozen `input`
+    /// frame (§2.7): `body` is the `TransitionState::body(AnyView::new(()),
+    /// frame)` product — a `FilteredView` chain over empty content. `None`
+    /// only when the body is no such chain — a user-triggerable violation
+    /// the macro already reported, so the caller ends the transition.
+    pub fn from_body(
+        body: AnyView,
+        env: &waterui_backend_core::Environment,
+        input: Retained<MetalTexture>,
+    ) -> Option<Self> {
+        let effects = effects_from_body(body, env)?;
+        Some(Self::new(
+            effects,
+            FilteredInput::Frozen { texture: input },
+            env,
+        ))
+    }
+
+    /// Builds the filtered pipeline over `input` — the construction the
+    /// effect and the mounted leaf share, minus the leaf.
+    fn new(
+        effects: Vec<(AnyEffect, ParamGuards)>,
+        input: FilteredInput,
+        env: &waterui_backend_core::Environment,
+    ) -> Self {
+        let mtm = MainThreadMarker::new().expect("a transition effect builds on the main thread");
+        let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        #[cfg(target_os = "macos")]
+        cocoa_ui::view::ensure_layer_backed(&view);
+        // The chain presents outermost-last: effects render
+        // content-adjacent first, as `install` builds them.
+        let (built, guards): (Vec<Box<dyn ErasedEffect>>, Vec<ParamGuards>) = effects
+            .into_iter()
+            .rev()
+            .map(|(effect, guards)| (effect.build(), guards))
+            .unzip();
+        let (state, guard, capturable) =
+            wire_filtered_state(mtm, services(env), &view, input, built, env);
+        Self {
+            view,
+            state,
+            capturable,
+            guards,
+            guard,
+        }
+    }
+
+    /// The output view — added to the host as a plain subview over the
+    /// same area.
+    pub fn view(&self) -> &PlatformView {
+        &self.view
+    }
+
+    /// Runs `f` once, when the first frame reaches the screen — the
+    /// removal ghost hides the retired root here, never before, so no
+    /// frame shows a gap.
+    pub fn on_first_present(&self, f: impl FnOnce() + 'static) {
+        *self.state.first_present.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Attaches against the current window and requests the first
+    /// frame — the caller has just added the view to a windowed host.
+    pub fn request_render(&self) {
+        initialize_gpu(&self.state);
+        request_render(&self.state);
+    }
+}
+
+/// A transition's blur effect over live content (§2.5): the content
+/// view stays in place — `ViewCapture` captures it where it is — while
+/// the effect output presents in a sibling host added to
+/// `output_parent`. The content is hidden when the first effect frame
+/// presents, never before, and un-hidden when the effect drops.
+pub struct LiveEffect {
+    /// The output host — a subview of `output_parent` covering the slot.
+    output: Retained<HostView>,
+    /// The render state — `input` is [`FilteredInput::Captured`] with
+    /// [`ContentOwner::Effect`]: the content is a sibling, framed by the
+    /// host it belongs to.
+    state: Rc<FilteredState>,
+    /// The output's capturable face — kept while the effect lives, so
+    /// an enclosing capture resolves it instead of the Metal layer.
+    capturable: Rc<dyn CapturableSurface>,
+    /// The subscriptions feeding the effect's reactive parameters —
+    /// kept while the effect lives; dropping freezes the radius.
+    guards: Vec<ParamGuards>,
+    /// The teardown — clears the sink, the capturable slot, the capture
+    /// and the presenter.
+    guard: FilteredGuard,
+}
+
+impl fmt::Debug for LiveEffect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LiveEffect")
+            .field("presented", &self.capturable.has_presented_frame())
+            .field("guards", &self.guards.len())
+            .field("guard", &self.guard)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LiveEffect {
+    /// Captures `content_view` in place and adds the effect output to
+    /// `output_parent`, covering the same area. The content is never
+    /// reparented; it hides only once the effect's first frame
+    /// presents, so no frame shows a gap.
+    pub fn attach(
+        effects: Vec<(AnyEffect, ParamGuards)>,
+        content_view: &PlatformView,
+        output_parent: &PlatformView,
+        env: &waterui_backend_core::Environment,
+    ) -> Self {
+        Self::build(effects, content_view, output_parent, output_parent, env)
+    }
+
+    /// A `captures_content` transition's live-capture effect (§2.7):
+    /// `body` is the `TransitionState::body(AnyView::new(()), frame)`
+    /// product — a `FilteredView` chain over empty content — realized
+    /// over `content_view` captured in place, its output presented in
+    /// the window-level `output_parent`. `None` only when the body is no
+    /// such chain — a user-triggerable violation the macro already
+    /// reported, so the caller ends the transition.
+    pub fn from_body(
+        body: AnyView,
+        content_view: &PlatformView,
+        output_parent: &PlatformView,
+        env: &waterui_backend_core::Environment,
+    ) -> Option<Self> {
+        let effects = effects_from_body(body, env)?;
+        // The output lives in the window overlay, but invalidations from
+        // the captured subtree rise through the content's own ancestors —
+        // the transition host — so that is where the sink must sit.
+        let sink_view = cocoa_ui::view::superview(content_view)
+            .expect("a transition's content view is mounted inside its host");
+        Some(Self::build(
+            effects,
+            content_view,
+            output_parent,
+            &sink_view,
+            env,
+        ))
+    }
+
+    /// The shared `attach` construction: the output fills `output_parent`
+    /// while the invalidation sink registers on `sink_view` — the view
+    /// whose subtree the captured content lives in (`output_parent`
+    /// itself when the output sits beside the content, as a blur does).
+    fn build(
+        effects: Vec<(AnyEffect, ParamGuards)>,
+        content_view: &PlatformView,
+        output_parent: &PlatformView,
+        sink_view: &PlatformView,
+        env: &waterui_backend_core::Environment,
+    ) -> Self {
+        let mtm = MainThreadMarker::new().expect("a transition effect attaches on the main thread");
+        let output = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        #[cfg(target_os = "macos")]
+        cocoa_ui::view::ensure_layer_backed(&output);
+        cocoa_ui::view::set_frame(&output, cocoa_ui::view::bounds(output_parent));
+        cocoa_ui::view::set_autoresizing_flexible_size(&output);
+        let content_view = cocoa_ui::view::retain_base(content_view);
+        let input = FilteredInput::Captured {
+            capture: Rc::new(cocoa_ui::capture::ViewCapture::new(
+                mtm,
+                content_view.clone(),
+            )),
+            content_view,
+            owner: ContentOwner::Effect,
+        };
+        // The chain presents outermost-last: effects render
+        // content-adjacent first, as `install` builds them.
+        let (built, guards): (Vec<Box<dyn ErasedEffect>>, Vec<ParamGuards>) = effects
+            .into_iter()
+            .rev()
+            .map(|(effect, guards)| (effect.build(), guards))
+            .unzip();
+        let (state, mut guard, capturable) =
+            wire_filtered_state(mtm, services(env), &output, input, built, env);
+        // The content hides only when the effect's first frame lands —
+        // until then it keeps painting, so no frame shows a gap.
+        if let FilteredInput::Captured { content_view, .. } = &state.input {
+            let content_view = content_view.clone();
+            *state.first_present.borrow_mut() = Some(Box::new(move || {
+                cocoa_ui::view::set_hidden(&content_view, true);
+            }));
+        }
+        // A descendant invalidation reaches the sink on the content's
+        // side of the tree — where its invalidations rise.
+        let weak = Rc::downgrade(&state);
+        crate::invalidation::register_sink(
+            sink_view,
+            Rc::new(move || {
+                if let Some(state) = weak.upgrade() {
+                    state.content_changed_since_capture.set(true);
+                    request_render(&state);
+                    crate::invalidation::invalidate_rendered_content(&state.view);
+                }
+            }),
+        );
+        guard.sink = Some(cocoa_ui::view::retain_base(sink_view));
+        // Added only once the state is wired: entering the windowed
+        // parent runs the window handler — the visibility watch, the
+        // attach and the first frame request the mounted leaf gets — so
+        // an output built while its window cannot present yet attaches
+        // when it can.
+        cocoa_ui::view::add_subview(output_parent, &output);
+        Self {
+            output,
+            state,
+            capturable,
+            guards,
+            guard,
+        }
+    }
+}
+
+impl Drop for LiveEffect {
+    /// The output leaves and the content the first frame hid shows
+    /// again — the content view's own ownership is untouched.
+    fn drop(&mut self) {
+        if let FilteredInput::Captured { content_view, .. } = &self.state.input {
+            cocoa_ui::view::set_hidden(content_view, false);
+        }
+        cocoa_ui::view::remove_from_superview(&self.output);
     }
 }
 
@@ -2348,8 +3020,8 @@ pub mod native_test {
 
     use super::{
         CAMetalLayer, CapturableSurface, CaptureError, DrawableFrame, ErasedEffect, FilteredParts,
-        FilteredState, GpuRuntime, GpuServices, HostView, MetalPresenter, MetalTexture, NativeLeaf,
-        PlatformView, Rc, RefCell, Retained, build_filtered_parts, fmt, output_pixel_format,
+        FilteredState, GpuRuntime, GpuServices, HostView, MetalPresenter, MetalTexture, Mounted,
+        PlatformView, Rc, RefCell, Retained, Weak, build_filtered_parts, fmt, output_pixel_format,
         render_frame, settle_capture_failure, wgpu,
     };
     use crate::components::gpu_surface::native_test::{MountedSceneSurface, fixture_env};
@@ -2365,8 +3037,10 @@ pub mod native_test {
     /// capturable answers back into the filtered settle.
     #[must_use]
     pub struct MountedFilteredSurface {
-        /// The mounted filtered leaf — dropping it unmounts the leaf.
-        pub leaf: NativeLeaf,
+        /// The mounted filtered leaf — mounted through the real
+        /// [`NativeLeaf::mount`], so its drop detaches the host view and
+        /// ends the mount exactly as production's does.
+        pub leaf: Mounted,
         /// The filtered leaf's render state.
         state: Rc<FilteredState>,
         /// The host view the leaf presents through.
@@ -2501,7 +3175,7 @@ pub mod native_test {
         fn trim(&mut self) {}
     }
 
-    /// Holds a nested [`FillEffect`]'s setup until [`Self::release`].
+    /// Holds a [`FillEffect`]'s setup until [`Self::release`].
     pub struct SetupGate(RefCell<Option<oneshot::Sender<()>>>);
 
     impl fmt::Debug for SetupGate {
@@ -2531,8 +3205,8 @@ pub mod native_test {
     /// A filtered leaf over `child_view` through the production
     /// [`build_filtered_parts`] construction. The host view adds the child
     /// itself — `build_filtered_parts` takes the same child-view reference
-    /// the production `mounted.view()` hands it, and `mounted: None` is
-    /// already a state every reader tolerates.
+    /// the production `mounted.view()` hands it, and a leaf with no
+    /// mount is a state every reader tolerates.
     fn filtered_parts(
         mtm: MainThreadMarker,
         runtime: &GpuRuntime,
@@ -2553,6 +3227,7 @@ pub mod native_test {
             None,
             effects,
             Vec::new(),
+            &fixture_env(runtime.clone()),
         )
     }
 
@@ -2653,6 +3328,33 @@ pub mod native_test {
             Self::mount_on(mtm, runtime, Vec::new())
         }
 
+        /// [`Self::mount`] with one [`FillEffect`] whose setup waits on the
+        /// returned gate: until the trial releases it, `effects_ready`
+        /// keeps the display link paused through attach and the window's
+        /// ordering, so no link-issued frame can consume demand the trial
+        /// set up first.
+        ///
+        /// # Errors
+        ///
+        /// When the runner has no GPU adapter.
+        #[expect(
+            clippy::future_not_send,
+            reason = "the mount is a main-thread fixture: Rc<FilteredState>, the MainThreadMarker and the Objective-C views stay on the trial's main thread"
+        )]
+        pub async fn mount_gated(mtm: MainThreadMarker) -> Result<(Self, SetupGate), String> {
+            let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
+            let (release, gate) = oneshot::channel();
+            let mounted = Self::mount_on(
+                mtm,
+                runtime,
+                vec![Box::new(FillEffect {
+                    gate: Some(gate),
+                    encodes: Arc::new(AtomicU32::new(0)),
+                })],
+            )?;
+            Ok((mounted, SetupGate(RefCell::new(Some(release)))))
+        }
+
         /// [`Self::mount`] with one [`FillEffect`] whose setup lands at
         /// once, so every frame fills the output with [`FILL`].
         ///
@@ -2676,6 +3378,17 @@ pub mod native_test {
             )?;
             mounted.fill_encodes = Some(encodes);
             Ok(mounted)
+        }
+
+        /// [`Self::mount`] on an already-live shared [`GpuRuntime`] — a
+        /// fresh leaf on the runtime a previous mount released with, so
+        /// a trial can remount after unmounting.
+        ///
+        /// # Errors
+        ///
+        /// When `runtime`'s environment is unusable for the mount.
+        pub fn mount_shared(mtm: MainThreadMarker, runtime: GpuRuntime) -> Result<Self, String> {
+            Self::mount_on(mtm, runtime, Vec::new())
         }
 
         /// An empty-chain filtered leaf whose hidden content is a nested
@@ -2737,9 +3450,13 @@ pub mod native_test {
             let container = PlatformView::new(mtm);
             cocoa_ui::view::ensure_layer_backed(&container);
             cocoa_ui::view::set_frame(&container, cocoa_ui::view::bounds(&parts.view));
-            cocoa_ui::view::add_subview(&container, &cocoa_ui::view::retain_base(&parts.view));
+            // The real mount path — `NativeLeaf::mount` installs the
+            // intrinsic measure on the filtered host and parents the
+            // view, so the fixture exercises the same handler wiring a
+            // production mount builds.
+            let leaf = parts.leaf.mount(&container);
             Self {
-                leaf: parts.leaf,
+                leaf,
                 state: parts.state,
                 view: parts.view,
                 capturable: parts.capturable,
@@ -2753,8 +3470,9 @@ pub mod native_test {
         }
 
         /// Uses a real `AppKit`/`UIKit` window — the attach door's only
-        /// host requirement — then pumps the main queue until the leaf's
-        /// own setup lands and the link attaches.
+        /// host requirement — then pumps the main queue until the window
+        /// reports visible. The leaf's visibility watch attaches it on the
+        /// window's occlusion edge inside that pump.
         ///
         /// # Panics
         ///
@@ -2794,8 +3512,11 @@ pub mod native_test {
 
         /// Attaches through the production door: the fixture window makes
         /// the leaf presentable, `initialize_gpu` builds the real
-        /// `MetalPresenter`, and the main-queue pump lets the (empty)
-        /// effect setup land so `effects_ready` opens the link.
+        /// `MetalPresenter`, and the main-queue pump runs until the
+        /// Attached epoch is installed. An ungated effect setup may already
+        /// have landed — and the link delivered frames — while the window
+        /// was ordering in; a trial that must sample the link before its
+        /// first delivery mounts with [`Self::mount_gated`].
         ///
         /// # Panics
         ///
@@ -3003,6 +3724,25 @@ pub mod native_test {
         /// failure stands.
         pub fn request_render(&self) {
             super::request_render(&self.state);
+        }
+
+        /// Weak handles on the render state and the host view — taken
+        /// before [`Self::unmount`] so a trial can observe their release
+        /// once every retainer is gone.
+        pub fn release_probes(&self) -> (Weak<FilteredState>, objc2::rc::Weak<HostView>) {
+            (
+                Rc::downgrade(&self.state),
+                objc2::rc::Weak::from_retained(&self.view),
+            )
+        }
+
+        /// Unmounts the leaf — the `Mounted` drop detaches the host view
+        /// and clears its handlers — then releases every fixture retain
+        /// of the mount: the state, the view, the capturable face, the
+        /// hidden content and the fixture window. Returns the shared
+        /// runtime, which lives on past the mount it served.
+        pub fn unmount(self) -> GpuRuntime {
+            self.runtime
         }
 
         /// Drives the settle the `finish_captured_frame` `Failed` arm

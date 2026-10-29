@@ -83,10 +83,10 @@ cherenkov-gpu.workspace = true
 wgpu.workspace = true
 waterui = { workspace = true, features = ["dialog", "gpu", "inspector"] }
 waterui-graphics = { workspace = true, features = ["gpu"] }
-# `font-collection` for the one `parley` collection this runner builds and
-# installs into the environment; the faces come from the resource loader and
-# the system source `parley/system` provides, so `system-fonts` is not needed.
-waterui-text = { workspace = true, features = ["font-collection"] }
+# `engine` for the `parley` font context this runner builds and installs into
+# the environment; the faces come from the resource loader and the system
+# source `parley/system` provides, so `system-fonts` is not needed.
+waterui-text = { workspace = true, features = ["engine"] }
 # `complex-scripts` ships the ICU4X segmentation dictionaries (CJ plus the
 # Southeast-Asian scripts) inside the one parley build: this runner owns the
 # `LayoutContext`, and without them its word segmenter logs `No segmentation
@@ -141,6 +141,8 @@ futures = { workspace = true, optional = true }
 objc2 = { workspace = true, optional = true }
 objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSAnimation",
+    "NSAppearance",
+    "NSApplication",
     "NSEvent",
     "NSGraphics",
     "NSResponder",
@@ -232,6 +234,18 @@ x11rb = { version = "0.14", features = ["allow-unsafe-code"], optional = true }
 # pulls in.
 wayland-client = { version = "0.31", features = ["system"], optional = true }
 wayland-protocols = { version = "0.32", features = ["client", "staging"], optional = true }
+
+# The XDG desktop portal's `org.freedesktop.appearance color-scheme` feed for
+# the winit runner (`org.freedesktop.portal.Settings` `ReadOne` plus the
+# `SettingChanged` signal) — winit reports no theme on X11 or Wayland. See
+# src/platform/linux_appearance.rs. The version tracks the one atspi and
+# mpris-server already pull in; `async-io` is the socket driver, and the
+# client polls its futures on the runner's local executor so the event loop
+# never blocks on D-Bus. `futures-core` names the `Stream` trait the signal
+# subscription is consumed through.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.19", default-features = false, features = ["async-io"], optional = true }
+futures-core = { version = "0.3", optional = true }
 
 # `GetCursorPos` / `GetMonitorInfoW` for `MonitorSelector::Pointer` and
 # `visible_frame`, `WS_EX_NOACTIVATE` for `Activation::Never`,
@@ -341,6 +355,7 @@ web-sys = { version = "0.3", optional = true, features = [
     "IntersectionObserver",
     "IntersectionObserverEntry",
     "KeyboardEvent",
+    "MediaQueryList",
     "Navigator",
     "Node",
     "PointerEvent",
@@ -445,7 +460,7 @@ gpu = [
     "dep:raw-window-handle",
     "waterui/gpu",
     "waterui-graphics/gpu",
-    "waterui-text/font-collection",
+    "waterui-text/engine",
 ]
 inspector-signals = ["waterui/inspector-signals"]
 # The HWUI render target (Android only): the retained layer tree recorded
@@ -491,6 +506,8 @@ winit = [
     "dep:wayland-client",
     "dep:wayland-protocols",
     "dep:windows-sys",
+    "dep:futures-core",
+    "dep:zbus",
 ]
 # The browser's `<video>` element as the web realization of `Video` and
 # `VideoPlayer`. Only a wasm32 `web` build has it; elsewhere the feature

@@ -35,8 +35,8 @@ pub fn forward(host: &HostView, child: &PlatformView) {
 
 /// Forwards `host`'s primary content to the view `current` returns at call
 /// time: the variant for a wrapper whose mounted child changes over the
-/// leaf's life (`dynamic`).
-#[cfg(feature = "dynamic")]
+/// leaf's life (`dynamic`, a navigation page root).
+#[cfg(any(feature = "dynamic", feature = "navigation"))]
 pub fn forward_current(
     host: &HostView,
     current: impl Fn(&HostView) -> Option<Retained<PlatformView>> + 'static,

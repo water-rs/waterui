@@ -271,11 +271,11 @@ fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
             // The record lives in the metadata directory section, not on the
             // symbol table: a linked image need not carry one (a PE keeps
             // none), so the record names itself.
-            #[allow(non_upper_case_globals)]
-            #[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
-            #[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wmeta"))]
-            #[doc(hidden)]
-            pub static #meta_ident: [u8; #record_len] = *#record_lit;
+            #waterui::__meta::dir_static! {
+                #[allow(non_upper_case_globals)]
+                #[doc(hidden)]
+                pub static #meta_ident: [u8; #record_len] = *#record_lit;
+            }
         }
     }
 }
@@ -494,16 +494,17 @@ pub fn include_web(input: TokenStream) -> TokenStream {
 
     quote! {
         {
-            #[allow(non_upper_case_globals)]
-            #[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
-            #[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wmeta"))]
-            #[doc(hidden)]
-            static #meta_ident: [u8; #record_len] = *#record_lit;
+            #waterui::__meta::dir_static! {
+                #[allow(non_upper_case_globals)]
+                #[doc(hidden)]
+                static #meta_ident: [u8; #record_len] = *#record_lit;
+            }
             // A block-scoped static is private: it is only emitted into the
             // object file when the surrounding code refers to it, so this
             // throwaway reference is what puts the record into the rlib the
-            // CLI reads. `#[used]` would do that too, but it also survives
-            // the linker's dead stripping and ships in the binary.
+            // CLI reads — on Apple the macro's own `#[used]` already does,
+            // and the release `__DWARF` placement keeps it out of the
+            // shipped binary.
             let _ = &#meta_ident;
 
             // Cargo does not see a proc macro's filesystem reads, so the
@@ -522,7 +523,7 @@ pub fn include_web(input: TokenStream) -> TokenStream {
                     ::core::option::Option::None
                 }
             };
-            match dev {
+            let view = match dev {
                 ::core::option::Option::Some(url) => #waterui::webview::WebView::open(url),
                 ::core::option::Option::None => #waterui::webview::WebView::open_assets(
                     #waterui::webview::DirectoryServer::new(
@@ -533,7 +534,14 @@ pub fn include_web(input: TokenStream) -> TokenStream {
                     .into_server_fn(),
                     #entry_lit,
                 ),
-            }
+            };
+            // A bundled frontend's links that leave its origin open in the
+            // system browser; an application's `.navigation_policy(..)`
+            // replaces this. The web `<iframe>` backend cannot intercept
+            // navigations, so the policy does not exist there.
+            #[cfg(not(target_arch = "wasm32"))]
+            let view = view.navigation_policy(#waterui::webview::stay_on_origin);
+            view
         }
     }
     .into()

@@ -19,7 +19,6 @@ use waterui_core::{Environment, Native};
 
 use crate::platform_view::{
     PlatformView, PlatformViewPlacement, PlatformViewSink, PlatformViewSource,
-    next_platform_view_id,
 };
 use crate::renderer::{
     HydroNativeView, HydroState, WidgetRenderContext, graphics_dimensions_from_proposal,
@@ -69,10 +68,11 @@ impl PlatformViewRenderState {
     }
 
     pub fn from_config(view: &PlatformView, env: &Environment) -> Self {
+        let sink = Self::sink_from(env);
         Self {
-            id: next_platform_view_id(),
+            id: sink.next_id(),
             source: PlacementSource::Factory(view.kind().into()),
-            sink: Self::sink_from(env),
+            sink,
         }
     }
 
@@ -83,13 +83,14 @@ impl PlatformViewRenderState {
     /// Only the Android system-WebView bridge creates these today.
     #[cfg(hydrolysis_android_system_webview)]
     pub fn from_instance(instance: u64, owner: Rc<dyn core::any::Any>, env: &Environment) -> Self {
+        let sink = Self::sink_from(env);
         Self {
-            id: next_platform_view_id(),
+            id: sink.next_id(),
             source: PlacementSource::Instance {
                 id: instance,
                 _owner: owner,
             },
-            sink: Self::sink_from(env),
+            sink,
         }
     }
 }

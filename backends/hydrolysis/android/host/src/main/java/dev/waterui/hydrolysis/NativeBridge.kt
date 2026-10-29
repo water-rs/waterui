@@ -58,9 +58,13 @@ object NativeBridge {
      * session-owned painter and [nativeSetHostAttached] reports the host
      * view's bind state; 21 = the BindPlatformView op binds a platform
      * view inside its owner's RenderNode; 22 = [nativePlatformViewHitTest]
-     * answers the retained tree's platform view under a host pixel.
+     * answers the retained tree's platform view under a host pixel; 23 =
+     * [nativeCreateSession] carries the configuration's night-mode flag so
+     * the session's colour-scheme signal starts on the real `uiMode`, and
+     * [nativeSetColorScheme] reports every later change
+     * (water-rs/waterui#3544).
      */
-    private const val SCHEMA: Int = 22
+    private const val SCHEMA: Int = 23
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -135,6 +139,10 @@ object NativeBridge {
     /**
      * `painter` is the session-owned [SessionPainter] — null on the GPU
      * backend, the HWUI painter object otherwise.
+     *
+     * `nightMode` is `Configuration.uiMode`'s night flag at the moment the
+     * session is created — the colour-scheme signal's initial value, so the
+     * theme tokens never start on a Light default corrected a frame later.
      */
     @JvmStatic
     external fun nativeCreateSession(
@@ -142,9 +150,17 @@ object NativeBridge {
         context: Context,
         painter: SessionPainter?,
         uiThreadServices: Long,
+        nightMode: Boolean,
     ): Long
 
     @JvmStatic external fun nativeDestroySession(sessionPtr: Long)
+
+    /**
+     * The configuration's night-mode flag — pushed when a host view binds
+     * and on every `onConfigurationChanged`; the native side re-resolves
+     * the colour-scheme signal only when the value moved.
+     */
+    @JvmStatic external fun nativeSetColorScheme(sessionPtr: Long, nightMode: Boolean)
 
     /**
      * The host bound (`true`) or unbound (`false`) its view — the session's
@@ -154,8 +170,9 @@ object NativeBridge {
 
     /**
      * The retained tree's platform view under host pixel (`x`, `y`) — the
-     * HWUI painter's ordered hit test. `0` means content or nothing covers
-     * the point; any other value is a placement id.
+     * HWUI painter's ordered hit test. `0` means no view is drawn there or
+     * an interactive target painted above it takes the point; any other
+     * value is a placement id.
      */
     @JvmStatic external fun nativePlatformViewHitTest(sessionPtr: Long, x: Float, y: Float): Long
 

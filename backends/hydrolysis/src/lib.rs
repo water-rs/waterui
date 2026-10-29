@@ -2,26 +2,20 @@
 
 // An Android build needs one painter: `hwui` selects the platform `RenderNode`
 // target, `gpu` the Cherenkov GPU attachment (the two may combine). A build
-// with neither compiles no painter — the bare check leg exercises exactly
-// that shape — and the build script warns on it; the generated launcher
-// always enables the resolved painter's feature.
+// with neither compiles no painter: the theme contract (`Style`,
+// `WidgetTheme`, tokens) stays, the renderer, runner and platform
+// implementations compile out — the bare check leg exercises exactly that
+// shape — and the build script warns on it; the generated launcher always
+// enables the resolved painter's feature.
 
+#[cfg(hydrolysis_runtime)]
 mod animation;
 #[cfg(hydrolysis_gpu_painter)]
 mod engine;
 // Bare wasm reaches none of the env-driven window/console paths that call
 // these helpers.
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
-// A painter-less Android build compiles no runner — the env knobs' only
-// readers — so the helpers are dead there while every painter'd build still
-// reaches them.
-#[cfg_attr(
-    not(any(hydrolysis_gpu_painter, hydrolysis_hwui)),
-    expect(
-        dead_code,
-        reason = "a painter-less Android build compiles no runner — the env overrides' only readers"
-    )
-)]
+#[cfg(hydrolysis_runtime)]
 mod env;
 #[cfg(hydrolysis_gpu)]
 mod gpu_view;
@@ -31,74 +25,34 @@ mod hosted;
 // runtime under its feature.
 #[cfg(any(test, hydrolysis_hwui))]
 pub mod hwui;
-#[cfg_attr(
-    not(any(hydrolysis_gpu_painter, hydrolysis_hwui)),
-    expect(
-        dead_code,
-        reason = "a painter-less Android build compiles no runner to install the localization catalog"
-    )
-)]
+#[cfg(hydrolysis_runtime)]
 mod localization;
-#[cfg_attr(
-    not(any(hydrolysis_gpu_painter, hydrolysis_hwui)),
-    expect(
-        dead_code,
-        reason = "a painter-less Android build compiles no runner or JNI bridge — the casts' main callers"
-    )
-)]
+#[cfg(hydrolysis_runtime)]
 mod num_cast;
 #[cfg(all(hydrolysis_pipeline_cache, hydrolysis_gpu_painter))]
 mod pipeline_cache;
-#[cfg_attr(
-    not(any(hydrolysis_gpu_painter, hydrolysis_hwui)),
-    expect(
-        dead_code,
-        reason = "a painter-less Android build compiles no window pump — the platform helpers' only drivers"
-    )
-)]
+#[cfg(hydrolysis_runtime)]
 mod platform;
-#[cfg_attr(
-    not(any(hydrolysis_gpu_painter, hydrolysis_hwui)),
-    expect(
-        dead_code,
-        reason = "a painter-less Android build ships no session — PlatformViewFocus's only owner"
-    )
-)]
+#[cfg(hydrolysis_runtime)]
 mod platform_view;
 #[cfg(hydrolysis_gpu_painter)]
 mod readback;
-#[cfg_attr(
-    not(any(hydrolysis_gpu_painter, hydrolysis_hwui)),
-    expect(
-        dead_code,
-        reason = "a painter-less Android build ships no session to drive the retained-tree renderer"
-    )
-)]
+#[cfg(hydrolysis_runtime)]
 mod renderer;
-#[cfg_attr(
-    not(any(hydrolysis_gpu_painter, hydrolysis_hwui)),
-    expect(
-        dead_code,
-        reason = "a painter-less Android build compiles no runner — the frame pump and host machinery it alone drives go unreferenced"
-    )
-)]
+#[cfg(hydrolysis_runtime)]
 mod runner;
-#[cfg(any(test, feature = "testing"))]
+#[cfg(all(hydrolysis_runtime, any(test, feature = "testing")))]
 pub mod testing;
-#[cfg_attr(
-    not(any(hydrolysis_gpu_painter, hydrolysis_hwui)),
-    expect(
-        dead_code,
-        reason = "a painter-less Android build compiles no text engine, so the seam's service internals are unreferenced"
-    )
-)]
+#[cfg(hydrolysis_runtime)]
 mod text;
 pub mod theme;
 #[cfg(hydrolysis_gpu_painter)]
 mod view_renderer;
+#[cfg(hydrolysis_runtime)]
 mod widgets;
 
 // Interaction/runtime layer shared with other self-drawn backends.
+#[cfg(hydrolysis_runtime)]
 pub(crate) use waterui_backend_core::{gesture, scroll, time};
 
 #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
@@ -147,6 +101,7 @@ pub use keyboard_types;
 pub use platform::BrowserWindow;
 #[cfg(hydrolysis_winit)]
 pub use platform::WinitWindow;
+#[cfg(hydrolysis_runtime)]
 pub use platform::{
     BackEdge, BackNavigation, EdgeBounce, EdgeStretch, ExponentialDecay, FlingDeceleration,
     InputEvent, KeyCode, KeyState, Modifiers, Overscroll, PlatformWindow, PointerButton,
@@ -159,6 +114,7 @@ pub use platform::{
     DeviceLoss, OffscreenGpuContext, OffscreenSceneSurface, OffscreenSurface, OffscreenWindow,
     SurfaceFrame,
 };
+#[cfg(hydrolysis_runtime)]
 pub use platform_view::{
     PlatformView, PlatformViewPlacement, PlatformViewSink, PlatformViewSource,
 };
@@ -166,10 +122,11 @@ pub use platform_view::{
 pub use readback::{ReadbackError, readback_texture_rgba8};
 #[cfg(hydrolysis_gpu_painter)]
 pub use renderer::HydrolysisRenderTarget;
-#[cfg(feature = "accessibility")]
+#[cfg(all(feature = "accessibility", hydrolysis_runtime))]
 pub use renderer::accessibility::{AccessibilityActivationPointError, AccessibilityContentTypes};
 #[cfg(all(feature = "frame-profile", hydrolysis_gpu_painter))]
 pub use renderer::{FrameStageTimes, GpuIdentity};
+#[cfg(hydrolysis_runtime)]
 pub use renderer::{HydroState, HydrolysisRenderer, RenderContext};
 #[cfg(all(target_os = "android", any(hydrolysis_gpu_painter, hydrolysis_hwui)))]
 pub use runner::android;
@@ -177,6 +134,7 @@ pub use runner::android;
 pub use runner::init_tracing;
 #[cfg(hydrolysis_run)]
 pub use runner::run;
+#[cfg(hydrolysis_runtime)]
 pub use runner::{FrameCounters, FramePhases, FrameProfile};
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 pub use runner::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
@@ -188,6 +146,7 @@ pub use text::HwuiTextEngine;
 pub use text::ParleyEngine;
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 pub use text::fonts::native_collection;
+#[cfg(hydrolysis_runtime)]
 pub use text::{DeclaredFonts, FontFamilyResolution};
 #[cfg(hydrolysis_gpu_painter)]
 pub use view_renderer::HydrolysisViewRenderer;

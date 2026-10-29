@@ -1205,6 +1205,22 @@ mod hierarchy_tests {
         });
     }
 
+    /// A commit never emits `Remove` before `Push` for one layer; a
+    /// stream that carries it anyway is an invariant violation, not a
+    /// tree to render (water-rs/waterui#3453).
+    #[test]
+    #[should_panic(expected = "pushing unknown layer")]
+    fn pushing_a_removed_layer_panics() {
+        let mut tree = tree();
+        let id = LayerId::new(4);
+        tree.apply(LayerOp::Create(id));
+        tree.remove(id);
+        tree.apply(LayerOp::Push {
+            parent: tree.root(),
+            child: id,
+        });
+    }
+
     #[test]
     fn animating_reports_a_running_track() {
         let mut tree = SurfaceTree::new();

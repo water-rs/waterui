@@ -187,4 +187,25 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             ));
         }
     }
+
+    /// The platform view that owns a touch at host pixel `point`: the
+    /// topmost view `encoder` draws there, unless an interactive target
+    /// painted above it covers the point — the rule every backend applies
+    /// to embedded native views. `scale` is the density the touch edge
+    /// divides host pixels by.
+    ///
+    /// # Errors
+    ///
+    /// A [`crate::hwui::HwuiError`] when a layer's projective pose is
+    /// degenerate.
+    pub(crate) fn platform_view_hit(
+        &self,
+        encoder: &crate::hwui::Encoder,
+        point: kurbo::Point,
+        scale: f64,
+    ) -> Result<Option<u64>, crate::hwui::HwuiError> {
+        let view = encoder.platform_view_at(point)?;
+        let logical = kurbo::Point::new(point.x / scale, point.y / scale);
+        Ok(view.filter(|view| !self.core.platform_view_occluded(*view, logical)))
+    }
 }

@@ -229,6 +229,7 @@ struct Buffers {
 /// that finds its key replays the block with a per-draw shift, a miss
 /// runs the kernels for it alone (water-rs/waterui#3081).
 pub struct GpuCoverage {
+    cache: super::PipelineCache,
     /// `GpuPath` record words for the frame's misses, in apply order.
     paths: Vec<[u32; PATH_WORDS]>,
     batch: Batch,
@@ -362,12 +363,16 @@ impl BufferBounds {
 }
 
 impl GpuCoverage {
-    pub fn new(device: &wgpu::Device, budget: u64) -> Self {
-        Self::with_limits(&device.limits(), budget)
+    pub fn new(device: &wgpu::Device, budget: u64, cache: super::PipelineCache) -> Self {
+        Self {
+            cache,
+            ..Self::with_limits(&device.limits(), budget)
+        }
     }
 
     fn with_limits(limits: &wgpu::Limits, budget: u64) -> Self {
         Self {
+            cache: super::PipelineCache::default(),
             paths: Vec::new(),
             batch: Batch::default(),
             batches: Vec::new(),
@@ -1439,7 +1444,7 @@ impl GpuCoverage {
                 module: &program.module,
                 entry_point: Some(entry),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
+                cache: self.cache.handle.as_ref(),
             })
         };
         let pipes = self.pipes.get_or_insert_with(|| Pipes {
@@ -1482,6 +1487,7 @@ impl GpuCoverage {
                 bin_dashes: make("bin_dashes"),
             });
         }
+        self.cache.persist();
     }
 }
 
@@ -1867,7 +1873,8 @@ mod tests {
         let Some((device, _, delivery)) = delivery_device() else {
             return;
         };
-        let mut coverage = GpuCoverage::new(&device, u64::MAX);
+        let mut coverage =
+            GpuCoverage::new(&device, u64::MAX, super::super::PipelineCache::default());
         let mut batch = Batch::default();
         coverage.ensure_pipes(&device, delivery, batch);
         let pipes = coverage.pipes.as_ref().unwrap();
@@ -1914,7 +1921,7 @@ mod tests {
             ]);
         }
         let path = crate::render::path::prepare_gpu(&elements, Affine::IDENTITY, (64.0, 64.0));
-        let mut frame = GpuCoverage::new(&device, u64::MAX);
+        let mut frame = GpuCoverage::new(&device, u64::MAX, super::super::PipelineCache::default());
         frame.begin_frame();
         frame
             .draw(
@@ -1956,7 +1963,7 @@ mod tests {
         let Some(device) = device() else {
             return;
         };
-        let mut frame = GpuCoverage::new(&device, u64::MAX);
+        let mut frame = GpuCoverage::new(&device, u64::MAX, super::super::PipelineCache::default());
         frame.begin_frame();
         frame
             .draw(
@@ -1997,7 +2004,7 @@ mod tests {
         let Some(device) = device() else {
             return;
         };
-        let mut probe = GpuCoverage::new(&device, u64::MAX);
+        let mut probe = GpuCoverage::new(&device, u64::MAX, super::super::PipelineCache::default());
         probe.begin_frame();
         probe
             .draw(
@@ -2088,7 +2095,7 @@ mod tests {
         let [first, second] = &draws[..] else {
             panic!("two road layers")
         };
-        let mut frame = GpuCoverage::new(&device, u64::MAX);
+        let mut frame = GpuCoverage::new(&device, u64::MAX, super::super::PipelineCache::default());
         let output_bytes: u64 = draws
             .iter()
             .map(|draw| {
@@ -2507,7 +2514,8 @@ mod tests {
             .chain(singles.chunks(1))
             .chain(miters.chunks(1))
         {
-            let mut frame = GpuCoverage::new(&device, u64::MAX);
+            let mut frame =
+                GpuCoverage::new(&device, u64::MAX, super::super::PipelineCache::default());
             frame.begin_frame();
             let mut kept = Vec::new();
             for (path, stroke) in chunk {

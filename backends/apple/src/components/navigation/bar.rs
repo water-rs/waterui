@@ -11,7 +11,6 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-#[cfg(target_os = "ios")]
 use waterui::component::LabelDisplayMode;
 use waterui::navigation::{
     Bar, BarColor, NavigationSearch, NavigationTitleDisplayMode, NavigationToolbarItem,
@@ -212,12 +211,14 @@ fn bar_title(view: &mut waterui_backend_core::AnyView, ctx: &RenderContext<'_>) 
 
 /// A semantic toolbar item rendered with its name and icon apart.
 ///
-/// iOS toolbar labels default to icon-only presentation. Explicit label
-/// preferences retain precedence over the toolbar environment.
+/// The item renders under the toolbar's environment — the slot's captured
+/// context included — so its labels default to icon-only presentation, as
+/// the platform's toolbars present them, while explicit label preferences
+/// keep precedence. On macOS that environment is also the window
+/// toolbar's, so the item's button styles resolve the way the toolbar
+/// draws them.
 fn bar_item(item: NavigationToolbarItem, ctx: &RenderContext<'_>) -> BarItem {
-    #[cfg(target_os = "ios")]
     let toolbar_env = toolbar_environment(ctx.env());
-    #[cfg(target_os = "ios")]
     let content = match item
         .content
         .downcast::<waterui_core::Metadata<Environment>>()
@@ -228,9 +229,6 @@ fn bar_item(item: NavigationToolbarItem, ctx: &RenderContext<'_>) -> BarItem {
         }
         Err(content) => content,
     };
-    #[cfg(target_os = "macos")]
-    let content = item.content;
-    #[cfg(target_os = "ios")]
     let ctx = ctx.with_env(&toolbar_env);
 
     let leaf = ctx.render(content);
@@ -247,10 +245,13 @@ fn bar_item(item: NavigationToolbarItem, ctx: &RenderContext<'_>) -> BarItem {
     }
 }
 
-/// Adds the toolbar default without overriding an explicit label context.
-#[cfg(target_os = "ios")]
+/// `env` with the toolbar defaults added without overriding an explicit
+/// label context.
 fn toolbar_environment(env: &Environment) -> Environment {
+    #[cfg(target_os = "ios")]
     let mut env = env.clone();
+    #[cfg(target_os = "macos")]
+    let mut env = crate::toolbar::toolbar_environment(env);
     if env
         .get::<LabelDisplayMode>()
         .is_none_or(|mode| matches!(mode, LabelDisplayMode::Automatic))

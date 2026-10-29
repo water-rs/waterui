@@ -26,6 +26,23 @@ use core::cell::RefCell;
 /// The point size a rendered label rasterizes into a toolbar icon.
 const TOOLBAR_ICON_SIZE: f64 = 18.0;
 
+/// Marks an environment whose content renders inside the window toolbar.
+///
+/// A button style resolves against the toolbar there, as it does in
+/// `SwiftUI`: a borderless toolbar button draws its label in the secondary
+/// label color inside the item's capsule, not in the accent color it has in
+/// content.
+#[derive(Debug, Clone, Copy)]
+pub struct ToolbarChrome;
+
+/// `env` with [`ToolbarChrome`] set: the environment every toolbar item's
+/// content renders under.
+pub fn toolbar_environment(env: &Environment) -> Environment {
+    let mut env = env.clone();
+    env.insert(ToolbarChrome);
+    env
+}
+
 /// Installs `view` — the rendered window-toolbar host — as `window`'s
 /// toolbar items: lone-child wrappers are descended and the first
 /// multi-child view's children become the items, as
@@ -99,7 +116,6 @@ fn toolbar_child(view: &Retained<NSView>, index: usize, jobs: &Rc<IconJobs>) -> 
             view: hosted(view),
             icon: None,
             label: String::new(),
-            bordered: false,
             action: None,
         };
     };
@@ -138,7 +154,6 @@ fn toolbar_child(view: &Retained<NSView>, index: usize, jobs: &Rc<IconJobs>) -> 
         view: hosted(view),
         icon,
         label,
-        bordered: true,
         action: Some(action),
     }
 }

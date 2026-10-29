@@ -1,9 +1,9 @@
-// swift-tools-version: 6.3.0
+// swift-tools-version: 6.4
 import PackageDescription
 
 let package = Package(
   name: "waterui-apple-host",
-  platforms: [.iOS(.v26), .macOS(.v26)],
+  platforms: [.iOS(.v27), .macOS(.v27)],
   products: [.library(name: "WaterUI", targets: ["WaterUI"])],
   targets: [
     .target(

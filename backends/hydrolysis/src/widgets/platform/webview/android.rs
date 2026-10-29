@@ -36,9 +36,9 @@ use nami::watcher::BoxWatcherGuard;
 use waterui_core::{Computed, Str};
 use waterui_webview::{
     ASSET_HTTPS_ORIGIN, AssetServer, BackendEvent, Cookie, CustomWebViewController,
-    DOCUMENT_START_SCRIPT, DocumentScripts, ScriptInjectionTime, ScriptMessageHandler, Url,
-    UserScript, WatcherGuard, WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle,
-    assets, bridge,
+    DOCUMENT_START_SCRIPT, DocumentScripts, NavigationPolicy, NavigationRequest,
+    ScriptInjectionTime, ScriptMessageHandler, Url, UserScript, WatcherGuard, WatcherSet,
+    WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, assets, bridge,
 };
 
 use crate::runner::android::jni::{JniError, get_string, guard, guard_val};
@@ -172,6 +172,12 @@ pub(super) struct SharedState {
     /// The navigation event state machine every navigation callback feeds;
     /// it also knows the main-frame URL the cookie path stores against.
     navigation: RefCell<NavigationTracker>,
+    /// The policy deciding navigations the page initiates; `None` allows
+    /// them all. Chromium never offers an application-started load —
+    /// `loadUrl`, history, reload — to `shouldOverrideUrlLoading` except for
+    /// its server redirects, which `isRedirect` marks, so nothing here needs
+    /// marking.
+    navigation_policy: Option<NavigationPolicy>,
 }
 
 impl SharedState {
@@ -391,6 +397,7 @@ impl CustomWebViewController for AndroidSystemWebViewController {
             pending: RefCell::new(PendingCalls::default()),
             origin_rules,
             navigation: RefCell::new(NavigationTracker::default()),
+            navigation_policy: config.navigation_policy,
         });
         let native_handle = Box::into_raw(Box::new(Rc::downgrade(&shared))) as jlong;
 
@@ -1037,9 +1044,14 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
     });
 }
 
-/// `shouldOverrideUrlLoading`, answered by the tracker: `true` cancels the
-/// request — a server redirect while redirects are disabled. A subframe
-/// request is the page's own and passes before its URL is read.
+/// `shouldOverrideUrlLoading`, answered by the navigation policy and the
+/// tracker: `true` cancels the request — a policy refusal, or a server
+/// redirect while redirects are disabled. The policy is consulted for every
+/// request that is not a server redirect. Chromium offers this hook only
+/// page-initiated `GET` navigations and their redirects, and of subframes
+/// only those to a non-`http(s)`/`about` scheme
+/// (`AwContentBrowserClient::ShouldOverrideUrlLoading`); a subframe request
+/// that passes the policy still leaves the tracker out of it.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeShouldOverrideUrlLoading<
     'local,
@@ -1050,16 +1062,30 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
     url: JString<'local>,
     is_main_frame: jboolean,
     is_redirect: jboolean,
+    has_gesture: jboolean,
 ) -> jboolean {
     guard_val(&mut env, false, |env| {
         let Some(shared) = shared_from_handle(handle) else {
             tracing::debug!("android webview: a request on a released view passed");
             return Ok(false);
         };
+        let url = parse_url(&get_string(env, &url)?, "a request for")?;
+        if let Some(policy) = shared.navigation_policy.as_ref()
+            && !is_redirect
+        {
+            let request = NavigationRequest::new(
+                url.clone(),
+                shared.navigation.borrow().current_url().cloned(),
+                is_main_frame,
+                has_gesture,
+            );
+            if !policy.allows(&request) {
+                return Ok(true);
+            }
+        }
         if !is_main_frame {
             return Ok(false);
         }
-        let url = parse_url(&get_string(env, &url)?, "a request for")?;
         let block = shared.navigate(|tracker| {
             let decision = tracker.request(url, is_redirect);
             (decision.events, decision.block)

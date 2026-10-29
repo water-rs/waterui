@@ -65,7 +65,7 @@ env:
 jobs:
   prepare:
     name: prepare
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 30
     outputs:
       waterui_ref: ${{ steps.setup.outputs.waterui_ref }}
@@ -149,7 +149,7 @@ jobs:
     name: e2e-ios-${{ matrix.example }}
     if: inputs.platforms == 'ios' || inputs.platforms == 'both'
     needs: prepare
-    runs-on: macos-26
+    runs-on: xcode-27
     strategy:
       fail-fast: false
       matrix:
@@ -230,10 +230,6 @@ jobs:
       - name: Set up modern bash
         uses: ./.github/actions/setup-bash
 
-      - name: Prepare comparison tools
-        uses: ./.github/actions/setup-e2e-tools
-        timeout-minutes: 1
-
       - name: Run iOS e2e examples
         env:
           PLATFORM: ios
@@ -286,7 +282,7 @@ jobs:
     name: e2e-macos-${{ matrix.example }}
     if: inputs.platforms == 'macos' || inputs.platforms == 'both'
     needs: prepare
-    runs-on: macos-26
+    runs-on: xcode-27
     strategy:
       fail-fast: false
       matrix:
@@ -327,10 +323,6 @@ jobs:
       # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
       - name: Set up modern bash
         uses: ./.github/actions/setup-bash
-
-      - name: Prepare comparison tools
-        uses: ./.github/actions/setup-e2e-tools
-        timeout-minutes: 1
 
       - name: Install the screenshot comparer
         uses: actions/download-artifact@v4

@@ -12,7 +12,15 @@ use waterui::window::WindowManager;
 use waterui_backend_core::Environment;
 use waterui_backend_core::scroll::ANIMATED_ROW_SCROLL_APPROACH;
 
+/// `pump_main_until` for the `AppKit` harnesses.
+#[cfg(target_os = "macos")]
 pub use cocoa_ui::native_test::pump_main_until;
+/// The pump a case inside the harness application waits on: on iOS it is
+/// `uikit::native_test`'s — under Catalyst that is a real `AppKit`
+/// `nextEvent:`/`sendEvent:` turn, the only dispatch route `UIKit` has
+/// (water-rs/waterui#3358) — while `AppKit` keeps the bare run-loop turn.
+#[cfg(target_os = "ios")]
+pub use cocoa_ui::uikit::native_test::pump_main_until;
 
 /// The bound a case gives deferred main-queue work before it fails.
 ///
@@ -178,7 +186,7 @@ pub struct UIKitMount {
     pub host: cocoa_ui::Retained<cocoa_ui::uikit::HostView>,
     pub content: alloc::rc::Rc<crate::contract::Mounted>,
     pub window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
-    _controller: cocoa_ui::Retained<cocoa_ui::uikit::ViewController>,
+    controller: cocoa_ui::Retained<cocoa_ui::uikit::ViewController>,
     _keepalive: crate::contract::KeepAlive,
 }
 
@@ -186,8 +194,27 @@ pub struct UIKitMount {
 impl Drop for UIKitMount {
     fn drop(&mut self) {
         self.host.clear_handlers();
+        // Whether the window shows in a window scene — the same read
+        // `mount_uikit_window` gated its appearance wait on, taken before
+        // the window hides. A scene-less window releases its root at once,
+        // as it always has.
+        let scene_bound = self.window.windowScene().is_some();
         self.window.setHidden(true);
+        // Hiding alone delivers no disappearance; releasing the root does,
+        // ending on a later run-loop turn. The mount still owns the
+        // controller, so it lives until that disappearance has ended.
         self.window.setRootViewController(None);
+        if scene_bound {
+            assert!(
+                pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                    let counts = self.controller.appearance_counts();
+                    counts.did_disappear >= counts.did_appear
+                }),
+                "the root controller's viewDidDisappear: did not run within \
+                 {MAIN_QUEUE_DEADLINE}s of releasing it: {:?}",
+                self.controller.appearance_counts()
+            );
+        }
     }
 }
 
@@ -245,11 +272,26 @@ pub fn mount_uikit_window(
     let content = crate::embedding::mount_content(&host, view, &env, &mut keepalive);
     window.makeKeyAndVisible();
     window.layoutIfNeeded();
+    // A scene window opens an appearance transition only the run loop
+    // closes: `viewWillAppear:` lands inside `makeKeyAndVisible`, but
+    // `viewDidAppear:` waits for a later turn. Returning before it runs
+    // hands the case a mid-transition controller whose drop would cut
+    // the transition short. A scene-less window — the bare harness's
+    // spawned window — keeps the immediate return.
+    if window.windowScene().is_some() {
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                controller.appearance_counts().did_appear >= 1
+            }),
+            "the root controller's viewDidAppear: did not run within \
+             {MAIN_QUEUE_DEADLINE}s of showing its scene window"
+        );
+    }
     UIKitMount {
         host,
         content,
         window,
-        _controller: controller,
+        controller,
         _keepalive: keepalive,
     }
 }
@@ -642,6 +684,48 @@ pub fn render_environment() -> Environment {
     );
     env
 }
+/// The view's current pixels through the production
+/// [`capture_rgba`](crate::capture_image::capture_rgba) path — the same
+/// capture every visual-review export drives.
+#[cfg(feature = "gpu_surface")]
+pub fn capture_view_rgba(view: &cocoa_ui::PlatformView) -> crate::capture_image::CapturedRgba {
+    let mut env = render_environment();
+    let runtime = block_on_main(30.0, waterui_graphics::gpu::GpuRuntime::new())
+        .expect("the harness provides a GPU runtime");
+    install_gpu(&mut env, runtime);
+    let scale = cocoa_ui::view::backing_scale_factor(view).max(1.0);
+    let mtm = MainThreadMarker::new().expect("captures run on the main thread");
+    block_on_main(
+        30.0,
+        crate::capture_image::capture_rgba(view, &env, scale, mtm),
+    )
+    .expect("the window capture completes")
+}
+
+/// Installs the GPU owners onto an existing environment.
+///
+/// Runtime, scene engine, filter-pipeline cache and the
+/// `PresentationTime` anchor — the set a `captures_content` transition
+/// and the filtered handler resolve. `gpu_runtime::prepare` installs
+/// the same beside the runtime in production; trials that render
+/// `FilteredView` through the dispatcher need it on the env they hand
+/// `dispatch::render`.
+#[cfg(feature = "gpu_surface")]
+pub fn install_gpu(
+    env: &mut waterui_backend_core::Environment,
+    runtime: waterui_graphics::gpu::GpuRuntime,
+) {
+    use std::rc::Rc;
+    env.insert(runtime);
+    env.insert(Rc::new(crate::gpu_runtime::SceneEngine::new()));
+    env.insert(Rc::new(crate::gpu_runtime::FilterPipelines::new()));
+    crate::presentation_time::PresentationTime::install(env);
+    crate::components::view_renderer::install_service(env);
+    // The dispatcher captures the environment at install time — re-run
+    // the install so its root env sees the GPU services just inserted
+    // (`handler.set`-driven remounts render through it).
+    crate::dispatch::install(env);
+}
 
 /// Renders `view` against [`render_environment`] through the typed
 /// dispatch entry point.
@@ -817,4 +901,12 @@ pub mod menus {
             })
             .collect()
     }
+}
+
+/// The inspector tree `walk` produces over `root` — a trial's read of
+/// the published hierarchy without driving the inspect gesture.
+pub fn inspector_tree(
+    root: &cocoa_ui::PlatformView,
+) -> Vec<waterui::inspector::protocol::TreeNode> {
+    crate::inspector::recordable_tree(root)
 }

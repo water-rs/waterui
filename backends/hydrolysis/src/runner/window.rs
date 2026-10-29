@@ -17,7 +17,7 @@ use crate::platform::GpuSurfaceWindow;
 ))]
 #[cfg(hydrolysis_gpu_painter)]
 use crate::platform::PresentationSurface as _;
-use crate::renderer::material::{Blending, WithinWindowLevel};
+use crate::renderer::material::{BehindWindowLevel, Blending, WithinWindowLevel};
 #[cfg(any(target_os = "android", test))]
 use std::sync::{
     Arc,
@@ -129,6 +129,7 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
         platform: P,
         renderer: HydrolysisRenderer<E>,
         render_diagnostics_config: RenderDiagnosticsConfig,
+        env: &Environment,
     ) -> Self {
         // The window's host wake, installed before any subscription can
         // record a request: from here on, a `Binding::set` outside a frame
@@ -136,7 +137,7 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
         // action — fires it on the none→some edge and schedules the frame
         // the request needs, by construction.
         renderer.install_host_wake(platform.frame_wake());
-        let declaration_watches = subscribe_window_declaration_signals(&window, &renderer);
+        let declaration_watches = subscribe_window_declaration_signals(&window, env, &renderer);
         Self {
             window,
             platform,
@@ -164,8 +165,9 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P, crate::text::ParleyEngine> {
         platform: P,
         renderer: HydrolysisRenderer<crate::text::ParleyEngine>,
         config: RenderDiagnosticsConfig,
+        env: &Environment,
     ) -> Self {
-        let mut runtime = Self::new(window, platform, renderer, config);
+        let mut runtime = Self::new(window, platform, renderer, config, env);
         if let Some(handle) = runtime.platform.gpu_surface_redraw_handle() {
             runtime.renderer.set_host_redraw_handle(handle.into());
         }
@@ -702,7 +704,7 @@ impl SurfaceBackground {
     /// Whether the window must be transparent: a colour with alpha, or a
     /// behind-window material, whatever its tint — the level's blending
     /// alone decides, so no colour scheme is consulted.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_runtime)]
     pub(super) fn transparent(self) -> bool {
         match self.0 {
             ResolvedWindowBackground::Color(color) => color.components[3] < 1.0,
@@ -712,15 +714,16 @@ impl SurfaceBackground {
         }
     }
 
-    /// Whether the window asks the compositor to blur what lies behind it:
-    /// exactly a behind-window material — false for every colour and every
-    /// within-window level.
-    pub(super) const fn blurs_behind(self) -> bool {
+    /// The behind-window material level asking for the compositor's blur —
+    /// its measured σ resolves the platform's blur radius — or `None` for
+    /// every colour and every within-window level.
+    pub(super) const fn behind_level(self) -> Option<BehindWindowLevel> {
         match self.0 {
-            ResolvedWindowBackground::Color(_) => false,
-            ResolvedWindowBackground::Material(material) => {
-                matches!(Blending::of(material), Blending::BehindWindow(_))
-            }
+            ResolvedWindowBackground::Color(_) => None,
+            ResolvedWindowBackground::Material(material) => match Blending::of(material) {
+                Blending::BehindWindow(level) => Some(level),
+                Blending::WithinWindow(_) => None,
+            },
         }
     }
 
@@ -778,7 +781,7 @@ pub(super) fn apply_window_background<P: GpuSurfaceWindow, E: crate::text::TextE
 ) -> peniko::Color {
     let background = SurfaceBackground::of(&runtime.window, env);
     runtime.platform.set_transparent(background.transparent());
-    runtime.platform.set_blur_behind(background.blurs_behind());
+    runtime.platform.set_blur_behind(background.behind_level());
     runtime.renderer.set_window_backdrop(background.backdrop());
     background.clear(env)
 }
@@ -796,6 +799,7 @@ crate::engine::cfg_async_fn! {
     /// ([`GpuSurfaceFrame`]).
     ///
     /// Async on wasm32, where the engine render inside awaits the browser device.
+    #[cfg(not(hydrolysis_hwui))]
     pub(super) fn render_window<P: GpuSurfaceWindow>(
         runtime: &mut RuntimeWindow<P, crate::text::ParleyEngine>,
         env: &Environment,
@@ -1102,7 +1106,7 @@ pub struct SurfaceRenderResult {
 
 #[cfg(hydrolysis_gpu_painter)]
 impl SurfaceRenderResult {
-    #[cfg(target_os = "android")]
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
     pub(crate) const fn engine_presented(render: Duration) -> Self {
         Self {
             acquire: Duration::ZERO,
@@ -1124,7 +1128,7 @@ impl SurfaceRenderResult {
 pub trait GpuSurfaceFrame {
     /// Renders and presents one frame into the surface, reporting the
     /// stage durations.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
     fn render_frame(
         &mut self,
         renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
@@ -1147,7 +1151,7 @@ pub trait GpuSurfaceFrame {
 /// a live window reads no snapshot.
 #[cfg(hydrolysis_gpu_painter)]
 impl<S: crate::platform::SurfaceProvider> GpuSurfaceFrame for S {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
     fn render_frame(
         &mut self,
         renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
@@ -1389,6 +1393,7 @@ impl GpuSurfaceFrame for crate::platform::BrowserSurface {
 #[cfg(hydrolysis_gpu_painter)]
 pub(super) enum FrameReader {
     /// A live window: the display reads the presented surface.
+    #[cfg(not(hydrolysis_hwui))]
     Display,
     /// A headless capture: the harness reads the surface back as a snapshot.
     Snapshot,

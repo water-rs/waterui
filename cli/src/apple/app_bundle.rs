@@ -663,7 +663,10 @@ async fn signing_entitlements(
 
 /// Serializes `entitlements` as an XML plist at `path`.
 #[cfg(target_os = "macos")]
-async fn write_entitlements(path: &Path, entitlements: plist::Dictionary) -> eyre::Result<()> {
+pub(crate) async fn write_entitlements(
+    path: &Path,
+    entitlements: plist::Dictionary,
+) -> eyre::Result<()> {
     let mut serialized = Vec::new();
     plist::Value::Dictionary(entitlements)
         .to_writer_xml(&mut serialized)
@@ -709,7 +712,7 @@ async fn codesign_bundle(
     codesign_path(host, app_path, identity, entitlements, identifier).await
 }
 
-async fn codesign_path(
+pub(crate) async fn codesign_path(
     host: &crate::toolchain::Host,
     path: &Path,
     identity: &str,
@@ -774,18 +777,43 @@ async fn sign_device_app(
         entitlements: &spec.project_entitlements,
         platform: spec.platform,
     };
-    let selection = match provisioning::select_development_profile(host, &request).await {
+    sign_development_bundle(
+        host,
+        layout,
+        &request,
+        &backend_root.join("DerivedData/Provisioning"),
+        deployment_target,
+    )
+    .await
+}
+
+/// The shared development-signature sequence for a device build: select an
+/// installed development profile, provision one through `xcodebuild` when
+/// none matches, then embed it and `codesign`.
+///
+/// # Errors
+/// Returns an error when no profile can be selected or provisioned, or
+/// `codesign` fails.
+#[cfg(target_os = "macos")]
+pub(crate) async fn sign_development_bundle(
+    host: &crate::toolchain::Host,
+    layout: &AppleAppLayout,
+    request: &provisioning::SigningRequest<'_>,
+    provisioning_staging: &Path,
+    deployment_target: &str,
+) -> eyre::Result<()> {
+    let selection = match provisioning::select_development_profile(host, request).await {
         Ok(selection) => selection,
         Err(provisioning::SelectError::NoMatch(first)) => {
             info!("{first}; asking xcodebuild to provision one");
             provisioning::provision_via_xcodebuild(
                 host,
-                &request,
-                &backend_root.join("DerivedData/Provisioning"),
+                request,
+                provisioning_staging,
                 deployment_target,
             )
             .await?;
-            match provisioning::select_development_profile(host, &request).await {
+            match provisioning::select_development_profile(host, request).await {
                 Ok(selection) => selection,
                 Err(provisioning::SelectError::NoMatch(still)) => {
                     bail!(
@@ -797,10 +825,26 @@ async fn sign_device_app(
         }
         Err(error) => return Err(error.into()),
     };
+    apply_development_signature(host, layout, request, &selection).await
+}
 
+/// Embed `selection`'s profile in the bundle and `codesign` it: copy the
+/// profile to `embedded.mobileprovision`, write the TN2415-concretized
+/// entitlements to `<bundle>.xcent`, then sign inside-out with the
+/// profile's paired identity.
+///
+/// # Errors
+/// Returns an error when the profile cannot be embedded or `codesign`
+/// fails.
+#[cfg(target_os = "macos")]
+pub(crate) async fn apply_development_signature(
+    host: &crate::toolchain::Host,
+    layout: &AppleAppLayout,
+    request: &provisioning::SigningRequest<'_>,
+    selection: &provisioning::ProfileSelection,
+) -> eyre::Result<()> {
     // Selection already paired the profile with a usable keychain identity:
     // `selection.identity` is the SHA-1 `codesign --sign` takes.
-    let identity = &selection.identity;
     copy_file(
         &selection.path,
         layout.app_path.join("embedded.mobileprovision"),
@@ -808,10 +852,10 @@ async fn sign_device_app(
     .await?;
 
     let entitlements =
-        provisioning::signing_entitlements(&selection.data, &request, &selection.app_id_prefix)?;
+        provisioning::signing_entitlements(&selection.data, request, &selection.app_id_prefix)?;
     let app_name = layout
         .app_path
-        .file_name()
+        .file_stem()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
     let merged = layout.app_path.with_file_name(format!("{app_name}.xcent"));
@@ -821,14 +865,16 @@ async fn sign_device_app(
         host,
         &layout.app_path,
         &layout.frameworks_dir,
-        identity,
+        &selection.identity,
         Some(&merged),
-        Some(spec.bundle_id.as_str()),
+        Some(request.bundle_id),
     )
     .await?;
     info!(
-        "Signed {} with {team}/{identity}",
-        layout.app_path.display()
+        "Signed {} with {}/{}",
+        layout.app_path.display(),
+        request.team,
+        selection.identity
     );
     Ok(())
 }

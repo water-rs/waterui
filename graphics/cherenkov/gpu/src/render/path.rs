@@ -94,22 +94,65 @@ pub enum CoverageRoute {
     Gpu,
 }
 
-/// Keep ordinary UI geometry out of the GPU preparation pass.
+/// Minimum flattened workload that amortizes GPU coverage dispatch.
 pub const GPU_ROUTE_MIN_ELEMENTS: usize = 4096;
 
-/// Rounded joins and caps expand into arcs, unlike a plain offset outline.
-/// Admit them earlier for actual segment/incidence/grid assessment; keep
-/// ordinary polylines on the existing two-sided-outline candidate threshold.
-pub const fn stroke_gpu_candidate(elements: usize, stroke: &kurbo::Stroke) -> bool {
-    let expansion = if matches!(stroke.join, kurbo::Join::Round)
-        || matches!(stroke.start_cap, kurbo::Cap::Round)
-        || matches!(stroke.end_cap, kurbo::Cap::Round)
-    {
-        5
-    } else {
-        2
-    };
-    elements >= GPU_ROUTE_MIN_ELEMENTS / expansion
+/// Source element count used before device-space preparation.
+#[derive(Clone, Copy)]
+pub struct Complexity {
+    elements: Option<usize>,
+}
+
+impl Complexity {
+    pub const fn of(elements: &[PathEl]) -> Self {
+        Self {
+            elements: Some(elements.len()),
+        }
+    }
+
+    pub fn of_shape(shape: &ShapeData) -> Self {
+        match shape {
+            ShapeData::Path { elements, .. } => Self::of(elements),
+            _ => Self { elements: None },
+        }
+    }
+
+    pub const fn fill_candidate(self) -> bool {
+        match self.elements {
+            Some(elements) => elements >= GPU_ROUTE_MIN_ELEMENTS,
+            None => true,
+        }
+    }
+
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a conservative workload estimate, not a buffer size"
+    )]
+    pub fn stroke_candidate(self, stroke: &kurbo::Stroke, raster: Affine) -> bool {
+        let Some(elements) = self.elements else {
+            return true;
+        };
+        if !stroke.dash_pattern.is_empty() {
+            return true;
+        }
+        // Plain polylines keep the two-sided centerline cost estimate.
+        // For round arcs, acos(1-x) >= sqrt(2*x) bounds the chord count
+        // without expanding the outline. The compute stroker uses tolerance/2.
+        let expansion = if matches!(stroke.join, kurbo::Join::Round)
+            || matches!(stroke.start_cap, kurbo::Cap::Round)
+            || matches!(stroke.end_cap, kurbo::Cap::Round)
+        {
+            let tolerance = FLATTEN / raster.spectral_norm().max(1e-12);
+            let half_width = stroke.width * 0.5;
+            let arc = (std::f64::consts::FRAC_PI_2 * (half_width / tolerance).sqrt())
+                .ceil()
+                .max(1.0);
+            4.0_f64.mul_add(arc, 2.0)
+        } else {
+            2.0
+        };
+        elements as f64 * expansion >= GPU_ROUTE_MIN_ELEMENTS as f64
+    }
 }
 
 /// A coverage grid over an integer device-space rect.

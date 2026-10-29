@@ -13,7 +13,7 @@ use std::ops::Range;
 use crate::render::present::ColorRange;
 
 use super::super::composition::Materialization;
-use super::super::instance::PAINT_TEXTURE;
+use super::super::instance::{PAINT_PROJECTIVE, PAINT_TEXTURE, composite_blend_code};
 use super::super::lower::{DrawRange, Frame, ImageSource, PipelineKind, Source, Target};
 
 /// How a tile executor orders two accesses to one pixel of one
@@ -116,10 +116,28 @@ pub enum ReadKind {
     Opaque,
 }
 
+/// How a reading draw combines the image it samples with its
+/// destination. It decides whether the image may take compact storage:
+/// an image a [`Combine::Blend`] reads keeps float storage (#3458).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Combine {
+    /// Not a composite of the image over a destination: a load, a
+    /// snapshot, or a capture.
+    None,
+    /// A `Normal` (source-over) composite.
+    SourceOver,
+    /// A composite under any other blend mode: an arithmetic blend
+    /// (plus-lighter, multiply, …) or a Porter-Duff operator that reads
+    /// the destination explicitly.
+    Blend,
+}
+
 #[derive(Clone, Debug)]
 pub struct Read {
     pub image: LogicalImageId,
     pub kind: ReadKind,
+    /// How the reader combines the image with its destination.
+    pub combine: Combine,
     /// The last pass before the reader that wrote `image`; `None` when
     /// no earlier pass did — the image entered the frame already written
     /// (a retained projected image), or the reader itself opens it.
@@ -150,8 +168,8 @@ pub struct TileOp {
     )]
     pub clear_region: [u32; 4],
     #[cfg_attr(
-        not(any(unix, test)),
-        expect(dead_code, reason = "read by native tile executors")
+        not(unix),
+        expect(dead_code, reason = "read by native tile executors; no test reads it")
     )]
     pub backdrop: Option<ReadKind>,
 }
@@ -261,6 +279,7 @@ impl ExecutionPlan {
             let prior = previous.map(|previous| Read {
                 image: current[previous].1,
                 kind: ReadKind::CorrespondingPixel,
+                combine: Combine::None,
                 writer: current[previous].2,
             });
             plan.loads
@@ -319,6 +338,7 @@ impl ExecutionPlan {
                 Read {
                     image: *id,
                     kind: ReadKind::FrozenSnapshot,
+                    combine: Combine::None,
                     writer: *writer,
                 }
             }));
@@ -372,6 +392,7 @@ impl ExecutionPlan {
         Some(Read {
             image,
             kind: read_kind(frame, range),
+            combine: combine(frame, range),
             writer,
         })
     }
@@ -431,10 +452,29 @@ impl ExecutionPlan {
             );
             // Copy captures and pixel-processing scopes retain their existing
             // representation. Tile outputs must match their native attachments.
+            //
+            // Precision invariant (#3458) — a memory or performance
+            // optimisation must not remove it: an image a non-`Normal`
+            // blend composite reads keeps float storage. Such a blend
+            // (plus-lighter, multiply, a destination-reading Porter-Duff
+            // operator, …) combines the stored member values
+            // arithmetically with the destination, so the 8-bit
+            // quantisation of its input adds into a result stored at float
+            // precision — about ten f16 steps off the oracle in
+            // `blend-plus-lighter-solid-p3`. A `Normal` composite's
+            // quantisation stays within the precision of an 8-bit output
+            // of the same content.
+            let blended = self
+                .reads
+                .iter()
+                .flatten()
+                .flatten()
+                .any(|read| read.image == id && read.combine == Combine::Blend);
             if formats.content
                 && image.color_range != ColorRange::HighDynamicRange
                 && image.space == cherenkov::BlendSpace::Linear
                 && !native_output
+                && !blended
                 && !self.captures.iter().flatten().any(|read| read.image == id)
             {
                 image.format = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -851,6 +891,25 @@ pub fn read_kind(frame: &Frame, range: &DrawRange) -> ReadKind {
         ReadKind::CorrespondingPixel
     } else {
         ReadKind::Neighborhood
+    }
+}
+
+/// How `range` combines the image it samples with its destination: the
+/// blend mode its composite (`PAINT_TEXTURE` / `PAINT_PROJECTIVE`)
+/// instances carry. A range without a source combines nothing.
+pub fn combine(frame: &Frame, range: &DrawRange) -> Combine {
+    if range.source.is_none() {
+        Combine::None
+    } else if frame.instances[range.instances.start as usize..range.instances.end as usize]
+        .iter()
+        .any(|instance| {
+            matches!(instance.meta[1], PAINT_TEXTURE | PAINT_PROJECTIVE)
+                && composite_blend_code(instance.meta[3]) != 0
+        })
+    {
+        Combine::Blend
+    } else {
+        Combine::SourceOver
     }
 }
 

@@ -381,6 +381,9 @@ fn stage_local_host_sync(source: &Path, staged: &Path) -> eyre::Result<()> {
                 )
             },
         )?;
+        // Windows has no mode bits to carry; the copy keeps the read-only
+        // attribute on its own.
+        #[cfg(unix)]
         preserve_source_permissions(entry.path(), &destination)
             .wrap_err_with(|| format!("failed to set permissions on {}", destination.display()))?;
         expected_files.insert(relative.to_path_buf());
@@ -466,11 +469,6 @@ fn preserve_source_permissions(source: &Path, destination: &Path) -> std::io::Re
 
     let mode = std::fs::metadata(source)?.permissions().mode();
     std::fs::set_permissions(destination, std::fs::Permissions::from_mode(mode | 0o600))
-}
-
-#[cfg(not(unix))]
-fn preserve_source_permissions(_source: &Path, _destination: &Path) -> std::io::Result<()> {
-    Ok(())
 }
 
 /// `remove_file` for a staged mirror entry, clearing a kept read-only bit

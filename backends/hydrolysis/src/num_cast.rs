@@ -151,7 +151,11 @@ pub const fn f32_as_i32(v: f32) -> i32 {
     clippy::cast_possible_truncation,
     reason = "the values are pixel extents within i32 range; saturating truncation is the intended conversion"
 )]
-#[cfg(any(test, feature = "accessibility"))]
+#[cfg(any(
+    test,
+    feature = "accessibility",
+    all(target_os = "android", not(hydrolysis_hwui))
+))]
 pub const fn f64_as_i32(v: f64) -> i32 {
     v as i32
 }

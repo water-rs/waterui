@@ -72,10 +72,20 @@ pub mod kernels {
         // Move the arguments into vectorize together, rather than capturing
         // references to the scalar coordinates and loading them again inside it.
         let args = (paint, x0, py, out);
-        fearless_simd::dispatch!(level, simd => eval(simd, args))
+        cherenkov_simd::dispatch!(level, simd => eval(simd, args))
     }
 
     /// `crate::render::composite_span` under `level`'s dispatch.
+    ///
+    /// Inlined into its caller, so a kernel benchmark counts one `Level`
+    /// match and the dispatched kernel, not a call into this function that
+    /// LLVM keeps or inlines depending on the size of the baseline
+    /// level's inline arm.
+    #[expect(
+        clippy::inline_always,
+        reason = "the per-call count must not depend on an inlining heuristic"
+    )]
+    #[inline(always)]
     pub fn composite_span(
         level: Level,
         dst: &mut [[f32; 4]],
@@ -84,7 +94,7 @@ pub mod kernels {
         clip: ClipRun<'_>,
         space: BlendSpace,
     ) {
-        fearless_simd::dispatch!(level, simd => {
+        cherenkov_simd::dispatch!(level, simd => {
             crate::render::composite_span(simd, dst, src, cov, clip, space);
         });
     }
@@ -113,7 +123,7 @@ pub mod kernels {
         }
 
         let args = (dst, cov);
-        fearless_simd::dispatch!(level, simd => composite(simd, args, clip, color, space));
+        cherenkov_simd::dispatch!(level, simd => composite(simd, args, clip, color, space));
     }
 
     /// Uniform coverage through the production solid kernel.
@@ -125,7 +135,7 @@ pub mod kernels {
         color: [f32; 4],
         space: BlendSpace,
     ) {
-        fearless_simd::dispatch!(level, simd => {
+        cherenkov_simd::dispatch!(level, simd => {
             crate::render::composite_solid(
                 simd, dst, crate::render::coverage::Uniform(coverage), clip, color, space,
             );
@@ -134,7 +144,7 @@ pub mod kernels {
 
     /// Bidirectional filter conversion under `level`'s dispatch.
     pub fn convert_span(level: Level, pixels: &mut [[f32; 4]], from: BlendSpace, to: BlendSpace) {
-        fearless_simd::dispatch!(level, simd => {
+        cherenkov_simd::dispatch!(level, simd => {
             crate::render::convert_span(simd, pixels, from, to);
         });
     }

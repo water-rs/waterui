@@ -957,7 +957,7 @@ impl SceneResources {
     }
 
     /// The largest image the target admits, in each dimension and in
-    /// total texels — what it reports through
+    /// stored bytes — what it reports through
     /// [`SceneBackend::image_limits`]. Fixed for the target's life.
     /// [`ImageLimits::fit`](crate::draw::ImageLimits::fit) gives the
     /// largest admitted size at a kept aspect ratio, for content that
@@ -972,7 +972,7 @@ impl SceneResources {
     /// the source is hashed for [`intern`](Self::intern), so an oversized
     /// image is rejected without hashing it at all.
     fn admit_image<F: Format>(&self, data: &ImageData<F>) -> Result<(), ResourceError> {
-        self.image_limits().check(data.width(), data.height())
+        self.image_limits().check::<F>(data.width(), data.height())
     }
 
     /// The live registration of `bytes` in `shape`, or a new one from

@@ -33,7 +33,7 @@ use crate::{
 /// `managed_backends/…/<sha>/` below it, crossing 260 characters on Windows
 /// (water-rs/waterui#3125). Git honours long paths only when the machine
 /// enables them — the `windows-long-paths` doctor item checks that setting.
-const CONFIG_ARGS: &[&str] = &["-c", "core.longpaths=true"];
+pub const CONFIG_ARGS: &[&str] = &["-c", "core.longpaths=true"];
 
 /// `args` with [`CONFIG_ARGS`] in front, as [`Host::run`] and
 /// [`Host::output`] take them.

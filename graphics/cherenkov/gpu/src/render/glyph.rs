@@ -3611,6 +3611,210 @@ mod tests {
         );
     }
 
+    /// A retained emission's stored UVs name only the shelf each quad's
+    /// own fragment samples: a `KIND_REGION` interval widened across
+    /// path cells spans shelves, so the UV scan pins the first band and
+    /// leaves the rest evictable. The `(slot, epoch)` refs folded at
+    /// apply already record every band the emission samples, so
+    /// `replay_pins` pins the still-live ones too — otherwise an
+    /// evicting commit reclaims a band the frame still draws (#2909).
+    #[test]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "atlas texel origins are small integers — exact in f32"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the atlas layout, a real lowering and the commit sequence each need their full setup"
+    )]
+    fn replay_pins_hold_every_band_a_region_emission_samples() {
+        use cherenkov::Draw as _;
+        use cherenkov::testing::LayerOp;
+
+        let (mut renderer, _info) = match crate::render::init(crate::GpuConfig::default()) {
+            Ok(pair) => pair,
+            Err(e) => panic!("the replay-pin commit needs a GPU adapter: {e}"),
+        };
+        let device = renderer.device.clone();
+        let queue = renderer.queue.clone();
+        renderer.atlas.size = 64;
+        let key = |glyph: u32| GlyphKey {
+            font: 7,
+            glyph,
+            size_bits: (16.0f32 * 64.0).to_bits(),
+            subpixel: 0,
+            matrix: [
+                1.0f32.to_bits(),
+                0.0f32.to_bits(),
+                0.0f32.to_bits(),
+                1.0f32.to_bits(),
+            ],
+            coords_hash: 0,
+        };
+        // The layout of `evicting_commit_reclaims_cold_shelves`: a
+        // class-8 shelf, a packed class-16 shelf, a class-24 shelf and
+        // a second class-16 shelf take `top` to the atlas edge.
+        let (key_a, key_b, key_c, key_d) = (key(1), key(2), key(3), key(4));
+        let origin_a = renderer
+            .atlas
+            .store_glyph(&device, &queue, key_a, 0, 0, 4, 4, &[0; 16])
+            .expect("the first cell places");
+        assert!(
+            renderer
+                .atlas
+                .store_glyph(&device, &queue, key_b, 0, 0, 60, 10, &[0; 600])
+                .is_some()
+        );
+        assert!(
+            renderer
+                .atlas
+                .store_glyph(&device, &queue, key_c, 0, 0, 4, 20, &[0; 80])
+                .is_some()
+        );
+        assert!(
+            renderer
+                .atlas
+                .store_glyph(&device, &queue, key_d, 0, 0, 60, 10, &[0; 600])
+                .is_some()
+        );
+        assert_eq!(
+            renderer.atlas.layout.tops.iter().copied().sum::<u32>(),
+            64,
+            "the layout is full"
+        );
+        let slot_a = renderer.atlas.map[&key_a].shelf.expect("a shelved cell");
+        let slot_b = renderer.atlas.map[&key_b].shelf.expect("a shelved cell");
+        let epoch_a = renderer.atlas.shelf_epoch(slot_a);
+        let epoch_b = renderer.atlas.shelf_epoch(slot_b);
+
+        // One layer's fill lowered for real, then edited into the
+        // retained state `replay_pins` consumes on the next commit: a
+        // region emission whose stored quad samples band A while its
+        // recorded `(slot, epoch)` refs span bands A and B.
+        let layer = cherenkov::LayerId::new(1);
+        let mut tree = cherenkov::SurfaceTree::new();
+        tree.apply(LayerOp::Create(layer));
+        tree.apply(LayerOp::Push {
+            parent: tree.root(),
+            child: layer,
+        });
+        let mut caches: FxHashMap<_, crate::render::lower::ContentData> = std::iter::once((
+            layer,
+            crate::render::lower::ContentData::new(cherenkov::Picture::record(|c| {
+                c.fill(
+                    kurbo::Rect::new(0.0, 0.0, 8.0, 8.0),
+                    cherenkov::WorkingColor::WHITE,
+                );
+            })),
+        ))
+        .collect();
+        let fonts = FxHashMap::default();
+        let images = FxHashMap::default();
+        let bitmaps = FxHashMap::default();
+        let glyphs = crate::render::lower::GlyphContext {
+            atlas: &renderer.atlas,
+            live_stamp: renderer.atlas.live_stamp(),
+            fonts: &fonts,
+            images: &images,
+            bitmaps: &bitmaps,
+            content: &FxHashMap::default(),
+        };
+        let mut frame = crate::render::lower::Frame::default();
+        let mut anchor_scratch = crate::render::lower::AnchorScratch::default();
+        let mut raster_scratch = crate::render::path::EmitScratch::new();
+        let mut lowering = crate::render::lower::Lowering::new(
+            &mut frame,
+            (64, 64),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+            Some(crate::render::gpu_cov::CoverageLimit::new(&device.limits())),
+        );
+        lowering.prepare(&mut caches, &glyphs).expect("prepared");
+        let plan = crate::render::planes::Plan {
+            planes: Vec::new(),
+            rejected: Vec::new(),
+            unplaced: Vec::new(),
+            trailing: false,
+        };
+        lowering
+            .run(
+                &tree,
+                &mut caches,
+                cherenkov::WorkingColor::BLACK,
+                &glyphs,
+                &FxHashMap::default(),
+                FxHashMap::default(),
+                &plan,
+            )
+            .expect("lowered");
+        {
+            let content = caches.get_mut(&layer).expect("the layer lowered");
+            let (_, emissions) = content.retained.prepared();
+            let emission = emissions
+                .iter_mut()
+                .find_map(|entry| entry.data.as_mut())
+                .expect("the fill realized an emission");
+            let inst = &mut content.storage.instances[emission.instances.start];
+            inst.kind = crate::render::instance::KIND_REGION;
+            inst.uv = [origin_a.0 as f32 + 0.5, origin_a.1 as f32 + 0.5];
+            let first = content.storage.refs.len();
+            content
+                .storage
+                .refs
+                .extend([(slot_a, epoch_a), (slot_b, epoch_b)]);
+            emission.refs = crate::render::lower::Emission::pack_refs(first, 2);
+            emission.clear_pending_cells();
+        }
+
+        let (target, view) = crate::render::create_target(
+            &device,
+            "pin test surface",
+            (64, 64),
+            crate::render::TARGET_USAGES,
+            crate::render::WORKING_FORMAT,
+        );
+        let mut surf = crate::render::SurfaceState::new(
+            None,
+            None,
+            None,
+            cherenkov::DEFAULT_REFRESH,
+            (target, view),
+            cherenkov::testing::unhosted_waker(),
+            false,
+        );
+        surf.layers = caches;
+        let mut pending = vec![surf];
+        let results = vec![Ok(crate::render::lower::Lowered::default())];
+        let mut touches = Vec::new();
+        renderer.replay_pins(&mut pending, &results, &mut touches);
+        assert!(
+            touches.contains(&slot_b),
+            "every still-live band the emission samples is pinned"
+        );
+
+        // The evicting commit reclaims the coldest unpinned band; with
+        // B pinned that is C, without the pin it is B itself.
+        renderer.atlas.begin_commit(&touches);
+        renderer.atlas.enable_evicting();
+        let mut writes = CellWrites::default();
+        let key_e = key(5);
+        assert!(
+            renderer
+                .atlas
+                .place_glyph(key_e, 0, 0, 60, 10, vec![0; 600], &mut writes)
+                .is_some(),
+            "reclaiming a cold band makes room"
+        );
+        assert!(
+            renderer.atlas.shelf_matches(slot_b, epoch_b),
+            "the band the emission still samples survives eviction"
+        );
+        assert!(
+            renderer.atlas.get(&key_b).is_some(),
+            "its entries stay live"
+        );
+    }
+
     /// A batch whose cells exceed one `cap` page appends atlas pages
     /// instead of reporting exhaustion (#211): the fresh-layout grow
     /// probe places every cell on blank pages, so the admitted cells

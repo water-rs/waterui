@@ -88,6 +88,8 @@ fn main() {
         // The Android HWUI render target: the retained layer tree recorded
         // into `RenderNode` display lists, on Android only.
         hydrolysis_hwui: { all(feature = "hwui", android_platform) },
+        // Runtime implementation exists only when a painter is selected.
+        hydrolysis_runtime: { any(hydrolysis_gpu_painter, hydrolysis_hwui) },
         // The Cherenkov GPU engine, its wgpu device stack and the parley
         // text engine are linkable: always off-Android (one painter, the
         // deps unconditional), on Android only under the `gpu` feature so a

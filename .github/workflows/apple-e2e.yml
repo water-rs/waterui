@@ -116,7 +116,7 @@ env:
 jobs:
   prepare:
     name: prepare
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 30
     # `prepare` is the only job allowed to resolve the CLI ref; every
     # consumer fetches the commit published here so one run certifies one
@@ -204,7 +204,7 @@ jobs:
   build-ios:
     name: build-ios-${{ matrix.group.i }}
     needs: prepare
-    runs-on: macos-26
+    runs-on: xcode-27
     if: (github.event_name != 'schedule' || inputs.full_suite)
     # A group's share is ~10 min of thin-LTO packaging warm plus setup and
     # upload; a cold-cache night adds one framework build to the leg's first
@@ -300,7 +300,7 @@ jobs:
   build-macos:
     name: build-macos-${{ matrix.group.i }}
     needs: prepare
-    runs-on: macos-26
+    runs-on: xcode-27
     if: (github.event_name != 'schedule' || inputs.full_suite)
     # A group's share is ~10 min of thin-LTO packaging warm plus setup and
     # upload; a cold-cache night adds one framework build to the leg's first
@@ -395,7 +395,7 @@ jobs:
   e2e-ios:
     name: e2e-ios-${{ matrix.shard }}
     needs: [prepare, build-ios]
-    runs-on: macos-26
+    runs-on: xcode-27
     if: (github.event_name != 'schedule' || inputs.full_suite)
     # ~7 examples × ~3 min of launch/settle/capture/twin/compare plus
     # simulator boot and the artifact download — no compile. 45 minutes keeps
@@ -474,10 +474,6 @@ jobs:
       - name: Set up modern bash
         uses: ./.github/actions/setup-bash
 
-      - name: Prepare comparison tools
-        uses: ./.github/actions/setup-e2e-tools
-        timeout-minutes: 1
-
       - name: Run iOS e2e shard
         env:
           PLATFORM: ios
@@ -532,7 +528,7 @@ jobs:
   e2e-macos:
     name: e2e-macos-${{ matrix.shard }}
     needs: [prepare, build-macos]
-    runs-on: macos-26
+    runs-on: xcode-27
     if: (github.event_name != 'schedule' || inputs.full_suite)
     # ~7 examples × ~3 min of launch/settle/capture/twin/compare plus the
     # artifact download — no compile. 45 minutes keeps a wide margin over the
@@ -582,10 +578,6 @@ jobs:
       # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
       - name: Set up modern bash
         uses: ./.github/actions/setup-bash
-
-      - name: Prepare comparison tools
-        uses: ./.github/actions/setup-e2e-tools
-        timeout-minutes: 1
 
       - name: Run macOS e2e shard
         env:
@@ -642,7 +634,7 @@ jobs:
   host-native:
     name: host-native
     if: (github.event_name != 'schedule' || inputs.full_suite)
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
@@ -689,7 +681,7 @@ jobs:
   ios-device-tests:
     name: ios-device-tests
     needs: prepare
-    runs-on: macos-26
+    runs-on: xcode-27
     if: (github.event_name != 'schedule' || inputs.full_suite)
     timeout-minutes: 60
     env:
@@ -747,7 +739,7 @@ jobs:
       # device type and the newest iOS runtime out of the runner image's
       # own inventory (failing clearly when no iOS runtime is installed),
       # creates the device, and deletes it in the always() step below.
-      # nextest-ios-sim.sh requires WATERUI_IOS_SIM_UDID of a caller-owned
+      # `water test-runner simulator` requires WATERUI_IOS_SIM_UDID of a caller-owned
       # device, so nothing here may pick a simulator implicitly.
       - name: Create and boot the iOS simulator
         run: |
@@ -919,7 +911,7 @@ jobs:
     # startup and memory is a trend series, not a nightly gate, and on the
     # other six nights the slots go to the shards.
     if: (github.event_name == 'schedule' && !inputs.full_suite) || inputs.release_metrics
-    runs-on: macos-26
+    runs-on: xcode-27
     strategy:
       fail-fast: false
       matrix:

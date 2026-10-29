@@ -686,13 +686,17 @@ impl TableView {
     }
 
     /// Applies `deletes`, `inserts` and `moves` as one animated batch —
-    /// `.automatic` when `animated`, `.none` otherwise. Batch-update
-    /// indexing: `deletes` and each move's source name rows before the
-    /// batch, `inserts` and each move's destination name rows after it.
+    /// `.automatic` when `animated`, `.none` otherwise. `claimed_inserts`
+    /// names rows whose own structural transition replaces the row
+    /// animation: they always insert with `.none`. Batch-update indexing:
+    /// `deletes` and each move's source name rows before the batch,
+    /// `inserts`, `claimed_inserts` and each move's destination name rows
+    /// after it.
     pub fn apply_row_updates(
         &self,
         deletes: &[IndexPath],
         inserts: &[IndexPath],
+        claimed_inserts: &[IndexPath],
         moves: &[(IndexPath, IndexPath)],
         animated: bool,
     ) {
@@ -707,6 +711,12 @@ impl TableView {
         let insert_array = NSArray::from_retained_slice(
             &inserts.iter().map(|i| index_path(*i)).collect::<Vec<_>>(),
         );
+        let claimed_array = NSArray::from_retained_slice(
+            &claimed_inserts
+                .iter()
+                .map(|i| index_path(*i))
+                .collect::<Vec<_>>(),
+        );
         let move_paths: Vec<_> = moves
             .iter()
             .map(|(from, to)| (index_path(*from), index_path(*to)))
@@ -715,6 +725,10 @@ impl TableView {
         let updates = RcBlock::new(move || {
             table.deleteRowsAtIndexPaths_withRowAnimation(&delete_array, animation);
             table.insertRowsAtIndexPaths_withRowAnimation(&insert_array, animation);
+            table.insertRowsAtIndexPaths_withRowAnimation(
+                &claimed_array,
+                UITableViewRowAnimation::None,
+            );
             for (from, to) in &move_paths {
                 table.moveRowAtIndexPath_toIndexPath(from, to);
             }
@@ -853,6 +867,15 @@ impl TableView {
     #[must_use]
     pub fn scroll_animation_in_flight(&self) -> bool {
         self.ivars().flight.in_flight()
+    }
+
+    /// Installs a stepped clock on this surface's scroll flights and
+    /// returns it — the native test suite's hand on flight time. Call it
+    /// before the surface's first flight.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn install_manual_scroll_clock(&self) -> Rc<crate::native_test::ManualScrollClock> {
+        self.ivars().flight.install_manual_clock()
     }
 
     /// Runs `handler` whenever the scroll position changes, replacing the

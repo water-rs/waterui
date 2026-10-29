@@ -3063,7 +3063,7 @@ mod tests {
             &mut fonts,
             &bitmap_fonts,
             (&mut bitmaps, &mut geometry, &mut edge_scratch),
-            crate::Level::new(),
+            cherenkov_simd::detect(),
             &pool,
         );
         lowering.transform = transform;
@@ -3209,7 +3209,7 @@ mod tests {
                 &mut fonts,
                 &bitmap_fonts,
                 (&mut bitmaps, &mut geometry, &mut edge_scratch),
-                crate::Level::new(),
+                cherenkov_simd::detect(),
                 &pool,
             );
             let shape = ShapeData::Ellipse(kurbo::Ellipse::new(centre, (20.0, 12.0), 0.0));

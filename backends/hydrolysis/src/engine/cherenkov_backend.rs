@@ -280,12 +280,12 @@ pub trait EngineSurface {
 }
 
 /// Android presents retained buffers directly through the system compositor.
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
 pub struct AndroidCherenkovSurface {
     core: SurfaceCore,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
 impl core::fmt::Debug for AndroidCherenkovSurface {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AndroidCherenkovSurface")
@@ -294,7 +294,7 @@ impl core::fmt::Debug for AndroidCherenkovSurface {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
 impl EngineSurface for AndroidCherenkovSurface {
     fn core(&self) -> &SurfaceCore {
         &self.core
@@ -305,13 +305,14 @@ impl EngineSurface for AndroidCherenkovSurface {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
 impl AndroidCherenkovSurface {
     pub(crate) fn new(
         engine: Rc<GpuEngine>,
         window: &ndk::native_window::NativeWindow,
         size: (u32, u32),
         wake: impl Fn() + Send + Sync + 'static,
+        transparent: bool,
     ) -> Self {
         use cherenkov_gpu::interop::android::{SurfaceControl, SurfaceControlTarget};
         // SAFETY: the host holds the live SurfaceView's ANativeWindow lease.
@@ -320,7 +321,10 @@ impl AndroidCherenkovSurface {
         let looper = ndk::looper::ForeignLooper::for_thread()
             .expect("hydrolysis android: surface creation requires the host Looper");
         let surface = engine
-            .surface(SurfaceControlTarget::new(parent, size, looper), wake)
+            .surface(
+                SurfaceControlTarget::new(parent, size, looper).transparent(transparent),
+                wake,
+            )
             .expect("hydrolysis android: failed to create the compositor surface");
         Self {
             core: SurfaceCore::new(engine, surface, size),

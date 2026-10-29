@@ -116,5 +116,10 @@ pub mod platform;
 /// Development provisioning profiles: validation and `xcodebuild` acquisition.
 #[cfg(target_os = "macos")]
 pub mod provisioning;
+/// The `water test-runner` target runners (cargo/nextest plumbing).
+#[cfg(target_os = "macos")]
+pub mod test_runner;
 /// Apple toolchain management.
 pub mod toolchain;
+/// WidgetKit extension assembly from `#[widget]` declaration records.
+pub mod widgets;

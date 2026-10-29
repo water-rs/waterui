@@ -72,7 +72,10 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// `BindPlatformView` op binds a platform view inside its owner's `RenderNode`.
 /// 21->22 = `nativePlatformViewHitTest` answers the retained tree's platform
 /// view under a host pixel — the HWUI painter's ordered-input query.
-pub const JNI_SCHEMA: jint = 22;
+/// 23 = `nativeCreateSession` carries the configuration's night-mode flag so
+/// the colour-scheme signal starts on the real `uiMode`, and
+/// `nativeSetColorScheme` reports every later change (water-rs/waterui#3544).
+pub const JNI_SCHEMA: jint = 23;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -421,6 +424,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
     context: JObject<'local>,
     painter: JObject<'local>,
     services_ptr: jlong,
+    night: jboolean,
 ) -> jlong {
     guard_val(&mut env, 0, |env| {
         let vm = env.get_java_vm()?;
@@ -448,6 +452,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             host_view,
             &painter,
             metrics,
+            night,
             services(services_ptr),
         )?;
         Ok(Box::into_raw(Box::new(SessionBox {
@@ -654,6 +659,21 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceDes
     });
 }
 
+/// The configuration's night-mode flag — pushed by the host at bind and on
+/// every `onConfigurationChanged`, into the session's colour-scheme signal.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetColorScheme<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    night: jboolean,
+) {
+    guard(&mut env, |_env| {
+        session(session_ptr).set_night_mode(night);
+        Ok(())
+    });
+}
+
 /// The Activity's started state — `onStart`/`onStop` drive the pump's
 /// hidden flag alongside the surface's own attach/detach.
 #[unsafe(no_mangle)]
@@ -671,8 +691,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetVisible
 
 /// The retained tree's platform view under host pixel (`x`, `y`) — the
 /// ordered hit test the Kotlin host's gesture dispatch asks before latching
-/// a native gesture. `0` means content or nothing covers the point. HWUI
-/// builds only: the GPU path's slots own their own hit order.
+/// a native gesture. `0` means no view is drawn there or an interactive
+/// target painted above it takes the point; non-interactive content never
+/// blocks a view. HWUI builds only: the GPU path's slots own their own hit
+/// order.
 #[cfg(hydrolysis_hwui)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformViewHitTest<
@@ -684,12 +706,18 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformVi
     x: jfloat,
     y: jfloat,
 ) -> jlong {
+    use crate::platform::PlatformWindow as _;
+
     guard_val(&mut env, 0, |_env| {
-        let id = session(session_ptr)
-            .hwui
-            .surface
-            .encoder()
-            .platform_view_at(kurbo::Point::new(f64::from(x), f64::from(y)))
+        let session = session(session_ptr);
+        let id = session
+            .runtime
+            .renderer
+            .platform_view_hit(
+                session.hwui.surface.encoder(),
+                kurbo::Point::new(f64::from(x), f64::from(y)),
+                session.runtime.platform.scale_factor(),
+            )
             .map_err(|e| JniError(e.to_string()))?;
         Ok(id.map_or(0, |id| i64::from_ne_bytes(id.to_ne_bytes())))
     })

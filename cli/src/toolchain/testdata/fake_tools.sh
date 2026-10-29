@@ -306,6 +306,43 @@ cargo)
     esac
     exit 0
     ;;
+codesign)
+    exit 0
+    ;;
+# `caffeinate -d -u -w <pid>`: the display assertion the simulator runner holds.
+caffeinate)
+    exit 0
+    ;;
+# `open -n -W --env K=V --stdout <f> --stderr <f> <app> --args …`: the
+# Catalyst runner's LaunchServices launch. Writes the staged status to
+# the file WATERUI_NATIVE_TEST_STATUS names (unless NO_STATUS is set,
+# modeling an app that died before its trials concluded) and the canned
+# streams to the --stdout/--stderr files. WATERUI_FAKE_OPEN_EXIT is the
+# launcher status, WATERUI_FAKE_OPEN_STATUS the app's.
+open)
+    _status_path=""
+    _o_stdout=""
+    _o_stderr=""
+    _prev=""
+    for _arg in "$@"; do
+        case "$_prev" in
+            --env)
+                case "$_arg" in
+                    WATERUI_NATIVE_TEST_STATUS=*) _status_path="${_arg#*=}" ;;
+                esac
+                ;;
+            --stdout) _o_stdout="$_arg" ;;
+            --stderr) _o_stderr="$_arg" ;;
+        esac
+        _prev="$_arg"
+    done
+    if [ -z "${WATERUI_FAKE_OPEN_NO_STATUS-}" ] && [ -n "$_status_path" ]; then
+        printf '%s' "${WATERUI_FAKE_OPEN_STATUS:-0}" > "$_status_path"
+    fi
+    [ -n "$_o_stdout" ] && printf '%s\n' "${WATERUI_FAKE_OPEN_STDOUT-}" > "$_o_stdout"
+    [ -n "$_o_stderr" ] && printf '%s\n' "${WATERUI_FAKE_OPEN_STDERR-}" > "$_o_stderr"
+    exit "${WATERUI_FAKE_OPEN_EXIT:-0}"
+    ;;
 xcodebuild)
     case "$*" in
         -version | --version)
@@ -340,14 +377,105 @@ xcrun)
         *--show-sdk-path)
             respond XCRUN_SDK_PATH
             ;;
-        "simctl list --json")
+        "simctl list --json" | "simctl list devices --json")
             respond XCRUN_SIMCTL_DEVICES
             ;;
-        "simctl delete unavailable" | "simctl create "*)
+        "simctl delete unavailable" | "simctl create "* | "simctl bootstatus "*)
             exit 0
+            ;;
+        "simctl spawn "*)
+            (respond_or_empty XCRUN_SIMCTL_SPAWN)
+            exit "${WATERUI_FAKE_SIMCTL_SPAWN_STATUS:-0}"
+            ;;
+        "simctl install "*)
+            exit 0
+            ;;
+        "simctl get_app_container "*)
+            respond XCRUN_SIMCTL_APP_CONTAINER
+            ;;
+        "simctl launch "*)
+            # launch --console --terminate-running-process <udid> <bundle> [args]
+            _bundle="$6"
+            printf '%s: 4242\n' "$_bundle"
+            (respond_or_empty XCRUN_SIMCTL_LAUNCH)
+            if [ -n "${SIMCTL_CHILD_WATERUI_NATIVE_TEST_STATUS-}" ]; then
+                printf '%s' "${WATERUI_FAKE_SIMCTL_APP_STATUS:-0}" \
+                    > "$SIMCTL_CHILD_WATERUI_NATIVE_TEST_STATUS"
+            fi
+            exit 0
+            ;;
+        "devicectl list devices --json-output -")
+            respond XCRUN_DEVICE_LIST
             ;;
         "devicectl device info processes "*)
             respond XCRUN_DEVICE_INFO_PROCESSES
+            ;;
+        "devicectl device info apps "*)
+            # --json-output <path> takes the report as a file; the runner
+            # parses it, never stdout.
+            _out=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --json-output) _out="$2"; shift 2 ;;
+                    *) shift ;;
+                esac
+            done
+            _report="${WATERUI_FAKE_DEVICE_INFO_APPS:-{}}"
+            if [ -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/XCRUN_DEVICE_INFO_APPS" ]; then
+                _report=""
+                while IFS= read -r _line || [ -n "$_line" ]; do
+                    _report="$_report$_line
+"
+                done < "${WATERUI_FAKE_RESPONSES}/XCRUN_DEVICE_INFO_APPS"
+            fi
+            printf '%s' "$_report" > "$_out"
+            exit 0
+            ;;
+        "devicectl device install app "*)
+            if [ -n "${WATERUI_FAKE_DEVICE_CONTAINER-}" ]; then
+                /bin/mkdir -p "$WATERUI_FAKE_DEVICE_CONTAINER/tmp" \
+                    "$WATERUI_FAKE_DEVICE_CONTAINER/Library"
+            fi
+            exit "${WATERUI_FAKE_DEVICE_INSTALL_STATUS:-0}"
+            ;;
+        "devicectl "--quiet" device process launch "* | "devicectl --quiet device process launch "*)
+            respond_or_empty XCRUN_DEVICE_LAUNCH
+            if [ -n "${DEVICECTL_CHILD_WATERUI_NATIVE_TEST_STATUS-}" ] \
+                && [ -n "${WATERUI_FAKE_DEVICE_CONTAINER-}" ]; then
+                printf '%s' "${WATERUI_FAKE_DEVICE_STATUS:-0}" \
+                    > "$WATERUI_FAKE_DEVICE_CONTAINER/$DEVICECTL_CHILD_WATERUI_NATIVE_TEST_STATUS"
+            fi
+            exit "${WATERUI_FAKE_DEVICE_LAUNCH_STATUS:-0}"
+            ;;
+        "devicectl device copy from "*)
+            _src=""; _dst=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --source) _src="$2"; shift 2 ;;
+                    --destination) _dst="$2"; shift 2 ;;
+                    *) shift ;;
+                esac
+            done
+            if [ -d "${WATERUI_FAKE_DEVICE_CONTAINER:?}/$_src" ]; then
+                /bin/cp -R "${WATERUI_FAKE_DEVICE_CONTAINER:?}/$_src" "$_dst" || exit 1
+            else
+                /bin/cp "${WATERUI_FAKE_DEVICE_CONTAINER:?}/$_src" "$_dst" || exit 1
+            fi
+            ;;
+        "devicectl device copy to "*)
+            _src=""; _dst=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --source) _src="$2"; shift 2 ;;
+                    --destination) _dst="$2"; shift 2 ;;
+                    *) shift ;;
+                esac
+            done
+            if [ -d "$_src" ]; then
+                /bin/cp -R "$_src" "${WATERUI_FAKE_DEVICE_CONTAINER:?}/$_dst"
+            else
+                /bin/cp "$_src" "${WATERUI_FAKE_DEVICE_CONTAINER:?}/$_dst"
+            fi
             ;;
         *)
             exit 1
@@ -637,6 +765,28 @@ cmake | meson | spirv-opt | sh | bash)
             printf '%s 1.0.0 (waterui-test)\n' "$tool"
             ;;
     esac
+    if [ "$tool" = "cmake" ]; then
+        # WPE source-build fixture: --install --prefix <dir> materializes the
+        # two bridge outputs (or only the bridge under OMIT_EXTENSION); any
+        # invocation fails under WATERUI_FAKE_CMAKE_FAIL.
+        if [ -n "${WATERUI_FAKE_LOG-}" ]; then
+            printf 'cmake-env PKG_CONFIG_PATH=%s\n' "${PKG_CONFIG_PATH-}" >> "$WATERUI_FAKE_LOG"
+        fi
+        [ -n "${WATERUI_FAKE_CMAKE_FAIL-}" ] && exit 1
+        _prefix=""
+        _prev=""
+        for _arg in "$@"; do
+            [ "$_prev" = "--prefix" ] && _prefix="$_arg"
+            _prev="$_arg"
+        done
+        if [ -n "$_prefix" ]; then
+            /bin/mkdir -p "$_prefix/lib/waterui-wpe/extensions"
+            printf 'fake bridge' > "$_prefix/lib/libwaterui_wpe.so"
+            if [ -z "${WATERUI_FAKE_CMAKE_OMIT_EXTENSION-}" ]; then
+                printf 'fake extension' > "$_prefix/lib/waterui-wpe/extensions/waterui_wpe_extension.so"
+            fi
+        fi
+    fi
     exit 0
     ;;
 wasm-pack)
@@ -799,6 +949,12 @@ pkg-config)
     ;;
 *-clang | *-clang++* | clang | clang++ | ld | ld64)
     exit 0
+    ;;
+# A staged test binary a destination's exec route spawns directly —
+# `stage_binary` names it `harness-<hash>`: its own exit status passes
+# through.
+harness-*)
+    exit "${WATERUI_FAKE_EXEC_STATUS:-0}"
     ;;
 uname)
     case "$*" in

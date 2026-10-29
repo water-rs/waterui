@@ -18,6 +18,7 @@ use nami::collection::SignalCollection;
 use waterui::animation::Animation;
 use waterui::component::list::{List, ListItem};
 use waterui::component::text;
+use waterui::graphics::Color;
 use waterui::prelude::ContextMenu;
 use waterui::{AnyView, ViewExt as _};
 use waterui_backend_core::View;
@@ -30,7 +31,7 @@ use waterui_core::transition::PropertyTransition;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::scroll::scroll;
-use waterui_layout::stack::{VStack, vstack};
+use waterui_layout::stack::{VStack, vstack, zstack};
 use waterui_navigation::tab::{Tab, TabsLayout};
 use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};
 
@@ -421,6 +422,89 @@ fn the_platform_view_table_holds_each_view_once_after_n_frames() {
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), 2, "no view may record twice in one frame");
+}
+
+/// Two runtimes in one process mint placement ids independently: the id
+/// space lives in the sink each runtime installed, so the second runtime's
+/// first leaf takes the same first id instead of continuing the first
+/// runtime's count — the behaviour the process-global counter broke.
+#[test]
+fn each_runtime_mints_platform_view_ids_from_its_own_sink() {
+    let first_published_id = || {
+        let sink = PlatformViewSink::new();
+        let mut env = test_environment();
+        env.insert(sink.clone());
+        let builder = AnyViewBuilder::<AnyView>::new(|| {
+            AnyView::new(Native::new(PlatformView::new("probe")))
+        });
+        let mut runtime = HeadlessRuntime::new_for_tests(
+            env,
+            builder,
+            WINDOW.0,
+            WINDOW.1,
+            MinimalTestTheme::default(),
+        );
+        let pump = runtime.pump_at(true, Instant::now());
+        assert!(pump.profile.counters.rendered);
+        sink.table().borrow_mut().publish();
+        let placements = sink.table().borrow().placements().to_vec();
+        let [placement] = placements.as_slice() else {
+            panic!("the probe view is placed exactly once, got {placements:?}");
+        };
+        placement.id
+    };
+    let first = first_published_id();
+    let second = first_published_id();
+    assert_eq!(
+        first, second,
+        "each runtime's sink mints from its own first id, got {first} then {second}"
+    );
+    assert_eq!(first, 1, "a runtime's placement ids start at 1");
+}
+
+/// A platform view yields a press only where an interactive target is
+/// painted above it: a decorative layer covering the whole view leaves the
+/// view its press, and a button stacked over it takes the press inside its
+/// own bounds — the rule hosted planes publish as their occlusion.
+#[test]
+fn only_an_interactive_target_above_a_platform_view_takes_its_press() {
+    let mut env = test_environment();
+    env.insert(PlatformViewSink::new());
+    let builder = AnyViewBuilder::<AnyView>::new(|| {
+        AnyView::new(zstack((
+            AnyView::new(Native::new(PlatformView::new("probe"))).size(300.0, 300.0),
+            Color::srgb(20, 20, 20).size(300.0, 300.0),
+            button("Above"),
+        )))
+    });
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        env,
+        builder,
+        WINDOW.0,
+        WINDOW.1,
+        MinimalTestTheme::default(),
+    );
+    let (button_x, button_y) = midpoint(bounds_of(&mut runtime, "Above"));
+    let core = runtime.renderer();
+    let [placed] = core.materialized_platform_views.as_slice() else {
+        panic!("the probe view is placed exactly once");
+    };
+    let view = placed.placement.id;
+    let decorated = kurbo::Point::new(
+        f64::from(placed.placement.x) + 10.0,
+        f64::from(placed.placement.y) + 10.0,
+    );
+    assert!(
+        !core.platform_view_occluded(view, decorated),
+        "decorative ink above the view must leave it the press"
+    );
+    assert!(
+        core.platform_view_occluded(
+            view,
+            kurbo::Point::new(f64::from(button_x), f64::from(button_y))
+        ),
+        "the button painted above the view takes the press"
+    );
 }
 
 /// The materialized paint order keeps dev's per-frame registration ranking:

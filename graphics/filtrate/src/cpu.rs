@@ -10,12 +10,12 @@
 //! the CPU twins of the executor's `to_srgb`/`from_srgb` conversion stages
 //! (`filtrate_core::space::{TO_SRGB_WGSL, FROM_SRGB_WGSL}`).
 
+use fearless_simd::{Simd, SimdBase, SimdFloat, f32x4};
 use filtrate_core::{
     AuxData, AuxFormat, AuxImage, CpuFilter, CpuFilterError, CpuImage, FilterParam, OperatingSpace,
     SpatialFilter, WorkingSpace,
     space::{convert, from_srgb, to_srgb},
 };
-use wide::f32x4;
 
 use crate::filters::{
     BlendWithImage, Blur, GAUSSIAN_RADIUS_PER_SIGMA, GaussianBlur, OverscrollStretch, SRGB_LUMA,
@@ -24,17 +24,26 @@ use crate::filters::{
 
 /// A 4x4 matrix on premultiplied RGBA, stored as columns: the output is
 /// `c[0] * r + c[1] * g + c[2] * b + c[3] * a`.
-struct Matrix([f32x4; 4]);
+struct Matrix([[f32; 4]; 4]);
 
 impl Matrix {
     fn apply(&self, pixels: &mut [[f32; 4]]) {
-        let [red, green, blue, alpha] = self.0;
+        cherenkov_simd::dispatch!(cherenkov_simd::detect(), simd => self.apply_simd(simd, pixels));
+    }
+
+    #[expect(clippy::inline_always, reason = "inherits dispatched target features")]
+    #[inline(always)]
+    fn apply_simd<S: Simd>(&self, simd: S, pixels: &mut [[f32; 4]]) {
+        let red = f32x4::load_array(simd, self.0[0]);
+        let green = f32x4::load_array(simd, self.0[1]);
+        let blue = f32x4::load_array(simd, self.0[2]);
+        let alpha = f32x4::load_array(simd, self.0[3]);
         for pixel in pixels {
             let [r, g, b, a] = *pixel;
-            let out = alpha * f32x4::splat(a);
-            let out = blue.mul_add(f32x4::splat(b), out);
-            let out = green.mul_add(f32x4::splat(g), out);
-            *pixel = red.mul_add(f32x4::splat(r), out).to_array();
+            let out = alpha * simd.splat_f32x4(a);
+            let out = blue.mul_add(simd.splat_f32x4(b), out);
+            let out = green.mul_add(simd.splat_f32x4(g), out);
+            *pixel = red.mul_add(simd.splat_f32x4(r), out).to_array();
         }
     }
 
@@ -45,14 +54,9 @@ impl Matrix {
             let mut column = [toward * space.luma[channel]; 4];
             column[channel] += keep;
             column[3] = 0.0;
-            f32x4::new(column)
+            column
         };
-        Self([
-            column(0),
-            column(1),
-            column(2),
-            f32x4::new([0.0, 0.0, 0.0, 1.0]),
-        ])
+        Self([column(0), column(1), column(2), [0.0, 0.0, 0.0, 1.0]])
     }
 }
 
@@ -60,10 +64,10 @@ impl Matrix {
 pub fn brightness(params: [f32; 1], _space: &WorkingSpace, pixels: &mut [[f32; 4]]) {
     let amount = params[0];
     Matrix([
-        f32x4::new([1.0, 0.0, 0.0, 0.0]),
-        f32x4::new([0.0, 1.0, 0.0, 0.0]),
-        f32x4::new([0.0, 0.0, 1.0, 0.0]),
-        f32x4::new([amount, amount, amount, 1.0]),
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [amount, amount, amount, 1.0],
     ])
     .apply(pixels);
 }
@@ -91,25 +95,25 @@ pub fn hue_rotation(params: [f32; 1], _space: &WorkingSpace, pixels: &mut [[f32;
     Matrix([
         // Columns are the red, green and blue input channels' contributions
         // to (r', g', b').
-        f32x4::new([
+        [
             coefficient(0.213, 0.787, -0.213),
             coefficient(0.213, -0.213, 0.143),
             coefficient(0.213, -0.213, -0.787),
             0.0,
-        ]),
-        f32x4::new([
+        ],
+        [
             coefficient(0.715, -0.715, -0.715),
             coefficient(0.715, 0.285, 0.140),
             coefficient(0.715, -0.715, 0.715),
             0.0,
-        ]),
-        f32x4::new([
+        ],
+        [
             coefficient(0.072, -0.072, 0.928),
             coefficient(0.072, -0.072, -0.283),
             coefficient(0.072, 0.928, 0.072),
             0.0,
-        ]),
-        f32x4::new([0.0, 0.0, 0.0, 1.0]),
+        ],
+        [0.0, 0.0, 0.0, 1.0],
     ])
     .apply(pixels);
 }
@@ -118,9 +122,8 @@ pub fn hue_rotation(params: [f32; 1], _space: &WorkingSpace, pixels: &mut [[f32;
 /// straight-alpha RGB, whose bias column scales with alpha on premultiplied
 /// colour.
 pub fn color_matrix(params: [f32; 12], _space: &WorkingSpace, pixels: &mut [[f32; 4]]) {
-    let column = |index: usize, alpha: f32| {
-        f32x4::new([params[index], params[4 + index], params[8 + index], alpha])
-    };
+    let column =
+        |index: usize, alpha: f32| [params[index], params[4 + index], params[8 + index], alpha];
     Matrix([
         column(0, 0.0),
         column(1, 0.0),
@@ -368,41 +371,41 @@ fn gaussian_blur(sigma: f32, image: &mut CpuImage<'_>) {
     );
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    clippy::suboptimal_flops,
-    reason = "the blur loop mirrors WGSL f32 offsets and accumulation order"
-)]
 fn gaussian_weights(sigma: f32, radius: usize) -> (Vec<f32>, f32) {
-    let k = 1.0 / (sigma * std::f32::consts::SQRT_2);
-    let mut edge = gaussian_erf(0.5 * k);
-    let mut weights = Vec::with_capacity(radius + 1);
-    weights.push(edge);
-    let mut total = edge;
-    for offset in 1..=radius {
-        let next_edge = gaussian_erf((offset as f32 + 0.5) * k);
-        let weight = 0.5 * (next_edge - edge);
-        weights.push(weight);
-        total += 2.0 * weight;
-        edge = next_edge;
-    }
-    (weights, total)
+    cherenkov_simd::dispatch!(cherenkov_simd::detect(), simd => gaussian_weights_simd(simd, sigma, radius))
 }
 
 #[expect(
-    clippy::suboptimal_flops,
-    reason = "matches the Abramowitz and Stegun 7.1.26 WGSL evaluation order"
+    clippy::cast_precision_loss,
+    reason = "blur offsets fit f32 pixel coordinates"
 )]
-fn gaussian_erf(x: f32) -> f32 {
-    let sign = x.signum();
-    let a = x.abs();
-    let t = 1.0 / (1.0 + 0.327_591_1 * a);
-    let y = 1.0
-        - (((((1.061_405_4 * t - 1.453_152_1) * t + 1.421_413_8) * t - 0.284_496_72) * t
-            + 0.254_829_6)
-            * t
-            * (-a * a).exp());
-    sign * y
+#[expect(clippy::inline_always, reason = "inherits dispatched target features")]
+#[inline(always)]
+fn gaussian_weights_simd<S: Simd>(simd: S, sigma: f32, radius: usize) -> (Vec<f32>, f32) {
+    let k = 1.0 / (sigma * std::f32::consts::SQRT_2);
+    let mut edge = cherenkov_simd::math::erf4(simd, simd.splat_f32x4(0.5 * k))[0];
+    let mut weights = Vec::with_capacity(radius + 1);
+    weights.push(edge);
+    let mut total = edge;
+    for offset in (1..=radius).step_by(4) {
+        let points = f32x4::load_array(
+            simd,
+            [
+                (offset as f32 + 0.5) * k,
+                ((offset + 1) as f32 + 0.5) * k,
+                ((offset + 2) as f32 + 0.5) * k,
+                ((offset + 3) as f32 + 0.5) * k,
+            ],
+        );
+        let edges = cherenkov_simd::math::erf4(simd, points).to_array();
+        for next_edge in &edges[..(radius + 1 - offset).min(4)] {
+            let weight = 0.5 * (*next_edge - edge);
+            weights.push(weight);
+            total = 2.0_f32.mul_add(weight, total);
+            edge = *next_edge;
+        }
+    }
+    (weights, total)
 }
 
 #[expect(

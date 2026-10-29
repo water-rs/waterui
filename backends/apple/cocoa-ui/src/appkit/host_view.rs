@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use objc2::AnyThread;
 use objc2::rc::Retained;
-use objc2::runtime::{ProtocolObject, Sel};
+use objc2::runtime::{Bool, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAccessibilityFrameInView, NSDragOperation, NSDraggingInfo, NSEvent, NSScreen, NSTrackingArea,
@@ -116,6 +116,10 @@ pub struct HostViewIvars {
     emitter: VisibilityEmitter,
     /// The capturable surface the mounted leaf stored on this view.
     capturable: crate::capture::CapturableSlot,
+    /// One-way ghost mark: a retired host and its subtree are pure visuals —
+    /// outside hit testing, accessibility and focus. Not a handler slot, so
+    /// `clear_handlers` cannot revoke it.
+    retired: Cell<bool>,
 }
 
 impl fmt::Debug for HostViewIvars {
@@ -156,6 +160,7 @@ impl fmt::Debug for HostViewIvars {
             )
             .field("capturable", &self.capturable.get().is_some())
             .field("emitter", &self.emitter)
+            .field("retired", &self.retired.get())
             .finish()
     }
 }
@@ -486,10 +491,14 @@ define_class!(
             });
         }
 
-        // SAFETY: see the module safety note.
+        // SAFETY: see the module safety note. A retired host answers nil
+        // before any handler — the ghost keeps no hit-test membership.
         #[unsafe(method_id(hitTest:))]
         fn hit_test_override(&self, point: NSPoint) -> Option<Retained<NSView>> {
             guarded("HostView hitTest:", || {
+                if self.ivars().retired.get() {
+                    return None;
+                }
                 let handler = self.ivars().hit_test.borrow().clone();
                 match handler.map_or(HitTest::Default, |handler| handler(self, point.into())) {
                     // SAFETY: see the module safety note.
@@ -607,12 +616,50 @@ define_class!(
         #[unsafe(method(accessibilityPerformPress))]
         fn accessibility_perform_press_override(&self) -> bool {
             guarded("HostView accessibilityPerformPress", || {
-                if let Some(handler) = self.ivars().accessibility_press.borrow().clone() {
+                let handler = self.ivars().accessibility_press.borrow().clone();
+                if let Some(handler) = handler {
                     return handler(self);
                 }
                 // SAFETY: see the module safety note.
                 unsafe { msg_send![super(self), accessibilityPerformPress] }
             })
+        }
+
+        // SAFETY: see the module safety note. A retired host reports no
+        // accessibility children — the ghost is outside the tree.
+        #[unsafe(method_id(accessibilityChildren))]
+        fn accessibility_children_override(
+            &self,
+        ) -> Option<Retained<NSArray<objc2::runtime::AnyObject>>> {
+            guarded("HostView accessibilityChildren", || {
+                if self.ivars().retired.get() {
+                    return Some(NSArray::new());
+                }
+                // SAFETY: see the module safety note.
+                unsafe { msg_send![super(self), accessibilityChildren] }
+            })
+        }
+
+        // SAFETY: see the module safety note. A retired host is not an
+        // accessibility element.
+        #[unsafe(method(isAccessibilityElement))]
+        fn is_accessibility_element_override(&self) -> Bool {
+            if self.ivars().retired.get() {
+                return Bool::NO;
+            }
+            // SAFETY: see the module safety note.
+            unsafe { msg_send![super(self), isAccessibilityElement] }
+        }
+
+        // SAFETY: see the module safety note. A retired host refuses first
+        // responder — the ghost keeps no focus membership.
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder_override(&self) -> Bool {
+            if self.ivars().retired.get() {
+                return Bool::NO;
+            }
+            // SAFETY: see the module safety note.
+            unsafe { msg_send![super(self), acceptsFirstResponder] }
         }
 
         // SAFETY: see the module safety note.
@@ -862,6 +909,23 @@ impl HostView {
         ivars.right_mouse.replace(None);
         ivars.accessibility_press.replace(None);
         ivars.backing_changed.replace(None);
+    }
+
+    /// One-way: from now on this view and its subtree are a ghost —
+    /// pure visuals the transition host keeps on screen after semantics
+    /// end. Survives `clear_handlers`: the mark is an ivar, not a handler
+    /// slot. A retired host's `hitTest:` answers nil before consulting the
+    /// handler, `accessibilityChildren` answers empty, and
+    /// `isAccessibilityElement` / `acceptsFirstResponder` answer `NO`.
+    pub fn retire(&self) {
+        self.ivars().retired.set(true);
+    }
+
+    /// Whether [`retire`](HostView::retire) ran — the mark descendants
+    /// test to know their visual ownership already transferred.
+    #[must_use]
+    pub fn is_retired(&self) -> bool {
+        self.ivars().retired.get()
     }
 
     /// Whether the intrinsic content size reports the height the current

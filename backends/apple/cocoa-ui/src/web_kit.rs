@@ -43,8 +43,9 @@ use objc2_foundation::{
     NSURLSessionAuthChallengeDisposition,
 };
 use objc2_security::SecTrust;
+pub use objc2_web_kit::WKNavigation;
 use objc2_web_kit::{
-    WKContentWorld, WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy,
+    WKContentWorld, WKFrameInfo, WKNavigationAction, WKNavigationActionPolicy,
     WKNavigationDelegate, WKNavigationResponse, WKNavigationResponsePolicy, WKScriptMessage,
     WKScriptMessageHandlerWithReply, WKUIDelegate, WKURLSchemeHandler, WKURLSchemeTask,
     WKUserScript, WKUserScriptInjectionTime, WKWebViewConfiguration, WKWindowFeatures,
@@ -196,6 +197,11 @@ pub struct ActionInfo {
     pub has_target_frame: bool,
     /// Whether the target frame is the main frame.
     pub target_is_main: bool,
+    /// `mainFrameNavigation`: the main-frame navigation the action belongs
+    /// to — the same `WKNavigation` the load call that issued it returned,
+    /// and the one every server redirect of it keeps. `None` for a subframe
+    /// action.
+    pub navigation: Option<Retained<WKNavigation>>,
 }
 
 impl ActionInfo {
@@ -905,6 +911,11 @@ define_class!(
                 target_is_main: target_frame
                     // SAFETY: see the module safety note.
                     .is_some_and(|frame| unsafe { frame.isMainFrame() }),
+                // SAFETY: `action` is a live `WKNavigationAction`;
+                // `mainFrameNavigation` is a read-only property the
+                // generated bindings do not carry — public API since
+                // macOS/iOS 27, this workspace's deployment floor.
+                navigation: unsafe { msg_send![action, mainFrameNavigation] },
             };
             let handlers = self.ivars().handlers.clone();
             let policy = crate::callback::guarded("web view navigation action", || {
@@ -1220,17 +1231,21 @@ impl WebViewController {
     /// # Panics
     ///
     /// When `url` is not a URL Foundation can parse.
-    pub fn load_url(&self, url: &str) {
+    ///
+    /// Returns the navigation the engine started — the same `WKNavigation`
+    /// the action later reports as `mainFrameNavigation`, which the policy
+    /// uses to tell the loads the application issued from the page's own.
+    pub fn load_url(&self, url: &str) -> Option<Retained<WKNavigation>> {
         let url = NSURL::URLWithString(&NSString::from_str(url))
             .expect("WebView received an invalid URL");
         // SAFETY: `url` is a live `NSURL`.
         let request = NSURLRequest::requestWithURL(&url);
-        self.load_request(&request);
+        self.load_request(&request)
     }
 
-    /// Loads `request`.
-    pub fn load_request(&self, request: &NSURLRequest) {
-        self.view.load_request(request);
+    /// Loads `request`, returning the navigation the engine started.
+    pub fn load_request(&self, request: &NSURLRequest) -> Option<Retained<WKNavigation>> {
+        self.view.load_request(request)
     }
 
     /// The active committed URL string.
@@ -1254,19 +1269,21 @@ impl WebViewController {
         self.view.can_go_forward()
     }
 
-    /// Navigates to the previous entry.
-    pub fn go_back(&self) {
-        self.view.go_back();
+    /// Navigates to the previous entry, returning the navigation the
+    /// engine started — it starts none when there is no previous entry.
+    pub fn go_back(&self) -> Option<Retained<WKNavigation>> {
+        self.view.go_back()
     }
 
-    /// Navigates to the next entry.
-    pub fn go_forward(&self) {
-        self.view.go_forward();
+    /// Navigates to the next entry; see [`Self::go_back`].
+    pub fn go_forward(&self) -> Option<Retained<WKNavigation>> {
+        self.view.go_forward()
     }
 
-    /// Reloads the current document.
-    pub fn reload(&self) {
-        self.view.reload();
+    /// Reloads the current document, returning the navigation the engine
+    /// started.
+    pub fn reload(&self) -> Option<Retained<WKNavigation>> {
+        self.view.reload()
     }
 
     /// Stops an in-flight load.

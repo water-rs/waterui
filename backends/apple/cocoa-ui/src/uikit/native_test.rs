@@ -14,12 +14,18 @@
 //! `simctl spawn` runs without an application, keep their sceneless
 //! windows and never reach this module.
 //!
-//! The `.github/scripts/nextest-ios-sim.sh` target runner launches the
-//! process as an application: it wraps the test binary in an `.app` whose
-//! `Info.plist` is the one [`native_test_info_plist!`](crate::native_test_info_plist)
-//! embeds in the binary's `__TEXT,__info_plist` section. `simctl launch`
-//! does not forward the application's exit status, so [`run`] writes it to
-//! the file the runner names in [`STATUS_PATH_VARIABLE`] before exiting.
+//! The `water test-runner` target runner launches the process as an
+//! application: it wraps the test binary in an `.app` whose `Info.plist` is
+//! the one [`native_test_info_plist!`](crate::native_test_info_plist)
+//! embeds in the binary's `__TEXT,__info_plist` section — flat and
+//! `simctl launch`'d on the simulator, installed and `devicectl`'d on a
+//! device, `Contents/` and `open -n -W`'d through `LaunchServices` on
+//! Catalyst, where only a real application launch hands `UIApplicationMain`
+//! a scene. None of the launchers forwards the application's exit status,
+//! so [`run`] writes it to the file the runner names in
+//! [`STATUS_PATH_VARIABLE`] before exiting. The device runner cannot name
+//! a host path, so a relative value is resolved against the application's
+//! home — its data container.
 //!
 //! # Safety
 //!
@@ -42,7 +48,43 @@ use super::window::{Window, application_is_active};
 use super::{ViewController, window_root};
 use crate::callback::guarded;
 use crate::geometry::Rect;
-use crate::native_test::pump_main_until;
+
+/// Pumps the harness application's main thread until `until` holds or
+/// `seconds` pass, and answers `until()`.
+///
+/// It turns the event source the platform's `UIKit` actually dispatches
+/// from, so the case's own awaited work — activation, event dispatch,
+/// main-queue blocks — keeps moving while it holds the main thread.
+///
+/// iOS delivers `UIKit`'s lifecycle and events push-style through
+/// `CFRunLoop` sources, so the bare turn services them. Under Catalyst
+/// `UIApplicationMain` hands the process to `AppKit`'s `-[NSApplication
+/// run]`, which dispatches by pulling `nextEvent:`/`sendEvent:` turns:
+/// scene connection and activation never happen inside a nested
+/// `CFRunLoop` turn, and every mid-case event wait would stall the same
+/// way (water-rs/waterui#3358). The bare `native` harnesses keep
+/// [`crate::native_test::pump_main_until`] — a spawned Catalyst process
+/// runs under [`catalyst::BackgroundApplication`](super::catalyst::BackgroundApplication)
+/// with no running `NSApplication` to pull events from.
+#[cfg(target_abi = "macabi")]
+pub fn pump_main_until(seconds: f64, until: impl Fn() -> bool) -> bool {
+    use objc2_foundation::NSDate;
+
+    let mtm =
+        MainThreadMarker::new().expect("the harness application's pump runs on the main thread");
+    let event_loop = super::catalyst::EventLoop::running(mtm);
+    let deadline = NSDate::dateWithTimeIntervalSinceNow(seconds);
+    while !until() && deadline.timeIntervalSinceNow() > 0.0 {
+        event_loop.turn(&NSDate::dateWithTimeIntervalSinceNow(0.02));
+    }
+    until()
+}
+
+/// `pump_main_until` on iOS — the `CFRunLoop` turn is sufficient where
+/// `UIKit` is push-driven; see the `macabi` variant for why the two
+/// differ.
+#[cfg(not(target_abi = "macabi"))]
+pub use crate::native_test::pump_main_until;
 
 const INFO_PLIST_LEN: usize = include_bytes!("native_test.plist").len();
 
@@ -53,6 +95,11 @@ pub const INFO_PLIST: [u8; INFO_PLIST_LEN] = *include_bytes!("native_test.plist"
 
 /// The environment variable naming the file [`run`] writes the process's
 /// exit status to.
+///
+/// An absolute value names a host path (the simulator and Catalyst
+/// runners). A relative value is resolved against `NSHomeDirectory` — the
+/// application's data container — because the device runner can only name
+/// container-relative paths.
 pub const STATUS_PATH_VARIABLE: &str = "WATERUI_NATIVE_TEST_STATUS";
 
 /// The bound the launched application gets to connect its window scene
@@ -99,12 +146,20 @@ thread_local! {
 /// file cannot be written.
 pub fn run(arguments: Arguments, trials: impl FnOnce() -> Vec<Trial> + 'static) -> ! {
     if arguments.list {
-        libtest_mimic::run(&arguments, trials()).exit();
+        let conclusion = libtest_mimic::run(&arguments, trials());
+        // A `--list` launch must still report a status when the runner
+        // names one: a crash halfway through the list would otherwise hand
+        // nextest a truncated list and lose cases silently. The simulator's
+        // bare route lists without the variable, so that path is unchanged.
+        if let Some(status_path) = std::env::var_os(STATUS_PATH_VARIABLE) {
+            write_status(&conclusion, &status_path);
+        }
+        conclusion.exit();
     }
     let status_path = std::env::var_os(STATUS_PATH_VARIABLE).unwrap_or_else(|| {
         panic!(
             "{STATUS_PATH_VARIABLE} is unset — the harness application is launched by the \
-             nextest-ios-sim.sh target runner, which names the file its exit status goes to"
+             `water test-runner` target runner, which names the file its exit status goes to"
         )
     });
     let mtm = MainThreadMarker::new().expect("a harness's `main` runs on the main thread");
@@ -185,17 +240,31 @@ fn run_trials(arguments: &Arguments, trials: impl FnOnce() -> Vec<Trial>, status
         application_is_active()
     );
     let conclusion = libtest_mimic::run(arguments, trials());
+    write_status(&conclusion, status_path);
+    conclusion.exit();
+}
+
+/// The file the harness's exit status goes to: `value` as-is when
+/// absolute, else resolved against the application's home — its data
+/// container on iOS — which the device runner's relative status path names.
+fn resolve_status_path(value: &std::ffi::OsStr) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else {
+        std::path::PathBuf::from(objc2_foundation::NSHomeDirectory().to_string()).join(path)
+    }
+}
+
+/// Writes `conclusion`'s exit-status byte to the file `status_path` names.
+fn write_status(conclusion: &libtest_mimic::Conclusion, status_path: &OsString) {
+    let path = resolve_status_path(status_path);
     // `ExitCode` exposes no number on stable; recover the conclusion's by
     // comparison so the status file carries exactly the process's exit.
     let exit_code = conclusion.exit_code();
     let status = (0..=u8::MAX)
         .find(|&code| ExitCode::from(code) == exit_code)
         .expect("a libtest conclusion exits with a status byte");
-    std::fs::write(status_path, status.to_string()).unwrap_or_else(|error| {
-        panic!(
-            "writing the exit status to {}: {error}",
-            status_path.display()
-        )
-    });
-    conclusion.exit();
+    std::fs::write(&path, status.to_string())
+        .unwrap_or_else(|error| panic!("writing the exit status to {}: {error}", path.display()));
 }

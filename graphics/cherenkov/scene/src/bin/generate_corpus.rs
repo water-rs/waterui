@@ -6385,40 +6385,53 @@ fn run(root: &Path) -> Result<(), SceneError> {
         );
     }
 
-    // Effects page: 20 shadowed cards under a group-opacity layer.
+    // Effects page: 20 shadowed cards under a group-opacity group that
+    // composites in sRGB-encoded space — its shadows, card bodies and
+    // translucent insets blend with each other encoded, and the group
+    // composites onto the background encoded (#3346). Encoded sRGB is the
+    // one blend space every compared engine composites in through its
+    // own API: Vello has no linear compositing, so a linear effects page
+    // would compare different images.
     {
         perf.scene("effects", pw, ph, srgb(0.98, 0.97, 0.96), |l| {
-            l.layer(|group| {
-                group.opacity(0.82);
-                for i in 0u8..20 {
-                    let (col, row) = (i % 4, i / 4);
-                    let (x, y) = (32.0 + f64::from(col) * 250.0, 48.0 + f64::from(row) * 420.0);
-                    let card = RoundedRect::from_rect(
-                        Rect::new(x, y, x + 226.0, y + 380.0),
-                        RoundedRectRadii::new(20.0, 20.0, 20.0, 20.0),
-                    );
-                    group.shadow(
-                        Shape::RoundedRect(card),
-                        12.0,
-                        [0.0, 10.0],
-                        srgba(0.15, 0.1, 0.3, 0.35),
-                    );
-                    group.fill(
-                        Shape::RoundedRect(card),
-                        solid(srgb(
-                            0.55 + 0.05 * f32::from(col),
-                            0.35 + 0.03 * f32::from(row),
-                            0.75,
-                        )),
-                    );
-                    group.fill(
-                        Shape::RoundedRect(RoundedRect::from_rect(
-                            Rect::new(x + 20.0, y + 24.0, x + 206.0, y + 120.0),
-                            RoundedRectRadii::new(10.0, 10.0, 10.0, 10.0),
-                        )),
-                        solid(srgba(1.0, 1.0, 1.0, 0.6)),
-                    );
-                }
+            let mut items = Vec::with_capacity(60);
+            for i in 0u8..20 {
+                let (col, row) = (i % 4, i / 4);
+                let (x, y) = (32.0 + f64::from(col) * 250.0, 48.0 + f64::from(row) * 420.0);
+                let card = RoundedRect::from_rect(
+                    Rect::new(x, y, x + 226.0, y + 380.0),
+                    RoundedRectRadii::new(20.0, 20.0, 20.0, 20.0),
+                );
+                items.push(GroupItem::Draw(Draw::Shadow {
+                    shape: Shape::RoundedRect(card),
+                    blur_sigma: 12.0,
+                    offset: [0.0, 10.0],
+                    color: srgba(0.15, 0.1, 0.3, 0.35),
+                }));
+                items.push(GroupItem::Draw(Draw::Fill {
+                    shape: Shape::RoundedRect(card),
+                    rule: FillRule::NonZero,
+                    paint: solid(srgb(
+                        0.55 + 0.05 * f32::from(col),
+                        0.35 + 0.03 * f32::from(row),
+                        0.75,
+                    )),
+                }));
+                items.push(GroupItem::Draw(Draw::Fill {
+                    shape: Shape::RoundedRect(RoundedRect::from_rect(
+                        Rect::new(x + 20.0, y + 24.0, x + 206.0, y + 120.0),
+                        RoundedRectRadii::new(10.0, 10.0, 10.0, 10.0),
+                    )),
+                    rule: FillRule::NonZero,
+                    paint: solid(srgba(1.0, 1.0, 1.0, 0.6)),
+                }));
+            }
+            l.group(Group {
+                items,
+                opacity: 0.82,
+                blend: BlendMode::Normal,
+                blend_space: BlendSpace::SrgbEncoded,
+                filter: None,
             });
         });
     }

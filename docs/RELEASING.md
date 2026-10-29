@@ -13,9 +13,7 @@ packages with `publish = false` are excluded.
 4. Rehearse registry publication in dependency order, then install the
    newest published `waterui-cli` that satisfies the workspace's
    `minimum-cli-version` and run `water create` followed by `water build`.
-5. Build and smoke-test both WPE runtime architectures from their packaged ZIP
-   files.
-6. Review [the 0.3 migration guide](MIGRATION_0.3.md) and every changelog entry.
+5. Review [the 0.3 migration guide](MIGRATION_0.3.md) and every changelog entry.
 
 ## Release
 

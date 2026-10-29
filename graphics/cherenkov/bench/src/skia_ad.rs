@@ -6,7 +6,11 @@
 //! colour space is linear Display P3 (CICP primaries 12 / transfer 8) —
 //! the suite working space — so HDR and wide-gamut values are carried
 //! unclamped end to end and the `HdrColor`/`WideGamut` claims are real.
-//! Readback is `f16` premultiplied linear P3 decoded to `f32`.
+//! A scene whose root level composites in encoded sRGB (every root item
+//! an encoded-sRGB group) renders into an encoded-sRGB surface instead,
+//! and each group into a layer of its own space, so every composite
+//! happens in the space the scene declares. Readback is `f16`
+//! premultiplied linear P3 decoded to `f32`.
 //!
 //! Prepare/encode/submit split: `prepare` runs once per scene — feature
 //! check, render-target creation, PNG decode, typeface/font creation,
@@ -34,8 +38,8 @@ use std::time::Instant;
 
 use cherenkov_oracle::{F32Image, color as oc};
 use cherenkov_scene::{
-    BlendMode as SBlend, Draw, Extend, Feature, FillRule, GlyphRun, Item, Layer, Paint as SPaint,
-    ResourceHash, Sampling as SSampling, Scene, StrokeStyle,
+    BlendMode as SBlend, BlendSpace, Draw, Extend, Feature, FillRule, GlyphRun, Group, GroupItem,
+    Item, Layer, Paint as SPaint, ResourceHash, Sampling as SSampling, Scene, StrokeStyle,
 };
 use kurbo::{Affine, BezPath, PathEl};
 use read_fonts::TableProvider;
@@ -90,6 +94,9 @@ pub fn skia_features() -> Vec<Feature> {
         Feature::Shadow,
         Feature::Glyphs,
         Feature::FontVariations,
+        // A group composites in its own `SaveLayerRec::color_space` layer,
+        // where its enclosing level stores the same space (`encode_group`).
+        Feature::BlendSpace(BlendSpace::SrgbEncoded),
         Feature::HdrColor,
         Feature::WideGamut,
         // Skia maps `Extend::None` to `SkTileMode::kDecal`.
@@ -134,6 +141,47 @@ fn p3_cs(engine: &'static str) -> Result<ColorSpace, BenchError> {
     })
 }
 
+/// The space the scene's root level composites in, which the surface
+/// stores: encoded sRGB when every root item is a group compositing in
+/// encoded sRGB onto an opaque `Normal` root, so the groups composite onto
+/// the clear in their own space as the scene declares; the linear Display
+/// P3 working space otherwise.
+fn root_space(scene: &Scene) -> BlendSpace {
+    let root = &scene.root;
+    let encoded = root.opacity >= 1.0
+        && root.blend == SBlend::Normal
+        && !root.items.is_empty()
+        && root
+            .items
+            .iter()
+            .all(|item| matches!(item, Item::Group(g) if g.blend_space == BlendSpace::SrgbEncoded));
+    if encoded {
+        BlendSpace::SrgbEncoded
+    } else {
+        BlendSpace::Linear
+    }
+}
+
+/// The colour space a surface or layer storing `space` is created in.
+///
+/// # Errors
+/// [`BenchError::Gpu`] when Skia rejects the linear-P3 CICP combo.
+fn space_cs(engine: &'static str, space: BlendSpace) -> Result<ColorSpace, BenchError> {
+    match space {
+        BlendSpace::Linear => p3_cs(engine),
+        BlendSpace::SrgbEncoded => Ok(ColorSpace::new_srgb()),
+    }
+}
+
+/// The surface colour space for `scene`: the space its root level
+/// composites in ([`root_space`]). Readback converts it to linear P3.
+///
+/// # Errors
+/// As [`space_cs`].
+fn surface_cs(engine: &'static str, scene: &Scene) -> Result<ColorSpace, BenchError> {
+    space_cs(engine, root_space(scene))
+}
+
 /// One recorded canvas operation.
 enum Cmd {
     /// `canvas.draw_paint(paint)` — paints over the whole clip; a paint
@@ -148,8 +196,9 @@ enum Cmd {
     Concat(Matrix),
     /// `canvas.clip_path(p, Intersect, aa)`.
     Clip(Path),
-    /// `canvas.save_layer(paint)` (blend + alpha).
-    SaveLayer(Paint),
+    /// `canvas.save_layer(paint)` (blend + alpha), in the given colour
+    /// space or, with `None`, the enclosing device's.
+    SaveLayer(Paint, Option<ColorSpace>),
     /// `canvas.draw_path(p, paint)` (fill or stroke paint).
     Draw(Path, Paint),
     /// `canvas.draw_image_rect` with sampling.
@@ -171,7 +220,14 @@ fn build_cmds(
     let mut clear = Paint::default();
     clear.set_color4f(p3_linear4f(&scene.clear), &p3_cs(engine)?);
     let mut cmds = vec![Cmd::DrawPaint(clear)];
-    encode_layer(&mut cmds, blobs, &scene.root, engine, counters)?;
+    encode_layer(
+        &mut cmds,
+        blobs,
+        &scene.root,
+        root_space(scene),
+        engine,
+        counters,
+    )?;
     Ok(cmds)
 }
 
@@ -183,6 +239,7 @@ fn encode_layer(
     cmds: &mut Vec<Cmd>,
     blobs: &Blobs,
     layer: &Layer,
+    space: BlendSpace,
     engine: &'static str,
     counters: &mut Counters,
 ) -> Result<(), BenchError> {
@@ -200,7 +257,7 @@ fn encode_layer(
         let mut lp = Paint::default();
         lp.set_blend_mode(blend(layer.blend));
         lp.set_alpha_f(layer.opacity.clamp(0.0, 1.0) as f32);
-        cmds.push(Cmd::SaveLayer(lp));
+        cmds.push(Cmd::SaveLayer(lp, None));
     }
     // Content and children draw translated by -scroll_offset inside the
     // clip; `motion` is unsupported (not in `skia_features`).
@@ -212,24 +269,77 @@ fn encode_layer(
     }
     for item in &layer.items {
         match item {
-            Item::Layer(l) => encode_layer(cmds, blobs, l, engine, counters)?,
+            Item::Layer(l) => encode_layer(cmds, blobs, l, space, engine, counters)?,
             Item::Draw(d) => {
                 counters.draw_commands += 1;
                 encode_draw(cmds, blobs, d, engine)?;
             }
-            // Unreachable: scenes declaring `blend-space` fail the feature
-            // check; a group with no declared feature needs no support.
-            Item::Group(_) => {
-                return Err(BenchError::Unsupported {
-                    engine,
-                    feature: Feature::BlendSpace(cherenkov_scene::BlendSpace::SrgbEncoded),
-                    api: Some("skia: scoped group compositing"),
-                });
-            }
+            Item::Group(g) => encode_group(cmds, blobs, g, space, engine, counters)?,
         }
     }
     if grouped {
         cmds.push(Cmd::Restore);
+    }
+    cmds.push(Cmd::Restore);
+    Ok(())
+}
+
+/// The upstream API Skia lacks for a group whose blend space differs from
+/// the level it composites onto.
+const GROUP_SPACE_API: &str = "SkCanvas::restore composites a layer in the enclosing device's \
+     colour space, not the layer's own";
+
+/// Encodes a [`Group`] as a `saveLayer` created in the group's blend space
+/// (`SaveLayerRec::color_space`): its members composite with each other in
+/// that space, and the layer composites onto the enclosing level with the
+/// group's opacity and blend.
+///
+/// Skia composites a restored layer in the enclosing device's space, so
+/// the group composites in its declared space only where the enclosing
+/// level stores that same space; a group under a level of another space
+/// is unsupported. Only encoded-sRGB groups are mapped; a linear group
+/// keeps reporting unsupported.
+///
+/// # Errors
+/// [`BenchError::Unsupported`] for a linear group or one whose space
+/// differs from `space`, the enclosing level's; any error encoding its
+/// members.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Skia paint alpha is f32; scene opacity is f64"
+)]
+fn encode_group(
+    cmds: &mut Vec<Cmd>,
+    blobs: &Blobs,
+    group: &Group,
+    space: BlendSpace,
+    engine: &'static str,
+    counters: &mut Counters,
+) -> Result<(), BenchError> {
+    if group.blend_space != BlendSpace::SrgbEncoded || group.blend_space != space {
+        return Err(BenchError::Unsupported {
+            engine,
+            feature: Feature::BlendSpace(group.blend_space),
+            api: Some(GROUP_SPACE_API),
+        });
+    }
+    let mut lp = Paint::default();
+    lp.set_blend_mode(blend(group.blend));
+    lp.set_alpha_f(group.opacity.clamp(0.0, 1.0) as f32);
+    cmds.push(Cmd::SaveLayer(
+        lp,
+        Some(space_cs(engine, group.blend_space)?),
+    ));
+    for item in &group.items {
+        match item {
+            GroupItem::Draw(d) => {
+                counters.draw_commands += 1;
+                encode_draw(cmds, blobs, d, engine)?;
+            }
+            GroupItem::Group(g) => {
+                encode_group(cmds, blobs, g, group.blend_space, engine, counters)?;
+            }
+        }
     }
     cmds.push(Cmd::Restore);
     Ok(())
@@ -345,8 +455,11 @@ fn replay(canvas: &Canvas, cmds: &[Cmd]) {
             Cmd::Clip(p) => {
                 canvas.clip_path(p, ClipOp::Intersect, true);
             }
-            Cmd::SaveLayer(p) => {
+            Cmd::SaveLayer(p, None) => {
                 canvas.save_layer(&SaveLayerRec::default().paint(p));
+            }
+            Cmd::SaveLayer(p, Some(cs)) => {
+                canvas.save_layer(&SaveLayerRec::default().paint(p).color_space(cs));
             }
             Cmd::Draw(p, paint) => {
                 canvas.draw_path(p, paint);
@@ -880,7 +993,9 @@ impl SkiaCpu {
                 crate_version: env!("DEP_SKIA_SAFE_VERSION"),
                 source_rev: option_env!("DEP_SKIA_SAFE_SOURCE_REV").map(String::from),
                 output_format:
-                    "RGBAF16 premultiplied raster surface (linear Display P3, CICP 12/8)".into(),
+                    "RGBAF16 premultiplied raster surface (linear Display P3, CICP 12/8; \
+                     encoded sRGB for a scene whose root composites encoded)"
+                        .into(),
                 precision: "Skia blends in f32 premultiplied; output is f16 (≈11-bit mantissa)",
                 route: "cpu-raster",
                 color_note: "scene colours converted working-space→linear-P3 f32 unclamped; \
@@ -921,7 +1036,7 @@ impl Engine for SkiaCpu {
             ),
             ColorType::RGBAF16,
             AlphaType::Premul,
-            p3_cs(Self::NAME)?,
+            surface_cs(Self::NAME, input.scene)?,
         );
         let surface = surfaces::raster(&info, None, None)
             .ok_or_else(|| BenchError::Gpu("skia raster surface".into()))?;
@@ -1142,7 +1257,9 @@ impl SkiaVk {
                 crate_version: env!("DEP_SKIA_SAFE_VERSION"),
                 source_rev: option_env!("DEP_SKIA_SAFE_SOURCE_REV").map(String::from),
                 output_format:
-                    "Ganesh Vulkan render target, RGBAF16 premultiplied (linear Display P3)".into(),
+                    "Ganesh Vulkan render target, RGBAF16 premultiplied (linear Display P3; \
+                     encoded sRGB for a scene whose root composites encoded)"
+                        .into(),
                 precision: "Skia blends in f32 premultiplied; output is f16 (≈11-bit mantissa)",
                 route: "vulkan",
                 color_note: "scene colours converted working-space→linear-P3 f32 unclamped; \
@@ -1199,7 +1316,7 @@ impl Engine for SkiaVk {
             ),
             ColorType::RGBAF16,
             AlphaType::Premul,
-            p3_cs(Self::NAME)?,
+            surface_cs(Self::NAME, input.scene)?,
         );
         let surface = skia_safe::gpu::ganesh::surface_ganesh::render_target(
             &mut self.dctx,
@@ -1322,6 +1439,7 @@ mod graphite_metal {
 
     use super::{
         SkiaPrepared, build_cmds, p3_cs, replay_scrolled, skia_features, skia_missing_api,
+        surface_cs,
     };
     use crate::convert;
     use crate::memory::{AdapterMemory, Reading, skia_budget};
@@ -1396,7 +1514,8 @@ mod graphite_metal {
                     crate_version: env!("DEP_SKIA_SAFE_VERSION"),
                     source_rev: option_env!("DEP_SKIA_SAFE_SOURCE_REV").map(String::from),
                     output_format: "Graphite Metal render target, RGBAF16 premultiplied \
-                                    (linear Display P3)"
+                                    (linear Display P3; encoded sRGB for a scene whose root \
+                                    composites encoded)"
                         .into(),
                     precision: "Skia blends in f32 premultiplied; output is f16 (≈11-bit mantissa)",
                     route: "metal (graphite)",
@@ -1486,7 +1605,7 @@ mod graphite_metal {
                 (w as i32, h as i32),
                 ColorType::RGBAF16,
                 AlphaType::Premul,
-                p3_cs(Self::NAME)?,
+                surface_cs(Self::NAME, input.scene)?,
             );
             let surface = surfaces::render_target(
                 &mut self.recorder,

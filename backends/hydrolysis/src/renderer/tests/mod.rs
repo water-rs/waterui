@@ -34,6 +34,7 @@ mod gesture_surface;
 mod gpu_surface_direct;
 mod gpu_surface_idle;
 mod gpu_surface_input;
+mod group_opacity;
 mod image_ingest;
 mod ime;
 mod interaction_state;
@@ -262,9 +263,20 @@ pub fn pumped_test_environment() -> Environment {
 }
 
 fn themed_test_environment() -> Environment {
+    test_environment_with_scheme(waterui::theme::ColorScheme::Light)
+}
+
+/// [`themed_test_environment`] with the installed colour scheme set to
+/// `scheme` — the same install the runners perform, so the default colour
+/// tokens are signals over it. A test passes a binding it owns when the
+/// point is that a scheme flip re-resolves them, the way a platform
+/// appearance flip does on a live runner.
+pub fn test_environment_with_scheme(
+    scheme: impl nami::signal::IntoComputed<waterui::theme::ColorScheme>,
+) -> Environment {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
     let mut env = Environment::new();
-    crate::testing::install_theme(&mut env);
+    crate::theme::install_theme_tokens(&mut env, None, scheme);
     crate::localization::install(&mut env);
     // The runners seed the chord table; a test that mounts menus resolves
     // shortcuts through the same path (water-rs/hydrolysis#247).
@@ -2875,6 +2887,11 @@ pub struct ChromePlan {
     pub captures: Vec<(CaptureClass, MaterialCapture)>,
     /// The materials `draw_interaction_state_layer` records per call.
     pub draws: Vec<ChromeDraw>,
+    /// Scene fills `draw_interaction_state_layer` records after the
+    /// materials — each lands in the segment above the last member, so a
+    /// test can mount a keyed mount and a scene segment over it in one
+    /// program (water-rs/waterui#2002).
+    pub fills: Vec<(kurbo::RoundedRect, Paint)>,
     /// When set, `draw_interaction_state_layer` records the materials
     /// this resolves from the live `WidgetInteractionState` instead —
     /// how a theme whose uniforms depend on the press is written.
@@ -3007,6 +3024,9 @@ impl WidgetTheme for MinimalTestTheme {
                 chrome.capture,
                 chrome.effect.clone(),
             );
+        }
+        for (shape, paint) in &self.chrome.fills {
+            draw.fill(*shape, paint.clone());
         }
     }
 

@@ -282,14 +282,15 @@ pub struct Mirror {
     /// device's lazily allocated memory types.
     eligible: Eligible,
     /// The tile modules, `[family][self]` with families short, long
-    /// gradient, image source, clipped glyph and span composite (see [`family`]):
+    /// gradient, image source, clipped glyph, span composite and simple (see [`family`]):
     /// `engine_tile{,_long,_image}.spv` for a draw sourcing another slot,
     /// `engine_tile{,_long,_image}_self.spv` for a draw sourcing its own
     /// slot.
-    modules: [[vk::ShaderModule; 2]; 5],
+    modules: [[vk::ShaderModule; 2]; 6],
     set_layouts: [vk::DescriptorSetLayout; 3],
     layout: vk::PipelineLayout,
     cache: vk::PipelineCache,
+    cache_path: Option<std::path::PathBuf>,
     pipelines: FxHashMap<PipeKey, vk::Pipeline>,
     attachments: FxHashMap<(u32, u32), SizeEntry>,
     frames: Vec<FrameSets>,
@@ -326,6 +327,7 @@ impl Mirror {
         device: &wgpu::Device,
         adapter: &wgpu::Adapter,
         eligible: Eligible,
+        cache_path: Option<&std::path::Path>,
     ) -> Result<Self, MirrorError> {
         // SAFETY: `as_hal` borrows the adapter for this scope and the
         // callback only reads its instance and physical device.
@@ -337,8 +339,8 @@ impl Mirror {
         drop(hal_adapter);
         // SAFETY: `physical_device` belongs to `instance`, which is
         // live; the query writes only its own return value.
-        let api_version =
-            unsafe { instance.get_physical_device_properties(physical_device) }.api_version;
+        let properties = unsafe { instance.get_physical_device_properties(physical_device) };
+        let api_version = properties.api_version;
         // SAFETY: `as_hal` borrows the device for this scope; the
         // callback clones the `ash::Device`, which is reference counted
         // by the `wgpu::Device` the caller holds for the mirror's life.
@@ -365,8 +367,16 @@ impl Mirror {
         };
         let local_read = ash::khr::dynamic_rendering_local_read::Device::new(&instance, &vk_device);
 
+        // Native Vulkan data must not share wgpu's wrapped cache file.
+        let cache_path = cache_path.map(|path| path.with_added_extension("vulkan"));
+        let data = cache_path
+            .as_ref()
+            .and_then(|path| std::fs::read(path).ok());
+        let data = data
+            .as_deref()
+            .filter(|data| compatible_cache(data, &properties));
         let mut built = Built::default();
-        let result = built.build(&vk_device);
+        let result = built.build(&vk_device, data);
         let Ok(()) = result else {
             // SAFETY: `built` holds only objects created on `vk_device`
             // by this call, each destroyed exactly once.
@@ -382,6 +392,7 @@ impl Mirror {
             set_layouts: built.set_layouts,
             layout: built.layout,
             cache: built.cache,
+            cache_path,
             pipelines: FxHashMap::default(),
             attachments: FxHashMap::default(),
             frames: Vec::new(),
@@ -976,6 +987,18 @@ impl Mirror {
         *created = true;
         let pipeline = self.create_pipeline(key)?;
         self.pipelines.insert(key, pipeline);
+        if let Some(path) = &self.cache_path {
+            // SAFETY: the cache belongs to this live device and all access
+            // is serialized on the renderer thread.
+            match unsafe { self.device.get_pipeline_cache_data(self.cache) } {
+                Ok(data) => {
+                    if let Err(error) = crate::render::write_pipeline_cache(path, &data) {
+                        tracing::debug!(?path, %error, "could not persist Vulkan pipeline cache");
+                    }
+                }
+                Err(error) => tracing::debug!(%error, "could not read Vulkan pipeline cache"),
+            }
+        }
         Ok(pipeline)
     }
 
@@ -1261,10 +1284,11 @@ fn raw(buffer: vk::Buffer) -> u64 {
 }
 
 /// The tile module family a pipeline key's engine variant draws through:
-/// 0 for the short module (variants 0–3), 1 for long gradients (4), 2 for
-/// image sources (6), solid clipped glyphs (7), and span composites (8).
+/// Short paint, long gradients, images, glyphs, composites and simple paint
+/// occupy the six module families in that order.
 const fn family(variant: u8) -> usize {
     match variant {
+        0 => 5,
         4 => 1,
         6 => 2,
         7 => 3,
@@ -1283,7 +1307,7 @@ fn raw_view(view: vk::ImageView) -> u64 {
 #[derive(Default)]
 struct Built {
     /// `[family][self]` — see [`Mirror::modules`].
-    modules: [[vk::ShaderModule; 2]; 5],
+    modules: [[vk::ShaderModule; 2]; 6],
     set_layouts: [vk::DescriptorSetLayout; 3],
     layout: vk::PipelineLayout,
     cache: vk::PipelineCache,
@@ -1291,7 +1315,7 @@ struct Built {
 
 impl Built {
     /// Creates the mirror's immutable objects on `device`.
-    fn build(&mut self, device: &ash::Device) -> Result<(), MirrorError> {
+    fn build(&mut self, device: &ash::Device, data: Option<&[u8]>) -> Result<(), MirrorError> {
         let create_module = |bytes| {
             let code = words(bytes);
             // SAFETY: `device` is live and `code` is SPIR-V the build
@@ -1313,6 +1337,8 @@ impl Built {
             spirv::TILE_GLYPH_SELF,
             spirv::TILE_COMPOSITE,
             spirv::TILE_COMPOSITE_SELF,
+            spirv::TILE_SIMPLE,
+            spirv::TILE_SIMPLE_SELF,
         ];
         for (slot, bytes) in self.modules.iter_mut().flatten().zip(blobs) {
             *slot = create_module(bytes)?;
@@ -1412,13 +1438,7 @@ impl Built {
             )
         }
         .map_err(|e| MirrorError::Vulkan("vkCreatePipelineLayout", e))?;
-        // The cache is created empty and never serialized: it exists so
-        // that the pipelines an epoch creates on first use share their
-        // compilation work within one run.
-        // SAFETY: `device` is live and the info carries no initial data.
-        self.cache =
-            unsafe { device.create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None) }
-                .map_err(|e| MirrorError::Vulkan("vkCreatePipelineCache", e))?;
+        self.cache = create_cache(device, data)?;
         Ok(())
     }
 
@@ -1440,4 +1460,37 @@ impl Built {
             }
         }
     }
+}
+
+/// Vulkan's version-one cache header is four little-endian u32 fields
+/// followed by the device's pipeline-cache UUID. Other devices or driver
+/// cache versions must start empty.
+fn compatible_cache(data: &[u8], properties: &vk::PhysicalDeviceProperties) -> bool {
+    let Some(header) = data.get(..32) else {
+        return false;
+    };
+    let word =
+        |offset| u32::from_le_bytes(header[offset..offset + 4].try_into().expect("header word"));
+    word(0) == 32
+        && word(4)
+            == u32::try_from(vk::PipelineCacheHeaderVersion::ONE.as_raw())
+                .expect("positive version")
+        && word(8) == properties.vendor_id
+        && word(12) == properties.device_id
+        && header[16..32] == properties.pipeline_cache_uuid
+}
+
+fn create_cache(
+    device: &ash::Device,
+    data: Option<&[u8]>,
+) -> Result<vk::PipelineCache, MirrorError> {
+    // SAFETY: the bytes came from our cache file and their Vulkan
+    // header matches this device; the slice outlives creation.
+    unsafe {
+        device.create_pipeline_cache(
+            &vk::PipelineCacheCreateInfo::default().initial_data(data.unwrap_or_default()),
+            None,
+        )
+    }
+    .map_err(|e| MirrorError::Vulkan("vkCreatePipelineCache", e))
 }

@@ -37,6 +37,7 @@ fn text_node<E: crate::text::TextEngine>(content: &'static str) -> RenderNode<E>
         alignment,
         line_limit: None,
         layout_dirty: Rc::new(Cell::new(false)),
+        tap_span_targets: RefCell::default(),
     }))
 }
 

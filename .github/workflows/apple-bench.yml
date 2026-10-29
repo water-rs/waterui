@@ -20,7 +20,7 @@ concurrency:
 jobs:
   bench:
     name: native hot paths
-    runs-on: macos-26
+    runs-on: xcode-27
     env:
       CARGO_TERM_COLOR: always
       # Same toolchain policy as ci.yml (#328): no compile wrapper on CI.

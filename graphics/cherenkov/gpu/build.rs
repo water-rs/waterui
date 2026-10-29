@@ -44,6 +44,11 @@ mod programs;
 mod stroke_abi;
 
 mod build_tile_spirv;
+/// The SPIR-V writer flags `cherenkov_shader::emit::spirv` emits with,
+/// pulled in the same way so the two emitters cannot drift
+/// (water-rs/waterui#3079).
+#[path = "../shader/src/spv_flags.rs"]
+mod spv_flags;
 #[path = "build_tile.rs"]
 mod tile;
 /// The union member cap the WGSL fold compiles against — the same
@@ -164,7 +169,13 @@ impl Stripped {
             "image-source",
         );
         let shader_no_cell = drop_marked(&shader_cell, "cell-buffer");
-        let shader_long = drop_marked(&shader_no_cell, "image-source");
+        let shader_long = drop_marked(
+            &drop_marked(
+                &drop_marked(&shader_no_cell, "image-source"),
+                "non-gradient-paint",
+            ),
+            "generic-composite",
+        );
         let shader_image = drop_marked(&shader_no_cell, "long-gradient-stub");
         let shader_plain = drop_marked(&shader_image, "image-source");
         let shared_plain = drop_marked(shared, "cell-buffer");
@@ -213,6 +224,12 @@ const UNCHECKED: naga::proc::BoundsCheckPolicies = naga::proc::BoundsCheckPolici
     binding_array: naga::proc::BoundsCheckPolicy::Unchecked,
 };
 
+fn read_shader(manifest: &Path, name: &str) -> String {
+    let path = manifest.join(format!("src/render/{name}.wgsl"));
+    println!("cargo::rerun-if-changed={}", path.display());
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -222,11 +239,7 @@ fn main() {
             manifest.join(format!("src/render/{shared}.rs")).display()
         );
     }
-    let read = |name: &str| {
-        let path = manifest.join(format!("src/render/{name}.wgsl"));
-        println!("cargo::rerun-if-changed={}", path.display());
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
-    };
+    let read = |name: &str| read_shader(&manifest, name);
     let [
         shared,
         shader,
@@ -306,6 +319,9 @@ fn main() {
     let cell_glyph = format!("{cell_specialized}\n{}", read("shader_glyph"));
     let composite = format!("{specialized}\n{}", read("shader_composite"));
     let specs = module_specs(&Modules {
+        simple_entry: &read("entry_simple"),
+        shadow_entry: &read("entry_shadow"),
+        full_entry: &read("entry_full"),
         shared: &shared,
         shared_plain: &stripped.shared_plain,
         shader_no_long: &stripped.shader_no_long,
@@ -440,6 +456,9 @@ fn gauss_legendre_8() -> Vec<(f64, f64)> {
 
 /// The WGSL module sources `module_specs` splices into `Spec`s.
 struct Modules<'a> {
+    simple_entry: &'a str,
+    shadow_entry: &'a str,
+    full_entry: &'a str,
     shared: &'a str,
     /// `shared` minus its `// cell-buffer` spans.
     shared_plain: &'a str,
@@ -529,10 +548,15 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
                 11 => 2,
                 _ => variant,
             };
+            let entry = match paint_variant {
+                0 => m.simple_entry,
+                1 => m.shadow_entry,
+                _ => m.full_entry,
+            };
             Spec {
                 name: format!("engine{variant}"),
                 source: format!(
-                    "const VARIANT: u32 = {paint_variant}u;\n{cap}{shared}\n{shader}\n{union}{}",
+                    "const VARIANT: u32 = {paint_variant}u;\n{cap}{shared}\n{shader}\n{union}{}\n{entry}",
                     m.blend
                 ),
                 groups: bindings::ENGINE_GROUPS,
@@ -600,6 +624,15 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
             attachment: true,
         });
     }
+    specs.push(Spec {
+        name: "engine_tile_simple".into(),
+        source: format!("{}\n{}", specs[0].source, m.tile),
+        groups: bindings::ENGINE_GROUPS,
+        programs: &[],
+        metal: false,
+        merge_pair: None,
+        attachment: true,
+    });
     specs
 }
 
@@ -782,19 +815,23 @@ fn compile(
     let validated = Validator::new(ValidationFlags::all(), capabilities::ENGINE_CAPABILITIES)
         .validate(&module)
         .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
-    let info = if spec.attachment && spirv {
-        let specialized = matches!(
-            spec.name.as_str(),
-            "engine_tile_glyph" | "engine_tile_composite"
-        );
+    if spec.attachment && spirv {
+        let fragment = match spec.name.as_str() {
+            "engine_tile_simple" => Some("tile_simple"),
+            "engine_tile_glyph" | "engine_tile_composite" => Some("tile_full"),
+            _ => None,
+        };
         module.entry_points.retain(|entry| {
             entry.name == "vs_main"
-                || if specialized {
-                    entry.name == "tile_full"
-                } else {
-                    entry.name.starts_with("tile_")
-                }
+                || fragment.map_or_else(
+                    || entry.name.starts_with("tile_") && entry.name != "tile_simple",
+                    |name| entry.name == name,
+                )
         });
+    }
+    // Metal's attachment wrapper calls helper functions directly; its roots
+    // are outside the generated module. Other modules expose only entry points.
+    let info = if !spec.attachment || spirv {
         naga::compact::compact(&mut module, naga::compact::KeepUnused::No);
         Validator::new(ValidationFlags::all(), capabilities::ENGINE_CAPABILITIES)
             .validate(&module)
@@ -892,9 +929,9 @@ fn write_spirv(out_dir: &Path, spec: &Spec, module: &naga::Module, info: &naga::
         // The attachment pass finds the reads by name; it strips the
         // names again, so the written module matches the others.
         flags: if spec.attachment {
-            spv::WriterFlags::DEBUG
+            spv_flags::SPIRV_WRITER_FLAGS | spv::WriterFlags::DEBUG
         } else {
-            spv::WriterFlags::empty()
+            spv_flags::SPIRV_WRITER_FLAGS
         },
         fake_missing_bindings: false,
         binding_map: binding_map(spec, module),
@@ -939,7 +976,9 @@ fn write_spirv(out_dir: &Path, spec: &Spec, module: &naga::Module, info: &naga::
                     bindings::TILE_INPUT_BINDINGS,
                     source_index,
                     match spec.name.as_str() {
-                        "engine_tile_glyph" => [false, false],
+                        "engine_tile_simple" | "engine_tile_glyph" | "engine_tile_long" => {
+                            [false, false]
+                        }
                         "engine_tile_composite" => [false, true],
                         _ => [true, true],
                     },
@@ -1377,6 +1416,7 @@ fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option
         };
         if spec.attachment {
             match spec.name.as_str() {
+                "engine_tile_long" => defines.push("TILE_LONG_GRADIENT".to_owned()),
                 "engine_tile_glyph" => defines.push("TILE_GLYPH".to_owned()),
                 "engine_tile_composite" => defines.push("TILE_COMPOSITE_SOURCE_OVER".to_owned()),
                 _ => {}
