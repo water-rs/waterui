@@ -1133,7 +1133,8 @@ pub enum InputEvent {
         x: f32,
         /// Vertical position in logical points.
         y: f32,
-        /// The gesture's cumulative delta.
+        /// The fractional scale change since the previous event; the gesture
+        /// engine multiplies the running scale by `1 + delta`.
         delta: f32,
         /// The gesture's touch phase.
         phase: TouchPhase,
@@ -1144,7 +1145,8 @@ pub enum InputEvent {
         x: f32,
         /// Vertical position in logical points.
         y: f32,
-        /// The gesture's cumulative delta.
+        /// The angle change since the previous event, in radians, clockwise
+        /// positive in the top-left (y-down) window coordinates.
         delta: f32,
         /// The gesture's touch phase.
         phase: TouchPhase,
@@ -5120,7 +5122,8 @@ mod winit_impl {
                     self.pending_events.push(InputEvent::Rotation {
                         x: self.pointer_position.0,
                         y: self.pointer_position.1,
-                        delta: *delta,
+                        // winit/AppKit report degrees, counter-clockwise positive.
+                        delta: -delta.to_radians(),
                         phase: map_touch_phase(*phase),
                     });
                 }

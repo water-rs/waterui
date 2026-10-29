@@ -104,6 +104,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSCalendar",
     "NSCharacterSet",
     "NSDate",
+    "NSTimer",
     "NSUUID",
     "NSDateFormatter",
     "NSFormatter",
@@ -137,6 +138,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSURLRequest",
     "NSURLResponse",
     "NSURLSession",
+    "NSUserDefaults",
 ] }
 objc2-security = { version = "0.3", default-features = false, features = [
     "SecTrust",

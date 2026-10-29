@@ -122,7 +122,7 @@ use waterui_layout::{Divider, scroll};
 #[cfg(feature = "accessibility")]
 use waterui_navigation::NavigationView;
 #[cfg(feature = "accessibility")]
-use waterui_navigation::tab::{Tab, TabsLayout};
+use waterui_navigation::tab::{NativeTabStyle, Tab, TabsLayout};
 
 use crate::theme::WidgetTheme;
 use crate::theme::{
@@ -130,8 +130,8 @@ use crate::theme::{
     InteractionMotion, ListMetrics, ModalInteraction, NavigationMetrics, NavigationMotion,
     PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
     RadioSelectionMotion, SliderMetrics, SliderValueIndicatorMetrics, StepperEnd, StepperMetrics,
-    TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics,
-    ToggleMetrics, WidgetInteractionState,
+    TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
+    TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
 };
 use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
@@ -3386,16 +3386,11 @@ impl WidgetTheme for MinimalTestTheme {
         self.forced_tab_item_layout
             .unwrap_or(TabItemLayout::Vertical)
     }
-    fn tabs_metrics(&self, layout: TabItemLayout) -> TabsMetrics {
+    fn tabs_metrics(&self, _layout: TabItemLayout) -> TabsMetrics {
         TabsMetrics {
             bar_height: 48.0,
             button_min_width: 48.0,
             button_horizontal_inset: 16.0,
-            active_indicator_height: match layout {
-                TabItemLayout::Vertical => 3.0,
-                TabItemLayout::Horizontal => 40.0,
-            },
-            active_indicator_radius: 3.0,
             icon_label_spacing: 4.0,
         }
     }
@@ -3405,10 +3400,38 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_tabs_bar_divider(&self, _draw: &mut Recorder, divider: Rect) {
         self.tabs_bar_divider_draws.borrow_mut().push(divider);
     }
-    fn draw_tabs_highlight(&self, _draw: &mut Recorder, bounds: Rect, layout: TabItemLayout) {
+    fn draw_tabs_highlight(&self, _draw: &mut Recorder, item: TabItemGeometry) {
+        // This theme's indicator is a strip: 40 thick and the item's whole
+        // extent, centered, for horizontal items; otherwise 3 thick along the
+        // bar item's top (the sidebar item's trailing edge), as wide (tall) as
+        // the title.
+        let thickness: f64 = match item.layout {
+            TabItemLayout::Vertical => 3.0,
+            TabItemLayout::Horizontal => 40.0,
+        };
+        let bounds = item.bounds;
+        let strip = if matches!(item.layout, TabItemLayout::Horizontal) {
+            let height = thickness.min(bounds.height());
+            let y0 = (bounds.height() - height).mul_add(0.5, bounds.y0);
+            Rect::new(bounds.x0, y0, bounds.x1, y0 + height)
+        } else if matches!(item.placement, NativeTabStyle::Sidebar) {
+            Rect::new(
+                (bounds.x1 - thickness).max(bounds.x0),
+                item.title.y0,
+                bounds.x1,
+                item.title.y1,
+            )
+        } else {
+            Rect::new(
+                item.title.x0,
+                bounds.y0,
+                item.title.x1,
+                (bounds.y0 + thickness).min(bounds.y1),
+            )
+        };
         self.tabs_highlight_draws
             .borrow_mut()
-            .push((bounds, layout));
+            .push((strip, item.layout));
     }
     fn draw_scroll_indicator(&self, _draw: &mut Recorder, _bounds: Rect) {}
 
@@ -4178,6 +4201,43 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
     assert_eq!(draws.len(), 1, "one badge indicator draw, got {draws:?}");
     approx::assert_relative_eq!(draws[0].x1, 12.0);
     approx::assert_relative_eq!(draws[0].y0, -2.0);
+}
+
+/// A tab's `badge` count draws the theme's count badge on the item; a tab
+/// without one, or with a zero count, draws none (water-rs/waterui#3709).
+#[test]
+fn tab_badge_draws_only_for_a_nonzero_count() {
+    let env = test_environment();
+    let log = env
+        .get::<BadgeDrawLog>()
+        .expect("badge draw log is installed")
+        .clone();
+    let bounds = Rect::new(0.0, 0.0, 480.0, 480.0);
+    // The renderer retains tab state by node, so each variant captures on a
+    // fresh renderer.
+    let capture = |badge: Option<i32>| {
+        log.0.borrow_mut().clear();
+        let inbox = Tab::new("Inbox", || NavigationView::new("Inbox", text("One")));
+        let inbox = match badge {
+            Some(count) => inbox.badge(count),
+            None => inbox,
+        };
+        let tab_items = waterui_core::views::SharedAnyViews::new(vec![inbox]);
+        let snapshot = waterui_core::views::Views::snapshot(&tab_items);
+        let first = waterui_core::views::ViewSnapshot::get_id(&snapshot, 0)
+            .expect("a non-empty tab set reports an id");
+        let tabs = TabsLayout::new(Binding::container(first), tab_items);
+        let mut renderer = test_renderer_with_theme(MinimalTestTheme {
+            badge_draws: Rc::clone(&log.0),
+            ..Default::default()
+        });
+        capture_root_window(&mut renderer, tabs, &env, bounds);
+        log.0.borrow().len()
+    };
+
+    assert_eq!(capture(None), 0, "an unbadged tab draws no badge");
+    assert_eq!(capture(Some(0)), 0, "a zero count draws no badge");
+    assert_eq!(capture(Some(3)), 1, "a counted tab draws one count badge");
 }
 
 /// water-rs/hydrolysis#51: after the single-child collapse the surviving

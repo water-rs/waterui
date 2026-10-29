@@ -146,13 +146,13 @@ impl UiKitApplication {
 
         // The iPadOS main menu is built from the environment the chords above
         // were registered under, so its actions run with the application
-        // environment as the macOS winit bar's do. `UIKit` builds the menu
-        // after launch returns; the rebuild request covers a build that ran
-        // before this fill.
-        *self.menu_watch.borrow_mut() = Some(install_declared(&menu_bar, &env, &self.menus));
-        uikit::request_main_menu_rebuild(
+        // environment as the macOS winit bar's do.
+        *self.menu_watch.borrow_mut() = Some(install_declared(
             MainThreadMarker::new().expect("launch runs on the main thread"),
-        );
+            &menu_bar,
+            &env,
+            &self.menus,
+        ));
 
         let application = Rc::clone(self);
         self.executor

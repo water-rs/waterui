@@ -244,6 +244,65 @@ fn toolbar_reach_trials() -> Vec<Trial> {
     ]
 }
 
+/// The macOS menu, selection, split and material registrars, kept apart so
+/// `trials` stays within the length lint.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+fn chrome_trials() -> Vec<Trial> {
+    vec![
+        Trial::test(
+            "menus::the_window_menu_opens_with_the_standard_close_item",
+            || {
+                menus::the_window_menu_opens_with_the_standard_close_item();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "menus::a_pull_down_validates_its_callback_rows_from_their_command",
+            || {
+                menus::a_pull_down_validates_its_callback_rows_from_their_command();
+                Ok(())
+            },
+        ),
+        #[cfg(feature = "text_field")]
+        Trial::test(
+            "text_selection::a_selection_menu_command_edits_the_live_selection",
+            || {
+                text_selection::a_selection_menu_command_edits_the_live_selection();
+                Ok(())
+            },
+        ),
+        Trial::test("split::a_sidebar_list_takes_the_source_list_chrome", || {
+            split::a_sidebar_list_takes_the_source_list_chrome();
+            Ok(())
+        }),
+        Trial::test("split::a_plain_list_keeps_the_regular_chrome", || {
+            split::a_plain_list_keeps_the_regular_chrome();
+            Ok(())
+        }),
+        Trial::test(
+            "material_vibrancy::a_window_material_hosts_its_content_and_releases_it",
+            || {
+                material_vibrancy::a_window_material_hosts_its_content_and_releases_it();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "material_vibrancy::text_in_a_material_is_vibrant_only_for_default_tokens",
+            || {
+                material_vibrancy::text_in_a_material_is_vibrant_only_for_default_tokens();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "material_vibrancy::glass_text_draws_bold_in_the_opaque_text_color",
+            || {
+                material_vibrancy::glass_text_draws_bold_in_the_opaque_text_color();
+                Ok(())
+            },
+        ),
+    ]
+}
+
 fn trials() -> Vec<Trial> {
     let mut tests = base_trials();
     #[cfg(all(target_os = "macos", feature = "native-test"))]
@@ -260,59 +319,7 @@ fn trials() -> Vec<Trial> {
         ]);
         tests.extend(embedding_trials());
         tests.extend(navigation_trials());
-        tests.extend([
-            Trial::test(
-                "menus::the_window_menu_opens_with_the_standard_close_item",
-                || {
-                    menus::the_window_menu_opens_with_the_standard_close_item();
-                    Ok(())
-                },
-            ),
-            Trial::test(
-                "menus::a_pull_down_validates_its_callback_rows_from_their_command",
-                || {
-                    menus::a_pull_down_validates_its_callback_rows_from_their_command();
-                    Ok(())
-                },
-            ),
-            #[cfg(feature = "text_field")]
-            Trial::test(
-                "text_selection::a_selection_menu_command_edits_the_live_selection",
-                || {
-                    text_selection::a_selection_menu_command_edits_the_live_selection();
-                    Ok(())
-                },
-            ),
-            Trial::test("split::a_sidebar_list_takes_the_source_list_chrome", || {
-                split::a_sidebar_list_takes_the_source_list_chrome();
-                Ok(())
-            }),
-            Trial::test("split::a_plain_list_keeps_the_regular_chrome", || {
-                split::a_plain_list_keeps_the_regular_chrome();
-                Ok(())
-            }),
-            Trial::test(
-                "material_vibrancy::a_window_material_hosts_its_content_and_releases_it",
-                || {
-                    material_vibrancy::a_window_material_hosts_its_content_and_releases_it();
-                    Ok(())
-                },
-            ),
-            Trial::test(
-                "material_vibrancy::text_in_a_material_is_vibrant_only_for_default_tokens",
-                || {
-                    material_vibrancy::text_in_a_material_is_vibrant_only_for_default_tokens();
-                    Ok(())
-                },
-            ),
-            Trial::test(
-                "material_vibrancy::glass_text_draws_bold_in_the_opaque_text_color",
-                || {
-                    material_vibrancy::glass_text_draws_bold_in_the_opaque_text_color();
-                    Ok(())
-                },
-            ),
-        ]);
+        tests.extend(chrome_trials());
         #[cfg(target_os = "macos")]
         tests.extend(material_reduce_transparency::trials());
         tests.extend(list_ax::trials());
@@ -343,6 +350,8 @@ fn trials() -> Vec<Trial> {
         tests.extend(controller_bounds::trials());
         tests.extend(safe_area::trials());
         tests.extend(offset::trials());
+        #[cfg(feature = "gpu_surface")]
+        tests.extend(capture_scale::trials());
     }
     tests.extend(migration::trials());
     tests.extend(transition::trials());
@@ -1351,10 +1360,12 @@ mod resolve {
         #[cfg(target_os = "ios")]
         use cocoa_ui::uikit::toggle::LABEL_SPACING;
 
-        // Auto Layout snaps frames to the backing scale's pixel grid.
+        // Auto Layout rounds frames to the nearest pixel of the backing
+        // scale, which moves an edge by up to half a pixel: half a point
+        // on a 1x display, a tie included.
         fn assert_near(actual: f64, expected: f64, what: &str, name: &str) {
             assert!(
-                (actual - expected).abs() < 0.5,
+                (actual - expected).abs() <= 0.5,
                 "{name}: {what} — expected {expected}, got {actual}"
             );
         }
@@ -1471,6 +1482,61 @@ mod resolve {
         assert!(
             (gap - 8.0).abs() < 0.5,
             "icon-to-title gap — expected 8 pt, got {gap}"
+        );
+    }
+}
+
+/// A windowless view captured as a template image rasterizes at the
+/// screen's scale, not the detached view's `1.0`.
+#[cfg(all(target_os = "ios", feature = "gpu_surface"))]
+mod capture_scale {
+    use cocoa_ui::{Rect, bitmap, view};
+    use libtest_mimic::Trial;
+    use waterui_apple::native_test_support::capture_template_image;
+
+    use super::{PlatformView, mtm};
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "capture_scale::a_windowless_template_capture_uses_the_screen_scale",
+            || {
+                a_windowless_template_capture_uses_the_screen_scale();
+                Ok(())
+            },
+        )]
+    }
+
+    /// A `40x30` point view with no window: the image is `40x30` points at
+    /// the capture scene's screen scale, so its pixel size is the point size times
+    /// that scale.
+    fn a_windowless_template_capture_uses_the_screen_scale() {
+        let screen_scale = bitmap::any_window_scene()
+            .expect("the simulator host has a window scene")
+            .screen()
+            .scale();
+        let detached = PlatformView::new(mtm());
+        view::set_frame(&detached, Rect::new(0.0, 0.0, 40.0, 30.0));
+        assert!(view::window(&detached).is_none(), "the view is windowless");
+
+        let image = capture_template_image(&detached, 100.0);
+
+        // SAFETY: `size` and `scale` are plain getters on a live `UIImage`.
+        let (size, image_scale) = unsafe { (image.size(), image.scale()) };
+        assert!(
+            (image_scale - screen_scale).abs() < f64::EPSILON,
+            "image scale {image_scale} must be the screen scale {screen_scale}"
+        );
+        assert!(
+            (size.width - 40.0).abs() < 0.01 && (size.height - 30.0).abs() < 0.01,
+            "image keeps its point size, got {}x{}",
+            size.width,
+            size.height
+        );
+        let pixels = (size.width * image_scale, size.height * image_scale);
+        assert!(
+            (pixels.0 - (40.0 * screen_scale).ceil()).abs() < 0.01
+                && (pixels.1 - (30.0 * screen_scale).ceil()).abs() < 0.01,
+            "pixel size {pixels:?} must be the point size times {screen_scale}"
         );
     }
 }
@@ -1656,15 +1722,18 @@ mod picture {
 #[cfg(target_os = "ios")]
 mod tabs {
     use cocoa_ui::objc2_ui_kit::{
-        NSDirectionalRectEdge, UIScrollView, UITabBarController, UITabBarMinimizeBehavior,
+        NSDirectionalRectEdge, UIScrollView, UITabAccessory, UITabBarController,
+        UITabBarMinimizeBehavior,
     };
     use cocoa_ui::uikit::view_controller::owning_controller;
     use cocoa_ui::uikit::{Label, NavContentController};
     use cocoa_ui::{PlatformView, Retained, view};
+    use waterui::layout::scroll_both;
     use waterui::navigation::{NavigationStack, NavigationView, Tab, TabBarMinimizeBehavior, Tabs};
     use waterui::prelude::{label, scroll, text, vstack};
     use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
     use super::resolve;
 
@@ -1721,6 +1790,13 @@ mod tabs {
                 },
             ),
             libtest_mimic::Trial::test(
+                "tabs::unmounting_before_the_commit_installs_no_accessory",
+                || {
+                    unmounting_before_the_commit_installs_no_accessory();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
                 "tabs::each_minimize_behavior_maps_to_the_uikit_property",
                 || {
                     each_minimize_behavior_maps_to_the_uikit_property();
@@ -1741,6 +1817,18 @@ mod tabs {
         owning_controller(&controller_view)
             .and_then(|responder| responder.downcast::<UITabBarController>().ok())
             .expect("the tabs leaf mounts a UITabBarController")
+    }
+
+    /// The capsule installs when the transaction that rendered the tabs
+    /// commits, so it is awaited on its own condition.
+    fn installed_accessory(controller: &UITabBarController) -> Retained<UITabAccessory> {
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || controller
+                .bottomAccessory()
+                .is_some()),
+            "the accessory installs once the render transaction commits"
+        );
+        controller.bottomAccessory().expect("installed")
     }
 
     /// First `Label`'s text in the subtree, depth-first.
@@ -1795,9 +1883,7 @@ mod tabs {
     /// view carries the rendered text at a natural height.
     pub fn bottom_accessory_mounts_into_the_controller() {
         let (_pane, leaf) = tabs(text("Now Playing"));
-        let accessory = tab_bar_controller(&leaf)
-            .bottomAccessory()
-            .expect("the shared accessory view installs a UITabAccessory");
+        let accessory = installed_accessory(&tab_bar_controller(&leaf));
         let content = accessory.contentView();
         assert_eq!(label_text(&content).as_deref(), Some("Now Playing"));
         assert!(view::fitting_size(&content).height > 0.0);
@@ -1809,7 +1895,7 @@ mod tabs {
         let track = binding(String::from("first"));
         let (_pane, leaf) = tabs(text!("{track}"));
         let controller = tab_bar_controller(&leaf);
-        let accessory = controller.bottomAccessory().expect("installed");
+        let accessory = installed_accessory(&controller);
         let content = accessory.contentView();
         // `text!` wraps interpolations in bidi isolates — match the payload.
         assert!(label_text(&content).is_some_and(|text| text.contains("first")));
@@ -1819,12 +1905,30 @@ mod tabs {
         assert_eq!(Retained::as_ptr(&after), Retained::as_ptr(&accessory));
     }
 
+    /// Tearing the tabs down before the render transaction commits
+    /// cancels the pending install: the deferred closure must not put a
+    /// capsule over content that is already unmounted.
+    pub fn unmounting_before_the_commit_installs_no_accessory() {
+        let (_pane, leaf) = tabs(text("Now Playing"));
+        let controller = tab_bar_controller(&leaf);
+        // Registered after the tabs' own completion, so it runs after it
+        // in the same commit.
+        let committed = std::rc::Rc::new(std::cell::Cell::new(false));
+        cocoa_ui::core_animation::on_commit({
+            let committed = std::rc::Rc::clone(&committed);
+            move || committed.set(true)
+        });
+        drop(leaf);
+        assert!(pump_main_until(MAIN_QUEUE_DEADLINE, || committed.get()));
+        assert!(controller.bottomAccessory().is_none());
+    }
+
     /// Selecting the other tab switches panes through the existing
     /// controller — the accessory mount is untouched.
     pub fn tab_selection_does_not_rebuild_the_accessory() {
         let (pane, leaf) = tabs(text("Now Playing"));
         let controller = tab_bar_controller(&leaf);
-        let accessory = controller.bottomAccessory().expect("installed");
+        let accessory = installed_accessory(&controller);
         pane.set(1usize);
         assert_eq!(controller.selectedIndex(), 1);
         let after = controller.bottomAccessory().expect("still installed");
@@ -1841,10 +1945,7 @@ mod tabs {
             let (_pane, leaf) = tabs(text!("{track}"));
             let controller = tab_bar_controller(&leaf);
             let label = {
-                let content = controller
-                    .bottomAccessory()
-                    .expect("installed")
-                    .contentView();
+                let content = installed_accessory(&controller).contentView();
                 track.set(String::from("second"));
                 first_label(&content).expect("the accessory mounts a label")
             };
@@ -2163,9 +2264,7 @@ mod tabs {
         }
 
         let (_pane, leaf) = tabs(text("Now Playing"));
-        let accessory = tab_bar_controller(&leaf)
-            .bottomAccessory()
-            .expect("installed");
+        let accessory = installed_accessory(&tab_bar_controller(&leaf));
         let content = accessory.contentView();
         let intrinsic = view::fitting_size(&content);
         assert!(intrinsic.width > 0.0 && intrinsic.height > 0.0);
@@ -2191,12 +2290,12 @@ mod tabs {
             (tight_frame.origin.y - (tight.height - tight_frame.size.height) / 2.0).abs() < 0.01
         );
 
-        // A stretching child measures back to the bounds it was offered
-        // and fills the host.
-        let (_pane, leaf) = tabs(scroll(text("stretched")));
-        let accessory = tab_bar_controller(&leaf)
-            .bottomAccessory()
-            .expect("installed");
+        // A child that stretches on both axes measures back to the bounds
+        // it was offered and fills the host. A vertical scroll would not:
+        // it hugs non-filling content on its non-scrolling axis
+        // (`docs/layout-spec.md`, ScrollView).
+        let (_pane, leaf) = tabs(scroll_both(text("stretched")));
+        let accessory = installed_accessory(&tab_bar_controller(&leaf));
         let content = accessory.contentView();
         let frame = child_frame(&content, wide);
         assert_eq!(frame.size, wide);

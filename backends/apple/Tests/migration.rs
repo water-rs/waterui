@@ -399,7 +399,7 @@ mod uikit_surface {
 
     fn reference(key: &str) -> f64 {
         let path = std::env::var("WATERUI_REFERENCE_METRICS")
-            .expect("run prepare-native-reference.sh on this simulator first");
+            .expect("run prepare-native-reference.sh for this destination first");
         let metrics: serde_json::Value = serde_json::from_slice(
             &std::fs::read(path).expect("read live SwiftUI reference metrics"),
         )

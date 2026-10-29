@@ -395,12 +395,18 @@ mod platform {
             // the rest of the process; installing into the already-live
             // tab bar is the path a now-playing bar appearing mid-run
             // takes — the same deferred install the parity twin declares.
+            // The closure holds the slot weakly: `BottomAccessory` owns the
+            // only strong reference, so tearing the tabs down before the
+            // commit makes the upgrade fail and cancels the install.
             let accessory = Rc::new(core::cell::OnceCell::new());
             cocoa_ui::core_animation::on_commit({
                 let tabs = tabs.clone();
                 let accessory_host = accessory_host.clone();
-                let accessory = Rc::clone(&accessory);
+                let accessory = Rc::downgrade(&accessory);
                 move || {
+                    let Some(accessory) = accessory.upgrade() else {
+                        return;
+                    };
                     let capsule = UITabAccessory::initWithContentView(mtm.alloc(), &accessory_host);
                     tabs.setBottomAccessory(Some(&capsule));
                     let _ = accessory.set(capsule);

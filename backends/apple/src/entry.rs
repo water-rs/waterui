@@ -261,6 +261,7 @@ mod imp {
         // delegate registered at launch; the watch rebuilds on every change.
         // The guard lives for the process.
         core::mem::forget(waterui_apple_menu::ios::install_declared(
+            mtm,
             &parts.menu_bar,
             &app_env,
             &launch.declared,

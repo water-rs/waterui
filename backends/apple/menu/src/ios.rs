@@ -75,16 +75,16 @@ pub fn build_handler(declared: Declared) -> impl Fn(&MenuBuilder<'_>) + 'static 
 /// Fills `declared` and flags each change for rebuild. The returned guard
 /// keeps the watcher alive; hold it for the process.
 pub fn install_declared(
+    mtm: MainThreadMarker,
     menu_bar: &Computed<Vec<DeclaredMenu>>,
     env: &Environment,
     declared: &Declared,
 ) -> Box<dyn Any> {
     let resolved = resolve_menu_bar_items(menu_bar, env);
-    let guard = resolved.watch(|_| {
-        if let Some(mtm) = MainThreadMarker::new() {
-            cocoa_ui::uikit::request_main_menu_rebuild(mtm);
-        }
-    });
+    let guard = resolved.watch(move |_| cocoa_ui::uikit::request_main_menu_rebuild(mtm));
     *declared.borrow_mut() = Some((resolved, env.clone()));
+    // `UIKit` may have built the main menu before the slot was filled; the
+    // watcher only flags later changes.
+    cocoa_ui::uikit::request_main_menu_rebuild(mtm);
     Box::new(guard)
 }
