@@ -42,6 +42,20 @@ pub struct Target {
     pub token: String,
 }
 
+impl Target {
+    /// Endpoint published by the target application.
+    #[must_use]
+    pub const fn addr(&self) -> &SocketAddr {
+        &self.addr
+    }
+
+    /// One-time session token.
+    #[must_use]
+    pub const fn token(&self) -> &str {
+        self.token.as_str()
+    }
+}
+
 // The token is a credential: it travels in the `Hello`, never in
 // diagnostics.
 impl std::fmt::Debug for Target {

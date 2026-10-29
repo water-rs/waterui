@@ -55,6 +55,32 @@ pub struct Border {
     pub edges: EdgeSet,
 }
 
+impl Border {
+    /// The color of the border.
+    #[must_use]
+    pub const fn color(&self) -> &Color {
+        &self.color
+    }
+
+    /// The width of the border in points.
+    #[must_use]
+    pub const fn width(&self) -> f32 {
+        self.width
+    }
+
+    /// The corner radius for rounded borders (0 = square corners).
+    #[must_use]
+    pub const fn get_corner_radius(&self) -> f32 {
+        self.corner_radius
+    }
+
+    /// Which edges to draw the border on (default: all edges).
+    #[must_use]
+    pub const fn get_edges(&self) -> EdgeSet {
+        self.edges
+    }
+}
+
 impl MetadataKey for Border {}
 
 impl Border {

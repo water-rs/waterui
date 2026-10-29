@@ -98,6 +98,58 @@ pub struct Context<'a> {
     pub redraw: RedrawHandle,
 }
 
+impl<'a> Context<'a> {
+    /// A context over the engine's device: the adapter it was created from,
+    /// the device and its queue, the format content renders into, and the
+    /// handle that wakes the host for another frame.
+    #[must_use]
+    pub const fn new(
+        adapter: &'a Adapter,
+        device: &'a Device,
+        queue: &'a Queue,
+        format: TextureFormat,
+        redraw: RedrawHandle,
+    ) -> Self {
+        Self {
+            adapter,
+            device,
+            queue,
+            format,
+            redraw,
+        }
+    }
+
+    /// The adapter the device was created from.
+    #[must_use]
+    pub const fn adapter(&self) -> &'a Adapter {
+        self.adapter
+    }
+
+    /// The device the engine renders with.
+    #[must_use]
+    pub const fn device(&self) -> &'a Device {
+        self.device
+    }
+
+    /// Its queue.
+    #[must_use]
+    pub const fn queue(&self) -> &'a Queue {
+        self.queue
+    }
+
+    /// The format of the texture the content renders into.
+    #[must_use]
+    pub const fn format(&self) -> TextureFormat {
+        self.format
+    }
+
+    /// Wakes the host for another frame from any thread.
+    #[must_use]
+    pub const fn redraw(&self) -> &RedrawHandle {
+        &self.redraw
+    }
+}
+
 /// One frame of a [`GpuContent`]: the texture to draw into and the clock.
 #[derive(Debug)]
 pub struct Frame<'a> {

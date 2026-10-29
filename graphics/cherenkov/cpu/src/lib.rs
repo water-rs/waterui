@@ -47,7 +47,6 @@
 //! ```
 #![expect(
     clippy::exhaustive_enums,
-    clippy::exhaustive_structs,
     reason = "publish = false: no semver surface until #2687 makes the crate publishable"
 )]
 
@@ -55,7 +54,6 @@ mod names;
 mod render;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
-mod topology;
 
 use cherenkov::{Backend, EngineError, Offscreen, OffscreenFormat};
 

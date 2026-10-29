@@ -1593,13 +1593,21 @@ fn convert_quad<S: Simd, const ENCODE: bool>(simd: S, group: &[[f32; 4]; 4]) -> 
 )]
 fn convert_span_in<S: Simd, const ENCODE: bool>(simd: S, pixels: &mut [[f32; 4]]) {
     let (chunks, tail) = pixels.as_chunks_mut::<4>();
+    let mut uniform = None;
     for group in chunks {
-        // Solid fills and clear regions need one transfer evaluation, not
-        // four identical evaluations. Varying pixels retain the wide path.
+        // Reuse a uniform run's conversion across blocks, not just within
+        // one block. Varying pixels retain the wide path.
         if group[1] == group[0] && group[2] == group[0] && group[3] == group[0] {
-            *group = [convert_packed::<S, ENCODE>(simd, group[0]); 4];
+            let source = group[0];
+            let converted = match uniform {
+                Some((previous, converted)) if previous == source => converted,
+                _ => convert_packed::<S, ENCODE>(simd, source),
+            };
+            uniform = Some((source, converted));
+            *group = [converted; 4];
             continue;
         }
+        uniform = None;
         let out = convert_quad::<S, ENCODE>(simd, group);
         f32x4::store_four_interleaved(out, group.as_flattened_mut());
     }

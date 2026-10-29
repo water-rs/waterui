@@ -395,10 +395,6 @@ compile_error!(
 /// sccache is optional but significantly improves build times by caching
 /// compiled artifacts across builds and projects.
 #[derive(Debug, Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct Sccache;
 
 impl Sccache {
@@ -1013,7 +1009,7 @@ mod host_tests {
         let install_dir = tool.install_dir(&host).unwrap();
         machine.file(
             install_dir
-                .join(&tool.binary)
+                .join(tool.binary())
                 .strip_prefix(machine.root())
                 .unwrap(),
             "",
@@ -1039,7 +1035,7 @@ mod host_tests {
         let install_dir = tool.install_dir(&host).unwrap();
         machine.file(
             install_dir
-                .join(&tool.binary)
+                .join(tool.binary())
                 .strip_prefix(machine.root())
                 .unwrap(),
             "",

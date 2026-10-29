@@ -47,10 +47,6 @@ pub mod tab_style {
 
     /// Platform- and window-adaptive tab style.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less style marker used by name"
-    )]
     pub struct Automatic;
 
     impl TabStyle for Automatic {
@@ -61,10 +57,6 @@ pub mod tab_style {
 
     /// Native tab-bar style.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less style marker used by name"
-    )]
     pub struct TabBar;
 
     impl TabStyle for TabBar {
@@ -75,10 +67,6 @@ pub mod tab_style {
 
     /// Native sidebar or navigation-rail style.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less style marker used by name"
-    )]
     pub struct Sidebar;
 
     impl TabStyle for Sidebar {
@@ -196,6 +184,71 @@ pub struct Tab {
     pub role: TabRole,
 }
 
+impl Tab {
+    /// Semantic tab label, kept as a builder so a tab in a `Vec` stays
+    /// cloneable — the collection materializes one label per mount.
+    #[must_use]
+    pub const fn label(&self) -> &AnyViewBuilder<AnyView> {
+        &self.label
+    }
+
+    /// The label's icon, lifted out so native chrome can place it itself.
+    #[must_use]
+    pub const fn icon(&self) -> Option<&TabIcon> {
+        self.icon.as_ref()
+    }
+
+    /// Stable lazily built tab root.
+    #[must_use]
+    pub const fn content(&self) -> &AnyViewBuilder<NavigationView> {
+        &self.content
+    }
+
+    /// Optional reactive badge count.
+    #[must_use]
+    pub const fn get_badge(&self) -> Option<&Computed<i32>> {
+        self.badge.as_ref()
+    }
+
+    /// Whether the native tab item is enabled.
+    #[must_use]
+    pub const fn get_enabled(&self) -> &Computed<bool> {
+        &self.enabled
+    }
+
+    /// The part the tab plays in the container's chrome.
+    #[must_use]
+    pub const fn get_role(&self) -> TabRole {
+        self.role
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    #[expect(
+        clippy::type_complexity,
+        reason = "the tuple is the value's complete field list"
+    )]
+    pub fn into_parts(
+        self,
+    ) -> (
+        AnyViewBuilder<AnyView>,
+        Option<TabIcon>,
+        AnyViewBuilder<NavigationView>,
+        Option<Computed<i32>>,
+        Computed<bool>,
+        TabRole,
+    ) {
+        (
+            self.label,
+            self.icon,
+            self.content,
+            self.badge,
+            self.enabled,
+            self.role,
+        )
+    }
+}
+
 impl_debug!(Tab);
 
 impl Tab {
@@ -296,6 +349,63 @@ pub struct TabsLayout {
     pub minimize_behavior: TabBarMinimizeBehavior,
     /// A view the platform floats above the tab bar, when it has such a slot.
     pub bottom_accessory: Option<AnyView>,
+}
+
+impl TabsLayout {
+    /// Currently selected tab identifier.
+    #[must_use]
+    pub const fn selection(&self) -> &Binding<Id> {
+        &self.selection
+    }
+
+    /// The tab collection, keyed by erased tab identity.
+    #[must_use]
+    pub const fn tabs(&self) -> &SharedAnyViews<Tab> {
+        &self.tabs
+    }
+
+    /// Native adaptive style.
+    #[must_use]
+    pub const fn get_style(&self) -> NativeTabStyle {
+        self.style
+    }
+
+    /// How the bar behaves while content scrolls.
+    #[must_use]
+    pub const fn get_minimize_behavior(&self) -> TabBarMinimizeBehavior {
+        self.minimize_behavior
+    }
+
+    /// A view the platform floats above the tab bar, when it has such a slot.
+    #[must_use]
+    pub const fn get_bottom_accessory(&self) -> Option<&AnyView> {
+        self.bottom_accessory.as_ref()
+    }
+
+    /// Takes the `bottom_accessory` out of the value, leaving none behind.
+    pub const fn take_bottom_accessory(&mut self) -> Option<AnyView> {
+        self.bottom_accessory.take()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Binding<Id>,
+        SharedAnyViews<Tab>,
+        NativeTabStyle,
+        TabBarMinimizeBehavior,
+        Option<AnyView>,
+    ) {
+        (
+            self.selection,
+            self.tabs,
+            self.style,
+            self.minimize_behavior,
+            self.bottom_accessory,
+        )
+    }
 }
 
 impl TabsLayout {

@@ -24,7 +24,9 @@ use crate::platform::{
 
 use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 
-/// The JNI schema this build of the runner speaks — `nativeInit` returns it
+/// The JNI schema this build of the runner speaks — `nativeInit` returns it.
+/// 24 adds `DefineEffect` (`effect, stage_count, kind + 12 floats` stages)
+/// for native `RenderEffect` chains (#1750).
 /// and the Kotlin `NativeBridge` refuses a mismatch, so a stale native
 /// library cannot load against a newer host.
 /// Schema history: 1 = initial surface/input/IME events; 2 =
@@ -75,7 +77,7 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// 23 = `nativeCreateSession` carries the configuration's night-mode flag so
 /// the colour-scheme signal starts on the real `uiMode`, and
 /// `nativeSetColorScheme` reports every later change (water-rs/waterui#3544).
-pub const JNI_SCHEMA: jint = 23;
+pub const JNI_SCHEMA: jint = 24;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]

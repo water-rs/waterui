@@ -125,6 +125,86 @@ pub struct TreeRow {
     pub enabled: bool,
 }
 
+impl TreeRow {
+    /// Node identity, which is also the reconciliation key.
+    #[must_use]
+    pub const fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Nesting depth, used for indentation.
+    #[must_use]
+    pub const fn depth(&self) -> usize {
+        self.depth
+    }
+
+    /// Node role.
+    #[must_use]
+    pub const fn role(&self) -> &Str {
+        &self.role
+    }
+
+    /// Accessibility label, when the node has one.
+    #[must_use]
+    pub const fn label(&self) -> Option<&Str> {
+        self.label.as_ref()
+    }
+
+    /// Node value, when the node has one.
+    #[must_use]
+    pub const fn value(&self) -> Option<&Str> {
+        self.value.as_ref()
+    }
+
+    /// Formatted bounds, when the node is laid out.
+    #[must_use]
+    pub const fn bounds(&self) -> Option<&Str> {
+        self.bounds.as_ref()
+    }
+
+    /// Whether the node is hidden from assistive technology.
+    #[must_use]
+    pub const fn hidden(&self) -> bool {
+        self.hidden
+    }
+
+    /// Whether the node accepts interaction.
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    #[expect(
+        clippy::type_complexity,
+        reason = "the tuple is the value's complete field list"
+    )]
+    pub fn into_parts(
+        self,
+    ) -> (
+        u64,
+        usize,
+        Str,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        bool,
+        bool,
+    ) {
+        (
+            self.id,
+            self.depth,
+            self.role,
+            self.label,
+            self.value,
+            self.bounds,
+            self.hidden,
+            self.enabled,
+        )
+    }
+}
+
 /// One row of the task table.
 #[derive(Debug, Clone, PartialEq, Eq, Identifiable)]
 #[non_exhaustive]
@@ -142,6 +222,50 @@ pub struct TaskRow {
     pub over_budget: u32,
 }
 
+impl TaskRow {
+    /// Task type name, which is also its identity.
+    #[must_use]
+    pub const fn id(&self) -> &Str {
+        &self.id
+    }
+
+    /// Polls in the last window.
+    #[must_use]
+    pub const fn polls(&self) -> u32 {
+        self.polls
+    }
+
+    /// Mean wall time per poll.
+    #[must_use]
+    pub const fn mean_us(&self) -> u64 {
+        self.mean_us
+    }
+
+    /// Longest single poll.
+    #[must_use]
+    pub const fn max_us(&self) -> u32 {
+        self.max_us
+    }
+
+    /// Polls that exceeded the frame budget.
+    #[must_use]
+    pub const fn over_budget(&self) -> u32 {
+        self.over_budget
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Str, u32, u64, u32, u32) {
+        (
+            self.id,
+            self.polls,
+            self.mean_us,
+            self.max_us,
+            self.over_budget,
+        )
+    }
+}
+
 /// One log line.
 #[derive(Debug, Clone, PartialEq, Eq, Identifiable)]
 #[non_exhaustive]
@@ -157,6 +281,44 @@ pub struct LogRow {
     pub message: Str,
     /// Source location, when the record carried one.
     pub origin: Option<Str>,
+}
+
+impl LogRow {
+    /// Monotonic identity; log records have no natural key.
+    #[must_use]
+    pub const fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Severity.
+    #[must_use]
+    pub const fn level(&self) -> LogLevel {
+        self.level
+    }
+
+    /// Emitting target.
+    #[must_use]
+    pub const fn target(&self) -> &Str {
+        &self.target
+    }
+
+    /// Rendered message.
+    #[must_use]
+    pub const fn message(&self) -> &Str {
+        &self.message
+    }
+
+    /// Source location, when the record carried one.
+    #[must_use]
+    pub const fn origin(&self) -> Option<&Str> {
+        self.origin.as_ref()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (u64, LogLevel, Str, Str, Option<Str>) {
+        (self.id, self.level, self.target, self.message, self.origin)
+    }
 }
 
 /// One reactive-graph node, as the inspector understands it.
@@ -178,6 +340,57 @@ pub struct SignalRow {
     pub dropped: bool,
 }
 
+impl SignalRow {
+    /// Node identity.
+    #[must_use]
+    pub const fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Type of the value it holds.
+    #[must_use]
+    pub const fn type_name(&self) -> &Str {
+        &self.type_name
+    }
+
+    /// Where in the application it was created.
+    #[must_use]
+    pub const fn origin(&self) -> &Str {
+        &self.origin
+    }
+
+    /// Live watchers.
+    #[must_use]
+    pub const fn subscribers(&self) -> u32 {
+        self.subscribers
+    }
+
+    /// Notifications observed since it appeared.
+    #[must_use]
+    pub const fn notifications(&self) -> u64 {
+        self.notifications
+    }
+
+    /// Whether the node has since been dropped.
+    #[must_use]
+    pub const fn dropped(&self) -> bool {
+        self.dropped
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (u64, Str, Str, u32, u64, bool) {
+        (
+            self.id,
+            self.type_name,
+            self.origin,
+            self.subscribers,
+            self.notifications,
+            self.dropped,
+        )
+    }
+}
+
 /// One stall, with whatever stack was affordable to capture.
 #[derive(Debug, Clone, PartialEq, Identifiable)]
 #[non_exhaustive]
@@ -193,6 +406,38 @@ pub struct StallRow {
     pub wall_us: u64,
     /// Captured stack, empty when capture was rate-limited.
     pub backtrace: Vec<Str>,
+}
+
+impl StallRow {
+    /// Monotonic identity; stalls have no natural key.
+    #[must_use]
+    pub const fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Task that overran.
+    #[must_use]
+    pub const fn task_type(&self) -> &Str {
+        &self.task_type
+    }
+
+    /// Percentage of the frame budget consumed.
+    #[must_use]
+    pub const fn usage_pct(&self) -> f32 {
+        self.usage_pct
+    }
+
+    /// Wall time spent in the poll.
+    #[must_use]
+    pub const fn wall_us(&self) -> u64 {
+        self.wall_us
+    }
+
+    /// Captured stack, empty when capture was rate-limited.
+    #[must_use]
+    pub const fn backtrace(&self) -> &[Str] {
+        self.backtrace.as_slice()
+    }
 }
 
 /// Everything the Inspector displays.

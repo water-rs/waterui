@@ -17,7 +17,6 @@
 //!   on the render thread.
 #![expect(
     clippy::exhaustive_enums,
-    clippy::exhaustive_structs,
     reason = "publish = false: no semver surface until #2687 makes the crate publishable"
 )]
 
@@ -41,6 +40,8 @@ mod message;
 mod resource;
 mod surface;
 mod text;
+#[cfg(feature = "workers")]
+pub mod workers;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

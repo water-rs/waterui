@@ -11,10 +11,6 @@ pub type AppleToolchain = (Xcode, AppleSdk);
 
 /// Represents the Xcode toolchain
 #[derive(Debug, Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct Xcode;
 
 impl Toolchain for Xcode {

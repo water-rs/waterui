@@ -179,7 +179,7 @@ pub(crate) fn resolve_release_signing(
     host: &Host,
     signing: DeviceSigning,
 ) -> Result<ReleaseSigning> {
-    match manifest.signing.android.as_ref() {
+    match manifest.signing().android().as_ref() {
         Some(config) => match signing {
             DeviceSigning::Unsigned => Ok(ReleaseSigning::Suppressed),
             DeviceSigning::Automatic => {
@@ -323,14 +323,10 @@ mod tests {
     }
 
     fn manifest_without_signing() -> Manifest {
-        Manifest::new(Package {
-            name: "Test".to_string(),
-            bundle_identifier: BundleIdentifier::try_from("dev.waterui.test")
-                .expect("bundle identifier"),
-            assets_path: "assets".to_string(),
-            accessory: false,
-            embedded: false,
-        })
+        Manifest::new(Package::new(
+            "Test",
+            BundleIdentifier::try_from("dev.waterui.test").expect("bundle identifier"),
+        ))
     }
 
     fn host_with_passwords() -> Host {
@@ -347,9 +343,8 @@ mod tests {
     fn signing_section_parses_from_the_manifest() {
         let manifest = manifest_with_signing("keys/release.keystore");
         let signing = manifest
-            .signing
-            .android
-            .as_ref()
+            .signing()
+            .android()
             .expect("[signing.android] is present");
         assert_eq!(signing.keystore(), Path::new("keys/release.keystore"));
         assert_eq!(signing.key_alias(), "upload");
@@ -358,8 +353,8 @@ mod tests {
     #[test]
     fn manifest_without_signing_has_no_android_entry() {
         let manifest = manifest_without_signing();
-        assert!(manifest.signing.android.is_none());
-        assert!(manifest.signing.is_empty());
+        assert!(manifest.signing().android().is_none());
+        assert!(manifest.signing().is_empty());
     }
 
     #[test]
@@ -604,18 +599,12 @@ mod tests {
         let project = smol::block_on(crate::project::Project::create(
             &host,
             &root,
-            crate::project::CreateOptions {
-                name: "Water Example".to_string(),
-                bundle_identifier: BundleIdentifier::try_from("dev.waterui.waterexample")
-                    .expect("bundle identifier"),
-                waterui_path: None,
-                channel: None,
-                framework_manifest: None,
-                framework: Some(crate::framework::test_fixtures::stable_framework()),
-                framework_lock: None,
-                author: "Test".to_string(),
-                web: None,
-            },
+            crate::project::CreateOptions::new(
+                "Water Example".to_string(),
+                BundleIdentifier::try_from("dev.waterui.waterexample").expect("bundle identifier"),
+                "Test".to_string(),
+            )
+            .with_framework(Some(crate::framework::test_fixtures::stable_framework())),
         ))
         .expect("project creation must succeed");
         // The scaffold declares no [signing.android]: a release package must
@@ -646,18 +635,12 @@ mod tests {
         let other = smol::block_on(crate::project::Project::create(
             &crate::toolchain::testing::real_toolchain_host(other_dir.path()),
             &other_root,
-            crate::project::CreateOptions {
-                name: "Other App".to_string(),
-                bundle_identifier: BundleIdentifier::try_from("dev.waterui.otherapp")
-                    .expect("bundle identifier"),
-                waterui_path: None,
-                channel: None,
-                framework_manifest: None,
-                framework: Some(crate::framework::test_fixtures::stable_framework()),
-                framework_lock: None,
-                author: "Test".to_string(),
-                web: None,
-            },
+            crate::project::CreateOptions::new(
+                "Other App".to_string(),
+                BundleIdentifier::try_from("dev.waterui.otherapp").expect("bundle identifier"),
+                "Test".to_string(),
+            )
+            .with_framework(Some(crate::framework::test_fixtures::stable_framework())),
         ))
         .expect("second project creation must succeed");
         assert!(

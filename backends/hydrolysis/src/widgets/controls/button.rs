@@ -83,11 +83,11 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
     /// instead would throw that view away. Content kind decides here, not
     /// display mode.
     pub(crate) fn init_label(&mut self) {
-        if renders_as_plain_title(&self.config.label) {
+        if renders_as_plain_title(self.config.label()) {
             return;
         }
         self.label_view = Some(RetainedSubview::new(AnyView::new(
-            self.config.label.clone(),
+            self.config.label().clone(),
         )));
     }
 
@@ -108,7 +108,7 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
             return;
         }
         let theme = renderer.theme();
-        let style = self.config.style;
+        let style = self.config.style();
         let interaction_style = env.get::<InteractionStyle>();
         let floating_style = env.get::<FloatingScope>().map(|scope| &scope.0);
         let color = if env.get::<ListRowChrome>().is_some() {
@@ -122,8 +122,8 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
                 floating_style,
             )
         };
-        let styled = styled_button_label(&theme, style, self.config.label.clone());
-        let icon_only = label_resolves_icon_only(&self.config.label, env);
+        let styled = styled_button_label(&theme, style, self.config.label().clone());
+        let icon_only = label_resolves_icon_only(self.config.label(), env);
         subview.map_source(|_| button_label_view(color, AnyView::new(styled), icon_only));
         subview.ensure_built(renderer, env);
     }
@@ -157,14 +157,14 @@ pub fn button_accessibility<E: crate::text::TextEngine>(
         let mut node = AccessibilityNode::new(
             crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
-                match button.style {
+                match button.style() {
                     ButtonStyle::Link => AccessibilityNodeRole::Link,
                     _ => AccessibilityNodeRole::Button,
                 },
             ),
         );
         let default_label =
-            crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&button.label, env);
+            crate::renderer::SemanticCore::<E>::accessibility_label_from_label(button.label(), env);
         let label = renderer.resolve_accessibility_label(env, default_label);
         if let Some(label) = label {
             node.set_label(label);
@@ -191,7 +191,7 @@ pub fn button_accessibility<E: crate::text::TextEngine>(
         };
         let node_id = match ctx {
             Some(ctx) => {
-                let bounds = ctx.bounds;
+                let bounds = ctx.bounds();
                 renderer.register_accessibility_node(node, bounds, env, action_target)
             }
             None => renderer.register_accessibility_node_semantic(node, env, action_target),
@@ -221,7 +221,7 @@ pub fn button_activation<E: crate::text::TextEngine>(
     let action_env = env.clone();
     Rc::new(RefCell::new(
         move |_renderer: &mut crate::renderer::SemanticCore<E>, _env: &Environment| {
-            (state.borrow_mut().config.action)(&action_env);
+            (state.borrow_mut().config.action_mut())(&action_env);
             true
         },
     ))
@@ -264,9 +264,9 @@ pub fn measure_button_node<E: crate::text::TextEngine>(
 ) -> ViewDimensions {
     let metrics = button_metrics(
         theme,
-        render_state.config.style,
-        render_state.config.size,
-        label_resolves_icon_only(&render_state.config.label, env),
+        render_state.config.style(),
+        render_state.config.size(),
+        label_resolves_icon_only(render_state.config.label(), env),
         env.get::<InteractionStyle>(),
         env.get::<FloatingScope>().map(|scope| &scope.0),
     );
@@ -276,8 +276,8 @@ pub fn measure_button_node<E: crate::text::TextEngine>(
         let styled = styled_button_title(
             state,
             theme,
-            render_state.config.style,
-            &render_state.config.label,
+            render_state.config.style(),
+            render_state.config.label(),
             env,
         );
         HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
@@ -444,7 +444,7 @@ pub fn menu_accessibility<E: crate::text::TextEngine>(
         // merged accessibility tree exactly as the rendered popup's do.
         let request = ctx.as_ref().zip(theme).map(|(ctx, theme)| {
             (
-                crate::widgets::util::popup_anchor(renderer.resolve_window_rect(ctx.bounds)),
+                crate::widgets::util::popup_anchor(renderer.resolve_window_rect(ctx.bounds())),
                 theme.text_context_menu_metrics(),
                 theme.clone(),
             )
@@ -474,7 +474,7 @@ pub fn menu_accessibility<E: crate::text::TextEngine>(
         };
         let node_id = match ctx {
             Some(ctx) => {
-                let bounds = ctx.bounds;
+                let bounds = ctx.bounds();
                 renderer.register_accessibility_node(node, bounds, env, Some(activation))
             }
             None => renderer.register_accessibility_node_semantic(node, env, Some(activation)),
@@ -552,14 +552,14 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     let theme = ctx.theme();
-    let style = state.borrow().config.style;
-    let size = state.borrow().config.size;
+    let style = state.borrow().config.style();
+    let size = state.borrow().config.size();
     let interaction_style = env.get::<InteractionStyle>().cloned();
     let floating_style = env.get::<FloatingScope>().map(|scope| scope.0.clone());
     // Subscribe to the (possibly reactive) title so a label change schedules a frame
     // and this persistent node re-renders the new text.
     {
-        let label = state.borrow().config.label.clone();
+        let label = state.borrow().config.label().clone();
         watch_button_title(ctx.renderer_mut(), &label, env);
     }
     // Reading the disabled signal watches it, so a change schedules a frame
@@ -573,7 +573,7 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
     // icon-only button lays out at the theme's icon-button touch target and
     // its bounds are the hit area — the theme draws the smaller icon-button
     // container centred inside them.
-    let icon_only = label_resolves_icon_only(&state.borrow().config.label, env);
+    let icon_only = label_resolves_icon_only(state.borrow().config.label(), env);
     let metrics = button_metrics(
         &theme,
         style,
@@ -591,8 +591,8 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
         .flatten()
         .map(|chrome| {
             let motion = chrome
-                .motion
-                .clone()
+                .get_motion()
+                .cloned()
                 .unwrap_or_else(|| theme.interaction_motion());
             (chrome, motion)
         });
@@ -685,8 +685,13 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
         } else if label_target.width() > 0.0 && label_target.height() > 0.0 {
             // Title label: centered styled text rendered fresh each frame,
             // picking the enabled or disabled label color for this frame.
-            let mut styled =
-                styled_button_title(ctx.state_mut(), &theme, style, &state_mut.config.label, env);
+            let mut styled = styled_button_title(
+                ctx.state_mut(),
+                &theme,
+                style,
+                state_mut.config.label(),
+                env,
+            );
             let title_color = if env.get::<ListRowChrome>().is_some() {
                 Some(Color::new(waterui::theme::color::Foreground))
             } else {
@@ -777,7 +782,7 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
         bounds,
         press_slot,
         move |_renderer, _point, _env| {
-            (state.borrow_mut().config.action)(&action_env);
+            (state.borrow_mut().config.action_mut())(&action_env);
             true
         },
     );
@@ -899,13 +904,14 @@ pub fn measure_button_intrinsic<E: crate::text::TextEngine>(
 ) -> LayoutSize {
     let metrics = button_metrics(
         theme,
-        button.style,
-        button.size,
-        label_resolves_icon_only(&button.label, env),
+        button.style(),
+        button.size(),
+        label_resolves_icon_only(button.label(), env),
         env.get::<InteractionStyle>(),
         env.get::<FloatingScope>().map(|scope| &scope.0),
     );
-    let label_size = measure_button_label_intrinsic(theme, button.style, &button.label, state, env);
+    let label_size =
+        measure_button_label_intrinsic(theme, button.style(), button.label(), state, env);
     button_chrome_size(label_size, &metrics, ProposalSize::UNSPECIFIED)
 }
 
@@ -1124,7 +1130,7 @@ fn styled_button_title<E: crate::text::TextEngine>(
         title
     };
     let resolved = title.resolve(env);
-    state.measure_signal(&resolved.content)
+    state.measure_signal(resolved.content())
 }
 
 /// Subscribes to a label's reactive title content so a change schedules a frame
@@ -1135,7 +1141,7 @@ fn watch_button_title<E: crate::text::TextEngine>(
     label: &Label,
     env: &Environment,
 ) {
-    let _ = renderer.read_signal(&label.semantic_text().resolve(env).content);
+    let _ = renderer.read_signal(label.semantic_text().resolve(env).content());
 }
 
 /// Fills `color` into chunks that have no explicit foreground: the theme's
@@ -1148,8 +1154,8 @@ fn styled_with_default_foreground(styled: StyledStr, color: Color) -> StyledStr 
     let mut out = StyledStr::empty();
     for (chunk, style) in styled.chunks() {
         let mut style = style.clone();
-        if style.foreground.is_none() {
-            style.foreground = Some(color.clone());
+        if style.get_foreground().is_none() {
+            style.set_foreground(Some(color.clone()));
         }
         out.push(chunk.clone(), style);
     }

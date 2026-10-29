@@ -18,10 +18,6 @@ use crate::{
 
 /// Toolchain for `spirv-opt`, the SPIR-V optimizer `cherenkov-gpu` builds invoke.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct SpirvTools;
 
 impl SpirvTools {

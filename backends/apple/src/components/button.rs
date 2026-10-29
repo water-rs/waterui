@@ -154,7 +154,7 @@ fn label_font(env: &Environment, size: platform::NSControlSize) -> Computed<Reso
     let points = cocoa_ui::font::system_size_for_control_size(size) as f32;
     Body.resolve(env)
         .map(move |mut font| {
-            font.size = points;
+            font.set_size(points);
             font
         })
         .computed()
@@ -304,7 +304,7 @@ impl SubView for ButtonSubView {
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<ButtonConfig>(|config, ctx| {
         let mtm = ctx.mtm();
-        let style = config.style;
+        let style = config.style();
 
         // The label subtree resolves `Foreground` from the color the style
         // prescribes for its platform.
@@ -319,7 +319,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             // `Button`'s documented default is `Small`; a bare button
             // therefore draws at `regular` like a bare `NSButton`.
             let size = ns_control_size(platform_control_size(
-                config.size,
+                config.size(),
                 waterui::component::ControlSize::Small,
             ));
             install_font_signal::<Body>(&mut label_env, label_font(ctx.env(), size));
@@ -337,8 +337,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         #[cfg(target_os = "macos")]
         let padding = configure_button(&button, style, control_size);
 
-        let accessibility_label = config.label.accessibility_label();
-        let label_leaf = ctx.with_env(&label_env).render(AnyView::new(config.label));
+        let (label, action, ..) = config.into_parts();
+        let accessibility_label = label.accessibility_label();
+        let label_leaf = ctx.with_env(&label_env).render(AnyView::new(label));
         let child_view = view::retain_base(label_leaf.view());
         let mounted = label_leaf.mount(&label_container);
 
@@ -391,7 +392,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The action runs against the button's own environment — the one
         // `Button<Action>` extracted state into — not the label's clone.
-        let action = Rc::new(RefCell::new(config.action));
+        let action = Rc::new(RefCell::new(action));
         let action_env = ctx.env().clone();
         wire_action(&mut leaf, &button, action, action_env);
 

@@ -42,10 +42,6 @@ pub fn bench_report_file_name(crate_name: &str, bench_name: &str) -> String {
 
 /// One executed bench: its identity, run shape, budgets, and measurements.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "wire record that waterui-testing fills field by field for the CLI to read; a new measurement must fail its producer's build rather than be left unset"
-)]
 pub struct BenchReport {
     /// Package that declared the bench.
     pub crate_name: String,
@@ -70,6 +66,26 @@ pub struct BenchRunConfig {
     pub samples: u32,
     /// Independent measurement repetitions.
     pub repetitions: u32,
+}
+
+impl BenchRunConfig {
+    /// Unrecorded frames run before sampling.
+    #[must_use]
+    pub const fn warmups(&self) -> u32 {
+        self.warmups
+    }
+
+    /// Recorded frames per measurement.
+    #[must_use]
+    pub const fn samples(&self) -> u32 {
+        self.samples
+    }
+
+    /// Independent measurement repetitions.
+    #[must_use]
+    pub const fn repetitions(&self) -> u32 {
+        self.repetitions
+    }
 }
 
 impl BenchRunConfig {
@@ -101,6 +117,44 @@ pub struct BenchBudgets {
     pub max_gpu_surface_layers: Option<u64>,
     /// Maximum allowed clip layers pushed by one frame.
     pub max_clip_layers: Option<u64>,
+}
+
+impl BenchBudgets {
+    /// Maximum allowed 95th-percentile frame time, in microseconds.
+    #[must_use]
+    pub const fn max_p95_us(&self) -> Option<u64> {
+        self.max_p95_us
+    }
+
+    /// Maximum allowed mean frame time, in microseconds.
+    #[must_use]
+    pub const fn max_mean_us(&self) -> Option<u64> {
+        self.max_mean_us
+    }
+
+    /// Maximum allowed share of sampled frames that rebuilt (0.0..=1.0).
+    #[must_use]
+    pub const fn max_rebuild_ratio(&self) -> Option<f64> {
+        self.max_rebuild_ratio
+    }
+
+    /// Maximum allowed compositor scene layers submitted by one frame.
+    #[must_use]
+    pub const fn max_scene_layers(&self) -> Option<u64> {
+        self.max_scene_layers
+    }
+
+    /// Maximum allowed embedded GPU surface layers submitted by one frame.
+    #[must_use]
+    pub const fn max_gpu_surface_layers(&self) -> Option<u64> {
+        self.max_gpu_surface_layers
+    }
+
+    /// Maximum allowed clip layers pushed by one frame.
+    #[must_use]
+    pub const fn max_clip_layers(&self) -> Option<u64> {
+        self.max_clip_layers
+    }
 }
 
 /// One `with_<budget>` builder method per budget; `None` leaves the metric
@@ -137,10 +191,6 @@ impl BenchBudgets {
 
 /// Aggregated statistics of one perf measurement.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "wire record that waterui-testing fills field by field for the CLI to read; a new measurement must fail its producer's build rather than be left unset"
-)]
 pub struct PerfMeasurement {
     /// Scenario name.
     pub name: String,
@@ -200,10 +250,6 @@ pub struct PerfMeasurement {
 
 /// Frame phase aggregates of a perf measurement.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "wire record that waterui-testing fills field by field for the CLI to read; a new measurement must fail its producer's build rather than be left unset"
-)]
 pub struct PerfPhases {
     /// Mean rebuild phase time in microseconds.
     pub rebuild_mean_us: u64,
@@ -233,10 +279,6 @@ pub struct PerfPhases {
 
 /// One recorded perf frame.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "wire record that waterui-testing fills field by field for the CLI to read; a new measurement must fail its producer's build rather than be left unset"
-)]
 pub struct PerfFrame {
     /// Frame index within the measurement.
     pub index: u64,

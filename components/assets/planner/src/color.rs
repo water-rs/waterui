@@ -25,6 +25,14 @@ pub struct InvalidHexColor {
     pub value: String,
 }
 
+impl InvalidHexColor {
+    /// The rejected text.
+    #[must_use]
+    pub const fn value(&self) -> &str {
+        self.value.as_str()
+    }
+}
+
 impl HexColor {
     /// The red, green and blue channels.
     #[must_use]

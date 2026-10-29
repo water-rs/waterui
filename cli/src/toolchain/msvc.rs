@@ -21,10 +21,6 @@ const EXIT_SUCCESS_REBOOT_REQUIRED: i32 = 0xBC2;
 
 /// MSVC C++ build tools on a Windows host.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct MsvcBuildTools;
 
 impl MsvcBuildTools {
@@ -89,10 +85,6 @@ impl Toolchain for MsvcBuildTools {
 /// A system-wide install outside `~/.water`, so the doctor fix loop confirms
 /// it with the user first (or proceeds on `--yes`).
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct MsvcBuildToolsInstallation;
 
 /// Errors that can occur while installing the MSVC build tools.

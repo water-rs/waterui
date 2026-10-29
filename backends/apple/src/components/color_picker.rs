@@ -313,20 +313,20 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let host_view: &PlatformView = &host;
         cocoa_ui::view::add_subview(host_view, well.view());
         #[cfg(target_os = "macos")]
-        well.set_supports_alpha(config.support_alpha, mtm);
+        well.set_supports_alpha(config.support_alpha(), mtm);
         #[cfg(target_os = "ios")]
-        well.set_supports_alpha(config.support_alpha);
+        well.set_supports_alpha(config.support_alpha());
 
         // The sync flag is shared with the state installed below.
         let syncing = Rc::new(Cell::new(false));
-        let support_hdr = config.support_hdr;
+        let support_hdr = config.support_hdr();
 
         // Well → binding: a picked color reads back as a WorkingColor with
         // linear Display-P3 channels and HDR headroom already encoded.
         let action = well.install_action({
             let well = Rc::clone(&well);
             let syncing = Rc::clone(&syncing);
-            let value = config.value.clone();
+            let value = config.value().clone();
             move || {
                 if syncing.get() {
                     return;
@@ -344,7 +344,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The label is always mounted — a hidden one collapses to zero
         // size, matching `WuiColorPicker`'s always-present `labelView`.
         let label = ctx
-            .render(waterui_backend_core::AnyView::new(config.label.clone()))
+            .render(waterui_backend_core::AnyView::new(config.label().clone()))
             .mount(host_view);
         // The semantic text is announced on the well itself.
         cocoa_ui::view::hide_from_accessibility(label.view());
@@ -374,10 +374,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // Binding → well: each `Color` the binding produces is resolved in
         // this environment and observed — `observeColor` re-arming on every
         // `Color` the binding emits, as `WuiColorPicker` does.
-        bind_value_well(&mut leaf, &config.value, &state, ctx.env(), support_hdr);
+        bind_value_well(&mut leaf, config.value(), &state, ctx.env(), support_hdr);
 
         // The label's semantic text is announced on the well.
-        let accessibility_label = config.label.accessibility_label();
+        let accessibility_label = config.label().accessibility_label();
         leaf.bind(&accessibility_label, {
             let state = Rc::clone(&state);
             move |styled| {

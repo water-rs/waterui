@@ -30,7 +30,7 @@ pub struct ToggleRenderState<E: crate::text::TextEngine> {
 impl<E: crate::text::TextEngine> ToggleRenderState<E> {
     pub(crate) fn from_config(config: ToggleConfig) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
+            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
             config,
         }
     }
@@ -81,7 +81,7 @@ pub fn toggle_accessibility<E: crate::text::TextEngine>(
         let mut node = AccessibilityNode::new(
             crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
-                match toggle.style {
+                match toggle.style() {
                     ToggleStyle::Switch => AccessibilityNodeRole::Switch,
                     ToggleStyle::Checkbox => AccessibilityNodeRole::CheckBox,
                     ToggleStyle::Automatic => panic!("{UNRESOLVED_STYLE}"),
@@ -90,7 +90,7 @@ pub fn toggle_accessibility<E: crate::text::TextEngine>(
             ),
         );
         let default_label =
-            crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&toggle.label, env);
+            crate::renderer::SemanticCore::<E>::accessibility_label_from_label(toggle.label(), env);
         let label = renderer.resolve_accessibility_label(env, default_label);
         if let Some(label) = label {
             node.set_label(label);
@@ -98,7 +98,7 @@ pub fn toggle_accessibility<E: crate::text::TextEngine>(
         if let Some(value) = renderer.resolve_accessibility_value(env, None) {
             node.set_value(value);
         }
-        let checked = renderer.read_signal(&toggle.toggle);
+        let checked = renderer.read_signal(toggle.toggle());
         node.set_toggled(AccessibilityToggled::from(checked));
         node.add_action(AccessibilityAction::Focus);
         // A disabled toggle stays in the tree (focusable, announced as
@@ -110,7 +110,7 @@ pub fn toggle_accessibility<E: crate::text::TextEngine>(
         } else {
             node.add_action(AccessibilityAction::Click);
             Some(AccessibilityActionTarget::Toggle {
-                binding: toggle.toggle.clone(),
+                binding: toggle.toggle().clone(),
             })
         };
         if let Some(node_id) = renderer.register_accessibility_leaf(ctx, node, env, action_target) {
@@ -144,7 +144,7 @@ pub fn measure_toggle_node<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    let metrics = theme.toggle_metrics(render_state.config.style);
+    let metrics = theme.toggle_metrics(render_state.config.style());
     let label_size = render_state.label_view.measure_built(state, env, theme);
     let label_width = f64::from(label_size.width);
     let width = if label_width > 0.0 {
@@ -205,7 +205,7 @@ pub fn render_toggle_parts<E: crate::text::TextEngine>(
     let owner = state;
     let theme = ctx.theme();
     let mut state = state.borrow_mut();
-    let style = state.config.style;
+    let style = state.config.style();
     let metrics = theme.toggle_metrics(style);
     // Reading the disabled signal watches it, so a change schedules a frame
     // and this persistent node re-renders (and re-registers input) with the
@@ -255,7 +255,7 @@ pub fn render_toggle_parts<E: crate::text::TextEngine>(
     // signal (it registers a retained-refresh watcher), so a value change
     // schedules a frame and this persistent node re-renders the new state.
     let (thumb_progress, selected) = {
-        let binding = state.config.toggle.clone();
+        let binding = state.config.toggle().clone();
         ctx.renderer_mut()
             .resolve_toggle_progress(&binding, owner, theme.toggle_value_animation())
     };
@@ -310,7 +310,7 @@ pub fn render_toggle_parts<E: crate::text::TextEngine>(
     // switch's visual interaction. An associated the Material label toggles the switch
     // but does not originate a switch ripple or pressed thumb from the label's
     // distant pointer coordinate.
-    let binding = state.config.toggle.clone();
+    let binding = state.config.toggle().clone();
     if label_bounds.width() > 0.0 {
         let mut activation_press_slot = press_slot.clone();
         activation_press_slot.key = activation_interaction_key;
@@ -351,8 +351,8 @@ pub fn measure_toggle_intrinsic<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
-    let metrics = theme.toggle_metrics(toggle.style);
-    let label_size = measure_label_intrinsic(&toggle.label, state, env, theme);
+    let metrics = theme.toggle_metrics(toggle.style());
+    let label_size = measure_label_intrinsic(toggle.label(), state, env, theme);
     let label_width = f64::from(label_size.width);
     let width = if label_width > 0.0 {
         label_width + metrics.label_spacing + metrics.width

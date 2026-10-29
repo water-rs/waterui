@@ -50,6 +50,7 @@ impl HwuiWindow {
         id: SurfaceId,
         theme: Rc<dyn WidgetTheme>,
         wake: Rc<dyn Fn()>,
+        effect_wake: std::sync::Arc<dyn Fn() + Send + Sync>,
     ) -> Result<(Self, HydrolysisRenderer<AndroidTextEngine>), JniError> {
         if peer.is_null() {
             return Err(JniError(
@@ -99,7 +100,7 @@ impl HwuiWindow {
                 .map_err(JniError)?,
         );
         let painter = JniPainter::new(env, peer).map_err(JniError)?;
-        let (mount, host) = renderer.mount_hwui(&surface, resources);
+        let (mount, host) = renderer.mount_hwui(&surface, resources, effect_wake);
         Ok((
             Self {
                 surface,
@@ -149,9 +150,9 @@ impl HwuiWindow {
             .surface
             .frame(cherenkov_record::Instant::now(), scale)
             .map_err(|e| JniError(e.to_string()))?;
-        let animating = frame.content_animating || frame.sampling.rate.is_some();
+        let animating = frame.content_animating() || frame.sampling().rate.is_some();
         self.painter
-            .replay(frame.words, frame.clear)
+            .replay(frame.words(), frame.clear())
             .map_err(JniError)?;
         sync_platform_input(runtime);
         if runtime.renderer.take_redraw_request() || animating || self.surface.has_pending() {

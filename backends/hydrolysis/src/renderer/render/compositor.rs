@@ -14,10 +14,6 @@ use std::sync::Arc;
 /// SDR, single-scale display, the headless contract `waterui-testing`
 /// drives.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a host describes every field of the frame it presents; a new field must fail its build instead of taking a default"
-)]
 pub struct HydrolysisRenderTarget<'a> {
     /// The adapter the frame's device was requested on; the shared engine is
     /// created against what it can actually run.

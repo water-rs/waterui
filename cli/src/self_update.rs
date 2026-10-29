@@ -167,14 +167,44 @@ pub enum UpdateOutcome {
 
 /// The result of a `water update` operation.
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct UpdateReport {
     /// The channel that owns the running executable.
-    pub source: InstallSource,
+    source: InstallSource,
     /// The directory containing the running executable.
-    pub install_dir: PathBuf,
+    install_dir: PathBuf,
     /// The update operation's outcome.
-    pub outcome: UpdateOutcome,
+    outcome: UpdateOutcome,
+}
+
+impl UpdateReport {
+    /// The update's outcome on the channel `source` owns, installed under
+    /// `install_dir`.
+    #[must_use]
+    pub const fn new(source: InstallSource, install_dir: PathBuf, outcome: UpdateOutcome) -> Self {
+        Self {
+            source,
+            install_dir,
+            outcome,
+        }
+    }
+
+    /// The channel that owns the running executable.
+    #[must_use]
+    pub const fn source(&self) -> InstallSource {
+        self.source
+    }
+
+    /// The directory containing the running executable.
+    #[must_use]
+    pub fn install_dir(&self) -> &Path {
+        &self.install_dir
+    }
+
+    /// The update operation's outcome.
+    #[must_use]
+    pub const fn outcome(&self) -> &UpdateOutcome {
+        &self.outcome
+    }
 }
 
 /// What `water update --check` reports.
@@ -226,11 +256,7 @@ pub async fn update(host: &Host) -> Result<UpdateReport> {
             UpdateOutcome::ExternallyManaged { command }
         }
     };
-    Ok(UpdateReport {
-        source,
-        install_dir,
-        outcome,
-    })
+    Ok(UpdateReport::new(source, install_dir, outcome))
 }
 
 /// `water update --check`: report the newest release without installing it.
@@ -282,11 +308,11 @@ pub fn cli_update_command(host: &Host, fallback: &str) -> String {
 pub async fn passive_update_notice(host: &Host) -> Option<String> {
     let water_home = water_dir::water_home_dir(host).ok()?;
     let mut config = water_dir::ensure_global_config_in(&water_home).await.ok()?;
-    if !passive_check_due(config.last_update_check_unix_seconds, unix_now()) {
+    if !passive_check_due(config.last_update_check_unix_seconds(), unix_now()) {
         return None;
     }
     let notice = passive_notice_inner(host).await;
-    config.last_update_check_unix_seconds = Some(unix_now());
+    config.set_last_update_check_unix_seconds(Some(unix_now()));
     if let Err(error) = water_dir::write_global_config_in(&water_home, &config).await {
         tracing::debug!("update check: failed to record the check timestamp: {error}");
     }

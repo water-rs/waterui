@@ -361,6 +361,33 @@ pub struct Monitor {
 }
 
 impl Monitor {
+    /// Bounds in the global logical coordinate space window frames use.
+    #[must_use]
+    pub const fn frame(&self) -> Rect {
+        self.frame
+    }
+
+    /// `frame` minus what the desktop reserves (menu bar, dock, panels, taskbar).
+    /// Equal to `frame` where the platform reports no work area.
+    #[must_use]
+    pub const fn visible_frame(&self) -> Rect {
+        self.visible_frame
+    }
+
+    /// Physical pixels per logical point.
+    #[must_use]
+    pub const fn scale_factor(&self) -> f64 {
+        self.scale_factor
+    }
+
+    /// The platform's name for the display, when it reports one.
+    #[must_use]
+    pub const fn name(&self) -> Option<&Str> {
+        self.name.as_ref()
+    }
+}
+
+impl Monitor {
     /// A display spanning `frame`, of which `visible_frame` is free of
     /// desktop chrome, at `scale_factor` physical pixels per logical point,
     /// named `name` when the platform reports one.
@@ -412,6 +439,24 @@ pub struct WindowPlacement {
     /// visible; `place` answers in the same global logical space
     /// [`Monitor::frame`] is expressed in.
     pub place: Rc<dyn Fn(&Monitor) -> Rect>,
+}
+
+impl WindowPlacement {
+    /// The monitor a backend resolves before calling `place`.
+    #[must_use]
+    pub const fn monitor(&self) -> MonitorSelector {
+        self.monitor
+    }
+
+    /// Computes the window frame from the resolved monitor's geometry.
+    ///
+    /// Backends call it once per show, immediately before the window becomes
+    /// visible; `place` answers in the same global logical space
+    /// [`Monitor::frame`] is expressed in.
+    #[must_use]
+    pub const fn place(&self) -> &Rc<dyn Fn(&Monitor) -> Rect> {
+        &self.place
+    }
 }
 
 impl Debug for WindowPlacement {

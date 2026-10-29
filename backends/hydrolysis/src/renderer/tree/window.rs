@@ -121,10 +121,10 @@ fn safe_area_context(
 ) -> (RenderContext, kurbo::Affine) {
     let shift = kurbo::Affine::translate((content.x0, content.y0));
     (
-        RenderContext {
-            local: shift,
-            bounds: kurbo::Rect::new(0.0, 0.0, content.width(), content.height()),
-        },
+        RenderContext::new(
+            shift,
+            kurbo::Rect::new(0.0, 0.0, content.width(), content.height()),
+        ),
         hit_transform * shift,
     )
 }
@@ -622,7 +622,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             tree.patch(self);
             #[cfg(feature = "frame-profile")]
             {
-                self.frame_stage_times.update += update_started_at.elapsed();
+                self.frame_stage_times
+                    .set_update(self.frame_stage_times.update() + update_started_at.elapsed());
             }
             #[cfg(feature = "frame-profile")]
             let layout_started_at = Instant::now();
@@ -630,7 +631,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             tree.layout(self, env, Some(safe_area.clone()), proposal, size);
             #[cfg(feature = "frame-profile")]
             {
-                self.frame_stage_times.layout += layout_started_at.elapsed();
+                self.frame_stage_times
+                    .set_layout(self.frame_stage_times.layout() + layout_started_at.elapsed());
                 self.last_layout_signature = Some(tree.placed_signature(Rect::from_size(size)));
             }
             #[cfg(feature = "frame-profile")]
@@ -647,7 +649,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             self.core.finish_emit_pass();
             #[cfg(feature = "frame-profile")]
             {
-                self.frame_stage_times.encode += encode_started_at.elapsed();
+                self.frame_stage_times
+                    .set_encode(self.frame_stage_times.encode() + encode_started_at.elapsed());
             }
             self.content_minimum = None;
             self.render_tree = Some(tree);
@@ -655,7 +658,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         }
         #[cfg(feature = "frame-profile")]
         {
-            self.frame_stage_times.update += update_started_at.elapsed();
+            self.frame_stage_times
+                .set_update(self.frame_stage_times.update() + update_started_at.elapsed());
         }
         self.render_depth = 0;
         let mut node = RenderNode::build(content, env, self);
@@ -671,7 +675,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         node.layout(self, env, Some(safe_area.clone()), proposal, size);
         #[cfg(feature = "frame-profile")]
         {
-            self.frame_stage_times.layout += layout_started_at.elapsed();
+            self.frame_stage_times
+                .set_layout(self.frame_stage_times.layout() + layout_started_at.elapsed());
             self.last_layout_signature = Some(node.placed_signature(Rect::from_size(size)));
         }
         #[cfg(feature = "frame-profile")]
@@ -686,7 +691,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.core.finish_emit_pass();
         #[cfg(feature = "frame-profile")]
         {
-            self.frame_stage_times.encode += encode_started_at.elapsed();
+            self.frame_stage_times
+                .set_encode(self.frame_stage_times.encode() + encode_started_at.elapsed());
         }
         self.content_minimum = None;
         self.render_tree = Some(node);
@@ -737,7 +743,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         drop(update_span);
         #[cfg(feature = "frame-profile")]
         {
-            self.frame_stage_times.update += update_started_at.elapsed();
+            self.frame_stage_times
+                .set_update(self.frame_stage_times.update() + update_started_at.elapsed());
         }
         let layout_span = tracing::debug_span!("hydrolysis_frame_layout").entered();
         #[cfg(feature = "frame-profile")]
@@ -755,7 +762,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         drop(layout_span);
         #[cfg(feature = "frame-profile")]
         {
-            self.frame_stage_times.layout += layout_started_at.elapsed();
+            self.frame_stage_times
+                .set_layout(self.frame_stage_times.layout() + layout_started_at.elapsed());
             self.last_layout_signature = Some(tree.placed_signature(Rect::from_size(size)));
         }
         let encode_span = tracing::debug_span!("hydrolysis_scene_encode").entered();
@@ -775,7 +783,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         drop(encode_span);
         #[cfg(feature = "frame-profile")]
         {
-            self.frame_stage_times.encode += encode_started_at.elapsed();
+            self.frame_stage_times
+                .set_encode(self.frame_stage_times.encode() + encode_started_at.elapsed());
         }
         self.core.registries();
         // The materialized platform-view placements write into their tables

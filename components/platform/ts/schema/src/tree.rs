@@ -183,6 +183,20 @@ pub struct StructSchema {
 }
 
 impl StructSchema {
+    /// The Rust type name, which is also the generated TypeScript type name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The fields in declaration order.
+    #[must_use]
+    pub const fn fields(&self) -> &'static [FieldSchema] {
+        self.fields
+    }
+}
+
+impl StructSchema {
     /// A struct named `name` with `fields` in declaration order.
     #[must_use]
     pub const fn new(name: &'static str, fields: &'static [FieldSchema]) -> Self {
@@ -198,6 +212,20 @@ pub struct FieldSchema {
     pub name: &'static str,
     /// The field type.
     pub ty: TypeSchema,
+}
+
+impl FieldSchema {
+    /// The field name, which is also the generated property name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The field type.
+    #[must_use]
+    pub const fn ty(&self) -> &TypeSchema {
+        &self.ty
+    }
 }
 
 impl FieldSchema {
@@ -218,6 +246,26 @@ pub struct EnumSchema {
     pub representation: EnumRepresentation,
     /// The variants in declaration order.
     pub variants: &'static [VariantSchema],
+}
+
+impl EnumSchema {
+    /// The Rust type name, which is also the generated TypeScript type name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// How the variants are laid out on the TypeScript side.
+    #[must_use]
+    pub const fn representation(&self) -> EnumRepresentation {
+        self.representation
+    }
+
+    /// The variants in declaration order.
+    #[must_use]
+    pub const fn variants(&self) -> &'static [VariantSchema] {
+        self.variants
+    }
 }
 
 impl EnumSchema {
@@ -279,6 +327,20 @@ pub struct VariantSchema {
     pub name: &'static str,
     /// What the variant carries.
     pub payload: VariantPayload,
+}
+
+impl VariantSchema {
+    /// The variant name, which is also its tag value.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// What the variant carries.
+    #[must_use]
+    pub const fn payload(&self) -> VariantPayload {
+        self.payload
+    }
 }
 
 impl VariantSchema {

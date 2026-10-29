@@ -587,6 +587,32 @@ impl Outline {
 }
 
 impl OutlineRef<'_> {
+    /// Conservative outline bounds without constructing a stroked path.
+    pub fn bounds(self) -> Rect {
+        use kurbo::Shape as _;
+        match self {
+            Self::Fill { elements, .. } => elements.bounding_box(),
+            Self::Stroke { shape, stroke } => {
+                // A square cap's diagonal can extend sqrt(2) half-widths
+                // along either local axis. Miter joins can extend farther.
+                let cap = if stroke.start_cap == kurbo::Cap::Square
+                    || stroke.end_cap == kurbo::Cap::Square
+                {
+                    std::f64::consts::SQRT_2
+                } else {
+                    1.0
+                };
+                let join = if stroke.join == kurbo::Join::Miter {
+                    stroke.miter_limit.max(1.0)
+                } else {
+                    1.0
+                };
+                let margin = stroke.width.abs() * 0.5 * cap.max(join);
+                shape.bounds().inflate(margin, margin)
+            }
+        }
+    }
+
     pub fn gpu_candidate(self, complexity: path::Complexity, raster: Affine) -> bool {
         match self {
             Self::Fill { .. } => complexity.fill_candidate(),
@@ -1429,6 +1455,40 @@ mod tests {
     use cherenkov::kurbo::Ellipse;
 
     use super::*;
+
+    #[test]
+    fn stroke_bounds_include_square_caps_and_miter_tips() {
+        use kurbo::Shape as _;
+        let shape = ShapeData::Path {
+            elements: vec![
+                PathEl::MoveTo((0.0, 0.0).into()),
+                PathEl::LineTo((10.0, 10.0).into()),
+                PathEl::LineTo((0.0, 11.0).into()),
+            ]
+            .into(),
+            rule: FillRule::NonZero,
+        };
+        for join in [kurbo::Join::Round, kurbo::Join::Bevel, kurbo::Join::Miter] {
+            for limit in [1.0, 4.0, 20.0] {
+                let stroke = kurbo::Stroke::new(8.0)
+                    .with_join(join)
+                    .with_caps(kurbo::Cap::Square)
+                    .with_miter_limit(limit);
+                let outline = OutlineRef::Stroke {
+                    shape: &shape,
+                    stroke: &stroke,
+                };
+                let bound = outline.bounds();
+                let actual = outline.build(0.001).bounding_box();
+                assert!(
+                    bound.x0 <= actual.x0
+                        && bound.y0 <= actual.y0
+                        && bound.x1 >= actual.x1
+                        && bound.y1 >= actual.y1
+                );
+            }
+        }
+    }
 
     /// `stroke` against empty registries, as `draw` dispatches a
     /// `Command::Stroke`.

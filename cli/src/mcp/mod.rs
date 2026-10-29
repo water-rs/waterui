@@ -31,10 +31,6 @@ pub use proxy::ChildProxy;
 
 /// One `water mcp` session.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the terminal fills every field of the session request; a new field must fail its build instead of taking a default"
-)]
 pub struct McpSessionRequest {
     /// The host this session's builds and spawned processes run on.
     pub host: crate::toolchain::Host,

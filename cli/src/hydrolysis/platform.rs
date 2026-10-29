@@ -472,7 +472,7 @@ pub async fn package_hydrolysis(
     if platform == TargetPlatform::Linux {
         crate::platforming::linux_share::write_linux_share_material(
             project,
-            &project.manifest().package.name,
+            project.manifest().package().name(),
             binary_name.as_str(),
             &runtime_dir.join("share"),
         )
@@ -529,8 +529,8 @@ async fn package_hydrolysis_macos(
         .map_err(|error| eyre::eyre!("{error}"))?;
     let app_name = project
         .manifest()
-        .package
-        .name
+        .package()
+        .name()
         .chars()
         .filter(|character| character.is_alphanumeric() || *character == ' ')
         .collect::<String>();
@@ -543,26 +543,20 @@ async fn package_hydrolysis_macos(
     fs::create_dir_all(&dist_dir).await?;
     let usage_descriptions = project
         .manifest()
-        .permissions
+        .permissions()
         .iter()
         .filter(|(_, entry)| entry.is_enabled())
         .flat_map(|(key, entry)| {
-            key.macos_usage_description_keys()
-                .iter()
-                .map(|&plist_key| MacOsUsageDescription {
-                    plist_key,
-                    description: entry.description().to_string(),
-                })
+            key.macos_usage_description_keys().iter().map(|&plist_key| {
+                MacOsUsageDescription::new(plist_key, entry.description().to_string())
+            })
         })
         .collect::<Vec<_>>();
     let icns = assets::project_macos_icns(project)?;
     let app_path = package_binary_as_app(
         binary_path,
         &bundle_id,
-        MacOsAppNames {
-            app_name: &app_name,
-            executable_name: project.hydrolysis_binary_name().as_str(),
-        },
+        MacOsAppNames::new(&app_name, project.hydrolysis_binary_name().as_str()),
         &usage_descriptions,
         Some(&backend_path.join("resources")),
         &icns,
@@ -599,7 +593,7 @@ async fn package_hydrolysis_macos(
         },
         PackageAudience::Distribution => {
             MacOsSigning::Distribution(crate::macos_bundle::DistributionSigning::from_manifest(
-                project.manifest().signing.macos.as_ref(),
+                project.manifest().signing().macos(),
                 None,
             )?)
         }
@@ -1294,7 +1288,7 @@ mod tests {
                  local_path = \"assets/fonts/FixtureSans.ttf\"\n",
             )
             .expect("Water.toml parses");
-            manifest.framework = Some(stable_framework());
+            manifest.set_framework(Some(stable_framework()));
             std::fs::write(
                 root.join("Water.toml"),
                 toml::to_string(&manifest).expect("manifest serializes"),

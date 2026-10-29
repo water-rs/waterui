@@ -74,9 +74,9 @@ impl Encoder {
             }
         }
         if let Some(portal) = &state.platform
-            && portal.binding.bounds.contains(point)
+            && portal.binding.bounds().contains(point)
         {
-            return Ok(Some(portal.binding.view));
+            return Ok(Some(portal.binding.view()));
         }
         Ok(None)
     }

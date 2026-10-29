@@ -1187,6 +1187,8 @@ struct BackdropShaderEntry {
 
 /// All render-thread state.
 pub struct GpuRenderer {
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    preparation: rayon::ThreadPool,
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     presenter: Option<present::Presenter>,
@@ -2996,6 +2998,12 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         );
         let pipeline_cache = PipelineCache::new(pipeline_cache.as_ref(), &config);
         let renderer = GpuRenderer {
+            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+            preparation: rayon::ThreadPoolBuilder::new()
+                .num_threads(cherenkov::workers::count(None)?.get())
+                .thread_name(|i| format!("cherenkov-geometry-{i}"))
+                .build()
+                .map_err(|e| EngineError::Backend(format!("geometry pool: {e}")))?,
             instance,
             adapter,
             presenter: None,
@@ -6677,6 +6685,8 @@ impl GpuRenderer {
             .map(|surf| surf.backdrop_info(&mut self.filters))
             .collect();
         self.ready_planes(frames, pending);
+        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+        let preparation = &self.preparation;
         // The workers share the producers' current frames, not the
         // producers: a rendered producer's content is render-thread
         // state (`!Sync`), and a frame slot is all the lowering
@@ -6710,6 +6720,8 @@ impl GpuRenderer {
                         let prepared = prepared.remove(&frame.id).unwrap_or_default();
                         s.spawn(move || {
                             let result = Self::lower_content(
+                                #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+                                preparation,
                                 surf,
                                 frame,
                                 GlyphResources {
@@ -6749,6 +6761,8 @@ impl GpuRenderer {
                 .zip(group_maps.iter().zip(inputs).zip(self.ready_sets.iter()))
                 .map(|((surf, frame), ((groups, inputs), ready))| {
                     Self::lower_content(
+                        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+                        preparation,
                         surf,
                         frame,
                         GlyphResources {
@@ -7156,6 +7170,8 @@ impl GpuRenderer {
         reason = "one surface's prepared inputs and lowering resources"
     )]
     fn lower_content(
+        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+        preparation: &rayon::ThreadPool,
         surf: &mut SurfaceState,
         frame: &SurfaceFrame<'_>,
         resources: GlyphResources<'_>,
@@ -7214,6 +7230,8 @@ impl GpuRenderer {
                 &mut surf.raster_scratch,
                 coverage_options.0,
             );
+            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+            let _ = lowering.preparation.insert(preparation);
             lowering.coverage_route = coverage_options.1;
             lowering.pending = std::mem::take(&mut lowered.pending);
             let result = lowering.prepare(&mut layers, &glyphs).and_then(|()| {

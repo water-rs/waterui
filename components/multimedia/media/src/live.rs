@@ -25,6 +25,20 @@ pub struct LivePhotoSource {
     pub video: Url,
 }
 
+impl LivePhotoSource {
+    /// The URL for the still image component of the live photo.
+    #[must_use]
+    pub const fn image(&self) -> &Url {
+        &self.image
+    }
+
+    /// The URL for the video component of the live photo.
+    #[must_use]
+    pub const fn video(&self) -> &Url {
+        &self.video
+    }
+}
+
 /// Events emitted by the `LivePhoto` component.
 ///
 /// [`Self::MotionEnded`] and [`Self::MotionFailed`] both leave the still photo

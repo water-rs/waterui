@@ -75,11 +75,12 @@ struct Mounted {
 /// Renders one tab once: the pane, the label's extracted text and the icon's
 /// leaf the platform chrome still binds.
 fn mount_tab(id: Id, tab: Tab, renderer: &crate::contract::Renderer) -> Mounted {
-    let pane = renderer.render(waterui_backend_core::AnyView::new(tab.content.build()));
-    let label_leaf = renderer.render(tab.label.build());
+    let (label, icon, content, badge, enabled, role) = tab.into_parts();
+    let pane = renderer.render(waterui_backend_core::AnyView::new(content.build()));
+    let label_leaf = renderer.render(label.build());
     let label = extract_title_text(label_leaf.view());
-    let (symbol, icon_leaf) = match tab.icon {
-        Some(TabIcon::System(icon)) => (Some(icon.name.to_string()), None),
+    let (symbol, icon_leaf) = match icon {
+        Some(TabIcon::System(icon)) => (Some(icon.name().to_string()), None),
         Some(TabIcon::View(icon)) => (None, Some(renderer.render(icon.build()))),
         None => (None, None),
     };
@@ -91,9 +92,9 @@ fn mount_tab(id: Id, tab: Tab, renderer: &crate::contract::Renderer) -> Mounted 
         label: label.unwrap_or_default(),
         symbol,
         icon_leaf,
-        badge: tab.badge,
-        enabled: tab.enabled,
-        is_search: matches!(tab.role, TabRole::Search),
+        badge,
+        enabled,
+        is_search: matches!(role, TabRole::Search),
         keep: core::cell::RefCell::new(crate::contract::KeepAlive::default()),
     }
 }
@@ -308,17 +309,17 @@ mod platform {
             BTreeMap::<Id, Retained<TabContentController>>::new(),
         ));
         {
-            let snapshot = layout.tabs.snapshot();
+            let snapshot = layout.tabs().snapshot();
             let _ = reconcile_tabs(
                 &mut mounted.borrow_mut(),
                 &snapshot,
                 &renderer,
-                &layout.selection,
+                layout.selection(),
             );
         }
         refresh(mtm, &env, &tabs, &mounted, &controllers);
 
-        tabs.setTabBarMinimizeBehavior(match layout.minimize_behavior {
+        tabs.setTabBarMinimizeBehavior(match layout.get_minimize_behavior() {
             TabBarMinimizeBehavior::Automatic => UITabBarMinimizeBehavior::Automatic,
             TabBarMinimizeBehavior::Never => UITabBarMinimizeBehavior::Never,
             TabBarMinimizeBehavior::OnScrollDown => UITabBarMinimizeBehavior::OnScrollDown,
@@ -330,7 +331,7 @@ mod platform {
         // view renders once into a host whose intrinsic measure forwards
         // the child's answer, then UIKit owns the capsule's placement,
         // sizing and collapse.
-        if let Some(accessory) = layout.bottom_accessory.take() {
+        if let Some(accessory) = layout.take_bottom_accessory() {
             let accessory_host = HostView::new(mtm, Rect::ZERO);
             let mounted = Rc::new(ctx.render(accessory).mount(&accessory_host));
             accessory_host.set_measure_handler({
@@ -422,7 +423,7 @@ mod platform {
 
         // Two-way selection.
         tabs.set_select_handler({
-            let selection = layout.selection.clone();
+            let selection = layout.selection().clone();
             let mounted = mounted.clone();
             move |index| {
                 // Copy the id under a short borrow — `selection.set` runs user
@@ -434,7 +435,7 @@ mod platform {
                 }
             }
         });
-        keep.bind(&layout.selection, {
+        keep.bind(layout.selection(), {
             let tabs = tabs.clone();
             let mounted = mounted.clone();
             move |id| {
@@ -448,9 +449,9 @@ mod platform {
         // Membership changes re-key the mounted set by tab id: a surviving
         // tab keeps its controller — pane, navigation state, surfaces — the
         // array is re-set in the new order.
-        keep.keep(layout.tabs.watch(.., {
+        keep.keep(layout.tabs().watch(.., {
             let mounted = mounted.clone();
-            let selection = layout.selection.clone();
+            let selection = layout.selection().clone();
             let tabs = tabs.clone();
             move |ctx, _change| {
                 let snapshot = ctx.into_value();
@@ -554,12 +555,12 @@ mod platform {
         let renderer = ctx.renderer();
         let mounted: Rc<RefCell<Vec<Mounted>>> = Rc::new(RefCell::new(Vec::new()));
         {
-            let snapshot = layout.tabs.snapshot();
+            let snapshot = layout.tabs().snapshot();
             let _ = reconcile_tabs(
                 &mut mounted.borrow_mut(),
                 &snapshot,
                 &renderer,
-                &layout.selection,
+                layout.selection(),
             );
         }
         keep.keep(mounted.clone());
@@ -567,13 +568,13 @@ mod platform {
             view::add_subview(&host, tab.pane.view());
         }
 
-        let sidebar = matches!(layout.style, NativeTabStyle::Sidebar);
+        let sidebar = matches!(layout.get_style(), NativeTabStyle::Sidebar);
         let chrome = if sidebar {
             let list = SourceList::new(mtm);
             list.set_segments(&segments(&mounted.borrow()));
             view::add_subview(&host, list.view());
             list.set_select_handler({
-                let selection = layout.selection.clone();
+                let selection = layout.selection().clone();
                 let mounted = mounted.clone();
                 move |index| {
                     // Short borrow — `selection.set` runs watchers that may
@@ -592,7 +593,7 @@ mod platform {
             control.set_segments(&segments(&mounted.borrow()));
             view::add_subview(&host, &control);
             control.set_select_handler({
-                let selection = layout.selection.clone();
+                let selection = layout.selection().clone();
                 let mounted = mounted.clone();
                 move |index| {
                     // Short borrow — `selection.set` runs watchers that may
@@ -628,11 +629,11 @@ mod platform {
                 }
             }
         };
-        let selected = layout.selection.snapshot();
+        let selected = layout.selection().snapshot();
         let index = mounted.borrow().iter().position(|tab| tab.id == selected);
         show(index);
 
-        keep.bind(&layout.selection, {
+        keep.bind(layout.selection(), {
             let show = show.clone();
             let mounted = mounted.clone();
             move |id| {
@@ -646,11 +647,11 @@ mod platform {
         // pane mounts and joins the host, the segments rebuild in the new
         // order — a surviving tab's Mounted — pane, navigation state,
         // surfaces — is never touched.
-        keep.keep(layout.tabs.watch(.., {
+        keep.keep(layout.tabs().watch(.., {
             let mounted = mounted.clone();
             let host = host.clone();
             let chrome = chrome.clone();
-            let selection = layout.selection.clone();
+            let selection = layout.selection().clone();
             let show = show.clone();
             move |ctx, _change| {
                 let snapshot = ctx.into_value();

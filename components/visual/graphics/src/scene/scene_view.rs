@@ -15,10 +15,6 @@ use crate::scene::resources::RecordingResources;
 
 /// Environment marker: render `SceneView` directly in the backend scene.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less environment marker inserted by name"
-)]
 pub struct SceneViewMergeToParent;
 
 /// Callback used by scene content to request another frame.

@@ -97,6 +97,15 @@ pub struct SnapshotArgs {
     pub format: SnapshotFormat,
 }
 
+impl SnapshotArgs {
+    /// `text` (default) renders indented node lines; `json` renders the full
+    /// node tree as JSON.
+    #[must_use]
+    pub const fn format(&self) -> SnapshotFormat {
+        self.format
+    }
+}
+
 /// Output format for the `snapshot` tool.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -152,6 +161,101 @@ pub struct SelectorArgs {
     pub children_of: Option<u64>,
 }
 
+impl SelectorArgs {
+    /// Role name as `snapshot` prints it: `button`, `text_input`,
+    /// `scroll_view`, …
+    #[must_use]
+    pub fn role(&self) -> Option<&str> {
+        self.role.as_deref()
+    }
+
+    /// Exact accessibility label.
+    #[must_use]
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
+    /// Substring the label must contain.
+    #[must_use]
+    pub fn label_contains(&self) -> Option<&str> {
+        self.label_contains.as_deref()
+    }
+
+    /// Accessibility identifier (`a11y_id`).
+    #[must_use]
+    pub fn identifier(&self) -> Option<&str> {
+        self.identifier.as_deref()
+    }
+
+    /// Exact current value.
+    #[must_use]
+    pub fn value(&self) -> Option<&str> {
+        self.value.as_deref()
+    }
+
+    /// Substring the value must contain.
+    #[must_use]
+    pub fn value_contains(&self) -> Option<&str> {
+        self.value_contains.as_deref()
+    }
+
+    /// Required enabled state.
+    #[must_use]
+    pub const fn enabled(&self) -> Option<bool> {
+        self.enabled
+    }
+
+    /// Required selected state.
+    #[must_use]
+    pub const fn selected(&self) -> Option<bool> {
+        self.selected
+    }
+
+    /// Required checked state — `true`/`false`; use `mixed` for
+    /// indeterminate.
+    #[must_use]
+    pub const fn checked(&self) -> Option<bool> {
+        self.checked
+    }
+
+    /// `true` matches only indeterminate checkable nodes.
+    #[must_use]
+    pub const fn mixed(&self) -> Option<bool> {
+        self.mixed
+    }
+
+    /// Required expanded state.
+    #[must_use]
+    pub const fn expanded(&self) -> Option<bool> {
+        self.expanded
+    }
+
+    /// Required busy state.
+    #[must_use]
+    pub const fn busy(&self) -> Option<bool> {
+        self.busy
+    }
+
+    /// `true` also matches hidden nodes; they are excluded by default.
+    #[must_use]
+    pub const fn hidden(&self) -> Option<bool> {
+        self.hidden
+    }
+
+    /// Restrict matches to descendants of this node id.
+    #[must_use]
+    pub const fn within(&self) -> Option<u64> {
+        self.within
+    }
+
+    /// Restrict matches to direct children of this node id. Mutually
+    /// exclusive with `within`.
+    #[must_use]
+    pub const fn children_of(&self) -> Option<u64> {
+        self.children_of
+    }
+}
+
 /// Find nodes matching the criteria and return their node lines. Fails when
 /// nothing matches.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
@@ -161,6 +265,14 @@ pub struct FindArgs {
     /// The match criteria, inlined into the tool arguments.
     #[serde(flatten)]
     pub criteria: SelectorArgs,
+}
+
+impl FindArgs {
+    /// The match criteria, inlined into the tool arguments.
+    #[must_use]
+    pub const fn criteria(&self) -> &SelectorArgs {
+        &self.criteria
+    }
 }
 
 /// Perform a semantic accessibility action on a node, then return the settled
@@ -183,6 +295,37 @@ pub struct ActArgs {
     /// observe the transient it triggers.
     #[serde(default)]
     pub settle: Option<bool>,
+}
+
+impl ActArgs {
+    /// Target node id from a `snapshot` or `find` line (`#42` → `42`).
+    /// Required for every action except `clear_focus`, which is app-level and
+    /// ignores it.
+    #[must_use]
+    pub const fn node(&self) -> Option<u64> {
+        self.node
+    }
+
+    /// The action to perform.
+    #[must_use]
+    pub const fn action(&self) -> ActAction {
+        self.action
+    }
+
+    /// The value for `set_value` and `replace_text`; required for them,
+    /// ignored by other actions.
+    #[must_use]
+    pub fn value(&self) -> Option<&str> {
+        self.value.as_deref()
+    }
+
+    /// Settle the runtime before returning (default `true`). Pass `false` to
+    /// queue the action without settling, so `advance` and `screenshot` can
+    /// observe the transient it triggers.
+    #[must_use]
+    pub const fn settle(&self) -> Option<bool> {
+        self.settle
+    }
 }
 
 /// The accessibility actions `act` can dispatch.
@@ -300,6 +443,94 @@ pub struct PointerArgs {
     pub settle: Option<bool>,
 }
 
+impl PointerArgs {
+    /// Which pointer event to dispatch.
+    #[must_use]
+    pub const fn kind(&self) -> PointerKind {
+        self.kind
+    }
+
+    /// X coordinate in logical pixels — or a `0`–`1` fraction of the `node`
+    /// bounds when `node` is set.
+    #[must_use]
+    pub const fn x(&self) -> f32 {
+        self.x
+    }
+
+    /// Y coordinate in logical pixels — or a `0`–`1` fraction of the `node`
+    /// bounds when `node` is set.
+    #[must_use]
+    pub const fn y(&self) -> f32 {
+        self.y
+    }
+
+    /// Drag end X — required when `kind` is `drag`. A `0`–`1` fraction of the
+    /// `to_node` (or `node`) bounds when an anchor is set.
+    #[must_use]
+    pub const fn to_x(&self) -> Option<f32> {
+        self.to_x
+    }
+
+    /// Drag end Y — required when `kind` is `drag`.
+    #[must_use]
+    pub const fn to_y(&self) -> Option<f32> {
+        self.to_y
+    }
+
+    /// Horizontal scroll delta — used when `kind` is `scroll`.
+    #[must_use]
+    pub const fn dx(&self) -> Option<f32> {
+        self.dx
+    }
+
+    /// Vertical scroll delta — used when `kind` is `scroll`.
+    #[must_use]
+    pub const fn dy(&self) -> Option<f32> {
+        self.dy
+    }
+
+    /// Number of intermediate positions for `drag`.
+    #[must_use]
+    pub const fn steps(&self) -> Option<u16> {
+        self.steps
+    }
+
+    /// Anchor node id: `x`/`y` become fractions of its bounds (`0.5, 0.5` is
+    /// the center). Fractions outside `0`–`1` extrapolate past the edge.
+    #[must_use]
+    pub const fn node(&self) -> Option<u64> {
+        self.node
+    }
+
+    /// Anchor node id for the drag end point — `to_x`/`to_y` become fractions
+    /// of its bounds. Falls back to `node` when unset.
+    #[must_use]
+    pub const fn to_node(&self) -> Option<u64> {
+        self.to_node
+    }
+
+    /// Magnification factor — required when `kind` is `magnify`.
+    #[must_use]
+    pub const fn factor(&self) -> Option<f32> {
+        self.factor
+    }
+
+    /// Scroll delta unit — `pixel` (default) or `line`; used when `kind` is
+    /// `scroll`.
+    #[must_use]
+    pub const fn unit(&self) -> Option<ScrollUnit> {
+        self.unit
+    }
+
+    /// Settle the runtime before returning (default `true`). Pass `false` to
+    /// queue the event without settling, so `advance` and `screenshot` can
+    /// observe the transient it triggers.
+    #[must_use]
+    pub const fn settle(&self) -> Option<bool> {
+        self.settle
+    }
+}
+
 /// The pointer events `pointer` can dispatch.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -359,6 +590,31 @@ pub struct KeyArgs {
     pub settle: Option<bool>,
 }
 
+impl KeyArgs {
+    /// A single character (`"a"`, `" "`), or a W3C named key: `Enter`, `Tab`,
+    /// `Escape`, `Backspace`, `Delete`, `ArrowLeft`, `ArrowRight`, `ArrowUp`,
+    /// `ArrowDown`, `Home`, `End`, `PageUp`, `PageDown`, `F1`–`F12`.
+    #[must_use]
+    pub const fn key(&self) -> &str {
+        self.key.as_str()
+    }
+
+    /// Modifiers held during the press: `shift`, `ctrl`, `alt`, `meta`.
+    #[must_use]
+    pub const fn modifiers(&self) -> &[String] {
+        self.modifiers.as_slice()
+    }
+
+    /// Settle the runtime before returning (default `true`). Pass `false` to
+    /// queue the press without settling, so `advance` and `screenshot` can
+    /// observe the transient it triggers — a focus ring appearing on `Tab`, a
+    /// sheet dismissing on `Escape`.
+    #[must_use]
+    pub const fn settle(&self) -> Option<bool> {
+        self.settle
+    }
+}
+
 /// Drop one or more files at a viewport point or onto a node, then return
 /// the settled tree.
 ///
@@ -391,6 +647,45 @@ pub struct DropFilesArgs {
     /// observe the transient it triggers.
     #[serde(default)]
     pub settle: Option<bool>,
+}
+
+impl DropFilesArgs {
+    /// Absolute file paths to drop — one hovered-then-dropped pair per path,
+    /// in order; the destination receives all of them as one `Files`
+    /// payload.
+    #[must_use]
+    pub const fn paths(&self) -> &[PathBuf] {
+        self.paths.as_slice()
+    }
+
+    /// X coordinate in logical pixels — or a `0`–`1` fraction of the `node`
+    /// bounds when `node` is set.
+    #[must_use]
+    pub const fn x(&self) -> f32 {
+        self.x
+    }
+
+    /// Y coordinate in logical pixels — or a `0`–`1` fraction of the `node`
+    /// bounds when `node` is set.
+    #[must_use]
+    pub const fn y(&self) -> f32 {
+        self.y
+    }
+
+    /// Anchor node id: `x`/`y` become fractions of its bounds (`0.5, 0.5` is
+    /// the center). Fractions outside `0`–`1` extrapolate past the edge.
+    #[must_use]
+    pub const fn node(&self) -> Option<u64> {
+        self.node
+    }
+
+    /// Settle the runtime before returning (default `true`). Pass `false` to
+    /// queue the drop without settling, so `advance` and `screenshot` can
+    /// observe the transient it triggers.
+    #[must_use]
+    pub const fn settle(&self) -> Option<bool> {
+        self.settle
+    }
 }
 
 impl DropFilesArgs {
@@ -435,6 +730,28 @@ pub struct TypeTextArgs {
     pub settle: Option<bool>,
 }
 
+impl TypeTextArgs {
+    /// The text to insert.
+    #[must_use]
+    pub const fn text(&self) -> &str {
+        self.text.as_str()
+    }
+
+    /// Settle the runtime before returning (default `true`). Pass `false` to
+    /// queue the input without settling, so `advance` and `screenshot` can
+    /// observe the transient it triggers.
+    #[must_use]
+    pub const fn settle(&self) -> Option<bool> {
+        self.settle
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (String, Option<bool>) {
+        (self.text, self.settle)
+    }
+}
+
 /// Wait until every given expectation holds, then return `fulfilled` — or
 /// `timed out` — followed by the current tree. Prefer this over polling
 /// `snapshot`.
@@ -457,6 +774,45 @@ pub struct WaitArgs {
     pub timeout_ms: Option<u64>,
 }
 
+impl WaitArgs {
+    /// Fulfilled once a matching node exists.
+    #[must_use]
+    pub const fn exists(&self) -> Option<&ExpectArgs> {
+        self.exists.as_ref()
+    }
+
+    /// Fulfilled once no matching node exists.
+    #[must_use]
+    pub const fn not_exists(&self) -> Option<&ExpectArgs> {
+        self.not_exists.as_ref()
+    }
+
+    /// Fulfilled once a matching node's value equals `value`.
+    #[must_use]
+    pub const fn value_eq(&self) -> Option<&ValueEqArgs> {
+        self.value_eq.as_ref()
+    }
+
+    /// Fulfilled once a matching node holds keyboard/UI focus.
+    #[must_use]
+    pub const fn focus(&self) -> Option<&ExpectArgs> {
+        self.focus.as_ref()
+    }
+
+    /// `true` requires the non-inverted expectations to fulfill in the order
+    /// given; a later one fulfilling first reports `incorrect_order`.
+    #[must_use]
+    pub const fn enforce_order(&self) -> Option<bool> {
+        self.enforce_order
+    }
+
+    /// Timeout in milliseconds; defaults to 5000.
+    #[must_use]
+    pub const fn timeout_ms(&self) -> Option<u64> {
+        self.timeout_ms
+    }
+}
+
 /// A selector plus an optional inversion flag.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -472,6 +828,23 @@ pub struct ExpectArgs {
     pub inverted: Option<bool>,
 }
 
+impl ExpectArgs {
+    /// The match criteria, inlined into the tool arguments.
+    #[must_use]
+    pub const fn selector(&self) -> &SelectorArgs {
+        &self.selector
+    }
+
+    /// `true` makes the expectation forbidden: it never fulfills, and the
+    /// wait fails with `inverted_fulfillment` the moment it becomes true. A
+    /// wait holding only inverted expectations runs the full timeout and
+    /// reports `fulfilled` if none of them ever held.
+    #[must_use]
+    pub const fn inverted(&self) -> Option<bool> {
+        self.inverted
+    }
+}
+
 /// A selector plus the value a matching node must reach.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
@@ -484,6 +857,26 @@ pub struct ValueEqArgs {
     /// `true` makes the expectation forbidden; see [`ExpectArgs::inverted`].
     #[serde(default)]
     pub inverted: Option<bool>,
+}
+
+impl ValueEqArgs {
+    /// The match criteria, inlined into the tool arguments.
+    #[must_use]
+    pub const fn selector(&self) -> &SelectorArgs {
+        &self.selector
+    }
+
+    /// The expected value.
+    #[must_use]
+    pub const fn value(&self) -> &str {
+        self.value.as_str()
+    }
+
+    /// `true` makes the expectation forbidden; see [`ExpectArgs::inverted`].
+    #[must_use]
+    pub const fn inverted(&self) -> Option<bool> {
+        self.inverted
+    }
 }
 
 /// Capture the current frame as a PNG image.
@@ -522,6 +915,24 @@ pub struct AdvanceArgs {
     /// least one frame always elapses: the capture is the last pump of the
     /// advance.
     pub screenshot: Option<bool>,
+}
+
+impl AdvanceArgs {
+    /// Virtual milliseconds to advance; defaults to one frame (16ms). `0`
+    /// polls the current animation status without pumping.
+    #[must_use]
+    pub const fn duration_ms(&self) -> Option<u64> {
+        self.duration_ms
+    }
+
+    /// Return the PNG frame rendered at exactly the landed instant instead of
+    /// the tree — repeat with `duration_ms: 16` for a per-frame flipbook. At
+    /// least one frame always elapses: the capture is the last pump of the
+    /// advance.
+    #[must_use]
+    pub const fn screenshot(&self) -> Option<bool> {
+        self.screenshot
+    }
 }
 
 session_tool!(

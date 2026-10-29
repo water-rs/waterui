@@ -63,11 +63,11 @@ fn visible_rows(
         .map(|(rows, (query, minimum))| {
             let query = query.to_lowercase();
             rows.into_iter()
-                .filter(|row| row.level >= minimum)
+                .filter(|row| row.level() >= minimum)
                 .filter(|row| {
                     query.is_empty()
-                        || str::contains(&row.message.to_lowercase(), query.as_str())
-                        || str::contains(&row.target.to_lowercase(), query.as_str())
+                        || str::contains(&row.message().to_lowercase(), query.as_str())
+                        || str::contains(&row.target().to_lowercase(), query.as_str())
                 })
                 .collect()
         })
@@ -99,13 +99,14 @@ fn level_picker(minimum: &Binding<LogLevel>) -> impl View {
 }
 
 fn row_view(row: LogRow) -> ListItem {
+    let (_, level, target, message, origin) = row.into_parts();
     ListItem::new(
         hstack((
-            text(row.level.name())
+            text(level.name())
                 .caption()
-                .foreground(parts::level_color(row.level))
+                .foreground(parts::level_color(level))
                 .width(52.0),
-            vstack((text(row.message), origin_view(row.target, row.origin)))
+            vstack((text(message), origin_view(target, origin)))
                 .alignment(HorizontalAlignment::Leading)
                 .spacing(2.0),
         ))

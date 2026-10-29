@@ -71,8 +71,8 @@ impl Gtk4Backend {
     async fn template_context(project: &Project) -> eyre::Result<TemplateContext> {
         let manifest = project.manifest();
         let app_name = manifest
-            .package
-            .name
+            .package()
+            .name()
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();

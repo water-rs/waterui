@@ -36,6 +36,49 @@ pub struct Style {
 }
 
 impl Style {
+    /// The font to use.
+    #[must_use]
+    pub const fn get_font(&self) -> &Font {
+        &self.font
+    }
+
+    /// The foreground (text) color.
+    #[must_use]
+    pub const fn get_foreground(&self) -> Option<&Color> {
+        self.foreground.as_ref()
+    }
+
+    /// Sets the `foreground`.
+    pub fn set_foreground(&mut self, foreground: Option<Color>) {
+        self.foreground = foreground;
+    }
+
+    /// The background color.
+    #[must_use]
+    pub const fn get_background(&self) -> Option<&Color> {
+        self.background.as_ref()
+    }
+
+    /// Whether the text is italic.
+    #[must_use]
+    pub const fn get_italic(&self) -> bool {
+        self.italic
+    }
+
+    /// Whether the text has an underline.
+    #[must_use]
+    pub const fn get_underline(&self) -> bool {
+        self.underline
+    }
+
+    /// Whether the text has a strikethrough.
+    #[must_use]
+    pub const fn get_strikethrough(&self) -> bool {
+        self.strikethrough
+    }
+}
+
+impl Style {
     /// Creates a new default `Style`.
     #[must_use]
     pub fn new() -> Self {
@@ -1007,7 +1050,7 @@ mod tests {
             HeadingLevel::H6,
         ]
         .iter()
-        .map(|&level| heading_style(level).font.resolve(&env).snapshot().size)
+        .map(|&level| heading_style(level).font.resolve(&env).snapshot().size())
         .collect();
 
         assert_eq!(sizes.as_slice(), &[28.0, 17.0, 17.0, 15.0, 13.0, 12.0]);

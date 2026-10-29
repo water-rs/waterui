@@ -162,6 +162,34 @@ pub struct CodeConfig {
     pub on_copied: Option<OnCopied>,
 }
 
+impl CodeConfig {
+    /// The fence's info token as written (`mermaid`, `rust`, …), if it had one.
+    #[must_use]
+    pub const fn info(&self) -> Option<&Str> {
+        self.info.as_ref()
+    }
+
+    /// The language that token resolved to; [`Language::Plaintext`] when it
+    /// resolved to nothing.
+    #[must_use]
+    pub const fn language(&self) -> &Language {
+        &self.language
+    }
+
+    /// The block's text, verbatim.
+    #[must_use]
+    pub const fn content(&self) -> &Str {
+        &self.content
+    }
+
+    /// The caller's feedback for a copy, if it asked for any. Carried so a hook
+    /// that declines the fence and renders the default keeps it.
+    #[must_use]
+    pub const fn on_copied(&self) -> Option<&OnCopied> {
+        self.on_copied.as_ref()
+    }
+}
+
 impl ViewConfiguration for CodeConfig {
     type View = Code;
 

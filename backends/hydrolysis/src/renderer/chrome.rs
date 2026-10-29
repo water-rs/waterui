@@ -219,50 +219,54 @@ impl LiveChrome {
     ) -> Self {
         let frame = spec.frame(bounds);
         let pressed = state.contains(InteractionState::PRESSED);
-        let surface = &spec.surface;
-        let border = surface.border.as_ref().map(|border| {
+        let surface = &spec.surface();
+        let border = surface.get_border().as_ref().map(|border| {
             let resolved = border.resolve(state);
             BorderOperands {
-                shape: Operand::new(surface.shape.outset(frame, -resolved.width / 2.0, pressed)),
+                shape: Operand::new(
+                    surface
+                        .shape()
+                        .outset(frame, -resolved.width / 2.0, pressed),
+                ),
                 stroke: Operand::new(Stroke::new(resolved.width)),
                 paint: Operand::new(resolved.paint.clone()),
             }
         });
-        let elevates = every_state().any(|state| !surface.elevation.resolve(state).is_none());
+        let elevates = every_state().any(|state| !surface.get_elevation().resolve(state).is_none());
         let elevation = elevates.then(|| {
-            let resolved = surface.elevation.resolve(state);
+            let resolved = surface.get_elevation().resolve(state);
             (Operand::new(resolved.key), Operand::new(resolved.ambient))
         });
-        let waves = match spec.press {
+        let waves = match spec.press() {
             PressFeedback::Ripple(ripple) => Some((
                 ripple,
                 core::array::from_fn(|_| WaveOperands {
                     shape: Operand::new(ShapeData::Circle(kurbo::Circle::new(frame.center(), 0.0))),
-                    paint: Operand::new(spec.state_layer.paint(0.0)),
+                    paint: Operand::new(spec.state_layer().paint(0.0)),
                 }),
             )),
             PressFeedback::Tint => None,
         };
-        let ring = match spec.focus {
+        let ring = match spec.focus() {
             FocusIndicator::Ring {
                 width,
                 offset,
                 color,
             } => Some(RingOperands {
-                shape: Operand::new(surface.shape.outset(frame, offset + width / 2.0, pressed)),
+                shape: Operand::new(surface.shape().outset(frame, offset + width / 2.0, pressed)),
                 stroke: Stroke::new(width),
                 paint: Operand::new(Self::ring_paint(color, state)),
             }),
             FocusIndicator::Tint => None,
         };
         Self {
-            shape: Operand::new(surface.shape.shape(frame, pressed)),
-            fill: Operand::new(surface.fill.resolve(state).clone()),
+            shape: Operand::new(surface.shape().shape(frame, pressed)),
+            fill: Operand::new(surface.fill().resolve(state).clone()),
             border,
             elevation,
             tint: Operand::new(
-                spec.state_layer
-                    .paint(spec.state_layer.opacity(state, &spec.press)),
+                spec.state_layer()
+                    .paint(spec.state_layer().opacity(state, &spec.press())),
             ),
             waves,
             ring,
@@ -343,16 +347,16 @@ impl LiveChrome {
         let shape_animation = changed
             .contains(InteractionState::PRESSED)
             .then_some(&motion.press_shape);
-        let surface = &self.spec.surface;
+        let surface = &self.spec.surface();
         self.shape
-            .set(surface.shape.shape(self.frame, pressed), shape_animation);
+            .set(surface.shape().shape(self.frame, pressed), shape_animation);
         self.fill
-            .set(surface.fill.resolve(state).clone(), animation);
-        if let (Some(operands), Some(border)) = (&self.border, &surface.border) {
+            .set(surface.fill().resolve(state).clone(), animation);
+        if let (Some(operands), Some(border)) = (&self.border, &surface.get_border()) {
             let resolved = border.resolve(state);
             operands.shape.set(
                 surface
-                    .shape
+                    .shape()
                     .outset(self.frame, -resolved.width / 2.0, pressed),
                 shape_animation,
             );
@@ -363,13 +367,13 @@ impl LiveChrome {
             let Elevation {
                 key: key_shadow,
                 ambient: ambient_shadow,
-            } = *surface.elevation.resolve(state);
+            } = *surface.get_elevation().resolve(state);
             key.set(key_shadow, animation);
             ambient.set(ambient_shadow, animation);
         }
-        let layer = &self.spec.state_layer;
+        let layer = &self.spec.state_layer();
         self.tint.set(
-            layer.paint(layer.opacity(state, &self.spec.press)),
+            layer.paint(layer.opacity(state, &self.spec.press())),
             animation,
         );
         if let (
@@ -379,11 +383,11 @@ impl LiveChrome {
                 offset,
                 color,
             },
-        ) = (&self.ring, self.spec.focus)
+        ) = (&self.ring, self.spec.focus())
         {
             ring.shape.set(
                 surface
-                    .shape
+                    .shape()
                     .outset(self.frame, offset + width / 2.0, pressed),
                 shape_animation,
             );
@@ -424,7 +428,7 @@ impl LiveChrome {
         wave.shape.set(ShapeData::Circle(start), None);
         wave.shape
             .set(ShapeData::Circle(end), Some(&self.motion.press_grow));
-        let layer = &self.spec.state_layer;
+        let layer = &self.spec.state_layer();
         wave.paint
             .set(layer.paint(layer.pressed), Some(&self.motion.press_fade_in));
     }
@@ -436,7 +440,7 @@ impl LiveChrome {
             return;
         };
         waves[index].paint.set(
-            self.spec.state_layer.paint(0.0),
+            self.spec.state_layer().paint(0.0),
             Some(&self.motion.press_fade_out),
         );
     }
@@ -447,7 +451,7 @@ impl LiveChrome {
             return;
         };
         for wave in waves {
-            wave.paint.set(self.spec.state_layer.paint(0.0), None);
+            wave.paint.set(self.spec.state_layer().paint(0.0), None);
         }
     }
 

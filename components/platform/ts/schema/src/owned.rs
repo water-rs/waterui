@@ -68,6 +68,32 @@ pub struct Struct {
     pub fields: Vec<Field>,
 }
 
+impl Struct {
+    /// Creates a Struct from its parts.
+    #[must_use]
+    pub const fn new(name: String, fields: Vec<Field>) -> Self {
+        Self { name, fields }
+    }
+
+    /// The type name.
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// The fields in declaration order.
+    #[must_use]
+    pub const fn fields(&self) -> &[Field] {
+        self.fields.as_slice()
+    }
+
+    /// Takes the fields in declaration order.
+    #[must_use]
+    pub fn into_fields(self) -> Vec<Field> {
+        self.fields
+    }
+}
+
 /// An owned [`FieldSchema`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
@@ -76,6 +102,26 @@ pub struct Field {
     pub name: String,
     /// The field type.
     pub ty: Schema,
+}
+
+impl Field {
+    /// Creates a Field from its parts.
+    #[must_use]
+    pub const fn new(name: String, ty: Schema) -> Self {
+        Self { name, ty }
+    }
+
+    /// The field name.
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// The field type.
+    #[must_use]
+    pub const fn ty(&self) -> &Schema {
+        &self.ty
+    }
 }
 
 /// An owned [`EnumSchema`].
@@ -88,6 +134,36 @@ pub struct Enum {
     pub representation: Representation,
     /// The variants in declaration order.
     pub variants: Vec<Variant>,
+}
+
+impl Enum {
+    /// Creates a Enum from its parts.
+    #[must_use]
+    pub const fn new(name: String, representation: Representation, variants: Vec<Variant>) -> Self {
+        Self {
+            name,
+            representation,
+            variants,
+        }
+    }
+
+    /// The type name.
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// How the variants are laid out on the TypeScript side.
+    #[must_use]
+    pub const fn representation(&self) -> &Representation {
+        &self.representation
+    }
+
+    /// The variants in declaration order.
+    #[must_use]
+    pub const fn variants(&self) -> &[Variant] {
+        self.variants.as_slice()
+    }
 }
 
 /// An owned [`EnumRepresentation`].
@@ -113,6 +189,26 @@ pub struct Variant {
     pub name: String,
     /// What the variant carries.
     pub payload: Payload,
+}
+
+impl Variant {
+    /// Creates a Variant from its parts.
+    #[must_use]
+    pub const fn new(name: String, payload: Payload) -> Self {
+        Self { name, payload }
+    }
+
+    /// The variant name.
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// What the variant carries.
+    #[must_use]
+    pub const fn payload(&self) -> &Payload {
+        &self.payload
+    }
 }
 
 /// An owned [`VariantPayload`].
@@ -161,8 +257,8 @@ impl From<&TypeSchema> for Schema {
 impl From<&StructSchema> for Struct {
     fn from(schema: &StructSchema) -> Self {
         Self {
-            name: schema.name.to_owned(),
-            fields: schema.fields.iter().map(Field::from).collect(),
+            name: schema.name().to_owned(),
+            fields: schema.fields().iter().map(Field::from).collect(),
         }
     }
 }
@@ -170,8 +266,8 @@ impl From<&StructSchema> for Struct {
 impl From<&FieldSchema> for Field {
     fn from(field: &FieldSchema) -> Self {
         Self {
-            name: field.name.to_owned(),
-            ty: Schema::from(&field.ty),
+            name: field.name().to_owned(),
+            ty: Schema::from(field.ty()),
         }
     }
 }
@@ -179,9 +275,9 @@ impl From<&FieldSchema> for Field {
 impl From<&EnumSchema> for Enum {
     fn from(schema: &EnumSchema) -> Self {
         Self {
-            name: schema.name.to_owned(),
-            representation: Representation::from(&schema.representation),
-            variants: schema.variants.iter().map(Variant::from).collect(),
+            name: schema.name().to_owned(),
+            representation: Representation::from(&schema.representation()),
+            variants: schema.variants().iter().map(Variant::from).collect(),
         }
     }
 }
@@ -201,8 +297,8 @@ impl From<&EnumRepresentation> for Representation {
 impl From<&VariantSchema> for Variant {
     fn from(variant: &VariantSchema) -> Self {
         Self {
-            name: variant.name.to_owned(),
-            payload: Payload::from(&variant.payload),
+            name: variant.name().to_owned(),
+            payload: Payload::from(&variant.payload()),
         }
     }
 }

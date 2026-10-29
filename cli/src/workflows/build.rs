@@ -145,10 +145,6 @@ impl CargoTarget<'_> {
 /// The outcome of one Cargo invocation: the profile directory everything
 /// landed under and the artifact Cargo reported for the selected target.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a build describes every field of the artifact it produced; a new field must fail every producer's build"
-)]
 pub struct BuiltTarget {
     /// Explicit Cargo features used for this invocation. Post-build metadata
     /// scans must resolve the same graph instead of inferring launcher features.
@@ -2321,8 +2317,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         let framework = self.project.as_ref().and_then(|project| {
             project
                 .manifest()
-                .framework
-                .as_ref()
+                .framework()
                 .map(|framework| (project, framework))
         });
         if let Some((project, framework)) = framework {
@@ -2347,7 +2342,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         if let Some(project) = &self.project
             && let Some((key, value)) = crate::apple::platform::apple_deployment_target_env(
                 project.resolved_framework().await?,
-                &project.manifest().apple.deployment_targets,
+                project.manifest().apple().deployment_targets(),
                 &self.triple,
             )?
         {
@@ -5769,21 +5764,15 @@ mod tests {
             let project = crate::project::Project::create(
                 &crate::toolchain::testing::real_toolchain_host(temporary.path()),
                 &root,
-                crate::project::CreateOptions {
-                    name: "Release App".to_string(),
-                    bundle_identifier:
-                        crate::project_model::project_types::BundleIdentifier::try_from(
-                            "dev.waterui.releaseapp",
-                        )
-                        .expect("bundle identifier"),
-                    waterui_path: Some(checkout),
-                    channel: None,
-                    framework_manifest: None,
-                    framework: None,
-                    framework_lock: None,
-                    author: String::new(),
-                    web: None,
-                },
+                crate::project::CreateOptions::new(
+                    "Release App".to_string(),
+                    crate::project_model::project_types::BundleIdentifier::try_from(
+                        "dev.waterui.releaseapp",
+                    )
+                    .expect("bundle identifier"),
+                    String::new(),
+                )
+                .with_waterui_path(Some(checkout)),
             )
             .await
             .expect("project creation must succeed");

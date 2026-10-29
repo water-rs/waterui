@@ -86,7 +86,66 @@ fn trials() -> Vec<libtest_mimic::Trial> {
     trials.extend(list_spacing::trials());
     trials.extend(capture_regions::trials());
     trials.extend(text_selection_ios::trials());
+    #[cfg(feature = "gpu_surface")]
+    trials.extend(capture_scale::trials());
     trials
+}
+
+/// A windowless view captured as a template image rasterizes at the
+/// screen's scale, not the detached view's `1.0`.
+#[cfg(all(target_os = "ios", feature = "gpu_surface"))]
+mod capture_scale {
+    use cocoa_ui::{Rect, bitmap, view};
+    use libtest_mimic::Trial;
+    use waterui_apple::native_test_support::capture_template_image;
+
+    use cocoa_ui::PlatformView;
+
+    use super::mtm;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "capture_scale::a_windowless_template_capture_uses_the_screen_scale",
+            || {
+                a_windowless_template_capture_uses_the_screen_scale();
+                Ok(())
+            },
+        )]
+    }
+
+    /// A `40x30` point view with no window: the image is `40x30` points at
+    /// the capture scene's screen scale, so its pixel size is the point size times
+    /// that scale.
+    fn a_windowless_template_capture_uses_the_screen_scale() {
+        let screen_scale = bitmap::any_window_scene()
+            .expect("the simulator host has a window scene")
+            .screen()
+            .scale();
+        let detached = PlatformView::new(mtm());
+        view::set_frame(&detached, Rect::new(0.0, 0.0, 40.0, 30.0));
+        assert!(view::window(&detached).is_none(), "the view is windowless");
+
+        let image = capture_template_image(&detached, 100.0);
+
+        // SAFETY: `size` and `scale` are plain getters on a live `UIImage`.
+        let (size, image_scale) = unsafe { (image.size(), image.scale()) };
+        assert!(
+            (image_scale - screen_scale).abs() < f64::EPSILON,
+            "image scale {image_scale} must be the screen scale {screen_scale}"
+        );
+        assert!(
+            (size.width - 40.0).abs() < 0.01 && (size.height - 30.0).abs() < 0.01,
+            "image keeps its point size, got {}x{}",
+            size.width,
+            size.height
+        );
+        let pixels = (size.width * image_scale, size.height * image_scale);
+        assert!(
+            (pixels.0 - (40.0 * screen_scale).ceil()).abs() < 0.01
+                && (pixels.1 - (30.0 * screen_scale).ceil()).abs() < 0.01,
+            "pixel size {pixels:?} must be the point size times {screen_scale}"
+        );
+    }
 }
 
 #[cfg(target_os = "ios")]
@@ -1254,8 +1313,8 @@ mod gesture_events {
         let taps = taps.borrow();
         assert_eq!(taps.len(), before + 1, "one completion appends one event");
         let tap = &taps[before];
-        assert_eq!(tap.count, 1);
-        assert_eq!(tap.button, PointerButton::Primary);
+        assert_eq!(tap.count(), 1);
+        assert_eq!(tap.button(), PointerButton::Primary);
     }
 
     /// Driving the pan recognizer's `Began`→`Changed`→`Ended` transitions
@@ -1291,7 +1350,10 @@ mod gesture_events {
         }
         let drags = drags.borrow();
         assert_eq!(
-            drags.iter().map(|e| e.phase).collect::<Vec<_>>(),
+            drags
+                .iter()
+                .map(waterui::gesture::DragEvent::phase)
+                .collect::<Vec<_>>(),
             vec![
                 GesturePhase::Started,
                 GesturePhase::Updated,
@@ -1300,7 +1362,7 @@ mod gesture_events {
             "the pan's transitions are the contract's phase sequence"
         );
         assert!(
-            drags.iter().all(|e| e.button == PointerButton::Primary),
+            drags.iter().all(|e| e.button() == PointerButton::Primary),
             "a touches contact presses as the primary button"
         );
     }
@@ -1341,21 +1403,21 @@ mod gesture_events {
 
         let e = fire(UIGestureRecognizerState::Began, 0.0);
         assert_eq!(
-            (e.phase, e.angle, e.velocity),
+            (e.phase(), e.angle(), e.velocity()),
             (GesturePhase::Started, 0.0, 0.0)
         );
         let e = fire(UIGestureRecognizerState::Changed, 0.75);
-        assert_eq!(e.phase, GesturePhase::Updated);
+        assert_eq!(e.phase(), GesturePhase::Updated);
         assert!(
-            (e.angle - 0.75).abs() < 1e-6,
+            (e.angle() - 0.75).abs() < 1e-6,
             "raw radians getter, saw {}",
-            e.angle
+            e.angle()
         );
         let e = fire(UIGestureRecognizerState::Changed, 1.25);
-        assert!((e.angle - 1.25).abs() < 1e-6);
+        assert!((e.angle() - 1.25).abs() < 1e-6);
         let e = fire(UIGestureRecognizerState::Ended, 1.25);
-        assert_eq!((e.phase, e.velocity), (GesturePhase::Ended, 0.0));
-        assert!((e.angle - 1.25).abs() < 1e-6);
+        assert_eq!((e.phase(), e.velocity()), (GesturePhase::Ended, 0.0));
+        assert!((e.angle() - 1.25).abs() < 1e-6);
     }
 
     /// The shared scale composition clamps at the contract's `.01`
@@ -1389,25 +1451,25 @@ mod gesture_events {
         };
 
         let e = fire(UIGestureRecognizerState::Began, 1.0);
-        assert_eq!((e.phase, e.velocity), (GesturePhase::Started, 0.0));
-        assert!((e.scale - 0.001).abs() < 1e-6, "saw {}", e.scale);
+        assert_eq!((e.phase(), e.velocity()), (GesturePhase::Started, 0.0));
+        assert!((e.scale() - 0.001).abs() < 1e-6, "saw {}", e.scale());
         let e = fire(UIGestureRecognizerState::Changed, 1.5);
         assert!(
-            (e.scale - 0.01).abs() < 1e-6,
+            (e.scale() - 0.01).abs() < 1e-6,
             "clamp to .01, saw {}",
-            e.scale
+            e.scale()
         );
         let e = fire(UIGestureRecognizerState::Changed, 3.0);
         assert!(
-            (e.scale - 0.02).abs() < 1e-6,
+            (e.scale() - 0.02).abs() < 1e-6,
             "factor 2 on .01, saw {}",
-            e.scale
+            e.scale()
         );
         let e = fire(UIGestureRecognizerState::Changed, 3.0);
-        assert!((e.scale - 0.02).abs() < 1e-6 && e.velocity == 0.0);
+        assert!((e.scale() - 0.02).abs() < 1e-6 && e.velocity() == 0.0);
         let e = fire(UIGestureRecognizerState::Ended, 3.0);
-        assert_eq!((e.phase, e.velocity), (GesturePhase::Ended, 0.0));
-        assert!((e.scale - 0.02).abs() < 1e-6);
+        assert_eq!((e.phase(), e.velocity()), (GesturePhase::Ended, 0.0));
+        assert!((e.scale() - 0.02).abs() < 1e-6);
     }
 }
 

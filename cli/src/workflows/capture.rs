@@ -78,7 +78,7 @@ pub async fn verify_device(host: &Host, device_id: &str) -> eyre::Result<DeviceP
     match platform {
         DevicePlatform::Ios => {
             let simulators = apple::device::AppleSimulator::scan(host).await?;
-            if simulators.iter().any(|s| s.udid == device_id) {
+            if simulators.iter().any(|s| s.udid() == device_id) {
                 Ok(DevicePlatform::Ios)
             } else {
                 Err(eyre!("iOS simulator with UDID '{}' not found", device_id))

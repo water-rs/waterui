@@ -148,16 +148,6 @@ pub fn render_platform_view_node<E: crate::text::TextEngine>(
     ctx.renderer_mut().register_platform_view_placement(
         local_bounds,
         Rc::clone(&state.sink.table),
-        PlatformViewPlacement {
-            id: state.id,
-            source: state.source.wire(),
-            x: 0.0,
-            y: 0.0,
-            width: 0.0,
-            height: 0.0,
-            clip: None,
-            order: 0,
-            visible: false,
-        },
+        PlatformViewPlacement::new(state.id, state.source.wire()),
     );
 }

@@ -155,7 +155,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     }
                 },
             );
-            leaf.bind(&metadata.value.style, {
+            leaf.bind(metadata.value.style(), {
                 move |style| {
                     current.set(style);
                     if host.is_pointer_inside() {
@@ -171,7 +171,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             // rounded-rect pointer shape; the style signal does not
             // change it — `UIKit` has no cursor vocabulary.
             leaf.keep(uikit::PointerInteraction::rounded_rect(&host));
-            let _ = &metadata.value.style;
+            let _ = metadata.value.style();
         }
 
         leaf.keep(state);

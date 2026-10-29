@@ -31,17 +31,17 @@ impl HarnessBundle {
     ) -> eyre::Result<Self> {
         let app = binary.path().with_extension("app");
         let layout = AppleAppLayout::for_app(&app, sdk_name);
-        if layout.app_path.exists() {
-            fs::remove_dir_all(&layout.app_path)
+        if layout.app_path().exists() {
+            fs::remove_dir_all(&layout.app_path())
                 .await
-                .wrap_err_with(|| format!("failed to remove {}", layout.app_path.display()))?;
+                .wrap_err_with(|| format!("failed to remove {}", layout.app_path().display()))?;
         }
-        fs::create_dir_all(&layout.executable_dir)
+        fs::create_dir_all(&layout.executable_dir())
             .await
-            .wrap_err_with(|| format!("failed to create {}", layout.executable_dir.display()))?;
-        fs::write(&layout.info_plist_path, manifest.bytes())
+            .wrap_err_with(|| format!("failed to create {}", layout.executable_dir().display()))?;
+        fs::write(&layout.info_plist_path(), manifest.bytes())
             .await
-            .wrap_err_with(|| format!("failed to write {}", layout.info_plist_path.display()))?;
+            .wrap_err_with(|| format!("failed to write {}", layout.info_plist_path().display()))?;
         let executable = layout.executable_file(manifest.executable());
         crate::utils::copy_file(binary.path(), &executable)
             .await
@@ -82,7 +82,7 @@ impl HarnessBundle {
         if bundle_id.is_empty() {
             bail!("the device bundle identifier must not be empty");
         }
-        let path = &self.layout.info_plist_path;
+        let path = &self.layout.info_plist_path();
         let mut value = plist::Value::from_file(path)
             .wrap_err_with(|| format!("failed to read {}", path.display()))?;
         let plist::Value::Dictionary(dictionary) = &mut value else {
@@ -122,9 +122,9 @@ mod tests {
         // Flat iOS layout: the bundle's Info.plist at its root is the
         // manifest's bytes verbatim, and the executable sits beside it
         // under the manifest's own CFBundleExecutable name.
-        assert_eq!(bundle.layout().executable_dir, bundle.layout().app_path);
+        assert_eq!(bundle.layout().executable_dir(), bundle.layout().app_path());
         assert_eq!(
-            std::fs::read(bundle.layout().info_plist_path.clone()).expect("plist"),
+            std::fs::read(bundle.layout().info_plist_path()).expect("plist"),
             plist
         );
         assert!(
@@ -135,7 +135,7 @@ mod tests {
         );
         assert_eq!(bundle.bundle_id(), "dev.waterui.tests");
         assert_eq!(
-            bundle.layout().app_path,
+            bundle.layout().app_path(),
             std::fs::canonicalize(&path)
                 .expect("canonical fixture path")
                 .with_extension("app")
@@ -144,7 +144,7 @@ mod tests {
         bundle
             .rewrite_identifier("cool.test.bench")
             .expect("rewrite");
-        let rewritten = plist::Value::from_file(bundle.layout().info_plist_path.clone())
+        let rewritten = plist::Value::from_file(bundle.layout().info_plist_path())
             .expect("parse rewritten plist");
         assert_eq!(
             rewritten

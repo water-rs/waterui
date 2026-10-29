@@ -34,7 +34,7 @@ pub fn unsupported_system_icon(icon: &SystemIcon) -> ! {
     panic!(
         "SystemIcon `{}` is unsupported on Hydrolysis because self-drawn backends have no \
          OS-supplied icon catalog; use a packaged WaterUI icon crate",
-        icon.name.as_str()
+        icon.name().as_str()
     )
 }
 

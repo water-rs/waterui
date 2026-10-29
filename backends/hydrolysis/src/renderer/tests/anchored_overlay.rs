@@ -542,14 +542,15 @@ fn the_exiting_overlay_draws_its_animation_mid_flight() {
     open.set(false);
     scale.set(0.0);
     let result = runtime.pump_at(true, start + Duration::from_millis(500));
-    let snapshot = result
-        .snapshot
-        .expect("a mid-exit frame must be capturable");
+    let (width, height, rgba8, _) = result
+        .into_snapshot()
+        .expect("a mid-exit frame must be capturable")
+        .into_parts();
     let path =
         crate::testing::artifact_snapshot_path("hydrolysis", "anchored_overlay_exit", "mid-flight");
     std::fs::create_dir_all(path.parent().expect("the case directory"))
         .expect("the capture directory must be creatable");
-    image::RgbaImage::from_raw(snapshot.width, snapshot.height, snapshot.rgba8)
+    image::RgbaImage::from_raw(width, height, rgba8)
         .expect("snapshot dimensions must match the rgba buffer")
         .save(&path)
         .expect("the mid-exit frame must be writable");
@@ -766,7 +767,7 @@ fn an_overlay_body_transition_runs_on_present_and_dismiss() {
     let presented = presented_frame(&runtime);
     let mid_insertion = runtime
         .pump_at(true, start + Duration::from_millis(516))
-        .snapshot
+        .into_snapshot()
         .expect("a mid-insertion frame must be capturable");
     assert!(
         has_inside(&mut runtime),
@@ -774,10 +775,10 @@ fn an_overlay_body_transition_runs_on_present_and_dismiss() {
     );
     let settled = runtime
         .pump_at(true, start + Duration::from_millis(1_100))
-        .snapshot
+        .into_snapshot()
         .expect("a settled frame must be capturable");
     assert!(
-        mid_insertion.rgba8 != settled.rgba8,
+        mid_insertion.rgba8() != settled.rgba8(),
         "halfway through the insertion the overlay is still fading in"
     );
 
@@ -794,10 +795,10 @@ fn an_overlay_body_transition_runs_on_present_and_dismiss() {
     );
     let mid_removal = runtime
         .pump_at(true, start + Duration::from_millis(1_616))
-        .snapshot
+        .into_snapshot()
         .expect("a mid-removal frame must be capturable");
     assert!(
-        mid_removal.rgba8 != settled.rgba8,
+        mid_removal.rgba8() != settled.rgba8(),
         "halfway through the removal the overlay is fading out"
     );
 

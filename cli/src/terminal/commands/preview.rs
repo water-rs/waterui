@@ -269,19 +269,19 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let manifest = Manifest::open(project_path.join("Water.toml")).await?;
     let request = args.preview_args(target).resolve(&manifest, &crate_name)?;
     if args.device.is_some()
-        && request.backend
+        && request.backend()
             != ResolvedPreviewBackend::Hydrolysis(waterui_cli::platform::TargetPlatform::Android)
     {
         bail!("`--device` is supported only with `--platform android`.");
     }
-    header!(shell, "Preview: {}", request.target.display_name());
+    header!(shell, "Preview: {}", request.target().display_name());
 
-    let kotlin_toolchain = request::check_toolchain_for_backend(&host, request.backend).await?;
+    let kotlin_toolchain = request::check_toolchain_for_backend(&host, request.backend()).await?;
 
     // Detect sccache for compilation caching
     let sccache_path = super::detect_sccache_path(shell, &host).await;
 
-    if let ResolvedPreviewBackend::Hydrolysis(platform) = request.backend {
+    if let ResolvedPreviewBackend::Hydrolysis(platform) = request.backend() {
         let android = if platform == waterui_cli::platform::TargetPlatform::Android {
             let spinner = shell.spinner("Scanning for devices...");
             let target = super::select_android_target(
@@ -308,14 +308,14 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
             HydrolysisPreviewRequest {
                 host: &host,
                 project_path: &project_path,
-                source: request.target.source(),
+                source: request.target().source(),
                 theme: request
-                    .hydrolysis_theme
+                    .hydrolysis_theme()
                     .expect("hydrolysis preview theme must be resolved"),
                 platform,
-                width: request.width,
-                height: request.height,
-                content_deadline: request.content_deadline,
+                width: request.width(),
+                height: request.height(),
+                content_deadline: request.content_deadline(),
                 sccache_path,
                 progress: Some(shell.build_progress()),
             },
@@ -332,7 +332,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
             success!(
                 shell,
                 "Preview frames saved to {}",
-                scenario.output_dir.display()
+                scenario.output_dir().display()
             );
         } else {
             success!(shell, "Preview saved to {}", args.output.display());
@@ -344,17 +344,17 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         bail!("`--scenario` and `--output-dir` are supported only with `--backend hydrolysis`.");
     }
 
-    if let ResolvedPreviewBackend::Apple(platform) = request.backend {
+    if let ResolvedPreviewBackend::Apple(platform) = request.backend() {
         let spinner = shell.spinner("Building and rendering with the Apple backend...");
         render_preview_with_apple(
             ApplePreviewRequest {
                 host: &host,
                 project_path: &project_path,
                 platform,
-                source: request.target.source(),
-                width: request.width,
-                height: request.height,
-                content_deadline: request.content_deadline,
+                source: request.target().source(),
+                width: request.width(),
+                height: request.height(),
+                content_deadline: request.content_deadline(),
                 sccache_path,
                 progress: Some(shell.build_progress()),
             },
@@ -419,7 +419,7 @@ async fn load_hydrolysis_scenario(
         .iter()
         .map(parse_scenario_event)
         .collect::<Result<Vec<_>>>()?;
-    events.sort_by_key(|event| event.at_ms);
+    events.sort_by_key(HydrolysisPreviewScenarioEvent::at_ms);
     Ok(Some(HydrolysisPreviewScenario::new(
         scenario.captures_ms,
         events,

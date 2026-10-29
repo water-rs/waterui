@@ -56,10 +56,6 @@ pub enum LayoutDirection {
 /// Locale-derived application direction, lower priority than scoped overrides.
 #[doc(hidden)]
 #[derive(Clone, Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "environment newtype over the locale-derived direction signal"
-)]
 pub struct AutomaticLayoutDirection(pub nami::Computed<LayoutDirection>);
 
 impl LayoutDirection {
@@ -531,10 +527,6 @@ impl ViewDimensions {
 
 /// A child's frame and the size proposal selected to produce its layout.
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "frozen layout contract (docs/layout-spec.md): a placement is a frame plus the proposal that produced it"
-)]
 pub struct SubviewPlacement {
     /// The child frame in the parent layout's coordinate space.
     pub frame: Rect,
@@ -552,10 +544,6 @@ impl SubviewPlacement {
 
 /// A child view together with its placed frame inside a container.
 #[derive(Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "frozen layout contract (docs/layout-spec.md): a placed subview is the view, its frame, and the proposal that produced it"
-)]
 pub struct PlacedSubview<'a> {
     /// The child proxy.
     pub view: &'a dyn SubView,
@@ -1192,10 +1180,6 @@ impl Rect {
 
 /// Two-dimensional size expressed in points.
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a 2D size: width and height are the whole value"
-)]
 pub struct Size {
     /// The width in points.
     pub width: f32,
@@ -1232,10 +1216,6 @@ impl Size {
 
 /// Absolute coordinate relative to a parent layout's origin.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a 2D point: its two coordinates are the whole value"
-)]
 pub struct Point {
     /// The x-coordinate in points.
     pub x: f32,
@@ -1291,10 +1271,6 @@ impl From<[f32; 2]> for Size {
 /// encodes a delta and is the natural input for physics-style modifiers such
 /// as `gravity(...)` and `wind(...)` on a particle system.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a 2D vector: its two components are the whole value"
-)]
 pub struct Vec2 {
     /// Displacement along the x axis.
     pub dx: f32,
@@ -1334,10 +1310,6 @@ impl From<[f32; 2]> for Vec2 {
 /// Used to specify both anchor points on views and target positions in parents.
 /// Values outside `0.0..=1.0` are valid and will position outside bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a normalized 2D point: its two coordinates are the whole value"
-)]
 pub struct UnitPoint {
     /// X coordinate (0.0 = left edge, 1.0 = right edge).
     pub x: f32,
@@ -1432,10 +1404,6 @@ impl From<Alignment> for UnitPoint {
 /// HTML Canvas 2D context, so a transform built here can be losslessly handed to
 /// a 2D rendering backend.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a 2x3 affine matrix: its six coefficients are the whole value"
-)]
 pub struct Affine2 {
     /// Scale on the x axis.
     pub a: f32,
@@ -1590,10 +1558,6 @@ impl_layout_signal_constant!(
 ///
 /// Children are free to return any size; the proposal is just a suggestion.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "frozen layout contract (docs/layout-spec.md): a proposal is an optional width and an optional height"
-)]
 pub struct ProposalSize {
     /// Width proposal: `None` = unspecified, `Some(f32)` = suggested width
     pub width: Option<f32>,

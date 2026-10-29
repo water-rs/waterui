@@ -123,12 +123,25 @@ impl PackageManager {
 /// The macro never reads this — only the CLI does. Absent section and absent
 /// key both mean [`PackageManager::Bun`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct WebConfig {
     /// The package manager used for `run build`, `run dev`, `create vite`,
     /// and `install` in the frontend project.
     #[serde(default)]
-    pub package_manager: PackageManager,
+    package_manager: PackageManager,
+}
+impl WebConfig {
+    /// A `WebConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(package_manager: PackageManager) -> Self {
+        Self { package_manager }
+    }
+
+    /// The package manager used for `run build`, `run dev`, `create vite`,
+    /// and `install` in the frontend project.
+    #[must_use]
+    pub const fn package_manager(&self) -> PackageManager {
+        self.package_manager
+    }
 }
 
 /// The `include_web!` mount declared by the project's compiled library.
@@ -155,7 +168,7 @@ pub fn decode_web_mount(symbols: &ArtifactSymbols) -> eyre::Result<Option<Bundle
     let mut frontend = None;
     for leaf in symbols.leaves_with_prefix(BUNDLE_META_PREFIX) {
         let meta = symbols.bundle_mount_meta(&leaf)?;
-        if meta.project.is_none() {
+        if meta.project().is_none() {
             continue;
         }
         if frontend.replace(meta).is_some() {
@@ -184,8 +197,7 @@ pub async fn build_frontend(
     meta: &BundleMountMeta,
 ) -> eyre::Result<()> {
     let root = meta
-        .project
-        .as_ref()
+        .project()
         .expect("build_frontend is only called for mounts that declare a project");
     let pm = package_manager.binary();
     // Not interactive: a bundler never reads the terminal. Under `water
@@ -206,10 +218,10 @@ pub async fn build_frontend(
             crate::utils::format_failure_stream("stdout", &output.stdout),
         );
     }
-    if !meta.path.is_dir() {
+    if !meta.path().is_dir() {
         bail!(
             "`{pm} run build` did not produce `{}`; set `out_dir` on `include_web!` to the bundler's output directory",
-            meta.path.display()
+            meta.path().display()
         );
     }
     Ok(())
@@ -561,15 +573,34 @@ pub enum ExistingFrontendMode {
 
 /// The answers `water init` needs, each supplied by a flag or a prompt.
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub struct InitAnswers {
     /// `--web new|<path>`: the frontend source, if the flag settled it.
-    pub web: Option<WebSource>,
+    web: Option<WebSource>,
     /// `--web-mode copy|reference`: how an existing frontend joins, if the
     /// flag settled it.
-    pub web_mode: Option<ExistingFrontendMode>,
+    web_mode: Option<ExistingFrontendMode>,
     /// `--package-manager`: the declared manager, if the flag settled it.
-    pub package_manager: Option<PackageManager>,
+    package_manager: Option<PackageManager>,
+}
+impl InitAnswers {
+    /// `--web new|<path>`: the frontend source, if the flag settled it.
+    #[must_use]
+    pub const fn web(&self) -> Option<&WebSource> {
+        self.web.as_ref()
+    }
+
+    /// `--web-mode copy|reference`: how an existing frontend joins, if the
+    /// flag settled it.
+    #[must_use]
+    pub const fn web_mode(&self) -> Option<&ExistingFrontendMode> {
+        self.web_mode.as_ref()
+    }
+
+    /// `--package-manager`: the declared manager, if the flag settled it.
+    #[must_use]
+    pub const fn package_manager(&self) -> Option<PackageManager> {
+        self.package_manager
+    }
 }
 
 impl InitAnswers {
@@ -800,12 +831,33 @@ impl WebFramework {
 /// What `web/package.json` says about a scaffolded frontend: the framework
 /// dependency and whether `typescript` is a devDependency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct WebFrontend {
     /// The framework the starter's dependencies declare.
-    pub framework: WebFramework,
+    framework: WebFramework,
     /// Whether `typescript` is a devDependency (else JavaScript).
-    pub typescript: bool,
+    typescript: bool,
+}
+impl WebFrontend {
+    /// A `WebFrontend` carrying each of its fields.
+    #[must_use]
+    pub const fn new(framework: WebFramework, typescript: bool) -> Self {
+        Self {
+            framework,
+            typescript,
+        }
+    }
+
+    /// The framework the starter's dependencies declare.
+    #[must_use]
+    pub const fn framework(&self) -> &WebFramework {
+        &self.framework
+    }
+
+    /// Whether `typescript` is a devDependency (else JavaScript).
+    #[must_use]
+    pub const fn typescript(&self) -> bool {
+        self.typescript
+    }
 }
 
 /// The dependency names that identify each framework, checked in order.
@@ -862,15 +914,44 @@ pub fn detect_web_frontend(package_json: &str) -> Option<WebFrontend> {
 
 /// What [`apply_brand_overlay`] did, and what it could not.
 #[derive(Debug, Default)]
-#[non_exhaustive]
 pub struct WebOverlayReport {
     /// The detected frontend (`None` when `package.json` did not parse).
-    pub frontend: Option<WebFrontend>,
+    frontend: Option<WebFrontend>,
     /// Whether the starter's visible page was replaced with the branded one —
     /// `false` means the framework's own starter page remains.
-    pub branded: bool,
+    branded: bool,
     /// Non-fatal misses: expected files the layout did not ship.
-    pub warnings: Vec<String>,
+    warnings: Vec<String>,
+}
+impl WebOverlayReport {
+    /// A `WebOverlayReport` carrying each of its fields.
+    #[must_use]
+    pub const fn new(frontend: Option<WebFrontend>, branded: bool, warnings: Vec<String>) -> Self {
+        Self {
+            frontend,
+            branded,
+            warnings,
+        }
+    }
+
+    /// The detected frontend (`None` when `package.json` did not parse).
+    #[must_use]
+    pub const fn frontend(&self) -> Option<&WebFrontend> {
+        self.frontend.as_ref()
+    }
+
+    /// Whether the starter's visible page was replaced with the branded one —
+    /// `false` means the framework's own starter page remains.
+    #[must_use]
+    pub const fn branded(&self) -> bool {
+        self.branded
+    }
+
+    /// Non-fatal misses: expected files the layout did not ship.
+    #[must_use]
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
 }
 
 /// Values the branded starter templates interpolate.

@@ -64,26 +64,81 @@ pub fn bytes_label(value: u64) -> String {
 
 /// CPU, memory, GPU and scene-complexity aggregates over a measurement's frames.
 #[derive(Debug, Clone, Copy)]
-#[non_exhaustive]
 pub struct BenchResourceSummary {
     /// Mean CPU utilization across sampled frames.
-    pub avg_cpu_percent: f64,
+    avg_cpu_percent: f64,
     /// Peak CPU utilization across sampled frames.
-    pub max_cpu_percent: f64,
+    max_cpu_percent: f64,
     /// Peak resident memory.
-    pub max_memory_bytes: u64,
+    max_memory_bytes: u64,
     /// Mean GPU frame time.
-    pub avg_gpu_frame_us: u64,
+    avg_gpu_frame_us: u64,
     /// Peak GPU frame time.
-    pub max_gpu_frame_us: u64,
+    max_gpu_frame_us: u64,
     /// Mean number of scene layers.
-    pub avg_scene_layers: f64,
+    avg_scene_layers: f64,
     /// Peak number of scene layers.
-    pub max_scene_layers: u64,
+    max_scene_layers: u64,
     /// Mean number of clip layers.
-    pub avg_clip_layers: f64,
+    avg_clip_layers: f64,
     /// Peak clip nesting depth.
-    pub max_clip_depth: u64,
+    max_clip_depth: u64,
+}
+
+impl BenchResourceSummary {
+    /// Mean CPU utilization across sampled frames.
+    #[must_use]
+    pub const fn avg_cpu_percent(&self) -> f64 {
+        self.avg_cpu_percent
+    }
+
+    /// Peak CPU utilization across sampled frames.
+    #[must_use]
+    pub const fn max_cpu_percent(&self) -> f64 {
+        self.max_cpu_percent
+    }
+
+    /// Peak resident memory.
+    #[must_use]
+    pub const fn max_memory_bytes(&self) -> u64 {
+        self.max_memory_bytes
+    }
+
+    /// Mean GPU frame time.
+    #[must_use]
+    pub const fn avg_gpu_frame_us(&self) -> u64 {
+        self.avg_gpu_frame_us
+    }
+
+    /// Peak GPU frame time.
+    #[must_use]
+    pub const fn max_gpu_frame_us(&self) -> u64 {
+        self.max_gpu_frame_us
+    }
+
+    /// Mean number of scene layers.
+    #[must_use]
+    pub const fn avg_scene_layers(&self) -> f64 {
+        self.avg_scene_layers
+    }
+
+    /// Peak number of scene layers.
+    #[must_use]
+    pub const fn max_scene_layers(&self) -> u64 {
+        self.max_scene_layers
+    }
+
+    /// Mean number of clip layers.
+    #[must_use]
+    pub const fn avg_clip_layers(&self) -> f64 {
+        self.avg_clip_layers
+    }
+
+    /// Peak clip nesting depth.
+    #[must_use]
+    pub const fn max_clip_depth(&self) -> u64 {
+        self.max_clip_depth
+    }
 }
 
 /// Aggregate a measurement's per-frame resource samples, if it recorded any.

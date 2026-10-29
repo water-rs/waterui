@@ -491,7 +491,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let host = HostView::new(mtm, Rect::ZERO);
         let host_view: &PlatformView = &host;
 
-        let variant = if is_round(config.style) {
+        let variant = if is_round(config.style()) {
             ProgressVariant::Circular
         } else {
             ProgressVariant::Linear
@@ -506,13 +506,14 @@ pub fn install(dispatcher: &mut Dispatcher) {
         }
         cocoa_ui::view::add_subview(host_view, as_view(&progress));
 
-        let value = config.value.snapshot();
+        let value = config.value().snapshot();
+        let (label, value_label, value_signal, _, four_color) = config.into_parts();
         let children = Children {
             label: ctx
-                .render(waterui_backend_core::AnyView::new(config.label))
+                .render(waterui_backend_core::AnyView::new(label))
                 .mount(host_view),
             value_label: ctx
-                .render(waterui_backend_core::AnyView::new(config.value_label))
+                .render(waterui_backend_core::AnyView::new(value_label))
                 .mount(host_view),
         };
 
@@ -527,7 +528,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             cycling: false,
             track: None,
             #[cfg(target_os = "ios")]
-            four_color: config.four_color,
+            four_color,
         }));
 
         host.set_layout_handler({
@@ -544,7 +545,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // Signal → indicator: a value change selects determinate or
         // indeterminate drawing and refreshes the value label's visibility.
-        leaf.watch(&config.value, {
+        leaf.watch(&value_signal, {
             let state = Rc::clone(&state);
             let host = cocoa_ui::view::retain_base(host_view);
             move |change| {
@@ -556,7 +557,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // Theme → tint: the accent is the indicator's color; the border is
         // the bar's track. `four_color` widens the palette with the
         // container and tertiary slots the cycle steps through.
-        install_tint(&mut leaf, &state, ctx.env(), config.four_color);
+        install_tint(&mut leaf, &state, ctx.env(), four_color);
 
         // The initial value applies without animation.
         apply_value(&state, host_view, value, false);

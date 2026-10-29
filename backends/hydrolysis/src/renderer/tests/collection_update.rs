@@ -79,17 +79,17 @@ fn collection_same_id_item_update_rematerializes_row() {
     let start = Instant::now();
     let before = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("initial overlay frame must produce a snapshot");
 
     // Same ids, changed field on the topmost (last) row.
     let _ = list.replace(vec![Shade { id: 0, level: 0 }, Shade { id: 1, level: 3 }]);
     let after = runtime
         .pump_at(true, start + Duration::from_millis(16))
-        .snapshot
+        .into_snapshot()
         .expect("update frame must produce a snapshot");
     assert!(
-        after.rgba8 != before.rgba8,
+        after.rgba8() != before.rgba8(),
         "the changed row must repaint: a same-id content update must re-materialize \
          the retained row, not replay the stale subtree"
     );
@@ -118,16 +118,16 @@ fn lazy_stack_same_id_item_update_rematerializes_row() {
     let start = Instant::now();
     let before = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("initial lazy-stack frame must produce a snapshot");
 
     let _ = list.replace(vec![Shade { id: 0, level: 0 }, Shade { id: 1, level: 3 }]);
     let after = runtime
         .pump_at(true, start + Duration::from_millis(16))
-        .snapshot
+        .into_snapshot()
         .expect("update frame must produce a snapshot");
     assert!(
-        after.rgba8 != before.rgba8,
+        after.rgba8() != before.rgba8(),
         "the changed row must repaint: a same-id content update must re-materialize \
          the retained row, not replay the stale subtree"
     );

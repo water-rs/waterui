@@ -70,9 +70,9 @@ fn navigation_bar_height<E: crate::text::TextEngine>(
         } else {
             0.0
         };
-        let bottom_extra = if view.bar.toolbar.items.iter().any(|item| {
+        let bottom_extra = if view.bar.toolbar.items().iter().any(|item| {
             matches!(
-                item.placement,
+                item.placement(),
                 NavigationToolbarPlacement::BottomBar | NavigationToolbarPlacement::Status
             )
         }) {
@@ -278,15 +278,15 @@ fn measure_view_dimensions_with_proposal_with_budget<E: crate::text::TextEngine>
     }
     if let Some(text) = view.downcast_ref::<Text>() {
         let resolved = text.resolve(&scoped_env);
-        let content = state.measure_signal(&resolved.content);
-        let alignment = state.measure_signal(&resolved.paragraph_alignment);
+        let content = state.measure_signal(resolved.content());
+        let alignment = state.measure_signal(resolved.paragraph_alignment());
         return HydrolysisRenderer::measure_text_dimensions(
             state,
             content,
             alignment,
             &scoped_env,
             proposal.width,
-            resolved.line_limit.map(core::num::NonZeroUsize::get),
+            resolved.line_limit().map(core::num::NonZeroUsize::get),
         );
     }
     if let Some(label) = view.downcast_ref::<SemanticLabel>() {
@@ -550,7 +550,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         tail: TailMark,
     ) -> Option<f32> {
         let state = &mut self.state;
-        let max_width = Some(crate::num_cast::f64_as_f32(ctx.bounds.width()));
+        let max_width = Some(crate::num_cast::f64_as_f32(ctx.bounds().width()));
         let fragment = state.text.record(
             input,
             max_width,
@@ -560,9 +560,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         );
         let source: Rc<dyn crate::renderer::chrome::LiveSource> = fragment;
         self.push_live(
-            RenderContext {
-                local: ctx.local * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0)),
-                ..ctx
+            {
+                let mut literal = ctx;
+                literal.set_local(
+                    ctx.local() * kurbo::Affine::translate((ctx.bounds().x0, ctx.bounds().y0)),
+                );
+                literal
             },
             &source,
         );
@@ -593,8 +596,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             |(ink_min, ink_max)| f64::from(metrics.advance.max(ink_max) - ink_min.min(0.0)),
         );
         let height = f64::from(metrics.line_height);
-        let x = ((ctx.bounds.width() - width) * 0.5).max(0.0);
-        let y = ((ctx.bounds.height() - height) * 0.5).max(0.0);
+        let x = ((ctx.bounds().width() - width) * 0.5).max(0.0);
+        let y = ((ctx.bounds().height() - height) * 0.5).max(0.0);
         let fragment = state.text.record(
             &input,
             None,
@@ -604,9 +607,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         );
         let source: Rc<dyn crate::renderer::chrome::LiveSource> = fragment;
         self.push_live(
-            RenderContext {
-                local: ctx.local * kurbo::Affine::translate((x, y)),
-                ..ctx
+            {
+                let mut literal = ctx;
+                literal.set_local(ctx.local() * kurbo::Affine::translate((x, y)));
+                literal
             },
             &source,
         );
@@ -706,15 +710,15 @@ pub fn measure_navigation_view_intrinsic<E: crate::text::TextEngine>(
     let mut bottom_width = 0.0_f64;
     let mut bottom_height = 0.0_f64;
     let metrics = theme.navigation_metrics();
-    for item in &navigation.bar.toolbar.items {
-        let (content, scoped) = flatten_environment_metadata_ref(&item.content, env);
+    for item in navigation.bar.toolbar.items() {
+        let (content, scoped) = flatten_environment_metadata_ref(item.content(), env);
         let size = measure_view_intrinsic(
             content,
             state,
             &crate::widgets::nav::navigation::toolbar_item_env(&scoped),
             theme,
         );
-        let (width, height) = match item.placement {
+        let (width, height) = match item.placement() {
             NavigationToolbarPlacement::Principal => (&mut principal_width, &mut principal_height),
             NavigationToolbarPlacement::Cancellation
             | NavigationToolbarPlacement::TopBarLeading => {
@@ -766,9 +770,9 @@ pub fn measure_navigation_view_intrinsic<E: crate::text::TextEngine>(
     let search_size = if let Some(search) = navigation.bar.search.as_ref() {
         let body_env = env.clone();
         // Mirrors the search field built in `widgets::nav::navigation`.
-        let search_field = TextField::new(search.prompt.clone(), &search.text)
+        let search_field = TextField::new(search.prompt().clone(), search.text())
             .hide_label()
-            .prompt(search.prompt.clone());
+            .prompt(search.prompt().clone());
         let search_body =
             normalize_layout_view(AnyView::new(search_field.body(&body_env)), &body_env);
         measure_transient_view_intrinsic(&search_body, state, &body_env, theme)
@@ -826,7 +830,7 @@ pub fn measure_tabs_layout<E: crate::text::TextEngine>(
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
     // An empty set mounts: nothing answers but the bar's own metrics.
-    let snapshot = tabs.tabs.snapshot();
+    let snapshot = tabs.tabs().snapshot();
     let tab_at = |index: usize| {
         snapshot
             .get_view(index)
@@ -839,8 +843,8 @@ pub fn measure_tabs_layout<E: crate::text::TextEngine>(
     let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = (0..snapshot.len())
         .map(|index| {
             let tab = tab_at(index);
-            let label_size = measure_view_intrinsic(&tab.label.build(), state, &label_env, theme);
-            let icon_size = tab.icon.as_ref().map(|icon| {
+            let label_size = measure_view_intrinsic(&tab.label().build(), state, &label_env, theme);
+            let icon_size = tab.icon().as_ref().map(|icon| {
                 let icon_view = match icon {
                     TabIcon::System(icon) => AnyView::new(icon.clone()),
                     TabIcon::View(builder) => builder.build(),
@@ -860,11 +864,11 @@ pub fn measure_tabs_layout<E: crate::text::TextEngine>(
     // and the drawn bar answer the same layout (see `tabs_decide_layout`).
     let (layout, metrics) = tabs_decide_layout(
         theme,
-        tabs.style,
+        tabs.get_style(),
         proposal.width.map(f64::from),
         &item_sizes,
     );
-    let content_proposal = tabs_content_proposal(proposal, tabs.style, metrics.bar_height);
+    let content_proposal = tabs_content_proposal(proposal, tabs.get_style(), metrics.bar_height);
     let mut max_content_width: f64 = 0.0;
     let mut max_content_height: f64 = 0.0;
     let mut bar_width = 0.0;
@@ -872,14 +876,14 @@ pub fn measure_tabs_layout<E: crate::text::TextEngine>(
         let tab = tab_at(index);
         bar_width += tabs_item_natural_width(*label_size, *icon_size, &metrics, layout);
 
-        let content = normalize_layout_view(AnyView::new(tab.content.build()), env);
+        let content = normalize_layout_view(AnyView::new(tab.content().build()), env);
         let content_size =
             measure_transient_view_with_proposal(&content, content_proposal, state, env, theme);
         max_content_width = max_content_width.max(f64::from(content_size.width));
         max_content_height = max_content_height.max(f64::from(content_size.height));
     }
 
-    let (width, height) = match tabs.style {
+    let (width, height) = match tabs.get_style() {
         NativeTabStyle::Automatic | NativeTabStyle::TabBar => (
             max_content_width.max(bar_width),
             max_content_height + metrics.bar_height,
@@ -969,17 +973,18 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
 ) -> LayoutSize {
     // One immutable row set for the measure: the count, the sampled item, and
     // the section-marker walk all read the same membership.
-    let contents = list.contents.snapshot();
+    let contents = list.contents().snapshot();
     let row_count = contents.len();
     if row_count == 0 {
         return LayoutSize::zero();
     }
-    let editing = state.measure_signal(&list.editing);
+    let editing = state.measure_signal(list.editing());
     let mut first_item = contents
         .get_view(0)
         .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index 0"));
-    first_item.content = normalize_layout_view(first_item.content, env);
-    let content_size = measure_transient_view_intrinsic(&first_item.content, state, env, theme);
+    let first_content = normalize_layout_view(first_item.take_content(), env);
+    first_item.set_content(first_content);
+    let content_size = measure_transient_view_intrinsic(first_item.content(), state, env, theme);
     let metrics = theme.list_metrics();
     let row_height = metrics
         .vertical_inset
@@ -989,25 +994,25 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
     let mut row_width = metrics
         .horizontal_inset
         .mul_add(2.0, f64::from(content_size.width));
-    if editing && list.on_move.is_some() {
+    if editing && list.on_move().is_some() {
         row_width += metrics.move_control_width + metrics.trailing_control_spacing;
     }
-    if editing && list.on_delete.is_some() {
+    if editing && list.on_delete().is_some() {
         row_width += metrics.delete_control_width + metrics.trailing_control_spacing;
     }
     // Section chrome is part of the list's own height. Walking every marker is
     // bounded here because only static section content sets `uses_sections`; a
     // virtualized `List::for_each` never does.
     let mut section_height = 0.0;
-    if list.uses_sections {
+    if list.uses_sections() {
         for index in contents.range() {
-            let Some(section) = contents.get_view(index).and_then(|item| item.section) else {
+            let Some(section) = contents.get_view(index).and_then(ListItem::into_section) else {
                 continue;
             };
-            if section.label.is_some() {
+            if section.label().is_some() {
                 section_height += metrics.section_header_height;
             }
-            if section.footer.is_some() {
+            if section.get_footer().is_some() {
                 section_height += metrics.section_footer_height;
             }
         }
@@ -1033,7 +1038,8 @@ pub fn materialize_list_item(
     let mut item = contents
         .get_view(index)
         .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index {index}"));
-    item.content = normalize_layout_view(item.content, env);
+    let content = normalize_layout_view(item.take_content(), env);
+    item.set_content(content);
     item
 }
 
@@ -1064,17 +1070,17 @@ pub fn measure_progress_intrinsic<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    match progress.style {
+    match progress.style() {
         ProgressStyle::Linear => {
             let metrics = theme.progress_metrics(crate::theme::ProgressIndicatorStyle::Linear);
             let label_height = f64::from(
                 waterui_text::font::Font::default()
                     .resolve(env)
                     .snapshot()
-                    .size,
+                    .size(),
             )
             .max(metrics.label_height);
-            let value_label_height = if state.measure_signal(&progress.value).is_finite() {
+            let value_label_height = if state.measure_signal(progress.value()).is_finite() {
                 metrics.value_label_top_spacing + label_height
             } else {
                 0.0
@@ -1106,7 +1112,7 @@ pub fn measure_text_field_intrinsic<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    let label_size = measure_label_intrinsic(&text_field.label, state, env, theme);
+    let label_size = measure_label_intrinsic(text_field.label(), state, env, theme);
     measure_text_field_intrinsic_with_label_size(text_field, label_size, state, env, theme)
 }
 
@@ -1146,9 +1152,9 @@ pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine>(
     proposal: ProposalSize,
 ) -> LayoutSize {
     let metrics = theme.input_field_metrics();
-    let line_limit = text_field.line_limit.map(NonZeroUsize::get);
-    let prompt = state.measure_signal(&text_field.prompt.content);
-    let value = state.measure_signal(&text_field.value);
+    let line_limit = text_field.line_limit().map(NonZeroUsize::get);
+    let prompt = state.measure_signal(text_field.prompt().content());
+    let value = state.measure_signal(text_field.value());
     let prompt_size = HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(
         state, prompt, env, line_limit,
     );
@@ -1185,7 +1191,7 @@ pub fn measure_secure_field_intrinsic<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    let label_size = measure_label_intrinsic(&secure_field.label, state, env, theme);
+    let label_size = measure_label_intrinsic(secure_field.label(), state, env, theme);
     measure_secure_field_intrinsic_with_label_size(secure_field, label_size, state, env, theme)
 }
 
@@ -1224,7 +1230,7 @@ pub fn measure_secure_field_size_with_label_size<E: crate::text::TextEngine>(
 ) -> LayoutSize {
     let metrics = theme.input_field_metrics();
     let secure_len = state
-        .measure_signal(&secure_field.value)
+        .measure_signal(secure_field.value())
         .expose()
         .chars()
         .count();
@@ -1363,10 +1369,10 @@ pub fn measure_slider_intrinsic<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    let metrics = theme.slider_metrics(slider.size);
-    let label_size = measure_label_intrinsic(&slider.label, state, env, theme);
-    let min_label_size = measure_view_intrinsic(&slider.min_value_label, state, env, theme);
-    let max_label_size = measure_view_intrinsic(&slider.max_value_label, state, env, theme);
+    let metrics = theme.slider_metrics(slider.size());
+    let label_size = measure_label_intrinsic(slider.label(), state, env, theme);
+    let min_label_size = measure_view_intrinsic(slider.min_value_label(), state, env, theme);
+    let max_label_size = measure_view_intrinsic(slider.max_value_label(), state, env, theme);
 
     let control_row_height = metrics
         .handle_height
@@ -1399,7 +1405,7 @@ fn resolved_text_styled<E: crate::text::TextEngine>(
     state: &mut HydroState<E>,
 ) -> StyledStr {
     let resolved = text.resolve(env);
-    state.measure_signal(&resolved.content)
+    state.measure_signal(resolved.content())
 }
 
 pub fn measure_date_picker_intrinsic<E: crate::text::TextEngine>(
@@ -1410,7 +1416,7 @@ pub fn measure_date_picker_intrinsic<E: crate::text::TextEngine>(
 ) -> LayoutSize {
     let metrics = theme.picker_metrics(PickerStyle::Menu);
     let input_metrics = theme.input_field_metrics();
-    let label_size = measure_label_intrinsic(&date_picker.label, state, env, theme);
+    let label_size = measure_label_intrinsic(date_picker.label(), state, env, theme);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
     let label_height = if has_label {
         f64::from(label_size.height).max(input_metrics.label_height)
@@ -1418,12 +1424,12 @@ pub fn measure_date_picker_intrinsic<E: crate::text::TextEngine>(
         0.0
     };
     let current = state
-        .measure_signal(&date_picker.value)
-        .clamp(*date_picker.range.start(), *date_picker.range.end());
+        .measure_signal(date_picker.value())
+        .clamp(*date_picker.range().start(), *date_picker.range().end());
     let candidates = [
-        date_picker.ty.format_value(*date_picker.range.start()),
-        date_picker.ty.format_value(current),
-        date_picker.ty.format_value(*date_picker.range.end()),
+        date_picker.ty().format_value(*date_picker.range().start()),
+        date_picker.ty().format_value(current),
+        date_picker.ty().format_value(*date_picker.range().end()),
     ];
     let mut field_text_width: f64 = 0.0;
     let mut field_text_height: f64 = 0.0;
@@ -1483,7 +1489,7 @@ pub fn measure_picker_intrinsic<E: crate::text::TextEngine>(
     // The label view is materialized only for this measurement, so it goes
     // through the transient path — see `measure_transient_view_intrinsic`.
     let label_size = measure_transient_view_intrinsic(
-        &crate::widgets::controls::picker::menu_picker_label_view(&picker.label),
+        &crate::widgets::controls::picker::menu_picker_label_view(picker.label()),
         state,
         env,
         theme,
@@ -1508,14 +1514,14 @@ pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    let items = state.measure_signal(&picker.items);
+    let items = state.measure_signal(picker.items());
     assert!(
         !(items.is_empty()),
         "hydrolysis picker requires at least one item"
     );
     let item_count = items.len();
 
-    match picker.style {
+    match picker.style() {
         PickerStyle::Automatic | PickerStyle::Menu => {
             let metrics = theme.picker_metrics(PickerStyle::Menu);
             let mut max_item_width: f64 = 0.0;

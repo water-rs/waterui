@@ -291,7 +291,7 @@ impl PixelRemoval {
         let frame = Binding::container(frame_now(
             overlay.view(),
             &visual.host,
-            visual.geometry.direction,
+            visual.geometry.direction(),
         ));
         let body = state.body(AnyView::new(()), frame.computed());
         Rc::new(Self {
@@ -312,7 +312,7 @@ impl PixelRemoval {
         this.frame.set(frame_now(
             this.overlay.view(),
             &run.visual.host,
-            run.visual.geometry.direction,
+            run.visual.geometry.direction(),
         ));
         if !this.pending.get() && this.effect.borrow().is_none() {
             Self::attempt(this, &run.visual, Rc::downgrade(run));

@@ -210,7 +210,7 @@ impl Shared {
         );
         for entry in self.scripts.borrow().iter() {
             self.view()
-                .add_user_script(&entry.source, injection_time(entry.time), true);
+                .add_user_script(entry.source(), injection_time(entry.time()), true);
         }
     }
 
@@ -265,14 +265,14 @@ impl Shared {
         };
         // Release the borrow before invoking: a handler may register or
         // remove handlers on the same view.
-        let handler = self.handlers.borrow().get(&request.name).map(Rc::clone);
+        let handler = self.handlers.borrow().get(request.name()).map(Rc::clone);
         let Some(handler) = handler else {
             tracing::warn!(
-                handler = %request.name,
+                handler = %request.name(),
                 "page script called a WaterUI handler that is not registered"
             );
             reply.resolve(
-                &bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name))
+                &bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name()))
                     .to_json(),
             );
             return;
@@ -282,7 +282,7 @@ impl Shared {
         // future completes. The reply needs no view: the channel answers the
         // document that asked, and `ScriptReply`'s `Drop` covers a view that
         // died mid-await.
-        let future = handler(&request.payload);
+        let future = handler(request.payload());
         executor_core::spawn_local(async move {
             let answer = match future.await {
                 Ok(answer) => bridge::Reply::from(answer),
@@ -770,14 +770,9 @@ impl CustomWebViewController for AppleWebViewController {
         // Interception can only be registered while the configuration is
         // being assembled, so the asset server arrives at creation.
         let scripts = DocumentScripts::new(&config);
-        let scheme = config.asset_server.map(|server| asset_scheme(&server));
-        WkWebViewHandle::new(
-            mtm,
-            scheme,
-            config.bridge_origins,
-            scripts,
-            config.navigation_policy,
-        )
+        let (asset_server, bridge_origins, navigation_policy, ..) = config.into_parts();
+        let scheme = asset_server.as_ref().map(asset_scheme);
+        WkWebViewHandle::new(mtm, scheme, bridge_origins, scripts, navigation_policy)
     }
 
     fn asset_origin(&self) -> Option<Url> {
@@ -861,14 +856,14 @@ fn asset_scheme(server: &assets::AssetServer) -> web_kit::SchemeHandler {
                 &request.path,
                 request.query.as_deref().or(Some("")),
             );
+            let (status, headers, body) = response.into_parts();
             web_kit::SchemeResponse {
-                status: response.status,
-                headers: response
-                    .headers
+                status,
+                headers: headers
                     .iter()
                     .map(|(name, value)| (name.to_string(), value.to_string()))
                     .collect(),
-                body: response.body,
+                body,
             }
         }),
     }
@@ -977,8 +972,8 @@ mod tests {
         let request =
             bridge::Request::parse(r#"{"id":7,"name":"alert","payload":{"message":"hi"}}"#)
                 .expect("a well-formed envelope parses");
-        assert_eq!(request.id, 7);
-        assert_eq!(request.name, "alert");
+        assert_eq!(request.id(), 7);
+        assert_eq!(request.name(), "alert");
 
         let json = bridge::Reply::failure("boom").to_json();
         assert!(json.contains("boom"));

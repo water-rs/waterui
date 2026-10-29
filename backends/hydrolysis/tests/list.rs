@@ -671,7 +671,7 @@ fn for_each_same_id_item_update_rematerializes_row_offscreen() {
         320,
     );
     app.settle();
-    let before = app.snapshot().rgba8.clone();
+    let before = app.snapshot().rgba8().to_vec();
 
     // Focus a row so its claim is retained by id, then update a different row.
     app.tap_at(20.0, 20.0);
@@ -686,7 +686,7 @@ fn for_each_same_id_item_update_rematerializes_row_offscreen() {
             .collect::<Vec<_>>(),
     );
     app.settle();
-    let after = app.snapshot().rgba8.clone();
+    let after = app.snapshot().rgba8().to_vec();
     assert!(
         after != before,
         "the updated row must repaint: a same-id content change must re-materialize \

@@ -36,18 +36,18 @@ pub(super) fn publish_frame(
         return;
     }
 
-    let phases = &profile.phases;
-    let counters = &profile.counters;
+    let phases = &profile.phases();
+    let counters = &profile.counters();
     let refresh_hz = refresh_rate_hz.unwrap_or_else(|| waterui::task::RefreshRate::HEADLESS.hz());
 
     recorder.record(FrameSample {
         kind: frame_kind(mode),
         // Everything up to a laid-out tree: building the root view value,
         // dispatching it into scene state, and finishing layout.
-        layout_us: micros(phases.build_content + phases.scene_dispatch + phases.scene_finish),
+        layout_us: micros(phases.build_content() + phases.scene_dispatch() + phases.scene_finish()),
         // Acquiring the target and submitting encoded work.
-        encode_us: micros(phases.acquire + phases.render),
-        present_us: micros(phases.present),
+        encode_us: micros(phases.acquire() + phases.render()),
+        present_us: micros(phases.present()),
         total_us: micros(total),
         budget_us: budget_us(refresh_hz),
         #[expect(
@@ -55,8 +55,8 @@ pub(super) fn publish_frame(
             reason = "a display refresh rate is far inside f32 range"
         )]
         refresh_hz: refresh_hz as f32,
-        layers: counters.scene_layers,
-        clip_depth: counters.max_clip_depth,
+        layers: counters.scene_layers(),
+        clip_depth: counters.max_clip_depth(),
     });
 }
 

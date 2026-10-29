@@ -9,6 +9,9 @@ import androidx.lifecycle.ViewModelStoreOwner
 import dev.waterui.hydrolysis.HydrolysisEmbedding
 import dev.waterui.hydrolysis.HydrolysisHostView
 import dev.waterui.hydrolysis.HydrolysisSession
+{%- if ctx.hydrolysis_android_is_hwui() %}
+import dev.waterui.hydrolysis.hwui.HwuiPainter
+{%- endif %}
 {%- if ctx.hydrolysis_android_has_painter_band() %}
 import {{ ctx.hydrolysis_android_painter_band_import() }}
 {%- endif %}
@@ -56,6 +59,9 @@ object WaterUi {
         onBackPressedDispatcher,
         NATIVE_LIBRARY,
         key = key,
+        {%- if ctx.hydrolysis_android_is_hwui() %}
+        createPainter = { HwuiPainter() },
+        {%- endif %}
         createContentView = { session ->
             {% include "partials/hydrolysis_android_content_view.kt.tpl" %}
         },

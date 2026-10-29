@@ -293,7 +293,7 @@ impl<H: HostTable + Clone> Loader<H> {
             .map_err(LaunchError::BaselineManifest)?;
         let catalog = verify::requirement(&manifest, &self.requirement)
             .map_err(LaunchError::BaselineRejected)?;
-        verify::bundle(self.baseline.bundle.as_bytes(), &manifest.bundle.sha256)
+        verify::bundle(self.baseline.bundle.as_bytes(), manifest.bundle().sha256())
             .map_err(LaunchError::BaselineRejected)?;
         Ok(CheckedBaseline { manifest, catalog })
     }
@@ -308,14 +308,14 @@ impl<H: HostTable + Clone> Loader<H> {
             .load(self.baseline.bundle)
             .map_err(LaunchError::BaselineFailed)?;
         tracing::debug!(
-            version = checked.manifest.version,
+            version = checked.manifest.version(),
             "launched the baseline bundle"
         );
         Ok(Launched::new(
             prepared,
-            checked.manifest.version,
+            checked.manifest.version(),
             self.requirement,
-            checked.manifest.version,
+            checked.manifest.version(),
         ))
     }
 

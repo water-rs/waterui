@@ -487,7 +487,7 @@ fn the_reference_program_materializes_every_spatial_stage() {
     let stages: Vec<_> = plan
         .passes
         .iter()
-        .map(|pass| (pass.segment.stages.clone(), pass.sampler))
+        .map(|pass| (pass.segment.stages(), pass.sampler))
         .collect();
     assert_eq!(
         stages,
@@ -523,7 +523,7 @@ fn srgb_stages_are_converted_around() {
     let plan = assert_composes("css_invert", &CssInvert);
     // The conversions are colour stages, so they share the stage's segment.
     assert_eq!(plan.passes.len(), 1);
-    assert_eq!(plan.passes[0].segment.stages, 0..3);
+    assert_eq!(plan.passes[0].segment.stages(), 0..3);
 
     let plan = assert_composes(
         "consecutive sRGB stages",
@@ -533,7 +533,7 @@ fn srgb_stages_are_converted_around() {
     let stages: Vec<_> = plan
         .passes
         .iter()
-        .map(|pass| pass.segment.stages.clone())
+        .map(|pass| pass.segment.stages())
         .collect();
     assert_eq!(stages, [0..2, 2..3, 3..4, 4..5]);
 
@@ -542,7 +542,7 @@ fn srgb_stages_are_converted_around() {
         &CssInvert.then(filters::Brightness(0.1_f32)).then(CssInvert),
     );
     // Each encoded stage still needs its own pair across the working stage.
-    assert_eq!(plan.passes[0].segment.stages, 0..7);
+    assert_eq!(plan.passes[0].segment.stages(), 0..7);
 }
 
 #[test]

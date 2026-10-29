@@ -59,10 +59,6 @@ pub use transition::{
 /// The `NavigationView` contains a navigation bar with a title and other
 /// configuration options, along with the actual content to display.
 #[must_use]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole navigation view, so a new field must fail their build instead of being ignored"
-)]
 pub struct NavigationView {
     /// The navigation bar for this view
     pub bar: Bar,
@@ -108,6 +104,38 @@ pub struct NavigationDestinationState {
     pub disappear: Option<BoxedAction>,
     /// Called only after a completed pop removes the destination.
     pub pop: Option<BoxedAction>,
+}
+
+impl NavigationDestinationState {
+    /// Whether a user or system initiated pop may begin.
+    #[must_use]
+    pub const fn pop_enabled(&self) -> &Computed<bool> {
+        &self.pop_enabled
+    }
+
+    /// Called for a real user/system pop request, including a denied request.
+    #[must_use]
+    pub const fn pop_attempted(&self) -> Option<&BoxedAction> {
+        self.pop_attempted.as_ref()
+    }
+
+    /// Called after the destination becomes active.
+    #[must_use]
+    pub const fn appear(&self) -> Option<&BoxedAction> {
+        self.appear.as_ref()
+    }
+
+    /// Called after the destination ceases to be active.
+    #[must_use]
+    pub const fn disappear(&self) -> Option<&BoxedAction> {
+        self.disappear.as_ref()
+    }
+
+    /// Called only after a completed pop removes the destination.
+    #[must_use]
+    pub const fn pop(&self) -> Option<&BoxedAction> {
+        self.pop.as_ref()
+    }
 }
 
 impl Debug for NavigationDestinationState {
@@ -180,10 +208,6 @@ type PathPopHandler = Rc<dyn Fn(usize)>;
 /// A transaction always replaces a suffix: the first [`Self::retained_prefix`]
 /// entries stay untouched, the [`Self::removed`] entries above them are
 /// discarded, and [`Self::inserted`] is appended in their place.
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole navigation transaction, so a new field must fail their build instead of being ignored"
-)]
 pub struct NavigationTransaction {
     /// Stack-scoped identifier acknowledged by
     /// [`NavigationController::transition_completed`] or
@@ -761,6 +785,62 @@ pub struct NavigationToolbarItem {
     pub icon: Option<ToolbarItemIcon>,
 }
 
+impl NavigationToolbarItem {
+    /// Takes the value apart into its fields, in declaration order.
+    pub fn into_parts(
+        self,
+    ) -> (
+        NavigationToolbarPlacement,
+        AnyView,
+        Option<Text>,
+        Option<ToolbarItemIcon>,
+    ) {
+        (self.placement, self.content, self.title, self.icon)
+    }
+
+    /// Semantic placement resolved by each platform backend.
+    #[must_use]
+    pub const fn placement(&self) -> NavigationToolbarPlacement {
+        self.placement
+    }
+
+    /// Item content.
+    #[must_use]
+    pub const fn content(&self) -> &AnyView {
+        &self.content
+    }
+
+    /// Takes the item content out, leaving an empty view behind.
+    pub fn take_content(&mut self) -> AnyView {
+        core::mem::take(&mut self.content)
+    }
+
+    /// Sets the item content.
+    pub fn set_content(&mut self, content: AnyView) {
+        self.content = content;
+    }
+
+    /// The item's name, when it was declared as a semantic label.
+    ///
+    /// Kept beside the content rather than only inside it, because the
+    /// platforms disagree about how much of a toolbar action to draw: a Mac
+    /// shows the icon alone and keeps the name for the overflow menu, its
+    /// tooltip and assistive technology, while a phone's navigation bar
+    /// commonly shows the text. Once the label is erased into a view, no
+    /// backend can tell the name from the icon, so both travel separately and
+    /// each platform draws what its own chrome calls for.
+    #[must_use]
+    pub const fn title(&self) -> Option<&Text> {
+        self.title.as_ref()
+    }
+
+    /// The item's icon, when it was declared as a semantic label.
+    #[must_use]
+    pub const fn icon(&self) -> Option<&ToolbarItemIcon> {
+        self.icon.as_ref()
+    }
+}
+
 /// A toolbar item's icon, kept apart from its name.
 ///
 /// The two forms are not interchangeable: a platform that recognizes the symbol
@@ -847,6 +927,24 @@ pub struct NavigationToolbar {
 }
 
 impl NavigationToolbar {
+    /// Semantic toolbar items in declaration order.
+    #[must_use]
+    pub const fn items(&self) -> &[NavigationToolbarItem] {
+        self.items.as_slice()
+    }
+
+    /// The items, for in-place edits.
+    pub const fn items_mut(&mut self) -> &mut [NavigationToolbarItem] {
+        self.items.as_mut_slice()
+    }
+
+    /// Takes the items out of the toolbar, leaving it empty.
+    pub fn take_items(&mut self) -> Vec<NavigationToolbarItem> {
+        core::mem::take(&mut self.items)
+    }
+}
+
+impl NavigationToolbar {
     /// Creates a toolbar from semantic items.
     #[must_use]
     pub const fn new(items: Vec<NavigationToolbarItem>) -> Self {
@@ -866,10 +964,6 @@ impl NavigationToolbar {
 /// Represents the appearance and behavior of a navigation bar, including
 /// its title, color, and visibility.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole navigation bar configuration, so a new field must fail their build instead of being ignored"
-)]
 pub struct Bar {
     /// The title view displayed in the navigation bar
     pub title: AnyView,
@@ -911,10 +1005,6 @@ impl Default for Bar {
 /// behavior, and a renderer with no such affordance (a Mac list, say) ignores
 /// it, which is why it wraps as [`IgnorableMetadata`].
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less metadata marker inserted by name"
-)]
 pub struct NavigationLinkHint;
 
 impl MetadataKey for NavigationLinkHint {}
@@ -973,6 +1063,20 @@ pub struct NavigationLink<Label, Content> {
     pub content: Content,
 }
 
+impl<Label, Content> NavigationLink<Label, Content> {
+    /// The label view displayed for this link
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// A function that creates the destination view when the link is activated
+    #[must_use]
+    pub const fn content(&self) -> &Content {
+        &self.content
+    }
+}
+
 /// A typed navigation link that pushes a route value onto a path-backed stack.
 #[must_use]
 #[derive(Debug)]
@@ -982,6 +1086,20 @@ pub struct NavigationValueLink<Label, T> {
     pub label: Label,
     /// The route value pushed when the link is activated.
     pub value: T,
+}
+
+impl<Label, T> NavigationValueLink<Label, T> {
+    /// The label view displayed for this link.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// The route value pushed when the link is activated.
+    #[must_use]
+    pub const fn value(&self) -> &T {
+        &self.value
+    }
 }
 
 impl<Label, Content> NavigationLink<Label, Content>
@@ -1401,7 +1519,9 @@ impl NavigationView {
     #[doc(hidden)]
     pub fn resolve_native_fields(&mut self, env: &Environment) {
         if let Some(search) = &mut self.bar.search {
-            search.prompt = waterui_text::Text::computed(search.prompt.resolve(env).content);
+            search.set_prompt(waterui_text::Text::computed(
+                search.prompt().resolve(env).into_content(),
+            ));
         }
 
         // A toolbar item's name crosses the boundary as resolved content, so it
@@ -1410,7 +1530,7 @@ impl NavigationView {
         // to resolve one against.
         for item in &mut self.bar.toolbar.items {
             if let Some(title) = item.title.take() {
-                item.title = Some(Text::computed(title.resolve(env).content));
+                item.title = Some(Text::computed(title.resolve(env).into_content()));
             }
         }
 

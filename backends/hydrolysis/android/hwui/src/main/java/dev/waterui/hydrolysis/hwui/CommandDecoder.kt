@@ -248,6 +248,29 @@ class CommandDecoder(private val sink: CommandSink) {
             Protocol.RELEASE_BITMAP -> sink.releaseBitmap(word())
             Protocol.RELEASE_RUNTIME_SHADER -> sink.releaseRuntimeShader(word())
             Protocol.RELEASE_EFFECT -> sink.releaseEffect(word())
+            Protocol.DEFINE_EFFECT -> {
+                val effect = word()
+                val count = count()
+                // `count * 13` words of stages; the bound precedes the math
+                // so a wrapped count cannot size an array.
+                if (count < 0 || count > (end - at) / 52) fail("effect ${unsigned(effect)} count exceeds its payload")
+                val kinds = ints(count)
+                val values = floats(count * 12)
+                for (i in 0 until count) {
+                    val kind = word()
+                    if (kind != EffectKind.BLUR && kind != EffectKind.LINEAR_COLOR) {
+                        fail("effect ${unsigned(effect)} stage $i kind ${unsigned(kind)} is unknown")
+                    }
+                    kinds[i] = kind
+                    floatView.position(at ushr 2)
+                    floatView.get(values, i * 12, 12)
+                    at += 48
+                    for (j in 0 until 12) {
+                        if (!values[i * 12 + j].isFinite()) fail("effect ${unsigned(effect)} stage $i holds a non-finite value")
+                    }
+                }
+                sink.defineEffect(effect, count, kinds, values)
+            }
             Protocol.RELEASE_TEXT_LAYOUT -> sink.releaseTextLayout(word())
             Protocol.DERIVE_FONT -> {
                 val font = word()

@@ -45,30 +45,85 @@ const DEFAULT_BUILD_CACHE_CLEANUP_AFTER_UNUSED_DAYS: u64 = 30;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 /// Global Water CLI configuration persisted to `~/.water/config.toml`.
-#[non_exhaustive]
 pub struct WaterConfig {
     /// Managed build-cache policy.
     #[serde(default)]
-    pub build_cache: BuildCacheConfig,
+    build_cache: BuildCacheConfig,
     /// The device `water run` last used per target, keyed by
     /// `"<backend>/<platform>"` (for example `"apple/ios"`). The value is the
     /// device's stable identifier — a simulator UDID, a physical-device
     /// identifier, an Android serial, or an AVD name.
     #[serde(default)]
-    pub last_used_device: std::collections::BTreeMap<String, String>,
+    last_used_device: std::collections::BTreeMap<String, String>,
     /// Unix seconds of the last passive `water update` check, which runs at
     /// most once per 24 hours.
     #[serde(default)]
-    pub last_update_check_unix_seconds: Option<u64>,
+    last_update_check_unix_seconds: Option<u64>,
+}
+impl WaterConfig {
+    /// A `WaterConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(
+        build_cache: BuildCacheConfig,
+        last_used_device: std::collections::BTreeMap<String, String>,
+        last_update_check_unix_seconds: Option<u64>,
+    ) -> Self {
+        Self {
+            build_cache,
+            last_used_device,
+            last_update_check_unix_seconds,
+        }
+    }
+
+    /// Managed build-cache policy.
+    #[must_use]
+    pub const fn build_cache(&self) -> &BuildCacheConfig {
+        &self.build_cache
+    }
+
+    /// The device `water run` last used per target, keyed by
+    /// `"<backend>/<platform>"` (for example `"apple/ios"`). The value is the
+    /// device's stable identifier — a simulator UDID, a physical-device
+    /// identifier, an Android serial, or an AVD name.
+    #[must_use]
+    pub const fn last_used_device(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.last_used_device
+    }
+
+    /// Unix seconds of the last passive `water update` check, which runs at
+    /// most once per 24 hours.
+    #[must_use]
+    pub const fn last_update_check_unix_seconds(&self) -> Option<u64> {
+        self.last_update_check_unix_seconds
+    }
+
+    /// Record the last passive `water update` check timestamp.
+    pub const fn set_last_update_check_unix_seconds(&mut self, unix_seconds: Option<u64>) {
+        self.last_update_check_unix_seconds = unix_seconds;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 /// Cleanup policy for the global managed build cache.
-#[non_exhaustive]
 pub struct BuildCacheConfig {
     /// Remove build-cache entries that have been unused for more than this many days.
     #[serde(default = "default_build_cache_cleanup_after_unused_days")]
-    pub cleanup_after_unused_days: u64,
+    cleanup_after_unused_days: u64,
+}
+impl BuildCacheConfig {
+    /// A `BuildCacheConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(cleanup_after_unused_days: u64) -> Self {
+        Self {
+            cleanup_after_unused_days,
+        }
+    }
+
+    /// Remove build-cache entries that have been unused for more than this many days.
+    #[must_use]
+    pub const fn cleanup_after_unused_days(&self) -> u64 {
+        self.cleanup_after_unused_days
+    }
 }
 
 impl Default for BuildCacheConfig {
@@ -88,12 +143,33 @@ struct CacheMetadata {
 
 /// Summary of one managed build-cache garbage-collection pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct BuildCacheGcSummary {
     /// Number of managed cache entries inspected, excluding the active project cache.
-    pub scanned_entries: usize,
+    scanned_entries: usize,
     /// Number of stale managed cache entries removed during this pass.
-    pub removed_entries: usize,
+    removed_entries: usize,
+}
+impl BuildCacheGcSummary {
+    /// A `BuildCacheGcSummary` carrying each of its fields.
+    #[must_use]
+    pub const fn new(scanned_entries: usize, removed_entries: usize) -> Self {
+        Self {
+            scanned_entries,
+            removed_entries,
+        }
+    }
+
+    /// Number of managed cache entries inspected, excluding the active project cache.
+    #[must_use]
+    pub const fn scanned_entries(&self) -> usize {
+        self.scanned_entries
+    }
+
+    /// Number of stale managed cache entries removed during this pass.
+    #[must_use]
+    pub const fn removed_entries(&self) -> usize {
+        self.removed_entries
+    }
 }
 
 /// Result of attempting to garbage-collect stale managed build-cache entries.
@@ -116,10 +192,6 @@ const fn default_build_cache_cleanup_after_unused_days() -> u64 {
 /// The current user's home directory could not be determined.
 #[derive(Debug, thiserror::Error)]
 #[error("Could not determine home directory")]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit error marker with no fields to add"
-)]
 pub struct HomeDirError;
 
 /// Return the Water home directory root at `~/.water` for `host`.
@@ -1262,30 +1334,110 @@ async fn remove_legacy_local_water_dir(project_root: &Path) -> eyre::Result<()> 
 
 /// On-disk usage of one managed build-cache entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct BuildCacheEntryUsage {
     /// Project the cache entry belongs to.
-    pub project_root: PathBuf,
+    project_root: PathBuf,
     /// Managed cache directory holding the entry.
-    pub cache_dir: PathBuf,
+    cache_dir: PathBuf,
     /// Disk space the entry occupies, in bytes.
-    pub bytes: u64,
+    bytes: u64,
     /// Whether the entry is currently eligible for removal.
-    pub stale: bool,
+    stale: bool,
     /// Whether the entry belongs to the project the survey was run from.
-    pub active: bool,
+    active: bool,
+}
+impl BuildCacheEntryUsage {
+    /// A `BuildCacheEntryUsage` carrying each of its fields.
+    #[must_use]
+    pub const fn new(
+        project_root: PathBuf,
+        cache_dir: PathBuf,
+        bytes: u64,
+        stale: bool,
+        active: bool,
+    ) -> Self {
+        Self {
+            project_root,
+            cache_dir,
+            bytes,
+            stale,
+            active,
+        }
+    }
+
+    /// Project the cache entry belongs to.
+    #[must_use]
+    pub fn project_root(&self) -> &Path {
+        &self.project_root
+    }
+
+    /// Managed cache directory holding the entry.
+    #[must_use]
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache_dir
+    }
+
+    /// Disk space the entry occupies, in bytes.
+    #[must_use]
+    pub const fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// Whether the entry is currently eligible for removal.
+    #[must_use]
+    pub const fn stale(&self) -> bool {
+        self.stale
+    }
+
+    /// Whether the entry belongs to the project the survey was run from.
+    #[must_use]
+    pub const fn active(&self) -> bool {
+        self.active
+    }
 }
 
 /// What the managed build cache is currently spending disk on.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct BuildCacheUsageReport {
     /// Entries, largest first.
-    pub entries: Vec<BuildCacheEntryUsage>,
+    entries: Vec<BuildCacheEntryUsage>,
     /// Total disk space across every entry, in bytes.
-    pub total_bytes: u64,
+    total_bytes: u64,
     /// Disk space held by entries eligible for removal, in bytes.
-    pub reclaimable_bytes: u64,
+    reclaimable_bytes: u64,
+}
+impl BuildCacheUsageReport {
+    /// A `BuildCacheUsageReport` carrying each of its fields.
+    #[must_use]
+    pub const fn new(
+        entries: Vec<BuildCacheEntryUsage>,
+        total_bytes: u64,
+        reclaimable_bytes: u64,
+    ) -> Self {
+        Self {
+            entries,
+            total_bytes,
+            reclaimable_bytes,
+        }
+    }
+
+    /// Entries, largest first.
+    #[must_use]
+    pub fn entries(&self) -> &[BuildCacheEntryUsage] {
+        &self.entries
+    }
+
+    /// Total disk space across every entry, in bytes.
+    #[must_use]
+    pub const fn total_bytes(&self) -> u64 {
+        self.total_bytes
+    }
+
+    /// Disk space held by entries eligible for removal, in bytes.
+    #[must_use]
+    pub const fn reclaimable_bytes(&self) -> u64 {
+        self.reclaimable_bytes
+    }
 }
 
 /// Survey the managed build cache without removing anything.

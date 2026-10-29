@@ -931,7 +931,7 @@ impl WebViewOpen {
         match self
             .scripts
             .iter_mut()
-            .find(|existing| existing.key == script.key)
+            .find(|existing| existing.key() == script.key())
         {
             Some(existing) => *existing = script,
             None => self.scripts.push(script),
@@ -1175,18 +1175,16 @@ impl WebViewOpen {
         #[cfg(not(target_arch = "wasm32"))]
         let mirror = (!state.is_empty()).then(|| state::prepare(state));
         #[cfg(not(target_arch = "wasm32"))]
-        let config = WebViewConfig {
+        let config = WebViewConfig::new(
             asset_server,
-            // For an asset-origin view `initial` is the resolved entry URL, so
-            // `BridgeOrigins::Initial` narrows to the asset origin.
-            bridge_origins: OriginPolicy::new(bridge_origins, &initial),
+            OriginPolicy::new(bridge_origins, &initial),
             navigation_policy,
             scripts,
-            state: mirror
+            mirror
                 .as_ref()
                 .map(state::Mirror::declarations)
                 .unwrap_or_default(),
-        };
+        );
         #[cfg(target_arch = "wasm32")]
         let config = WebViewConfig::default();
         let webview = controller.open_with(config);

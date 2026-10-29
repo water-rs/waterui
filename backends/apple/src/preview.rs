@@ -166,14 +166,14 @@ fn drive(
     let inspector = crate::startup::initialize_for_preview();
 
     let content_deadline = config.content_deadline();
-    let output = match config.mode {
+    let size = cocoa_ui::Size::new(f64::from(config.width()), f64::from(config.height()));
+    let output = match config.into_mode() {
         PreviewRunMode::Image { output } => output,
         PreviewRunMode::Scenario { .. } => {
             return Err(PreviewError::UnsupportedMode("scenario"));
         }
         PreviewRunMode::Semantic => return Err(PreviewError::UnsupportedMode("semantic")),
     };
-    let size = cocoa_ui::Size::new(f64::from(config.width), f64::from(config.height));
 
     // The keepers live on `drive`'s frame and are declared before `env`, so
     // `env` drops first and `keepers` — the theme, appearance observer,
@@ -366,11 +366,12 @@ async fn render_and_write(
     crate::content::await_content(&ledger, &stage.root, capture.content_deadline).await?;
     let result = stage.capture().await?;
     drop(stage);
+    let (rgba_data, width, height) = result.into_parts();
     waterui_preview_protocol::run::write_png(
         capture.output,
-        result.width,
-        result.height,
-        result.rgba_data,
+        width,
+        height,
+        rgba_data,
         Alpha::Premultiplied,
     )?;
     Ok(())

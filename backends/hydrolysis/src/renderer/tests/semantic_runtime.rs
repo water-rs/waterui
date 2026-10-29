@@ -757,7 +757,7 @@ fn a_clean_pump_publishes_no_tree_update() {
 
     let update = pumped(&mut runtime);
     assert!(
-        runtime.pump().tree_update.is_none(),
+        runtime.pump().tree_update().is_none(),
         "a settled pump with no popup must publish nothing"
     );
 
@@ -773,7 +773,7 @@ fn a_clean_pump_publishes_no_tree_update() {
         "the swatch panel must be merged before the clean-pump check"
     );
     assert!(
-        runtime.pump().tree_update.is_none(),
+        runtime.pump().tree_update().is_none(),
         "a settled pump with an open popup must publish nothing"
     );
 }

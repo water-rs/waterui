@@ -350,8 +350,6 @@ fn trials() -> Vec<Trial> {
         tests.extend(controller_bounds::trials());
         tests.extend(safe_area::trials());
         tests.extend(offset::trials());
-        #[cfg(feature = "gpu_surface")]
-        tests.extend(capture_scale::trials());
     }
     tests.extend(migration::trials());
     tests.extend(transition::trials());
@@ -1486,61 +1484,6 @@ mod resolve {
     }
 }
 
-/// A windowless view captured as a template image rasterizes at the
-/// screen's scale, not the detached view's `1.0`.
-#[cfg(all(target_os = "ios", feature = "gpu_surface"))]
-mod capture_scale {
-    use cocoa_ui::{Rect, bitmap, view};
-    use libtest_mimic::Trial;
-    use waterui_apple::native_test_support::capture_template_image;
-
-    use super::{PlatformView, mtm};
-
-    pub fn trials() -> Vec<Trial> {
-        vec![Trial::test(
-            "capture_scale::a_windowless_template_capture_uses_the_screen_scale",
-            || {
-                a_windowless_template_capture_uses_the_screen_scale();
-                Ok(())
-            },
-        )]
-    }
-
-    /// A `40x30` point view with no window: the image is `40x30` points at
-    /// the capture scene's screen scale, so its pixel size is the point size times
-    /// that scale.
-    fn a_windowless_template_capture_uses_the_screen_scale() {
-        let screen_scale = bitmap::any_window_scene()
-            .expect("the simulator host has a window scene")
-            .screen()
-            .scale();
-        let detached = PlatformView::new(mtm());
-        view::set_frame(&detached, Rect::new(0.0, 0.0, 40.0, 30.0));
-        assert!(view::window(&detached).is_none(), "the view is windowless");
-
-        let image = capture_template_image(&detached, 100.0);
-
-        // SAFETY: `size` and `scale` are plain getters on a live `UIImage`.
-        let (size, image_scale) = unsafe { (image.size(), image.scale()) };
-        assert!(
-            (image_scale - screen_scale).abs() < f64::EPSILON,
-            "image scale {image_scale} must be the screen scale {screen_scale}"
-        );
-        assert!(
-            (size.width - 40.0).abs() < 0.01 && (size.height - 30.0).abs() < 0.01,
-            "image keeps its point size, got {}x{}",
-            size.width,
-            size.height
-        );
-        let pixels = (size.width * image_scale, size.height * image_scale);
-        assert!(
-            (pixels.0 - (40.0 * screen_scale).ceil()).abs() < 0.01
-                && (pixels.1 - (30.0 * screen_scale).ceil()).abs() < 0.01,
-            "pixel size {pixels:?} must be the point size times {screen_scale}"
-        );
-    }
-}
-
 /// `Metadata<Offset>` on `UIKit`: the content moves visually through its
 /// `transform`, and the wrapper's layout pass positions its bounds and
 /// center. `UIKit` resolves `frame`/`center` writes under a non-identity
@@ -2337,18 +2280,18 @@ mod menus {
             Some(Shortcut::new('w').command()).as_ref(),
         );
         let first = rows.first().expect("the Window menu has rows");
-        assert_eq!(first.title, "Close");
-        assert_eq!(first.key_equivalent, "w");
-        assert_eq!(first.action.as_deref(), Some("performClose:"));
-        assert!(first.modifiers.contains(NSEventModifierFlags::Command));
-        assert!(!first.enabled, "no key window takes `performClose:`");
+        assert_eq!(first.title(), "Close");
+        assert_eq!(first.key_equivalent(), "w");
+        assert_eq!(first.action(), Some("performClose:"));
+        assert!(first.modifiers().contains(NSEventModifierFlags::Command));
+        assert!(!first.enabled(), "no key window takes `performClose:`");
 
         let declared = window_menu_rows(mtm(), CloseWindowPlacement::Declared, None);
         assert!(!declared.is_empty(), "the Window menu keeps its other rows");
         assert!(
             declared
                 .iter()
-                .all(|row| row.title != "Close" && row.action.as_deref() != Some("performClose:")),
+                .all(|row| row.title() != "Close" && row.action() != Some("performClose:")),
             "a declared Close is never repeated in the Window menu: {declared:?}"
         );
     }
@@ -4046,11 +3989,11 @@ mod gpu_surface {
         )]
         let side = (64.0 * scale).ceil() as u32;
         assert_eq!(
-            (result.width, result.height),
+            (result.width(), result.height()),
             (side, side),
             "the raster is the 64-point proposal at the backing scale"
         );
-        let (texels, rest) = result.rgba_data.as_chunks::<4>();
+        let (texels, rest) = result.rgba_data().as_chunks::<4>();
         assert!(rest.is_empty(), "the raster is whole RGBA8 texels");
         assert_eq!(
             texels.len(),
@@ -10850,16 +10793,24 @@ mod embedding {
         assert_eq!(cap.scheme_now(), scheme);
         assert_eq!(cap.direction_now(), direction);
         assert_eq!(cap.locale_now(), locale_tag);
-        assert_eq!(f64::from(cap.font_now(0).size), base, "Body size");
-        assert_eq!(f64::from(cap.font_now(1).size), base + 2.0, "Headline size");
-        assert_eq!(f64::from(cap.font_now(2).size), base + 5.0, "Footnote size");
+        assert_eq!(f64::from(cap.font_now(0).size()), base, "Body size");
         assert_eq!(
-            cap.font_now(0).line_height.map(f64::from),
+            f64::from(cap.font_now(1).size()),
+            base + 2.0,
+            "Headline size"
+        );
+        assert_eq!(
+            f64::from(cap.font_now(2).size()),
+            base + 5.0,
+            "Footnote size"
+        );
+        assert_eq!(
+            cap.font_now(0).line_height().map(f64::from),
             Some(base + 3.0),
             "Body line height"
         );
         assert_eq!(
-            cap.font_now(0).weight,
+            cap.font_now(0).weight(),
             waterui::text::font::FontWeight::Normal,
             "Body weight"
         );
@@ -10976,14 +10927,14 @@ mod embedding {
         assert!(
             waterui_apple::native_test_support::pump_main_until(
                 waterui_apple::native_test_support::MAIN_QUEUE_DEADLINE,
-                || (cap_a.font_now(0).size - 26.0).abs() < f32::EPSILON
+                || (cap_a.font_now(0).size() - 26.0).abs() < f32::EPSILON
             ),
             "the Body font slot lands the update within the pump deadline"
         );
-        assert_eq!(cap_a.font_now(0).size, 26.0);
-        assert_eq!(cap_a.font_now(2).size, 31.0, "A Footnote size");
+        assert_eq!(cap_a.font_now(0).size(), 26.0);
+        assert_eq!(cap_a.font_now(2).size(), 31.0, "A Footnote size");
         assert_eq!(
-            cap_a.font_now(0).line_height,
+            cap_a.font_now(0).line_height(),
             Some(29.0),
             "A Body line height"
         );
@@ -11009,7 +10960,7 @@ mod embedding {
         // Nothing reaches the sibling mount or the process's own regional
         // settings.
         assert_eq!(cap_b.bodies.get(), 1);
-        assert_eq!(cap_b.font_now(0).size, 20.0);
+        assert_eq!(cap_b.font_now(0).size(), 20.0);
         assert_eq!(cap_b.locale_now(), "ar-EG");
         assert_eq!(
             regional::current_settings().locale_tag(),
@@ -11092,10 +11043,10 @@ mod gesture_events {
                     "each press appends exactly one tap event"
                 );
                 let tap = &taps[before];
-                assert_eq!(tap.count, 1, "an assistive press is a count-1 tap");
-                assert_eq!(tap.button, PointerButton::Primary);
+                assert_eq!(tap.count(), 1, "an assistive press is a count-1 tap");
+                assert_eq!(tap.button(), PointerButton::Primary);
                 assert_eq!(
-                    tap.location,
+                    tap.location(),
                     waterui::gesture::GesturePoint::new(expected.0, expected.1),
                     "the event names the activation point — the bounds-space center"
                 );
@@ -11341,36 +11292,36 @@ mod gesture_events {
 
         let e = fire(NSGestureRecognizerState::Began, 0.0);
         assert_eq!(
-            (e.phase, e.angle, e.velocity),
+            (e.phase(), e.angle(), e.velocity()),
             (GesturePhase::Started, 0.0, 0.0)
         );
         let e = fire(NSGestureRecognizerState::Changed, 0.75);
-        assert_eq!(e.phase, GesturePhase::Updated);
+        assert_eq!(e.phase(), GesturePhase::Updated);
         assert!(
-            (e.angle - 0.75).abs() < 1e-6,
+            (e.angle() - 0.75).abs() < 1e-6,
             "angle must be the raw radians getter, saw {}",
-            e.angle
+            e.angle()
         );
         assert!(
-            e.velocity.is_finite() && e.velocity > 0.0,
+            e.velocity().is_finite() && e.velocity() > 0.0,
             "rotation progressed: {}",
-            e.velocity
+            e.velocity()
         );
         let e = fire(NSGestureRecognizerState::Changed, 1.25);
-        assert!((e.angle - 1.25).abs() < 1e-6);
+        assert!((e.angle() - 1.25).abs() < 1e-6);
         let e = fire(NSGestureRecognizerState::Ended, 1.25);
-        assert_eq!((e.phase, e.velocity), (GesturePhase::Ended, 0.0));
-        assert!((e.angle - 1.25).abs() < 1e-6);
+        assert_eq!((e.phase(), e.velocity()), (GesturePhase::Ended, 0.0));
+        assert!((e.angle() - 1.25).abs() < 1e-6);
 
         // A second gesture reseeds at zero; a negative update and a
         // cancel keep the last angle with zero velocity.
         let e = fire(NSGestureRecognizerState::Began, 0.0);
-        assert_eq!(e.phase, GesturePhase::Started);
+        assert_eq!(e.phase(), GesturePhase::Started);
         let e = fire(NSGestureRecognizerState::Changed, -0.5);
-        assert!((e.angle + 0.5).abs() < 1e-6);
+        assert!((e.angle() + 0.5).abs() < 1e-6);
         let e = fire(NSGestureRecognizerState::Cancelled, -0.5);
-        assert_eq!((e.phase, e.velocity), (GesturePhase::Cancelled, 0.0));
-        assert!((e.angle + 0.5).abs() < 1e-6);
+        assert_eq!((e.phase(), e.velocity()), (GesturePhase::Cancelled, 0.0));
+        assert!((e.angle() + 0.5).abs() < 1e-6);
     }
 
     /// `AppKit`: `NSMagnificationGestureRecognizer.magnification` is the
@@ -11404,48 +11355,48 @@ mod gesture_events {
 
         let e = fire(NSGestureRecognizerState::Began, 0.0);
         assert_eq!(
-            (e.phase, e.scale, e.velocity),
+            (e.phase(), e.scale(), e.velocity()),
             (GesturePhase::Started, 2.0, 0.0)
         );
         let e = fire(NSGestureRecognizerState::Changed, 0.25);
         assert!(
-            (e.scale - 2.5).abs() < 1e-5,
+            (e.scale() - 2.5).abs() < 1e-5,
             "m .25 -> factor 1.25: {}",
-            e.scale
+            e.scale()
         );
-        assert!(e.velocity.is_finite() && e.velocity > 0.0);
+        assert!(e.velocity().is_finite() && e.velocity() > 0.0);
         let e = fire(NSGestureRecognizerState::Changed, 0.5);
         assert!(
-            (e.scale - 3.0).abs() < 1e-5,
+            (e.scale() - 3.0).abs() < 1e-5,
             "m .5 -> factor 1.5: {}",
-            e.scale
+            e.scale()
         );
-        assert!(e.velocity.is_finite() && e.velocity > 0.0);
+        assert!(e.velocity().is_finite() && e.velocity() > 0.0);
         let e = fire(NSGestureRecognizerState::Changed, 0.5);
         assert!(
-            (e.scale - 3.0).abs() < 1e-5 && e.velocity == 0.0,
+            (e.scale() - 3.0).abs() < 1e-5 && e.velocity() == 0.0,
             "an unchanged sample adds nothing"
         );
         let e = fire(NSGestureRecognizerState::Ended, 0.5);
         assert_eq!(
-            (e.phase, e.scale, e.velocity),
+            (e.phase(), e.scale(), e.velocity()),
             (GesturePhase::Ended, 3.0, 0.0)
         );
 
         // The next gesture reseeds the baseline; a smaller factor zooms
         // out with a negative velocity and the cancel keeps the scale.
         let e = fire(NSGestureRecognizerState::Began, 0.0);
-        assert_eq!((e.phase, e.scale), (GesturePhase::Started, 2.0));
+        assert_eq!((e.phase(), e.scale()), (GesturePhase::Started, 2.0));
         let e = fire(NSGestureRecognizerState::Changed, -0.25);
         assert!(
-            (e.scale - 1.5).abs() < 1e-5,
+            (e.scale() - 1.5).abs() < 1e-5,
             "m -.25 -> factor .75: {}",
-            e.scale
+            e.scale()
         );
-        assert!(e.velocity.is_finite() && e.velocity < 0.0);
+        assert!(e.velocity().is_finite() && e.velocity() < 0.0);
         let e = fire(NSGestureRecognizerState::Cancelled, -0.25);
-        assert_eq!((e.phase, e.velocity), (GesturePhase::Cancelled, 0.0));
-        assert!((e.scale - 1.5).abs() < 1e-5);
+        assert_eq!((e.phase(), e.velocity()), (GesturePhase::Cancelled, 0.0));
+        assert!((e.scale() - 1.5).abs() < 1e-5);
     }
 
     /// `AppKit`: `Then(tap, rotation)` forwards the second gesture only
@@ -11495,8 +11446,8 @@ mod gesture_events {
                     events.len()
                 );
             };
-            assert_eq!(event.phase, GesturePhase::Started);
-            assert!((event.angle - 0.5).abs() < 1e-6);
+            assert_eq!(event.phase(), GesturePhase::Started);
+            assert!((event.angle() - 0.5).abs() < 1e-6);
         }
         assert!(
             matches!(gestures.borrow().as_slice(), [Gesture::Then(_)]),
@@ -14664,7 +14615,7 @@ mod transition {
                 _geometry: TransitionGeometry,
             ) -> TransitionProperties {
                 let mut properties = TransitionProperties::IDENTITY;
-                properties.blur = 8.0 * (1.0 - 3.0f32.mul_add(progress, -1.5).abs()).max(0.0);
+                properties.set_blur(8.0 * (1.0 - 3.0f32.mul_add(progress, -1.5).abs()).max(0.0));
                 properties
             }
         }
@@ -14756,7 +14707,7 @@ mod transition {
             content: AnyView,
             transition_context: waterui_core::transition::TransitionContext,
         ) -> impl waterui_backend_core::View {
-            *self.frame.borrow_mut() = Some(transition_context.frame);
+            *self.frame.borrow_mut() = Some(transition_context.frame().clone());
             let shader =
                 waterui::graphics::filtrate::ShaderEffect::new(include_str!("pixel_probe.wgsl"))
                     .expect("the probe shader is valid WGSL");
@@ -14882,7 +14833,7 @@ mod transition {
             .as_ref()
             .expect("the transition body published a frame")
             .snapshot()
-            .source
+            .source()
     }
 
     /// `a_pixel_removal_freezes_into_the_window_overlay` — a

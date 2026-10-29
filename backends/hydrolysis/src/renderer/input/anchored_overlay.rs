@@ -232,10 +232,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             }
         }
 
-        let ctx = RenderContext {
-            local: transform,
-            bounds: self.window_bounds,
-        };
+        let ctx = RenderContext::new(transform, self.window_bounds);
         for entry in registered {
             let mut state = core::mem::take(&mut *entry.presentations.borrow_mut());
             let reduce_motion = entry
@@ -314,7 +311,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // propose at most the window inset by the clamp margins, so long
         // content wraps inside the frame it will be clamped into instead
         // of laying out unbounded and overflowing it.
-        let margin = match entry.placement.clamp {
+        let margin = match entry.placement.get_clamp() {
             Clamp::Window { margin } => f64::from(margin) * 2.0,
             Clamp::Off => 0.0,
         };
@@ -351,12 +348,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             entry.placement,
             direction,
         );
-        let frame = rect_to_kurbo(placement.frame);
+        let frame = rect_to_kurbo(placement.frame());
 
         // Every placement writes back the logical edge the overlay was
         // placed against — the physical edge resolved under the layout
         // direction, so `Leading`/`Trailing` read back correctly in RTL.
-        let logical = waterui_backend_core::overlay::logical_edge(placement.edge, direction);
+        let logical = waterui_backend_core::overlay::logical_edge(placement.edge(), direction);
         if entry.placed_edge.snapshot() != logical {
             entry.placed_edge.set(logical);
         }

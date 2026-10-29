@@ -22,7 +22,6 @@
 //!   the recording comes back split at each one for its host to realize.
 #![expect(
     clippy::exhaustive_enums,
-    clippy::exhaustive_structs,
     reason = "publish = false: no semver surface until #2687 makes the crate publishable"
 )]
 

@@ -954,6 +954,33 @@ struct GeometryEntry {
     used: u64,
 }
 
+/// One joined batch, kept as a symbol so Callgrind can include worker work.
+#[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+#[inline(never)]
+fn prepare_geometry_batch(
+    jobs: FxHashMap<GeometryKey, (NonZeroU64, OutlineRef<'_>, Affine, f64)>,
+    surface: (f64, f64),
+) -> Vec<(NonZeroU64, GeometryEntry)> {
+    use rayon::prelude::*;
+    jobs.into_par_iter()
+        .map(|(key, (digest, outline, raster, tolerance))| {
+            let mut geometry = RetainedGeometry::new(outline.build(tolerance), raster, key.rule);
+            let [.., x, y] = raster.as_coeffs();
+            if path::grid(geometry.placed(Vec2::new(x, y)).1, surface).is_some() {
+                geometry.state.resolve();
+            }
+            (
+                digest,
+                GeometryEntry {
+                    key,
+                    geometry,
+                    used: 0,
+                },
+            )
+        })
+        .collect()
+}
+
 /// A content's retained CPU-route path geometry
 /// (water-rs/waterui#3306), keyed by [`GeometryKey::digest`]: a
 /// re-recorded or re-placed path reuses its flattened,
@@ -986,15 +1013,15 @@ impl GeometryCache {
         &mut self,
         digest: NonZeroU64,
         key: GeometryKey,
-        build: impl FnOnce() -> RetainedGeometry,
-    ) -> &mut RetainedGeometry {
+        build: impl FnOnce() -> Option<RetainedGeometry>,
+    ) -> Option<&mut RetainedGeometry> {
         let entry = match self.entries.entry(digest) {
             std::collections::hash_map::Entry::Occupied(slot) => {
                 let entry = slot.into_mut();
                 if entry.key != key {
                     *entry = GeometryEntry {
                         key,
-                        geometry: build(),
+                        geometry: build()?,
                         used: 0,
                     };
                 }
@@ -1002,11 +1029,11 @@ impl GeometryCache {
             }
             std::collections::hash_map::Entry::Vacant(slot) => slot.insert(GeometryEntry {
                 key,
-                geometry: build(),
+                geometry: build()?,
                 used: 0,
             }),
         };
-        &mut entry.geometry
+        Some(&mut entry.geometry)
     }
 
     /// Reconcile liveness after a successful walk that flagged or
@@ -1715,6 +1742,10 @@ impl Isolation {
 
 /// The lowering walk state for one surface frame.
 pub struct Lowering<'a> {
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    pub(super) preparation: Option<&'a rayon::ThreadPool>,
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    geometry_miss: bool,
     frame: &'a mut Frame,
     anchor_scratch: &'a mut AnchorScratch,
     /// Path emission buffers, owned by the surface so their capacity
@@ -1857,6 +1888,10 @@ impl<'a> Lowering<'a> {
             frame,
             anchor_scratch,
             raster_scratch,
+            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+            preparation: None,
+            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+            geometry_miss: false,
             width: size.0 as f32,
             height: size.1 as f32,
             transform: Affine::IDENTITY,
@@ -4497,6 +4532,99 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
+    /// Prepare independent CPU-route geometry before ordered leaf emission.
+    /// The pool owns only geometry work; atlas updates and painting stay here.
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    fn prepare_paths(
+        &self,
+        source: &cherenkov::DisplayList,
+        ops: &[Op],
+        emissions: &[Realization<Emission>],
+        storage: &mut EmissionStorage,
+        glyphs: &GlyphContext<'_>,
+    ) {
+        let Some(pool) = self.preparation else {
+            return;
+        };
+        if self.coverage_route == path::CoverageRoute::Gpu {
+            return;
+        }
+        let mut jobs = FxHashMap::default();
+        for (op, emission) in ops.iter().zip(emissions) {
+            if matches!(
+                op,
+                Op::BeginClip { .. } | Op::BeginIsolate { .. } | Op::BeginShadow { .. } | Op::End
+            ) {
+                break;
+            }
+            let Op::Path {
+                local,
+                rule,
+                outline,
+                paint,
+                complexity,
+                ..
+            } = op
+            else {
+                continue;
+            };
+            if emission.valid
+                && emission
+                    .data
+                    .as_ref()
+                    .is_some_and(|e| e.transform == self.transform)
+                || matches!(paint, ResolvedPaint::Shader(_))
+            {
+                continue;
+            }
+            let raster = self.transform * *local;
+            let outline = outline.get(source);
+            if self.compute.is_some()
+                && self.coverage_route == path::CoverageRoute::Automatic
+                && outline.gpu_candidate(*complexity, raster)
+            {
+                continue;
+            }
+            let tolerance = path::FLATTEN / raster.spectral_norm().max(1e-12);
+            let content = outline.content(tolerance);
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "surface extents fit u32"
+            )]
+            let placement =
+                path::placement(content, raster, (self.width as u32, self.height as u32));
+            if glyphs.atlas.path(placement.key).is_some()
+                || glyphs.atlas.path(placement.key_exact()).is_some()
+                || self.pending_paths.contains_key(&placement.key)
+                || self.pending_paths.contains_key(&placement.key_exact())
+            {
+                continue;
+            }
+            let key = GeometryKey::new(content, *rule, placement.raster);
+            let digest = key.digest();
+            if storage
+                .geometry
+                .entries
+                .get(&digest)
+                .is_some_and(|entry| entry.key == key)
+                || !self.path_visible(outline.bounds(), raster)
+            {
+                continue;
+            }
+            jobs.entry(key)
+                .or_insert((digest, outline, placement.raster, tolerance));
+        }
+        // One path has no independent peer: its existing lazy builder avoids
+        // dispatch and temporary result storage.
+        if jobs.len() < 2 {
+            return;
+        }
+        let surface = (f64::from(self.width), f64::from(self.height));
+        let prepared = pool.install(|| prepare_geometry_batch(jobs, surface));
+        storage.geometry.entries.extend(prepared);
+    }
+
     /// Consecutive leaves share provenance; their operation indices follow
     /// from the run's first index instead of being copied into every record.
     fn command_run(
@@ -4508,11 +4636,19 @@ impl<'a> Lowering<'a> {
         (layer, range): (LayerId, Range<usize>),
         glyphs: &GlyphContext<'_>,
     ) -> Result<(usize, bool), RenderError> {
+        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+        let mut prepared = false;
+        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+        {
+            self.geometry_miss = false;
+        }
         let first_command = self.frame.commands.len();
         let first_instance = self.frame.instances.len();
         let mut i = range.start;
         let mut changed = false;
-        for (op, cache) in ops[range.clone()].iter().zip(&mut emissions[range.clone()]) {
+        while i < range.end {
+            let op = &ops[i];
+            let cache = &mut emissions[i];
             if matches!(
                 op,
                 Op::BeginClip { .. } | Op::BeginIsolate { .. } | Op::BeginShadow { .. } | Op::End
@@ -4521,6 +4657,17 @@ impl<'a> Lowering<'a> {
             }
             changed |= self.leaf((i, op), ops.get(i + 1), cache, storage, glyphs, source)?;
             i += 1;
+            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+            if !prepared && self.geometry_miss {
+                self.prepare_paths(
+                    source,
+                    &ops[i..range.end],
+                    &emissions[i..range.end],
+                    storage,
+                    glyphs,
+                );
+                prepared = true;
+            }
         }
         self.frame
             .command_sources
@@ -4594,17 +4741,17 @@ impl<'a> Lowering<'a> {
             (replaced, emission.revision)
         } else {
             // An unchanged retained emission has already passed visibility testing.
-            if let Op::Glyphs { local, bounds, .. } = op {
-                // Coverage cells carry a one-pixel apron and integer rounding can
-                // extend another pixel beyond the outline. Cull against this
-                // target, including the enlarged target of a silhouette capture.
-                let placed = (self.transform * *local).transform_rect_bbox(*bounds);
+            let visibility = match op {
+                Op::Glyphs { local, bounds, .. } => Some((*local, *bounds)),
+                _ => None,
+            };
+            if let Some((local, bounds)) = visibility {
+                // Include the atlas apron and integer rounding. The active
+                // target includes filter/silhouette capture expansion.
+                let placed = (self.transform * local).transform_rect_bbox(bounds);
                 let visible = Rect::new(0.0, 0.0, f64::from(self.width), f64::from(self.height));
                 if placed.inflate(2.0, 2.0).intersect(visible).is_zero_area() {
-                    // Offscreen emissions must not pin their old atlas shelves.
-                    // The existing storage compaction reclaims their ranges.
                     *cache = Realization::default();
-                    // Keep operation indices stable within this command run.
                     self.frame.commands.push(super::damage::Command {
                         instances_end: self.frame.instances.len(),
                         revision: self.frame.revision,
@@ -4627,6 +4774,18 @@ impl<'a> Lowering<'a> {
             revision,
         });
         Ok(changed)
+    }
+
+    fn path_visible(&self, bounds: Rect, raster: Affine) -> bool {
+        let placed = raster.transform_rect_bbox(bounds).inflate(2.0, 2.0);
+        !placed
+            .intersect(Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.width),
+                f64::from(self.height),
+            ))
+            .is_zero_area()
     }
 
     /// The automatic route's predicate (decisions R1 and R2): a path
@@ -4680,6 +4839,9 @@ impl<'a> Lowering<'a> {
             .get(&index)
             .is_none_or(|entry| entry.content != content || entry.linear != linear_bits)
         {
+            if !self.path_visible(outline.bounds(), raster) {
+                return Ok(true);
+            }
             let surface = (f64::from(self.width), f64::from(self.height));
             let linear_affine = Affine::new([linear[0], linear[1], linear[2], linear[3], 0.0, 0.0]);
             let prepared = match outline {
@@ -5178,7 +5340,10 @@ impl<'a> Lowering<'a> {
                     OutlineRef::Fill { elements, content } => self.path(
                         content,
                         *rule,
-                        || BezPath::from_vec(elements.to_vec()),
+                        (
+                            || BezPath::from_vec(elements.to_vec()),
+                            || OutlineRef::Fill { elements, content }.bounds(),
+                        ),
                         paint,
                         glyphs,
                         geometry,
@@ -5196,7 +5361,7 @@ impl<'a> Lowering<'a> {
                         self.path(
                             outline.content(tolerance),
                             *rule,
-                            || outline.build(tolerance),
+                            (|| outline.build(tolerance), || outline.bounds()),
                             paint,
                             glyphs,
                             geometry,
@@ -5573,7 +5738,7 @@ impl<'a> Lowering<'a> {
         &mut self,
         content: u64,
         rule: FillRule,
-        make: impl FnOnce() -> BezPath,
+        (make, bounds): (impl FnOnce() -> BezPath, impl FnOnce() -> Rect),
         paint: &ResolvedPaint,
         glyphs: &GlyphContext<'_>,
         geometry: &mut GeometryCache,
@@ -5614,9 +5779,8 @@ impl<'a> Lowering<'a> {
         if let Some(emit) = hit {
             // A hit needs no `GeometryKey`: the stored digest the
             // miss recorded marks ownership the same way.
-            let geometry = emit.geometry;
             self.replay(emit, None, pl.offset, paint, shader_data.as_ref());
-            return Ok(geometry);
+            return Ok(emit.geometry);
         }
         if let Some(&pending) = self
             .pending_paths
@@ -5635,9 +5799,19 @@ impl<'a> Lowering<'a> {
             let key = GeometryKey::new(content, rule, pl.raster);
             let digest = key.digest();
             let entry = geometry.entry(digest, key, || {
+                if !self.path_visible(bounds(), self.transform) {
+                    return None;
+                }
+                #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+                {
+                    self.geometry_miss = true;
+                }
                 let local = shader_path.unwrap_or_else(|| make.take().expect("path factory")());
-                RetainedGeometry::new(local, pl.raster, rule)
+                Some(RetainedGeometry::new(local, pl.raster, rule))
             });
+            let Some(entry) = entry else {
+                return Ok(None);
+            };
             let (to_device, device_bbox) = entry.placed(Vec2::new(e, f));
             let Some(grid @ (x0, y0, ..)) =
                 path::grid(device_bbox, (f64::from(self.width), f64::from(self.height)))
@@ -7124,9 +7298,9 @@ mod tests {
             let mut retained = ContentData::new(cherenkov::Picture::record(|_| {}));
             let mut previous_geometry = None;
             let mut previous_draw = std::ptr::null();
-            if has_compute && large {
-                // A culled GPU candidate must not outline/rasterize on the CPU,
-                // and its empty retained emission must not hide it after a move.
+            {
+                // Offscreen paths prepare neither CPU nor GPU geometry, and
+                // become visible normally when moved back into the target.
                 let mut frame = Frame::default();
                 let mut anchors = AnchorScratch::default();
                 let mut raster = path::EmitScratch::new();
@@ -7135,7 +7309,7 @@ mod tests {
                     (128, 128),
                     &mut anchors,
                     &mut raster,
-                    Some(test_limit()),
+                    has_compute.then(test_limit),
                 );
                 lowering.begin_pass(Target::Part(0), None);
                 lowering.transform = Affine::translate((1000.25, 1000.25));
@@ -7152,7 +7326,16 @@ mod tests {
                 assert_eq!(lowering.paths_rasterized(), 0);
                 assert!(lowering.pending.is_empty());
                 assert!(lowering.frame.instances.is_empty());
-                assert!(cache.data.as_ref().unwrap().geometry.is_none());
+                assert!(
+                    cache
+                        .data
+                        .as_ref()
+                        .expect("empty emission retained")
+                        .geometry
+                        .is_none()
+                );
+                assert!(retained.storage.geometry.entries.is_empty());
+                assert!(retained.storage.gpu_paths.is_empty());
             }
 
             let templates_before = retained.storage.templates.len();

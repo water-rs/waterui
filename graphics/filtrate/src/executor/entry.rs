@@ -64,7 +64,7 @@ pub(super) fn pass_module(
     let segment = module
         .functions
         .iter()
-        .find(|(_, function)| function.name.as_deref() == Some(pass.segment.function.as_str()))
+        .find(|(_, function)| function.name.as_deref() == Some(pass.segment.function()))
         .map(|(handle, _)| handle)
         .expect("the composition defines every segment it describes");
     let argument_types: Vec<Handle<Type>> = module.functions[segment]
@@ -114,7 +114,7 @@ pub(super) fn pass_module(
     };
     let arguments = pass
         .segment
-        .args
+        .args()
         .iter()
         .zip(&argument_types)
         .map(|(&arg, &ty)| inputs.argument(arg, ty))

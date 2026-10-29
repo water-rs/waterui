@@ -1370,6 +1370,45 @@ pub mod menus {
         pub separator: bool,
     }
 
+    impl MenuRow {
+        /// The row's title.
+        #[must_use]
+        pub const fn title(&self) -> &str {
+            self.title.as_str()
+        }
+
+        /// Its key equivalent — `""` for none.
+        #[must_use]
+        pub const fn key_equivalent(&self) -> &str {
+            self.key_equivalent.as_str()
+        }
+
+        /// The modifiers its key equivalent takes.
+        #[must_use]
+        pub const fn modifiers(&self) -> NSEventModifierFlags {
+            self.modifiers
+        }
+
+        /// The name of the selector the row sends, when it sends one —
+        /// `performClose:` on the standard Close item.
+        #[must_use]
+        pub fn action(&self) -> Option<&str> {
+            self.action.as_deref()
+        }
+
+        /// Whether the row reports enabled after a validation pass.
+        #[must_use]
+        pub const fn enabled(&self) -> bool {
+            self.enabled
+        }
+
+        /// Whether the row is a separator.
+        #[must_use]
+        pub const fn separator(&self) -> bool {
+            self.separator
+        }
+    }
+
     /// The Window menu's rows in the standard bar `menus::install` builds.
     ///
     /// Installs that bar — the default menus plus nothing declared, with
