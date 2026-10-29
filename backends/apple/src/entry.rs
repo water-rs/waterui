@@ -303,9 +303,13 @@ mod imp {
         // Scenes may connect before the asynchronous preparation finishes:
         // `connect` builds the platform window eagerly and the declaration
         // fills it when `prepared` lands.
+        let disconnected = Rc::clone(&scene_state);
         let handlers = ApplicationHandlers::new(move |scene| {
             crate::windows::connect(&scene_state, scene, Rc::clone(&theme), mtm)
         })
+        // Releases the scene's host, leaf and keep-alive, as the embedding
+        // path's `waterui_apple_scene_disconnect` does.
+        .scene_did_disconnect(move |id| disconnected.disconnect(id))
         .build_menus(build_menus)
         .did_finish_launching(move |_| {
             let env_ptr = launch.env;
