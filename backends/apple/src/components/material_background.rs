@@ -6,7 +6,8 @@
 //! mounted child — holding the platform's effect view (`UIVisualEffectView`
 //! with a `UIBlurEffect` on `UIKit`, `NSVisualEffectView` on `AppKit`) plus
 //! the content. On `AppKit` the content is a subview of the effect view, so
-//! text in a system label color draws vibrant; on `UIKit` both are direct
+//! text in a system label color draws vibrant, and a thick material follows
+//! the Reduce Transparency setting live; on `UIKit` both are direct
 //! subviews of the container. Each layout pass centers the effect and
 //! the content over the content's negotiated size: a width-constrained
 //! content keeps its narrower material column while the wrapper may be
@@ -92,7 +93,13 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let host = HostView::new(mtm, Rect::ZERO);
         let host_view: &PlatformView = &host;
 
-        let blur = material::material_view(mtm, level(metadata.value.0));
+        let material = material::material_view(mtm, level(metadata.value.0));
+        let blur = view::retain_base(material.view());
+
+        // The thick material's flat fill follows the system's Reduce
+        // Transparency setting live; the guard lives with the leaf.
+        #[cfg(target_os = "macos")]
+        let reduce_transparency = material.follow_system_reduce_transparency(mtm);
 
         // `wantsLayer = true`: `NSVisualEffectView` expects a layer-backed
         // host on `AppKit`.
@@ -189,6 +196,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
             },
         );
         leaf.keep(sink_guard);
+        #[cfg(target_os = "macos")]
+        leaf.keep(reduce_transparency);
         leaf.keep(state);
         leaf
     });

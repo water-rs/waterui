@@ -66,6 +66,17 @@ const fn under_material(material: Material, theme: WorkingColor) -> WorkingColor
     theme
 }
 
+/// A window material's installed effect.
+struct Installed {
+    /// The material it realizes.
+    material: Material,
+    /// The effect view.
+    effect: material::MaterialView,
+    /// Keeps the effect's Reduce Transparency fill following the system.
+    #[cfg(target_os = "macos")]
+    _reduce_transparency: cocoa_ui::notification::NotificationObserver,
+}
+
 /// The effect view a material background fills `container` with.
 struct EffectView {
     /// The view the effect fills, behind its content.
@@ -75,7 +86,7 @@ struct EffectView {
     #[cfg(target_os = "macos")]
     content: Retained<PlatformView>,
     /// The installed effect and the material it realizes.
-    installed: RefCell<Option<(Material, Retained<PlatformView>)>>,
+    installed: RefCell<Option<Installed>>,
     mtm: MainThreadMarker,
 }
 
@@ -85,24 +96,32 @@ impl EffectView {
     /// `AppKit` the content moves into the effect view and back out.
     fn show(&self, material: Option<Material>) {
         let mut installed = self.installed.borrow_mut();
-        if installed.as_ref().map(|(shown, _)| *shown) == material {
+        if installed.as_ref().map(|shown| shown.material) == material {
             return;
         }
         let previous = installed.take();
         if let Some(material) = material {
             let effect = material::material_view(self.mtm, level(material));
-            view::set_frame(&effect, view::bounds(&self.container));
-            view::set_autoresizing_flexible_size(&effect);
-            view::add_subview_at_bottom(&self.container, &effect);
+            let host = effect.view();
+            view::set_frame(host, view::bounds(&self.container));
+            view::set_autoresizing_flexible_size(host);
+            view::add_subview_at_bottom(&self.container, host);
+            // Above the effect's Reduce Transparency fill, which was added
+            // when the effect was created.
             #[cfg(target_os = "macos")]
-            view::add_subview(&effect, &self.content);
-            *installed = Some((material, effect));
+            view::add_subview(host, &self.content);
+            *installed = Some(Installed {
+                material,
+                #[cfg(target_os = "macos")]
+                _reduce_transparency: effect.follow_system_reduce_transparency(self.mtm),
+                effect,
+            });
         } else {
             #[cfg(target_os = "macos")]
             view::add_subview_at_bottom(&self.container, &self.content);
         }
-        if let Some((_, effect)) = previous {
-            view::remove_from_superview(&effect);
+        if let Some(previous) = previous {
+            view::remove_from_superview(previous.effect.view());
         }
     }
 }

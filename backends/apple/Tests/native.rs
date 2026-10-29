@@ -281,6 +281,8 @@ fn trials() -> Vec<Trial> {
                 },
             ),
         ]);
+        #[cfg(target_os = "macos")]
+        tests.extend(material_reduce_transparency::trials());
         tests.extend(list_ax::trials());
         tests.extend(gesture_ax::trials());
         tests.extend(a11y_extent::trials());
@@ -2932,6 +2934,165 @@ mod material_vibrancy {
             !label_valued.isEqual(Some(label_color.as_ref()))
                 && !label_valued.isEqual(Some(secondary.as_ref())),
             "an explicit color equal in value to the light-mode label color is not a system label color"
+        );
+    }
+}
+
+/// A thick material under Reduce Transparency on `AppKit` paints
+/// `SwiftUI`'s flat colour, in both appearances, and `Menu`'s own flat colour
+/// otherwise (#3622), as a view-level and as a window-level material. The
+/// setting is an input of the effect host, since a test cannot flip the
+/// system's.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+mod material_reduce_transparency {
+    use cocoa_ui::ColorScheme;
+    use cocoa_ui::appkit::colors::resolve_native;
+    use cocoa_ui::material::{
+        MaterialLevel, MaterialView, material_view_with, system_reduce_transparency,
+    };
+    use cocoa_ui::objc2_app_kit::{NSBox, NSVisualEffectMaterial, NSVisualEffectView};
+    use cocoa_ui::{PlatformView, Retained, view};
+    use waterui::ViewExt as _;
+    use waterui::background::Material;
+    use waterui::layout::stack::vstack;
+    use waterui::prelude::text;
+    use waterui::reactive::{SignalExt as _, binding};
+    use waterui::window::ResolvedWindowBackground;
+    use waterui_apple::native_test_support::{
+        bind_window_background, refresh_theme, window_environment,
+    };
+    use waterui_backend_core::AnyView;
+
+    use super::{HostView, mtm};
+
+    /// The effect view's own material and the flat fill inside it, if any.
+    fn parts(effect: &PlatformView) -> (NSVisualEffectMaterial, Option<Retained<NSBox>>) {
+        let native = effect
+            .downcast_ref::<NSVisualEffectView>()
+            .expect("a material is an NSVisualEffectView");
+        let fill = view::subviews(effect)
+            .into_iter()
+            .find_map(|sub| sub.downcast::<NSBox>().ok());
+        (native.material(), fill)
+    }
+
+    /// The grey `fill` draws under `scheme`.
+    fn painted(fill: &NSBox, scheme: ColorScheme) -> f64 {
+        let rgba = resolve_native(&fill.fillColor(), scheme).expect("the fill resolves in sRGB");
+        assert!(
+            (rgba.red - rgba.green).abs() < 1e-6 && (rgba.green - rgba.blue).abs() < 1e-6,
+            "the fill is a grey"
+        );
+        rgba.red
+    }
+
+    fn assert_swiftui_greys(fill: &NSBox) {
+        let light = painted(fill, ColorScheme::Light);
+        let dark = painted(fill, ColorScheme::Dark);
+        assert!(
+            (light - 0.9412).abs() < 0.0005,
+            "light appearance paints SwiftUI's 0.9412, not {light}"
+        );
+        assert!(
+            (dark - 0.1961).abs() < 0.0005,
+            "dark appearance paints 0.1961, not {dark}"
+        );
+    }
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "material_reduce_transparency::a_thick_material_paints_the_swiftui_colour_under_reduce_transparency",
+                || {
+                    a_thick_material_paints_the_swiftui_colour_under_reduce_transparency();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "material_reduce_transparency::a_window_thick_material_carries_the_fill_below_its_content",
+                || {
+                    a_window_thick_material_carries_the_fill_below_its_content();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn a_thick_material_paints_the_swiftui_colour_under_reduce_transparency() {
+        let reduced = material_view_with(mtm(), MaterialLevel::Thick, true);
+        let (material, fill) = parts(reduced.view());
+        assert_eq!(
+            material,
+            NSVisualEffectMaterial::Menu,
+            "the effect view keeps its material"
+        );
+        let fill = fill.expect("a thick material carries the flat fill");
+        assert!(!fill.isHidden(), "the fill shows under Reduce Transparency");
+        assert_swiftui_greys(&fill);
+
+        let clear: MaterialView = material_view_with(mtm(), MaterialLevel::Thick, false);
+        let (material, fill) = parts(clear.view());
+        assert_eq!(material, NSVisualEffectMaterial::Menu);
+        assert!(
+            fill.expect("a thick material carries the flat fill")
+                .isHidden(),
+            "with transparency the Menu material paints alone"
+        );
+
+        // The setting switches live.
+        clear.set_reduce_transparency(true);
+        assert!(!parts(clear.view()).1.expect("the fill").isHidden());
+        clear.set_reduce_transparency(false);
+        assert!(parts(clear.view()).1.expect("the fill").isHidden());
+
+        // Other thicknesses are untouched.
+        let regular = material_view_with(mtm(), MaterialLevel::Regular, true);
+        assert!(
+            parts(regular.view()).1.is_none(),
+            "only Thick carries the fill"
+        );
+    }
+
+    /// The window-level material installs the same fill, below the window's
+    /// content, hidden exactly when the system setting is off.
+    fn a_window_thick_material_carries_the_fill_below_its_content() {
+        let mtm = mtm();
+        let (env, theme) = window_environment(mtm);
+        refresh_theme(&theme, ColorScheme::Light);
+        let container = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 300.0, 200.0));
+        let leaf = waterui_apple::dispatch::render(
+            AnyView::new(vstack((text("default"),)).padding()),
+            &env,
+        );
+        container.add_subview(leaf.view());
+        let leaf_view = view::retain_base(leaf.view());
+        let background = binding(ResolvedWindowBackground::Material(Material::Thick));
+        let (_keepalive, _painted) =
+            bind_window_background(&container, &leaf_view, &background.computed(), &env, mtm);
+
+        let effect = view::subviews(&container)
+            .into_iter()
+            .find(|sub| sub.downcast_ref::<NSVisualEffectView>().is_some())
+            .expect("the material installs an effect view");
+        let (material, fill) = parts(&effect);
+        assert_eq!(material, NSVisualEffectMaterial::Menu);
+        let fill = fill.expect("a thick window material carries the flat fill");
+        assert_eq!(
+            fill.isHidden(),
+            !system_reduce_transparency(),
+            "the fill follows the system setting"
+        );
+        assert_swiftui_greys(&fill);
+        let order = view::subviews(&effect);
+        let position = |wanted: &PlatformView| {
+            order
+                .iter()
+                .position(|sub| **sub == *wanted)
+                .expect("the view is a subview of the effect")
+        };
+        assert!(
+            position(&fill) < position(&leaf_view),
+            "the window's content lies above the fill"
         );
     }
 }

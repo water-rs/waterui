@@ -86,7 +86,26 @@ pub fn observe(
     name: &NotificationName,
     handler: impl Fn() + 'static,
 ) -> NotificationObserver {
-    observe_impl(mtm, name, None, move |_| handler())
+    observe_impl(
+        mtm,
+        name,
+        None,
+        NSNotificationCenter::defaultCenter(),
+        move |_| handler(),
+    )
+}
+
+/// Like [`observe`], but on the shared workspace's notification center, where
+/// `NSWorkspace` posts its notifications (accessibility display options
+/// among them).
+#[cfg(target_os = "macos")]
+pub fn observe_workspace(
+    mtm: MainThreadMarker,
+    name: &NotificationName,
+    handler: impl Fn() + 'static,
+) -> NotificationObserver {
+    let center = objc2_app_kit::NSWorkspace::sharedWorkspace().notificationCenter();
+    observe_impl(mtm, name, None, center, move |_| handler())
 }
 
 /// Like [`observe`], but only for notifications whose object is `object` —
@@ -97,7 +116,13 @@ pub fn observe_object(
     object: &AnyObject,
     handler: impl Fn() + 'static,
 ) -> NotificationObserver {
-    observe_impl(mtm, name, Some(object), move |_| handler())
+    observe_impl(
+        mtm,
+        name,
+        Some(object),
+        NSNotificationCenter::defaultCenter(),
+        move |_| handler(),
+    )
 }
 
 /// Like [`observe`], but the handler receives the posted notification —
@@ -108,7 +133,13 @@ pub fn observe_with_notification(
     name: &NotificationName,
     handler: impl Fn(&NSNotification) + 'static,
 ) -> NotificationObserver {
-    observe_impl(mtm, name, None, handler)
+    observe_impl(
+        mtm,
+        name,
+        None,
+        NSNotificationCenter::defaultCenter(),
+        handler,
+    )
 }
 
 /// The registration [`observe`], [`observe_object`] and
@@ -117,6 +148,7 @@ fn observe_impl(
     mtm: MainThreadMarker,
     name: &NotificationName,
     object: Option<&AnyObject>,
+    center: Retained<NSNotificationCenter>,
     handler: impl Fn(&NSNotification) + 'static,
 ) -> NotificationObserver {
     // The center may release the block on the thread that posted the last
@@ -132,7 +164,6 @@ fn observe_impl(
             (handler.get(mtm))(unsafe { notification.as_ref() });
         });
     });
-    let center = NSNotificationCenter::defaultCenter();
     let queue = NSOperationQueue::mainQueue();
     // SAFETY: see the module safety note.
     let token = unsafe {
