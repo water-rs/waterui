@@ -4648,6 +4648,21 @@ impl<'a> Lowering<'a> {
         let mut changed = false;
         while i < range.end {
             let op = &ops[i];
+            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+            if !prepared
+                && !emissions[i].valid
+                && matches!(op, Op::Path { .. })
+                && storage.geometry.entries.is_empty()
+            {
+                self.prepare_paths(
+                    source,
+                    &ops[i..range.end],
+                    &emissions[i..range.end],
+                    storage,
+                    glyphs,
+                );
+                prepared = true;
+            }
             let cache = &mut emissions[i];
             if matches!(
                 op,
