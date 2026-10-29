@@ -57,6 +57,19 @@ fn stack_leaf(stack: NavigationStack<(), ()>, ctx: &RenderContext<'_>) -> Native
     leaf
 }
 
+/// What roots a split column's `UINavigationController`: always a
+/// `NavigationView`, either already built or still to be resolved from a
+/// selected destination. A plain view (the empty-selection placeholder)
+/// cannot be expressed, so it can never reach [`resolve_navigation_root`].
+#[cfg(target_os = "ios")]
+pub(super) enum ColumnRoot {
+    /// A navigation page the caller built.
+    Resolved(Box<waterui::navigation::NavigationView>),
+    /// A selected destination, resolved once the column's controller is
+    /// installed in its environment.
+    Destination(waterui_backend_core::AnyView),
+}
+
 /// The split-column leaf: `content` renders as the root page of a fresh
 /// [`platform::Stack`], and the returned `UINavigationController` is the
 /// column's `viewController`. A collapsed split then pushes the page onto
@@ -65,7 +78,7 @@ fn stack_leaf(stack: NavigationStack<(), ()>, ctx: &RenderContext<'_>) -> Native
 /// toolbar items — applies instead of drawing in-content.
 #[cfg(target_os = "ios")]
 pub(super) fn column_leaf(
-    content: waterui_backend_core::AnyView,
+    content: ColumnRoot,
     ctx: &RenderContext<'_>,
 ) -> (
     NativeLeaf,
@@ -79,7 +92,10 @@ pub(super) fn column_leaf(
     });
     env.insert(controller);
     driver.prepare(ctx, env.clone());
-    let root = resolve_navigation_root(content, &env);
+    let root = match content {
+        ColumnRoot::Resolved(root) => *root,
+        ColumnRoot::Destination(destination) => resolve_navigation_root(destination, &env),
+    };
     let mut leaf = driver.build(root);
     let nav = driver.nav();
     leaf.keep(driver);
