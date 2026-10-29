@@ -503,6 +503,8 @@ pub struct Cherenkov {
     info: EngineInfo,
     engine: CpuEngine<Raster>,
     surface: Option<Surface<Raster>>,
+    streamed: Option<std::sync::mpsc::Receiver<(u32, Vec<[f32; 4]>)>>,
+    stream_size: (u32, u32),
     /// Registered fonts per `(blob hash, face index)`.
     fonts: HashMap<(ResourceHash, u32), cherenkov::Font>,
     images: HashMap<(ResourceHash, ImageEncoding), cherenkov::ImageId>,
@@ -1371,6 +1373,8 @@ impl Cherenkov {
             },
             engine,
             surface: None,
+            streamed: None,
+            stream_size: (0, 0),
             fonts: HashMap::new(),
             images: HashMap::new(),
             image_handles: Vec::new(),
@@ -1427,13 +1431,28 @@ impl Engine for Cherenkov {
             }
             None => Self::readback_format(),
         };
-        let surface = self
-            .engine
-            .surface(
-                Offscreen::new((input.scene.width, input.scene.height), format),
+        self.stream_size = (input.scene.width, input.scene.height);
+        let surface = if std::env::var_os("CHERENKOV_VERIFY_BANDS").is_some() {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            self.streamed = Some(receiver);
+            self.engine.surface(
+                cherenkov_cpu::Bands::new(self.stream_size, format, move |band| {
+                    let pixels = match band.pixels {
+                        cherenkov_cpu::BandPixels::F32(pixels) => pixels.to_vec(),
+                        cherenkov_cpu::BandPixels::F16(pixels) => {
+                            pixels.iter().map(|p| p.map(|v| v.to_f32())).collect()
+                        }
+                    };
+                    sender.send((band.y, pixels)).expect("diagnostic receiver");
+                }),
                 || {},
             )
-            .map_err(|e| BenchError::Gpu(format!("cherenkov surface: {e}")))?;
+        } else {
+            self.streamed = None;
+            self.engine
+                .surface(Offscreen::new(self.stream_size, format), || {})
+        }
+        .map_err(|e| BenchError::Gpu(format!("cherenkov surface: {e}")))?;
         surface.clear_color(working(&input.scene.clear));
         register_fonts(
             &mut self.fonts,
@@ -1595,12 +1614,26 @@ impl Engine for Cherenkov {
         self.completed.record(rendered);
         let readback_at = std::time::Instant::now();
         let image = if readback {
-            let rb = self
-                .surface
-                .as_ref()
-                .expect("checked above")
-                .readback()
-                .map_err(render_error)?;
+            let rb = if let Some(receiver) = &self.streamed {
+                let (width, height) = self.stream_size;
+                let mut pixels = Vec::with_capacity(width as usize * height as usize);
+                for (y, band) in receiver.try_iter() {
+                    assert_eq!(y as usize, pixels.len() / width as usize);
+                    pixels.extend(band);
+                }
+                assert_eq!(pixels.len(), width as usize * height as usize);
+                cherenkov::Readback {
+                    width,
+                    height,
+                    pixels,
+                }
+            } else {
+                self.surface
+                    .as_ref()
+                    .expect("checked above")
+                    .readback()
+                    .map_err(render_error)?
+            };
             let pixels = match self.present {
                 // sRGB presentation: the framebuffer goes through the
                 // backend's present path into encoded premultiplied
