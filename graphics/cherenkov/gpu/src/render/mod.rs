@@ -7418,6 +7418,7 @@ impl GpuRenderer {
     // `never` so Callgrind can attribute the commit path's inclusive
     // cost — the one-per-frame call boundary is free evidence (#119).
     #[inline(never)]
+    #[expect(clippy::too_many_lines, reason = "temporary stage attribution")]
     fn commit_rasters(
         &mut self,
         pending: &mut [SurfaceState],
@@ -7425,6 +7426,7 @@ impl GpuRenderer {
     ) {
         // The frame's GPU coverage context restarts with its lowers
         // (issue #2543).
+        let diagnostic_commit_start = Instant::now();
         self.gpu_cov.begin_frame();
         let rasters: Vec<&glyph::PendingRaster> = results
             .iter()
@@ -7449,6 +7451,9 @@ impl GpuRenderer {
         // no eviction, so no emission scan and no touch decoding runs —
         // the commit's work scales with what changed, not what stays
         // retained (#119).
+        let diagnostic_collect_ms = diagnostic_commit_start.elapsed().as_secs_f64() * 1e3;
+        let diagnostic_plan_start = Instant::now();
+        let mut diagnostic_pins_ms = 0.0;
         let mut touches_len = 0usize;
         // `plan` also decides whether a paged atlas may release pages
         // (#211), so only a single-page atlas takes the strict path.
@@ -7458,7 +7463,9 @@ impl GpuRenderer {
         } else {
             let mut touches = std::mem::take(&mut self.commit_touches);
             touches.clear();
+            let diagnostic_pins_start = Instant::now();
             touches_len = self.replay_pins(pending, results, &mut touches);
+            diagnostic_pins_ms = diagnostic_pins_start.elapsed().as_secs_f64() * 1e3;
             self.atlas.begin_commit(&touches);
             touches.clear();
             self.commit_touches = touches;
@@ -7466,6 +7473,19 @@ impl GpuRenderer {
                 glyph::AtlasPlan::Fits | glyph::AtlasPlan::FitsEviction => "fits-eviction",
                 glyph::AtlasPlan::Resize(size, pages) => {
                     if !self.repack_atlas(size, pages, pending, results) {
+                        tracing::debug!(
+                            collect_ms = diagnostic_collect_ms,
+                            pins_ms = diagnostic_pins_ms,
+                            plan_ms = diagnostic_plan_start
+                                .elapsed()
+                                .as_secs_f64()
+                                .mul_add(1e3, -diagnostic_pins_ms),
+                            total_ms = diagnostic_commit_start.elapsed().as_secs_f64() * 1e3,
+                            pages = self.atlas.pages(),
+                            pending_cells = n_cells,
+                            touches = touches_len,
+                            "atlas commit repack failed"
+                        );
                         return;
                     }
                     "relocated"
@@ -7486,6 +7506,11 @@ impl GpuRenderer {
         // The upload consumes its batch and returns the emptied
         // container, so `commit_writes` always comes back empty and the
         // next commit refills the same lists (#2671).
+        let diagnostic_plan_ms = diagnostic_plan_start
+            .elapsed()
+            .as_secs_f64()
+            .mul_add(1e3, -diagnostic_pins_ms);
+        let diagnostic_apply_start = Instant::now();
         let mut writes = std::mem::take(&mut self.commit_writes);
         let mut failed = None;
         for (i, (surf, result)) in pending.iter_mut().zip(results.iter_mut()).enumerate() {
@@ -7517,6 +7542,8 @@ impl GpuRenderer {
             Self::discard_unapplied(&mut pending[i..], &mut results[i..]);
         }
         let evicted = self.atlas.take_evicted();
+        let diagnostic_apply_ms = diagnostic_apply_start.elapsed().as_secs_f64() * 1e3;
+        let diagnostic_retire_start = Instant::now();
         tracing::debug!(
             evictions = evicted.len(),
             evicted_bytes = evicted.iter().map(|e| e.0).sum::<u64>(),
@@ -7538,9 +7565,27 @@ impl GpuRenderer {
                 },
             );
         }
+        let diagnostic_retire_ms = diagnostic_retire_start.elapsed().as_secs_f64() * 1e3;
+        let diagnostic_upload_start = Instant::now();
         self.commit_writes = self
             .atlas
             .upload_committed(&self.device, &self.queue, writes);
+        let diagnostic_upload_ms = diagnostic_upload_start.elapsed().as_secs_f64() * 1e3;
+        let diagnostic_total_ms = diagnostic_commit_start.elapsed().as_secs_f64() * 1e3;
+        tracing::debug!(
+            collect_ms = diagnostic_collect_ms,
+            pins_ms = diagnostic_pins_ms,
+            plan_ms = diagnostic_plan_ms,
+            apply_ms = diagnostic_apply_ms,
+            retire_ms = diagnostic_retire_ms,
+            upload_ms = diagnostic_upload_ms,
+            total_ms = diagnostic_total_ms,
+            pages = self.atlas.pages(),
+            pending_cells = n_cells,
+            touches = touches_len,
+            plan = plan_dbg,
+            "atlas commit stage timings"
+        );
     }
 
     /// `AtlasPlan::Resize`'s cold path: repacks surviving coverage into
