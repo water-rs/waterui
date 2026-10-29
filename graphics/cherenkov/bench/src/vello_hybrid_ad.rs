@@ -44,6 +44,8 @@ pub struct VelloHybrid {
     /// Fonts whose runs draw bitmap glyphs, from [`bitmap_glyph_fonts`].
     bitmap_fonts: BitmapFonts,
     counters: Counters,
+    /// Whether a submitted frame awaits [`Engine::completion`].
+    awaiting_completion: bool,
 }
 
 /// The GPU and renderer state do not format.
@@ -91,6 +93,7 @@ impl VelloHybrid {
             lowered: None,
             bitmap_fonts: BitmapFonts::new(),
             counters: Counters::default(),
+            awaiting_completion: false,
         })
     }
 }
@@ -479,6 +482,7 @@ impl Engine for VelloHybrid {
         } else {
             None
         };
+        self.awaiting_completion = true;
         Ok(Submit {
             image,
             gpu: Vec::new(),
@@ -488,6 +492,24 @@ impl Engine for VelloHybrid {
             render_seconds: Some(render_seconds),
             readback_seconds: readback_flag.then(|| readback_at.elapsed().as_secs_f64()),
         })
+    }
+
+    fn completion_signal(&self) -> crate::CompletionSignal {
+        crate::CompletionSignal::Measured(crate::Completion::WGPU_SIGNAL)
+    }
+
+    fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+        if !std::mem::take(&mut self.awaiting_completion) {
+            return Err(BenchError::Engine(format!(
+                "{}: completion requested without a submitted frame",
+                Self::NAME
+            )));
+        }
+        // Nothing has been submitted on this queue since the frame's submit
+        // returned, so its latest submission is the frame's.
+        Ok(Some(crate::Completion::on_submitted_work_done(
+            &self.gpu.queue,
+        )))
     }
 
     fn gpu_timing_unavailable(&self) -> Option<&'static str> {

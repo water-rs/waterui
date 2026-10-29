@@ -21,6 +21,10 @@
 //! the adapter's reason in the measurement report. Skia Graphite Metal,
 //! Ganesh Vulkan and Vello hybrid lack usable GPU timing in the pinned versions.
 //! The Cherenkov GPU adapter collects timestamps from completed submissions.
+//!
+//! A frame's completion instant comes from each adapter's own backend signal
+//! ([`Engine::completion_signal`]); the measured pipelined frame time is the
+//! interval between consecutive completions, never derived from stage times.
 #![expect(
     clippy::exhaustive_enums,
     clippy::exhaustive_structs,
@@ -255,6 +259,138 @@ impl GpuSample {
     }
 }
 
+/// Resolves an in-flight [`Completion`] once all submitted work is done.
+pub type ResolveCompletion = Box<dyn FnOnce() -> Result<std::time::Instant, BenchError>>;
+
+/// When one submitted frame's rendering completed, on the host's monotonic
+/// clock ([`std::time::Instant`]), as the adapter's backend signals it.
+pub enum Completion {
+    /// Rendering finished at this instant, already known when
+    /// [`Engine::completion`] runs: the end of a CPU engine's raster work
+    /// or the return of a completion wait the adapter performs inside
+    /// submission.
+    Finished(std::time::Instant),
+    /// Rendering is still in flight. The frame loop calls the resolver only
+    /// after it has waited for all submitted work; it returns the instant
+    /// the backend's signal recorded, or an error when the signal never
+    /// arrived.
+    InFlight(ResolveCompletion),
+}
+
+impl std::fmt::Debug for Completion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Finished(at) => f.debug_tuple("Finished").field(at).finish(),
+            Self::InFlight(_) => f.write_str("InFlight"),
+        }
+    }
+}
+
+impl Completion {
+    /// A completion a backend callback reports, for backends that run the
+    /// callback synchronously inside the drain (wgpu's device poll): by the
+    /// time the frame loop resolves it the callback has run, or never will.
+    #[must_use]
+    pub fn callback() -> (std::sync::mpsc::SyncSender<std::time::Instant>, Self) {
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let resolve = move || {
+            receive.try_recv().map_err(|_| {
+                BenchError::Engine(
+                    "the completion callback had not run after the GPU drained".into(),
+                )
+            })
+        };
+        (send, Self::InFlight(Box::new(resolve)))
+    }
+
+    /// A completion a backend reports from its own thread some time after
+    /// the GPU finished (Metal's completed handlers): resolving waits for
+    /// that callback, which the backend runs for every committed command
+    /// buffer, and fails if it is dropped without running.
+    #[cfg(all(feature = "skia-metal", target_vendor = "apple"))]
+    #[must_use]
+    pub fn deferred_callback() -> (std::sync::mpsc::SyncSender<std::time::Instant>, Self) {
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let resolve = move || {
+            receive.recv().map_err(|_| {
+                BenchError::Engine("the completion callback was dropped without running".into())
+            })
+        };
+        (send, Self::InFlight(Box::new(resolve)))
+    }
+}
+
+/// A completion instant an adapter observes inside [`Engine::submit`] —
+/// where its rendering really ends — held until [`Engine::completion`]
+/// hands it out as [`Completion::Finished`].
+#[derive(Debug, Default)]
+pub struct ObservedCompletion(Option<std::time::Instant>);
+
+impl ObservedCompletion {
+    /// Records the submitted frame's completion instant.
+    pub const fn record(&mut self, at: std::time::Instant) {
+        self.0 = Some(at);
+    }
+
+    /// The recorded instant of the last submitted frame, for
+    /// [`Engine::completion`].
+    ///
+    /// # Errors
+    /// [`BenchError::Engine`] when no submission recorded one since the
+    /// last call.
+    pub fn take(&mut self, engine: &str) -> Result<Option<Completion>, BenchError> {
+        self.0
+            .take()
+            .map(|at| Some(Completion::Finished(at)))
+            .ok_or_else(|| {
+                BenchError::Engine(format!(
+                    "{engine}: completion requested without a submitted frame"
+                ))
+            })
+    }
+}
+
+#[cfg(any(
+    feature = "cherenkov",
+    feature = "vello-classic",
+    feature = "vello-hybrid"
+))]
+impl Completion {
+    /// The [`CompletionSignal::Measured`] text of adapters whose frames
+    /// complete through [`Completion::on_submitted_work_done`].
+    pub const WGPU_SIGNAL: &'static str = "wgpu Queue::on_submitted_work_done registered after the \
+        frame's last submission, outside the timed submit; the instant is when wgpu ran the callback, \
+        which it does only inside a later device poll or queue submission, so it bounds the GPU's \
+        completion from above";
+
+    /// The completion of everything submitted to `queue` so far: a
+    /// [`wgpu::Queue::on_submitted_work_done`] callback that stamps the
+    /// instant it runs. Registering it records no command and waits for
+    /// nothing; wgpu runs it in whichever device poll or queue submission
+    /// first sees that work done.
+    #[must_use]
+    pub fn on_submitted_work_done(queue: &wgpu::Queue) -> Self {
+        let (send, completion) = Self::callback();
+        queue.on_submitted_work_done(move || {
+            // A dropped receiver means the run already failed; the frame
+            // loop reports a missing instant itself.
+            let _ = send.send(std::time::Instant::now());
+        });
+        completion
+    }
+}
+
+/// How an adapter's [`Engine::completion`] is obtained, or why it is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionSignal {
+    /// [`Engine::completion`] returns a [`Completion`] for every
+    /// submission; the text names the backend signal and its precision.
+    Measured(&'static str),
+    /// [`Engine::completion`] returns none; the text says why. Completion
+    /// fields are then `null`, never substituted.
+    Unavailable(&'static str),
+}
+
 /// One CPU phase of a submitted frame, as the adapter names it.
 #[derive(Clone, Debug, Serialize)]
 pub struct PhaseSample {
@@ -453,6 +589,25 @@ pub trait Engine {
     fn gpu_timing_unavailable(&self) -> Option<&'static str> {
         None
     }
+    /// The backend signal [`Engine::completion`] comes from, or why the
+    /// adapter has none.
+    fn completion_signal(&self) -> CompletionSignal;
+    /// The completion of the frame the last [`Engine::submit`] submitted.
+    /// The frame loop calls it once per submission, after the submit's
+    /// timed interval has closed, so the work a completion signal needs —
+    /// registering a callback, committing a marker, exporting a fence,
+    /// creating the next frame's semaphore — is never part of a timed
+    /// stage. An instant the adapter observed inside submit (a CPU
+    /// engine's raster end, a device wait's return) is recorded there and
+    /// handed out here.
+    ///
+    /// Returns `None` exactly when [`Engine::completion_signal`] is
+    /// [`CompletionSignal::Unavailable`].
+    ///
+    /// # Errors
+    /// [`BenchError`] when no submission awaits its completion, or the
+    /// backend fails to arm the signal.
+    fn completion(&mut self) -> Result<Option<Completion>, BenchError>;
     /// The feature set this adapter can execute faithfully.
     fn supported(&self) -> BTreeSet<Feature>;
     /// Prepare the scene's resources once, outside the timed loop.
