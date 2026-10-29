@@ -986,15 +986,15 @@ impl GeometryCache {
         &mut self,
         digest: NonZeroU64,
         key: GeometryKey,
-        build: impl FnOnce() -> RetainedGeometry,
-    ) -> &mut RetainedGeometry {
+        build: impl FnOnce() -> Option<RetainedGeometry>,
+    ) -> Option<&mut RetainedGeometry> {
         let entry = match self.entries.entry(digest) {
             std::collections::hash_map::Entry::Occupied(slot) => {
                 let entry = slot.into_mut();
                 if entry.key != key {
                     *entry = GeometryEntry {
                         key,
-                        geometry: build(),
+                        geometry: build()?,
                         used: 0,
                     };
                 }
@@ -1002,11 +1002,11 @@ impl GeometryCache {
             }
             std::collections::hash_map::Entry::Vacant(slot) => slot.insert(GeometryEntry {
                 key,
-                geometry: build(),
+                geometry: build()?,
                 used: 0,
             }),
         };
-        &mut entry.geometry
+        Some(&mut entry.geometry)
     }
 
     /// Reconcile liveness after a successful walk that flagged or
@@ -4594,17 +4594,17 @@ impl<'a> Lowering<'a> {
             (replaced, emission.revision)
         } else {
             // An unchanged retained emission has already passed visibility testing.
-            if let Op::Glyphs { local, bounds, .. } = op {
-                // Coverage cells carry a one-pixel apron and integer rounding can
-                // extend another pixel beyond the outline. Cull against this
-                // target, including the enlarged target of a silhouette capture.
-                let placed = (self.transform * *local).transform_rect_bbox(*bounds);
+            let visibility = match op {
+                Op::Glyphs { local, bounds, .. } => Some((*local, *bounds)),
+                _ => None,
+            };
+            if let Some((local, bounds)) = visibility {
+                // Include the atlas apron and integer rounding. The active
+                // target includes filter/silhouette capture expansion.
+                let placed = (self.transform * local).transform_rect_bbox(bounds);
                 let visible = Rect::new(0.0, 0.0, f64::from(self.width), f64::from(self.height));
                 if placed.inflate(2.0, 2.0).intersect(visible).is_zero_area() {
-                    // Offscreen emissions must not pin their old atlas shelves.
-                    // The existing storage compaction reclaims their ranges.
                     *cache = Realization::default();
-                    // Keep operation indices stable within this command run.
                     self.frame.commands.push(super::damage::Command {
                         instances_end: self.frame.instances.len(),
                         revision: self.frame.revision,
@@ -4627,6 +4627,18 @@ impl<'a> Lowering<'a> {
             revision,
         });
         Ok(changed)
+    }
+
+    fn path_visible(&self, bounds: Rect, raster: Affine) -> bool {
+        let placed = raster.transform_rect_bbox(bounds).inflate(2.0, 2.0);
+        !placed
+            .intersect(Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.width),
+                f64::from(self.height),
+            ))
+            .is_zero_area()
     }
 
     /// The automatic route's predicate (decisions R1 and R2): a path
@@ -4680,6 +4692,9 @@ impl<'a> Lowering<'a> {
             .get(&index)
             .is_none_or(|entry| entry.content != content || entry.linear != linear_bits)
         {
+            if !self.path_visible(outline.bounds(), raster) {
+                return Ok(true);
+            }
             let surface = (f64::from(self.width), f64::from(self.height));
             let linear_affine = Affine::new([linear[0], linear[1], linear[2], linear[3], 0.0, 0.0]);
             let prepared = match outline {
@@ -5178,7 +5193,10 @@ impl<'a> Lowering<'a> {
                     OutlineRef::Fill { elements, content } => self.path(
                         content,
                         *rule,
-                        || BezPath::from_vec(elements.to_vec()),
+                        (
+                            || BezPath::from_vec(elements.to_vec()),
+                            || OutlineRef::Fill { elements, content }.bounds(),
+                        ),
                         paint,
                         glyphs,
                         geometry,
@@ -5196,7 +5214,7 @@ impl<'a> Lowering<'a> {
                         self.path(
                             outline.content(tolerance),
                             *rule,
-                            || outline.build(tolerance),
+                            (|| outline.build(tolerance), || outline.bounds()),
                             paint,
                             glyphs,
                             geometry,
@@ -5573,7 +5591,7 @@ impl<'a> Lowering<'a> {
         &mut self,
         content: u64,
         rule: FillRule,
-        make: impl FnOnce() -> BezPath,
+        (make, bounds): (impl FnOnce() -> BezPath, impl FnOnce() -> Rect),
         paint: &ResolvedPaint,
         glyphs: &GlyphContext<'_>,
         geometry: &mut GeometryCache,
@@ -5635,9 +5653,15 @@ impl<'a> Lowering<'a> {
             let key = GeometryKey::new(content, rule, pl.raster);
             let digest = key.digest();
             let entry = geometry.entry(digest, key, || {
+                if !self.path_visible(bounds(), self.transform) {
+                    return None;
+                }
                 let local = shader_path.unwrap_or_else(|| make.take().expect("path factory")());
-                RetainedGeometry::new(local, pl.raster, rule)
+                Some(RetainedGeometry::new(local, pl.raster, rule))
             });
+            let Some(entry) = entry else {
+                return Ok(None);
+            };
             let (to_device, device_bbox) = entry.placed(Vec2::new(e, f));
             let Some(grid @ (x0, y0, ..)) =
                 path::grid(device_bbox, (f64::from(self.width), f64::from(self.height)))
@@ -7124,9 +7148,9 @@ mod tests {
             let mut retained = ContentData::new(cherenkov::Picture::record(|_| {}));
             let mut previous_geometry = None;
             let mut previous_draw = std::ptr::null();
-            if has_compute && large {
-                // A culled GPU candidate must not outline/rasterize on the CPU,
-                // and its empty retained emission must not hide it after a move.
+            {
+                // Offscreen paths prepare neither CPU nor GPU geometry, and
+                // become visible normally when moved back into the target.
                 let mut frame = Frame::default();
                 let mut anchors = AnchorScratch::default();
                 let mut raster = path::EmitScratch::new();
@@ -7135,7 +7159,7 @@ mod tests {
                     (128, 128),
                     &mut anchors,
                     &mut raster,
-                    Some(test_limit()),
+                    has_compute.then(test_limit),
                 );
                 lowering.begin_pass(Target::Part(0), None);
                 lowering.transform = Affine::translate((1000.25, 1000.25));
@@ -7152,7 +7176,16 @@ mod tests {
                 assert_eq!(lowering.paths_rasterized(), 0);
                 assert!(lowering.pending.is_empty());
                 assert!(lowering.frame.instances.is_empty());
-                assert!(cache.data.as_ref().unwrap().geometry.is_none());
+                assert!(
+                    cache
+                        .data
+                        .as_ref()
+                        .expect("empty emission retained")
+                        .geometry
+                        .is_none()
+                );
+                assert!(retained.storage.geometry.entries.is_empty());
+                assert!(retained.storage.gpu_paths.is_empty());
             }
 
             let templates_before = retained.storage.templates.len();
