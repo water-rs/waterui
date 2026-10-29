@@ -31,6 +31,8 @@
 //!
 //! The `unsafe` here schedules a block on the main run loop from the main
 //! thread; the block runs on that same thread and never crosses threads.
+//! Under Catalyst it also registers a defaults dictionary whose only value is
+//! an `NSNumber`, the property-list object `registerDefaults:` requires.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::OsString;
@@ -163,6 +165,8 @@ pub fn run(arguments: Arguments, trials: impl FnOnce() -> Vec<Trial> + 'static) 
         )
     });
     let mtm = MainThreadMarker::new().expect("a harness's `main` runs on the main thread");
+    #[cfg(target_abi = "macabi")]
+    ignore_persistent_state();
     super::run(
         mtm,
         ApplicationHandlers::new(|scene| {
@@ -186,6 +190,30 @@ pub fn run(arguments: Arguments, trials: impl FnOnce() -> Vec<Trial> + 'static) 
             perform_on_main_run_loop(move || run_trials(&arguments, trials, &status_path));
         }),
     )
+}
+
+/// Keeps `AppKit` from restoring the harness application's windows.
+///
+/// Under Catalyst `AppKit` records the application's windows for state
+/// restoration and its launches' crash history. After a run that ended while
+/// a window was open — a case that crashed, or a runner that killed the
+/// process at its deadline — the next launch first asks, in a modal alert,
+/// whether to reopen the windows, and no trial starts until someone answers
+/// it (water-rs/waterui#3731). The harness never restores windows, so it
+/// registers `ApplePersistenceIgnoreState` before the application launches.
+/// The registration domain lives only in this process; nothing is written
+/// to the machine's defaults.
+#[cfg(target_abi = "macabi")]
+fn ignore_persistent_state() {
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::{NSDictionary, NSNumber, NSUserDefaults, ns_string};
+
+    let ignore = NSNumber::new_bool(true);
+    let defaults: Retained<NSDictionary<_, AnyObject>> =
+        NSDictionary::from_slices(&[ns_string!("ApplePersistenceIgnoreState")], &[&**ignore]);
+    // SAFETY: the dictionary's only value is an `NSNumber`, a property-list
+    // object as `registerDefaults:` requires.
+    unsafe { NSUserDefaults::standardUserDefaults().registerDefaults(&defaults) };
 }
 
 /// How many times `UIKit` has built the main menu through the harness

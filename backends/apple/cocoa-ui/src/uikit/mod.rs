@@ -38,6 +38,11 @@ pub mod button;
 mod calendar_view;
 #[cfg(target_abi = "macabi")]
 pub mod catalyst;
+#[cfg(all(target_abi = "macabi", feature = "native-test"))]
+#[doc(hidden)]
+pub mod catalyst_menu;
+#[cfg(target_abi = "macabi")]
+mod catalyst_tracking;
 mod color_view;
 pub mod color_well;
 mod context_menu;
@@ -91,7 +96,7 @@ pub use key_commands::KeyCommands;
 pub use menu::{Menu, MenuAction, MenuButton, MenuElement, edit_menu};
 mod picker;
 mod pointer;
-pub use picker::Picker;
+pub use picker::{Picker, WHEEL_ROW_HEIGHT};
 pub mod toggle;
 pub use label::Label;
 mod slider;

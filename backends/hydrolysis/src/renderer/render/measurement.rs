@@ -707,7 +707,13 @@ pub fn measure_navigation_view_intrinsic<E: crate::text::TextEngine>(
     let mut bottom_height = 0.0_f64;
     let metrics = theme.navigation_metrics();
     for item in &navigation.bar.toolbar.items {
-        let size = measure_view_intrinsic(&item.content, state, env, theme);
+        let (content, scoped) = flatten_environment_metadata_ref(&item.content, env);
+        let size = measure_view_intrinsic(
+            content,
+            state,
+            &crate::widgets::nav::navigation::toolbar_item_env(&scoped),
+            theme,
+        );
         let (width, height) = match item.placement {
             NavigationToolbarPlacement::Principal => (&mut principal_width, &mut principal_height),
             NavigationToolbarPlacement::Cancellation

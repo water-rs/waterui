@@ -57,8 +57,8 @@ pub use widget::{
     ModalInteraction, NavigationMetrics, NavigationMotion, PickerMetrics, PressWave, PressWaves,
     ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
     RadioSelectionMotion, SliderMetrics, SliderValueIndicatorMetrics, StepperEnd, StepperMetrics,
-    TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics,
-    ToggleMetrics, WidgetInteractionState, WidgetTheme,
+    TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
+    TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
 };
 
 /// Marks the subtree of a button label that resolved to an icon-only

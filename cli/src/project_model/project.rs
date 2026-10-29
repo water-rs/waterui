@@ -13,6 +13,7 @@ use target_lexicon::Triple;
 use tracing::info;
 
 use super::facts::{Fact, Facts, Scope};
+use crate::apple_targets::{AppleConfig, AppleDeploymentTargets};
 use crate::build::{BuildProgress, RustLinkage};
 use crate::framework::{
     CheckoutMember, FrameworkChannel, ResolvedFramework, local_checkout_members,
@@ -239,7 +240,14 @@ impl Project {
             .into_iter()
             .map(|(file, contents)| (file, Some(contents)))
             .collect();
-        apply_channel_selection(host, &path, framework, updates).await?;
+        apply_channel_selection(
+            host,
+            &path,
+            framework,
+            &previous.apple.deployment_targets,
+            updates,
+        )
+        .await?;
         Self::open_for_preview_build(host, path)
             .await
             .map_err(Into::into)
@@ -1964,8 +1972,10 @@ impl Project {
             .resolve_framework(host)
             .await
             .map_err(FailToCreateProject::Framework)?;
+        let apple = Self::scaffold_apple_config(&options, &framework)
+            .map_err(FailToCreateProject::Framework)?;
         let cargo_config = framework
-            .cargo_config(&path)
+            .cargo_config(&path, &apple.deployment_targets)
             .await
             .map_err(FailToCreateProject::Framework)?;
 
@@ -2035,7 +2045,7 @@ impl Project {
                 .map_err(FailToCreateProject::Scaffold)?;
         }
 
-        let manifest = Self::scaffold_manifest(&options, framework, assets_path);
+        let manifest = Self::scaffold_manifest(&options, framework, assets_path, apple);
 
         // Save Water.toml
         manifest.save(&path).await?;
@@ -2081,12 +2091,28 @@ impl Project {
         })
     }
 
+    /// The `[apple]` section a scaffold records. A bundled web frontend
+    /// installs a navigation policy, which only compiles at the Apple OS
+    /// version the framework names; the project declares it so every build and
+    /// the generated Cargo config agree.
+    fn scaffold_apple_config(
+        options: &CreateOptions,
+        framework: &ResolvedFramework,
+    ) -> eyre::Result<AppleConfig> {
+        let mut apple = AppleConfig::default();
+        if options.web.is_some() {
+            apple.deployment_targets = framework.web_frontend_apple_deployment_targets()?;
+        }
+        Ok(apple)
+    }
+
     /// The `Water.toml` a scaffold records: the create options' identity and
     /// web section, the resolved framework's channel when it names one.
     fn scaffold_manifest(
         options: &CreateOptions,
         framework: ResolvedFramework,
         assets_path: String,
+        apple: AppleConfig,
     ) -> Manifest {
         Manifest {
             package: Package {
@@ -2115,6 +2141,7 @@ impl Project {
             web: options.web.as_ref().map(|scaffold| web::WebConfig {
                 package_manager: scaffold.package_manager,
             }),
+            apple,
             signing: SigningConfig::default(),
             assets: None,
             app_values: crate::assets::AppValuesConfig::default(),
@@ -2470,11 +2497,18 @@ async fn apply_channel_selection(
     host: &Host,
     root: &Path,
     framework: ResolvedFramework,
+    declared: &AppleDeploymentTargets,
     mut updates: Vec<(PathBuf, Option<Vec<u8>>)>,
 ) -> eyre::Result<()> {
     updates.push((
         root.join(".cargo/config.toml"),
-        Some(framework.cargo_config(root).await?.to_string().into_bytes()),
+        Some(
+            framework
+                .cargo_config(root, declared)
+                .await?
+                .to_string()
+                .into_bytes(),
+        ),
     ));
     let mut previous = BTreeMap::new();
     for file in updates
@@ -3675,6 +3709,10 @@ pub struct Manifest {
     /// Web-frontend toolchain declarations (`[web]`); only the CLI reads this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web: Option<web::WebConfig>,
+    /// Apple platform declarations (`[apple]`): the deployment targets the
+    /// project runs on.
+    #[serde(default, skip_serializing_if = "AppleConfig::is_empty")]
+    pub apple: AppleConfig,
     /// Assets the project bundles beyond what dependency crates declare for
     /// themselves (`[assets]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3851,6 +3889,7 @@ impl Manifest {
             theme: None,
             launch: None,
             web: None,
+            apple: AppleConfig::default(),
             assets: None,
             signing: SigningConfig::default(),
             app_values: crate::assets::AppValuesConfig::default(),
@@ -4444,6 +4483,7 @@ mod channel_tests {
                     &Host::current(),
                     root,
                     crate::framework::test_fixtures::stable_framework(),
+                    &AppleDeploymentTargets::default(),
                     updates
                 )
                 .await
@@ -4824,6 +4864,53 @@ mod target_graph_tests {
     }
 
     #[test]
+    fn a_web_frontend_scaffold_declares_the_web_deployment_targets() {
+        smol::block_on(async {
+            let machine = TestMachine::new();
+            machine.install("cargo");
+            machine.install("git");
+            let root = machine.root().join("app");
+            machine.respond("CARGO_METADATA", &cargo_metadata_json(&root, &root));
+            let host = machine.host(std::iter::empty::<(&str, &str)>());
+            let options = super::CreateOptions::new(
+                "Demo App".into(),
+                "dev.waterui.demo".try_into().unwrap(),
+                "Test".into(),
+            );
+            let options = super::CreateOptions {
+                framework: Some(crate::framework::test_fixtures::stable_framework()),
+                ..options
+            }
+            .with_web(Some(super::WebScaffold::new(
+                crate::web::PackageManager::Bun,
+                "web",
+            )));
+            Project::create(&host, &root, options).await.unwrap();
+
+            let water: Manifest =
+                Manifest::parse(&std::fs::read_to_string(root.join("Water.toml")).unwrap())
+                    .unwrap();
+            for platform in crate::apple_targets::APPLE_PLATFORMS {
+                assert_eq!(
+                    water
+                        .apple
+                        .deployment_targets
+                        .declared(platform)
+                        .map(crate::apple_targets::AppleVersion::as_str),
+                    Some("27.0"),
+                    "{platform}"
+                );
+            }
+            let config: toml::Value =
+                toml::from_str(&std::fs::read_to_string(root.join(".cargo/config.toml")).unwrap())
+                    .unwrap();
+            for variable in ["MACOSX_DEPLOYMENT_TARGET", "IPHONEOS_DEPLOYMENT_TARGET"] {
+                assert_eq!(config["env"][variable].as_str(), Some("27.0"));
+            }
+        });
+    }
+
+    #[test]
     fn create_writes_apple_deployment_env_and_channel_updates_preserve_user_config() {
         smol::block_on(async {
             let machine = TestMachine::new();
@@ -4854,7 +4941,7 @@ mod target_graph_tests {
             let contents = std::fs::read_to_string(&config_path).unwrap();
             let mut config: toml_edit::DocumentMut = contents.parse().unwrap();
             for variable in ["MACOSX_DEPLOYMENT_TARGET", "IPHONEOS_DEPLOYMENT_TARGET"] {
-                assert_eq!(config["env"][variable].as_str(), Some("27.0"));
+                assert_eq!(config["env"][variable].as_str(), Some("26.0"));
             }
             config["env"]["USER_SETTING"] = toml_edit::value("keep me");
             config["build"] = toml_edit::Item::Table(toml_edit::Table::new());
@@ -4867,22 +4954,28 @@ mod target_graph_tests {
             std::fs::write(&config_path, config.to_string()).unwrap();
             let mut selection = toml::Value::try_from(framework).unwrap();
             selection["metadata"]["apple-deployment-targets"]["macos"] =
-                toml::Value::String("28.0".into());
+                toml::Value::String("27.0".into());
             selection["metadata"]["apple-deployment-targets"]["ios"] =
-                toml::Value::String("29.0".into());
-            super::apply_channel_selection(&host, &root, selection.try_into().unwrap(), Vec::new())
-                .await
-                .unwrap();
+                toml::Value::String("28.0".into());
+            super::apply_channel_selection(
+                &host,
+                &root,
+                selection.try_into().unwrap(),
+                &crate::apple_targets::AppleDeploymentTargets::default(),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
             let updated = std::fs::read_to_string(&config_path).unwrap();
             assert!(updated.contains("# user comment"));
             let config: toml::Value = toml::from_str(&updated).unwrap();
             assert_eq!(
                 config["env"]["MACOSX_DEPLOYMENT_TARGET"].as_str(),
-                Some("28.0")
+                Some("27.0")
             );
             assert_eq!(
                 config["env"]["IPHONEOS_DEPLOYMENT_TARGET"].as_str(),
-                Some("29.0")
+                Some("28.0")
             );
             assert_eq!(config["env"]["USER_SETTING"].as_str(), Some("keep me"));
             assert_eq!(config["build"]["jobs"].as_integer(), Some(3));

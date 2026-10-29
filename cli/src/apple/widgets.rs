@@ -26,9 +26,8 @@ use tracing::info;
 use waterui_widgets::{IntentDeclaration, WidgetDeclaration};
 
 /// The `WidgetKit` deployment floor the extension compiles against —
-/// `containerBackground` needs `macOS`/`iOS` 26 and the framework floor is
-/// OS 27.
-pub const WIDGET_MINIMUM_APPLE_VERSION: &str = "27.0";
+/// `containerBackground` needs `macOS`/`iOS` 26.
+pub const WIDGET_MINIMUM_APPLE_VERSION: &str = "26.0";
 
 #[cfg(target_os = "macos")]
 use crate::apple::app_bundle;
@@ -742,7 +741,7 @@ mod tests {
                 WIDGET_MINIMUM_APPLE_VERSION
             )
             .unwrap(),
-            "arm64-apple-macosx27.0"
+            "arm64-apple-macosx26.0"
         );
         for unsupported in ["x86_64-apple-darwin", "x86_64-apple-ios"] {
             let error = widget_swift_target(

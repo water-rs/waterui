@@ -5,6 +5,7 @@ use cherenkov_record::{MaterialRegistry, Paint, Recorder};
 use core::time::Duration;
 use kurbo::{BezPath, Point, Rect, RoundedRectRadii};
 use nami::signal::IntoComputed;
+use waterui::navigation::tab::NativeTabStyle;
 use waterui_controls::toggle::ToggleStyle;
 use waterui_controls::{ControlSize, button::ButtonStyle};
 use waterui_core::EasingCurve;
@@ -949,6 +950,29 @@ pub enum TabItemLayout {
     Horizontal,
 }
 
+/// The geometry of one tab item, in the coordinate space of the bar that
+/// holds it: what a style needs to draw the selection indicator wherever and
+/// in whatever shape it wants.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract geometry: a new fact about the item must fail style packages' builds rather than be silently ignored"
+)]
+pub struct TabItemGeometry {
+    /// The item's chrome bounds: the whole button for vertical items, the
+    /// icon and title grown by the button inset for horizontal ones.
+    pub bounds: Rect,
+    /// The icon's rect, `None` for a title-only item.
+    pub icon: Option<Rect>,
+    /// The title's rect.
+    pub title: Rect,
+    /// How the item arranges its icon and title.
+    pub layout: TabItemLayout,
+    /// Whether the item sits in a bar or a sidebar strip; `Automatic` and
+    /// `TabBar` are both a bar.
+    pub placement: NativeTabStyle,
+}
+
 /// Layout metrics for tab containers.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[expect(
@@ -962,10 +986,6 @@ pub struct TabsMetrics {
     pub button_min_width: f64,
     /// Horizontal label inset inside one tab button.
     pub button_horizontal_inset: f64,
-    /// Selected tab active indicator height.
-    pub active_indicator_height: f64,
-    /// Selected tab active indicator corner radius.
-    pub active_indicator_radius: f64,
     /// Gap between a tab item's icon and its label: vertical space when the
     /// icon sits above the label, horizontal space when it sits beside it.
     pub icon_label_spacing: f64,
@@ -978,16 +998,12 @@ impl TabsMetrics {
         bar_height: f64,
         button_min_width: f64,
         button_horizontal_inset: f64,
-        active_indicator_height: f64,
-        active_indicator_radius: f64,
         icon_label_spacing: f64,
     ) -> Self {
         Self {
             bar_height,
             button_min_width,
             button_horizontal_inset,
-            active_indicator_height,
-            active_indicator_radius,
             icon_label_spacing,
         }
     }
@@ -1736,17 +1752,17 @@ pub trait WidgetTheme {
     /// `divider` is the bar's inner edge: the top row of a bottom bar, the
     /// trailing column of a sidebar strip.
     fn draw_tabs_bar_divider(&self, recorder: &mut Recorder, divider: Rect);
-    /// Draw the selected tab highlight of an item laid out as `layout`.
-    fn draw_tabs_highlight(&self, recorder: &mut Recorder, bounds: Rect, layout: TabItemLayout);
-    /// Draw the state layer of a tab button whose item is laid out as
-    /// `layout`.
+    /// Draw the selected tab's indicator. The style decides its shape and
+    /// placement from the item's geometry.
+    fn draw_tabs_highlight(&self, recorder: &mut Recorder, item: TabItemGeometry);
+    /// Draw the state layer of a tab button. The style decides its shape and
+    /// placement from the item's geometry, like the selection indicator.
     fn draw_tabs_button_state_layer(
         &self,
         _recorder: &mut Recorder,
-        _bounds: Rect,
+        _item: TabItemGeometry,
         _selected: bool,
         _state: WidgetInteractionState,
-        _layout: TabItemLayout,
     ) {
     }
 

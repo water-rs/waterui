@@ -40,6 +40,9 @@ pub enum AppColor {
     Label,
     /// `NSColor.secondaryLabelColor`.
     SecondaryLabel,
+    /// `NSColor.textColor`: the opaque primary text color — black in the
+    /// light and vibrant-light appearances, white in the dark ones.
+    Text,
     /// `NSColor.controlAccentColor`.
     ControlAccent,
     /// `NSColor.alternateSelectedControlTextColor`.
@@ -54,7 +57,11 @@ pub enum AppColor {
     White,
 }
 
-fn native(color: AppColor) -> Retained<NSColor> {
+/// The dynamic `NSColor` behind `color`: it resolves against the drawing
+/// view's effective appearance, and a label color draws vibrant inside an
+/// `NSVisualEffectView`.
+#[must_use]
+pub fn dynamic(color: AppColor) -> Retained<NSColor> {
     match color {
         AppColor::WindowBackground => NSColor::windowBackgroundColor(),
         AppColor::ControlBackground => NSColor::controlBackgroundColor(),
@@ -62,6 +69,7 @@ fn native(color: AppColor) -> Retained<NSColor> {
         AppColor::Separator => NSColor::separatorColor(),
         AppColor::Label => NSColor::labelColor(),
         AppColor::SecondaryLabel => NSColor::secondaryLabelColor(),
+        AppColor::Text => NSColor::textColor(),
         AppColor::ControlAccent => NSColor::controlAccentColor(),
         AppColor::AlternateSelectedControlText => NSColor::alternateSelectedControlTextColor(),
         AppColor::SelectedContentBackground => NSColor::selectedContentBackgroundColor(),
@@ -237,6 +245,17 @@ pub fn with_content_headroom(color: &NSColor, headroom: f64) -> Retained<NSColor
 /// and the `expect` only covers a platform that does not.
 #[must_use]
 pub fn resolve(color: AppColor, scheme: ColorScheme) -> Option<Rgba> {
+    resolve_native(&dynamic(color), scheme)
+}
+
+/// What the native `color` draws as under `scheme`, resolved the way
+/// [`resolve`] does.
+///
+/// # Panics
+///
+/// Never in practice; see [`resolve`].
+#[must_use]
+pub fn resolve_native(color: &NSColor, scheme: ColorScheme) -> Option<Rgba> {
     // SAFETY: these are the platform's two standard appearance names.
     let name = unsafe {
         match scheme {
@@ -246,7 +265,7 @@ pub fn resolve(color: AppColor, scheme: ColorScheme) -> Option<Rgba> {
     };
     let appearance = NSAppearance::appearanceNamed(name)
         .expect("AppKit ships appearances under both standard names");
-    let color = native(color);
+    let color = objc2::Message::retain(color);
     let rgba = RefCell::new(None);
     {
         let slot = &rgba;

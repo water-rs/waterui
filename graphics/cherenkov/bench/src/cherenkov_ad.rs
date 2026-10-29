@@ -561,6 +561,9 @@ pub struct Cherenkov {
     alloc_diag: Option<cherenkov_gpu::diag::Sink>,
     /// The #2547 composition attribution sink; `None` in timed runs.
     composition_diag: Option<cherenkov_gpu::composition::Sink>,
+    /// The frame the last submit rendered and whether it drew anything,
+    /// until [`Engine::completion`] arms its signal.
+    awaiting_completion: Option<(u64, bool)>,
 }
 
 /// `--present` state: the engine runs on a bench-owned shared device so a
@@ -1778,6 +1781,7 @@ impl Cherenkov {
             present: None,
             alloc_diag,
             composition_diag,
+            awaiting_completion: None,
         })
     }
 }
@@ -1988,6 +1992,7 @@ impl Engine for Cherenkov {
         )?;
         let stats = self.engine.stats();
         let render_seconds = render_at.elapsed().as_secs_f64();
+        self.awaiting_completion = Some((frame, stats.frame.is_some()));
         let readback_at = std::time::Instant::now();
         let image = if !readback {
             None
@@ -2020,6 +2025,29 @@ impl Engine for Cherenkov {
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
+    }
+
+    fn completion_signal(&self) -> crate::CompletionSignal {
+        crate::CompletionSignal::Measured(crate::Completion::WGPU_SIGNAL)
+    }
+
+    fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
+        let (frame, drew) = self.awaiting_completion.take().ok_or_else(|| {
+            BenchError::Engine("cherenkov: completion requested without a submitted frame".into())
+        })?;
+        // A render that drew nothing submitted no work of its own, and the
+        // queue's latest submission would belong to an earlier frame.
+        if !drew {
+            return Err(BenchError::Engine(format!(
+                "cherenkov: frame {frame} drew nothing, so it has no GPU completion to time"
+            )));
+        }
+        // Nothing has been submitted on this device since the frame's
+        // submit returned, so the queue's latest submission is the frame's
+        // last (its readback's when it read back, which completes later).
+        Ok(Some(crate::Completion::on_submitted_work_done(
+            &self.shared_device.queue,
+        )))
     }
 
     fn finish_gpu(&mut self) -> Result<Vec<GpuSample>, BenchError> {

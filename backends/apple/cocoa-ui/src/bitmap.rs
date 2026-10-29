@@ -159,18 +159,25 @@ pub fn with_uikit_context(context: &CGContext, body: impl FnOnce()) {
     unsafe { objc2_ui_kit::UIGraphicsPopContext() };
 }
 
-/// A `UIImage` rendering `image` at `scale`, tagged `alwaysTemplate`.
+/// A `UIImage` showing `image` at `size` points, tagged `alwaysTemplate` —
+/// its scale is the raster's pixels per point, so the image keeps every
+/// captured pixel.
 #[cfg(target_os = "ios")]
 #[must_use]
-pub fn template_image(image: &CGImage, scale: f64) -> Option<Retained<objc2_ui_kit::UIImage>> {
+pub fn template_image(image: &CGImage, size: Size) -> Retained<objc2_ui_kit::UIImage> {
     use objc2_ui_kit::{UIImage, UIImageOrientation, UIImageRenderingMode};
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a raster's pixel width is far below f64's exact integer range"
+    )]
+    let scale = CGImage::width(Some(image)) as f64 / size.width;
     let ui = UIImage::initWithCGImage_scale_orientation(
         UIImage::alloc(),
         image,
         scale,
         UIImageOrientation::Up,
     );
-    Some(ui.imageWithRenderingMode(UIImageRenderingMode::AlwaysTemplate))
+    ui.imageWithRenderingMode(UIImageRenderingMode::AlwaysTemplate)
 }
 
 /// An `NSImage` wrapping `image` at `size` points, tagged as a template.
@@ -226,9 +233,12 @@ pub fn capture_window(
     }
 }
 
-/// An offscreen `UIWindow` in `scene` — hidden off-display but attached so
-/// `UIView` captures see a real window. Its safe-area insets are zeroed:
-/// capture windows never sit under a device notch.
+/// An offscreen `UIWindow` in `scene`, attached so `UIView` captures see a
+/// real window.
+///
+/// The window has no device regions: the layout region reader treats the
+/// capture root as the window (`is_capture_window`), whatever safe area
+/// `UIKit` propagates into it.
 #[cfg(target_os = "ios")]
 #[must_use]
 /// # Panics
@@ -281,25 +291,26 @@ objc2::define_class!(
     #[unsafe(super(objc2_ui_kit::UIWindow))]
     #[name = "CocoaUiCaptureWindow"]
     #[thread_kind = MainThreadOnly]
-    /// A capture window reporting zero safe-area insets: it never appears on
-    /// a display, so no device notch or home-indicator inset applies.
+    /// The window a view is rehosted in for capture. It never appears on a
+    /// display, so no device region applies: the layout region reader
+    /// treats the capture root (the root controller's view) as the window,
+    /// with zero container and keyboard depths, and measures chrome bands
+    /// against the capture root's own `safeAreaInsets`. `UIKit` still
+    /// propagates the scene's device bands into the window's descendants;
+    /// the reader, not the window's `safeAreaInsets`, is what ignores them.
     pub struct CaptureWindow;
 
     unsafe impl NSObjectProtocol for CaptureWindow {}
-
-    impl CaptureWindow {
-        /// Zero insets — the window is never on a device.
-        #[unsafe(method(safeAreaInsets))]
-        fn safe_area_insets(&self) -> objc2_ui_kit::UIEdgeInsets {
-            objc2_ui_kit::UIEdgeInsets {
-                top: 0.0,
-                left: 0.0,
-                bottom: 0.0,
-                right: 0.0,
-            }
-        }
-    }
 );
+
+/// Whether `window` is a [`CaptureWindow`] — the context whose layout
+/// regions follow the capture contract instead of the device's geometry.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn is_capture_window(window: &objc2_ui_kit::UIWindow) -> bool {
+    use objc2::ClassType;
+    window.isKindOfClass(CaptureWindow::class())
+}
 
 /// Recursively forces every `NSTextField` inside `view` to draw — `AppKit`
 /// leaves text-field contents out of `cacheDisplay` unless they are marked
@@ -420,7 +431,10 @@ pub fn view_template_image(
     });
     let image = context_image(&context)?;
     let shrink = (max_side / f64::max(bounds.size.width, bounds.size.height)).min(1.0);
-    template_image(&image, scale / shrink)
+    Some(template_image(
+        &image,
+        Size::new(bounds.size.width * shrink, bounds.size.height * shrink),
+    ))
 }
 
 /// Any connected `UIWindowScene`:

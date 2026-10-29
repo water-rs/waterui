@@ -338,6 +338,7 @@ impl WkWebViewHandle {
         let weak = Rc::downgrade(&shared);
 
         let handlers = web_kit::Handlers {
+            reads_main_frame_navigation: shared.navigation_policy.is_some(),
             decide_action: Some(Box::new({
                 let weak = weak.clone();
                 move |_view, info| {
@@ -394,7 +395,13 @@ impl Shared {
     /// `mainFrameNavigation`, so the policy never sees it or the redirects
     /// it follows. `None` starts nothing: a `go_back` with no previous
     /// entry leaves none.
+    ///
+    /// Recorded only while a policy is installed: without one the action's
+    /// navigation is never read and nothing asks whether it was answered.
     fn app_load(&self, navigation: Option<&web_kit::WKNavigation>) {
+        if self.navigation_policy.is_none() {
+            return;
+        }
         if let Some(navigation) = navigation {
             self.answered.answer(navigation);
         }

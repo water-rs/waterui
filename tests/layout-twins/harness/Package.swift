@@ -7,8 +7,8 @@ import PackageDescription
 let package = Package(
   name: "LayoutTwinsHarness",
   platforms: [
-    .iOS(.v27),
-    .macOS(.v27),
+    .iOS(.v26),
+    .macOS(.v26),
   ],
   dependencies: [
     .package(name: "waterui-apple-host", path: "../../..")

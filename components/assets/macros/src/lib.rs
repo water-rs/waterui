@@ -431,6 +431,18 @@ const WEB_MOUNT: &str = "web";
 /// `include_web!(resources, "web").serve(MyApi).inject(..).on_event(..)`.
 ///
 /// Requires the `webview` and `assets` features of the `waterui` crate.
+///
+/// # Apple OS 27
+///
+/// The expansion installs the `stay_on_origin` navigation policy, and
+/// `WebViewOpen::navigation_policy` is available only where the Apple
+/// deployment target is OS 27 or newer (`WKWebView` tells the application's
+/// loads from the page's own through `WKNavigationAction.mainFrameNavigation`,
+/// public from OS 27). On an Apple build below that, the call does not compile
+/// and the error names the `Water.toml` key to raise: set the platforms you
+/// ship under `[apple.deployment-targets]` to `27.0`. `water create` writes
+/// them for a project that bundles a web frontend. Other targets are
+/// unaffected.
 pub fn include_web(input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(input as IncludeWebArgs);
     let resources = &args.resources;

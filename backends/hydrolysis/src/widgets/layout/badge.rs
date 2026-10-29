@@ -132,12 +132,24 @@ pub fn render_badge_parts<E: crate::text::TextEngine>(
         );
     }
 
-    let theme = ctx.theme();
-    let metrics = theme.badge_metrics();
     let value = {
         let signal = state.borrow().value.clone();
         ctx.renderer_mut().read_signal(&signal)
     };
+    draw_badge_indicator(ctx, bounds, value, env);
+}
+
+/// Draws the badge indicator for `value` anchored on `anchor`: a count of zero
+/// is the theme's small dot, anything else the large count pill. Shared by the
+/// badge widget and by tab items, which anchor it on their icon.
+pub fn draw_badge_indicator<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    anchor: kurbo::Rect,
+    value: i32,
+    env: &Environment,
+) {
+    let theme = ctx.theme();
+    let metrics = theme.badge_metrics();
 
     // Measure before placing: the badge's leading edge sits `offset_x` inside
     // the content's trailing edge — mirrored to the leading edge in RTL — and
@@ -179,11 +191,11 @@ pub fn render_badge_parts<E: crate::text::TextEngine>(
         .snapshot()
         .is_right_to_left()
     {
-        ctx.bounds.x0 + offset_x - badge_width
+        anchor.x0 + offset_x - badge_width
     } else {
-        ctx.bounds.x1 - offset_x
+        anchor.x1 - offset_x
     };
-    let y0 = ctx.bounds.y0 + offset_y - badge_height;
+    let y0 = anchor.y0 + offset_y - badge_height;
     let rect = kurbo::Rect::new(x0, y0, x0 + badge_width, y0 + badge_height);
 
     let Some((label, text_size)) = large else {

@@ -28,7 +28,7 @@ use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
-use crate::proposal;
+use crate::proposal::{self, Placement};
 
 #[cfg(target_os = "macos")]
 use super::menu_items::append_items;
@@ -99,9 +99,9 @@ struct MenuState {
     items: Vec<ResolvedMenuItem>,
     /// Watchers on every item signal; replaced wholesale on rebuild.
     item_watchers: Vec<BoxWatcherGuard>,
-    /// The proposal a Rust parent last placed this leaf at —
+    /// The placement a Rust parent last gave this leaf — its proposal is
     /// `selectedProposal`.
-    selected: Cell<Option<ProposalSize>>,
+    placement: Cell<Placement>,
     /// The scope the live menu's key commands are armed in, replaced with
     /// the menu on every rebuild.
     #[cfg(target_os = "ios")]
@@ -186,6 +186,20 @@ fn rebuild_menu(state: &Rc<RefCell<MenuState>>) {
     state.borrow_mut().key_commands = Some(key_commands);
 }
 
+/// Ends the trigger's open menu when the leaf's state goes, ahead of the
+/// state's `KeyCommands`: under Catalyst the menu is an `NSMenu` popup that
+/// a leaf retiring behind a still-mounted ghost view would otherwise leave
+/// offering the retired commands.
+#[cfg(all(target_os = "ios", target_abi = "macabi"))]
+struct EndOpenMenu(MenuButton);
+
+#[cfg(all(target_os = "ios", target_abi = "macabi"))]
+impl Drop for EndOpenMenu {
+    fn drop(&mut self) {
+        self.0.end_open_menu();
+    }
+}
+
 /// The container's layout face: the label's measurement plus the label
 /// padding — `sizeThatFits`.
 struct MenuSubView {
@@ -268,7 +282,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             env: ctx.env().clone(),
             items: Vec::new(),
             item_watchers: Vec::new(),
-            selected: Cell::new(None),
+            placement: Cell::new(Placement::UNPLACED),
             #[cfg(target_os = "ios")]
             key_commands: None,
             mtm,
@@ -308,7 +322,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 #[cfg(target_os = "ios")]
                 view::set_frame(&label_container, Rect::new(0.0, 0.0, width, height));
 
-                let base = state.selected.get().unwrap_or({
+                let placement = state.placement.get();
+                let base = placement.proposal.unwrap_or({
                     #[expect(
                         clippy::cast_possible_truncation,
                         reason = "the layout contract is f32; host bounds always fit"
@@ -318,10 +333,20 @@ pub fn install(dispatcher: &mut Dispatcher) {
                         height: Some(height as f32),
                     }
                 });
-                proposal::deliver(&child_view, label_offer(base));
+                // The label sits at its layout frame inside the host, so it
+                // aligns under the host's own offset.
+                proposal::deliver(
+                    &child_view,
+                    Placement {
+                        proposal: Some(label_offer(base)),
+                        offset: placement.offset,
+                    },
+                );
             }
         });
 
+        #[cfg(all(target_os = "ios", target_abi = "macabi"))]
+        let button_for_teardown = state.borrow().button.clone();
         let mut leaf = NativeLeaf::new(host_view, MenuSubView { label: mounted });
         leaf.keep(label_env);
 
@@ -345,10 +370,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let sink_guard = proposal::register_sink(&host, {
             let state = Rc::clone(&state);
             let host = host.clone();
-            move |selected| {
+            move |placement| {
                 let state = state.borrow();
-                if state.selected.get() != Some(selected) {
-                    state.selected.set(Some(selected));
+                if state.placement.get() != placement {
+                    state.placement.set(placement);
                     host.set_needs_layout();
                     crate::measure_memo::invalidate();
                 }
@@ -376,6 +401,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         }
 
         leaf.keep(state);
+        // Kept after the state, so it drops first (reverse order).
+        #[cfg(all(target_os = "ios", target_abi = "macabi"))]
+        leaf.keep(EndOpenMenu(button_for_teardown));
         leaf
     });
 }

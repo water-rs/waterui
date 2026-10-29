@@ -426,6 +426,27 @@ fn hover_exit_delivers_state_installed_between_view_and_handler() {
     );
 }
 
+/// water-rs/waterui#3701: the mouse leaving the window arrives as a
+/// `PointerCancel` with no button held; it must end the hover and run the
+/// exit handler.
+#[test]
+fn mouse_cancel_without_a_press_runs_hover_exit() {
+    let exits = Rc::new(RefCell::new(0_u32));
+    let exits_for_view = Rc::clone(&exits);
+    let view = handle().on_hover_exit(move || *exits_for_view.borrow_mut() += 1);
+    let mut runtime = runtime_with(split(AnyView::new(view)));
+
+    pointer_move(&mut runtime, 400.0, 300.0);
+    assert_eq!(*exits.borrow(), 0, "hovering does not exit");
+    runtime.push_input_event(InputEvent::PointerCancel {
+        id: POINTER_ID,
+        kind: PointerKind::Mouse,
+    });
+    let _ = runtime.pump(false);
+
+    assert_eq!(*exits.borrow(), 1, "leaving the window ends the hover");
+}
+
 /// The reverse spelling — `v.on_hover_exit(h).state(&b)` — resolves to the
 /// same environment.
 #[test]

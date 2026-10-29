@@ -380,7 +380,10 @@ mod platform {
                         width,
                         height,
                     );
-                    crate::proposal::deliver(sub, proposal);
+                    crate::proposal::deliver(
+                        sub,
+                        crate::proposal::Placement::platform_hosted(proposal),
+                    );
                     view::set_frame(sub, frame);
                 }
             });
@@ -392,12 +395,18 @@ mod platform {
             // the rest of the process; installing into the already-live
             // tab bar is the path a now-playing bar appearing mid-run
             // takes — the same deferred install the parity twin declares.
+            // The closure holds the slot weakly: `BottomAccessory` owns the
+            // only strong reference, so tearing the tabs down before the
+            // commit makes the upgrade fail and cancels the install.
             let accessory = Rc::new(core::cell::OnceCell::new());
             cocoa_ui::core_animation::on_commit({
                 let tabs = tabs.clone();
                 let accessory_host = accessory_host.clone();
-                let accessory = Rc::clone(&accessory);
+                let accessory = Rc::downgrade(&accessory);
                 move || {
+                    let Some(accessory) = accessory.upgrade() else {
+                        return;
+                    };
                     let capsule = UITabAccessory::initWithContentView(mtm.alloc(), &accessory_host);
                     tabs.setBottomAccessory(Some(&capsule));
                     let _ = accessory.set(capsule);
@@ -500,6 +509,7 @@ mod platform {
     use core::cell::RefCell;
 
     use crate::contract::{NativeLeaf, RenderContext};
+    use crate::native_layout::LayoutContext;
     use cocoa_ui::appkit::{HostView, Segment, SegmentedControl, SourceList, WindowToolbar};
     use cocoa_ui::objc2_app_kit::NSWindowStyleMask;
     use cocoa_ui::{Rect, view};
@@ -534,7 +544,12 @@ mod platform {
     )]
     pub(super) fn tabs_leaf(layout: TabsLayout, ctx: &RenderContext) -> NativeLeaf {
         let mtm = ctx.mtm();
+        // The host places each pane against the safe area itself
+        // (`region_frame`): a scroll surface reaches under the window
+        // toolbar, anything else stays clear of it (§7.1). So the window
+        // root hands it the whole window rather than the safe-area rect.
         let host = HostView::new(mtm, Rect::ZERO);
+        host.set_manages_safe_area(true);
         let mut keep = KeepAlive::default();
         let renderer = ctx.renderer();
         let mounted: Rc<RefCell<Vec<Mounted>>> = Rc::new(RefCell::new(Vec::new()));
@@ -700,15 +715,20 @@ mod platform {
 
         host.set_layout_handler({
             move |host| {
-                let bounds = cocoa_ui::view::bounds(host);
+                let host_view: &cocoa_ui::PlatformView = host;
+                let context = LayoutContext::of(host_view);
+                let bounds = view::bounds(host);
+                let place = |content: &cocoa_ui::PlatformView, region: Rect| {
+                    view::set_frame(content, context.region_frame(content, region));
+                };
                 if sidebar {
                     let width = 220.0_f64.min(bounds.size.width / 2.0);
-                    view::set_frame(
+                    place(
                         chrome.view(),
                         Rect::new(bounds.origin.x, bounds.origin.y, width, bounds.size.height),
                     );
                     for tab in mounted.borrow().iter() {
-                        view::set_frame(
+                        place(
                             tab.pane.view(),
                             Rect::new(
                                 bounds.origin.x + width,
@@ -720,27 +740,32 @@ mod platform {
                     }
                 } else if in_toolbar.get() {
                     for tab in mounted.borrow().iter() {
-                        view::set_frame(tab.pane.view(), bounds);
+                        place(tab.pane.view(), bounds);
                     }
                 } else {
                     let height = view::fitting_size(chrome.view()).height;
-                    view::set_frame(
+                    // `HostView` is flipped: the smallest y is the top edge,
+                    // so the strip docks at the safe rect's top and the
+                    // panes fill what lies below it.
+                    let strip_top = context.safe_rect().origin.y + 8.0;
+                    let panes_top = strip_top + height + 8.0;
+                    place(
                         chrome.view(),
                         Rect::new(
                             bounds.origin.x + 8.0,
-                            bounds.origin.y + bounds.size.height - height - 8.0,
+                            strip_top,
                             bounds.size.width - 16.0,
                             height,
                         ),
                     );
                     for tab in mounted.borrow().iter() {
-                        view::set_frame(
+                        place(
                             tab.pane.view(),
                             Rect::new(
                                 bounds.origin.x,
-                                bounds.origin.y,
+                                panes_top,
                                 bounds.size.width,
-                                bounds.size.height - height - 8.0,
+                                bounds.origin.y + bounds.size.height - panes_top,
                             ),
                         );
                     }
