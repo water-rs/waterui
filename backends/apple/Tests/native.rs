@@ -244,6 +244,65 @@ fn toolbar_reach_trials() -> Vec<Trial> {
     ]
 }
 
+/// The macOS menu, selection, split and material registrars, kept apart so
+/// `trials` stays within the length lint.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+fn chrome_trials() -> Vec<Trial> {
+    vec![
+        Trial::test(
+            "menus::the_window_menu_opens_with_the_standard_close_item",
+            || {
+                menus::the_window_menu_opens_with_the_standard_close_item();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "menus::a_pull_down_validates_its_callback_rows_from_their_command",
+            || {
+                menus::a_pull_down_validates_its_callback_rows_from_their_command();
+                Ok(())
+            },
+        ),
+        #[cfg(feature = "text_field")]
+        Trial::test(
+            "text_selection::a_selection_menu_command_edits_the_live_selection",
+            || {
+                text_selection::a_selection_menu_command_edits_the_live_selection();
+                Ok(())
+            },
+        ),
+        Trial::test("split::a_sidebar_list_takes_the_source_list_chrome", || {
+            split::a_sidebar_list_takes_the_source_list_chrome();
+            Ok(())
+        }),
+        Trial::test("split::a_plain_list_keeps_the_regular_chrome", || {
+            split::a_plain_list_keeps_the_regular_chrome();
+            Ok(())
+        }),
+        Trial::test(
+            "material_vibrancy::a_window_material_hosts_its_content_and_releases_it",
+            || {
+                material_vibrancy::a_window_material_hosts_its_content_and_releases_it();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "material_vibrancy::text_in_a_material_is_vibrant_only_for_default_tokens",
+            || {
+                material_vibrancy::text_in_a_material_is_vibrant_only_for_default_tokens();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "material_vibrancy::glass_text_draws_bold_in_the_opaque_text_color",
+            || {
+                material_vibrancy::glass_text_draws_bold_in_the_opaque_text_color();
+                Ok(())
+            },
+        ),
+    ]
+}
+
 fn trials() -> Vec<Trial> {
     let mut tests = base_trials();
     #[cfg(all(target_os = "macos", feature = "native-test"))]
@@ -260,59 +319,7 @@ fn trials() -> Vec<Trial> {
         ]);
         tests.extend(embedding_trials());
         tests.extend(navigation_trials());
-        tests.extend([
-            Trial::test(
-                "menus::the_window_menu_opens_with_the_standard_close_item",
-                || {
-                    menus::the_window_menu_opens_with_the_standard_close_item();
-                    Ok(())
-                },
-            ),
-            Trial::test(
-                "menus::a_pull_down_validates_its_callback_rows_from_their_command",
-                || {
-                    menus::a_pull_down_validates_its_callback_rows_from_their_command();
-                    Ok(())
-                },
-            ),
-            #[cfg(feature = "text_field")]
-            Trial::test(
-                "text_selection::a_selection_menu_command_edits_the_live_selection",
-                || {
-                    text_selection::a_selection_menu_command_edits_the_live_selection();
-                    Ok(())
-                },
-            ),
-            Trial::test("split::a_sidebar_list_takes_the_source_list_chrome", || {
-                split::a_sidebar_list_takes_the_source_list_chrome();
-                Ok(())
-            }),
-            Trial::test("split::a_plain_list_keeps_the_regular_chrome", || {
-                split::a_plain_list_keeps_the_regular_chrome();
-                Ok(())
-            }),
-            Trial::test(
-                "material_vibrancy::a_window_material_hosts_its_content_and_releases_it",
-                || {
-                    material_vibrancy::a_window_material_hosts_its_content_and_releases_it();
-                    Ok(())
-                },
-            ),
-            Trial::test(
-                "material_vibrancy::text_in_a_material_is_vibrant_only_for_default_tokens",
-                || {
-                    material_vibrancy::text_in_a_material_is_vibrant_only_for_default_tokens();
-                    Ok(())
-                },
-            ),
-            Trial::test(
-                "material_vibrancy::glass_text_draws_bold_in_the_opaque_text_color",
-                || {
-                    material_vibrancy::glass_text_draws_bold_in_the_opaque_text_color();
-                    Ok(())
-                },
-            ),
-        ]);
+        tests.extend(chrome_trials());
         #[cfg(target_os = "macos")]
         tests.extend(material_reduce_transparency::trials());
         tests.extend(list_ax::trials());
