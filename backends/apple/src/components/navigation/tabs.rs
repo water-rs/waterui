@@ -74,11 +74,12 @@ struct Mounted {
 
 /// Renders one tab once: the pane, the label's extracted text and the icon's
 /// leaf the platform chrome still binds.
-fn mount_tab(id: Id, tab: &Tab, renderer: &crate::contract::Renderer) -> Mounted {
-    let pane = renderer.render(waterui_backend_core::AnyView::new(tab.content().build()));
-    let label_leaf = renderer.render(tab.label().build());
+fn mount_tab(id: Id, tab: Tab, renderer: &crate::contract::Renderer) -> Mounted {
+    let (label, icon, content, badge, enabled, role) = tab.into_parts();
+    let pane = renderer.render(waterui_backend_core::AnyView::new(content.build()));
+    let label_leaf = renderer.render(label.build());
     let label = extract_title_text(label_leaf.view());
-    let (symbol, icon_leaf) = match tab.icon() {
+    let (symbol, icon_leaf) = match icon {
         Some(TabIcon::System(icon)) => (Some(icon.name().to_string()), None),
         Some(TabIcon::View(icon)) => (None, Some(renderer.render(icon.build()))),
         None => (None, None),
@@ -91,9 +92,9 @@ fn mount_tab(id: Id, tab: &Tab, renderer: &crate::contract::Renderer) -> Mounted
         label: label.unwrap_or_default(),
         symbol,
         icon_leaf,
-        badge: tab.get_badge().cloned(),
-        enabled: tab.get_enabled().clone(),
-        is_search: matches!(tab.get_role(), TabRole::Search),
+        badge,
+        enabled,
+        is_search: matches!(role, TabRole::Search),
         keep: core::cell::RefCell::new(crate::contract::KeepAlive::default()),
     }
 }
@@ -125,7 +126,7 @@ fn reconcile_tabs(
         tabs.push(old.remove(&id).unwrap_or_else(|| {
             mount_tab(
                 id,
-                &snapshot
+                snapshot
                     .get_view(index)
                     .expect("a collection snapshot reports a view for every index"),
                 renderer,

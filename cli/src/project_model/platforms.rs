@@ -212,7 +212,7 @@ mod tests {
         let project = manifest("");
         assert!(project.platforms().is_empty());
         assert!(
-            !toml::to_string(&Manifest::new(project.package().clone()))
+            !toml::to_string(&Manifest::new(project.into_package()))
                 .unwrap()
                 .contains("platforms")
         );

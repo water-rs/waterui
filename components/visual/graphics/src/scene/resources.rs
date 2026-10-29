@@ -404,15 +404,10 @@ where
         + cherenkov::ShaderPaintCapability,
 {
     fn register_shader(&self, source: ShaderSource) -> Result<Handle<ShaderId>, ResourceError> {
-        match source.language() {
+        let (source, language, animated) = source.into_parts();
+        match language {
             ShaderLanguage::Wgsl => {
-                let shader = Self::shader(
-                    self,
-                    cherenkov::ShaderSource {
-                        source: source.source().clone(),
-                        animated: source.get_animated(),
-                    },
-                )?;
+                let shader = Self::shader(self, cherenkov::ShaderSource { source, animated })?;
                 Ok(Handle::new(shader))
             }
             language @ ShaderLanguage::Agsl => Err(ResourceError::Shader(format!(

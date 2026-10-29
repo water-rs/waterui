@@ -596,24 +596,16 @@ fn render_tree_chart_switch_snapshot() {
         .pump_at(true, start)
         .into_snapshot()
         .expect("first frame must capture a snapshot");
-    write_png(
-        &export_path("switch", "before"),
-        before.width(),
-        before.height(),
-        before.rgba8().to_vec(),
-    );
+    let (width, height, rgba8, _) = before.into_parts();
+    write_png(&export_path("switch", "before"), width, height, rgba8);
 
     mode.set(true);
     let after = rt
         .pump_at(true, start + Duration::from_millis(16))
         .into_snapshot()
         .expect("switched frame must capture a snapshot");
-    write_png(
-        &export_path("switch", "after"),
-        after.width(),
-        after.height(),
-        after.rgba8().to_vec(),
-    );
+    let (width, height, rgba8, _) = after.into_parts();
+    write_png(&export_path("switch", "after"), width, height, rgba8);
 
     eprintln!("wrote /tmp/waterui_tree_switch_before.png and /tmp/waterui_tree_switch_after.png");
 }
@@ -673,24 +665,16 @@ fn render_tree_scene_view_switch_snapshot() {
         .pump_at(true, start)
         .into_snapshot()
         .expect("first frame must capture a snapshot");
-    write_png(
-        &export_path("sceneview", "before"),
-        before.width(),
-        before.height(),
-        before.rgba8().to_vec(),
-    );
+    let (width, height, rgba8, _) = before.into_parts();
+    write_png(&export_path("sceneview", "before"), width, height, rgba8);
 
     mode.set(true);
     let after = rt
         .pump_at(true, start + Duration::from_millis(16))
         .into_snapshot()
         .expect("switched frame must capture a snapshot");
-    write_png(
-        &export_path("sceneview", "after"),
-        after.width(),
-        after.height(),
-        after.rgba8().to_vec(),
-    );
+    let (width, height, rgba8, _) = after.into_parts();
+    write_png(&export_path("sceneview", "after"), width, height, rgba8);
 
     eprintln!(
         "wrote /tmp/waterui_tree_sceneview_before.png and /tmp/waterui_tree_sceneview_after.png"
@@ -738,12 +722,8 @@ fn render_tree_scroll_snapshot() {
         .pump_at(true, start)
         .into_snapshot()
         .expect("first frame must capture a snapshot");
-    write_png(
-        &export_path("scroll", "before"),
-        before.width(),
-        before.height(),
-        before.rgba8().to_vec(),
-    );
+    let (width, height, rgba8, _) = before.into_parts();
+    write_png(&export_path("scroll", "before"), width, height, rgba8);
 
     rt.push_input_event(crate::platform::InputEvent::Scroll {
         x: 80.0,
@@ -756,12 +736,8 @@ fn render_tree_scroll_snapshot() {
         .pump_at(true, start + Duration::from_millis(16))
         .into_snapshot()
         .expect("scrolled frame must capture a snapshot");
-    write_png(
-        &export_path("scroll", "after"),
-        after.width(),
-        after.height(),
-        after.rgba8().to_vec(),
-    );
+    let (width, height, rgba8, _) = after.into_parts();
+    write_png(&export_path("scroll", "after"), width, height, rgba8);
 
     eprintln!("wrote /tmp/waterui_tree_scroll_before.png and /tmp/waterui_tree_scroll_after.png");
 }
@@ -862,12 +838,8 @@ fn render_tree_collection_snapshot() {
         .pump_at(true, std::time::Instant::now())
         .into_snapshot()
         .expect("collection frame must capture a snapshot");
-    write_png(
-        &export_path("collection", "review"),
-        snapshot.width(),
-        snapshot.height(),
-        snapshot.rgba8().to_vec(),
-    );
+    let (width, height, rgba8, _) = snapshot.into_parts();
+    write_png(&export_path("collection", "review"), width, height, rgba8);
     eprintln!("wrote /tmp/waterui_tree_collection.png");
 }
 
@@ -1048,12 +1020,8 @@ fn render_tree_grid_snapshot() {
         .pump_at(true, std::time::Instant::now())
         .into_snapshot()
         .expect("grid frame must capture a snapshot");
-    write_png(
-        &export_path("grid", "review"),
-        snapshot.width(),
-        snapshot.height(),
-        snapshot.rgba8().to_vec(),
-    );
+    let (width, height, rgba8, _) = snapshot.into_parts();
+    write_png(&export_path("grid", "review"), width, height, rgba8);
     eprintln!("wrote /tmp/waterui_tree_grid.png");
 }
 

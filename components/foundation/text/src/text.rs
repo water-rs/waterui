@@ -69,6 +69,24 @@ impl TextConfig {
     pub const fn line_limit(&self) -> Option<NonZeroUsize> {
         self.line_limit
     }
+
+    /// Takes the rich text content out of the value.
+    #[must_use]
+    pub fn into_content(self) -> Computed<StyledStr> {
+        self.content
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Computed<StyledStr>,
+        Computed<HorizontalAlignment>,
+        Option<NonZeroUsize>,
+    ) {
+        (self.content, self.paragraph_alignment, self.line_limit)
+    }
 }
 
 impl TextConfig {

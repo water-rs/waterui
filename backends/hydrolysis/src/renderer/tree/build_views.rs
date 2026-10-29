@@ -213,12 +213,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// through `read_signal` so a tab change schedules a frame and the active
     /// content/indicator updates. Stretch is `Both` (read from the config).
     pub(super) fn build_tabs(
-        tabs: &TabsLayout,
+        tabs: TabsLayout,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
         use crate::widgets::nav::tabs::TabsRenderState;
-        let stretch = waterui_core::NativeView::stretch_axis(tabs);
+        let stretch = waterui_core::NativeView::stretch_axis(&tabs);
         let mut state = TabsRenderState::from_tabs(tabs, renderer);
         // See build_controls: the prebuild runs under this widget's
         // cell as the record reader, so its subviews attach to it.

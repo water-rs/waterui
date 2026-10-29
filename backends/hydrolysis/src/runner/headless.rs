@@ -313,6 +313,18 @@ impl HeadlessPumpResult {
     pub const fn ui_focus(&self) -> Option<accesskit::NodeId> {
         self.ui_focus
     }
+
+    /// Takes the accessibility tree update out of the result, leaving none.
+    #[cfg(feature = "accessibility")]
+    pub const fn take_tree_update(&mut self) -> Option<AccessibilityTreeUpdate> {
+        self.tree_update.take()
+    }
+
+    /// Takes the content types out of the result, leaving the map empty.
+    #[cfg(feature = "accessibility")]
+    pub fn take_content_types(&mut self) -> AccessibilityContentTypes {
+        core::mem::take(&mut self.content_types)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

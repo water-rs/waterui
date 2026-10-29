@@ -3927,6 +3927,12 @@ impl Manifest {
     pub const fn app_values(&self) -> &crate::assets::AppValuesConfig {
         &self.app_values
     }
+
+    /// Takes the package information out of the value.
+    #[must_use]
+    pub fn into_package(self) -> Package {
+        self.package
+    }
 }
 
 /// Distribution signing configuration (`[signing]`).

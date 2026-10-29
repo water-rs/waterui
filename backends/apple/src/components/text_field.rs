@@ -659,10 +659,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The label renders above the field; its semantic text names the
         // control while the visual label leaves the accessibility tree —
         // `WuiControlAccessibility`'s split.
-        let accessibility_label = config.label().accessibility_label();
+        let (label, value, prompt, _, _, selection_menu, _, on_submit) = config.into_parts();
+        let accessibility_label = label.accessibility_label();
         let host_view: &PlatformView = &host;
         let mounted = ctx
-            .render(waterui_backend_core::AnyView::new(config.label().clone()))
+            .render(waterui_backend_core::AnyView::new(label))
             .mount(host_view);
         view::hide_from_accessibility(mounted.view());
 
@@ -689,7 +690,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             mtm,
             ctx.env(),
             platform_color(&Foreground.resolve(ctx.env()).snapshot()),
-            &config.value().snapshot(),
+            &value.snapshot(),
             {
                 let field = field.clone();
                 move |state| {
@@ -703,10 +704,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
             },
         );
 
-        wire_value(&mut leaf, config.value(), ctx, &field, &value_state);
+        wire_value(&mut leaf, &value, ctx, &field, &value_state);
 
         // Return submits through the configured action.
-        if let Some(on_submit) = config.on_submit().cloned() {
+        if let Some(on_submit) = on_submit {
             let env = ctx.env().clone();
             #[cfg(target_os = "ios")]
             leaf.keep(field.install_submit_handler(move |_| on_submit.call(&env)));
@@ -716,7 +717,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The prompt renders into the placeholder under the placeholder
         // color — `WuiStyledStrRenderer`'s `defaultForegroundColor`.
-        wire_prompt(mtm, &mut leaf, ctx, &field, config.prompt());
+        wire_prompt(mtm, &mut leaf, ctx, &field, &prompt);
 
         // Announce the label's semantic text on the field.
         leaf.bind(&accessibility_label, {
@@ -740,13 +741,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // `selection_menu` rows ride the platform edit menu, on an
         // environment carrying the field's live `TextSelection`.
-        install_selection_menu(
-            mtm,
-            ctx.env(),
-            config.selection_menu(),
-            &field,
-            config.value(),
-        );
+        install_selection_menu(mtm, ctx.env(), &selection_menu, &field, &value);
 
         leaf.keep(state);
         leaf.keep(value_state);

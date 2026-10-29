@@ -445,10 +445,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
             child: mounted,
             env: ctx.env().clone(),
             is_presented: dialog.is_presented().clone(),
-            title: dialog.title().resolve(ctx.env()).content().clone(),
+            title: dialog.title().resolve(ctx.env()).into_content(),
             message: dialog
                 .message_text()
-                .map(|message| message.resolve(ctx.env()).content().clone()),
+                .map(|message| message.resolve(ctx.env()).into_content()),
             dialog,
             alert: RefCell::new(None),
         });

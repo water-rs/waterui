@@ -246,6 +246,12 @@ impl BundleMountMeta {
     pub fn set_project(&mut self, project: Option<PathBuf>) {
         self.project = project;
     }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (String, PathBuf, Option<PathBuf>) {
+        (self.mount, self.path, self.project)
+    }
 }
 
 impl BundleMountMeta {

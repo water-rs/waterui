@@ -29,7 +29,7 @@ pub fn view(model: Model) -> impl View {
                 move || {
                     vstack((
                         task_header(),
-                        List::for_each(SignalCollection::new(tasks.clone()), |row| task_row(&row)),
+                        List::for_each(SignalCollection::new(tasks.clone()), task_row),
                     ))
                     .alignment(HorizontalAlignment::Leading)
                 }
@@ -62,16 +62,16 @@ fn task_header() -> impl View {
     .spacing(8.0)
 }
 
-fn task_row(row: &TaskRow) -> ListItem {
-    let over = row.over_budget();
+fn task_row(row: TaskRow) -> ListItem {
+    let (id, polls, mean_us, max_us, over) = row.into_parts();
 
     ListItem::new(
         hstack((
-            text(row.id().clone()),
+            text(id),
             spacer(),
-            column(text(Str::from(row.polls().to_string()))),
-            column(text(parts::format_us(row.mean_us()))),
-            column(text(parts::format_us(u64::from(row.max_us())))),
+            column(text(Str::from(polls.to_string()))),
+            column(text(parts::format_us(mean_us))),
+            column(text(parts::format_us(u64::from(max_us)))),
             column(text(Str::from(over.to_string())).foreground(if over > 0 {
                 Color::from(Orange)
             } else {

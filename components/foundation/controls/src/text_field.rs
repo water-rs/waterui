@@ -65,6 +65,11 @@ impl TextFieldConfig {
         self.label = label;
     }
 
+    /// The label displayed for the control, for editing it in place.
+    pub const fn label_mut(&mut self) -> &mut Label {
+        &mut self.label
+    }
+
     /// The binding to the text value.
     #[must_use]
     pub const fn value(&self) -> &Binding<StyledStr> {
@@ -190,6 +195,36 @@ impl ResolvedTextFieldConfig {
     #[must_use]
     pub const fn on_submit(&self) -> Option<&SharedAction> {
         self.on_submit.as_ref()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    #[expect(
+        clippy::type_complexity,
+        reason = "the tuple is the value's complete field list"
+    )]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Label,
+        Binding<StyledStr>,
+        TextConfig,
+        KeyboardType,
+        Option<ContentType>,
+        Computed<Vec<ResolvedMenuItem>>,
+        Option<NonZeroUsize>,
+        Option<SharedAction>,
+    ) {
+        (
+            self.label,
+            self.value,
+            self.prompt,
+            self.keyboard,
+            self.content_type,
+            self.selection_menu,
+            self.line_limit,
+            self.on_submit,
+        )
     }
 }
 

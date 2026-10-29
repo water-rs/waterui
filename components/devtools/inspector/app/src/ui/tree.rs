@@ -47,7 +47,7 @@ pub fn view(model: Model) -> impl View {
                         .clone()
                         .map(move |node| node == Some(id))
                         .computed();
-                    row_view(&row, is_revealed)
+                    row_view(row, is_revealed)
                 })
             }
         }),
@@ -90,30 +90,31 @@ fn rows(model: &Model, filter: &Binding<Str>) -> SignalCollection<Computed<Vec<T
 /// A node the application asked to inspect is marked, so that opening the
 /// inspector on an element lands the eye on that element rather than on the
 /// top of a long tree.
-fn row_view(row: &TreeRow, revealed: Computed<bool>) -> ListItem {
+fn row_view(row: TreeRow, revealed: Computed<bool>) -> ListItem {
+    let (_, depth, role, label, value, bounds, hidden, enabled) = row.into_parts();
     #[expect(
         clippy::cast_precision_loss,
         reason = "a view tree deep enough to lose f32 precision could not be rendered"
     )]
-    let indent = (row.depth() as f32) * 14.0;
+    let indent = (depth as f32) * 14.0;
 
     let content = hstack((
         spacer().width(indent),
         vstack((
             hstack((
-                text(row.role().clone()).sub_headline().foreground(Accent),
-                label_view(row.label().cloned()),
-                hidden_badge(row.hidden()),
+                text(role).sub_headline().foreground(Accent),
+                label_view(label),
+                hidden_badge(hidden),
                 revealed_badge(revealed),
             ))
             .spacing(8.0),
-            detail_view(row.value().cloned(), row.bounds().cloned()),
+            detail_view(value, bounds),
         ))
         .alignment(HorizontalAlignment::Leading)
         .spacing(2.0),
     ))
     .padding_with(EdgeInsets::new(6.0, 6.0, 12.0, 12.0))
-    .opacity(if row.enabled() { 1.0 } else { 0.55 });
+    .opacity(if enabled { 1.0 } else { 0.55 });
 
     ListItem::new(content)
 }

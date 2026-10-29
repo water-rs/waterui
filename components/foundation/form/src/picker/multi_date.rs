@@ -43,6 +43,11 @@ impl MultiDatePickerConfig {
         self.label = label;
     }
 
+    /// The label displayed for the control, for editing it in place.
+    pub const fn label_mut(&mut self) -> &mut Label {
+        &mut self.label
+    }
+
     /// The selected dates as an ordered vector for backend/FFI transport.
     #[must_use]
     pub const fn value(&self) -> &Binding<Vec<Date>> {

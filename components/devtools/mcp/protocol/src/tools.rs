@@ -744,6 +744,12 @@ impl TypeTextArgs {
     pub const fn settle(&self) -> Option<bool> {
         self.settle
     }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (String, Option<bool>) {
+        (self.text, self.settle)
+    }
 }
 
 /// Wait until every given expectation holds, then return `fulfilled` — or

@@ -960,6 +960,12 @@ impl ListSection {
     pub fn set_footer(&mut self, footer: Option<Text>) {
         self.footer = footer;
     }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Option<Text>, Option<Text>) {
+        (self.label, self.footer)
+    }
 }
 
 impl ListSection {
@@ -1073,6 +1079,18 @@ impl ListItem {
     #[must_use]
     pub const fn get_insets(&self) -> Option<&EdgeInsets> {
         self.insets.as_ref()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    pub fn into_parts(
+        self,
+    ) -> (
+        AnyView,
+        Computed<bool>,
+        Option<ListSection>,
+        Option<EdgeInsets>,
+    ) {
+        (self.content, self.deletable, self.section, self.insets)
     }
 }
 

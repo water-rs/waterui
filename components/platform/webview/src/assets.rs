@@ -127,6 +127,12 @@ impl AssetResponse {
     pub const fn body(&self) -> &[u8] {
         self.body.as_slice()
     }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (u16, Vec<(Str, Str)>, Vec<u8>) {
+        (self.status, self.headers, self.body)
+    }
 }
 
 impl AssetResponse {

@@ -56,6 +56,12 @@ impl PreviewRunConfig {
         &self.mode
     }
 
+    /// Takes what the run produces.
+    #[must_use]
+    pub fn into_mode(self) -> PreviewRunMode {
+        self.mode
+    }
+
     /// How long, in milliseconds, an image or scenario capture waits for
     /// content its views owe after mount before the run fails naming them.
     #[must_use]

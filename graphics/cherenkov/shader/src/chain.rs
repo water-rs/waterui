@@ -325,6 +325,12 @@ impl Folded {
     pub const fn sampler(&self) -> SamplerFilter {
         self.sampler
     }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Segment, FoldCost, SamplerFilter) {
+        (self.segment, self.cost, self.sampler)
+    }
 }
 
 /// One piece of a composed chain. Boundaries between pieces are the possible

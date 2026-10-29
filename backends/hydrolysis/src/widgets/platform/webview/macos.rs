@@ -854,13 +854,12 @@ fn answer_scheme_task(
     let url = request_url
         .and_then(|url| NSURL::URLWithString(&NSString::from_str(url)))
         .expect("WebKit only starts scheme tasks for URLs it could parse");
-    let names: Vec<Retained<NSString>> = response
-        .headers()
+    let (status, response_headers, body) = response.into_parts();
+    let names: Vec<Retained<NSString>> = response_headers
         .iter()
         .map(|(name, _)| NSString::from_str(name))
         .collect();
-    let values: Vec<Retained<NSString>> = response
-        .headers()
+    let values: Vec<Retained<NSString>> = response_headers
         .iter()
         .map(|(_, value)| NSString::from_str(value))
         .collect();
@@ -871,7 +870,7 @@ fn answer_scheme_task(
     let ns_response = NSHTTPURLResponse::initWithURL_statusCode_HTTPVersion_headerFields(
         NSHTTPURLResponse::alloc(),
         &url,
-        NSInteger::try_from(response.status()).expect("HTTP status fits NSInteger"),
+        NSInteger::try_from(status).expect("HTTP status fits NSInteger"),
         Some(&NSString::from_str("HTTP/1.1")),
         Some(&headers),
     )
@@ -880,8 +879,8 @@ fn answer_scheme_task(
     // completes, and `stopURLSchemeTask` makes no further callbacks.
     unsafe {
         task.didReceiveResponse(&ns_response);
-        if !response.body().is_empty() {
-            task.didReceiveData(&NSData::from_vec(response.body().to_vec()));
+        if !body.is_empty() {
+            task.didReceiveData(&NSData::from_vec(body));
         }
         task.didFinish();
     }
@@ -963,11 +962,9 @@ impl MacSystemWebViewHandle {
     fn new(config: WebViewConfig) -> Self {
         let mtm = MainThreadMarker::new()
             .expect("Hydrolysis WKWebView must be created on the macOS main thread");
-        let shared = Rc::new(SharedState::new(
-            config.bridge_origins().clone(),
-            DocumentScripts::new(&config),
-            config.navigation_policy().cloned(),
-        ));
+        let scripts = DocumentScripts::new(&config);
+        let (asset_server, bridge_origins, navigation_policy, ..) = config.into_parts();
+        let shared = Rc::new(SharedState::new(bridge_origins, scripts, navigation_policy));
         let delegate = WebViewDelegate::new(mtm, Rc::clone(&shared));
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
@@ -975,8 +972,8 @@ impl MacSystemWebViewHandle {
         // The bundled-asset origin exists only when the view was opened with a
         // server to answer it; the configuration retains the handler it is
         // registered under.
-        if let Some(server) = config.asset_server() {
-            let handler = AssetSchemeHandler::new(mtm, server.clone());
+        if let Some(server) = asset_server {
+            let handler = AssetSchemeHandler::new(mtm, server);
             // SAFETY: main-thread message send to an object this wrapper
             // retains; see the module safety note.
             unsafe {

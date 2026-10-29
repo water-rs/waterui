@@ -337,10 +337,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         #[cfg(target_os = "macos")]
         let padding = configure_button(&button, style, control_size);
 
-        let accessibility_label = config.label().accessibility_label();
-        let label_leaf = ctx
-            .with_env(&label_env)
-            .render(AnyView::new(config.label().clone()));
+        let (label, action, ..) = config.into_parts();
+        let accessibility_label = label.accessibility_label();
+        let label_leaf = ctx.with_env(&label_env).render(AnyView::new(label));
         let child_view = view::retain_base(label_leaf.view());
         let mounted = label_leaf.mount(&label_container);
 
@@ -393,7 +392,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The action runs against the button's own environment — the one
         // `Button<Action>` extracted state into — not the label's clone.
-        let action = Rc::new(RefCell::new(config.into_action()));
+        let action = Rc::new(RefCell::new(action));
         let action_env = ctx.env().clone();
         wire_action(&mut leaf, &button, action, action_env);
 

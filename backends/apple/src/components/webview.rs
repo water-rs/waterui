@@ -770,14 +770,9 @@ impl CustomWebViewController for AppleWebViewController {
         // Interception can only be registered while the configuration is
         // being assembled, so the asset server arrives at creation.
         let scripts = DocumentScripts::new(&config);
-        let scheme = config.asset_server().map(asset_scheme);
-        WkWebViewHandle::new(
-            mtm,
-            scheme,
-            config.bridge_origins().clone(),
-            scripts,
-            config.navigation_policy().cloned(),
-        )
+        let (asset_server, bridge_origins, navigation_policy, ..) = config.into_parts();
+        let scheme = asset_server.as_ref().map(asset_scheme);
+        WkWebViewHandle::new(mtm, scheme, bridge_origins, scripts, navigation_policy)
     }
 
     fn asset_origin(&self) -> Option<Url> {
@@ -861,14 +856,14 @@ fn asset_scheme(server: &assets::AssetServer) -> web_kit::SchemeHandler {
                 &request.path,
                 request.query.as_deref().or(Some("")),
             );
+            let (status, headers, body) = response.into_parts();
             web_kit::SchemeResponse {
-                status: response.status(),
-                headers: response
-                    .headers()
+                status,
+                headers: headers
                     .iter()
                     .map(|(name, value)| (name.to_string(), value.to_string()))
                     .collect(),
-                body: response.body().to_vec(),
+                body,
             }
         }),
     }

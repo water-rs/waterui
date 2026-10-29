@@ -1520,7 +1520,7 @@ impl NavigationView {
     pub fn resolve_native_fields(&mut self, env: &Environment) {
         if let Some(search) = &mut self.bar.search {
             search.set_prompt(waterui_text::Text::computed(
-                search.prompt().resolve(env).content().clone(),
+                search.prompt().resolve(env).into_content(),
             ));
         }
 
@@ -1530,7 +1530,7 @@ impl NavigationView {
         // to resolve one against.
         for item in &mut self.bar.toolbar.items {
             if let Some(title) = item.title.take() {
-                item.title = Some(Text::computed(title.resolve(env).content().clone()));
+                item.title = Some(Text::computed(title.resolve(env).into_content()));
             }
         }
 

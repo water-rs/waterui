@@ -86,7 +86,7 @@ fn peek_section(snapshot: &AnyViewsSnapshot<ListItem>, index: usize) -> Option<L
 
 /// A resolved section `Text` as its live styled-string signal.
 fn resolve_text(text: &Text, env: &Environment) -> Computed<StyledStr> {
-    text.resolve(env).content().clone()
+    text.resolve(env).into_content()
 }
 
 /// `computeListSectionGroups`'s answer: a band's texts and how many items
@@ -678,11 +678,10 @@ impl Shared {
             .snapshot
             .get_view(self.positions[&self.item_ids[flat]])
             .expect("list item index is in bounds");
-        let insets = item.get_insets().cloned();
-        let deletable = item.get_deletable().clone();
+        let (content, deletable, _, insets) = item.into_parts();
         // The row's `Disabled` signal comes from the scope this render
         // resolves the content under — the same pass, not a second walk.
-        let (leaf, resolved_env) = self.renderer.render_resolved(item.into_content());
+        let (leaf, resolved_env) = self.renderer.render_resolved(content);
         self.disabled_rows
             .borrow_mut()
             .insert(self.item_ids[flat], Disabled::resolve(&resolved_env, false));

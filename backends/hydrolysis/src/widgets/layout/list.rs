@@ -21,7 +21,7 @@ use accesskit::{
 };
 #[cfg(feature = "accessibility")]
 use waterui::accessibility::{AccessibilityHidden, AccessibilityStateSignal};
-use waterui::component::list::{ListConfig, ListItem, ListSelection, Move};
+use waterui::component::list::{ListConfig, ListItem, ListSection, ListSelection, Move};
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
 use waterui_backend_core::scroll::{ScrollPositionReport, animated_row_scroll_approach};
 use waterui_core::animation::Animation;
@@ -565,7 +565,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         let mut open_section: Option<(usize, Option<Text>)> = None;
         for index in 0..len {
             let item = materialize_list_item(&snapshot, index, env);
-            let Some(section) = item.get_section() else {
+            let Some((label, footer)) = item.into_section().map(ListSection::into_parts) else {
                 continue;
             };
             if let Some((_, footer)) = open_section.take()
@@ -573,8 +573,8 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             {
                 chrome[index - 1].footer = footer;
             }
-            chrome[index].header = section.label().cloned();
-            open_section = Some((index, section.get_footer().cloned()));
+            chrome[index].header = label;
+            open_section = Some((index, footer));
         }
         if let Some((_, footer)) = open_section
             && len > 0

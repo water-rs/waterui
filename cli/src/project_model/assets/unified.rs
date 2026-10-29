@@ -632,11 +632,9 @@ pub async fn build_manifest(
             }
             crate::web::build_frontend(project.host(), package_manager, &meta).await?;
         }
-        assets.extend(plan_mount(meta.path(), meta.mount())?);
-        mounts.push(BundleMount::new(
-            meta.mount().to_owned(),
-            meta.path().clone(),
-        ));
+        let (mount, path, _) = meta.into_parts();
+        assets.extend(plan_mount(&path, &mount)?);
+        mounts.push(BundleMount::new(mount, path));
     }
 
     assets.sort_by(|left, right| left.logical_path().cmp(right.logical_path()));

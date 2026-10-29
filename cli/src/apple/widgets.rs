@@ -173,12 +173,13 @@ pub fn declared_widgets(symbols: &ArtifactSymbols) -> eyre::Result<Vec<DeclaredW
         })?;
         let declaration: WidgetDeclaration = serde_json::from_slice(&payload)
             .wrap_err_with(|| format!("`{record}`'s widget declaration does not decode"))?;
+        let (function, kind, display_name, description, families) = declaration.into_parts();
         widgets.push(DeclaredWidget {
-            function: declaration.function().to_owned(),
-            kind: declaration.kind().to_owned(),
-            display_name: declaration.display_name().to_owned(),
-            description: declaration.description().to_owned(),
-            families: declaration.families().to_vec(),
+            function,
+            kind,
+            display_name,
+            description,
+            families,
             symbol: export,
         });
     }

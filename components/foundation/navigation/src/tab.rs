@@ -221,6 +221,32 @@ impl Tab {
     pub const fn get_role(&self) -> TabRole {
         self.role
     }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    #[expect(
+        clippy::type_complexity,
+        reason = "the tuple is the value's complete field list"
+    )]
+    pub fn into_parts(
+        self,
+    ) -> (
+        AnyViewBuilder<AnyView>,
+        Option<TabIcon>,
+        AnyViewBuilder<NavigationView>,
+        Option<Computed<i32>>,
+        Computed<bool>,
+        TabRole,
+    ) {
+        (
+            self.label,
+            self.icon,
+            self.content,
+            self.badge,
+            self.enabled,
+            self.role,
+        )
+    }
 }
 
 impl_debug!(Tab);
@@ -359,6 +385,26 @@ impl TabsLayout {
     /// Takes the `bottom_accessory` out of the value, leaving none behind.
     pub const fn take_bottom_accessory(&mut self) -> Option<AnyView> {
         self.bottom_accessory.take()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Binding<Id>,
+        SharedAnyViews<Tab>,
+        NativeTabStyle,
+        TabBarMinimizeBehavior,
+        Option<AnyView>,
+    ) {
+        (
+            self.selection,
+            self.tabs,
+            self.style,
+            self.minimize_behavior,
+            self.bottom_accessory,
+        )
     }
 }
 

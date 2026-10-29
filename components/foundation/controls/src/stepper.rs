@@ -52,6 +52,11 @@ impl StepperConfig {
         self.label = label;
     }
 
+    /// The label displayed for the control, for editing it in place.
+    pub const fn label_mut(&mut self) -> &mut Label {
+        &mut self.label
+    }
+
     /// Optional formatter for the inline value display, layered on top of the
     /// label. When `None`, the stepper renders only the label; when `Some`, the
     /// formatted value is shown next to the buttons.
@@ -64,6 +69,30 @@ impl StepperConfig {
     #[must_use]
     pub const fn range(&self) -> &RangeInclusive<i32> {
         &self.range
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    #[expect(
+        clippy::type_complexity,
+        reason = "the tuple is the value's complete field list"
+    )]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Binding<i32>,
+        Computed<i32>,
+        Label,
+        Option<Computed<StyledStr>>,
+        RangeInclusive<i32>,
+    ) {
+        (
+            self.value,
+            self.step,
+            self.label,
+            self.value_formatter,
+            self.range,
+        )
     }
 }
 

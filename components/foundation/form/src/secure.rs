@@ -108,10 +108,21 @@ impl SecureFieldConfig {
         self.label = label;
     }
 
+    /// The label displayed for the control, for editing it in place.
+    pub const fn label_mut(&mut self) -> &mut Label {
+        &mut self.label
+    }
+
     /// The binding to the secure value being edited.
     #[must_use]
     pub const fn value(&self) -> &Binding<Secure> {
         &self.value
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Label, Binding<Secure>) {
+        (self.label, self.value)
     }
 }
 

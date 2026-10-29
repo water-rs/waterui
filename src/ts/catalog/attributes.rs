@@ -56,6 +56,12 @@ impl VStackAttributes {
     pub const fn alignment(&self) -> Option<HorizontalAlign> {
         self.alignment
     }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Option<Computed<f32>>, Option<HorizontalAlign>) {
+        (self.spacing, self.alignment)
+    }
 }
 
 /// `<HStack>`: children stacked leading to trailing.
@@ -79,6 +85,12 @@ impl HStackAttributes {
     #[must_use]
     pub const fn alignment(&self) -> Option<VerticalAlign> {
         self.alignment
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Option<Computed<f32>>, Option<VerticalAlign>) {
+        (self.spacing, self.alignment)
     }
 }
 
@@ -179,6 +191,12 @@ impl ButtonAttributes {
     pub const fn take_label(&mut self) -> Option<AnyView> {
         self.label.take()
     }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Option<JsAction>, Option<AnyView>) {
+        (self.on_tap, self.label)
+    }
 }
 
 /// `<Toggle>`: a two-state switch.
@@ -274,6 +292,12 @@ impl StepperAttributes {
     pub const fn take_label(&mut self) -> Option<AnyView> {
         self.label.take()
     }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Binding<i32>, Option<Computed<i32>>, Option<AnyView>) {
+        (self.value, self.step, self.label)
+    }
 }
 
 /// `<TextField>`: a single-line text entry field.
@@ -310,6 +334,12 @@ impl TextFieldAttributes {
     /// Takes the label out, leaving none behind.
     pub const fn take_label(&mut self) -> Option<AnyView> {
         self.label.take()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Binding<Str>, Option<Computed<TextContent>>, Option<AnyView>) {
+        (self.value, self.prompt, self.label)
     }
 }
 
@@ -454,6 +484,18 @@ impl ProgressAttributes {
     pub const fn style(&self) -> Option<ProgressStyleValue> {
         self.style
     }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Option<Computed<f64>>,
+        Option<Computed<f64>>,
+        Option<ProgressStyleValue>,
+    ) {
+        (self.value, self.total, self.style)
+    }
 }
 
 /// `<Link>`: a label that opens a URL.
@@ -469,6 +511,12 @@ impl LinkAttributes {
     #[must_use]
     pub const fn url(&self) -> &Computed<Str> {
         &self.url
+    }
+
+    /// Takes the `url` out of the value.
+    #[must_use]
+    pub fn into_url(self) -> Computed<Str> {
+        self.url
     }
 }
 
@@ -493,6 +541,12 @@ impl CardAttributes {
     #[must_use]
     pub const fn subtitle(&self) -> Option<&TextContent> {
         self.subtitle.as_ref()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Option<TextContent>, Option<TextContent>) {
+        (self.title, self.subtitle)
     }
 }
 
@@ -520,6 +574,12 @@ impl BadgeAttributes {
     pub const fn content(&self) -> &JsViewBuilder {
         &self.content
     }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Computed<i32>, JsViewBuilder) {
+        (self.value, self.content)
+    }
 }
 
 /// `<Table>`: columns of text.
@@ -540,6 +600,12 @@ impl ColumnAttributes {
     #[must_use]
     pub const fn label(&self) -> &TextContent {
         &self.label
+    }
+
+    /// Takes the `label` out of the value.
+    #[must_use]
+    pub fn into_label(self) -> TextContent {
+        self.label
     }
 }
 
@@ -566,6 +632,12 @@ impl AccordionAttributes {
     #[must_use]
     pub const fn expanded(&self) -> Option<&Binding<bool>> {
         self.expanded.as_ref()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (JsViewBuilder, Option<Binding<bool>>) {
+        (self.content, self.expanded)
     }
 }
 
@@ -598,6 +670,19 @@ impl AvatarAttributes {
     pub const fn image(&self) -> Option<&Computed<UrlValue>> {
         self.image.as_ref()
     }
+
+    /// Takes the `name` out of the value.
+    #[must_use]
+    pub fn into_name(self) -> TextContent {
+        self.name
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[cfg(feature = "media")]
+    #[must_use]
+    pub fn into_parts(self) -> (TextContent, Option<Computed<UrlValue>>) {
+        (self.name, self.image)
+    }
 }
 
 /// `<NavigationStack>`: a stack whose children are its root.
@@ -613,6 +698,12 @@ impl NavigationStackAttributes {
     #[must_use]
     pub const fn title(&self) -> Option<&TextContent> {
         self.title.as_ref()
+    }
+
+    /// Takes the `title` out of the value.
+    #[must_use]
+    pub fn into_title(self) -> Option<TextContent> {
+        self.title
     }
 }
 
@@ -637,6 +728,12 @@ impl NavigationLinkAttributes {
     #[must_use]
     pub const fn title(&self) -> Option<&TextContent> {
         self.title.as_ref()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (JsViewBuilder, Option<TextContent>) {
+        (self.destination, self.title)
     }
 }
 
@@ -685,6 +782,12 @@ impl TabAttributes {
     #[must_use]
     pub const fn title(&self) -> Option<&TextContent> {
         self.title.as_ref()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Str, JsViewBuilder, Option<TextContent>) {
+        (self.value, self.content, self.title)
     }
 }
 

@@ -550,13 +550,11 @@ mod tests {
         // its `Water.toml` declares reach the build the way they reach a
         // project's own `cargo` commands: through the generated
         // `.cargo/config.toml`.
-        let declared = crate::project::Manifest::parse(
+        let manifest = crate::project::Manifest::parse(
             &std::fs::read_to_string(staged.join("Water.toml")).expect("the fixture Water.toml"),
         )
-        .expect("the fixture Water.toml parses")
-        .apple()
-        .deployment_targets()
-        .clone();
+        .expect("the fixture Water.toml parses");
+        let declared = manifest.apple().deployment_targets();
         let cargo_config = futures_lite::future::block_on(async {
             crate::framework::ResolvedFramework::for_local_checkout(
                 &crate::toolchain::Host::current(),
@@ -564,7 +562,7 @@ mod tests {
             )
             .await
             .expect("the pinned framework resolves")
-            .cargo_config(&staged, &declared)
+            .cargo_config(&staged, declared)
             .await
             .expect("the fixture's deployment targets resolve")
         });

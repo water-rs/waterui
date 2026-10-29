@@ -204,10 +204,11 @@ impl ToolDispatch for SessionHandle {
     fn type_text(&self, args: TypeTextArgs) -> impl Future<Output = ToolResult> + Send {
         let handle = self.clone();
         async move {
+            let (text, settle) = args.into_parts();
             handle
                 .request(|reply| Command::TypeText {
-                    text: args.text().to_owned(),
-                    settle: args.settle(),
+                    text,
+                    settle,
                     reply,
                 })
                 .await

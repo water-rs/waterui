@@ -625,8 +625,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         if let Some(hook) = ctx.env().get::<Hook<MultiDatePickerConfig>>() {
             return ctx.render(hook.apply(ctx.env(), config));
         }
-        let label = config.label().clone().resolve(ctx.env());
-        config.set_label(label);
+        config.label_mut().resolve_in_place(ctx.env());
         render(config, ctx)
     });
 }

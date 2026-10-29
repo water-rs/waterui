@@ -173,6 +173,36 @@ impl TreeRow {
     pub const fn enabled(&self) -> bool {
         self.enabled
     }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    #[expect(
+        clippy::type_complexity,
+        reason = "the tuple is the value's complete field list"
+    )]
+    pub fn into_parts(
+        self,
+    ) -> (
+        u64,
+        usize,
+        Str,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        bool,
+        bool,
+    ) {
+        (
+            self.id,
+            self.depth,
+            self.role,
+            self.label,
+            self.value,
+            self.bounds,
+            self.hidden,
+            self.enabled,
+        )
+    }
 }
 
 /// One row of the task table.
@@ -222,6 +252,18 @@ impl TaskRow {
     pub const fn over_budget(&self) -> u32 {
         self.over_budget
     }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Str, u32, u64, u32, u32) {
+        (
+            self.id,
+            self.polls,
+            self.mean_us,
+            self.max_us,
+            self.over_budget,
+        )
+    }
 }
 
 /// One log line.
@@ -270,6 +312,12 @@ impl LogRow {
     #[must_use]
     pub const fn origin(&self) -> Option<&Str> {
         self.origin.as_ref()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (u64, LogLevel, Str, Str, Option<Str>) {
+        (self.id, self.level, self.target, self.message, self.origin)
     }
 }
 
@@ -327,6 +375,19 @@ impl SignalRow {
     #[must_use]
     pub const fn dropped(&self) -> bool {
         self.dropped
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (u64, Str, Str, u32, u64, bool) {
+        (
+            self.id,
+            self.type_name,
+            self.origin,
+            self.subscribers,
+            self.notifications,
+            self.dropped,
+        )
     }
 }
 

@@ -93,6 +93,11 @@ impl SliderConfig {
         self.label = label;
     }
 
+    /// The label displayed for the control, for editing it in place.
+    pub const fn label_mut(&mut self) -> &mut Label {
+        &mut self.label
+    }
+
     /// The label for the minimum value of the slider.
     #[must_use]
     pub const fn min_value_label(&self) -> &AnyView {

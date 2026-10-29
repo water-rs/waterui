@@ -361,7 +361,8 @@ fn passes(
                     // this pass replaces it.
                     (Some(folded), _, _) => {
                         selected.pop();
-                        selected.push((folded.segment().clone(), Some(folded.sampler())));
+                        let (segment, _, sampler) = folded.into_parts();
+                        selected.push((segment, Some(sampler)));
                     }
                     // The input has no hardware filtering: texel loads
                     // implement the sample, bound with a point sampler.

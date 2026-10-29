@@ -165,15 +165,16 @@ pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<ToggleConfig>(|config, ctx| {
         let mtm = ctx.mtm();
         let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let toggle = Toggle::new(mtm, kind(config.style()), config.toggle().snapshot());
+        let (label, binding, style) = config.into_parts();
+        let toggle = Toggle::new(mtm, kind(style), binding.snapshot());
         let disabled = Disabled::resolve(ctx.env(), false);
 
         // The label's spoken name lands on the control; the visual label
         // leaves the accessibility tree — `WuiControlAccessibility`'s split.
-        let accessibility_label = config.label().accessibility_label();
+        let accessibility_label = label.accessibility_label();
 
         // The label renders as a mounted child of the row's container.
-        let child = ctx.render(waterui_backend_core::AnyView::new(config.label().clone()));
+        let child = ctx.render(waterui_backend_core::AnyView::new(label));
         let mounted = child.mount(toggle.container());
         toggle.set_label(mounted.view());
         cocoa_ui::view::hide_from_accessibility(mounted.view());
@@ -188,7 +189,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         );
 
         // Signal → control, under the watcher metadata's animation.
-        leaf.watch(config.toggle(), {
+        leaf.watch(&binding, {
             let toggle = toggle.clone();
             move |ctx| {
                 toggle.set_on(*ctx.value(), state_change(ctx.metadata()));
@@ -197,7 +198,6 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // Control → binding: user edits write back through the action.
         leaf.keep(toggle.on_change({
-            let binding = config.toggle().clone();
             let toggle = toggle.clone();
             move |_| binding.set(toggle.is_on())
         }));

@@ -42,9 +42,7 @@ pub fn view(model: Model) -> impl View {
         when(empty, || {
             parts::empty_state("Nothing logged at this level yet.")
         })
-        .otherwise(move || {
-            List::for_each(SignalCollection::new(rows.clone()), |row| row_view(&row))
-        }),
+        .otherwise(move || List::for_each(SignalCollection::new(rows.clone()), row_view)),
     ))
     .alignment(HorizontalAlignment::Leading)
 }
@@ -100,19 +98,17 @@ fn level_picker(minimum: &Binding<LogLevel>) -> impl View {
         .spacing(4.0)
 }
 
-fn row_view(row: &LogRow) -> ListItem {
+fn row_view(row: LogRow) -> ListItem {
+    let (_, level, target, message, origin) = row.into_parts();
     ListItem::new(
         hstack((
-            text(row.level().name())
+            text(level.name())
                 .caption()
-                .foreground(parts::level_color(row.level()))
+                .foreground(parts::level_color(level))
                 .width(52.0),
-            vstack((
-                text(row.message().clone()),
-                origin_view(row.target().clone(), row.origin().cloned()),
-            ))
-            .alignment(HorizontalAlignment::Leading)
-            .spacing(2.0),
+            vstack((text(message), origin_view(target, origin)))
+                .alignment(HorizontalAlignment::Leading)
+                .spacing(2.0),
         ))
         .spacing(10.0)
         .padding_with(EdgeInsets::new(6.0, 6.0, 12.0, 12.0)),

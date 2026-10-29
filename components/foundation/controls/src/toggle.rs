@@ -82,6 +82,11 @@ impl ToggleConfig {
         self.label = label;
     }
 
+    /// The label displayed for the control, for editing it in place.
+    pub const fn label_mut(&mut self) -> &mut Label {
+        &mut self.label
+    }
+
     /// The binding to the toggle state.
     #[must_use]
     pub const fn toggle(&self) -> &Binding<bool> {
@@ -96,6 +101,12 @@ impl ToggleConfig {
     #[must_use]
     pub const fn style(&self) -> ToggleStyle {
         self.style
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Label, Binding<bool>, ToggleStyle) {
+        (self.label, self.toggle, self.style)
     }
 }
 

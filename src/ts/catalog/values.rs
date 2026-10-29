@@ -866,4 +866,10 @@ impl PickerOption {
     pub const fn label(&self) -> &TextContent {
         &self.label
     }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Str, TextContent) {
+        (self.value, self.label)
+    }
 }

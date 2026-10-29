@@ -248,29 +248,26 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let mtm = ctx.mtm();
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let host = HostView::new(mtm, Rect::ZERO);
+        let (value, step, label, value_formatter, range) = config.into_parts();
         let stepper = Stepper::new(mtm);
-        stepper.set_range(
-            f64::from(*config.range().start()),
-            f64::from(*config.range().end()),
-        );
-        stepper.set_step(f64::from(config.step().snapshot()));
-        stepper.set_value(f64::from(config.value().snapshot()));
+        stepper.set_range(f64::from(*range.start()), f64::from(*range.end()));
+        stepper.set_step(f64::from(step.snapshot()));
+        stepper.set_value(f64::from(value.snapshot()));
         host.add_subview(as_view(&stepper));
 
         let action = stepper.install_action({
-            let binding = config.value().clone();
+            let binding = value.clone();
             move |value| binding.set(stepped(value))
         });
 
         // The label's semantic text is announced on the control itself; the
         // visual children are hidden from the accessibility tree.
-        let accessibility_label = config.label().accessibility_label();
+        let accessibility_label = label.accessibility_label();
 
         let host_view: &PlatformView = &host;
-        let value_formatter = config.value_formatter().cloned();
         let children = Children {
             label: ctx
-                .render(waterui_backend_core::AnyView::new(config.label().clone()))
+                .render(waterui_backend_core::AnyView::new(label))
                 .mount(host_view),
             formatted: value_formatter.clone().map(|formatter| {
                 ctx.render(waterui_backend_core::AnyView::new(
@@ -306,7 +303,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // Signal → control: binding changes land on the stepper and refresh
         // the announced value.
-        leaf.watch(config.value(), {
+        leaf.watch(&value, {
             let state = Rc::clone(&state);
             move |change| {
                 let value = *change.value();
@@ -320,7 +317,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
 
         // The step size is computed: every change re-arms the control.
-        leaf.bind(config.step(), {
+        leaf.bind(&step, {
             let stepper = stepper.clone();
             move |step| stepper.set_step(f64::from(step))
         });

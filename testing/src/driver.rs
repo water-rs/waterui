@@ -88,12 +88,12 @@ impl RuntimeDriver for SemanticRuntime {
     }
 
     fn pump_at(&mut self, at: Instant, _capture_snapshot: bool) -> DriverPumpResult {
-        let result = Self::pump_at(self, at);
+        let mut result = Self::pump_at(self, at);
         DriverPumpResult {
             rebuilt: result.rebuilt(),
             profile: result.profile(),
-            tree_update: result.tree_update().cloned(),
-            content_types: result.content_types().clone(),
+            tree_update: result.take_tree_update(),
+            content_types: result.take_content_types(),
             snapshot: None,
             ui_focus: result.ui_focus().map(NodeId::from),
         }
@@ -134,18 +134,15 @@ impl RuntimeDriver for HeadlessRuntime {
     }
 
     fn pump_at(&mut self, at: Instant, capture_snapshot: bool) -> DriverPumpResult {
-        let result = Self::pump_at(self, capture_snapshot, at);
+        let mut result = Self::pump_at(self, capture_snapshot, at);
         DriverPumpResult {
             rebuilt: result.rebuilt(),
             profile: result.profile(),
-            tree_update: result.tree_update().cloned(),
-            content_types: result.content_types().clone(),
-            snapshot: result.snapshot().map(|snapshot| {
-                Snapshot::new(
-                    snapshot.width(),
-                    snapshot.height(),
-                    snapshot.rgba8().to_vec(),
-                )
+            tree_update: result.take_tree_update(),
+            content_types: result.take_content_types(),
+            snapshot: result.take_snapshot().map(|snapshot| {
+                let (width, height, rgba8, _) = snapshot.into_parts();
+                Snapshot::new(width, height, rgba8)
             }),
             ui_focus: result.ui_focus().map(NodeId::from),
         }

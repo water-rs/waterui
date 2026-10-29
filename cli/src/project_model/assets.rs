@@ -1274,10 +1274,8 @@ async fn resolve_fonts_with(
     for (decl, path) in satisfied {
         let path = path?;
         debug!("Resolved font '{}' -> {}", decl.name(), path.display());
-        resolved.push(ResolvedFont {
-            name: decl.name().to_owned(),
-            path,
-        });
+        let (name, ..) = decl.into_parts();
+        resolved.push(ResolvedFont { name, path });
     }
 
     info!("Resolved {} fonts", resolved.len());

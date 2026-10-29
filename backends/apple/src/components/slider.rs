@@ -343,8 +343,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let accessibility_label = config.label().accessibility_label();
 
         let host_view: &PlatformView = &host;
-        let value = config.value().clone();
-        let (label, min_value_label, max_value_label, ..) = config.into_parts();
+        let (label, min_value_label, max_value_label, _, value, ..) = config.into_parts();
         let children = Children {
             label: ctx
                 .render(waterui_backend_core::AnyView::new(label))

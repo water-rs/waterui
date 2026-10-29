@@ -595,6 +595,12 @@ impl HeadlessSnapshot {
     pub const fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
         self.output_alpha
     }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (u32, u32, Vec<u8>, cherenkov_gpu::interop::OutputAlpha) {
+        (self.width, self.height, self.rgba8, self.output_alpha)
+    }
 }
 
 #[derive(Debug)]

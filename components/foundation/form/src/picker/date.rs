@@ -36,6 +36,11 @@ impl DatePickerConfig {
         self.label = label;
     }
 
+    /// The label displayed for the control, for editing it in place.
+    pub const fn label_mut(&mut self) -> &mut Label {
+        &mut self.label
+    }
+
     /// The binding to the selected value.
     #[must_use]
     pub const fn value(&self) -> &Binding<DateTime> {

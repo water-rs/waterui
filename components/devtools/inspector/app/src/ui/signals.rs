@@ -62,7 +62,7 @@ pub fn view(model: Model) -> impl View {
         })
         .otherwise({
             let signals = model.signals.clone();
-            move || List::for_each(SignalCollection::new(signals.clone()), |row| row_view(&row))
+            move || List::for_each(SignalCollection::new(signals.clone()), row_view)
         }),
     ))
     .alignment(HorizontalAlignment::Leading)
@@ -105,33 +105,32 @@ fn totals(model: &Model) -> impl View {
 }
 
 /// One node: what it holds, where it came from, and how hard it is working.
-fn row_view(row: &SignalRow) -> ListItem {
+fn row_view(row: SignalRow) -> ListItem {
+    let (_, type_name, origin, subscribers, notifications, dropped) = row.into_parts();
     ListItem::new(
         hstack((
             vstack((
-                text(row.type_name().clone()).sub_headline(),
+                text(type_name).sub_headline(),
                 // The creation site is the whole point: it turns "something is
                 // firing 4000 times a second" into a file and a line.
-                text(row.origin().clone())
-                    .caption()
-                    .foreground(MutedForeground),
+                text(origin).caption().foreground(MutedForeground),
             ))
             .alignment(HorizontalAlignment::Leading)
             .spacing(2.0),
             spacer(),
             parts::metric(
                 "watchers",
-                Computed::constant(Str::from(row.subscribers().to_string())),
+                Computed::constant(Str::from(subscribers.to_string())),
             ),
             parts::metric(
                 "fired",
-                Computed::constant(Str::from(row.notifications().to_string())),
+                Computed::constant(Str::from(notifications.to_string())),
             ),
         ))
         .spacing(16.0)
         .padding_with(EdgeInsets::new(8.0, 8.0, 12.0, 12.0))
         // A dropped node stays visible so its history can still be read, but it is
         // clearly no longer live.
-        .opacity(if row.dropped() { 0.45 } else { 1.0 }),
+        .opacity(if dropped { 0.45 } else { 1.0 }),
     )
 }

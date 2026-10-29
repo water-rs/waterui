@@ -63,6 +63,18 @@ impl WidgetDeclaration {
     pub const fn families(&self) -> &[String] {
         self.families.as_slice()
     }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (String, String, String, String, Vec<String>) {
+        (
+            self.function,
+            self.kind,
+            self.display_name,
+            self.description,
+            self.families,
+        )
+    }
 }
 
 /// What a `#[widget_intent]` action declares — the `waterui_meta_intent_*`

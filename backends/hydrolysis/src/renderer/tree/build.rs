@@ -76,14 +76,15 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     }),
                     config.paragraph_alignment().watch(move |_| invalidate()),
                 ];
+                let (content, alignment, line_limit) = config.into_parts();
                 return Self::Text(Box::new(TextNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
                     accessibility_identity: Rc::new(()),
                     core,
-                    content: config.content().clone(),
-                    alignment: config.paragraph_alignment().clone(),
-                    line_limit: config.line_limit().map(core::num::NonZeroUsize::get),
+                    content,
+                    alignment,
+                    line_limit: line_limit.map(core::num::NonZeroUsize::get),
                     layout_dirty,
                     _guards: guards,
                     tap_span_targets: RefCell::new(Vec::new()),
@@ -832,7 +833,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Err(view) => view,
         };
         let view = match view.downcast::<Native<TabsLayout>>() {
-            Ok(tabs) => return Self::build_tabs(&(*tabs).into_inner(), env, renderer),
+            Ok(tabs) => return Self::build_tabs((*tabs).into_inner(), env, renderer),
             Err(view) => view,
         };
         let view = match view.downcast::<Native<Spacer>>() {

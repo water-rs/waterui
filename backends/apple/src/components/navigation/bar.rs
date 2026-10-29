@@ -230,7 +230,7 @@ fn bar_item(item: NavigationToolbarItem, ctx: &RenderContext<'_>) -> BarItem {
     let ctx = ctx.with_env(&toolbar_env);
 
     let leaf = ctx.render(content);
-    let title = title.map(|title| title.resolve(ctx.env()).content().clone());
+    let title = title.map(|title| title.resolve(ctx.env()).into_content());
     let icon = icon.map(|icon| match icon {
         ToolbarItemIcon::System(icon) => BarItemIcon::System(icon.name().to_string()),
         ToolbarItemIcon::View(builder) => BarItemIcon::View(ctx.render(builder.build())),
@@ -280,7 +280,7 @@ pub fn search_prompt(
     search: &NavigationSearch,
     env: &Environment,
 ) -> Computed<waterui::text::StyledStr> {
-    search.prompt().resolve(env).content().clone()
+    search.prompt().resolve(env).into_content()
 }
 
 /// A resolved color signal, when the bar color has resolved.

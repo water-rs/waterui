@@ -365,9 +365,9 @@ impl ButtonConfig {
         &mut self.action
     }
 
-    /// Takes the `action` out of the value.
-    pub fn into_action(self) -> BoxedAction<()> {
-        self.action
+    /// Splits the value into its label, action, style and size.
+    pub fn into_parts(self) -> (Label, BoxedAction<()>, ButtonStyle, ControlSize) {
+        (self.label, self.action, self.style, self.size)
     }
 
     /// The visual style of the button.

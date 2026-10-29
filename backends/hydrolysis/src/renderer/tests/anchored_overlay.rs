@@ -542,21 +542,18 @@ fn the_exiting_overlay_draws_its_animation_mid_flight() {
     open.set(false);
     scale.set(0.0);
     let result = runtime.pump_at(true, start + Duration::from_millis(500));
-    let snapshot = result
-        .snapshot()
-        .expect("a mid-exit frame must be capturable");
+    let (width, height, rgba8, _) = result
+        .into_snapshot()
+        .expect("a mid-exit frame must be capturable")
+        .into_parts();
     let path =
         crate::testing::artifact_snapshot_path("hydrolysis", "anchored_overlay_exit", "mid-flight");
     std::fs::create_dir_all(path.parent().expect("the case directory"))
         .expect("the capture directory must be creatable");
-    image::RgbaImage::from_raw(
-        snapshot.width(),
-        snapshot.height(),
-        snapshot.rgba8().to_vec(),
-    )
-    .expect("snapshot dimensions must match the rgba buffer")
-    .save(&path)
-    .expect("the mid-exit frame must be writable");
+    image::RgbaImage::from_raw(width, height, rgba8)
+        .expect("snapshot dimensions must match the rgba buffer")
+        .save(&path)
+        .expect("the mid-exit frame must be writable");
 
     assert_eq!(
         runtime.anchored_overlay_frames().as_slice(),
