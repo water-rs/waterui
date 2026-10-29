@@ -43,11 +43,10 @@ mod platform {
     use cocoa_ui::{Rect, view};
     use waterui::Str;
     use waterui::navigation::{NavigationController, NavigationTitleDisplayMode, NavigationView};
-    use waterui_core::layout::ProposalSize;
     use waterui_core::reactive::Signal;
 
     use crate::components::navigation::bar::{
-        BarItem, BarItemIcon, BarState, bar_color, bar_item_frame, search_prompt,
+        BarItem, BarState, bar_color, bar_item_frame, search_prompt,
     };
     use crate::components::text::platform_color;
     use crate::contract::{KeepAlive, NativeLeaf, RenderContext};
@@ -265,68 +264,9 @@ mod platform {
         env: &waterui::Environment,
     ) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem> {
         let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
-        let leaf_button = cocoa_ui::uikit::first_button(item.leaf.view());
-        let action = leaf_button.clone().map(|button| {
-            alloc::rc::Rc::new(move || {
-                button.sendActionsForControlEvents(
-                    cocoa_ui::objc2_ui_kit::UIControlEvents::PrimaryActionTriggered,
-                );
-            }) as alloc::rc::Rc<dyn Fn()>
-        });
-        let button = match &item.icon {
-            Some(BarItemIcon::System(symbol)) => {
-                cocoa_ui::uikit::bar_item(mtm, Some(symbol), None, action)
-            }
-            Some(BarItemIcon::View(icon)) => {
-                // The declared icon draws inside the bar's chrome as a
-                // template image the bar tints; a view that cannot render
-                // stays hosted as the item's custom view.
-                let size = icon
-                    .layout()
-                    .measure(ProposalSize {
-                        width: None,
-                        height: None,
-                    })
-                    .size;
-                cocoa_ui::view::set_frame(
-                    icon.view(),
-                    cocoa_ui::geometry::Rect::new(
-                        0.0,
-                        0.0,
-                        f64::from(size.width),
-                        f64::from(size.height),
-                    ),
-                );
-                view_icon_item(item, icon, action, env, keep, mtm)
-            }
-            None => {
-                // A `UIButton` whose configuration carries no title is what
-                // the bar draws as an empty capsule. A single text label
-                // becomes the title the bar draws itself; anything else is
-                // hosted, and must arrive with a real frame because the bar
-                // never lays a custom view out.
-                crate::components::navigation::text_button_bar_item(item, action, mtm)
-                    .unwrap_or_else(|| {
-                        cocoa_ui::view::set_frame(item.leaf.view(), bar_item_frame(item));
-                        cocoa_ui::uikit::bar_item(mtm, None, Some(item.leaf.view()), None)
-                    })
-            }
-        };
-        // A bar item the chrome draws follows the button's enabled state —
-        // the programmatic `sendActions` the action runs ignores
-        // `isEnabled`, so the bar item is what disables it.
-        if let Some(leaf_button) = &leaf_button {
-            cocoa_ui::uikit::mirror_enabled(leaf_button, &button);
-        }
-        if let Some(title) = &item.title {
-            keep.bind(title, {
-                let button = button.clone();
-                move |title| {
-                    cocoa_ui::uikit::bar_item_accessibility_label(&button, &title.to_plain());
-                }
-            });
-        }
-        button
+        crate::components::navigation::button_bar_item(item, keep, mtm, |icon, action, keep| {
+            view_icon_item(item, icon, action, env, keep, mtm)
+        })
     }
 
     /// A `View` icon under `gpu_surface`: the item is created at once with
