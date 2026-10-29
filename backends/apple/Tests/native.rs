@@ -123,8 +123,8 @@ fn embedding_trials() -> Vec<Trial> {
 /// so the registrars stay one-per-line.
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 fn navigation_trials() -> Vec<Trial> {
-    use waterui_apple::native_test_support::{chrome_top, toolbar_reach};
-    vec![
+    use waterui_apple::native_test_support::chrome_top;
+    let mut trials = vec![
         Trial::test(
             "navigation::chrome_top::a_standalone_page_header_sits_above_its_content",
             || {
@@ -167,6 +167,17 @@ fn navigation_trials() -> Vec<Trial> {
                 Ok(())
             },
         ),
+    ];
+    trials.extend(toolbar_reach_trials());
+    trials
+}
+
+/// The macOS `navigation::toolbar_reach::` trials — §7.1 on a real
+/// window root under the window toolbar.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+fn toolbar_reach_trials() -> Vec<Trial> {
+    use waterui_apple::native_test_support::toolbar_reach;
+    vec![
         Trial::test(
             "navigation::toolbar_reach::a_stack_page_list_runs_under_the_toolbar",
             || {
@@ -182,6 +193,13 @@ fn navigation_trials() -> Vec<Trial> {
             },
         ),
         Trial::test(
+            "navigation::toolbar_reach::a_stack_page_scroll_runs_under_the_toolbar",
+            || {
+                toolbar_reach::a_stack_page_scroll_runs_under_the_toolbar(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
             "navigation::toolbar_reach::a_stack_page_text_stays_clear_of_the_toolbar",
             || {
                 toolbar_reach::a_stack_page_text_stays_clear_of_the_toolbar(mtm());
@@ -192,6 +210,13 @@ fn navigation_trials() -> Vec<Trial> {
             "navigation::toolbar_reach::a_tabbed_stack_page_list_runs_under_the_toolbar",
             || {
                 toolbar_reach::a_tabbed_stack_page_list_runs_under_the_toolbar(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_reach::a_tabbed_stack_page_scroll_runs_under_the_toolbar",
+            || {
+                toolbar_reach::a_tabbed_stack_page_scroll_runs_under_the_toolbar(mtm());
                 Ok(())
             },
         ),
