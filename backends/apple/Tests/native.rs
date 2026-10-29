@@ -123,6 +123,7 @@ fn embedding_trials() -> Vec<Trial> {
 /// so the registrars stay one-per-line.
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 fn navigation_trials() -> Vec<Trial> {
+    use waterui_apple::native_test_support::toolbar_reach;
     vec![
         Trial::test(
             "navigation::a_searchable_page_rests_its_field_in_the_titlebar_row",
@@ -149,6 +150,48 @@ fn navigation_trials() -> Vec<Trial> {
             "navigation::toolbar_labels_default_to_icons_and_preserve_explicit_titles",
             || {
                 navigation::toolbar_labels_default_to_icons_and_preserve_explicit_titles();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_reach::a_stack_page_list_runs_under_the_toolbar",
+            || {
+                toolbar_reach::a_stack_page_list_runs_under_the_toolbar(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_reach::a_stack_page_text_stays_clear_of_the_toolbar",
+            || {
+                toolbar_reach::a_stack_page_text_stays_clear_of_the_toolbar(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_reach::a_tabbed_stack_page_list_runs_under_the_toolbar",
+            || {
+                toolbar_reach::a_tabbed_stack_page_list_runs_under_the_toolbar(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_reach::a_tabbed_stack_page_text_stays_clear_of_the_toolbar",
+            || {
+                toolbar_reach::a_tabbed_stack_page_text_stays_clear_of_the_toolbar(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_reach::the_example_inbox_list_runs_under_the_toolbar",
+            || {
+                toolbar_reach::the_example_inbox_list_runs_under_the_toolbar(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_reach::the_example_inbox_text_stays_clear_of_the_toolbar",
+            || {
+                toolbar_reach::the_example_inbox_text_stays_clear_of_the_toolbar(mtm());
                 Ok(())
             },
         ),
