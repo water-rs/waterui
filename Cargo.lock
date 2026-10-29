@@ -3642,6 +3642,7 @@ dependencies = [
 name = "filtrate"
 version = "0.2.1"
 dependencies = [
+ "blocking",
  "bytemuck",
  "cherenkov-oracle",
  "cherenkov-shader",
@@ -3650,6 +3651,7 @@ dependencies = [
  "fearless_simd 1.1.0",
  "filtrate-core",
  "filtrate-derive",
+ "futures-util",
  "half",
  "image",
  "pollster 1.0.1",
