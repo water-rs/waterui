@@ -986,15 +986,15 @@ impl GeometryCache {
         &mut self,
         digest: NonZeroU64,
         key: GeometryKey,
-        build: impl FnOnce() -> RetainedGeometry,
-    ) -> &mut RetainedGeometry {
+        build: impl FnOnce() -> Option<RetainedGeometry>,
+    ) -> Option<&mut RetainedGeometry> {
         let entry = match self.entries.entry(digest) {
             std::collections::hash_map::Entry::Occupied(slot) => {
                 let entry = slot.into_mut();
                 if entry.key != key {
                     *entry = GeometryEntry {
                         key,
-                        geometry: build(),
+                        geometry: build()?,
                         used: 0,
                     };
                 }
@@ -1002,11 +1002,11 @@ impl GeometryCache {
             }
             std::collections::hash_map::Entry::Vacant(slot) => slot.insert(GeometryEntry {
                 key,
-                geometry: build(),
+                geometry: build()?,
                 used: 0,
             }),
         };
-        &mut entry.geometry
+        Some(&mut entry.geometry)
     }
 
     /// Reconcile liveness after a successful walk that flagged or
@@ -5652,18 +5652,16 @@ impl<'a> Lowering<'a> {
         let (stored, pending) = 'stored: {
             let key = GeometryKey::new(content, rule, pl.raster);
             let digest = key.digest();
-            if geometry
-                .entries
-                .get(&digest)
-                .is_none_or(|entry| entry.key != key)
-                && !self.path_visible(bounds(), self.transform)
-            {
-                return Ok(None);
-            }
             let entry = geometry.entry(digest, key, || {
+                if !self.path_visible(bounds(), self.transform) {
+                    return None;
+                }
                 let local = shader_path.unwrap_or_else(|| make.take().expect("path factory")());
-                RetainedGeometry::new(local, pl.raster, rule)
+                Some(RetainedGeometry::new(local, pl.raster, rule))
             });
+            let Some(entry) = entry else {
+                return Ok(None);
+            };
             let (to_device, device_bbox) = entry.placed(Vec2::new(e, f));
             let Some(grid @ (x0, y0, ..)) =
                 path::grid(device_bbox, (f64::from(self.width), f64::from(self.height)))
