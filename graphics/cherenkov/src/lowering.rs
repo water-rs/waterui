@@ -2229,9 +2229,21 @@ fn sweep(prepared: disjoint::Prepared, rule: FillRule) -> Option<Vec<(f32, f32, 
             },
         };
         let ym = ya.midpoint(yb);
-        // Bring the carried-over list into the order the old sort
-        // produced at this band's midpoint first, so the binary-search
-        // admission below inserts on a sorted list.
+        // Expired edges must leave before ordering at the new midpoint:
+        // their supporting lines may cross beyond their finite span,
+        // where no crossing event is needed for coverage.
+        active.retire_ending(
+            &segs,
+            ya,
+            &mut retire,
+            &mut dead,
+            &mut retired,
+            &mut xings,
+            &mut posts,
+            &mut eqs,
+            m_glob,
+        );
+        // Order the surviving edges before binary-search admission.
         drain_xings(
             &mut xings,
             &mut posts,
@@ -2254,6 +2266,8 @@ fn sweep(prepared: disjoint::Prepared, rule: FillRule) -> Option<Vec<(f32, f32, 
             &mut eqs,
             m_glob,
         );
+        // An edge shorter than the admission epsilon can also end at
+        // this band top; it must never contribute a winding transition.
         active.retire_ending(
             &segs,
             ya,
