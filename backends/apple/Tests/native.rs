@@ -2551,24 +2551,20 @@ mod navigation {
     /// an icon action's hosted item is exactly its icon wide and the
     /// toolbar draws its capsule around the icon alone — while an explicit
     /// title-and-icon preference keeps its title.
+    ///
+    /// The icon is the one the item hosts: a macOS button label resolves
+    /// `Body` at its control size's system font, so the same symbol rendered
+    /// outside a button is drawn at a different size.
     pub fn toolbar_labels_default_to_icons_and_preserve_explicit_titles() {
+        use cocoa_ui::appkit::first_symbol_view;
         use waterui::component::{ButtonStyle, button, label};
         use waterui::icon::SystemIcon;
         use waterui::navigation::NavigationStack;
-        use waterui_core::layout::ProposalSize;
 
         const LEADING: &str = "dev.cocoaui.navigation.leading";
         const TRAILING: &str = "dev.cocoaui.navigation.trailing";
 
         let icon = || SystemIcon::new("plus");
-        let icon_leaf = resolve::render(icon());
-        let icon_width = f64::from(
-            icon_leaf
-                .layout()
-                .measure(ProposalSize::UNSPECIFIED)
-                .size
-                .width,
-        );
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
                 vec![
@@ -2585,22 +2581,28 @@ mod navigation {
             )),
         ));
         let window = leaf::attach(mtm(), leaf.view());
-        let hosted_width = |identifier: &str| {
+        let hosted_view = |identifier: &str| {
             window.native().toolbar().and_then(|toolbar| {
                 toolbar
                     .items()
                     .iter()
                     .find(|item| item.itemIdentifier().to_string() == identifier)
                     .and_then(|item| item.view())
-                    .map(|view| view.frame().size.width)
             })
         };
+        let hosted_width =
+            |identifier: &str| hosted_view(identifier).map(|view| view.frame().size.width);
         assert!(
             pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 hosted_width(LEADING).is_some() && hosted_width(TRAILING).is_some()
             }),
             "the page offers both actions to the window toolbar"
         );
+        let icon_width = hosted_view(LEADING)
+            .and_then(|view| first_symbol_view(&view))
+            .and_then(|symbol| symbol.image_size())
+            .expect("the default action hosts its symbol")
+            .width;
         let automatic = hosted_width(LEADING).expect("the default action is hosted");
         assert!(
             (automatic - icon_width).abs() < 0.5,
