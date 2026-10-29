@@ -1358,10 +1358,12 @@ mod resolve {
         #[cfg(target_os = "ios")]
         use cocoa_ui::uikit::toggle::LABEL_SPACING;
 
-        // Auto Layout snaps frames to the backing scale's pixel grid.
+        // Auto Layout rounds frames to the nearest pixel of the backing
+        // scale, which moves an edge by up to half a pixel: half a point
+        // on a 1x display, a tie included.
         fn assert_near(actual: f64, expected: f64, what: &str, name: &str) {
             assert!(
-                (actual - expected).abs() < 0.5,
+                (actual - expected).abs() <= 0.5,
                 "{name}: {what} — expected {expected}, got {actual}"
             );
         }
