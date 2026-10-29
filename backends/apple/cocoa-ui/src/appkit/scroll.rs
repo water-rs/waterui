@@ -24,7 +24,7 @@ use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSClipView, NSScrollView, NSView, NSViewNoIntrinsicMetric};
+use objc2_app_kit::{NSClipView, NSScrollView, NSScroller, NSView, NSViewNoIntrinsicMetric};
 use objc2_foundation::{NSEdgeInsets, NSObjectProtocol, NSPoint, NSRect, NSSize};
 
 use crate::callback::guarded;
@@ -213,9 +213,12 @@ define_class!(
 /// content by them (`docs/layout-spec.md` §7.1). `AppKit` re-lays a view
 /// out when its safe area changes — the toolbar shown or hidden, a
 /// titlebar accessory row added, a resize — so the insets track the
-/// bands. The scrollers span the whole scroll view: `scrollerInsets`
-/// negates the content insets, which would otherwise inset the scrollers
-/// with the content (water-rs/waterui#3588).
+/// bands. The scrollers follow the bands, as `AppKit`'s automatic insets
+/// and `SwiftUI`'s scroll views do: they start below the toolbar instead
+/// of running under it. They do not follow `top_gap`, which is breathing
+/// room inside the content: `scrollerInsets` negates it, since the
+/// scrollers would otherwise move down with the content
+/// (water-rs/waterui#3588, water-rs/waterui#3694).
 ///
 /// When the insets change, the clip moves by the same amount, so the
 /// content keeps its place against the band's edge — a surface resting
@@ -248,10 +251,10 @@ pub fn layout_with_safe_area_insets(scroll: &NSScrollView, top_gap: f64, layout:
         right: insets.right,
     });
     scroll.setScrollerInsets(NSEdgeInsets {
-        top: -insets.top,
-        left: -insets.left,
-        bottom: -insets.bottom,
-        right: -insets.right,
+        top: -top_gap,
+        left: 0.0,
+        bottom: 0.0,
+        right: 0.0,
     });
     layout();
     let pinned = Point::new(
@@ -391,6 +394,45 @@ impl ScrollView {
     #[must_use]
     pub fn clip_view(&self) -> Retained<NSClipView> {
         self.contentView()
+    }
+
+    /// The extent this view's scrollers take out of its frame beside the
+    /// clip view: `AppKit`'s own `frameSizeForContentSize:…` conversion of
+    /// an empty content under this view's scrollers, border and current
+    /// scroller style. Legacy scrollers reserve their track (17 pt for a
+    /// regular scroller on macOS 26); overlay scrollers float over the
+    /// content and reserve nothing.
+    #[must_use]
+    pub fn scroller_reservation(&self) -> Size {
+        let vertical = self
+            .hasVerticalScroller()
+            .then(|| self.verticalScroller())
+            .flatten();
+        let horizontal = self
+            .hasHorizontalScroller()
+            .then(|| self.horizontalScroller())
+            .flatten();
+        let Some(control_size) = vertical
+            .as_deref()
+            .or(horizontal.as_deref())
+            .map(NSScroller::controlSize)
+        else {
+            return Size::ZERO;
+        };
+        // SAFETY: both classes are the classes of this view's own
+        // installed scrollers, so they are `NSScroller` subclasses.
+        unsafe {
+            NSScrollView::frameSizeForContentSize_horizontalScrollerClass_verticalScrollerClass_borderType_controlSize_scrollerStyle(
+                NSSize::ZERO,
+                horizontal.as_deref().map(|scroller| scroller.class()),
+                vertical.as_deref().map(|scroller| scroller.class()),
+                self.borderType(),
+                control_size,
+                self.scrollerStyle(),
+                MainThreadMarker::from(self),
+            )
+        }
+        .into()
     }
 
     /// The size of the visible scroll area — the clip view's bounds.

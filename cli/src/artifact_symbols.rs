@@ -545,6 +545,30 @@ mod tests {
         .expect("the fixture sources copy");
         std::fs::write(staged.join("Cargo.toml"), web_meta_manifest())
             .expect("the manifest is written");
+        // The fixture is built with plain `cargo`, so the deployment targets
+        // its `Water.toml` declares reach the build the way they reach a
+        // project's own `cargo` commands: through the generated
+        // `.cargo/config.toml`.
+        let declared = crate::project::Manifest::parse(
+            &std::fs::read_to_string(staged.join("Water.toml")).expect("the fixture Water.toml"),
+        )
+        .expect("the fixture Water.toml parses")
+        .apple
+        .deployment_targets;
+        let cargo_config = futures_lite::future::block_on(async {
+            crate::framework::ResolvedFramework::for_local_checkout(
+                &crate::toolchain::Host::current(),
+                &crate::pinned_framework::checkout(),
+            )
+            .await
+            .expect("the pinned framework resolves")
+            .cargo_config(&staged, &declared)
+            .await
+            .expect("the fixture's deployment targets resolve")
+        });
+        std::fs::create_dir_all(staged.join(".cargo")).expect("the cargo config directory");
+        std::fs::write(staged.join(".cargo/config.toml"), cargo_config.to_string())
+            .expect("the cargo config is written");
         // The staged lock starts from the checkout's — the fixture build
         // runs without `--locked`, so Cargo prunes it to the fixture's graph
         // while keeping every version the checkout records.

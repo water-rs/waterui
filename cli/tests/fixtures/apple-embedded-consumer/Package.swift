@@ -8,7 +8,7 @@ let embedded = ProcessInfo.processInfo.environment["WATERUI_EMBEDDED_PACKAGE"]
 
 let package = Package(
     name: "apple-embedded-consumer",
-    platforms: [.macOS("27.0"), .iOS("27.0")],
+    platforms: [.macOS("26.0"), .iOS("26.0")],
     dependencies: [
         .package(name: "EmbeddedWaterUI", path: embedded),
     ],

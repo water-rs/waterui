@@ -572,8 +572,8 @@ mod tests {
         }];
         let rendered = PackageTemplate {
             name: "fixture",
-            macos: "27.0",
-            ios: "27.0",
+            macos: "26.0",
+            ios: "26.0",
             links: &links,
         }
         .render()

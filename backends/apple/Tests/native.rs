@@ -123,8 +123,8 @@ fn embedding_trials() -> Vec<Trial> {
 /// so the registrars stay one-per-line.
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 fn navigation_trials() -> Vec<Trial> {
-    use waterui_apple::native_test_support::{chrome_top, toolbar_reach};
-    vec![
+    use waterui_apple::native_test_support::chrome_top;
+    let mut trials = vec![
         Trial::test(
             "navigation::chrome_top::a_standalone_page_header_sits_above_its_content",
             || {
@@ -167,6 +167,17 @@ fn navigation_trials() -> Vec<Trial> {
                 Ok(())
             },
         ),
+    ];
+    trials.extend(toolbar_reach_trials());
+    trials
+}
+
+/// The macOS `navigation::toolbar_reach::` trials — §7.1 on a real
+/// window root under the window toolbar.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+fn toolbar_reach_trials() -> Vec<Trial> {
+    use waterui_apple::native_test_support::toolbar_reach;
+    vec![
         Trial::test(
             "navigation::toolbar_reach::a_stack_page_list_runs_under_the_toolbar",
             || {
@@ -182,6 +193,13 @@ fn navigation_trials() -> Vec<Trial> {
             },
         ),
         Trial::test(
+            "navigation::toolbar_reach::a_stack_page_scroll_runs_under_the_toolbar",
+            || {
+                toolbar_reach::a_stack_page_scroll_runs_under_the_toolbar(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
             "navigation::toolbar_reach::a_stack_page_text_stays_clear_of_the_toolbar",
             || {
                 toolbar_reach::a_stack_page_text_stays_clear_of_the_toolbar(mtm());
@@ -192,6 +210,13 @@ fn navigation_trials() -> Vec<Trial> {
             "navigation::toolbar_reach::a_tabbed_stack_page_list_runs_under_the_toolbar",
             || {
                 toolbar_reach::a_tabbed_stack_page_list_runs_under_the_toolbar(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_reach::a_tabbed_stack_page_scroll_runs_under_the_toolbar",
+            || {
+                toolbar_reach::a_tabbed_stack_page_scroll_runs_under_the_toolbar(mtm());
                 Ok(())
             },
         ),
@@ -280,6 +305,13 @@ fn trials() -> Vec<Trial> {
                     Ok(())
                 },
             ),
+            Trial::test(
+                "material_vibrancy::glass_text_draws_bold_in_the_opaque_text_color",
+                || {
+                    material_vibrancy::glass_text_draws_bold_in_the_opaque_text_color();
+                    Ok(())
+                },
+            ),
         ]);
         #[cfg(target_os = "macos")]
         tests.extend(material_reduce_transparency::trials());
@@ -299,6 +331,13 @@ fn trials() -> Vec<Trial> {
     }
     #[cfg(target_os = "ios")]
     {
+        tests.push(Trial::test(
+            "resolve::a_wheel_picker_spaces_rows_at_the_swiftui_pitch",
+            || {
+                resolve::a_wheel_picker_spaces_rows_at_the_swiftui_pitch();
+                Ok(())
+            },
+        ));
         tests.extend(tabs::trials());
         tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
@@ -1361,6 +1400,46 @@ mod resolve {
                 );
             }
         }
+    }
+
+    /// water-rs/waterui#3596: the radio style's `UIPickerView` wheel asks
+    /// its delegate for the row height and gets `SwiftUI`'s wheel pitch,
+    /// not `UIKit`'s 32 pt style default for a wheel this tall.
+    #[cfg(target_os = "ios")]
+    pub fn a_wheel_picker_spaces_rows_at_the_swiftui_pitch() {
+        use cocoa_ui::objc2_ui_kit::UIPickerView;
+        use cocoa_ui::uikit::WHEEL_ROW_HEIGHT;
+
+        let selection = binding(0_i32);
+        let items = vec![
+            waterui::text!("One").tag(0),
+            waterui::text!("Two").tag(1),
+            waterui::text!("Three").tag(2),
+        ];
+        let leaf = render(picker("Mode", items, &selection).style(PickerStyle::Radio));
+        let size = leaf
+            .layout()
+            .measure(ProposalSize::new(Some(300.0), None))
+            .size;
+        let row = leaf.view();
+        cocoa_ui::view::set_frame(
+            row,
+            cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+        );
+        cocoa_ui::view::layout_immediately(row);
+        let wheels: Vec<_> = cocoa_ui::view::subviews(row)
+            .into_iter()
+            .filter(|view| view.downcast_ref::<UIPickerView>().is_some())
+            .collect();
+        assert_eq!(wheels.len(), 1, "the radio picker hosts one wheel");
+        let wheel = wheels[0]
+            .downcast_ref::<UIPickerView>()
+            .expect("filtered to wheels above");
+        assert_eq!(
+            wheel.rowSizeForComponent(0).height.to_bits(),
+            WHEEL_ROW_HEIGHT.to_bits(),
+            "the wheel's row height"
+        );
     }
 
     /// water-rs/waterui#1101: a semantic label leaves 8 pt between its
@@ -2728,11 +2807,14 @@ mod split {
 /// fixed one (#3623).
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod material_vibrancy {
-    use cocoa_ui::objc2_app_kit::{NSColor, NSForegroundColorAttributeName, NSVisualEffectView};
+    use cocoa_ui::objc2_app_kit::{
+        NSColor, NSFont, NSFontAttributeName, NSFontDescriptorSymbolicTraits,
+        NSForegroundColorAttributeName, NSGlassEffectView, NSVisualEffectView,
+    };
     use cocoa_ui::objc2_foundation::NSObjectProtocol as _;
     use cocoa_ui::{PlatformView, Retained, view};
     use waterui::ViewExt as _;
-    use waterui::background::Material;
+    use waterui::background::{Glass, Material};
     use waterui::graphics::Color;
     use waterui::graphics::color::Working;
     use waterui::layout::stack::vstack;
@@ -2935,6 +3017,103 @@ mod material_vibrancy {
                 && !label_valued.isEqual(Some(secondary.as_ref())),
             "an explicit color equal in value to the light-mode label color is not a system label color"
         );
+    }
+
+    /// Text inside Liquid Glass (#3695): a bold default-token label keeps its
+    /// bold weight and draws in the opaque `NSColor.textColor`, as `SwiftUI`
+    /// draws `.primary` inside `glassEffect`, not in the vibrant
+    /// `labelColor` that `NSGlassEffectView`'s vibrant-light content
+    /// appearance resolves to black at 0.698 alpha. The muted token stays
+    /// `secondaryLabelColor`, and an explicit color stays as written.
+    pub fn glass_text_draws_bold_in_the_opaque_text_color() {
+        let (env, theme) = window_environment(mtm());
+        refresh_theme(&theme, cocoa_ui::ColorScheme::Light);
+        let content = vstack((
+            text("Now Playing").bold(),
+            text("muted").muted(),
+            text("explicit").foreground(Color::srgb(200, 30, 30)),
+        ))
+        .padding()
+        .background(Glass::regular());
+        let leaf = waterui_apple::dispatch::render(AnyView::new(content), &env);
+
+        let mut found = Vec::new();
+        glass_labels(leaf.view(), &mut found, false);
+        assert_eq!(found.len(), 3, "the three texts realize three labels");
+        assert!(
+            found.iter().all(|(_, inside)| *inside),
+            "every text sits inside the NSGlassEffectView"
+        );
+        let label = |name: &str| {
+            found
+                .iter()
+                .find(|(label, _)| {
+                    label
+                        .source_text()
+                        .expect("attributed text")
+                        .string()
+                        .to_string()
+                        == name
+                })
+                .map(|(label, _)| label.clone())
+                .expect("the text is realized")
+        };
+
+        let title = label("Now Playing");
+        let text_color = NSColor::textColor();
+        assert!(
+            color_of(&title).isEqual(Some(text_color.as_ref())),
+            "a default-token text inside glass draws as NSColor.textColor"
+        );
+        let font = font_of(&title);
+        assert!(
+            font.fontDescriptor()
+                .symbolicTraits()
+                .contains(NSFontDescriptorSymbolicTraits::TraitBold),
+            "a bold text inside glass keeps its bold weight, got {font:?}"
+        );
+        let secondary = NSColor::secondaryLabelColor();
+        assert!(
+            color_of(&label("muted")).isEqual(Some(secondary.as_ref())),
+            "a muted-token text inside glass draws as NSColor.secondaryLabelColor"
+        );
+        let explicit = color_of(&label("explicit"));
+        assert!(
+            !explicit.isEqual(Some(text_color.as_ref()))
+                && !explicit.isEqual(Some(secondary.as_ref())),
+            "an explicit color inside glass is not a system text color"
+        );
+    }
+
+    /// Every kit label under `root`, each with whether an
+    /// `NSGlassEffectView` is among its ancestors.
+    fn glass_labels(
+        root: &PlatformView,
+        out: &mut Vec<(Retained<Label>, bool)>,
+        inside_glass: bool,
+    ) {
+        for sub in view::subviews(root) {
+            let inside = inside_glass || sub.downcast_ref::<NSGlassEffectView>().is_some();
+            if let Ok(label) = sub.clone().downcast::<Label>() {
+                out.push((label, inside));
+            }
+            glass_labels(&sub, out, inside);
+        }
+    }
+
+    /// The font a label draws its first character in.
+    fn font_of(label: &Label) -> Retained<NSFont> {
+        let text = label
+            .source_text()
+            .expect("the label carries attributed text");
+        // SAFETY: index 0 is within a non-empty string; a null effective
+        // range is permitted.
+        let font = unsafe {
+            text.attribute_atIndex_effectiveRange(NSFontAttributeName, 0, core::ptr::null_mut())
+        }
+        .expect("the label text carries a font");
+        font.downcast::<NSFont>()
+            .expect("the font attribute is an NSFont")
     }
 }
 
@@ -7280,7 +7459,7 @@ mod owner_lifetimes {
     /// The host is a bare `HostView` that no leaf owns, so nothing clears
     /// its handlers; the handler borrows the child weakly so dropping the
     /// `Mounted` alone decides whether the child's views survive.
-    fn mount_hosted(
+    pub fn mount_hosted(
         mtm: MainThreadMarker,
         leaf_inst: waterui_apple::contract::NativeLeaf,
     ) -> (Retained<HostView>, waterui_apple::contract::Mounted) {
@@ -8104,6 +8283,127 @@ mod scroll {
         );
     }
 
+    /// A padded column whose caption is the widest thing in it, over a
+    /// 2000 pt spacer that makes the scroll overflow so its vertical
+    /// scroller shows — the `liquid_glass` surfaces page in miniature.
+    #[cfg(target_os = "macos")]
+    fn hugged_column() -> impl waterui::View {
+        use waterui::prelude::*;
+
+        vstack((
+            text("Interactive glass answers touch and hover with the platform's own effects.")
+                .size(15.0),
+            spacer().size(100.0, 2000.0),
+        ))
+        .padding()
+    }
+
+    /// water-rs/waterui#3597: a vertical scroll hugging its content in a
+    /// 640x480 window sits a legacy scroller beside the content instead of
+    /// over it. The expected frame width is `AppKit`'s own
+    /// `frameSizeForContentSize:` of the content's ideal width under a
+    /// regular legacy scroller (the ideal plus 17 pt on macOS 26) — the
+    /// width the `SwiftUI` twin's `ScrollView` takes, its scroller track
+    /// outside the content. The viewport is then the content's ideal
+    /// width, so the caption stays on one line and the content frame is
+    /// the content's ideal size; before the fix the frame was the ideal
+    /// width, the scroller took 17 pt of it and the caption wrapped.
+    #[cfg(target_os = "macos")]
+    fn a_legacy_scroller_sits_beside_the_hugged_content() {
+        use cocoa_ui::objc2_app_kit::{
+            NSBorderType, NSControlSize, NSScrollView, NSScroller, NSScrollerStyle,
+        };
+        use cocoa_ui::objc2_foundation::NSSize;
+        use objc2::ClassType as _;
+        use waterui::prelude::*;
+        use waterui_core::layout::ProposalSize;
+
+        /// The kit scroll surface somewhere under `view`.
+        fn surface_in(view: &cocoa_ui::PlatformView) -> Option<Retained<ScrollSurface>> {
+            if view.downcast_ref::<ScrollSurface>().is_some() {
+                return cocoa_ui::view::retain_base(view)
+                    .downcast::<ScrollSurface>()
+                    .ok();
+            }
+            cocoa_ui::view::subviews(view)
+                .iter()
+                .find_map(|sub| surface_in(sub))
+        }
+
+        fn assert_close(actual: f64, expected: f64, what: &str) {
+            assert!(
+                (actual - expected).abs() < 1.0,
+                "{what}: {actual} pt, expected {expected} pt"
+            );
+        }
+
+        let mtm = super::mtm();
+        let ideal = super::resolve::render(hugged_column())
+            .layout()
+            .measure(ProposalSize::UNSPECIFIED)
+            .size;
+        let (parent, mounted) = super::owner_lifetimes::mount_hosted(
+            mtm,
+            super::resolve::render(zstack((scroll(hugged_column()),))),
+        );
+        let surface = surface_in(mounted.view()).expect("the zstack hosts the kit scroll surface");
+        // The style a mouse-only Mac (and the CI runners) shows; the
+        // overlay style reserves nothing and needs no correction.
+        surface.setScrollerStyle(NSScrollerStyle::Legacy);
+        let _window = super::leaf::attach(mtm, &parent);
+        parent.set_needs_layout();
+        parent.layout_if_needed();
+        surface.layout_if_needed();
+
+        assert!(
+            surface
+                .verticalScroller()
+                .is_some_and(|scroller| !scroller.isHidden()),
+            "the overflowing column must show its vertical scroller"
+        );
+        // SAFETY: `NSScroller`'s own class is a valid scroller class.
+        let expected = unsafe {
+            NSScrollView::frameSizeForContentSize_horizontalScrollerClass_verticalScrollerClass_borderType_controlSize_scrollerStyle(
+                NSSize::new(f64::from(ideal.width), 0.0),
+                None,
+                Some(NSScroller::class()),
+                NSBorderType::NoBorder,
+                NSControlSize::Regular,
+                NSScrollerStyle::Legacy,
+                mtm,
+            )
+        };
+        let frame = cocoa_ui::view::frame(&surface);
+        assert_close(
+            frame.size.width,
+            expected.width,
+            "the scroll frame is the content's ideal width plus the legacy scroller",
+        );
+        assert_close(
+            surface.viewport_size().width,
+            f64::from(ideal.width),
+            "the viewport beside the scroller is the content's ideal width",
+        );
+        let document = surface
+            .document_view()
+            .expect("a laid-out scroll surface has a document");
+        let content = cocoa_ui::view::subviews(&document)
+            .into_iter()
+            .next()
+            .expect("the scroll mounts its content on the document");
+        let content = cocoa_ui::view::frame(&content).size;
+        assert_close(
+            content.width,
+            f64::from(ideal.width),
+            "the content keeps its ideal width",
+        );
+        assert_close(
+            content.height,
+            f64::from(ideal.height),
+            "the caption stays on one line",
+        );
+    }
+
     /// The `scroll::` trials — one per animation case plus the takeover
     /// and clamp cases.
     pub fn trials() -> Vec<libtest_mimic::Trial> {
@@ -8161,6 +8461,10 @@ mod scroll {
             (
                 "scroll::appkit_corrections_keep_an_in_flight_animation".to_owned(),
                 Box::new(appkit_corrections_keep_an_in_flight_animation),
+            ),
+            (
+                "scroll::a_legacy_scroller_sits_beside_the_hugged_content".to_owned(),
+                Box::new(a_legacy_scroller_sits_beside_the_hugged_content),
             ),
         ]);
         trial_each(named)

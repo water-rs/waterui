@@ -91,7 +91,7 @@ pub use key_commands::KeyCommands;
 pub use menu::{Menu, MenuAction, MenuButton, MenuElement, edit_menu};
 mod picker;
 mod pointer;
-pub use picker::Picker;
+pub use picker::{Picker, WHEEL_ROW_HEIGHT};
 pub mod toggle;
 pub use label::Label;
 mod slider;
