@@ -1465,15 +1465,34 @@ pub trait SurfaceProvider: PresentationSurface {
     }
 }
 
-/// What an engine-presented frame of the macOS winit window renders
-/// through: the window the engine's `cherenkov_gpu::WindowTarget` presents
-/// on, and the window's engine-surface slot, created on the first frame and
-/// replaced when its device chain or transparency no longer matches.
-#[cfg(all(hydrolysis_winit, target_os = "macos"))]
+/// The window object the engine presents an Apple window on: it builds the
+/// `cherenkov_gpu::WindowTarget` over the window's view, which captures the
+/// view's layer on the main thread.
+#[cfg(hydrolysis_apple_engine_window)]
+#[cfg(hydrolysis_gpu_painter)]
+pub trait EngineWindowHandle {
+    /// The engine target presenting on this window at `size` (physical
+    /// pixels), before the host's output request is applied.
+    fn window_target(&self, size: (u32, u32)) -> cherenkov_gpu::WindowTarget;
+}
+
+#[cfg(hydrolysis_apple_engine_window)]
+#[cfg(hydrolysis_gpu_painter)]
+impl EngineWindowHandle for std::sync::Arc<winit::window::Window> {
+    fn window_target(&self, size: (u32, u32)) -> cherenkov_gpu::WindowTarget {
+        cherenkov_gpu::WindowTarget::new(Self::clone(self), size)
+    }
+}
+
+/// What an engine-presented frame of an Apple window renders through: the
+/// window the engine's `cherenkov_gpu::WindowTarget` presents on, and the
+/// window's engine-surface slot, created on the first frame and replaced
+/// when its device chain or transparency no longer matches.
+#[cfg(hydrolysis_apple_engine_window)]
 #[cfg(hydrolysis_gpu_painter)]
 pub struct EngineWindowTarget<'a> {
     /// The window the engine presents on.
-    pub(crate) window: &'a std::sync::Arc<winit::window::Window>,
+    pub(crate) window: &'a dyn EngineWindowHandle,
     /// The window's engine surface and mount, owned by the window's surface.
     pub(crate) window_slot: &'a mut Option<
         crate::renderer::CherenkovWindow<

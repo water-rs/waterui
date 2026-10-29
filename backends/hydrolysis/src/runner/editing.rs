@@ -1,5 +1,6 @@
-//! The Android `InputConnection` range-editing protocol as a Rust state
-//! machine — the editing half of the step-5 work in water-rs/hydrolysis#246.
+//! The platform range-editing protocol as a Rust state machine — Android's
+//! `InputConnection` today, the editing half of the step-5 work in
+//! water-rs/hydrolysis#246.
 //!
 //! The `ImePreedit`/`ImeCommit` input events cannot express Android's
 //! complete protocol: an `InputConnection` carries a text *revision*, a
@@ -540,6 +541,23 @@ impl EditingSession {
         self.replace(a, b, text);
         self.composing = None;
         self.place_caret(a, utf16_len(text), new_cursor_position);
+        self.pending_apply = true;
+        self.dirty = true;
+        true
+    }
+
+    /// A host's `replaceRange:withText:` (`UITextInput`): replace the UTF-16
+    /// range `start..end` of the mirror with `text`. The edges are ordered and
+    /// clamped into the text, and the selection and composing endpoints map
+    /// through the edit exactly as for the other mutating ops.
+    #[cfg(test)]
+    pub fn replace_range(&mut self, editor_id: u64, start: usize, end: usize, text: &str) -> bool {
+        if !self.live(editor_id) {
+            return false;
+        }
+        let len = utf16_len(&self.text);
+        let (a, b) = ordered(start.min(len), end.min(len));
+        self.replace(a, b, text);
         self.pending_apply = true;
         self.dirty = true;
         true
@@ -1150,6 +1168,26 @@ mod tests {
         assert!(session.delete_surrounding_text(id, 10, 10));
         assert_eq!(session.text(), "cd");
         session.flush(runtime.renderer_mut());
+    }
+
+    #[test]
+    fn replace_range_edits_in_utf16_units_and_maps_the_selection() {
+        let (mut runtime, value, mut session, id) = focused_field("a\u{1F600}bc");
+        // "a😀bc": the emoji spans UTF-16 units 1..3.
+        assert!(session.set_selection(id, 5, 5));
+        assert!(session.replace_range(id, 1, 3, "XY"));
+        assert_eq!(session.text(), "aXYbc");
+        // The caret was after the replaced range: it follows the text.
+        assert_eq!(session.selection(), (5, 5));
+        // Reversed edges are ordered and out-of-range edges clamp.
+        assert!(session.replace_range(id, 99, 3, "!"));
+        assert_eq!(session.text(), "aXY!");
+        assert!(
+            !session.replace_range(id + 1, 0, 1, "z"),
+            "a stale id writes nothing"
+        );
+        session.flush(runtime.renderer_mut());
+        assert_eq!(value.snapshot().to_string(), "aXY!");
     }
 
     #[test]

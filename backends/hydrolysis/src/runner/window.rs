@@ -367,6 +367,181 @@ const fn wants_next_frame(hidden: bool, demand: FrameDemand) -> bool {
     !hidden && (demand.mode.is_pending() || demand.redraw_pending || demand.signals_pending)
 }
 
+/// The host-specific steps of [`run_frame_transaction`]: everything a
+/// windowed host owns around the shared sequence — its executor, its render
+/// call, the publishes (accessibility, editing, platform views) and its
+/// readiness reporting. The sequence itself lives once, in
+/// [`run_frame_transaction`], so hosts cannot drift apart.
+#[cfg(target_os = "android")]
+pub(super) trait FrameHost {
+    /// The host's platform window.
+    type Platform: PlatformWindow;
+    /// The host's text engine.
+    type Engine: crate::text::TextEngine;
+
+    /// The window's runtime and the process environment it runs in.
+    fn parts(
+        &mut self,
+    ) -> (
+        &mut RuntimeWindow<Self::Platform, Self::Engine>,
+        &Environment,
+    );
+
+    /// The window's frame transaction.
+    fn frame_transaction(&self) -> &FrameTransaction;
+
+    /// Runs every local task and post queued on the host's UI-thread
+    /// executor.
+    fn drain_executor(&self);
+
+    /// Work the host pulls in before this frame's input is dispatched; the
+    /// frame reads this frame's answer.
+    fn before_input(&mut self) {}
+
+    /// Whether the window's content asked the host to close.
+    fn should_close(&self) -> bool;
+
+    /// Whether the host has something to present into.
+    fn presentation_attached(&self) -> bool;
+
+    /// Scene changes queued for the host's painter that no wake was posted
+    /// for; the transaction counts them into its continuation.
+    fn has_pending_scene_changes(&self) -> bool {
+        false
+    }
+
+    /// Consumes the host's latched redraw request.
+    fn take_redraw_pending(platform: &Self::Platform) -> bool;
+
+    /// Renders the frame through the host's painter, draining local tasks
+    /// between its phases, and reports whether it was presented.
+    fn render(&mut self) -> bool;
+
+    /// Follows a frame that rendered, with whether it was presented.
+    fn after_render(&mut self, presented: bool);
+
+    /// Tells the host the window's content asked it to close.
+    fn notify_close(&mut self);
+
+    /// Publishes what the frame changed to the platform: accessibility,
+    /// platform views, text-input state. `flushed` is whether this
+    /// transaction rendered.
+    fn publish(&mut self, flushed: bool);
+
+    /// Follows the closed transaction with whether another frame is owed.
+    fn finished(&mut self, wants_next_frame: bool);
+}
+
+/// What one frame transaction leaves for the host's scheduler.
+#[cfg(target_os = "android")]
+#[derive(Clone, Copy, Debug)]
+pub(super) struct FrameOutcome {
+    /// Another frame is owed: animations, a pending refresh, or a redraw
+    /// request raised inside the transaction. False means the window goes
+    /// fully idle, with no callbacks and no CPU or GPU work.
+    pub(super) wants_next_frame: bool,
+    /// When the next gesture or engine deadline falls, if any: the host
+    /// schedules a fallback frame then in case no other wake fires first.
+    pub(super) deadline: Option<Instant>,
+    /// The window's content asked to close.
+    pub(super) should_close: bool,
+}
+
+/// The one coordinated frame transaction every windowed host shares.
+/// Executor wakes and input dispatch run against the last presented
+/// geometry; the pump renders only when the engine's `Next` says there is
+/// work, and the outcome tells the host whether another frame is owed.
+#[cfg(target_os = "android")]
+pub(super) fn run_frame_transaction<H: FrameHost>(host: &mut H) -> FrameOutcome {
+    // Tasks and input callbacks can start animations. Publish this frame's
+    // time before either runs so idle time is not charged to a new track.
+    let now = Instant::now();
+    host.parts().0.renderer.set_frame_instant(now);
+    // The transaction is open: a frame request recorded from now on
+    // fires no wake — its scheduling is counted into `wants_next_frame`
+    // below instead of posting into a frame already running.
+    host.frame_transaction().begin();
+    host.drain_executor();
+    host.before_input();
+    let should_close = {
+        let (runtime, env) = host.parts();
+        handle_input_events(runtime, env)
+    } || host.should_close();
+    let mut deadline = {
+        let (runtime, env) = host.parts();
+        let deadline = advance_runtime(runtime, env, now);
+        if matches!(runtime.engine_next, crate::renderer::Next::At { time, .. } if time <= now)
+            && !runtime.is_hidden()
+        {
+            runtime.platform.request_redraw();
+        }
+        deadline
+    };
+    let mut flushed = false;
+    let surface_attached = host.presentation_attached();
+    // A redraw request raised before this frame renders is served by
+    // that render — it drains into the render demand here, so only a
+    // request raised from this point on, an animation asking for its
+    // next frame, still counts toward the transaction's continuation.
+    if host.has_pending_scene_changes() {
+        // Queued scene changes the host's callback posted no wake for —
+        // the transaction counts them into its continuation; no frame
+        // post runs inside the open transaction.
+        host.parts().0.platform.request_redraw();
+    }
+    if FrameTransaction::take_render_request(
+        host.parts().0,
+        surface_attached,
+        H::take_redraw_pending,
+    ) {
+        let presented = host.render();
+        flushed = true;
+        host.after_render(presented);
+    }
+    if should_close {
+        host.notify_close();
+    }
+    host.publish(flushed);
+
+    // The redraw latch now holds only requests raised after this
+    // frame's render — an animation asking for its next frame; the
+    // requests before it were drained into the render demand above and
+    // served. A hidden session reports no continuation either way: the
+    // armed mode stays armed for the restore frame, but the scheduler
+    // must not keep posting wakes into a parked pump.
+    let redraw_pending = H::take_redraw_pending(&host.parts().0.platform);
+    // The signals' pending count covers a frame request raised inside
+    // this transaction after the pump drained the flags: its wake was
+    // suppressed by the gate, so this is its only path to the frame it
+    // needs. One raised while hidden stays armed for the restore frame.
+    let (occluded, demand, engine_next, hidden) = {
+        let runtime = host.parts().0;
+        (
+            runtime.platform.is_occluded(),
+            FrameDemand {
+                mode: runtime.mode,
+                redraw_pending,
+                signals_pending: runtime.renderer.has_pending_frame_request(),
+            },
+            runtime.engine_next.clone(),
+            runtime.is_hidden(),
+        )
+    };
+    let wants_next_frame = host.frame_transaction().finish(occluded, demand);
+    host.finished(wants_next_frame);
+    // A deadline already elapsed wakes the frame once: its tick then
+    // runs at or after the deadline, which is when the recognizer that
+    // armed it clears itself.
+    if !hidden && let crate::renderer::Next::At { time, .. } = engine_next {
+        deadline = Some(deadline.map_or(time, |other| other.min(time)));
+    }
+    FrameOutcome {
+        wants_next_frame,
+        deadline,
+        should_close,
+    }
+}
+
 /// Whether a frame transaction may report the pump's "first frame presented;
 /// ui idle" readiness line: it has presented at least once, and this wake
 /// leaves it idle — but never while hidden. A wake that arrives on a parked

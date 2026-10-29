@@ -42,6 +42,17 @@ fn main() {
                 all(target_arch = "wasm32", feature = "web")
             )
         },
+        // Where the engine presents a window itself, through a
+        // `cherenkov_gpu::WindowTarget` over a view the host hands it. Today
+        // that is the macOS winit window; it is the one gate the engine
+        // window path keys on, so a host that presents the same way joins by
+        // widening this alias.
+        hydrolysis_apple_engine_window: { all(hydrolysis_winit, target_os = "macos") },
+        // The platform range-editing protocol (`runner::editing`): a host
+        // whose input method edits the focused field through UTF-16 ranges.
+        // Test builds compile it too, but a build script cannot see `test`,
+        // so that arm sits at the gate, beside this alias.
+        hydrolysis_range_editing: { android_platform },
         hydrolysis_wayland_platform: { all(feature = "winit", free_unix, not(target_os = "redox")) },
         // The winit desktops, whose windows the application closes itself
         // (Close Window, ⌘W/Ctrl+W). On iOS and the web the system or the

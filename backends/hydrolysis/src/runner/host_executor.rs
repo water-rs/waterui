@@ -1,20 +1,22 @@
-//! The UI-thread executor the Android host shares with every session.
+//! The main-thread executor every windowed host shares across its sessions.
 //!
 //! The queue is the same channel shape the headless runner drains, but a
-//! waker's send also writes a coalescing `eventfd`. The load hook registers
-//! that fd with the main `ALooper` once per process — work scheduled from
-//! any thread lands on the UI thread while it idles, without a JNI call per
-//! wake. The executor outlives every session: dropping a session never
-//! unregisters the fd or strands a queued task the way a per-session
-//! executor did (water-rs/waterui#2226).
+//! waker's send also fires the host's [`HostWake`] — a coalescing signal that
+//! lands on the UI thread while it idles, without a bridge call per wake.
+//! Android's wake is an `eventfd` the load hook registers with the main
+//! `ALooper` once per process. The executor outlives every session: dropping
+//! a session never unregisters the wake or strands a queued task the way a
+//! per-session executor did (water-rs/waterui#2226).
 //!
-//! The same fd also carries one-shot posts: a thread-safe caller that needs
+//! The same wake also carries one-shot posts: a thread-safe caller that needs
 //! a bare call on the UI thread — the GPU-surface redraw handle asking the
-//! host for its Choreographer frame — queues it through [`UiThreadPoster`],
-//! so its wake coalesces with the executor's on the looper's one watched fd
-//! instead of paying a second registration (water-rs/waterui#2287).
+//! host for its next frame — queues it through [`UiThreadPoster`], so its
+//! wake coalesces with the executor's on the host's one wake instead of
+//! paying a second registration (water-rs/waterui#2287).
 
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::fmt::Debug;
+#[cfg(any(target_os = "android", all(test, target_os = "linux")))]
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
@@ -28,56 +30,118 @@ use executor_core::async_task::{AsyncTask, Runnable};
 /// post is a bare call.
 type UiPost = Box<dyn FnOnce() + Send>;
 
-/// The UI-local executor adapted to the main `ALooper`: the same channel
-/// queue the headless runner drains, but a waker's send also writes a
-/// coalescing `eventfd` the looper's fd callback watches — work scheduled
-/// from any thread lands on the UI thread without a JNI call per wake.
-#[derive(Clone, Debug)]
-pub struct AndroidMainThreadExecutor {
-    runnable_tx: mpsc::Sender<Runnable>,
-    runnable_rx: Rc<mpsc::Receiver<Runnable>>,
-    /// One-shot posts from thread-safe wakes, drained beside the runnables
-    /// so both ride the one wake fd.
-    post_tx: mpsc::Sender<UiPost>,
-    post_rx: Rc<mpsc::Receiver<UiPost>>,
-    pending: Arc<AtomicUsize>,
-    /// The `eventfd` every schedule edge writes and the only wake fd the
-    /// executor has: `ExecutorWake` registers this same fd with the main
-    /// `ALooper`, so a wake written while the looper idles is observed on
-    /// the fd the looper watches.
-    wake_fd: Arc<OwnedFd>,
+/// The host's way to get its UI thread to drain the executor.
+///
+/// [`wake`](Self::wake) is called from any thread after the work is queued,
+/// and must coalesce: however many wakes arrive before the UI thread drains,
+/// one drain observes all the queued work.
+pub trait HostWake: Debug + Send + Sync + 'static {
+    /// Signals the UI thread that the executor has work queued.
+    fn wake(&self);
 }
 
-/// The thread-safe face of the executor's wake, handed to callers that run
-/// off the UI thread — the window's GPU-surface redraw handle. A
-/// [`post`](Self::post) queues `work` for the next drain and writes the
-/// shared `eventfd`, so the call lands on the UI thread coalesced with
-/// every other wake the fd already counted.
-#[derive(Clone, Debug)]
-pub struct UiThreadPoster {
-    tx: mpsc::Sender<UiPost>,
-    wake_fd: Arc<OwnedFd>,
+/// Android's wake: a coalescing `eventfd` the main `ALooper` watches. The
+/// load hook registers this same fd, so a wake written while the looper idles
+/// is observed on the fd the looper watches.
+#[cfg(any(target_os = "android", all(test, target_os = "linux")))]
+#[derive(Debug)]
+pub struct EventFdWake(OwnedFd);
+
+#[cfg(any(target_os = "android", all(test, target_os = "linux")))]
+impl EventFdWake {
+    /// Wraps the `eventfd` every wake writes and the looper registration
+    /// watches — the registration can never drift onto a different fd.
+    pub(crate) const fn new(fd: OwnedFd) -> Self {
+        Self(fd)
+    }
+
+    /// The fd the load hook hands to `ALooper_addFd`.
+    pub(crate) fn fd(&self) -> BorrowedFd<'_> {
+        use std::os::fd::AsFd;
+        self.0.as_fd()
+    }
 }
 
-impl UiThreadPoster {
-    /// Queues `work` for the next drain and writes the wake fd. The send
-    /// precedes the write so a drain that observes the fd always finds the
-    /// work; a failed send means the executor is gone and the wake is a
-    /// no-op, the same shape a dead task channel gives a scheduled task.
-    pub(crate) fn post(&self, work: impl FnOnce() + Send + 'static) {
-        if self.tx.send(Box::new(work)).is_ok() {
-            // SAFETY: `wake_fd` is the executor's live eventfd.
-            unsafe {
-                libc::eventfd_write(self.wake_fd.as_raw_fd(), 1);
-            }
+#[cfg(any(target_os = "android", all(test, target_os = "linux")))]
+impl HostWake for EventFdWake {
+    fn wake(&self) {
+        // Coalesced wake: one counter increment regardless of how many
+        // runnables are already queued.
+        // SAFETY: `self.0` is the executor's live eventfd.
+        unsafe {
+            libc::eventfd_write(self.0.as_raw_fd(), 1);
         }
     }
 }
 
-impl AndroidMainThreadExecutor {
-    /// `wake_fd` is the fd the looper registration watches and the fd every
-    /// waker writes — the registration can never drift onto a different fd.
-    pub(crate) fn new(wake_fd: OwnedFd) -> Self {
+/// The UI-local executor adapted to a host's main thread: the same channel
+/// queue the headless runner drains, but a waker's send also fires the
+/// host's [`HostWake`] — work scheduled from any thread lands on the UI
+/// thread without a bridge call per wake.
+#[derive(Debug)]
+pub struct HostMainThreadExecutor<W: HostWake> {
+    runnable_tx: mpsc::Sender<Runnable>,
+    runnable_rx: Rc<mpsc::Receiver<Runnable>>,
+    /// One-shot posts from thread-safe wakes, drained beside the runnables
+    /// so both ride the one wake.
+    post_tx: mpsc::Sender<UiPost>,
+    post_rx: Rc<mpsc::Receiver<UiPost>>,
+    pending: Arc<AtomicUsize>,
+    /// The only wake the executor has: whatever watches the UI thread
+    /// registers this same wake, so a wake fired while the thread idles is
+    /// observed where the host listens.
+    wake: Arc<W>,
+}
+
+impl<W: HostWake> Clone for HostMainThreadExecutor<W> {
+    fn clone(&self) -> Self {
+        Self {
+            runnable_tx: self.runnable_tx.clone(),
+            runnable_rx: Rc::clone(&self.runnable_rx),
+            post_tx: self.post_tx.clone(),
+            post_rx: Rc::clone(&self.post_rx),
+            pending: Arc::clone(&self.pending),
+            wake: Arc::clone(&self.wake),
+        }
+    }
+}
+
+/// The thread-safe face of the executor's wake, handed to callers that run
+/// off the UI thread — the window's GPU-surface redraw handle. A
+/// [`post`](Self::post) queues `work` for the next drain and fires the
+/// shared wake, so the call lands on the UI thread coalesced with every
+/// other wake the host already counted.
+#[derive(Debug)]
+pub struct UiThreadPoster<W: HostWake> {
+    tx: mpsc::Sender<UiPost>,
+    wake: Arc<W>,
+}
+
+impl<W: HostWake> Clone for UiThreadPoster<W> {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            wake: Arc::clone(&self.wake),
+        }
+    }
+}
+
+impl<W: HostWake> UiThreadPoster<W> {
+    /// Queues `work` for the next drain and fires the wake. The send
+    /// precedes the wake so a drain that observes it always finds the
+    /// work; a failed send means the executor is gone and the wake is a
+    /// no-op, the same shape a dead task channel gives a scheduled task.
+    pub(crate) fn post(&self, work: impl FnOnce() + Send + 'static) {
+        if self.tx.send(Box::new(work)).is_ok() {
+            self.wake.wake();
+        }
+    }
+}
+
+impl<W: HostWake> HostMainThreadExecutor<W> {
+    /// `wake` is the signal the host's UI-thread registration observes and
+    /// every waker fires.
+    pub(crate) fn new(wake: W) -> Self {
         let (runnable_tx, runnable_rx) = mpsc::channel();
         let (post_tx, post_rx) = mpsc::channel();
         Self {
@@ -86,22 +150,22 @@ impl AndroidMainThreadExecutor {
             post_tx,
             post_rx: Rc::new(post_rx),
             pending: Arc::new(AtomicUsize::new(0)),
-            wake_fd: Arc::new(wake_fd),
+            wake: Arc::new(wake),
         }
     }
 
-    /// The fd the load hook hands to `ALooper_addFd` — the same one the
-    /// waker writes.
-    pub(crate) const fn wake_fd(&self) -> &Arc<OwnedFd> {
-        &self.wake_fd
+    /// The wake the host's registration observes — the same one every waker
+    /// fires.
+    pub(crate) const fn wake(&self) -> &Arc<W> {
+        &self.wake
     }
 
     /// The handle a thread-safe caller posts through — the window's
     /// GPU-surface redraw handle ends its wake in one.
-    pub(crate) fn poster(&self) -> UiThreadPoster {
+    pub(crate) fn poster(&self) -> UiThreadPoster<W> {
         UiThreadPoster {
             tx: self.post_tx.clone(),
-            wake_fd: Arc::clone(&self.wake_fd),
+            wake: Arc::clone(&self.wake),
         }
     }
 
@@ -122,7 +186,7 @@ impl AndroidMainThreadExecutor {
     }
 }
 
-impl LocalExecutor for AndroidMainThreadExecutor {
+impl<W: HostWake> LocalExecutor for HostMainThreadExecutor<W> {
     type Task<T: 'static> = AsyncTask<T>;
 
     fn spawn_local<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
@@ -131,18 +195,11 @@ impl LocalExecutor for AndroidMainThreadExecutor {
     {
         let runnable_tx = self.runnable_tx.clone();
         let pending = Arc::clone(&self.pending);
-        let wake_fd = self.wake_fd.as_raw_fd();
+        let wake = Arc::clone(&self.wake);
         let (runnable, task) = executor_core::async_task::spawn_local(fut, move |runnable| {
             pending.fetch_add(1, Ordering::SeqCst);
             match runnable_tx.send(runnable) {
-                Ok(()) => {
-                    // Coalesced wake: one counter increment regardless of how
-                    // many runnables are already queued.
-                    // SAFETY: `wake_fd` is the executor's live eventfd.
-                    unsafe {
-                        libc::eventfd_write(wake_fd, 1);
-                    }
-                }
+                Ok(()) => wake.wake(),
                 Err(unsent) => {
                     pending.fetch_sub(1, Ordering::SeqCst);
                     // Same teardown race as the headless executor: dropping a
@@ -159,11 +216,11 @@ impl LocalExecutor for AndroidMainThreadExecutor {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use std::cell::Cell;
-    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::fd::FromRawFd;
 
     use super::*;
 
-    fn executor() -> AndroidMainThreadExecutor {
+    fn executor() -> HostMainThreadExecutor<EventFdWake> {
         // SAFETY: NONBLOCK + CLOEXEC keep a saturated counter from stalling
         // the looper and the fd out of child processes.
         let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
@@ -173,12 +230,12 @@ mod tests {
             std::io::Error::last_os_error()
         );
         // SAFETY: fd >= 0 checked above.
-        AndroidMainThreadExecutor::new(unsafe { OwnedFd::from_raw_fd(fd) })
+        HostMainThreadExecutor::new(EventFdWake::new(unsafe { OwnedFd::from_raw_fd(fd) }))
     }
 
     /// A wake written while the looper is idle must land on the fd the
     /// `ALooper` watches. `ExecutorWake` cannot run on a host machine — it
-    /// needs the Android `ALooper` — but it registers `wake_fd()`, the only
+    /// needs the Android `ALooper` — but it registers `wake().fd()`, the only
     /// fd the executor has, so polling it here exercises exactly what the
     /// looper sees on device. The regression this guards against wrote
     /// wakes to one eventfd while a different, never-written fd sat in the
@@ -196,7 +253,7 @@ mod tests {
         // What `ALooper_pollOnce` would report while idle: the registered
         // fd readable, the wake already there.
         let mut pollfd = libc::pollfd {
-            fd: executor.wake_fd().as_raw_fd(),
+            fd: executor.wake().fd().as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
@@ -211,7 +268,7 @@ mod tests {
         // receives the coalesced counter exactly as the looper callback
         // reads it.
         unsafe {
-            libc::eventfd_read(executor.wake_fd().as_raw_fd(), &raw mut count);
+            libc::eventfd_read(executor.wake().fd().as_raw_fd(), &raw mut count);
         }
         assert_eq!(count, 1);
 
@@ -249,7 +306,7 @@ mod tests {
         // What `ALooper_pollOnce` would report while idle: the registered
         // fd readable, the wakes already there.
         let mut pollfd = libc::pollfd {
-            fd: executor.wake_fd().as_raw_fd(),
+            fd: executor.wake().fd().as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };

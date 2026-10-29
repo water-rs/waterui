@@ -61,11 +61,6 @@ pub mod android_accessibility;
 pub mod android_methods;
 // Bare wasm has no window pump to drive these modules' diagnostics
 // and menu-bar plumbing.
-/// The Android UI-thread executor and its `eventfd` wake — compiled on
-/// Android for the JNI bridge and, because `eventfd` is Linux-only, on a
-/// Linux host for the fd tests; dead elsewhere.
-#[cfg(any(target_os = "android", all(test, target_os = "linux")))]
-pub mod android_executor;
 /// The insets-region metrics the Android session's `set_metrics`
 /// change-detects on — compiled on Android for the session and on host
 /// for its tests; dead elsewhere.
@@ -79,14 +74,20 @@ mod content_tests;
     expect(dead_code, reason = "the GPU pump is the sole diagnostics consumer")
 )]
 mod diagnostics;
-/// The `InputConnection` protocol state machine — compiled on Android for the
-/// JNI bridge and on host for its tests; dead elsewhere.
-#[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
+/// The platform range-editing protocol state machine (UTF-16 ranges,
+/// composition, selection) — compiled where a host speaks it and on host for
+/// its tests; dead elsewhere.
+#[cfg(any(hydrolysis_range_editing, all(test, not(target_arch = "wasm32"))))]
 pub mod editing;
 #[cfg(hydrolysis_gpu_painter)]
 mod executor;
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 mod headless;
+/// The host UI-thread executor and its wake — compiled on Android for the
+/// JNI bridge and, because `eventfd` is Linux-only, on a Linux host for the
+/// fd tests; dead elsewhere.
+#[cfg(any(target_os = "android", all(test, target_os = "linux")))]
+pub mod host_executor;
 pub mod ime;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 pub mod menu_bar;
