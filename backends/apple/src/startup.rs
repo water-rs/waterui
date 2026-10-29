@@ -183,7 +183,7 @@ fn init_tracing(inspector: Option<waterui::inspector::InspectorLayer>, stderr: b
             .without_time()
     });
     let native_layer = tracing_subscriber::fmt::layer()
-        .with_writer(crate::native_log::NativeLog)
+        .with_writer(cocoa_ui::log::NativeLog)
         .without_time()
         .with_ansi(false);
     tracing_subscriber::registry()

@@ -24,7 +24,6 @@ pub mod dispatch;
 pub mod embedding;
 pub mod entry;
 mod native_layout;
-mod native_log;
 #[cfg(preview_entry)]
 pub mod preview;
 pub mod resources;
