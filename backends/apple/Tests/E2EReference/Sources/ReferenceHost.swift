@@ -156,24 +156,25 @@ func wuiSignalReferenceFirstPaint(presentation: WuiReferencePresentation) {
       if let title = UserDefaults.standard.string(forKey: "E2ETitle") {
         window.title = title
       }
-      // Mirror the chrome flags the WaterUI backend applies to a window with a
-      // toolbar (WuiWindowToolbar): unified style + full-size content, which
-      // is what lets a NavigationSplitView sidebar run the window's full
-      // height with the traffic lights inside it — the presentation Apple's
-      // own apps use. They must be in place before the content's first
-      // layout: AppKit hands the toolbar band to a scroll view under it only
-      // then, and turning them on afterwards leaves the titlebar its own
-      // full-width hard pocket (water-rs/waterui#3697). SwiftUI installs
-      // window.toolbar on first layout, so a window that ends up without one
-      // drops the flags after a turn of the main loop.
-      window.toolbarStyle = .unified
-      window.styleMask.insert(.fullSizeContentView)
       let presentation = WuiReferencePresentation()
       let hostingView = NSHostingView(rootView: TwinRoot().environmentObject(presentation))
       // Do not let the SwiftUI content's ideal size drive the window size —
       // the waterui scaffold pins the content rect at 800×600 unconditionally.
       hostingView.sizingOptions = []
       window.contentView = hostingView
+      // Mirror the chrome flags the WaterUI backend applies to a window with a
+      // toolbar (WuiWindowToolbar): unified style + full-size content, which
+      // is what lets a NavigationSplitView sidebar run the window's full
+      // height with the traffic lights inside it — the presentation Apple's
+      // own apps use. Like the backend, they go on after the content view is
+      // installed, which keeps the window frame the scaffold's, and before
+      // the content's first layout: AppKit hands the toolbar band to a scroll
+      // view under it only then, and turning them on afterwards leaves the
+      // titlebar its own full-width hard pocket (water-rs/waterui#3697).
+      // SwiftUI installs window.toolbar on first layout, so a window that
+      // ends up without one drops the flags after a turn of the main loop.
+      window.toolbarStyle = .unified
+      window.styleMask.insert(.fullSizeContentView)
       window.center()
       window.makeKeyAndOrderFront(nil)
       self.window = window
