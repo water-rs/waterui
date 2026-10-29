@@ -45,9 +45,6 @@ pub struct CapturedRgba {
     pub width: u32,
     /// Raster height in pixels.
     pub height: u32,
-    /// Pixels per point the raster was rendered at — the backing scale of
-    /// the window the capture ran in.
-    pub scale: f64,
 }
 
 /// Why [`capture_rgba`] produced no raster.
@@ -362,7 +359,7 @@ fn rgba_target(
 
 /// `view`'s subtree rendered into an owned `RGBA8` raster at the backing
 /// scale of the window it is captured in — `ceil(bounds * scale)` physical
-/// pixels, the scale reported on the result.
+/// pixels.
 ///
 /// The scale is resolved here, after a windowless view has been rehosted:
 /// a detached view has no screen and answers `1.0`, while the capture
@@ -414,7 +411,6 @@ pub async fn capture_rgba(
             pixels: Vec::new(),
             width: 0,
             height: 0,
-            scale,
         });
     }
     let (width, height) = pixel_extent(bounds.size, scale);
@@ -442,7 +438,7 @@ pub async fn capture_rgba(
     drop(guard);
     drop(host);
 
-    Ok(read_target(&target, width, height, scale))
+    Ok(read_target(&target, width, height))
 }
 
 /// The capture pass's pixel extent for a point `size` at `scale` — `ceil`
@@ -461,12 +457,7 @@ fn pixel_extent(size: cocoa_ui::Size, scale: f64) -> (u32, u32) {
 
 /// The one permitted readback: `width` × `height` premultiplied RGBA8
 /// texels out of the `.shared` capture target.
-fn read_target(
-    target: &ProtocolObject<dyn MTLTexture>,
-    width: u32,
-    height: u32,
-    scale: f64,
-) -> CapturedRgba {
+fn read_target(target: &ProtocolObject<dyn MTLTexture>, width: u32, height: u32) -> CapturedRgba {
     let mut pixels = vec![0u8; width as usize * height as usize * 4];
     // SAFETY: `pixels` holds `width*4` bytes per row for `height` rows and
     // `target` is `.shared` — the region read stays in bounds.
@@ -490,7 +481,6 @@ fn read_target(
         pixels,
         width,
         height,
-        scale,
     }
 }
 
@@ -661,7 +651,6 @@ impl CaptureDrive {
                 pixels: Vec::new(),
                 width: 0,
                 height: 0,
-                scale: self.scale,
             });
         }
         let (width, height) = pixel_extent(bounds.size, self.scale);
@@ -682,7 +671,7 @@ impl CaptureDrive {
             self.mtm,
         )
         .await?;
-        Ok(read_target(&target, width, height, self.scale))
+        Ok(read_target(&target, width, height))
     }
 }
 
@@ -864,19 +853,10 @@ pub async fn template_image(
     )
     .expect("CGImage creation from captured pixels failed");
     let shrink = (max_side / f64::max(bounds.size.width, bounds.size.height)).min(1.0);
-
-    #[cfg(target_os = "macos")]
-    {
-        cocoa_ui::bitmap::template_image(
-            &image,
-            cocoa_ui::Size::new(bounds.size.width * shrink, bounds.size.height * shrink),
-        )
-    }
-    #[cfg(target_os = "ios")]
-    {
-        cocoa_ui::bitmap::template_image(&image, captured.scale / shrink)
-            .expect("UIImage template conversion failed")
-    }
+    cocoa_ui::bitmap::template_image(
+        &image,
+        cocoa_ui::Size::new(bounds.size.width * shrink, bounds.size.height * shrink),
+    )
 }
 
 /// `view` rasterized as a non-template `NSImage` at its exact logical

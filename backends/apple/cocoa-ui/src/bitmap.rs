@@ -159,18 +159,25 @@ pub fn with_uikit_context(context: &CGContext, body: impl FnOnce()) {
     unsafe { objc2_ui_kit::UIGraphicsPopContext() };
 }
 
-/// A `UIImage` rendering `image` at `scale`, tagged `alwaysTemplate`.
+/// A `UIImage` showing `image` at `size` points, tagged `alwaysTemplate` —
+/// its scale is the raster's pixels per point, so the image keeps every
+/// captured pixel.
 #[cfg(target_os = "ios")]
 #[must_use]
-pub fn template_image(image: &CGImage, scale: f64) -> Option<Retained<objc2_ui_kit::UIImage>> {
+pub fn template_image(image: &CGImage, size: Size) -> Retained<objc2_ui_kit::UIImage> {
     use objc2_ui_kit::{UIImage, UIImageOrientation, UIImageRenderingMode};
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a raster's pixel width is far below f64's exact integer range"
+    )]
+    let scale = CGImage::width(Some(image)) as f64 / size.width;
     let ui = UIImage::initWithCGImage_scale_orientation(
         UIImage::alloc(),
         image,
         scale,
         UIImageOrientation::Up,
     );
-    Some(ui.imageWithRenderingMode(UIImageRenderingMode::AlwaysTemplate))
+    ui.imageWithRenderingMode(UIImageRenderingMode::AlwaysTemplate)
 }
 
 /// An `NSImage` wrapping `image` at `size` points, tagged as a template.
@@ -420,7 +427,10 @@ pub fn view_template_image(
     });
     let image = context_image(&context)?;
     let shrink = (max_side / f64::max(bounds.size.width, bounds.size.height)).min(1.0);
-    template_image(&image, scale / shrink)
+    Some(template_image(
+        &image,
+        Size::new(bounds.size.width * shrink, bounds.size.height * shrink),
+    ))
 }
 
 /// Any connected `UIWindowScene`:
