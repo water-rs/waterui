@@ -64,7 +64,7 @@ mod keyboard_band;
 pub use keyboard_band::KeyboardBand;
 mod menu;
 mod navigation;
-pub use pointer::PointerInteraction;
+pub use pointer::{CursorInteraction, PointerCursor, PointerInteraction};
 mod search_bar;
 mod split;
 pub mod surface_view;

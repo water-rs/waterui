@@ -25,18 +25,21 @@ use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_foundation::{
-    NSArray, NSAttributedStringKey, NSComparisonResult, NSDictionary, NSObject, NSRange, NSSet,
-    NSString,
+    NSArray, NSAttributedStringKey, NSComparisonResult, NSDictionary, NSNumber, NSObject, NSRange,
+    NSSet, NSString,
 };
 use objc2_ui_kit::{
-    UIEvent, UIEventButtonMask, UIGestureRecognizer, UIGestureRecognizerState, UIKeyInput,
-    UIKeyboardType, UIPanGestureRecognizer, UIPress, UIPressesEvent, UIReturnKeyType,
-    UIScrollTypeMask, UITextAutocapitalizationType, UITextAutocorrectionType, UITextInput,
-    UITextInputDelegate, UITextInputStringTokenizer, UITextInputTokenizer, UITextInputTraits,
-    UITextLayoutDirection, UITextPosition, UITextRange, UITextSelectionRect,
-    UITextStorageDirection, UITouch, UITouchType, UIView,
+    UIEvent, UIEventButtonMask, UIGestureRecognizer, UIGestureRecognizerDelegate,
+    UIGestureRecognizerState, UIHoverGestureRecognizer, UIKeyInput, UIKeyboardType,
+    UIPanGestureRecognizer, UIPinchGestureRecognizer, UIPress, UIPressesEvent, UIReturnKeyType,
+    UIRotationGestureRecognizer, UIScrollTypeMask, UITextAutocapitalizationType,
+    UITextAutocorrectionType, UITextInput, UITextInputDelegate, UITextInputStringTokenizer,
+    UITextInputTokenizer, UITextInputTraits, UITextLayoutDirection, UITextPosition, UITextRange,
+    UITextSelectionRect, UITextStorageDirection, UITouch, UITouchType, UIView,
 };
 
+use super::pointer::{CursorInteraction, PointerCursor};
+use super::surface_view::gesture_phase;
 use super::text_input::{
     Autocapitalization, Autocorrection, KeyboardType, ReturnKey, TextInputClient,
     TextInputNotifier, next_grapheme, previous_grapheme,
@@ -44,7 +47,7 @@ use super::text_input::{
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Rect};
 use crate::input::{
-    Key, NamedKey, PointerButtons, ScrollUnit, SurfaceEvent, TouchKind, TouchPhase,
+    GesturePhase, Key, NamedKey, PointerButtons, ScrollUnit, SurfaceEvent, TouchKind, TouchPhase,
 };
 use crate::keys;
 
@@ -65,12 +68,15 @@ pub struct InputViewIvars {
     input_delegate: RefCell<Option<Weak<ProtocolObject<dyn UITextInputDelegate>>>>,
     layout_handler: RefCell<Option<Rc<dyn Fn()>>>,
     safe_area_handler: RefCell<Option<SafeAreaHandler>>,
-    /// The target the scroll recognizers talk to — the view owns it.
-    scroll_target: RefCell<Option<Retained<ScrollTarget>>>,
-    /// The indirect-scroll recognizers — continuous (trackpad) and
-    /// discrete (wheel) so each callback knows its gesture's source and
-    /// completion behavior. Both report logical points.
-    scroll_recognizers: RefCell<Vec<Retained<UIGestureRecognizer>>>,
+    /// The target the pointer recognizers talk to — the view owns it.
+    pointer_target: RefCell<Option<Retained<PointerTarget>>>,
+    /// The pointer recognizers: the indirect-scroll pair — continuous
+    /// (trackpad) and discrete (wheel) so each callback knows its gesture's
+    /// source and completion behavior, both in logical points — plus hover
+    /// and the trackpad pinch and rotation.
+    pointer_recognizers: RefCell<Vec<Retained<UIGestureRecognizer>>>,
+    /// The interaction that shows the content's cursor.
+    cursor: RefCell<Option<CursorInteraction>>,
     /// The empty input view answered while no editor is focused, created on
     /// first use.
     silent_input: RefCell<Option<Retained<UIView>>>,
@@ -261,17 +267,17 @@ impl SelectionRect {
     }
 }
 
-/// The ivars of a [`ScrollTarget`].
+/// The ivars of a [`PointerTarget`].
 #[derive(Default)]
-struct ScrollTargetIvars {
-    /// The view the scroll recognizers forward to — weak, since the view
+struct PointerTargetIvars {
+    /// The view the pointer recognizers forward to — weak, since the view
     /// owns both the recognizers and the target.
     view: RefCell<Option<Weak<InputView>>>,
 }
 
-impl fmt::Debug for ScrollTargetIvars {
+impl fmt::Debug for PointerTargetIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ScrollTargetIvars").finish_non_exhaustive()
+        f.debug_struct("PointerTargetIvars").finish_non_exhaustive()
     }
 }
 
@@ -279,35 +285,47 @@ define_class!(
     // SAFETY: `NSObject` has no subclassing requirements; the class holds
     // a weak view reference and does not implement `Drop`.
     #[unsafe(super(NSObject))]
-    #[name = "CocoaUiInputScrollTarget"]
+    #[name = "CocoaUiInputPointerTarget"]
     #[thread_kind = MainThreadOnly]
-    #[ivars = ScrollTargetIvars]
+    #[ivars = PointerTargetIvars]
     #[derive(Debug)]
-    /// Receives the indirect-scroll recognizers' actions for an
-    /// [`InputView`]. `UIKit` delivers trackpad and wheel scrolling to a
-    /// view as `UIPanGestureRecognizer`s whose `allowedScrollTypesMask`
-    /// admits the scroll types — one recognizer per type, so each
-    /// callback knows its gesture's source and completion behavior. Both
-    /// report logical points, never a mask-selected unit.
-    struct ScrollTarget;
+    /// Receives the pointer recognizers' actions for an [`InputView`].
+    /// `UIKit` delivers trackpad and wheel scrolling to a view as
+    /// `UIPanGestureRecognizer`s whose `allowedScrollTypesMask` admits the
+    /// scroll types — one recognizer per type, so each callback knows its
+    /// gesture's source and completion behavior. Both report logical
+    /// points, never a mask-selected unit. Hover, and the trackpad's pinch
+    /// and rotation, arrive through their own recognizers.
+    struct PointerTarget;
 
     // SAFETY: `NSObjectProtocol` asks nothing of an `NSObject` subclass.
-    unsafe impl NSObjectProtocol for ScrollTarget {}
+    unsafe impl NSObjectProtocol for PointerTarget {}
 
-    impl ScrollTarget {
+    // SAFETY: `UIGestureRecognizerDelegate`'s method is implemented with its
+    // declared signature.
+    unsafe impl UIGestureRecognizerDelegate for PointerTarget {
+        // SAFETY: both recognizers are UIKit's.
+        #[unsafe(method(gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:))]
+        fn gesture_recognizer_should_recognize_simultaneously_with_gesture_recognizer(
+            &self,
+            _gesture_recognizer: &UIGestureRecognizer,
+            _other_gesture_recognizer: &UIGestureRecognizer,
+        ) -> bool {
+            // A trackpad pinch and rotation are one two-finger motion.
+            true
+        }
+    }
+
+    impl PointerTarget {
         // SAFETY: `scrollContinuous:` is the `UIGestureRecognizer` action
         // signature.
         #[unsafe(method(scrollContinuous:))]
         fn scroll_continuous(&self, gesture: &UIPanGestureRecognizer) {
-            guarded("CocoaUiInputScrollTarget scrollContinuous:", || {
-                if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load) {
-                    let finished = matches!(
-                        gesture.state(),
-                        UIGestureRecognizerState::Ended
-                            | UIGestureRecognizerState::Cancelled
-                            | UIGestureRecognizerState::Failed
-                    );
-                    view.handle_scroll(gesture, finished);
+            guarded("CocoaUiInputPointerTarget scrollContinuous:", || {
+                if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load)
+                    && let Some(phase) = gesture_phase(gesture.state())
+                {
+                    view.handle_trackpad_pan(gesture, phase);
                 }
             });
         }
@@ -316,10 +334,43 @@ define_class!(
         // signature.
         #[unsafe(method(scrollDiscrete:))]
         fn scroll_discrete(&self, gesture: &UIPanGestureRecognizer) {
-            guarded("CocoaUiInputScrollTarget scrollDiscrete:", || {
+            guarded("CocoaUiInputPointerTarget scrollDiscrete:", || {
                 if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load) {
-                    // A wheel notch is a complete scroll on its own.
-                    view.handle_scroll(gesture, true);
+                    view.handle_scroll(gesture);
+                }
+            });
+        }
+
+        // SAFETY: `hover:` is the `UIGestureRecognizer` action signature.
+        #[unsafe(method(hover:))]
+        fn hover(&self, gesture: &UIHoverGestureRecognizer) {
+            guarded("CocoaUiInputPointerTarget hover:", || {
+                if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load) {
+                    view.handle_hover(gesture);
+                }
+            });
+        }
+
+        // SAFETY: `pinch:` is the `UIGestureRecognizer` action signature.
+        #[unsafe(method(pinch:))]
+        fn pinch(&self, gesture: &UIPinchGestureRecognizer) {
+            guarded("CocoaUiInputPointerTarget pinch:", || {
+                if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load)
+                    && let Some(phase) = gesture_phase(gesture.state())
+                {
+                    view.handle_magnification(gesture, phase);
+                }
+            });
+        }
+
+        // SAFETY: `rotate:` is the `UIGestureRecognizer` action signature.
+        #[unsafe(method(rotate:))]
+        fn rotate(&self, gesture: &UIRotationGestureRecognizer) {
+            guarded("CocoaUiInputPointerTarget rotate:", || {
+                if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load)
+                    && let Some(phase) = gesture_phase(gesture.state())
+                {
+                    view.handle_rotation(gesture, phase);
                 }
             });
         }
@@ -1079,8 +1130,8 @@ impl InputView {
         // never selects a unit. `maximumNumberOfTouches = 0` keeps a
         // finger drag out of the scroll channel: a touch pan is pointer
         // input, not a scroll.
-        let target: Retained<ScrollTarget> = {
-            let this = ScrollTarget::alloc(mtm).set_ivars(ScrollTargetIvars::default());
+        let target: Retained<PointerTarget> = {
+            let this = PointerTarget::alloc(mtm).set_ivars(PointerTargetIvars::default());
             // SAFETY: `init` is `NSObject`'s designated initializer.
             unsafe { msg_send![super(this), init] }
         };
@@ -1109,12 +1160,69 @@ impl InputView {
             discrete.setCancelsTouchesInView(false);
             view.addGestureRecognizer(&discrete);
 
-            view.ivars()
-                .scroll_recognizers
-                .replace(vec![continuous.into_super(), discrete.into_super()]);
+            // Hover covers a pointer and a hovering pencil alike. Pinch and
+            // rotation are the trackpad's only: a pinch of direct touches
+            // is recognized from the touch streams, so it must not also
+            // arrive here.
+            let hover = UIHoverGestureRecognizer::initWithTarget_action(
+                UIHoverGestureRecognizer::alloc(mtm),
+                Some(&*target),
+                Some(sel!(hover:)),
+            );
+            view.addGestureRecognizer(&hover);
+
+            let indirect_pointer = NSArray::from_retained_slice(&[NSNumber::new_isize(
+                UITouchType::IndirectPointer.0,
+            )]);
+            let delegate = ProtocolObject::from_ref(&*target);
+            let pinch = UIPinchGestureRecognizer::initWithTarget_action(
+                UIPinchGestureRecognizer::alloc(mtm),
+                Some(&*target),
+                Some(sel!(pinch:)),
+            );
+            pinch.setAllowedTouchTypes(&indirect_pointer);
+            pinch.setCancelsTouchesInView(false);
+            pinch.setDelegate(Some(delegate));
+            view.addGestureRecognizer(&pinch);
+
+            let rotation = UIRotationGestureRecognizer::initWithTarget_action(
+                UIRotationGestureRecognizer::alloc(mtm),
+                Some(&*target),
+                Some(sel!(rotate:)),
+            );
+            rotation.setAllowedTouchTypes(&indirect_pointer);
+            rotation.setCancelsTouchesInView(false);
+            rotation.setDelegate(Some(delegate));
+            view.addGestureRecognizer(&rotation);
+
+            view.ivars().pointer_recognizers.replace(vec![
+                continuous.into_super(),
+                discrete.into_super(),
+                hover.into_super(),
+                pinch.into_super(),
+                rotation.into_super(),
+            ]);
         }
-        view.ivars().scroll_target.replace(Some(target));
+        view.ivars().pointer_target.replace(Some(target));
+        view.ivars()
+            .cursor
+            .replace(Some(CursorInteraction::install(&view)));
         view
+    }
+
+    /// Shows `cursor` as the pointer over the view.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the view was not built by [`InputView::new`], which
+    /// installs the cursor interaction.
+    pub fn set_pointer_cursor(&self, cursor: PointerCursor) {
+        self.ivars()
+            .cursor
+            .borrow()
+            .as_ref()
+            .expect("InputView installs its cursor interaction on creation")
+            .set(cursor);
     }
 
     /// Installs `handler` as the receiver of every surface event.
@@ -1356,10 +1464,10 @@ impl InputView {
         gesture: &UIPanGestureRecognizer,
         source: UIScrollTypeMask,
     ) {
-        let target = self.ivars().scroll_target.borrow();
+        let target = self.ivars().pointer_target.borrow();
         let target = target
             .as_ref()
-            .expect("InputView always owns a scroll target");
+            .expect("InputView always owns a pointer target");
         match source {
             // SAFETY: the ivars own `target`; the action takes one
             // `UIPanGestureRecognizer`.
@@ -1375,18 +1483,17 @@ impl InputView {
         }
     }
 
-    /// An indirect-scroll recognizer's report as a scroll event: the
-    /// translation since the last callback is the delta — `setTranslation`
-    /// zeroed it — negated into the W3C sign `SurfaceEvent` uses (a pan's
-    /// translation counts the pointer's own motion, positive right and
-    /// down, while `delta_x`/`delta_y` count content movement, positive
-    /// left and up). `translationInView:` is always a view-coordinate
-    /// displacement in logical points — `Pixel` — for both scroll type
-    /// masks; the masks select the gesture's source and completion
-    /// behavior, never a unit. `finished` says whether this callback ends
-    /// the scroll: a wheel notch is complete on its own; a trackpad glide
-    /// finishes when the gesture ends or is cancelled.
-    fn handle_scroll(&self, gesture: &UIPanGestureRecognizer, finished: bool) {
+    /// A wheel notch as a scroll event: the translation since the last
+    /// callback is the delta — `setTranslation` zeroed it — negated into the
+    /// W3C sign `SurfaceEvent` uses (a pan's translation counts the
+    /// pointer's own motion, positive right and down, while
+    /// `delta_x`/`delta_y` count content movement, positive left and up).
+    /// `translationInView:` is always a view-coordinate displacement in
+    /// logical points — `Pixel`. A notch is complete on its own, so every
+    /// callback is `finished`. A trackpad glide is a phased
+    /// [`SurfaceEvent::TrackpadPan`] instead, so the receiver owns its
+    /// momentum.
+    fn handle_scroll(&self, gesture: &UIPanGestureRecognizer) {
         let this: &UIView = self;
         let point = gesture.locationInView(Some(this));
         let translation = gesture.translationInView(Some(this));
@@ -1396,7 +1503,76 @@ impl InputView {
             delta_x: -translation.x,
             delta_y: -translation.y,
             unit: ScrollUnit::Pixel,
-            finished,
+            finished: true,
+        });
+    }
+
+    /// A trackpad glide's report as a phased pan: the translation since the
+    /// last callback, negated into the content-motion sign `SurfaceEvent`
+    /// uses — see [`handle_scroll`](Self::handle_scroll).
+    fn handle_trackpad_pan(&self, gesture: &UIPanGestureRecognizer, phase: GesturePhase) {
+        let this: &UIView = self;
+        let point = gesture.locationInView(Some(this));
+        let translation = gesture.translationInView(Some(this));
+        gesture.setTranslation_inView(objc2_core_foundation::CGPoint::ZERO, Some(this));
+        self.emit(SurfaceEvent::TrackpadPan {
+            position: kurbo::Point::new(point.x, point.y),
+            delta_x: -translation.x,
+            delta_y: -translation.y,
+            phase,
+        });
+    }
+
+    /// A hover recognizer's report: the position while the pointer or pencil
+    /// hovers, `None` when it leaves.
+    ///
+    /// `UIKit` reports no device for a hover; only a pencil has a height
+    /// above the glass, so a non-zero `zOffset` is the pencil.
+    fn handle_hover(&self, gesture: &UIHoverGestureRecognizer) {
+        let kind = if gesture.zOffset() > 0.0 {
+            TouchKind::Pencil
+        } else {
+            TouchKind::IndirectPointer
+        };
+        let position = match gesture.state() {
+            UIGestureRecognizerState::Began | UIGestureRecognizerState::Changed => {
+                let this: &UIView = self;
+                let point = gesture.locationInView(Some(this));
+                Some(kurbo::Point::new(point.x, point.y))
+            }
+            UIGestureRecognizerState::Ended
+            | UIGestureRecognizerState::Cancelled
+            | UIGestureRecognizerState::Failed => None,
+            _ => return,
+        };
+        self.emit(SurfaceEvent::Hover { position, kind });
+    }
+
+    /// A trackpad pinch as the scale change since the last callback:
+    /// `scale` is reset to 1 after each read, so it is `1 + delta`.
+    fn handle_magnification(&self, gesture: &UIPinchGestureRecognizer, phase: GesturePhase) {
+        let this: &UIView = self;
+        let point = gesture.locationInView(Some(this));
+        let delta = gesture.scale() - 1.0;
+        gesture.setScale(1.0);
+        self.emit(SurfaceEvent::Magnification {
+            position: kurbo::Point::new(point.x, point.y),
+            delta,
+            phase,
+        });
+    }
+
+    /// A trackpad rotation as the angle change since the last callback, in
+    /// radians: `rotation` is reset to 0 after each read.
+    fn handle_rotation(&self, gesture: &UIRotationGestureRecognizer, phase: GesturePhase) {
+        let this: &UIView = self;
+        let point = gesture.locationInView(Some(this));
+        let delta = gesture.rotation();
+        gesture.setRotation(0.0);
+        self.emit(SurfaceEvent::Rotation {
+            position: kurbo::Point::new(point.x, point.y),
+            delta,
+            phase,
         });
     }
 

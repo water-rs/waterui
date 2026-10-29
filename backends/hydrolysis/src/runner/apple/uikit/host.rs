@@ -22,7 +22,7 @@ use cocoa_ui::display_link::FrameClock;
 use cocoa_ui::main_queue::{MainQueueWake, MainThreadBound, enqueue_after_local};
 use cocoa_ui::notification::NotificationObserver;
 use cocoa_ui::uikit::input_view::InputView;
-use cocoa_ui::uikit::{KeyboardBand, WindowScene};
+use cocoa_ui::uikit::{KeyboardBand, PointerCursor, WindowScene};
 use cocoa_ui::{MainThreadMarker, Retained};
 use nami::Signal as _;
 use waterui::cursor::CursorStyle;
@@ -285,7 +285,6 @@ pub(super) struct UiKitHostWindow {
     display_moved: Rc<Cell<bool>>,
     /// Posts onto the main thread from any thread.
     poster: UiThreadPoster<MainQueueWake>,
-    cursor_style: CursorStyle,
     /// The [`TextInputState::activation`] the soft keyboard was last shown
     /// for; `None` while no field holds focus.
     soft_input: Option<u64>,
@@ -313,7 +312,6 @@ impl UiKitHostWindow {
             keyboard_area,
             display_moved,
             poster,
-            cursor_style: CursorStyle::default(),
             soft_input: None,
             applied_title: None,
             applied_size_limits: None,
@@ -495,9 +493,7 @@ impl PlatformWindow for UiKitHostWindow {
     }
 
     fn set_cursor_style(&mut self, style: CursorStyle) {
-        // Touch has no cursor chrome; a pointer-driven iPad session reads it
-        // when the pointer hovers the view.
-        self.cursor_style = style;
+        self.shared.view.set_pointer_cursor(pointer_cursor(style));
     }
 }
 
@@ -564,4 +560,14 @@ fn size_restrictions(min: Option<Size>, max: Option<Size>) -> (cocoa_ui::Size, c
     let maximum = max.unwrap_or(Size::new(f32::INFINITY, f32::INFINITY));
     let maximum = cocoa_ui::Size::new(extent(maximum.width), extent(maximum.height));
     (minimum, maximum)
+}
+
+/// The pointer `iPadOS` can draw for `style`. It has the arrow, the text
+/// I-beam and no pointer; a style with no counterpart there is the arrow, as
+/// [`CursorStyle`] documents for a platform without it.
+const fn pointer_cursor(style: CursorStyle) -> PointerCursor {
+    match style {
+        CursorStyle::IBeam => PointerCursor::Beam,
+        _ => PointerCursor::Arrow,
+    }
 }

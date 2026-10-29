@@ -89,7 +89,10 @@ impl Translator {
                 }),
                 None,
             ),
-            E::Hover { position: None, .. } => (None, None),
+            // The content vocabulary has no hover exit, pinch or rotation.
+            E::Hover { position: None, .. } | E::Magnification { .. } | E::Rotation { .. } => {
+                (None, None)
+            }
             // The content vocabulary cannot name which keys were lost; the
             // modifier chord is the one key state it can reset.
             E::KeyboardCancel => (
@@ -139,6 +142,23 @@ impl Translator {
                 },
                 finished: *finished,
             },
+            // The content's scroll vocabulary is unphased: a glide's last
+            // step is the one that finishes it.
+            E::TrackpadPan {
+                position,
+                delta_x,
+                delta_y,
+                phase,
+            } => SurfaceInputEvent::Scroll {
+                position: kurbo::Point::new(position.x, position.y),
+                delta_x: *delta_x,
+                delta_y: *delta_y,
+                unit: ScrollUnit::Pixel,
+                finished: matches!(
+                    phase,
+                    cocoa_ui::input::GesturePhase::Ended | cocoa_ui::input::GesturePhase::Cancelled
+                ),
+            },
             E::Key {
                 pressed,
                 key,
@@ -160,7 +180,11 @@ impl Translator {
             },
             E::CompositionCommit(text) => SurfaceInputEvent::CompositionCommit(text.clone().into()),
             E::CompositionCancel => SurfaceInputEvent::CompositionCancel,
-            E::Touch { .. } | E::Hover { .. } | E::KeyboardCancel => {
+            E::Touch { .. }
+            | E::Hover { .. }
+            | E::Magnification { .. }
+            | E::Rotation { .. }
+            | E::KeyboardCancel => {
                 unreachable!("translated by `Translator::translate`")
             }
         }

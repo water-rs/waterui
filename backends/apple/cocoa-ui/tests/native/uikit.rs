@@ -1072,15 +1072,15 @@ impl SeededPan {
 
 /// GPU-surface scroll input on `UIKit` (#2068): indirect scrolling
 /// reaches a view as `UIPanGestureRecognizer`s — a trackpad glide through
-/// the `Continuous` scroll type, a wheel notch through `Discrete` — and
-/// each must land as a `SurfaceEvent::Scroll` with the pan's incremental
-/// translation negated into the W3C content-motion sign — always a
-/// logical-point `Pixel` displacement, whatever the mask — and `finished`
-/// per gesture kind. A finger drag is
-/// pointer input, not a scroll: both recognizers take zero touches.
+/// the `Continuous` scroll type, a wheel notch through `Discrete`. A glide
+/// lands as a phased `SurfaceEvent::TrackpadPan` and a notch as a
+/// `SurfaceEvent::Scroll`, each with the pan's incremental translation
+/// negated into the W3C content-motion sign — always a logical-point
+/// displacement, whatever the mask. A finger drag is pointer input, not a
+/// scroll: both recognizers take zero touches.
 #[allow(clippy::too_many_lines)] // The wiring check plus the five scroll probes it verifies.
 fn indirect_scroll_input_arrives_as_surface_scroll_events() {
-    use cocoa_ui::input::{ScrollUnit, SurfaceEvent};
+    use cocoa_ui::input::{GesturePhase, ScrollUnit, SurfaceEvent};
     use cocoa_ui::objc2_ui_kit::{UIPanGestureRecognizer, UIScrollTypeMask};
 
     let mtm = marker();
@@ -1131,25 +1131,24 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
         let [event] = events.as_slice() else {
             panic!("expected one scroll event, got {}", events.len());
         };
-        let SurfaceEvent::Scroll {
+        let SurfaceEvent::TrackpadPan {
             position,
             delta_x,
             delta_y,
-            unit,
-            finished,
+            phase,
         } = event
         else {
-            panic!("expected a scroll event, got {event:?}");
+            panic!("expected a trackpad pan event, got {event:?}");
         };
         assert_eq!((position.x, position.y), (40.0, 24.0));
         // A pan's translation counts pointer motion — positive right and
         // down; `delta_x`/`delta_y` count content motion — positive left
         // and up.
         assert_eq!((*delta_x, *delta_y), (-12.0, 30.0));
-        assert_eq!(*unit, ScrollUnit::Pixel);
-        assert!(
-            !finished,
-            "a mid-gesture callback marked the scroll finished"
+        assert_eq!(
+            *phase,
+            GesturePhase::Changed,
+            "a mid-gesture callback was not a Changed phase"
         );
     }
 
@@ -1173,21 +1172,14 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
         let [.., event] = events.as_slice() else {
             panic!("expected a second scroll event, got {}", events.len());
         };
-        let SurfaceEvent::Scroll {
-            delta_x,
-            unit,
-            finished,
-            ..
-        } = event
-        else {
-            panic!("expected a scroll event, got {event:?}");
+        let SurfaceEvent::TrackpadPan { delta_x, phase, .. } = event else {
+            panic!("expected a trackpad pan event, got {event:?}");
         };
         assert_eq!(*delta_x, -4.0);
-        assert_eq!(*unit, ScrollUnit::Pixel);
-        assert!(*finished, "a glide's end did not mark the scroll finished");
+        assert_eq!(*phase, GesturePhase::Ended);
     }
 
-    // Cancelled and Failed terminate a glide the same way Ended does.
+    // Cancelled and Failed both end a glide as a cancellation.
     for terminal in [
         UIGestureRecognizerState::Cancelled,
         UIGestureRecognizerState::Failed,
@@ -1210,25 +1202,24 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
         let [.., event] = events.as_slice() else {
             panic!("expected another scroll event, got {}", events.len());
         };
-        let SurfaceEvent::Scroll {
+        let SurfaceEvent::TrackpadPan {
             delta_x,
             delta_y,
-            unit,
-            finished,
+            phase,
             ..
         } = event
         else {
-            panic!("expected a scroll event, got {event:?}");
+            panic!("expected a trackpad pan event, got {event:?}");
         };
         assert_eq!((*delta_x, *delta_y), (-2.0, 0.0));
-        assert_eq!(*unit, ScrollUnit::Pixel);
-        assert!(
-            *finished,
-            "a {terminal:?} callback did not mark the scroll finished"
+        assert_eq!(
+            *phase,
+            GesturePhase::Cancelled,
+            "a {terminal:?} callback did not cancel the glide"
         );
     }
 
-    // A wheel notch is complete on its own: the same logical-point
+    // A wheel notch is complete on its own: a logical-point
     // `Pixel` displacement, `finished` on every callback — even
     // mid-`Changed`.
     gesture.ivars().state.set(UIGestureRecognizerState::Changed);

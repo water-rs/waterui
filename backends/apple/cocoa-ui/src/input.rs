@@ -171,6 +171,47 @@ pub enum SurfaceEvent {
         /// notches carry `true` because each notch is complete on its own.
         finished: bool,
     },
+    /// A continuous two-finger trackpad scroll over the surface, phased so the
+    /// receiver owns the momentum after the fingers lift.
+    ///
+    /// Delivered by `UIKit` for the continuous indirect scroll; a discrete
+    /// wheel notch stays a [`SurfaceEvent::Scroll`].
+    TrackpadPan {
+        /// Where the pointer was during the gesture.
+        position: Point,
+        /// Horizontal delta since the last event, positive when the content
+        /// should move left.
+        delta_x: f64,
+        /// Vertical delta since the last event, positive when the content
+        /// should move up.
+        delta_y: f64,
+        /// The gesture's phase.
+        phase: GesturePhase,
+    },
+    /// A trackpad pinch over the surface.
+    ///
+    /// Delivered by `UIKit` for indirect-pointer pinches only; a pinch of
+    /// direct touches is recognized by the receiver from the
+    /// [`SurfaceEvent::Touch`] streams.
+    Magnification {
+        /// The gesture center.
+        position: Point,
+        /// The relative scale change since the last event: the content's
+        /// scale is multiplied by `1 + delta`.
+        delta: f64,
+        /// The gesture's phase.
+        phase: GesturePhase,
+    },
+    /// A trackpad rotation over the surface, with the same delivery rule as
+    /// [`SurfaceEvent::Magnification`].
+    Rotation {
+        /// The gesture center.
+        position: Point,
+        /// The angle change since the last event, in radians.
+        delta: f64,
+        /// The gesture's phase.
+        phase: GesturePhase,
+    },
     /// A key went down (`pressed`) or up while this surface had focus.
     ///
     /// This is the raw key, not text. A press that produces text is followed
