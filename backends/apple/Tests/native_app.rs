@@ -582,26 +582,23 @@ mod scroll_animation {
 /// spawn.
 #[cfg(target_os = "ios")]
 mod key_commands {
-    use std::cell::{Cell, RefCell};
-    use std::ptr::NonNull;
+    use std::cell::Cell;
     use std::rc::Rc;
 
-    use block2::StackBlock;
     use cocoa_ui::Rect;
     use cocoa_ui::Retained;
     use cocoa_ui::menu::{Command, KeyModifiers, MenuTreeNode};
     use cocoa_ui::objc2_ui_kit::{
-        UIAction, UIApplication, UIButton, UIContextMenuInteraction, UIKeyCommand,
-        UIKeyModifierFlags, UIMenu, UIMenuElement, UIMenuElementAttributes, UIMenuElementState,
-        UITextField, UIView, UIViewController, UIWindow,
+        UIAction, UIApplication, UIButton, UIKeyCommand, UIKeyModifierFlags, UIMenuElement,
+        UIMenuElementAttributes, UIMenuElementState, UITextField, UIView, UIViewController,
+        UIWindow,
     };
-    use cocoa_ui::uikit::native_test::pump_main_until;
     use cocoa_ui::uikit::{
         self, KeyCommands, Menu, MenuAction, MenuButton, MenuElement, native_test,
     };
     use libtest_mimic::Trial;
     use objc2::runtime::AnyObject;
-    use objc2::{MainThreadMarker, sel};
+    use objc2::{MainThreadMarker, Message as _, sel};
 
     /// The trial cases.
     pub fn trials() -> Vec<Trial> {
@@ -820,7 +817,7 @@ mod key_commands {
         let mtm = mtm();
         let scene = ChordScene::new(mtm);
         let fired = Rc::new(Cell::new(""));
-        let build = |label: &'static str| {
+        let build = move |fired: &Rc<Cell<&'static str>>, label: &'static str| {
             let key_commands = KeyCommands::new(mtm);
             let fired = fired.clone();
             let action =
@@ -835,36 +832,33 @@ mod key_commands {
         let trigger = MenuButton::new(mtm);
         scene.add(trigger.view());
         cocoa_ui::view::set_frame(trigger.view(), TRIGGER_FRAME);
-        let (menu, mut key_commands) = build("Old");
+        let (menu, mut key_commands) = build(&fired, "Old");
         trigger.set_menu(&menu);
-        let interaction = open_menu(
-            trigger
-                .view()
-                .downcast_ref::<UIButton>()
-                .expect("a `MenuButton` is a `UIButton`"),
-        );
-        assert_eq!(visible_titles(&interaction), ["Old"]);
+        let button = trigger
+            .view()
+            .downcast_ref::<UIButton>()
+            .expect("a `MenuButton` is a `UIButton`")
+            .retain();
+        with_open_menu(&button, move |open| {
+            assert_eq!(open.titles(), ["Old"]);
 
-        // The `Menu` component's rebuild: the button takes the new menu,
-        // then the previous menu's scope retires.
-        let (menu, rebuilt) = build("New");
-        trigger.set_menu(&menu);
-        drop(std::mem::replace(&mut key_commands, rebuilt));
-        let visible = visible_elements(&interaction);
-        assert_eq!(
-            visible
-                .iter()
-                .map(|element| element.title().to_string())
-                .collect::<Vec<_>>(),
-            ["New"],
-            "the menu stays open and shows the rebuilt command as soon as `setMenu:` returns"
-        );
-        assert!(
-            ChordScene::press(mtm, &visible[0]),
-            "the responder chain takes the visible command's action"
-        );
-        assert_eq!(fired.get(), "New", "picking runs the rebuilt callback");
-        interaction.dismissMenu();
+            // The `Menu` component's rebuild: the button takes the new
+            // menu, then the previous menu's scope retires.
+            let (menu, rebuilt) = build(&fired, "New");
+            trigger.set_menu(&menu);
+            drop(std::mem::replace(&mut key_commands, rebuilt));
+            assert_eq!(
+                open.titles(),
+                ["New"],
+                "the menu stays open and shows the rebuilt command as soon as `setMenu:` returns"
+            );
+            assert!(
+                open.press(mtm, 0),
+                "the visible command's action reaches a responder"
+            );
+            assert_eq!(fired.get(), "New", "picking runs the rebuilt callback");
+            drop(scene);
+        });
     }
 
     /// The `Menu` component's teardown: `Mounted` takes the trigger out of
@@ -888,14 +882,16 @@ mod key_commands {
         scene.window.layoutIfNeeded();
         let button =
             descendant_button(mounted.view()).expect("the `Menu` leaf's trigger is a `UIButton`");
-        let interaction = open_menu(&button);
-        assert_eq!(visible_titles(&interaction), ["Keys"]);
+        with_open_menu(&button, move |open| {
+            assert_eq!(open.titles(), ["Keys"]);
 
-        drop(mounted);
-        assert!(
-            visible_elements(&interaction).is_empty(),
-            "the menu closes as its leaf unmounts, before the leaf's commands retire"
-        );
+            drop(mounted);
+            assert!(
+                open.is_closed(),
+                "the menu closes as its leaf unmounts, before the leaf's commands retire"
+            );
+            drop(scene);
+        });
     }
 
     /// Where the cases place a menu trigger.
@@ -915,18 +911,160 @@ mod key_commands {
         }
     }
 
-    /// Opens `button`'s menu the way a tap does and waits until `UIKit`
-    /// shows it.
-    fn open_menu(button: &UIButton) -> Retained<UIContextMenuInteraction> {
-        button.performPrimaryAction();
-        let interaction = button
-            .contextMenuInteraction()
-            .expect("a button with a menu has a context-menu interaction");
-        assert!(
-            pump_main_until(MENU_DEADLINE, || !visible_elements(&interaction).is_empty()),
-            "the button's primary action opens its menu"
-        );
-        interaction
+    use open_menu::with_open_menu;
+
+    /// How an open menu is observed and driven. `UIKit` presents a button
+    /// menu as a context menu on iOS, and `UIContextMenuInteraction` vends
+    /// its visible elements. Under Mac Catalyst it is an `AppKit` `NSMenu`
+    /// popup whose tracking runs modally on the main thread, so its cases
+    /// run *inside* the tracking session (water-rs/waterui#3560). Either
+    /// way [`with_open_menu`] opens the menu the way a tap does, runs the
+    /// case's continuation against the open menu, and leaves no
+    /// presentation behind.
+    #[cfg(not(target_abi = "macabi"))]
+    mod open_menu {
+        use std::cell::RefCell;
+        use std::ptr::NonNull;
+
+        use block2::StackBlock;
+        use cocoa_ui::Retained;
+        use cocoa_ui::objc2_ui_kit::{UIButton, UIContextMenuInteraction, UIMenu, UIMenuElement};
+        use cocoa_ui::uikit::native_test::pump_main_until;
+        use objc2::MainThreadMarker;
+
+        use super::{ChordScene, MENU_DEADLINE};
+
+        /// A menu `UIKit` shows.
+        pub struct OpenMenu {
+            interaction: Retained<UIContextMenuInteraction>,
+        }
+
+        impl OpenMenu {
+            /// The elements the menu shows; none once it is closed or
+            /// closing.
+            fn elements(&self) -> Vec<Retained<UIMenuElement>> {
+                let elements = RefCell::new(Vec::new());
+                let block = StackBlock::new(|menu: NonNull<UIMenu>| {
+                    // SAFETY: `UIKit` hands the block a live copy of the
+                    // visible menu.
+                    elements
+                        .borrow_mut()
+                        .extend(unsafe { menu.as_ref() }.children().iter());
+                    menu
+                });
+                // SAFETY: the block returns the menu it is given, leaving
+                // the visible menu as it is.
+                unsafe { self.interaction.updateVisibleMenuWithBlock(&block) };
+                elements.into_inner()
+            }
+
+            /// The titles of the elements the menu shows.
+            pub fn titles(&self) -> Vec<String> {
+                self.elements()
+                    .iter()
+                    .map(|element| element.title().to_string())
+                    .collect()
+            }
+
+            /// Whether the menu is closed.
+            pub fn is_closed(&self) -> bool {
+                self.elements().is_empty()
+            }
+
+            /// Picks the element at `index` the way a chord does, and
+            /// answers whether a responder took its action.
+            pub fn press(&self, mtm: MainThreadMarker, index: usize) -> bool {
+                ChordScene::press(mtm, &self.elements()[index])
+            }
+        }
+
+        /// Dismisses the menu when a case ends, however it ends.
+        struct Dismiss(Retained<UIContextMenuInteraction>);
+
+        impl Drop for Dismiss {
+            fn drop(&mut self) {
+                self.0.dismissMenu();
+            }
+        }
+
+        /// Opens `button`'s menu, waits until `UIKit` shows it and runs
+        /// `inside` against it.
+        pub fn with_open_menu(button: &UIButton, inside: impl FnOnce(&OpenMenu) + 'static) {
+            button.performPrimaryAction();
+            let interaction = button
+                .contextMenuInteraction()
+                .expect("a button with a menu has a context-menu interaction");
+            let _dismiss = Dismiss(interaction.clone());
+            let open = OpenMenu { interaction };
+            assert!(
+                pump_main_until(MENU_DEADLINE, || !open.is_closed()),
+                "the button's primary action opens its menu"
+            );
+            inside(&open);
+        }
+    }
+
+    /// The Catalyst realization: the presented `NSMenu`, observed through
+    /// `cocoa_ui::uikit::catalyst_menu`.
+    #[cfg(target_abi = "macabi")]
+    mod open_menu {
+        use cocoa_ui::Retained;
+        use cocoa_ui::objc2_ui_kit::{UIButton, UIContextMenuInteraction};
+        use cocoa_ui::uikit::catalyst_menu::{PresentedMenu, within_presented_menu};
+        use objc2::MainThreadMarker;
+
+        use super::MENU_DEADLINE;
+
+        /// The `NSMenu` `AppKit` is tracking.
+        pub struct OpenMenu<'a>(&'a PresentedMenu);
+
+        impl OpenMenu<'_> {
+            /// The titles of the menu's items.
+            pub fn titles(&self) -> Vec<String> {
+                self.0.titles()
+            }
+
+            /// Whether `AppKit` has ended the menu's tracking.
+            pub fn is_closed(&self) -> bool {
+                self.0.has_ended()
+            }
+
+            /// Picks the item at `index` the way a click does, and
+            /// answers whether it was sent.
+            pub fn press(&self, _mtm: MainThreadMarker, index: usize) -> bool {
+                self.0.perform_action_for_item(index);
+                true
+            }
+        }
+
+        /// Dismisses a presentation `AppKit` has not shown yet when a
+        /// case ends, so it cannot appear inside a later case's pump.
+        struct Dismiss(Option<Retained<UIContextMenuInteraction>>);
+
+        impl Drop for Dismiss {
+            fn drop(&mut self) {
+                if let Some(interaction) = &self.0 {
+                    interaction.dismissMenu();
+                }
+            }
+        }
+
+        /// Opens `button`'s menu, waits until `AppKit` begins tracking it
+        /// and runs `inside` within the tracking session.
+        pub fn with_open_menu(
+            button: &UIButton,
+            inside: impl for<'a> FnOnce(&OpenMenu<'a>) + 'static,
+        ) {
+            let mut dismiss = Dismiss(None);
+            within_presented_menu(
+                MENU_DEADLINE,
+                || {
+                    button.performPrimaryAction();
+                    dismiss.0 = button.contextMenuInteraction();
+                },
+                move |presented| inside(&OpenMenu(presented)),
+            );
+        }
     }
 
     /// The first `UIButton` in `view`'s subtree.
@@ -938,31 +1076,6 @@ mod key_commands {
                 .ok()
                 .or_else(|| descendant_button(&child))
         })
-    }
-
-    /// The elements of the menu `interaction` shows; none once the menu
-    /// is closed or closing.
-    fn visible_elements(interaction: &UIContextMenuInteraction) -> Vec<Retained<UIMenuElement>> {
-        let elements = RefCell::new(Vec::new());
-        let block = StackBlock::new(|menu: NonNull<UIMenu>| {
-            // SAFETY: `UIKit` hands the block a live copy of the visible menu.
-            elements
-                .borrow_mut()
-                .extend(unsafe { menu.as_ref() }.children().iter());
-            menu
-        });
-        // SAFETY: the block returns the menu it is given, leaving the
-        // visible menu as it is.
-        unsafe { interaction.updateVisibleMenuWithBlock(&block) };
-        elements.into_inner()
-    }
-
-    /// The titles of the elements `interaction` shows.
-    fn visible_titles(interaction: &UIContextMenuInteraction) -> Vec<String> {
-        visible_elements(interaction)
-            .iter()
-            .map(|element| element.title().to_string())
-            .collect()
     }
 
     /// A key, visible window whose text field is first responder — the
