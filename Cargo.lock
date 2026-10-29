@@ -9295,7 +9295,6 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "reply-example"
 version = "0.1.0"
 dependencies = [
- "hydrolysis",
  "hydrolysis-m3",
  "waterui",
  "waterui-icons-material-icon",
