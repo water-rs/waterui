@@ -180,19 +180,10 @@ struct NavigationTwin: View {
       #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
       #endif
-      // iOS 26's automatic placement inside TabView hoists the field toward
-      // the tab-bar search slot and leaves an empty drawer stub; the
-      // navigation-bar drawer is the field this twin is for. macOS has no
-      // navigationBarDrawer — its automatic placement already draws it.
-      #if os(iOS)
-        .searchable(
-          text: $query,
-          placement: .navigationBarDrawer(displayMode: .always),
-          prompt: "Search mail"
-        )
-      #else
-        .searchable(text: $query, prompt: "Search mail")
-      #endif
+      // The example declares no display mode, so the field keeps the
+      // platform default: tucked under the large title, revealed by pulling
+      // the list down.
+      .searchable(text: $query, prompt: "Search mail")
       .toolbar {
         ToolbarItem(placement: .navigation) {
           Button(editing ? "Done" : "Edit") {}

@@ -30,21 +30,28 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_clas
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSDictionary, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    NSForegroundColorAttributeName, UIBarButtonItem, UIBarButtonItemStyle, UIBarPosition,
-    UIBarPositioning, UIBarPositioningDelegate, UIButton, UIColor, UIContentSizeCategoryAdjusting,
-    UIControl, UIFont, UIFontTextStyleBody, UIGestureRecognizer, UIGestureRecognizerDelegate,
-    UINavigationBar, UINavigationBarAppearance, UINavigationBarDelegate, UINavigationController,
-    UINavigationControllerDelegate, UINavigationItem, UINavigationItemLargeTitleDisplayMode,
-    UISearchController, UISearchResultsUpdating, UITransitionContextFromViewControllerKey,
-    UIViewController, UIViewControllerTransitionCoordinator,
-    UIViewControllerTransitionCoordinatorContext,
+    NSDirectionalRectEdge, NSForegroundColorAttributeName, UIBarButtonItem, UIBarButtonItemStyle,
+    UIBarPosition, UIBarPositioning, UIBarPositioningDelegate, UIButton, UIColor,
+    UIContentSizeCategoryAdjusting, UIControl, UIFont, UIFontTextStyleBody, UIGestureRecognizer,
+    UIGestureRecognizerDelegate, UINavigationBar, UINavigationBarAppearance,
+    UINavigationBarDelegate, UINavigationController, UINavigationControllerDelegate,
+    UINavigationItem, UINavigationItemLargeTitleDisplayMode, UIScrollView, UISearchController,
+    UISearchResultsUpdating, UITransitionContextFromViewControllerKey, UIViewController,
+    UIViewControllerTransitionCoordinator, UIViewControllerTransitionCoordinatorContext,
 };
+
+use crate::callback::guarded;
 
 /// `viewWillAppear:` listener, called with `UIKit`'s `animated` flag.
 type WillAppearHandler = Rc<dyn Fn(bool)>;
 
+/// Answers the page's top-edge scroll view for `contentScrollViewForEdge:`.
+type ScrollSurfaceHandler = Rc<dyn Fn(&NavContentController) -> Option<Retained<UIScrollView>>>;
+
 /// A plain content view controller, reporting when its view appears.
 pub struct NavContentControllerIvars {
+    /// Answers `contentScrollViewForEdge:` for the top edge.
+    scroll_surface: RefCell<Option<ScrollSurfaceHandler>>,
     /// Called when the controller's view appears.
     appear: RefCell<Option<Rc<dyn Fn()>>>,
     /// Called when the controller's view is about to appear.
@@ -121,6 +128,27 @@ define_class!(
             }
         }
 
+        // SAFETY: `contentScrollViewForEdge:` is `UIViewController`'s
+        // query for the scroll view that controls edge chrome. `UIKit`
+        // asks it for the top edge to tie the navigation bar — large
+        // title collapse, the search field's reveal — to the page's
+        // list. Re-resolving on every query keeps the answer current as
+        // the page's content changes; every other edge is `super`'s.
+        #[unsafe(method_id(contentScrollViewForEdge:))]
+        fn content_scroll_view_for_edge(
+            &self,
+            edge: NSDirectionalRectEdge,
+        ) -> Option<Retained<UIScrollView>> {
+            guarded("NavContentController contentScrollViewForEdge:", || {
+                if edge.contains(NSDirectionalRectEdge::Top) {
+                    let handler = self.ivars().scroll_surface.borrow().clone();
+                    return handler.and_then(|handler| handler(self));
+                }
+                // SAFETY: forwards the same selector to `super`.
+                unsafe { msg_send![super(self), contentScrollViewForEdge: edge] }
+            })
+        }
+
         // SAFETY: overriding `viewDidDisappear:` carries no obligations.
         #[unsafe(method(viewDidDisappear:))]
         fn view_did_disappear(&self, animated: bool) {
@@ -140,6 +168,7 @@ impl NavContentController {
     #[must_use]
     pub fn new(mtm: MainThreadMarker, view: &objc2_ui_kit::UIView) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(NavContentControllerIvars {
+            scroll_surface: RefCell::new(None),
             appear: RefCell::new(None),
             will_appear: RefCell::new(None),
             disappear: RefCell::new(None),
@@ -171,6 +200,17 @@ impl NavContentController {
             crate::uikit::view_controller::did_move_to_parent(&child);
         }
         this
+    }
+
+    /// The scroll view controlling top-edge chrome — the navigation
+    /// bar's tracking surface — answered whenever `UIKit` asks this
+    /// controller's `contentScrollViewForEdge:`. The handler re-resolves
+    /// the surface on each query.
+    pub fn set_top_scroll_surface(
+        &self,
+        handler: impl Fn(&Self) -> Option<Retained<UIScrollView>> + 'static,
+    ) {
+        self.ivars().scroll_surface.replace(Some(Rc::new(handler)));
     }
 
     /// Runs `handler` each time the page's view appears.
@@ -466,8 +506,11 @@ pub struct NavSearch {
     /// `None` leaves the platform default in place.
     pub placement: Option<SearchBarPlacement>,
     /// `hidesSearchBarWhenScrolling`: when true the bar's height tracks the
-    /// content scroll offset — a bar `UIKit` never sees scroll begins at
-    /// zero height. `None` leaves the platform default in place.
+    /// offset of the page's top-edge scroll view
+    /// (`contentScrollViewForEdge:`) — a bar `UIKit` never sees scroll
+    /// begins at zero height. `None` leaves the platform default in place:
+    /// the field tucked under the large title, revealed by pulling the
+    /// content down.
     pub hides_when_scrolling: Option<bool>,
 }
 
