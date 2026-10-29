@@ -81,12 +81,12 @@ fn row_height(content_height: f64, insets: KitInsets, minimum: f64) -> f64 {
 /// `peekListItemSection`: the `ListSection` marker `index` carries, when
 /// it starts a section.
 fn peek_section(snapshot: &AnyViewsSnapshot<ListItem>, index: usize) -> Option<ListSection> {
-    snapshot.get_view(index).and_then(|item| item.section)
+    snapshot.get_view(index).and_then(ListItem::into_section)
 }
 
 /// A resolved section `Text` as its live styled-string signal.
 fn resolve_text(text: &Text, env: &Environment) -> Computed<StyledStr> {
-    text.resolve(env).content
+    text.resolve(env).into_content()
 }
 
 /// `computeListSectionGroups`'s answer: a band's texts and how many items
@@ -120,8 +120,8 @@ fn compute_section_groups(
                 groups.push(group);
             }
             pending = Some(SectionGroup {
-                label: section.label.map(|text| resolve_text(&text, env)),
-                footer: section.footer.map(|text| resolve_text(&text, env)),
+                label: section.label().map(|text| resolve_text(text, env)),
+                footer: section.get_footer().map(|text| resolve_text(text, env)),
                 count: 0,
             });
         }
@@ -678,11 +678,10 @@ impl Shared {
             .snapshot
             .get_view(self.positions[&self.item_ids[flat]])
             .expect("list item index is in bounds");
-        let insets = item.insets;
-        let deletable = item.deletable;
+        let (content, deletable, _, insets) = item.into_parts();
         // The row's `Disabled` signal comes from the scope this render
         // resolves the content under — the same pass, not a second walk.
-        let (leaf, resolved_env) = self.renderer.render_resolved(item.content);
+        let (leaf, resolved_env) = self.renderer.render_resolved(content);
         self.disabled_rows
             .borrow_mut()
             .insert(self.item_ids[flat], Disabled::resolve(&resolved_env, false));
@@ -1820,7 +1819,7 @@ mod platform_impl {
                 .get(flat)
                 .and_then(|id| state.positions.get(id).copied())
                 .and_then(|pos| state.snapshot.get_view(pos))
-                .is_some_and(|item| item.deletable.snapshot())
+                .is_some_and(|item| item.get_deletable().snapshot())
         }
 
         fn delete_row(&self, table: &TableView, index: IndexPath) {
@@ -1958,8 +1957,8 @@ mod platform_impl {
         ) -> Retained<cocoa_ui::Font> {
             cocoa_ui::font::system(
                 self.mtm,
-                f64::from(resolved.size),
-                platform_weight(resolved.weight),
+                f64::from(resolved.size()),
+                platform_weight(resolved.weight()),
             )
         }
 
@@ -2229,7 +2228,7 @@ mod platform_impl {
                         let Some(item) = state.snapshot.get_view(pos) else {
                             return 30.0;
                         };
-                        (flat, id, state.insets_for(item.insets.as_ref()))
+                        (flat, id, state.insets_for(item.get_insets()))
                     }
                     None => return 30.0,
                 }
@@ -2488,7 +2487,7 @@ fn wire_controller(
     clippy::too_many_lines,
     reason = "one render pass: state init, source wiring, watches"
 )]
-fn render(config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+fn render(mut config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let table = TableView::new(mtm);
     // A navigation split marks its sidebar column with `SidebarContent`:
@@ -2521,8 +2520,8 @@ fn render(config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
         24.0,
     );
     let state = Rc::new(RefCell::new(Shared {
-        contents: config.contents.clone(),
-        snapshot: config.contents.snapshot(),
+        contents: config.contents().clone(),
+        snapshot: config.contents().snapshot(),
         positions: HashMap::new(),
         env: ctx.env().clone(),
         renderer: ctx.renderer(),
@@ -2535,20 +2534,20 @@ fn render(config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
         groups: Vec::new(),
         #[cfg(target_os = "macos")]
         flat_layout: Vec::new(),
-        selection: match &config.selection {
+        selection: match &config.selection() {
             ListSelection::None => SelectionMode::None,
             ListSelection::Single(binding) => SelectionMode::Single(binding.clone()),
             ListSelection::Multiple(binding) => SelectionMode::Multiple(binding.clone()),
         },
         applying_selection: Cell::new(false),
         #[cfg(target_os = "macos")]
-        editing: config.editing.clone(),
-        on_delete: config.on_delete,
-        on_move: config.on_move,
-        uses_sections: config.uses_sections,
+        editing: config.editing().clone(),
+        on_delete: config.take_on_delete(),
+        on_move: config.take_on_move(),
+        uses_sections: config.uses_sections(),
         #[cfg(target_os = "macos")]
         theme_insets,
-        resolved_min_height: min_row_height(config.min_row_height, stock_height),
+        resolved_min_height: min_row_height(config.min_row_height(), stock_height),
         measured_heights: HashMap::new(),
         disabled_rows: RefCell::new(HashMap::new()),
     }));
@@ -2632,7 +2631,7 @@ fn render(config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     // `editing` pushes `setEditing(animated:)`; AppKit shows its inline
     // delete buttons via the per-row `deletable` watch instead.
     #[cfg(target_os = "ios")]
-    leaf.watch(&config.editing, {
+    leaf.watch(config.editing(), {
         let table = table.clone();
         move |ctx| {
             table.set_editing(*ctx.value(), metadata_animated(ctx.metadata()));
@@ -2640,7 +2639,7 @@ fn render(config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     });
 
     // Binding → table selection.
-    match &config.selection {
+    match &config.selection() {
         ListSelection::None => {}
         ListSelection::Single(binding) => {
             leaf.watch(binding, {
@@ -2658,9 +2657,9 @@ fn render(config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
         }
     }
 
-    if let Some(controller) = config.scroll_controller {
-        wire_controller(&mut leaf, &table, &state, &controller);
-        wire_position_report(&mut leaf, &table, &controller, ctx.mtm());
+    if let Some(controller) = config.scroll_controller() {
+        wire_controller(&mut leaf, &table, &state, controller);
+        wire_position_report(&mut leaf, &table, controller, ctx.mtm());
     }
 
     leaf.keep(state);

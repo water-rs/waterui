@@ -286,13 +286,13 @@ const fn modifier(name: &'static str, summary: &'static str) -> ModifierSchema {
 /// The value shape [`Modifiers`] declares for `name`.
 const fn modifier_value(name: &str) -> &'static TypeSchema {
     let fields = match Modifiers::SCHEMA {
-        TypeSchema::Struct(schema) => schema.fields,
+        TypeSchema::Struct(schema) => schema.fields(),
         _ => panic!("the modifier table is an object type"),
     };
     let mut index = 0;
     while index < fields.len() {
-        if str_eq(fields[index].name, name) {
-            return &fields[index].ty;
+        if str_eq(fields[index].name(), name) {
+            return fields[index].ty();
         }
         index += 1;
     }
@@ -394,18 +394,18 @@ pub const CATALOG_HALF_ENCODED: &[u8] = payload(&CATALOG_HALF);
 #[must_use]
 pub fn component_named(name: &str) -> Option<&'static ComponentSchema> {
     CATALOG
-        .components
+        .components()
         .iter()
-        .find(|component| component.name == name)
+        .find(|component| component.name() == name)
 }
 
 /// Every component name, for the error an unknown tag raises.
 #[must_use]
 pub fn component_names() -> Vec<&'static str> {
     CATALOG
-        .components
+        .components()
         .iter()
-        .map(|component| component.name)
+        .map(ComponentSchema::name)
         .collect()
 }
 
@@ -416,10 +416,10 @@ pub fn component_names() -> Vec<&'static str> {
 #[must_use]
 pub fn attribute_names(component: &ComponentSchema) -> Vec<&'static str> {
     component
-        .attributes
-        .fields
+        .attributes()
+        .fields()
         .iter()
-        .map(|field| field.name)
+        .map(waterui_ts::schema::FieldSchema::name)
         .collect()
 }
 
@@ -427,8 +427,8 @@ pub fn attribute_names(component: &ComponentSchema) -> Vec<&'static str> {
 #[must_use]
 pub fn modifier_names() -> Vec<Str> {
     CATALOG
-        .modifiers
+        .modifiers()
         .iter()
-        .map(|modifier| Str::from_static(modifier.name))
+        .map(|modifier| Str::from_static(modifier.name()))
         .collect()
 }

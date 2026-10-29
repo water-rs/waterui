@@ -24,6 +24,36 @@ pub struct JsError {
 }
 
 impl JsError {
+    /// The exception class name (`"Error"`, `"TypeError"`, …).
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// The exception message.
+    #[must_use]
+    pub const fn message(&self) -> &str {
+        self.message.as_str()
+    }
+
+    /// Sets the `message`.
+    pub fn set_message(&mut self, message: String) {
+        self.message = message;
+    }
+
+    /// The JavaScript stack trace (`error.stack`), when the engine gives one.
+    #[must_use]
+    pub fn stack(&self) -> Option<&str> {
+        self.stack.as_deref()
+    }
+
+    /// Sets the `stack`.
+    pub fn set_stack(&mut self, stack: Option<String>) {
+        self.stack = stack;
+    }
+}
+
+impl JsError {
     /// An error with no stack attached.
     pub fn new(name: impl Into<String>, message: impl Into<String>) -> Self {
         Self {

@@ -63,10 +63,6 @@ where
 /// escape on terminal backends, a status-bar preview, an accessibility
 /// description — without intercepting the button's action.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "environment newtype over the link's URL signal"
-)]
 pub struct LinkTarget(pub Computed<Str>);
 
 impl<Label> View for Link<Label>

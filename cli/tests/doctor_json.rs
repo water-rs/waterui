@@ -14,28 +14,26 @@ use waterui_cli::toolchain::{
 /// so no group is optional.
 fn assert_item_schema(item: &DoctorItemRecord) {
     assert!(
-        ["ok", "missing", "skipped"].contains(&item.status.as_ref()),
+        ["ok", "missing", "skipped"].contains(&item.status()),
         "unexpected status {:?} on {}",
-        item.status,
-        item.id
+        item.status(),
+        item.id()
     );
-    if item.status == "missing" {
+    if item.status() == "missing" {
         assert!(
-            item.message
-                .as_deref()
-                .is_some_and(|message| !message.is_empty()),
+            item.message().is_some_and(|message| !message.is_empty()),
             "missing item {} must carry a diagnostic",
-            item.id
+            item.id()
         );
     }
-    let group = DoctorGroup::of(&item.id);
+    let group = DoctorGroup::of(item.id());
     assert_eq!(
-        item.group,
+        item.group(),
         group.as_str(),
         "group label drifted on {}",
-        item.id
+        item.id()
     );
-    assert!(!item.optional, "scope drifted on {}", item.id);
+    assert!(!item.optional(), "scope drifted on {}", item.id());
 }
 
 #[test]
@@ -87,7 +85,7 @@ fn doctor_json_emits_typed_item_records_for_every_check() -> std::io::Result<()>
         }
     }
 
-    let emitted_ids: Vec<&str> = items.iter().map(|item| item.id.as_ref()).collect();
+    let emitted_ids: Vec<&str> = items.iter().map(DoctorItemRecord::id).collect();
     assert_eq!(emitted_ids, ids::ALL, "doctor item set/order drifted");
 
     for item in &items {
@@ -98,8 +96,8 @@ fn doctor_json_emits_typed_item_records_for_every_check() -> std::io::Result<()>
     // state — assert it exactly, in emission order.
     let skipped_ids: Vec<&str> = items
         .iter()
-        .filter(|item| item.status == "skipped")
-        .map(|item| item.id.as_ref())
+        .filter(|item| item.status() == "skipped")
+        .map(DoctorItemRecord::id)
         .collect();
     let expected_skipped: Vec<&str> = ids::ALL
         .iter()

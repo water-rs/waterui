@@ -94,10 +94,7 @@ fn render_node_container_lays_out_and_flushes_text() {
         _ => panic!("expected a container node"),
     }
 
-    let ctx = RenderContext {
-        local: Affine::IDENTITY,
-        bounds,
-    };
+    let ctx = RenderContext::new(Affine::IDENTITY, bounds);
     node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
     assert!(
         renderer.commit_mirror().created > 0,
@@ -148,10 +145,7 @@ fn geometry_static_flush_reuses_cached_placement() {
 
     // A geometry-static frame re-encodes without re-running layout; the cached
     // placement must survive untouched across flushes.
-    let ctx = RenderContext {
-        local: Affine::IDENTITY,
-        bounds,
-    };
+    let ctx = RenderContext::new(Affine::IDENTITY, bounds);
     renderer.reset_scene();
     node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
     renderer.reset_scene();
@@ -194,10 +188,7 @@ fn opacity_wrapper_builds_and_flushes_via_dsl() {
         ProposalSize::new(Some(window.width), Some(window.height)),
         window,
     );
-    let ctx = RenderContext {
-        local: Affine::IDENTITY,
-        bounds,
-    };
+    let ctx = RenderContext::new(Affine::IDENTITY, bounds);
     node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
     assert!(
         renderer.commit_mirror().created > 0,
@@ -281,15 +272,15 @@ fn widget_reactive_label_stays_live() {
     let start = Instant::now();
     let before = rt
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("first frame snapshot");
     n.set(7);
     let after = rt
         .pump_at(true, start + Duration::from_millis(16))
-        .snapshot
+        .into_snapshot()
         .expect("post-change snapshot");
     assert!(
-        before.rgba8 != after.rgba8,
+        before.rgba8() != after.rgba8(),
         "a reactive button label must update on the render-tree path (the persistent \
          Widget node must re-render from the live config, not freeze a captured bake)"
     );
@@ -329,23 +320,24 @@ fn reactive_size_change_reflows_via_refresh_not_rebuild() {
     let start = Instant::now();
     let before = rt
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("first frame snapshot");
     label.set(Str::from("a very wide label that grows"));
     let result = rt.pump_at(true, start + Duration::from_millis(16));
     assert!(
-        !result.rebuilt,
+        !result.rebuilt(),
         "a reactive value change must reflow through the refresh pump, not a structural \
          body() rebuild"
     );
-    let after = result.snapshot.expect("post-change snapshot");
+    let after = result.snapshot().expect("post-change snapshot");
     assert_eq!(
-        (before.width, before.height),
-        (after.width, after.height),
+        (before.width(), before.height()),
+        (after.width(), after.height()),
         "snapshots must share dimensions to compare pixel-for-pixel"
     );
     assert_ne!(
-        before.rgba8, after.rgba8,
+        before.rgba8(),
+        after.rgba8(),
         "a widening reactive text must reflow its sibling through full per-frame layout"
     );
 }
@@ -379,20 +371,21 @@ fn widget_reactive_value_stays_live() {
     let start = Instant::now();
     let before = rt
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("first frame snapshot");
     value.set(0.8);
     let after = rt
         .pump_at(true, start + Duration::from_millis(16))
-        .snapshot
+        .into_snapshot()
         .expect("post-change snapshot");
     assert_eq!(
-        (before.width, before.height),
-        (after.width, after.height),
+        (before.width(), before.height()),
+        (after.width(), after.height()),
         "snapshots must share dimensions to compare pixel-for-pixel"
     );
     assert_ne!(
-        before.rgba8, after.rgba8,
+        before.rgba8(),
+        after.rgba8(),
         "a reactive progress value must update on the render-tree path (the persistent \
          Widget node must re-render its value-label from the live binding, not freeze a \
          captured bake)"
@@ -428,20 +421,21 @@ fn text_field_value_display_stays_live() {
     let start = Instant::now();
     let before = rt
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("first frame snapshot");
     value.set(Str::from("ZZZ"));
     let after = rt
         .pump_at(true, start + Duration::from_millis(16))
-        .snapshot
+        .into_snapshot()
         .expect("post-change snapshot");
     assert_eq!(
-        (before.width, before.height),
-        (after.width, after.height),
+        (before.width(), before.height()),
+        (after.width(), after.height()),
         "snapshots must share dimensions to compare pixel-for-pixel"
     );
     assert_ne!(
-        before.rgba8, after.rgba8,
+        before.rgba8(),
+        after.rgba8(),
         "a reactive text field value must update on the render-tree path (the persistent \
          Widget node must re-render its displayed value from the live binding, not freeze a \
          captured bake)"
@@ -480,7 +474,7 @@ fn render_tree_live_path_processes_watch_switch() {
     let start = Instant::now();
     let first = rt.pump_at(false, start);
     assert!(
-        first.rebuilt,
+        first.rebuilt(),
         "the initial frame must build the render tree"
     );
 
@@ -490,7 +484,7 @@ fn render_tree_live_path_processes_watch_switch() {
     // relayout + flush), not by rebuilding it from scratch (which would
     // re-connect the Dynamic). It must render a frame.
     assert!(
-        switched.profile.counters.rendered,
+        switched.profile().counters().rendered(),
         "a watch-driven switch must render a frame on the render-tree path"
     );
 }
@@ -537,22 +531,25 @@ fn body_dispatched_once_then_every_frame_refreshes() {
     let start = Instant::now();
 
     assert!(
-        rt.pump_at(false, start).rebuilt,
+        rt.pump_at(false, start).rebuilt(),
         "the first frame must build the persistent tree (recursive body() once)"
     );
     label.set(7);
     assert!(
-        !rt.pump_at(false, start + Duration::from_millis(16)).rebuilt,
+        !rt.pump_at(false, start + Duration::from_millis(16))
+            .rebuilt(),
         "a reactive value change must refresh the persistent tree, not re-run body()"
     );
     mode.set(true);
     assert!(
-        !rt.pump_at(false, start + Duration::from_millis(32)).rebuilt,
+        !rt.pump_at(false, start + Duration::from_millis(32))
+            .rebuilt(),
         "a structural watch switch must patch + refresh, not rebuild the whole tree"
     );
     label.set(9);
     assert!(
-        !rt.pump_at(false, start + Duration::from_millis(48)).rebuilt,
+        !rt.pump_at(false, start + Duration::from_millis(48))
+            .rebuilt(),
         "subsequent reactive changes keep refreshing the one persistent tree"
     );
 }
@@ -597,26 +594,18 @@ fn render_tree_chart_switch_snapshot() {
     let start = Instant::now();
     let before = rt
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("first frame must capture a snapshot");
-    write_png(
-        &export_path("switch", "before"),
-        before.width,
-        before.height,
-        before.rgba8,
-    );
+    let (width, height, rgba8, _) = before.into_parts();
+    write_png(&export_path("switch", "before"), width, height, rgba8);
 
     mode.set(true);
     let after = rt
         .pump_at(true, start + Duration::from_millis(16))
-        .snapshot
+        .into_snapshot()
         .expect("switched frame must capture a snapshot");
-    write_png(
-        &export_path("switch", "after"),
-        after.width,
-        after.height,
-        after.rgba8,
-    );
+    let (width, height, rgba8, _) = after.into_parts();
+    write_png(&export_path("switch", "after"), width, height, rgba8);
 
     eprintln!("wrote /tmp/waterui_tree_switch_before.png and /tmp/waterui_tree_switch_after.png");
 }
@@ -674,26 +663,18 @@ fn render_tree_scene_view_switch_snapshot() {
     let start = Instant::now();
     let before = rt
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("first frame must capture a snapshot");
-    write_png(
-        &export_path("sceneview", "before"),
-        before.width,
-        before.height,
-        before.rgba8,
-    );
+    let (width, height, rgba8, _) = before.into_parts();
+    write_png(&export_path("sceneview", "before"), width, height, rgba8);
 
     mode.set(true);
     let after = rt
         .pump_at(true, start + Duration::from_millis(16))
-        .snapshot
+        .into_snapshot()
         .expect("switched frame must capture a snapshot");
-    write_png(
-        &export_path("sceneview", "after"),
-        after.width,
-        after.height,
-        after.rgba8,
-    );
+    let (width, height, rgba8, _) = after.into_parts();
+    write_png(&export_path("sceneview", "after"), width, height, rgba8);
 
     eprintln!(
         "wrote /tmp/waterui_tree_sceneview_before.png and /tmp/waterui_tree_sceneview_after.png"
@@ -739,14 +720,10 @@ fn render_tree_scroll_snapshot() {
     let start = Instant::now();
     let before = rt
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("first frame must capture a snapshot");
-    write_png(
-        &export_path("scroll", "before"),
-        before.width,
-        before.height,
-        before.rgba8,
-    );
+    let (width, height, rgba8, _) = before.into_parts();
+    write_png(&export_path("scroll", "before"), width, height, rgba8);
 
     rt.push_input_event(crate::platform::InputEvent::Scroll {
         x: 80.0,
@@ -757,14 +734,10 @@ fn render_tree_scroll_snapshot() {
     });
     let after = rt
         .pump_at(true, start + Duration::from_millis(16))
-        .snapshot
+        .into_snapshot()
         .expect("scrolled frame must capture a snapshot");
-    write_png(
-        &export_path("scroll", "after"),
-        after.width,
-        after.height,
-        after.rgba8,
-    );
+    let (width, height, rgba8, _) = after.into_parts();
+    write_png(&export_path("scroll", "after"), width, height, rgba8);
 
     eprintln!("wrote /tmp/waterui_tree_scroll_before.png and /tmp/waterui_tree_scroll_after.png");
 }
@@ -802,7 +775,7 @@ fn scroll_offset_persists_across_refresh() {
 
     let unscrolled = rt
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("first frame snapshot");
     rt.push_input_event(crate::platform::InputEvent::Scroll {
         x: 80.0,
@@ -813,18 +786,20 @@ fn scroll_offset_persists_across_refresh() {
     });
     let scrolled = rt
         .pump_at(true, start + Duration::from_millis(16))
-        .snapshot
+        .into_snapshot()
         .expect("scrolled frame snapshot");
     assert_ne!(
-        unscrolled.rgba8, scrolled.rgba8,
+        unscrolled.rgba8(),
+        scrolled.rgba8(),
         "scrolling must change the rendered content — the offset must apply through the refresh pump"
     );
     let still_scrolled = rt
         .pump_at(true, start + Duration::from_millis(32))
-        .snapshot
+        .into_snapshot()
         .expect("re-pumped frame snapshot");
     assert_eq!(
-        scrolled.rgba8, still_scrolled.rgba8,
+        scrolled.rgba8(),
+        still_scrolled.rgba8(),
         "a no-op refresh must preserve the scroll offset, not reset or drift it"
     );
 }
@@ -861,14 +836,10 @@ fn render_tree_collection_snapshot() {
 
     let snapshot = rt
         .pump_at(true, std::time::Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("collection frame must capture a snapshot");
-    write_png(
-        &export_path("collection", "review"),
-        snapshot.width,
-        snapshot.height,
-        snapshot.rgba8,
-    );
+    let (width, height, rgba8, _) = snapshot.into_parts();
+    write_png(&export_path("collection", "review"), width, height, rgba8);
     eprintln!("wrote /tmp/waterui_tree_collection.png");
 }
 
@@ -915,22 +886,23 @@ fn wrapper_keeps_reactive_descendant_live() {
     let start = Instant::now();
     let before = rt
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("first frame must capture a snapshot");
 
     mode.set(true);
     let after = rt
         .pump_at(true, start + Duration::from_millis(16))
-        .snapshot
+        .into_snapshot()
         .expect("switched frame must capture a snapshot");
 
     assert_eq!(
-        (before.width, before.height),
-        (after.width, after.height),
+        (before.width(), before.height()),
+        (after.width(), after.height()),
         "snapshots must share dimensions to compare pixel-for-pixel"
     );
     assert_ne!(
-        before.rgba8, after.rgba8,
+        before.rgba8(),
+        after.rgba8(),
         "the reactive box must update through the .border() wrapper: a Captured \
          wrapper would freeze the descendant and produce an identical frame"
     );
@@ -981,22 +953,23 @@ fn gesture_wrapper_keeps_reactive_descendant_live() {
     let start = Instant::now();
     let before = rt
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("first frame must capture a snapshot");
 
     mode.set(true);
     let after = rt
         .pump_at(true, start + Duration::from_millis(16))
-        .snapshot
+        .into_snapshot()
         .expect("switched frame must capture a snapshot");
 
     assert_eq!(
-        (before.width, before.height),
-        (after.width, after.height),
+        (before.width(), before.height()),
+        (after.width(), after.height()),
         "snapshots must share dimensions to compare pixel-for-pixel"
     );
     assert_ne!(
-        before.rgba8, after.rgba8,
+        before.rgba8(),
+        after.rgba8(),
         "the reactive box must update through the .on_tap() gesture wrapper: a \
          Captured wrapper would freeze the descendant and produce an identical frame"
     );
@@ -1045,14 +1018,10 @@ fn render_tree_grid_snapshot() {
 
     let snapshot = rt
         .pump_at(true, std::time::Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("grid frame must capture a snapshot");
-    write_png(
-        &export_path("grid", "review"),
-        snapshot.width,
-        snapshot.height,
-        snapshot.rgba8,
-    );
+    let (width, height, rgba8, _) = snapshot.into_parts();
+    write_png(&export_path("grid", "review"), width, height, rgba8);
     eprintln!("wrote /tmp/waterui_tree_grid.png");
 }
 
@@ -1239,12 +1208,12 @@ fn applied_filter_renders_through_retained_tree() {
 fn text_ink_bands(snapshot: &crate::HeadlessSnapshot, rect: accesskit::Rect) -> Vec<(f64, f64)> {
     use std::collections::HashMap;
     let x0 = crate::num_cast::f64_as_usize(rect.x0.floor().max(0.0));
-    let x1 = (crate::num_cast::f64_as_usize(rect.x1.ceil())).min(snapshot.width as usize);
+    let x1 = (crate::num_cast::f64_as_usize(rect.x1.ceil())).min(snapshot.width() as usize);
     let y0 = crate::num_cast::f64_as_usize(rect.y0.floor().max(0.0));
-    let y1 = (crate::num_cast::f64_as_usize(rect.y1.ceil())).min(snapshot.height as usize);
+    let y1 = (crate::num_cast::f64_as_usize(rect.y1.ceil())).min(snapshot.height() as usize);
     let pixel = |x: usize, y: usize| {
-        let i = (y * snapshot.width as usize + x) * 4;
-        &snapshot.rgba8[i..i + 4]
+        let i = (y * snapshot.width() as usize + x) * 4;
+        &snapshot.rgba8()[i..i + 4]
     };
     let mut counts: HashMap<[u8; 4], usize> = HashMap::new();
     for y in y0..y1 {
@@ -1323,11 +1292,11 @@ fn menu_picker_draws_its_label_above_the_value() {
     let mut labelled = mount_labelled(false);
     let result = labelled.pump_at(true, Instant::now());
     let update = result
-        .tree_update
+        .tree_update()
         .expect("the labelled picker must publish a tree");
-    let field = field_bounds(&update);
-    let snapshot = result.snapshot.expect("a snapshot must be captured");
-    let bands = text_ink_bands(&snapshot, field);
+    let field = field_bounds(update);
+    let snapshot = result.snapshot().expect("a snapshot must be captured");
+    let bands = text_ink_bands(snapshot, field);
     assert_eq!(
         bands.len(),
         2,
@@ -1346,11 +1315,11 @@ fn menu_picker_draws_its_label_above_the_value() {
     let mut hidden = mount_labelled(true);
     let result = hidden.pump_at(true, Instant::now());
     let update = result
-        .tree_update
+        .tree_update()
         .expect("the hidden-label picker must publish a tree");
-    let field = field_bounds(&update);
-    let snapshot = result.snapshot.expect("a snapshot must be captured");
-    let bands = text_ink_bands(&snapshot, field);
+    let field = field_bounds(update);
+    let snapshot = result.snapshot().expect("a snapshot must be captured");
+    let bands = text_ink_bands(snapshot, field);
     assert_eq!(
         bands.len(),
         1,
@@ -1418,7 +1387,7 @@ fn radio_picker_draws_its_label_above_the_option_rows() {
     let mut labelled = mount_labelled(false);
     let result = labelled.pump_at(true, Instant::now());
     let update = result
-        .tree_update
+        .tree_update()
         .expect("the labelled picker must publish a tree");
     let group = update
         .nodes
@@ -1435,8 +1404,8 @@ fn radio_picker_draws_its_label_above_the_option_rows() {
         .expect("radio option nodes must carry bounds");
     let first_option_y = first_row.y0;
     let labelled_first_row_height = first_row.y1 - first_row.y0;
-    let snapshot = result.snapshot.expect("a snapshot must be captured");
-    let bands = text_ink_bands(&snapshot, group);
+    let snapshot = result.snapshot().expect("a snapshot must be captured");
+    let bands = text_ink_bands(snapshot, group);
     assert_eq!(
         bands.len(),
         3,
@@ -1455,7 +1424,7 @@ fn radio_picker_draws_its_label_above_the_option_rows() {
     let mut hidden = mount_labelled(true);
     let result = hidden.pump_at(true, Instant::now());
     let update = result
-        .tree_update
+        .tree_update()
         .expect("the hidden-label picker must publish a tree");
     let group = update
         .nodes
@@ -1475,8 +1444,8 @@ fn radio_picker_draws_its_label_above_the_option_rows() {
         labelled_first_row_height == hidden_first_row_height,
         "the labelled first row must keep exactly the unlabelled row's height: left {labelled_first_row_height:?}, right {hidden_first_row_height:?}"
     );
-    let snapshot = result.snapshot.expect("a snapshot must be captured");
-    let bands = text_ink_bands(&snapshot, group);
+    let snapshot = result.snapshot().expect("a snapshot must be captured");
+    let bands = text_ink_bands(snapshot, group);
     assert_eq!(
         bands.len(),
         2,
@@ -1544,7 +1513,7 @@ fn segmented_picker_draws_its_label_above_the_segment_row() {
     let mut labelled = mount_labelled(false);
     let result = labelled.pump_at(true, Instant::now());
     let update = result
-        .tree_update
+        .tree_update()
         .expect("the labelled picker must publish a tree");
     let group = update
         .nodes
@@ -1560,8 +1529,8 @@ fn segmented_picker_draws_its_label_above_the_segment_row() {
         .map(|rect| rect.y0)
         .reduce(f64::min)
         .expect("segment nodes must carry bounds");
-    let snapshot = result.snapshot.expect("a snapshot must be captured");
-    let bands = text_ink_bands(&snapshot, group);
+    let snapshot = result.snapshot().expect("a snapshot must be captured");
+    let bands = text_ink_bands(snapshot, group);
     assert_eq!(
         bands.len(),
         2,
@@ -1580,7 +1549,7 @@ fn segmented_picker_draws_its_label_above_the_segment_row() {
     let mut hidden = mount_labelled(true);
     let result = hidden.pump_at(true, Instant::now());
     let update = result
-        .tree_update
+        .tree_update()
         .expect("the hidden-label picker must publish a tree");
     let group = update
         .nodes
@@ -1596,8 +1565,8 @@ fn segmented_picker_draws_its_label_above_the_segment_row() {
         .map(|rect| rect.y1 - rect.y0)
         .reduce(f64::min)
         .expect("segment nodes must carry bounds");
-    let snapshot = result.snapshot.expect("a snapshot must be captured");
-    let bands = text_ink_bands(&snapshot, group);
+    let snapshot = result.snapshot().expect("a snapshot must be captured");
+    let bands = text_ink_bands(snapshot, group);
     assert_eq!(
         bands.len(),
         1,
@@ -1615,7 +1584,7 @@ fn segmented_picker_draws_its_label_above_the_segment_row() {
 
     let mut labelled = mount_labelled(false);
     let result = labelled.pump_at(true, Instant::now());
-    let update = result.tree_update.expect("a tree");
+    let update = result.tree_update().expect("a tree");
     let labelled_segment_height = update
         .nodes
         .iter()
@@ -1730,7 +1699,7 @@ fn when_subtree_and_shared_signal_text_present_one_frame_state() {
     let classify = |snapshot: &crate::HeadlessSnapshot| -> (usize, usize) {
         let mut pill = 0usize;
         let mut ink = 0usize;
-        let (pixels, _) = snapshot.rgba8.as_chunks::<4>();
+        let (pixels, _) = snapshot.rgba8().as_chunks::<4>();
         for px in pixels {
             let (r, g, b, a) = <(u8, u8, u8, u8)>::from(*px);
             if a > 0 && b > 170 && r < 100 && g < 100 {
@@ -1746,7 +1715,7 @@ fn when_subtree_and_shared_signal_text_present_one_frame_state() {
     // Let the initial build settle; the first presented frame mounts the
     // subtree with "HELLO".
     let baseline = rt.pump_at(true, start);
-    let (pill, ink) = classify(&baseline.snapshot.expect("baseline frame"));
+    let (pill, ink) = classify(baseline.snapshot().expect("baseline frame"));
     eprintln!("baseline: pill={pill} ink={ink}");
     assert!(pill > 0 && ink > 0, "baseline must show subtree + HELLO");
 
@@ -1755,8 +1724,8 @@ fn when_subtree_and_shared_signal_text_present_one_frame_state() {
     label.set(None);
     for i in 0..3u32 {
         let outcome = rt.pump_at(true, start + Duration::from_millis(16 * (u64::from(i) + 1)));
-        if let Some(snapshot) = outcome.snapshot {
-            let (pill, ink) = classify(&snapshot);
+        if let Some(snapshot) = outcome.snapshot() {
+            let (pill, ink) = classify(snapshot);
             eprintln!("plain None frame {i}: pill={pill} ink={ink}");
             frames.push(("plain", false, i, pill, ink));
         }
@@ -1769,8 +1738,8 @@ fn when_subtree_and_shared_signal_text_present_one_frame_state() {
     drive.set(1u32);
     for i in 0..3u32 {
         let outcome = rt.pump_at(true, start + Duration::from_millis(80 + 16 * u64::from(i)));
-        if let Some(snapshot) = outcome.snapshot {
-            let (pill, ink) = classify(&snapshot);
+        if let Some(snapshot) = outcome.snapshot() {
+            let (pill, ink) = classify(snapshot);
             eprintln!("midflush None frame {i}: pill={pill} ink={ink}");
             frames.push(("midflush", false, i, pill, ink));
         }
@@ -1779,8 +1748,8 @@ fn when_subtree_and_shared_signal_text_present_one_frame_state() {
     drive.set(2u32);
     for i in 0..3u32 {
         let outcome = rt.pump_at(true, start + Duration::from_millis(128 + 16 * u64::from(i)));
-        if let Some(snapshot) = outcome.snapshot {
-            let (pill, ink) = classify(&snapshot);
+        if let Some(snapshot) = outcome.snapshot() {
+            let (pill, ink) = classify(snapshot);
             eprintln!("midflush Some frame {i}: pill={pill} ink={ink}");
             frames.push(("midflush", true, i, pill, ink));
         }

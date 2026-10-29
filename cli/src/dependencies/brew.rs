@@ -7,10 +7,6 @@ use crate::{
 
 /// Homebrew toolchain manager
 #[derive(Debug, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct Brew {}
 
 impl Brew {
@@ -64,10 +60,6 @@ impl Toolchain for Brew {
 ///
 /// This will run the official Homebrew installation script.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct BrewInstallation;
 
 impl Installation for BrewInstallation {

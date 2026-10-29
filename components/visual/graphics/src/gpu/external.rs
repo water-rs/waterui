@@ -90,10 +90,6 @@ pub trait ExternalFrameSource: 'static {
 /// [`ExternalFrameSource::start`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the external-frame output was retired by its host")]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit error marker with no fields to add"
-)]
 pub struct RetiredOutput;
 
 /// Where an [`ExternalFrameSource`] publishes frames for one host layer.

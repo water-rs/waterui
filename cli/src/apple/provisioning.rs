@@ -39,23 +39,75 @@ fn profile_directories(home: &Path) -> Vec<PathBuf> {
 /// What the app being signed requires from a development provisioning
 /// profile.
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct SigningRequest<'a> {
     /// The development team the build signs under.
-    pub team: &'a str,
+    team: &'a str,
     /// The bundle identifier of the app.
-    pub bundle_id: &'a str,
+    bundle_id: &'a str,
     /// Hardware UDID of the destination device when the package is bound to
     /// one (`water run`, `water package --device`); `None` for a
     /// device-agnostic `water package`, which accepts a profile covering at
     /// least one device but fails rather than guessing when several qualify.
-    pub device_udid: Option<&'a str>,
+    device_udid: Option<&'a str>,
     /// The entitlements the app declares — its `<scheme>.entitlements`
     /// dictionary. The selected profile must grant every entry.
-    pub entitlements: &'a plist::Dictionary,
+    entitlements: &'a plist::Dictionary,
     /// The platform the app is signed for — drives the generated
     /// provisioning project's SDK and the xcodebuild destination.
-    pub platform: TargetPlatform,
+    platform: TargetPlatform,
+}
+
+impl<'a> SigningRequest<'a> {
+    /// The signing request for `bundle_id` under `team`, bound to
+    /// `device_udid` when the package targets one device, declaring
+    /// `entitlements` for `platform`.
+    #[must_use]
+    pub const fn new(
+        team: &'a str,
+        bundle_id: &'a str,
+        device_udid: Option<&'a str>,
+        entitlements: &'a plist::Dictionary,
+        platform: TargetPlatform,
+    ) -> Self {
+        Self {
+            team,
+            bundle_id,
+            device_udid,
+            entitlements,
+            platform,
+        }
+    }
+
+    /// The development team the build signs under.
+    #[must_use]
+    pub const fn team(&self) -> &'a str {
+        self.team
+    }
+
+    /// The bundle identifier of the app.
+    #[must_use]
+    pub const fn bundle_id(&self) -> &'a str {
+        self.bundle_id
+    }
+
+    /// Hardware UDID of the destination device, when the package is bound to
+    /// one.
+    #[must_use]
+    pub const fn device_udid(&self) -> Option<&'a str> {
+        self.device_udid
+    }
+
+    /// The entitlements the app declares.
+    #[must_use]
+    pub const fn entitlements(&self) -> &'a plist::Dictionary {
+        self.entitlements
+    }
+
+    /// The platform the app is signed for.
+    #[must_use]
+    pub const fn platform(&self) -> TargetPlatform {
+        self.platform
+    }
 }
 
 /// A `.mobileprovision` file that passed validation, together with its
@@ -65,18 +117,61 @@ pub struct SigningRequest<'a> {
 /// The identity and prefix are part of the selection so the signer can
 /// never pair the profile with a different — or unusable — certificate.
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct ProfileSelection {
     /// Location of the profile on disk.
-    pub path: PathBuf,
+    path: PathBuf,
     /// Its decoded plist dictionary.
-    pub data: plist::Dictionary,
+    data: plist::Dictionary,
     /// SHA-1 of the usable development identity the profile's
     /// `DeveloperCertificates` names — the value `codesign --sign` takes.
-    pub identity: String,
+    identity: String,
     /// The `ApplicationIdentifierPrefix` entry the App ID match used —
     /// often but not always the team ID (TN2415).
-    pub app_id_prefix: String,
+    app_id_prefix: String,
+}
+
+impl ProfileSelection {
+    /// The profile at `path` decoded as `data`, signing with `identity`
+    /// under the `app_id_prefix` the App ID match was made under.
+    #[must_use]
+    pub const fn new(
+        path: PathBuf,
+        data: plist::Dictionary,
+        identity: String,
+        app_id_prefix: String,
+    ) -> Self {
+        Self {
+            path,
+            data,
+            identity,
+            app_id_prefix,
+        }
+    }
+
+    /// Location of the profile on disk.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Its decoded plist dictionary.
+    #[must_use]
+    pub const fn data(&self) -> &plist::Dictionary {
+        &self.data
+    }
+
+    /// SHA-1 of the usable development identity the profile's
+    /// `DeveloperCertificates` names — the value `codesign --sign` takes.
+    #[must_use]
+    pub fn identity(&self) -> &str {
+        &self.identity
+    }
+
+    /// The `ApplicationIdentifierPrefix` entry the App ID match used.
+    #[must_use]
+    pub fn app_id_prefix(&self) -> &str {
+        &self.app_id_prefix
+    }
 }
 
 /// Why one installed `.mobileprovision` was rejected for a request.

@@ -37,10 +37,6 @@ pub use waterkit_location::{Latitude, Location, Longitude, OutOfRange, Timestamp
 
 /// A geographic coordinate with latitude and longitude.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a geographic coordinate: latitude and longitude are the whole value"
-)]
 pub struct Coordinate {
     /// Latitude in degrees (-90 to 90).
     pub latitude: Latitude,
@@ -102,7 +98,6 @@ impl Default for Coordinate {
 
 /// A map region defined by a center coordinate and span.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[non_exhaustive]
 pub struct Region {
     /// The center coordinate of the region.
     pub center: Coordinate,
@@ -154,6 +149,26 @@ pub struct Annotation {
     pub title: Str,
     /// Optional subtitle text.
     pub subtitle: Option<Str>,
+}
+
+impl Annotation {
+    /// The coordinate where the annotation is placed.
+    #[must_use]
+    pub const fn coordinate(&self) -> Coordinate {
+        self.coordinate
+    }
+
+    /// The title text shown on the annotation.
+    #[must_use]
+    pub const fn title(&self) -> &Str {
+        &self.title
+    }
+
+    /// Optional subtitle text.
+    #[must_use]
+    pub const fn get_subtitle(&self) -> Option<&Str> {
+        self.subtitle.as_ref()
+    }
 }
 
 impl Annotation {
@@ -312,6 +327,74 @@ pub struct MapConfig {
     /// `None` means the application is not observing status, and a realization
     /// must not allocate one on its behalf.
     pub status: Option<Binding<MapStatus>>,
+}
+
+impl MapConfig {
+    /// The region to display.
+    #[must_use]
+    pub const fn region(&self) -> &Computed<Region> {
+        &self.region
+    }
+
+    /// Sets the `region`.
+    pub fn set_region(&mut self, region: Computed<Region>) {
+        self.region = region;
+    }
+
+    /// Annotations (pins) to display on the map.
+    #[must_use]
+    pub const fn annotations(&self) -> &Computed<Vec<Annotation>> {
+        &self.annotations
+    }
+
+    /// The map display style.
+    #[must_use]
+    pub const fn style(&self) -> MapStyle {
+        self.style
+    }
+
+    /// Whether to show the user's current location.
+    #[must_use]
+    pub const fn user_location_visibility(&self) -> MapVisibility {
+        self.user_location_visibility
+    }
+
+    /// `WaterKit` location values rendered by portable map realizations.
+    ///
+    /// Native realizations may use the platform location service when this is
+    /// absent. Supplying it keeps camera following, the location marker, and
+    /// horizontal-accuracy visualization driven by one reactive source.
+    #[must_use]
+    pub const fn user_location(&self) -> Option<&Computed<Option<Location>>> {
+        self.user_location.as_ref()
+    }
+
+    /// Whether the map is interactive (pan/zoom enabled).
+    #[must_use]
+    pub const fn interactivity(&self) -> MapInteractivity {
+        self.interactivity
+    }
+
+    /// Whether to show the compass.
+    #[must_use]
+    pub const fn compass_visibility(&self) -> MapVisibility {
+        self.compass_visibility
+    }
+
+    /// Whether to show the scale.
+    #[must_use]
+    pub const fn scale_visibility(&self) -> MapVisibility {
+        self.scale_visibility
+    }
+
+    /// Caller-owned sink the realization reports its load lifecycle into.
+    ///
+    /// `None` means the application is not observing status, and a realization
+    /// must not allocate one on its behalf.
+    #[must_use]
+    pub const fn status(&self) -> Option<&Binding<MapStatus>> {
+        self.status.as_ref()
+    }
 }
 
 // Use configurable! with StretchAxis::Both - this provides both NativeView and View impls

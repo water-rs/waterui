@@ -84,10 +84,6 @@ pub fn dir_record(name: &[u8], payload: &[u8]) -> Vec<u8> {
 /// `waterui_meta_*` item carries, and the payload it describes, each cut at
 /// its first NUL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the record format is the channel's contract: a record is exactly its name and its payload"
-)]
 pub struct DirRecord<'a> {
     /// The record's name — the `waterui_meta_`-prefixed item name.
     pub name: &'a [u8],

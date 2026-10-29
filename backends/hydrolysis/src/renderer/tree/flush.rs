@@ -50,13 +50,18 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             if !matched {
                 self.core().cell.placement().set_paint_parent(None);
             }
-            renderer.record_layer_node_in(self.core(), ctx.bounds, !matched, |renderer, local| {
-                self.flush_inner(renderer, local, env);
-            });
+            renderer.record_layer_node_in(
+                self.core(),
+                ctx.bounds(),
+                !matched,
+                |renderer, local| {
+                    self.flush_inner(renderer, local, env);
+                },
+            );
             return;
         }
         if self.is_layer_node() {
-            renderer.record_layer_node(self.core(), ctx.bounds, |renderer, local| {
+            renderer.record_layer_node(self.core(), ctx.bounds(), |renderer, local| {
                 self.flush_inner(renderer, local, env);
             });
         } else {
@@ -139,11 +144,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         match self {
             Self::Color(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
-                if nami::Signal::snapshot(&node.bounds) != ctx.bounds {
-                    node.bounds.set(ctx.bounds);
+                if nami::Signal::snapshot(&node.bounds) != ctx.bounds() {
+                    node.bounds.set(ctx.bounds());
                 }
                 renderer.scene_mut().live_rect(
-                    ctx.local,
+                    ctx.local(),
                     node.bounds.clone().into(),
                     node.color.clone(),
                 );
@@ -205,7 +210,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 #[cfg(feature = "accessibility")]
                 let container_scope = accessibility_container_child_environment(env).map(|_| {
                     let (bounds, extent) = (
-                        ctx.bounds,
+                        ctx.bounds(),
                         renderer.resolve_window_rect(kurbo_rect(container.resolved)),
                     );
                     renderer.begin_accessibility_container(bounds, Some(extent), env)
@@ -246,32 +251,32 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Self::Opacity(node) => {
                 let alpha = renderer.resolve_owned_scalar(
-                    &node.value.value,
+                    node.value.value(),
                     &node.core.cell,
                     OPACITY_ANIMATION_KEY,
                     cherenkov_record::tree::RATE_SLOW,
                 );
                 let program = renderer.program().program_mut();
                 program.opacity = alpha;
-                program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds));
+                program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds()));
                 renderer.push_placement_scope(
                     crate::renderer::ScopeDelta::RECORD_SPACE,
-                    Some(ctx.bounds),
+                    Some(ctx.bounds()),
                 );
                 node.child
                     .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
                 renderer.pop_placement_scope();
             }
             Self::Scale(node) => {
-                let center = anchor_point(ctx.bounds, node.value.anchor);
+                let center = anchor_point(ctx.bounds(), node.value.anchor());
                 let scale_x = renderer.resolve_owned_scalar(
-                    &node.value.x,
+                    node.value.x(),
                     &node.core.cell,
                     SCALE_X_ANIMATION_KEY,
                     cherenkov_record::tree::RATE_FAST,
                 );
                 let scale_y = renderer.resolve_owned_scalar(
-                    &node.value.y,
+                    node.value.y(),
                     &node.core.cell,
                     SCALE_Y_ANIMATION_KEY,
                     cherenkov_record::tree::RATE_FAST,
@@ -280,12 +285,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     * kurbo::Affine::scale_non_uniform(f64::from(scale_x), f64::from(scale_y))
                     * kurbo::Affine::translate((-center.x, -center.y));
                 node.child
-                    .flush(renderer, ctx.child(transform, ctx.bounds), env, transform);
+                    .flush(renderer, ctx.child(transform, ctx.bounds()), env, transform);
             }
             Self::Rotation(node) => {
-                let center = anchor_point(ctx.bounds, node.value.anchor);
+                let center = anchor_point(ctx.bounds(), node.value.anchor());
                 let radians = f64::from(renderer.resolve_owned_scalar(
-                    &node.value.angle,
+                    node.value.angle(),
                     &node.core.cell,
                     ROTATION_ANIMATION_KEY,
                     cherenkov_record::tree::RATE_FAST,
@@ -295,7 +300,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     * kurbo::Affine::rotate(radians)
                     * kurbo::Affine::translate((-center.x, -center.y));
                 node.child
-                    .flush(renderer, ctx.child(transform, ctx.bounds), env, transform);
+                    .flush(renderer, ctx.child(transform, ctx.bounds()), env, transform);
             }
             Self::Offset(node) => {
                 let offset_x = renderer.resolve_owned_scalar(
@@ -313,7 +318,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 let transform =
                     kurbo::Affine::translate((f64::from(offset_x), f64::from(offset_y)));
                 node.child
-                    .flush(renderer, ctx.child(transform, ctx.bounds), env, transform);
+                    .flush(renderer, ctx.child(transform, ctx.bounds()), env, transform);
             }
             Self::Dynamic(node) => {
                 if node.apply_pending_mid_pass(renderer) {
@@ -325,7 +330,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     // sub-view re-lays out (re-placing this host) before its
                     // next flush.
                     #[allow(clippy::cast_possible_truncation)]
-                    let size = Size::new(ctx.bounds.width() as f32, ctx.bounds.height() as f32);
+                    let size = Size::new(ctx.bounds().width() as f32, ctx.bounds().height() as f32);
                     let proposal = ProposalSize::new(Some(size.width), Some(size.height));
                     let safe_area = node.safe_area.as_deref().cloned();
                     node.child
@@ -412,12 +417,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             "hydrolysis renderer: a material member under a `.material_group()` scope re-recorded with an empty scope stack — the partial descent did not establish the enclosing scopes"
                         );
                         let program = renderer.program().program_mut();
-                        program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds));
+                        program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds()));
                         program.material = Some(mount::MaterialRequest {
                             scope,
                             level: *level,
                             scheme,
-                            bounds: ctx.bounds,
+                            bounds: ctx.bounds(),
                             visible,
                         });
                         node.child
@@ -603,14 +608,14 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         content: Rc::clone(&node.content),
                         invalidator: Rc::clone(&node.invalidator),
                         association: Rc::clone(&node.association),
-                        bounds: ctx.bounds,
+                        bounds: ctx.bounds(),
                     }));
                 // Content that handles its own input receives the pointer,
                 // keyboard, IME and scroll events landing on its bounds, through
                 // the same routing an interactive `GpuContentView` uses.
                 if wants_input {
                     renderer.register_surface_input_target(
-                        ctx.bounds,
+                        ctx.bounds(),
                         Rc::clone(&node.content),
                         #[cfg(feature = "accessibility")]
                         _focus_node,
@@ -647,12 +652,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 let visible = renderer.record_alpha() != 0.0;
                 renderer.program().program_mut().producer = Some(mount::ProducerContent::Gpu {
                     runtime: Rc::clone(&node.runtime),
-                    bounds: ctx.bounds,
+                    bounds: ctx.bounds(),
                     visible,
                 });
                 if wants_input {
                     renderer.register_surface_input_target(
-                        ctx.bounds,
+                        ctx.bounds(),
                         Rc::clone(&node.runtime),
                         #[cfg(feature = "accessibility")]
                         _focus_node,
@@ -687,7 +692,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 renderer.program().program_mut().producer =
                     Some(mount::ProducerContent::External {
                         runtime: Rc::clone(&node.runtime),
-                        bounds: ctx.bounds,
+                        bounds: ctx.bounds(),
                         visible,
                     });
             }
@@ -716,7 +721,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 // grown by the extension layout computed — the surface
                 // paints through the bands its frame touched, clips its
                 // content there, and its own subtree owns the inset.
-                let viewport_rect = safe_area::grow_rect(ctx.bounds, node.surface.extension());
+                let viewport_rect = safe_area::grow_rect(ctx.bounds(), node.surface.extension());
                 let Some(handle) = node.handle.borrow().clone() else {
                     return;
                 };
@@ -741,10 +746,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             f64::from(node.content_size.width),
                             f64::from(node.content_size.height),
                         );
-                        let content_ctx = RenderContext {
-                            local: ctx.local,
-                            bounds: content_bounds,
-                        };
+                        let content_ctx = RenderContext::new(ctx.local(), content_bounds);
                         // Publish the visible window (in content coordinates) —
                         // the viewport window grown by the same extension —
                         // so a virtualized `LazyStack` child builds the rows
@@ -805,7 +807,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             stretch,
                             Rc::clone(&viewport),
                         );
-                        let world = renderer.record_world(content_ctx.local);
+                        let world = renderer.record_world(content_ctx.local());
                         renderer.push_lazy_viewport(crate::renderer::lifecycle::LazyViewport {
                             bounds: lazy_viewport,
                             transform: world * kurbo::Affine::translate(-offset),
@@ -830,7 +832,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 crate::widgets::draw_scroll_indicators(
                     &mut widget_ctx,
                     &node.env,
-                    ctx.bounds,
+                    ctx.bounds(),
                     metrics,
                     node.axis,
                     &handle,
@@ -1229,6 +1231,6 @@ fn flush_navigation_transition_element<E: crate::text::TextEngine>(
     source: bool,
     id: RawId,
 ) {
-    renderer.note_navigation_element(source, id, ctx.bounds);
+    renderer.note_navigation_element(source, id, ctx.bounds());
     child.flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
 }

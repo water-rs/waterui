@@ -79,28 +79,29 @@ impl<P: PlatformText> HwuiTextEngine<P> {
                     range.clone(),
                     Some(style.foreground.unwrap_or(input.default_brush)),
                 );
-                run.background = style.background.map(color_long);
-                run.italic = style.italic;
-                run.underline = style.underline;
-                run.strikethrough = style.strikethrough;
+                run.set_background(style.background.map(color_long));
+                run.set_italic(style.italic);
+                run.set_underline(style.underline);
+                run.set_strikethrough(style.strikethrough);
                 run
             })
             .collect();
-        let request = ShapeRequest {
-            locale: &input.locale,
-            max_width,
-            max_lines: max_lines.map(NonZeroUsize::get),
-            ellipsis: max_lines.is_some(),
-            alignment: if input.alignment == HorizontalAlignment::Leading {
+        let request = {
+            let mut literal = ShapeRequest::new(&input.plain, &runs, default_style);
+            literal.set_locale(&input.locale);
+            literal.set_max_width(max_width);
+            literal.set_max_lines(max_lines.map(NonZeroUsize::get));
+            literal.set_ellipsis(max_lines.is_some());
+            literal.set_alignment(if input.alignment == HorizontalAlignment::Leading {
                 TextAlignment::Start
             } else if input.alignment == HorizontalAlignment::Trailing {
                 TextAlignment::End
             } else {
                 TextAlignment::Center
-            },
-            right_to_left: input.right_to_left,
-            strict_families: self.family_resolution.is_strict(),
-            ..ShapeRequest::new(&input.plain, &runs, default_style)
+            });
+            literal.set_right_to_left(input.right_to_left);
+            literal.set_strict_families(self.family_resolution.is_strict());
+            literal
         };
         HwuiTextLayout::shape(&self.provider, &self.ids, &request)
             .unwrap_or_else(|error: HwuiError| panic!("HWUI text shaping failed: {error}"))
@@ -115,18 +116,17 @@ fn color_long([r, g, b, a]: [u8; 4]) -> u64 {
 
 /// A style run on the text wire from a resolved font.
 fn font_run(font: &ResolvedFontSpec, range: Range<usize>, foreground: Option<[u8; 4]>) -> TextRun {
-    TextRun {
-        range,
-        family: font.family.clone(),
-        size: font.size,
-        weight: font_weight(font.weight),
-        italic: false,
-        underline: false,
-        strikethrough: false,
-        foreground: foreground.map(color_long),
-        background: None,
-        line_height: font.line_height,
-        letter_spacing: font.letter_spacing,
+    {
+        let mut literal = TextRun::new(range, font.size, font_weight(font.weight));
+        literal.set_family(font.family.clone());
+        literal.set_italic(false);
+        literal.set_underline(false);
+        literal.set_strikethrough(false);
+        literal.set_foreground(foreground.map(color_long));
+        literal.set_background(None);
+        literal.set_line_height(font.line_height);
+        literal.set_letter_spacing(font.letter_spacing);
+        literal
     }
 }
 

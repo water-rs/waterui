@@ -81,6 +81,55 @@ pub struct ResolvedFont {
     pub design: FontDesign,
 }
 
+impl ResolvedFont {
+    /// Font size in points.
+    #[must_use]
+    pub const fn size(&self) -> f32 {
+        self.size
+    }
+
+    /// Sets the `size`.
+    pub const fn set_size(&mut self, size: f32) {
+        self.size = size;
+    }
+
+    /// Font weight.
+    #[must_use]
+    pub const fn weight(&self) -> FontWeight {
+        self.weight
+    }
+
+    /// Absolute line height in logical points.
+    ///
+    /// `None` uses the selected font's preferred metrics.
+    #[must_use]
+    pub const fn line_height(&self) -> Option<f32> {
+        self.line_height
+    }
+
+    /// Additional spacing between adjacent glyphs in logical points.
+    #[must_use]
+    pub const fn letter_spacing(&self) -> f32 {
+        self.letter_spacing
+    }
+
+    /// Optional font family name (e.g., "MaterialIcons-Regular").
+    /// None means use the system default font.
+    #[must_use]
+    pub const fn family(&self) -> Option<&Str> {
+        self.family.as_ref()
+    }
+
+    /// The design the face is chosen from when no family is named.
+    ///
+    /// A named family is exact and wins; the design says which of the
+    /// platform's own faces to use in its absence.
+    #[must_use]
+    pub const fn design(&self) -> FontDesign {
+        self.design
+    }
+}
+
 /// A semantic choice of typeface, resolved by each backend to a platform face.
 ///
 /// This is the axis `SwiftUI` calls a font design and Material a generic font
@@ -410,10 +459,6 @@ macro_rules! impl_font {
     ($name:ident, $doc:expr, $size:expr, $weight:expr) => {
         #[doc = $doc]
         #[derive(Debug, Clone, Copy)]
-        #[expect(
-            clippy::exhaustive_structs,
-            reason = "field-less font slot resolved by type and used by name"
-        )]
         pub struct $name;
 
         impl FontSlot for $name {

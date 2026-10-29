@@ -130,7 +130,7 @@ impl EdgeEffect {
     /// times it.
     pub(super) fn on_absorb(&mut self, speed: f64, config: &EdgeStretch, now: Instant) {
         self.state = EdgeState::Recede;
-        self.velocity = speed * config.absorb_velocity_scale;
+        self.velocity = speed * config.absorb_velocity_scale();
         self.stepped_at = Some(now);
     }
 
@@ -168,13 +168,13 @@ impl EdgeEffect {
             return;
         }
         self.stepped_at = Some(now);
-        if self.velocity.abs() <= config.linear_take_over_velocity
-            && (self.distance * dimension).abs() < config.linear_take_over_distance
+        if self.velocity.abs() <= config.linear_take_over_velocity()
+            && (self.distance * dimension).abs() < config.linear_take_over_distance()
             && java_signum(self.velocity) == -java_signum(self.distance)
         {
             // Close to rest the spring crawls: finish at a constant speed.
             self.velocity =
-                f64::from(java_signum(self.velocity)) * config.linear_take_over_velocity;
+                f64::from(java_signum(self.velocity)) * config.linear_take_over_velocity();
             let target = self.distance + self.velocity * dt / dimension;
             if java_signum(target) == java_signum(self.distance) {
                 self.distance = target;
@@ -184,8 +184,8 @@ impl EdgeEffect {
             }
             return;
         }
-        let omega = config.natural_frequency;
-        let zeta = config.damping_ratio;
+        let omega = config.natural_frequency();
+        let zeta = config.damping_ratio();
         let damped = omega * zeta.mul_add(-zeta, 1.0).sqrt();
         let cos_coeff = self.distance * dimension;
         let sin_coeff = (zeta * omega).mul_add(cos_coeff, self.velocity) / damped;
@@ -206,7 +206,8 @@ impl EdgeEffect {
         // close enough.
         let displacement = self.distance * dimension;
         if displacement < 0.0
-            || (self.velocity.abs() < config.rest_velocity && displacement < config.rest_distance)
+            || (self.velocity.abs() < config.rest_velocity()
+                && displacement < config.rest_distance())
         {
             self.distance = 0.0;
             self.velocity = 0.0;
@@ -220,9 +221,9 @@ impl EdgeEffect {
         let overscroll = self.distance.clamp(-1.0, 1.0);
         let sign = if overscroll > 0.0 { 1.0 } else { -1.0 };
         let overscroll = overscroll.abs();
-        let linear = config.linear_intensity * overscroll;
-        let scalar = core::f64::consts::E / config.exponential_distance;
-        let exponential = config.exponential_intensity * (1.0 - (-overscroll * scalar).exp());
+        let linear = config.linear_intensity() * overscroll;
+        let scalar = core::f64::consts::E / config.exponential_distance();
+        let exponential = config.exponential_intensity() * (1.0 - (-overscroll * scalar).exp());
         sign * (linear + exponential)
     }
 }

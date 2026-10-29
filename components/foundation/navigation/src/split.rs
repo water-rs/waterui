@@ -117,10 +117,6 @@ pub mod split_style {
 
     /// Platform-default adaptive split style.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less style marker used by name"
-    )]
     pub struct Automatic;
 
     impl NavigationSplitStyle for Automatic {
@@ -131,10 +127,6 @@ pub mod split_style {
 
     /// Balanced leading and detail columns.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less style marker used by name"
-    )]
     pub struct Balanced;
 
     impl NavigationSplitStyle for Balanced {
@@ -145,10 +137,6 @@ pub mod split_style {
 
     /// Detail-prominent split style.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less style marker used by name"
-    )]
     pub struct ProminentDetail;
 
     impl NavigationSplitStyle for ProminentDetail {

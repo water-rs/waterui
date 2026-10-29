@@ -75,6 +75,26 @@ pub struct ScrollPositionReport {
 }
 
 impl ScrollPositionReport {
+    /// The binding the measured [`ScrollPosition`] is written into.
+    #[must_use]
+    pub const fn binding(&self) -> &Binding<Option<ScrollPosition>> {
+        &self.binding
+    }
+
+    /// The logical viewport size the report describes, in points.
+    #[must_use]
+    pub const fn viewport_size(&self) -> Size {
+        self.viewport_size
+    }
+
+    /// The logical content size the report describes, in points.
+    #[must_use]
+    pub const fn content_size(&self) -> Size {
+        self.content_size
+    }
+}
+
+impl ScrollPositionReport {
     /// Creates the report channel: `binding` receives every measured
     /// [`ScrollPosition`] computed from `viewport_size` and `content_size`.
     #[must_use]
@@ -105,10 +125,6 @@ pub struct ScrollHandle {
 
 /// Snapshot of one scroll view's offsets and extents, in f64 logical pixels.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "scroll snapshot every backend fills field by field from its native scroll view; a new field must fail their build rather than be left unset"
-)]
 pub struct ScrollMetrics {
     /// Current horizontal offset: inside `0.0..=max_x`, except while a touch
     /// gesture or its fling holds it past an edge (an overscroll such as a

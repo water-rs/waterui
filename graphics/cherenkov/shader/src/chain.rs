@@ -59,6 +59,21 @@ pub struct ComposeOptions {
 }
 
 impl ComposeOptions {
+    /// The precision of the colour values segments take and return. Each
+    /// stage uses its variant of this precision when declared.
+    #[must_use]
+    pub const fn precision(&self) -> Precision {
+        self.precision
+    }
+
+    /// Use the subgroup variant of each stage that declares one.
+    #[must_use]
+    pub const fn subgroups(&self) -> bool {
+        self.subgroups
+    }
+}
+
+impl ComposeOptions {
     /// Compose for `precision`, using subgroup variants when `subgroups`.
     #[must_use]
     pub const fn new(precision: Precision, subgroups: bool) -> Self {
@@ -117,6 +132,32 @@ pub struct UniformMember {
     pub offset: u32,
 }
 
+impl UniformMember {
+    /// The stage index in the chain.
+    #[must_use]
+    pub const fn stage(&self) -> usize {
+        self.stage
+    }
+
+    /// The parameter name.
+    #[must_use]
+    pub const fn param(&self) -> &str {
+        self.param.as_str()
+    }
+
+    /// The parameter type.
+    #[must_use]
+    pub const fn ty(&self) -> ParamType {
+        self.ty
+    }
+
+    /// The byte offset in the block.
+    #[must_use]
+    pub const fn offset(&self) -> u32 {
+        self.offset
+    }
+}
+
 /// The uniform block of a segment, laid out by WGSL uniform rules.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -129,6 +170,28 @@ pub struct UniformLayout {
     pub members: Vec<UniformMember>,
     /// The block size in bytes; zero when every parameter is constant.
     pub size: u32,
+}
+
+impl UniformLayout {
+    /// Spatial segments only: the byte offset of the `size` member, the
+    /// `vec2<f32>` carrying the segment's input extent in pixels. It is
+    /// the block's first member, always at offset 0.
+    #[must_use]
+    pub const fn input_size(&self) -> Option<u32> {
+        self.input_size
+    }
+
+    /// The dynamic parameters, in offset order.
+    #[must_use]
+    pub const fn members(&self) -> &[UniformMember] {
+        self.members.as_slice()
+    }
+
+    /// The block size in bytes; zero when every parameter is constant.
+    #[must_use]
+    pub const fn size(&self) -> u32 {
+        self.size
+    }
 }
 
 /// One generated function.
@@ -145,6 +208,38 @@ pub struct Segment {
     pub args: Vec<SegmentArg>,
     /// Its uniform block.
     pub uniform: UniformLayout,
+}
+
+impl Segment {
+    /// The function's name in the module.
+    #[must_use]
+    pub const fn function(&self) -> &str {
+        self.function.as_str()
+    }
+
+    /// The chain stages it applies.
+    #[must_use]
+    pub fn stages(&self) -> Range<usize> {
+        self.stages.clone()
+    }
+
+    /// The variant each stage used, in stage order.
+    #[must_use]
+    pub const fn variants(&self) -> &[Variant] {
+        self.variants.as_slice()
+    }
+
+    /// Its arguments, in order.
+    #[must_use]
+    pub const fn args(&self) -> &[SegmentArg] {
+        self.args.as_slice()
+    }
+
+    /// Its uniform block.
+    #[must_use]
+    pub const fn uniform(&self) -> &UniformLayout {
+        &self.uniform
+    }
 }
 
 impl Segment {
@@ -178,6 +273,20 @@ pub struct FoldCost {
     pub samples: SampleCount,
 }
 
+impl FoldCost {
+    /// Computed expressions in the prefix, applied once per sample.
+    #[must_use]
+    pub const fn prefix_ops(&self) -> u32 {
+        self.prefix_ops
+    }
+
+    /// Samples the spatial stage takes per output pixel.
+    #[must_use]
+    pub const fn samples(&self) -> SampleCount {
+        self.samples
+    }
+}
+
 /// A spatial segment with the preceding colour piece folded into its samples.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -192,6 +301,36 @@ pub struct Folded {
     /// — for a sampled stage it is [`SamplerFilter::Point`], the contract
     /// that makes folding equivalent.
     pub sampler: SamplerFilter,
+}
+
+impl Folded {
+    /// The folded function. It replaces the preceding colour piece and the
+    /// plain spatial segment.
+    #[must_use]
+    pub const fn segment(&self) -> &Segment {
+        &self.segment
+    }
+
+    /// What folding costs.
+    #[must_use]
+    pub const fn cost(&self) -> FoldCost {
+        self.cost
+    }
+
+    /// The filter mode the snippet declares for `SegmentArg::InputSampler`.
+    /// The executor must honor it when binding the folded program's sampler
+    /// — for a sampled stage it is [`SamplerFilter::Point`], the contract
+    /// that makes folding equivalent.
+    #[must_use]
+    pub const fn sampler(&self) -> SamplerFilter {
+        self.sampler
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Segment, FoldCost, SamplerFilter) {
+        (self.segment, self.cost, self.sampler)
+    }
 }
 
 /// One piece of a composed chain. Boundaries between pieces are the possible
@@ -372,16 +511,13 @@ fn check_libraries(stages: &[Stage<'_>], options: ComposeOptions) -> Result<(), 
     // the name may come from only one origin — and only the variant each
     // stage actually imports can collide: an f16-only name never meets an
     // f32 name at f32.
-    let want = Variant {
-        precision: options.precision,
-        subgroups: options.subgroups,
-    };
+    let want = Variant::new(options.precision, options.subgroups);
     let mut owners: HashMap<&str, String> = HashMap::new();
     for stage in stages {
         let (variant, _) = stage.snippet.select(want);
         for library in stage.snippet.libraries() {
             let lib_variant = library
-                .variant(variant.precision)
+                .variant(variant.precision())
                 .expect("snippet parsing checked the variant exists");
             let owner = format!("library `{}`", library.name());
             for function in &lib_variant.functions {
@@ -411,7 +547,7 @@ fn check_libraries(stages: &[Stage<'_>], options: ComposeOptions) -> Result<(), 
             .snippet
             .libraries()
             .iter()
-            .filter_map(|library| library.variant(variant.precision))
+            .filter_map(|library| library.variant(variant.precision()))
             .flat_map(|variant| variant.functions.iter().map(String::as_str))
             .collect();
         for (_, function) in parsed.module.functions.iter() {
@@ -442,18 +578,18 @@ fn resolve_constants(
     for (name, value) in &stage.constants {
         let slot = params
             .iter()
-            .position(|param| param.name == *name)
+            .position(|param| param.name() == *name)
             .ok_or_else(|| ComposeError::UnknownParam {
                 stage: index,
                 snippet: stage.snippet.name().to_owned(),
                 param: name.clone(),
             })?;
-        if params[slot].ty != value.ty() {
+        if params[slot].ty() != value.ty() {
             return Err(ComposeError::ParamType {
                 stage: index,
                 snippet: stage.snippet.name().to_owned(),
                 param: name.clone(),
-                expected: params[slot].ty,
+                expected: params[slot].ty(),
                 found: value.ty(),
             });
         }
@@ -489,7 +625,7 @@ struct Imported {
 
 impl Imported {
     const fn precision(&self) -> Precision {
-        self.variant.precision
+        self.variant.precision()
     }
 }
 
@@ -591,10 +727,7 @@ impl<'a> Composer<'a> {
     }
 
     fn import(&mut self, index: usize, snippet: &'a Snippet, constants: Vec<Option<ParamValue>>) {
-        let want = Variant {
-            precision: self.options.precision,
-            subgroups: self.options.subgroups,
-        };
+        let want = Variant::new(self.options.precision, self.options.subgroups);
         let (variant, parsed) = snippet.select(want);
         self.capabilities |= variant.capabilities();
         let mut importer = Importer::new(&parsed.module, &format!("s{index}_{}", snippet.name()));
@@ -611,14 +744,14 @@ impl<'a> Composer<'a> {
         let reachable = parse::reachable_handles(&parsed.module, parsed.apply);
         for library in snippet.libraries() {
             let lib_variant = library
-                .variant(variant.precision)
+                .variant(variant.precision())
                 .expect("snippet parsing checked the variant exists");
             for (local, function) in parsed.module.functions.iter() {
                 let Some(name) = function.name.clone() else {
                     continue;
                 };
                 if reachable.contains(&local) && lib_variant.functions.contains(&name) {
-                    let canonical = self.library_function(library, variant.precision, &name);
+                    let canonical = self.library_function(library, variant.precision(), &name);
                     importer.alias_function(local, canonical);
                 }
             }
@@ -635,7 +768,7 @@ impl<'a> Composer<'a> {
             params: abi
                 .params
                 .iter()
-                .map(|param| (param.name.clone(), param.ty))
+                .map(|param| (param.name().to_owned(), param.ty()))
                 .collect(),
             params_ty,
             constants,

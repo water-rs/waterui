@@ -24,10 +24,6 @@ use crate::{
 /// Backends should read this instead. It answers both questions at once: whether
 /// there is an enclosing floating surface, and with which style.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "environment newtype over the floating surface's style"
-)]
 pub struct FloatingScope(pub FloatingStyle);
 
 impl Plugin for FloatingScope {}
@@ -203,7 +199,7 @@ mod tests {
             .content
             .downcast_ref::<Metadata<Shadow>>()
             .expect("inside the key shadow is the ambient shadow");
-        (ambient.value.radius, key.value.radius)
+        (ambient.value.radius(), key.value.radius())
     }
 
     /// A floating surface fills, clips, and shadows with one shape, so each
@@ -232,8 +228,8 @@ mod tests {
             .downcast_ref::<Metadata<Shadow>>()
             .expect("inside the key shadow is the ambient shadow");
         for (name, kind) in [
-            ("key", key.value.silhouette.kind()),
-            ("ambient", ambient.value.silhouette.kind()),
+            ("key", key.value.silhouette().kind()),
+            ("ambient", ambient.value.silhouette().kind()),
         ] {
             assert_eq!(
                 kind, clip_kind,

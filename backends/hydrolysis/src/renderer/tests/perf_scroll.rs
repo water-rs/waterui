@@ -75,7 +75,7 @@ fn measure_scroll_cost(rows: usize) -> ScrollCost {
     let mut runtime = runtime_for(rows);
     let start = Instant::now();
     let initial = runtime.pump_at(false, start);
-    let initial_misses = initial.profile.counters.measurement_cache_misses;
+    let initial_misses = initial.profile().counters().measurement_cache_misses();
 
     let mut scroll_misses = 0;
     for frame in 1..=SCROLL_FRAMES {
@@ -87,7 +87,7 @@ fn measure_scroll_cost(rows: usize) -> ScrollCost {
             is_line_delta: false,
         });
         let result = runtime.pump_at(false, start + Duration::from_millis(u64::from(frame) * 16));
-        scroll_misses += result.profile.counters.measurement_cache_misses;
+        scroll_misses += result.profile().counters().measurement_cache_misses();
     }
 
     ScrollCost {
@@ -233,7 +233,7 @@ fn assert_indexed_scroll_materializes_only_the_target_window(
         #[cfg(feature = "accessibility")]
         {
             saw_target |= frame
-                .tree_update
+                .into_tree_update()
                 .into_iter()
                 .flat_map(|update| update.nodes)
                 .any(|(_, node)| node.label() == Some("Target row"));
@@ -304,14 +304,15 @@ fn visible_lazy_item_remeasures_connected_dynamic_through_retained_node() {
     let updated = runtime.pump_at(false, start + Duration::from_millis(16));
 
     assert_eq!(
-        updated.profile.counters.rebuild_iterations, 0,
+        updated.profile().counters().rebuild_iterations(),
+        0,
         "a connected Dynamic inside a visible lazy item must patch and remeasure through \
          its retained node without rebuilding the window"
     );
     #[cfg(feature = "accessibility")]
     assert!(
         updated
-            .tree_update
+            .into_tree_update()
             .into_iter()
             .flat_map(|update| update.nodes)
             .any(|(_, node)| node.label() == Some("updated dynamic row")),
@@ -364,7 +365,7 @@ fn flow_markdown_blocks_reconnect_after_lazy_eviction() {
     #[cfg(feature = "accessibility")]
     assert!(
         returned
-            .tree_update
+            .into_tree_update()
             .into_iter()
             .flat_map(|update| update.nodes)
             .any(|(_, node)| node.label() == Some("Section 0")),
@@ -381,7 +382,7 @@ fn flow_markdown_blocks_reconnect_after_lazy_eviction() {
 fn flow_markdown_append_preserves_user_scroll_offset() {
     fn scroll_y(result: crate::HeadlessPumpResult) -> f64 {
         result
-            .tree_update
+            .into_tree_update()
             .expect("FlowMarkdown pump must publish an accessibility update")
             .nodes
             .into_iter()

@@ -70,10 +70,6 @@ pub use widget::{
 /// button's — `ButtonStyle::Automatic` resolves to a different variant for
 /// the two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less metadata marker inserted by name"
-)]
 pub struct IconOnlyButtonLabel;
 
 impl waterui::Plugin for IconOnlyButtonLabel {}

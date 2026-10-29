@@ -2282,7 +2282,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         action_target: Option<AccessibilityActionTarget<E>>,
     ) -> Option<AccessibilityNodeId> {
         match ctx {
-            Some(ctx) => self.register_accessibility_node(node, ctx.bounds, env, action_target),
+            Some(ctx) => self.register_accessibility_node(node, ctx.bounds(), env, action_target),
             None => self.register_accessibility_node_semantic(node, env, action_target),
         }
     }
@@ -2311,7 +2311,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let Some(&parent) = self.accessibility.parent_stack.last() else {
             return;
         };
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
             return;
         }
@@ -2503,11 +2503,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             );
         }
         if let Some(label) = view.downcast_ref::<SemanticLabel>() {
-            let styled = self.read_signal(&label.semantic_text().resolve(&scoped_env).content);
+            let styled = self.read_signal(label.semantic_text().resolve(&scoped_env).content());
             return Some(styled.to_semantic().to_string());
         }
         if let Some(text) = view.downcast_ref::<waterui_text::Text>() {
-            let styled = self.read_signal(&text.resolve(&scoped_env).content);
+            let styled = self.read_signal(text.resolve(&scoped_env).content());
             return Some(styled.to_semantic().to_string());
         }
         if let Some(label) = view.downcast_ref::<Str>() {
@@ -2538,11 +2538,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             );
         }
         if let Some(text) = view.downcast_ref::<Native<TextConfig>>() {
-            let styled = self.read_signal(&text.as_inner().content);
+            let styled = self.read_signal(text.as_inner().content());
             return Some(styled.to_semantic().to_string());
         }
         if let Some(icon) = view.downcast_ref::<Native<SystemIcon>>() {
-            return Some(icon.as_inner().name.as_str().to_owned());
+            return Some(icon.as_inner().name().as_str().to_owned());
         }
         // A control's `label` is the same `Label` a composite button's name
         // derives from, so a container holding a bare control derives the
@@ -2552,7 +2552,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             ($($config:ty),+ $(,)?) => {$(
                 if let Some(native) = view.downcast_ref::<Native<$config>>() {
                     return Self::accessibility_label_from_label(
-                        &native.as_inner().label,
+                        native.as_inner().label(),
                         &scoped_env,
                     );
                 }
@@ -2578,13 +2578,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         {
             return self
                 .accessibility_label_from_view_with_budget(
-                    &progress.as_inner().label,
+                    progress.as_inner().label(),
                     &scoped_env,
                     remaining - 1,
                 )
                 .or_else(|| {
                     self.accessibility_label_from_view_with_budget(
-                        &progress.as_inner().value_label,
+                        progress.as_inner().value_label(),
                         &scoped_env,
                         remaining - 1,
                     )

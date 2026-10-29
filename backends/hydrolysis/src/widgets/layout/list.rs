@@ -21,7 +21,7 @@ use accesskit::{
 };
 #[cfg(feature = "accessibility")]
 use waterui::accessibility::{AccessibilityHidden, AccessibilityStateSignal};
-use waterui::component::list::{ListConfig, ListItem, ListSelection, Move};
+use waterui::component::list::{ListConfig, ListItem, ListSection, ListSelection, Move};
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
 use waterui_backend_core::scroll::{ScrollPositionReport, animated_row_scroll_approach};
 use waterui_core::animation::Animation;
@@ -422,7 +422,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         let rows_dirty_for_watch = Rc::clone(&rows_dirty);
         let replaced_row_ids = Rc::new(RefCell::new(std::collections::HashSet::new()));
         let replaced_for_watch = Rc::clone(&replaced_row_ids);
-        let rows_snapshot = Rc::new(RefCell::new(config.contents.snapshot()));
+        let rows_snapshot = Rc::new(RefCell::new(config.contents().snapshot()));
         let snapshot_for_watch = Rc::clone(&rows_snapshot);
         // Membership changes mark the owning widget's cell — the node whose
         // read built this state, or the window root when built unowned.
@@ -440,7 +440,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             Rc::clone(&rows_dirty),
         );
 
-        let guard = config.contents.watch(.., move |ctx, change| {
+        let guard = config.contents().watch(.., move |ctx, change| {
             rows_dirty_for_watch.set(true);
             // Each event hands over an immutable snapshot of the exact row set
             // it reported — retained so every reader below works the same
@@ -456,7 +456,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
                 cell.mark(crate::renderer::Dirty::STRUCTURE);
             }
         });
-        let row_selection = ListRowSelection::new(&config.selection, Rc::clone(&rows_snapshot));
+        let row_selection = ListRowSelection::new(config.selection(), Rc::clone(&rows_snapshot));
         Self {
             config,
             row_selection,
@@ -551,7 +551,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
     /// Returns whether the chrome changed, which invalidates row extents: a
     /// row's height includes the chrome it owns.
     fn resolve_sections(&self, len: usize, env: &Environment) -> bool {
-        if !self.config.uses_sections {
+        if !self.config.uses_sections() {
             return false;
         }
         if self.sections_resolved_for.get() == Some(len) {
@@ -565,7 +565,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         let mut open_section: Option<(usize, Option<Text>)> = None;
         for index in 0..len {
             let item = materialize_list_item(&snapshot, index, env);
-            let Some(section) = item.section else {
+            let Some((label, footer)) = item.into_section().map(ListSection::into_parts) else {
                 continue;
             };
             if let Some((_, footer)) = open_section.take()
@@ -573,8 +573,8 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             {
                 chrome[index - 1].footer = footer;
             }
-            chrome[index].header = section.label;
-            open_section = Some((index, section.footer));
+            chrome[index].header = label;
+            open_section = Some((index, footer));
         }
         if let Some((_, footer)) = open_section
             && len > 0
@@ -753,7 +753,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         content_height: f64,
     ) -> Option<ScrollPositionReport> {
         use crate::num_cast::f64_as_f32;
-        self.config.scroll_controller.as_ref().map(|controller| {
+        self.config.scroll_controller().as_ref().map(|controller| {
             ScrollPositionReport::new(
                 controller.position_report(),
                 LayoutSize::new(f64_as_f32(viewport_width), f64_as_f32(viewport_height)),
@@ -779,7 +779,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         row_count: usize,
         animate: bool,
     ) -> bool {
-        let Some(controller) = &self.config.scroll_controller else {
+        let Some(controller) = &self.config.scroll_controller() else {
             return false;
         };
         let generation = renderer.read_signal(&controller.generation());
@@ -1150,7 +1150,7 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
         // `min_row_height` is the floor every row is estimated and measured
         // against; unset, the theme's one-line height keeps the same values.
         let row_floor = list
-            .min_row_height
+            .min_row_height()
             .map_or(list_metrics.one_line_row_height, f64::from);
         // A 0 floor still needs a positive seed estimate — measured extents
         // replace it row by row anyway.
@@ -1179,7 +1179,7 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
         }
     }
     let is_rendered = ctx.is_some();
-    let viewport = ctx.map_or(kurbo::Rect::ZERO, |ctx| ctx.bounds);
+    let viewport = ctx.map_or(kurbo::Rect::ZERO, |ctx| ctx.bounds());
     // The rendered scroll domain is the measured extent; the semantic one is
     // the row count — with a zero viewport every row is scrollable to.
     let content_height = state
@@ -1233,9 +1233,9 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
         list_node.set_scroll_y_max(metrics.max_y);
         list_node.add_action(AccessibilityAction::ScrollUp);
         list_node.add_action(AccessibilityAction::ScrollDown);
-        let editing = renderer.read_signal(&list.editing);
-        let has_delete = list.on_delete.is_some();
-        let has_move = list.on_move.is_some();
+        let editing = renderer.read_signal(list.editing());
+        let has_delete = list.on_delete().is_some();
+        let has_move = list.on_move().is_some();
         if ctx.is_none() {
             // The semantic walk emits every row's content through the shared
             // sub-view cache — the same frame bookkeeping the rendered flush
@@ -1278,15 +1278,15 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                     let list_metrics = list_metrics
                         .expect("hydrolysis rendered list measurement requires list metrics");
                     let content_size = measure_transient_view_intrinsic(
-                        &item.content,
+                        item.content(),
                         renderer.state_mut(),
                         &row_env,
                         theme,
                     );
                     let extent = list_row_height_for_content(
                         f64::from(content_size.height),
-                        item.insets.as_ref(),
-                        list.min_row_height,
+                        item.get_insets(),
+                        list.min_row_height(),
                         list_metrics,
                     ) + chrome.total_height(&list_metrics);
                     state
@@ -1346,13 +1346,14 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
             // under the container-child env that strips that naming, so the
             // row's name is announced once and children keep their own.
             let mut item = item;
-            let (content, row_a11y_env) = hoist_accessibility_metadata::<E>(item.content, &row_env);
-            item.content = content;
+            let (content, row_a11y_env) =
+                hoist_accessibility_metadata::<E>(item.take_content(), &row_env);
+            item.set_content(content);
             // The row's gate is the `Disabled` scope its content resolves
             // under — the same env the content's presses read — so a
             // `.disabled` row keeps its label and reports disabled but is
             // inert to selection.
-            let row_disabled = list_row_disabled(&item.content, &row_a11y_env, renderer);
+            let row_disabled = list_row_disabled(item.content(), &row_a11y_env, renderer);
             // A hidden row vanishes whole — node and content — matching the
             // naming container's treatment of `accessibilityHidden`.
             let row_hidden = row_a11y_env
@@ -1368,7 +1369,7 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                 ),
             );
             let default_label =
-                renderer.accessibility_label_from_view(&item.content, &row_a11y_env);
+                renderer.accessibility_label_from_view(item.content(), &row_a11y_env);
             let label = renderer.resolve_accessibility_label(&row_a11y_env, default_label);
             if let Some(label) = label {
                 row_node.set_label(label);
@@ -1447,7 +1448,7 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                     &crate::renderer::InteractionKey::for_rc(owner, row_interaction_base + 3),
                     row_node_id,
                 );
-                let deletable = editing && renderer.read_signal(&item.deletable);
+                let deletable = editing && renderer.read_signal(item.get_deletable());
                 let mut subtree_env = accessibility_container_child_environment(&row_a11y_env)
                     .unwrap_or_else(|| row_a11y_env.clone());
                 // Every row is an activation scope of its own: a tap gesture
@@ -1471,7 +1472,7 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                     // tree. The rendered path parents the same subtree in
                     // `render_list_parts`.
                     renderer.push_accessibility_parent(row_node_id);
-                    let content = item.content;
+                    let content = item.take_content();
                     {
                         let mut cache = state.item_cache.borrow_mut();
                         let subview = cache.entry(row_id, move || content);
@@ -1735,7 +1736,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
     let (editing, contents) = {
         let state_ref = state.borrow();
         (
-            state_ref.config.editing.clone(),
+            state_ref.config.editing().clone(),
             state_ref.rows_snapshot.borrow().clone(),
         )
     };
@@ -1747,7 +1748,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
     let row_floor = state
         .borrow()
         .config
-        .min_row_height
+        .min_row_height()
         .map_or(list_metrics.one_line_row_height, f64::from);
     // A 0 floor still needs a positive seed estimate — measured extents
     // replace it row by row anyway.
@@ -1865,8 +1866,8 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
     // The delete/move handlers (`Option<Box<dyn Fn>>`) stay owned by the retained
     // config; per-row tap targets invoke them through the shared cell so they are
     // reused every flush instead of being consumed.
-    let has_delete = state.borrow().config.on_delete.is_some();
-    let has_move = state.borrow().config.on_move.is_some();
+    let has_delete = state.borrow().config.on_delete().is_some();
+    let has_move = state.borrow().config.on_move().is_some();
     let total_rows = row_count;
     // A released swipe eases home (or off-screen) on the redraw cadence; keep
     // frames coming while it is still travelling.
@@ -1896,7 +1897,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
     // rows outside the window are never touched (water-rs/hydrolysis#199).
     let mut extents_changed = false;
     let theme = ctx.theme();
-    let min_row_height = state.borrow().config.min_row_height;
+    let min_row_height = state.borrow().config.min_row_height();
     // Removal ghosts in the window, with the content-space top of each slot.
     let mut ghosts = Vec::new();
     let mut position = window.start;
@@ -1930,10 +1931,10 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             // A row's extent covers the section chrome it owns, so scroll offsets,
             // hit testing, and the visible window all account for it.
             let content_size =
-                measure_transient_view_intrinsic(&item.content, ctx.state_mut(), &row_env, &theme);
+                measure_transient_view_intrinsic(item.content(), ctx.state_mut(), &row_env, &theme);
             let row_height = list_row_height_for_content(
                 f64::from(content_size.height),
-                item.insets.as_ref(),
+                item.get_insets(),
                 min_row_height,
                 list_metrics,
             ) + chrome.total_height(&list_metrics);
@@ -1998,7 +1999,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         draw_list_ghost(ctx, state, env, ghost, resting_y);
     }
 
-    for (index, row_id, item, resting_y, row_height, content_size) in rows {
+    for (index, row_id, mut item, resting_y, row_height, content_size) in rows {
         let row_env = env.clone();
         // The row's `ListItem` node claims whatever naming scope the content
         // carries — hoist the metadata off the view the same way
@@ -2006,10 +2007,10 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         // would claim the row's explicit label for itself. The subtree then
         // flushes under the container-child env that strips that naming.
         #[cfg(feature = "accessibility")]
-        let (item, row_env) = {
-            let mut item = item;
-            let (content, scoped) = hoist_accessibility_metadata::<E>(item.content, &row_env);
-            item.content = content;
+        let (mut item, row_env) = {
+            let (content, scoped) =
+                hoist_accessibility_metadata::<E>(item.take_content(), &row_env);
+            item.set_content(content);
             (item, scoped)
         };
         // A selectable row carries its selection as `Selected`, so the row's
@@ -2146,13 +2147,13 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             draw_section_label(ctx, footer, footer_rect, false, &row_env);
         }
 
-        let deletable = ctx.renderer_mut().read_signal(&item.deletable);
+        let deletable = ctx.renderer_mut().read_signal(item.get_deletable());
         // The content's measured size was resolved in the resting-geometry pass
         // above — the same measure that wrote the row's extent this frame.
         let mut content_rect = list_content_rect(
             row_rect,
             list_metrics,
-            item.insets.as_ref(),
+            item.get_insets(),
             content_size,
             &row_env,
         );
@@ -2190,7 +2191,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         // nested `on_tap`) from one attached to that same root: a descendant's
         // claims the press, the row's own handler coexists with it
         // (water-rs/hydrolysis#175).
-        let mut content = Some(item.content);
+        let mut content = Some(item.take_content());
         // The selection press honours the `Disabled` scope the row's content
         // resolves under — the same gate the content's own presses read — so
         // a `.disabled` row stays inert to pointer input.
@@ -2722,7 +2723,7 @@ fn run_row_delete<E: crate::text::TextEngine>(
     env: &Environment,
     index: usize,
 ) -> bool {
-    if let Some(action) = state.borrow().config.on_delete.as_ref() {
+    if let Some(action) = state.borrow().config.on_delete().as_ref() {
         (action)(env, index);
     }
     true
@@ -2739,7 +2740,7 @@ fn run_row_move<E: crate::text::TextEngine>(
     to: usize,
 ) -> bool {
     state.borrow().preserve_anchor_index_once.set(true);
-    if let Some(action) = state.borrow().config.on_move.as_ref() {
+    if let Some(action) = state.borrow().config.on_move().as_ref() {
         (action)(env, Move::new(from, to));
     }
     if !state.borrow().rows_dirty.get() {
@@ -2771,10 +2772,10 @@ fn register_row_swipe_gesture<E: crate::text::TextEngine>(
         || {
             let action: BoxedAction<()> = boxed_action(move |env: Environment| {
                 let event = drag_event(&env);
-                let offset = f64::from(event.translation.x);
+                let offset = f64::from(event.translation().x);
                 let row = binding.get();
                 let list = owner.borrow();
-                match event.phase {
+                match event.phase() {
                     GesturePhase::Started | GesturePhase::Updated => {
                         list.swipe.set(Some(RowSwipe {
                             id: row_id,
@@ -2787,7 +2788,7 @@ fn register_row_swipe_gesture<E: crate::text::TextEngine>(
                         let threshold = row.width * SWIPE_DISMISS_POSITIONAL_THRESHOLD;
                         if offset.abs() >= threshold {
                             list.swipe.set(None);
-                            if let Some(delete) = list.config.on_delete.as_ref() {
+                            if let Some(delete) = list.config.on_delete().as_ref() {
                                 (delete)(&action_env, row.index);
                             }
                         } else {
@@ -2839,7 +2840,7 @@ fn register_row_reorder_gesture<E: crate::text::TextEngine>(
         || {
             let action: BoxedAction<()> = boxed_action(move |env: Environment| {
                 let event = drag_event(&env);
-                let dy = f64::from(event.translation.y);
+                let dy = f64::from(event.translation().y);
                 let row = binding.get();
                 // How many whole slots the pointer has travelled. Rows are
                 // measured individually, but a drag only ever crosses its
@@ -2852,7 +2853,7 @@ fn register_row_reorder_gesture<E: crate::text::TextEngine>(
                 };
                 let to = reorder_destination(row.index, step, row.total_rows);
                 let list = owner.borrow();
-                match event.phase {
+                match event.phase() {
                     GesturePhase::Started | GesturePhase::Updated => {
                         list.reorder.set(Some(RowReorder {
                             id: row_id,
@@ -2865,7 +2866,7 @@ fn register_row_reorder_gesture<E: crate::text::TextEngine>(
                         list.reorder.set(None);
                         if to != row.index {
                             list.preserve_anchor_index_once.set(true);
-                            if let Some(action) = list.config.on_move.as_ref() {
+                            if let Some(action) = list.config.on_move().as_ref() {
                                 (action)(&action_env, Move::new(row.index, to));
                             }
                             if !list.rows_dirty.get() {
@@ -2966,7 +2967,7 @@ fn draw_section_label<E: crate::text::TextEngine>(
     }
     let styled = ctx
         .renderer_mut()
-        .read_signal(&section_chrome_text(label, is_header).resolve(env).content);
+        .read_signal(section_chrome_text(label, is_header).resolve(env).content());
     ctx.render_styled_text(
         styled,
         waterui_layout::stack::HorizontalAlignment::Leading,

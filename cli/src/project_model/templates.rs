@@ -611,14 +611,14 @@ impl TemplateContext {
         framework: &ResolvedFramework,
         local_sources: &LocalBackendSources,
     ) -> Self {
-        let waterui_path = options.waterui_path.clone();
+        let waterui_path = options.waterui_path().map(std::path::Path::to_path_buf);
         Self {
-            app_display_name: options.name.clone(),
-            app_name: options.name.replace(' ', ""),
+            app_display_name: options.name().to_owned(),
+            app_name: options.name().replace(' ', ""),
             crate_name,
             crate_version: String::new(),
-            bundle_identifier: options.bundle_identifier.clone(),
-            author: options.author.clone(),
+            bundle_identifier: options.bundle_identifier().clone(),
+            author: options.author().to_owned(),
             apple_pieces: false,
             waterui_path,
             backend_checkouts: BackendDevCheckouts::from_host(host),
@@ -632,7 +632,7 @@ impl TemplateContext {
             ios_permissions: Vec::new(),
             accessory: false,
             project_packages: None,
-            web_frontend_arg: options.web.as_ref().map(|web| web.include_arg.clone()),
+            web_frontend_arg: options.web().map(|web| web.include_arg().to_owned()),
             android_signing: None,
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
@@ -656,15 +656,15 @@ impl TemplateContext {
         local_sources: &LocalBackendSources,
     ) -> Self {
         Self {
-            app_display_name: manifest.package.name.clone(),
+            app_display_name: manifest.package().name().to_owned(),
             app_name: app_name.into(),
             crate_name,
             crate_version: String::new(),
-            bundle_identifier: manifest.package.bundle_identifier.clone(),
+            bundle_identifier: manifest.package().bundle_identifier().clone(),
             author: String::new(),
             // Selected at invocation, never from declared config.
             apple_pieces: false,
-            waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
+            waterui_path: manifest.waterui_path().map(PathBuf::from),
             backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
             framework: framework.clone(),
@@ -674,14 +674,13 @@ impl TemplateContext {
             project_root_path: None,
             android_permissions: Vec::new(),
             ios_permissions: Vec::new(),
-            accessory: manifest.package.accessory,
+            accessory: manifest.package().accessory(),
             project_packages: None,
-            web_frontend_arg: manifest.web.as_ref().map(|_| "web".to_string()),
-            embedded: manifest.package.embedded,
+            web_frontend_arg: manifest.web().map(|_| "web".to_string()),
+            embedded: manifest.package().embedded(),
             android_signing: manifest
-                .signing
-                .android
-                .as_ref()
+                .signing()
+                .android()
                 .map(AndroidSigningTemplateEntry::from),
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
@@ -7468,7 +7467,7 @@ pub fn project_patches(
     project_root: &Path,
     manifest: &crate::project::Manifest,
 ) -> io::Result<cargo_toml::PatchSet> {
-    match (&manifest.framework, &manifest.waterui_path) {
+    match (&manifest.framework(), &manifest.waterui_path()) {
         (Some(framework), _) => Ok(framework.patches()),
         (None, Some(waterui_path)) => {
             let members =

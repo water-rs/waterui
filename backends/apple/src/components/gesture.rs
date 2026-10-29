@@ -274,8 +274,8 @@ fn pressed_button(
 fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<GestureAttachment> {
     match gesture {
         Gesture::Tap(tap) => {
-            let buttons = button_mask(tap.buttons);
-            let count = tap.count;
+            let buttons = button_mask(tap.get_buttons());
+            let count = tap.count();
             #[cfg(target_os = "ios")]
             {
                 vec![kit::tap(host, count as usize, buttons, {
@@ -308,9 +308,9 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
             }
         }
         Gesture::LongPress(long_press) => {
-            let seconds = f64::from(long_press.duration) / 1000.0;
-            let duration = long_press.duration as f32;
-            let buttons = button_mask(long_press.buttons);
+            let seconds = f64::from(long_press.duration()) / 1000.0;
+            let duration = long_press.duration() as f32;
+            let buttons = button_mask(long_press.get_buttons());
             #[cfg(target_os = "ios")]
             {
                 vec![kit::long_press(host, seconds, buttons, {
@@ -343,8 +343,8 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
             }
         }
         Gesture::Drag(drag) => {
-            let min_distance = f64::from(drag.min_distance);
-            let buttons = button_mask(drag.buttons);
+            let min_distance = f64::from(drag.min_distance());
+            let buttons = button_mask(drag.get_buttons());
             let started = Rc::new(Cell::new(false));
             macro_rules! pan_handler {
                 ($rec:ident, $recognizer:ty, $button:expr) => {{
@@ -394,7 +394,7 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
             }
         }
         Gesture::Magnification(magnification) => {
-            let initial_scale = magnification.initial_scale;
+            let initial_scale = magnification.initial_scale();
             // Both platforms report a cumulative factor since the gesture
             // began — `UIPinchGestureRecognizer.scale` directly, and `1 +
             // NSMagnificationGestureRecognizer.magnification` on `AppKit`,
@@ -623,8 +623,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
 
         let env = ctx.env().clone();
-        let action = Rc::new(RefCell::new(metadata.value.action));
-        let observer_gesture = metadata.value.gesture.clone();
+        let (observer_gesture, action) = metadata.value.into_parts();
+        let activates = activates_on_press(&observer_gesture);
+        let attach_gesture = observer_gesture.clone();
+        let action = Rc::new(RefCell::new(action));
         let on_recognized: Recognized = Rc::new(move |payload| {
             // The shared gesture contract: the observed `Gesture` and the
             // completing recognizer's event go into the action's
@@ -649,7 +651,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // water-rs/waterui#2975). The synthesized event is a primary tap
         // at the host's center, the point an assistive activation stands
         // for.
-        if activates_on_press(&metadata.value.gesture) {
+        if activates {
             let on_recognized = Rc::clone(&on_recognized);
             let activate = move |activated_host: &HostView| {
                 let bounds = view::bounds(activated_host);
@@ -683,7 +685,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             }
         }
 
-        let attachments = attach(&host, &metadata.value.gesture, on_recognized);
+        let attachments = attach(&host, &attach_gesture, on_recognized);
 
         let mut leaf = NativeLeaf::new(
             &*host,
@@ -773,18 +775,18 @@ mod tests {
         );
         let opened = report(GestureState::Changed, (15.0, 0.0))
             .expect("crossing the threshold opens the drag");
-        assert_eq!(opened.phase, GesturePhase::Started);
-        assert_eq!(opened.location, GesturePoint::new(20.0, 30.0));
-        assert_eq!(opened.translation, GesturePoint::new(15.0, 0.0));
-        assert_eq!(opened.velocity, GesturePoint::new(100.0, -50.0));
-        assert_eq!(opened.button, PointerButton::Primary);
+        assert_eq!(opened.phase(), GesturePhase::Started);
+        assert_eq!(opened.location(), GesturePoint::new(20.0, 30.0));
+        assert_eq!(opened.translation(), GesturePoint::new(15.0, 0.0));
+        assert_eq!(opened.velocity(), GesturePoint::new(100.0, -50.0));
+        assert_eq!(opened.button(), PointerButton::Primary);
 
         let updated =
             report(GestureState::Changed, (25.0, 0.0)).expect("an open drag reports its changes");
-        assert_eq!(updated.phase, GesturePhase::Updated);
+        assert_eq!(updated.phase(), GesturePhase::Updated);
 
         let ended = report(GestureState::Ended, (25.0, 0.0)).expect("an open drag reports its end");
-        assert_eq!(ended.phase, GesturePhase::Ended);
+        assert_eq!(ended.phase(), GesturePhase::Ended);
         assert!(
             report(GestureState::Ended, (25.0, 0.0)).is_none(),
             "an ended sequence disarms the gate"
@@ -810,8 +812,8 @@ mod tests {
         report(GestureState::Changed, (15.0, 0.0), (0.0, 0.0)).unwrap();
         let cancelled = report(GestureState::Cancelled, (15.0, 0.0), (500.0, 0.0))
             .expect("an open drag reports its cancellation");
-        assert_eq!(cancelled.phase, GesturePhase::Cancelled);
-        assert_eq!(cancelled.velocity, GesturePoint::new(0.0, 0.0));
+        assert_eq!(cancelled.phase(), GesturePhase::Cancelled);
+        assert_eq!(cancelled.velocity(), GesturePoint::new(0.0, 0.0));
         assert!(
             report(GestureState::Cancelled, (15.0, 0.0), (0.0, 0.0)).is_none(),
             "a cancelled sequence disarms the gate"

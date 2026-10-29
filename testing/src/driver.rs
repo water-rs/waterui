@@ -88,14 +88,14 @@ impl RuntimeDriver for SemanticRuntime {
     }
 
     fn pump_at(&mut self, at: Instant, _capture_snapshot: bool) -> DriverPumpResult {
-        let result = Self::pump_at(self, at);
+        let mut result = Self::pump_at(self, at);
         DriverPumpResult {
-            rebuilt: result.rebuilt,
-            profile: result.profile,
-            tree_update: result.tree_update,
-            content_types: result.content_types,
+            rebuilt: result.rebuilt(),
+            profile: result.profile(),
+            tree_update: result.take_tree_update(),
+            content_types: result.take_content_types(),
             snapshot: None,
-            ui_focus: result.ui_focus.map(NodeId::from),
+            ui_focus: result.ui_focus().map(NodeId::from),
         }
     }
 
@@ -134,18 +134,17 @@ impl RuntimeDriver for HeadlessRuntime {
     }
 
     fn pump_at(&mut self, at: Instant, capture_snapshot: bool) -> DriverPumpResult {
-        let result = Self::pump_at(self, capture_snapshot, at);
+        let mut result = Self::pump_at(self, capture_snapshot, at);
         DriverPumpResult {
-            rebuilt: result.rebuilt,
-            profile: result.profile,
-            tree_update: result.tree_update,
-            content_types: result.content_types,
-            snapshot: result.snapshot.map(|snapshot| Snapshot {
-                width: snapshot.width,
-                height: snapshot.height,
-                rgba8: snapshot.rgba8,
+            rebuilt: result.rebuilt(),
+            profile: result.profile(),
+            tree_update: result.take_tree_update(),
+            content_types: result.take_content_types(),
+            snapshot: result.take_snapshot().map(|snapshot| {
+                let (width, height, rgba8, _) = snapshot.into_parts();
+                Snapshot::new(width, height, rgba8)
             }),
-            ui_focus: result.ui_focus.map(NodeId::from),
+            ui_focus: result.ui_focus().map(NodeId::from),
         }
     }
 
@@ -190,6 +189,48 @@ pub struct FrameTiming {
     pub profile: FrameProfile,
     /// Process CPU / memory sample collected immediately after the frame.
     pub resources: ResourceSample,
+}
+
+impl FrameTiming {
+    /// Creates a `FrameTiming` from its parts.
+    #[must_use]
+    pub const fn new(
+        total: std::time::Duration,
+        rebuilt: bool,
+        profile: FrameProfile,
+        resources: ResourceSample,
+    ) -> Self {
+        Self {
+            total,
+            rebuilt,
+            profile,
+            resources,
+        }
+    }
+
+    /// Wall-clock duration spent advancing one offscreen Hydrolysis frame.
+    #[must_use]
+    pub const fn total(&self) -> std::time::Duration {
+        self.total
+    }
+
+    /// Whether the frame rebuilt scene/layout state.
+    #[must_use]
+    pub const fn rebuilt(&self) -> bool {
+        self.rebuilt
+    }
+
+    /// Detailed Hydrolysis phase timings and counters.
+    #[must_use]
+    pub const fn profile(&self) -> FrameProfile {
+        self.profile
+    }
+
+    /// Process CPU / memory sample collected immediately after the frame.
+    #[must_use]
+    pub const fn resources(&self) -> ResourceSample {
+        self.resources
+    }
 }
 
 /// Host process resource sample captured during a perf run.

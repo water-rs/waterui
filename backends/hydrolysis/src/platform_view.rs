@@ -137,6 +137,117 @@ pub struct PlatformViewPlacement {
     pub visible: bool,
 }
 
+impl PlatformViewPlacement {
+    /// Creates a placement for `id` mounting `source`, not yet laid out: a
+    /// zero frame, no clip, order `0`, hidden.
+    #[must_use]
+    pub const fn new(id: u64, source: PlatformViewSource) -> Self {
+        Self {
+            id,
+            source,
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+            clip: None,
+            order: 0,
+            visible: false,
+        }
+    }
+
+    /// The retained node's stable placement id.
+    #[must_use]
+    pub const fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// What the host mounts for this leaf — a factory `kind` or a registered
+    /// `instance`.
+    #[must_use]
+    pub const fn source(&self) -> &PlatformViewSource {
+        &self.source
+    }
+
+    /// The effective clip the frame's paint layers impose, as
+    /// `[x, y, width, height]` — present only when it actually cuts the frame.
+    #[must_use]
+    pub const fn clip(&self) -> Option<[f32; 4]> {
+        self.clip
+    }
+
+    /// Sets the `clip`.
+    pub const fn set_clip(&mut self, clip: Option<[f32; 4]>) {
+        self.clip = clip;
+    }
+
+    /// The leaf's laid-out x origin under this frame's transforms.
+    #[must_use]
+    pub const fn x(&self) -> f32 {
+        self.x
+    }
+
+    /// Sets the `x`.
+    pub const fn set_x(&mut self, x: f32) {
+        self.x = x;
+    }
+
+    /// The leaf's laid-out y origin under this frame's transforms.
+    #[must_use]
+    pub const fn y(&self) -> f32 {
+        self.y
+    }
+
+    /// Sets the `y`.
+    pub const fn set_y(&mut self, y: f32) {
+        self.y = y;
+    }
+
+    /// The leaf's laid-out width under this frame's transforms.
+    #[must_use]
+    pub const fn width(&self) -> f32 {
+        self.width
+    }
+
+    /// Sets the `width`.
+    pub const fn set_width(&mut self, width: f32) {
+        self.width = width;
+    }
+
+    /// The leaf's laid-out height under this frame's transforms.
+    #[must_use]
+    pub const fn height(&self) -> f32 {
+        self.height
+    }
+
+    /// Sets the `height`.
+    pub const fn set_height(&mut self, height: f32) {
+        self.height = height;
+    }
+
+    /// Paint order among this frame's interactive content: a larger `order`
+    /// is later — the host stacks embedded children by it.
+    #[must_use]
+    pub const fn order(&self) -> u32 {
+        self.order
+    }
+
+    /// Sets the `order`.
+    pub const fn set_order(&mut self, order: u32) {
+        self.order = order;
+    }
+
+    /// Whether any of the frame remains visible inside its clip.
+    #[must_use]
+    pub const fn visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Sets the `visible`.
+    pub const fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
+    }
+}
+
 /// The placements one retained tree produced — the single source of truth a
 /// host's platform-view registry mirrors. The table also owns the placement
 /// id space: the host's registry keys mounted views by `id`, so an id is

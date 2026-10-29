@@ -562,22 +562,22 @@ impl PlatformWindow for BrowserWindow {
 
     fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
         if let Some(state) = state {
-            self.ime_input.set_type(match state.purpose {
+            self.ime_input.set_type(match state.purpose() {
                 TextInputPurpose::Normal => "text",
                 TextInputPurpose::Password => "password",
             });
             let style = self.ime_input.style();
             style
-                .set_property("left", &format!("{}px", state.x))
+                .set_property("left", &format!("{}px", state.x()))
                 .expect("hydrolysis web platform: failed to place IME input");
             style
-                .set_property("top", &format!("{}px", state.y))
+                .set_property("top", &format!("{}px", state.y()))
                 .expect("hydrolysis web platform: failed to place IME input");
             style
-                .set_property("width", &format!("{}px", state.width.max(1.0)))
+                .set_property("width", &format!("{}px", state.width().max(1.0)))
                 .expect("hydrolysis web platform: failed to size IME input width");
             style
-                .set_property("height", &format!("{}px", state.height.max(1.0)))
+                .set_property("height", &format!("{}px", state.height().max(1.0)))
                 .expect("hydrolysis web platform: failed to size IME input height");
             let _ = self.ime_input.focus();
         } else {

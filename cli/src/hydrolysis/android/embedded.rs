@@ -96,35 +96,102 @@ pub(crate) fn publish_modules(
 
 /// The embedded library's Gradle project, rendered and ready to assemble.
 #[derive(Debug, Clone, Serialize)]
-#[non_exhaustive]
 pub struct RenderedLibrary {
     /// The generated Gradle root the tasks run in.
-    pub dir: PathBuf,
+    dir: PathBuf,
     /// The pinned host checkout's Gradle project the library includes.
-    pub host_project_dir: PathBuf,
+    host_project_dir: PathBuf,
     /// The `dev.waterui.hydrolysis` version the host modules publish under
     /// for this build; [`Self::gradle_envs`] hands it to Gradle.
-    pub host_version: String,
+    host_version: String,
     /// The `dev.waterui.hydrolysis` coordinates the library's POM declares
     /// as `api` dependencies.
-    pub host_coordinates: Vec<String>,
+    host_coordinates: Vec<String>,
     /// The library's Maven group: the bundle identifier as a validated
     /// Android package name. The generated `WaterUi` entry point lives in
     /// its `.waterui` subpackage.
-    pub group: String,
+    group: String,
     /// The library's Maven artifact id: the crate name.
-    pub artifact: String,
+    artifact: String,
     /// The library's Maven version: the crate's `[package] version`.
-    pub version: String,
+    version: String,
     /// The library's `minSdk`, which a consuming app's `minSdk` must reach.
-    pub min_sdk: u32,
+    min_sdk: u32,
     /// The library's `compileSdk` — the host modules' — which a consuming
     /// app's `compileSdk` must reach; the AAR declares it as its
     /// `minCompileSdk`.
-    pub compile_sdk: u32,
+    compile_sdk: u32,
     /// The Gradle tasks that publish the host modules, then assemble and
     /// publish the library to `mavenLocal`, in order.
-    pub gradle_tasks: Vec<String>,
+    gradle_tasks: Vec<String>,
+}
+impl RenderedLibrary {
+    /// The generated Gradle root the tasks run in.
+    #[must_use]
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// The pinned host checkout's Gradle project the library includes.
+    #[must_use]
+    pub fn host_project_dir(&self) -> &Path {
+        &self.host_project_dir
+    }
+
+    /// The `dev.waterui.hydrolysis` version the host modules publish under
+    /// for this build; [`Self::gradle_envs`] hands it to Gradle.
+    #[must_use]
+    pub fn host_version(&self) -> &str {
+        &self.host_version
+    }
+
+    /// The `dev.waterui.hydrolysis` coordinates the library's POM declares
+    /// as `api` dependencies.
+    #[must_use]
+    pub fn host_coordinates(&self) -> &[String] {
+        &self.host_coordinates
+    }
+
+    /// The library's Maven group: the bundle identifier as a validated
+    /// Android package name. The generated `WaterUi` entry point lives in
+    /// its `.waterui` subpackage.
+    #[must_use]
+    pub fn group(&self) -> &str {
+        &self.group
+    }
+
+    /// The library's Maven artifact id: the crate name.
+    #[must_use]
+    pub fn artifact(&self) -> &str {
+        &self.artifact
+    }
+
+    /// The library's Maven version: the crate's `[package] version`.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// The library's `minSdk`, which a consuming app's `minSdk` must reach.
+    #[must_use]
+    pub const fn min_sdk(&self) -> u32 {
+        self.min_sdk
+    }
+
+    /// The library's `compileSdk` — the host modules' — which a consuming
+    /// app's `compileSdk` must reach; the AAR declares it as its
+    /// `minCompileSdk`.
+    #[must_use]
+    pub const fn compile_sdk(&self) -> u32 {
+        self.compile_sdk
+    }
+
+    /// The Gradle tasks that publish the host modules, then assemble and
+    /// publish the library to `mavenLocal`, in order.
+    #[must_use]
+    pub fn gradle_tasks(&self) -> &[String] {
+        &self.gradle_tasks
+    }
 }
 
 impl RenderedLibrary {
@@ -220,13 +287,32 @@ pub async fn render_library(
 /// The artifact `water build` produces for an embedded project, handed back
 /// to the terminal for its summary.
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct EmbeddedArtifact {
     /// `target/package/<crate>-<version>-release.aar` inside the project.
-    pub aar_path: PathBuf,
+    aar_path: PathBuf,
     /// The rendered library the AAR was assembled from: its coordinate,
     /// the host coordinates its POM names, and its consumer constraints.
-    pub library: RenderedLibrary,
+    library: RenderedLibrary,
+}
+impl EmbeddedArtifact {
+    /// A `EmbeddedArtifact` carrying each of its fields.
+    #[must_use]
+    pub const fn new(aar_path: PathBuf, library: RenderedLibrary) -> Self {
+        Self { aar_path, library }
+    }
+
+    /// `target/package/<crate>-<version>-release.aar` inside the project.
+    #[must_use]
+    pub fn aar_path(&self) -> &Path {
+        &self.aar_path
+    }
+
+    /// The rendered library the AAR was assembled from: its coordinate,
+    /// the host coordinates its POM names, and its consumer constraints.
+    #[must_use]
+    pub const fn library(&self) -> &RenderedLibrary {
+        &self.library
+    }
 }
 
 /// Build the embedded AAR.

@@ -424,13 +424,14 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let visible = self.record_alpha() > 0.0;
         let below = layered.below.into_picture();
         if !below.display_list().is_empty() {
-            self.scene_mut().draw_picture(ctx.local, below);
+            self.scene_mut().draw_picture(ctx.local(), below);
         }
         for run in layered.runs {
-            self.program().push_chrome(run.material, ctx.local, visible);
+            self.program()
+                .push_chrome(run.material, ctx.local(), visible);
             let above = run.above.into_picture();
             if !above.display_list().is_empty() {
-                self.scene_mut().draw_picture(ctx.local, above);
+                self.scene_mut().draw_picture(ctx.local(), above);
             }
         }
     }
@@ -446,7 +447,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         ctx: RenderContext,
         source: &Rc<dyn crate::renderer::chrome::LiveSource>,
     ) {
-        self.program().push_live(Rc::clone(source), ctx.local);
+        self.program().push_live(Rc::clone(source), ctx.local());
     }
 
     /// Records `core`'s node into its own program (§C): the parent's list
@@ -489,10 +490,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 .push(mount::ProgramBuilder::new(Rc::clone(&cell)));
             record(
                 renderer,
-                RenderContext {
-                    local: kurbo::Affine::IDENTITY,
-                    bounds,
-                },
+                RenderContext::new(kurbo::Affine::IDENTITY, bounds),
             );
             let program = renderer
                 .program

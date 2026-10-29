@@ -231,10 +231,7 @@ fn retained_scene_capture_preserves_proposal_and_viewport_boundaries() {
     }));
     let size = Size::new(160.0, 20.0);
     let rect = SceneRect::new(0.0, 0.0, 160.0, 20.0);
-    let ctx = RenderContext {
-        local: Affine::IDENTITY,
-        bounds: rect,
-    };
+    let ctx = RenderContext::new(Affine::IDENTITY, rect);
     let ideal = ProposalSize::new(None, Some(20.0));
     under_root_record(&mut renderer, |renderer| {
         retained.place(renderer, ctx, &env, ideal, rect, None);
@@ -284,10 +281,7 @@ fn retained_subview_relayouts_when_a_layout_signal_invalidates() {
         .max_width(constraint),
     ));
     let rect = SceneRect::new(0.0, 0.0, 800.0, 600.0);
-    let ctx = RenderContext {
-        local: Affine::IDENTITY,
-        bounds: rect,
-    };
+    let ctx = RenderContext::new(Affine::IDENTITY, rect);
     let proposal = ProposalSize::new(Some(800.0), Some(600.0));
     under_root_record(&mut renderer, |renderer| {
         retained.place(renderer, ctx, &env, proposal, rect, None);
@@ -361,10 +355,7 @@ fn retained_subview_relayouts_when_a_widget_leaf_label_invalidates() {
             .style(style),
         ));
         let rect = SceneRect::new(0.0, 0.0, 800.0, 600.0);
-        let ctx = RenderContext {
-            local: Affine::IDENTITY,
-            bounds: rect,
-        };
+        let ctx = RenderContext::new(Affine::IDENTITY, rect);
         let proposal = ProposalSize::new(Some(800.0), Some(600.0));
         under_root_record(&mut renderer, |renderer| {
             retained.place(renderer, ctx, &env, proposal, rect, None);
@@ -506,10 +497,7 @@ fn retained_subview_relayouts_when_a_scene_leaves_natural_size_moves() {
         trace: Rc::clone(&trace),
     }));
     let rect = SceneRect::new(0.0, 0.0, 800.0, 600.0);
-    let ctx = RenderContext {
-        local: Affine::IDENTITY,
-        bounds: rect,
-    };
+    let ctx = RenderContext::new(Affine::IDENTITY, rect);
     let proposal = ProposalSize::new(Some(800.0), Some(600.0));
     under_root_record(&mut renderer, |renderer| {
         retained.place(renderer, ctx, &env, proposal, rect, None);

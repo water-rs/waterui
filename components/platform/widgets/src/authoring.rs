@@ -14,8 +14,8 @@ use suiteki::Str;
 
 use crate::schema::{
     Alignment, Axis, Color, Date, DeclaredWidgetIntent, Font, FontStyle, FontWeight,
-    HorizontalAlignment, Image, ImageSource, Intent, Link, Node, ReloadPolicy, SemanticColor,
-    Shape, ShapeKind, Stack, Text, Timeline, TimelineEntry, VerticalAlignment,
+    HorizontalAlignment, Image, Intent, Link, Node, SemanticColor, Shape, Stack, Text, Timeline,
+    TimelineEntry, VerticalAlignment,
 };
 
 /// A value that can occupy a widget snapshot.
@@ -193,39 +193,6 @@ impl WidgetContent for Str {
 // Leaf constructors
 // ══════════════════════════════════════════════════════════════════════════
 
-impl Text {
-    /// Creates a text leaf with default styling.
-    pub fn new(content: impl Into<String>) -> Self {
-        Self {
-            content: content.into(),
-            font: None,
-            color: None,
-            line_limit: None,
-        }
-    }
-
-    /// Sets the font.
-    #[must_use]
-    pub const fn font(mut self, font: Font) -> Self {
-        self.font = Some(font);
-        self
-    }
-
-    /// Sets the foreground color.
-    #[must_use]
-    pub const fn color(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-
-    /// Caps the text at `limit` laid-out lines.
-    #[must_use]
-    pub const fn line_limit(mut self, limit: u32) -> Self {
-        self.line_limit = Some(limit);
-        self
-    }
-}
-
 /// Creates a text leaf — the ergonomic entry point.
 pub fn text(content: impl Into<String>) -> Text {
     Text::new(content)
@@ -242,79 +209,6 @@ impl Font {
     #[must_use]
     pub const fn system(size: f64, weight: FontWeight) -> Self {
         Self::System { size, weight }
-    }
-}
-
-impl Image {
-    /// An SF Symbol — an Apple-native primitive, supported on Apple widgets.
-    pub fn system(name: impl Into<String>) -> Self {
-        Self {
-            source: ImageSource::System { name: name.into() },
-            color: None,
-        }
-    }
-
-    /// Inline encoded image bytes (PNG).
-    pub fn data(data: impl Into<Vec<u8>>) -> Self {
-        Self {
-            source: ImageSource::Data { data: data.into() },
-            color: None,
-        }
-    }
-
-    /// Tints a monochrome (template) source.
-    #[must_use]
-    pub const fn color(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-}
-
-impl Shape {
-    /// `Rectangle`, filled with the primary semantic color.
-    #[must_use]
-    pub const fn rectangle() -> Self {
-        Self::of_kind(ShapeKind::Rectangle)
-    }
-
-    /// `RoundedRectangle` with a corner radius.
-    #[must_use]
-    pub const fn rounded_rectangle(corner_radius: f32) -> Self {
-        Self::of_kind(ShapeKind::RoundedRectangle { corner_radius })
-    }
-
-    /// `Capsule`.
-    #[must_use]
-    pub const fn capsule() -> Self {
-        Self::of_kind(ShapeKind::Capsule)
-    }
-
-    /// `Circle`.
-    #[must_use]
-    pub const fn circle() -> Self {
-        Self::of_kind(ShapeKind::Circle)
-    }
-
-    /// `Ellipse`.
-    #[must_use]
-    pub const fn ellipse() -> Self {
-        Self::of_kind(ShapeKind::Ellipse)
-    }
-
-    const fn of_kind(kind: ShapeKind) -> Self {
-        Self {
-            kind,
-            fill: Color::Semantic {
-                semantic: SemanticColor::Primary,
-            },
-        }
-    }
-
-    /// Sets the fill color.
-    #[must_use]
-    pub const fn fill(mut self, fill: Color) -> Self {
-        self.fill = fill;
-        self
     }
 }
 
@@ -383,17 +277,6 @@ impl Color {
 #[must_use]
 pub const fn fill(color: Color) -> Color {
     color
-}
-
-impl Link {
-    /// A tappable region that opens `url` — a deep link into the app or a
-    /// web URL.
-    pub fn new(url: impl Into<String>, content: impl WidgetContent) -> Self {
-        Self {
-            url: url.into(),
-            content: alloc::boxed::Box::new(content.into_node()),
-        }
-    }
 }
 
 /// A tappable region that opens `url`.
@@ -478,7 +361,7 @@ macro_rules! stack_impls {
             /// Sets the spacing between children in points.
             #[must_use]
             pub const fn spacing(mut self, spacing: f32) -> Self {
-                self.stack.spacing = Some(spacing);
+                self.stack.set_spacing(Some(spacing));
                 self
             }
         }
@@ -492,15 +375,19 @@ macro_rules! stack_impls {
         /// Creates a stack with default alignment and platform spacing.
         pub fn $ctor<C: WidgetChildren>(children: C) -> $ty {
             $ty {
-                stack: Stack {
-                    axis: Axis::$axis,
-                    children: children.into_nodes(),
-                    spacing: None,
-                    alignment: None,
-                },
+                stack: Stack::new(Axis::$axis, children.into_nodes()),
             }
         }
     };
+}
+
+/// Applies `change` to the stack's alignment, creating an empty one first.
+fn align(stack: &mut Stack, change: impl FnOnce(&mut Alignment)) {
+    let mut alignment = stack
+        .alignment()
+        .unwrap_or_else(|| Alignment::new(None, None));
+    change(&mut alignment);
+    stack.set_alignment(Some(alignment));
 }
 
 stack_impls!(VStack, vstack, Vertical);
@@ -511,13 +398,9 @@ impl VStack {
     /// Sets the horizontal alignment of the stack's children.
     #[must_use]
     pub fn alignment(mut self, alignment: HorizontalAlignment) -> Self {
-        self.stack
-            .alignment
-            .get_or_insert(Alignment {
-                horizontal: None,
-                vertical: None,
-            })
-            .horizontal = Some(alignment);
+        align(&mut self.stack, |aligned| {
+            aligned.set_horizontal(Some(alignment));
+        });
         self
     }
 }
@@ -526,13 +409,9 @@ impl HStack {
     /// Sets the vertical alignment of the stack's children.
     #[must_use]
     pub fn alignment(mut self, alignment: VerticalAlignment) -> Self {
-        self.stack
-            .alignment
-            .get_or_insert(Alignment {
-                horizontal: None,
-                vertical: None,
-            })
-            .vertical = Some(alignment);
+        align(&mut self.stack, |aligned| {
+            aligned.set_vertical(Some(alignment));
+        });
         self
     }
 }
@@ -541,26 +420,18 @@ impl ZStack {
     /// Sets the horizontal alignment of the stack's children.
     #[must_use]
     pub fn horizontal_alignment(mut self, alignment: HorizontalAlignment) -> Self {
-        self.stack
-            .alignment
-            .get_or_insert(Alignment {
-                horizontal: None,
-                vertical: None,
-            })
-            .horizontal = Some(alignment);
+        align(&mut self.stack, |aligned| {
+            aligned.set_horizontal(Some(alignment));
+        });
         self
     }
 
     /// Sets the vertical alignment of the stack's children.
     #[must_use]
     pub fn vertical_alignment(mut self, alignment: VerticalAlignment) -> Self {
-        self.stack
-            .alignment
-            .get_or_insert(Alignment {
-                horizontal: None,
-                vertical: None,
-            })
-            .vertical = Some(alignment);
+        align(&mut self.stack, |aligned| {
+            aligned.set_vertical(Some(alignment));
+        });
         self
     }
 }
@@ -634,33 +505,6 @@ impl core::ops::Sub<Duration> for Date {
     type Output = Self;
     fn sub(self, duration: Duration) -> Self {
         Self(self.0 - duration.as_secs_f64())
-    }
-}
-
-impl Timeline {
-    /// A timeline of `entries`; the default policy reloads [`ReloadPolicy::AtEnd`].
-    pub fn new(entries: impl Into<Vec<TimelineEntry>>) -> Self {
-        Self {
-            entries: entries.into(),
-            policy: ReloadPolicy::AtEnd,
-        }
-    }
-
-    /// Sets when the extension asks for the next timeline.
-    #[must_use]
-    pub const fn policy(mut self, policy: ReloadPolicy) -> Self {
-        self.policy = policy;
-        self
-    }
-}
-
-impl TimelineEntry {
-    /// A snapshot that becomes current at `date`.
-    pub fn new(date: impl Into<Date>, content: impl WidgetContent) -> Self {
-        Self {
-            date: date.into(),
-            content: content.into_node(),
-        }
     }
 }
 

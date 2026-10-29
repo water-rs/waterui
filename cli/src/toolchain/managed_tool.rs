@@ -35,23 +35,79 @@ pub enum ArchiveKind {
 
 /// A pinned release archive that unpacks under `~/.water/tools/<name>/<version>/`.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct ManagedTool {
     /// Directory name under `~/.water/tools`.
-    pub name: &'static str,
+    name: &'static str,
     /// Version segment of the install directory.
-    pub version: &'static str,
+    version: &'static str,
     /// Pinned archive URL.
-    pub url: String,
+    url: String,
     /// Expected sha256 of the archive, lowercase hex.
-    pub sha256: &'static str,
+    sha256: &'static str,
     /// Path of the tool binary inside the unpacked tree.
-    pub binary: String,
+    binary: String,
     /// The archive's compression format.
-    pub archive: ArchiveKind,
+    archive: ArchiveKind,
 }
 
 impl ManagedTool {
+    /// The tool `name` pinned at `version`, fetched from `url`, verified
+    /// against `sha256`, with the runnable at `binary` inside `archive`.
+    #[must_use]
+    pub const fn new(
+        name: &'static str,
+        version: &'static str,
+        url: String,
+        sha256: &'static str,
+        binary: String,
+        archive: ArchiveKind,
+    ) -> Self {
+        Self {
+            name,
+            version,
+            url,
+            sha256,
+            binary,
+            archive,
+        }
+    }
+
+    /// Directory name under `~/.water/tools`.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Version segment of the install directory.
+    #[must_use]
+    pub const fn version(&self) -> &'static str {
+        self.version
+    }
+
+    /// Pinned archive URL.
+    #[must_use]
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Expected sha256 of the archive, lowercase hex.
+    #[must_use]
+    pub const fn sha256(&self) -> &'static str {
+        self.sha256
+    }
+
+    /// Path of the tool binary inside the unpacked tree.
+    #[must_use]
+    pub fn binary(&self) -> &str {
+        &self.binary
+    }
+
+    /// The archive's compression format.
+    #[must_use]
+    pub const fn archive(&self) -> ArchiveKind {
+        self.archive
+    }
+
     /// The directory this tool unpacks into: `~/.water/tools/<name>/<version>`.
     ///
     /// # Errors

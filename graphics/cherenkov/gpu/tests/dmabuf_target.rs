@@ -296,7 +296,7 @@ fn reimport(
         .iter()
         .map(|plane| {
             Ok((
-                plane.fd.try_clone()?,
+                plane.fd().try_clone()?,
                 DmaBufPlane {
                     memory: 0,
                     offset: plane.offset,

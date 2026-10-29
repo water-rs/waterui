@@ -39,6 +39,32 @@ pub struct AnimatedMeshGradientConfig {
     pub palette: [WorkingColor; ANIMATED_MESH_PALETTE_LEN],
 }
 
+impl AnimatedMeshGradientConfig {
+    /// Animation speed multiplier on the engine's clock; `0.0` holds the
+    /// gradient still and lets the engine idle.
+    ///
+    /// The flow's phase is the engine clock times `speed`, so a new speed
+    /// takes effect from the current clock rather than continuing the old
+    /// phase.
+    #[must_use]
+    pub const fn get_speed(&self) -> f32 {
+        self.speed
+    }
+
+    /// UV warp strength (controls flow intensity).
+    #[must_use]
+    pub const fn get_warp(&self) -> f32 {
+        self.warp
+    }
+
+    /// The 4×4 mesh palette, row-major, the first row along the bottom
+    /// edge. The palette is opaque: alpha is ignored.
+    #[must_use]
+    pub const fn get_palette(&self) -> [WorkingColor; ANIMATED_MESH_PALETTE_LEN] {
+        self.palette
+    }
+}
+
 nami::impl_constant!(AnimatedMeshGradientConfig);
 
 impl AnimatedMeshGradientConfig {

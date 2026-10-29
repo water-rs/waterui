@@ -208,31 +208,31 @@ fn assert_fixture_declarations(fixture: &WidgetFixture) {
 
     // Sorted by `kind`: `now-kind`, then `record-kind`, then `steps`.
     let now = &widgets[0];
-    assert_eq!(now.function, "now");
-    assert_eq!(now.kind, "now-kind");
-    assert_eq!(now.display_name, "Now");
-    assert_eq!(now.description, "The current time");
-    assert_eq!(now.families, ["systemSmall"]);
-    assert_eq!(now.symbol, "waterui_widget_widget_app_now");
+    assert_eq!(now.function(), "now");
+    assert_eq!(now.kind(), "now-kind");
+    assert_eq!(now.display_name(), "Now");
+    assert_eq!(now.description(), "The current time");
+    assert_eq!(now.families(), ["systemSmall"]);
+    assert_eq!(now.symbol(), "waterui_widget_widget_app_now");
 
     let record = &widgets[1];
-    assert_eq!(record.function, "record");
-    assert_eq!(record.kind, "record-kind");
-    assert_eq!(record.display_name, "Record");
-    assert_eq!(record.description, "Writes a record");
-    assert_eq!(record.families, ["systemSmall"]);
-    assert_eq!(record.symbol, "waterui_widget_widget_app_record");
+    assert_eq!(record.function(), "record");
+    assert_eq!(record.kind(), "record-kind");
+    assert_eq!(record.display_name(), "Record");
+    assert_eq!(record.description(), "Writes a record");
+    assert_eq!(record.families(), ["systemSmall"]);
+    assert_eq!(record.symbol(), "waterui_widget_widget_app_record");
 
     let steps = &widgets[2];
-    assert_eq!(steps.function, "steps");
-    assert_eq!(steps.kind, "steps");
-    assert_eq!(steps.display_name, "Steps");
-    assert_eq!(steps.description, "Today's step count");
+    assert_eq!(steps.function(), "steps");
+    assert_eq!(steps.kind(), "steps");
+    assert_eq!(steps.display_name(), "Steps");
+    assert_eq!(steps.description(), "Today's step count");
     assert_eq!(
-        steps.families,
+        steps.families(),
         ["systemSmall", "systemMedium", "systemLarge"]
     );
-    assert_eq!(steps.symbol, "waterui_widget_widget_app_steps");
+    assert_eq!(steps.symbol(), "waterui_widget_widget_app_steps");
 
     let intents = declared_intents(&symbols).expect("pair intent declarations with exports");
     assert_eq!(intents.len(), 1);
@@ -362,7 +362,7 @@ fn widget_intent_performs_through_generated_app_intent() {
         let widgets = declared_widgets(&symbols).expect("the fixture declares its widgets");
         let widget = widgets
             .iter()
-            .find(|widget| widget.kind == "record-kind")
+            .find(|widget| widget.kind() == "record-kind")
             .expect("the record widget invokes the action");
         let shipped_sources = fixture_swift_sources(&symbols);
         let generated = output.path().join("DeclaredIntents.swift");
@@ -373,7 +373,7 @@ fn widget_intent_performs_through_generated_app_intent() {
         smol::fs::write(
             &probe,
             askama::Template::render(&IntentProbe {
-                provider_symbol: &widget.symbol,
+                provider_symbol: widget.symbol(),
                 intent_type: intent.swift_type(),
             })
             .expect("the intent probe template renders"),

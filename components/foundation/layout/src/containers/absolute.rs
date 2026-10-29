@@ -43,7 +43,6 @@ use crate::{
 ///
 /// Children are responsible for their own positioning (via `PositionedLayout`).
 #[derive(Debug, Clone, Default)]
-#[expect(clippy::exhaustive_structs, reason = "field-less layout used by name")]
 pub struct AbsoluteLayout;
 
 impl Layout for AbsoluteLayout {
@@ -199,10 +198,6 @@ impl PinConstraints {
 // ============================================================================
 
 /// Layout that positions a single child within received bounds.
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "frozen layout contract (docs/layout-spec.md): the layout is exactly its anchor and its target"
-)]
 pub struct PositionedLayout {
     /// Anchor point on the child (0.0-1.0)
     pub anchor: UnitPoint,

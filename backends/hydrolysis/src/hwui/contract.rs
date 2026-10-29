@@ -402,7 +402,7 @@ fn tree_scene() -> Result<Scene, HwuiError> {
         Rect::new(0.0, 0.0, 20.0, 10.0),
     )]);
     encoder.set_host_order(&[HostEntry::Layer(root)]);
-    frames.push(encoder.frame(Instant::now(), 1.0)?.words.to_vec());
+    frames.push(encoder.frame(Instant::now(), 1.0)?.words().to_vec());
 
     encoder.set_platform_views(&[]);
     encoder.commit(changes(vec![
@@ -429,7 +429,7 @@ fn tree_scene() -> Result<Scene, HwuiError> {
     drop(registry);
     encoder.text_layouts().release(text_layout);
     encoder.set_host_order(&[HostEntry::Layer(root)]);
-    frames.push(encoder.frame(Instant::now(), 1.0)?.words.to_vec());
+    frames.push(encoder.frame(Instant::now(), 1.0)?.words().to_vec());
 
     Ok(Scene {
         name: "tree",
@@ -733,60 +733,63 @@ fn the_contract_scenes_cover_every_opcode() {
 #[test]
 fn text_runs_decode_to_the_runs_the_engine_packed() {
     let text = "Wave \u{1f30a} \u{e9}";
-    let plain = TextRun {
-        range: 0..5,
-        family: Some("Inter, 'Noto Sans CJK SC', sans-serif".to_owned()),
-        size: 14.0,
-        weight: 400,
-        italic: false,
-        underline: false,
-        strikethrough: false,
-        foreground: None,
-        background: None,
-        line_height: None,
-        letter_spacing: 0.0,
+    let plain = {
+        let mut literal = TextRun::new(0..5, 14.0, 400);
+        literal.set_family(Some("Inter, 'Noto Sans CJK SC', sans-serif".to_owned()));
+        literal.set_italic(false);
+        literal.set_underline(false);
+        literal.set_strikethrough(false);
+        literal.set_foreground(None);
+        literal.set_background(None);
+        literal.set_line_height(None);
+        literal.set_letter_spacing(0.0);
+        literal
     };
     let runs = [
         plain.clone(),
-        TextRun {
-            range: 5..9,
-            family: None,
-            size: 20.0,
-            weight: 700,
-            italic: true,
-            underline: true,
-            foreground: Some(super::color::pack(0.0, 0.5, 1.0, 1.0)),
-            background: Some(super::color::pack(1.0, 1.0, 0.0, 0.5)),
-            line_height: Some(24.0),
-            letter_spacing: 2.0,
-            ..plain.clone()
+        {
+            let mut literal = plain.clone();
+            literal.set_range(5..9);
+            literal.set_family(None);
+            literal.set_size(20.0);
+            literal.set_weight(700);
+            literal.set_italic(true);
+            literal.set_underline(true);
+            literal.set_foreground(Some(super::color::pack(0.0, 0.5, 1.0, 1.0)));
+            literal.set_background(Some(super::color::pack(1.0, 1.0, 0.0, 0.5)));
+            literal.set_line_height(Some(24.0));
+            literal.set_letter_spacing(2.0);
+            literal
         },
-        TextRun {
-            range: 9..12,
-            strikethrough: true,
-            ..plain
+        {
+            let mut literal = plain;
+            literal.set_range(9..12);
+            literal.set_strikethrough(true);
+            literal
         },
     ];
     let index = Utf16Index::new(text).expect("the text indexes");
-    let request = ShapeRequest {
-        locale: "ja-JP",
-        max_width: Some(200.0),
-        max_lines: Some(2),
-        ellipsis: true,
-        alignment: TextAlignment::End,
-        right_to_left: true,
-        strict_families: true,
-        default_style: TextRun {
-            range: 0..0,
-            ..runs[0].clone()
-        },
-        ..ShapeRequest::new(text, &runs, runs[0].clone())
+    let default_style = {
+        let mut style = runs[0].clone();
+        style.set_range(0..0);
+        style
+    };
+    let request = {
+        let mut literal = ShapeRequest::new(text, &runs, default_style);
+        literal.set_locale("ja-JP");
+        literal.set_max_width(Some(200.0));
+        literal.set_max_lines(Some(2));
+        literal.set_ellipsis(true);
+        literal.set_alignment(TextAlignment::End);
+        literal.set_right_to_left(true);
+        literal.set_strict_families(true);
+        literal
     };
     let packed = request.pack(&index).expect("the runs pack");
-    assert_eq!(packed.families.len(), 1);
+    assert_eq!(packed.families().len(), 1);
     let expected: String = std::iter::once(describe_paragraph(&request) + "\n")
         .chain(std::iter::once(
-            describe_run(&request.default_style, &index) + "\n",
+            describe_run(request.default_style(), &index) + "\n",
         ))
         .chain(runs.iter().map(|run| describe_run(run, &index) + "\n"))
         .collect();
@@ -797,16 +800,16 @@ fn text_runs_decode_to_the_runs_the_engine_packed() {
     if let Ok(dir) = std::env::var("HWUI_CONTRACT_DIR") {
         let dir = Path::new(&dir);
         std::fs::create_dir_all(dir).expect("the contract directory can be created");
-        let spans: Vec<String> = packed.spans.iter().map(ToString::to_string).collect();
+        let spans: Vec<String> = packed.spans().iter().map(ToString::to_string).collect();
         let wire = format!(
             "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
-            packed.locale,
-            packed.max_width,
-            packed.max_lines,
-            packed.paragraph,
-            packed.families.len(),
-            packed.families.join("\n"),
-            packed.span_count,
+            packed.locale(),
+            packed.max_width(),
+            packed.max_lines(),
+            packed.paragraph(),
+            packed.families().len(),
+            packed.families().join("\n"),
+            packed.span_count(),
             spans.join(" ")
         );
         std::fs::write(dir.join("text-runs.wire"), wire)
@@ -1210,9 +1213,9 @@ fn surface_preserves_hidden_transaction_order_and_reuses_nodes() {
 
     time += std::time::Duration::from_millis(1);
     let frame = surface.frame(time, 1.0).expect("the restore frame encodes");
-    assert!(frame.clear.is_some(), "the queued clear rides the frame");
-    assert!(!frame.content_animating);
-    assert!(frame.sampling.rate.is_none());
+    assert!(frame.clear().is_some(), "the queued clear rides the frame");
+    assert!(!frame.content_animating());
+    assert!(frame.sampling().rate.is_none());
     assert!(
         !surface.has_pending(),
         "the restore frame consumed its changes"
@@ -1238,8 +1241,8 @@ fn surface_preserves_hidden_transaction_order_and_reuses_nodes() {
     // A quiet frame encodes no node ops and reports no animation.
     time += std::time::Duration::from_millis(1);
     let frame = surface.frame(time, 1.0).expect("a quiet frame encodes");
-    assert!(!frame.content_animating);
-    assert!(frame.sampling.rate.is_none());
+    assert!(!frame.content_animating());
+    assert!(frame.sampling().rate.is_none());
     let log = surface.take_log();
     assert!(
         !log.iter().any(|op| op.starts_with("CreateNode ")
@@ -1274,10 +1277,10 @@ fn content_animation_demand_belongs_to_the_submitted_frame() {
         .commit(animated)
         .expect("the animated commit encodes");
     let first = encoder.frame(Instant::now(), 1.0).expect("frame one");
-    assert!(first.content_animating);
+    assert!(first.content_animating());
     let second = encoder.frame(Instant::now(), 1.0).expect("frame two");
     assert!(
-        !second.content_animating,
+        !second.content_animating(),
         "an empty drain reports no animation"
     );
 }

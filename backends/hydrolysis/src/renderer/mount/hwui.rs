@@ -200,7 +200,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             };
             out.push(crate::hwui::PlatformViewBinding::new(
                 layers.frame().id(),
-                staged.placement.id,
+                staged.placement.id(),
                 staged.local,
             ));
         }

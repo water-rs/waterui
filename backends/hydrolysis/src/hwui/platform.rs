@@ -268,23 +268,23 @@ impl SceneBackend for HwuiResources {
 
 impl ShaderBackend for HwuiResources {
     fn register_shader(&self, source: ShaderSource) -> Result<Handle<ShaderId>, ResourceError> {
-        let name = shader_name(&source.source);
-        if source.language != ShaderLanguage::Agsl {
+        let name = shader_name(source.source());
+        if source.language() != ShaderLanguage::Agsl {
             return Err(ResourceError::Shader(format!(
                 "{:?} shader {name} is not AGSL; the HWUI target draws AGSL shader paint only",
-                source.language
+                source.language()
             )));
         }
-        if source.animated {
+        if source.get_animated() {
             return Err(ResourceError::Shader(format!(
                 "AGSL shader {name} samples `uniforms.time`, which the HWUI target does not drive"
             )));
         }
-        let uniforms = agsl_uniforms(&source.source)
+        let uniforms = agsl_uniforms(source.source())
             .map_err(|reason| ResourceError::Shader(format!("AGSL shader {name}: {reason}")))?;
         self.register(Kind::RuntimeShader, ShaderId::new, |id| {
             self.platform
-                .register_runtime_shader(id, &source.source, &uniforms)
+                .register_runtime_shader(id, source.source(), &uniforms)
                 .map(|()| None)
                 .map_err(|reason| format!("AGSL shader {name}: {reason}"))
         })

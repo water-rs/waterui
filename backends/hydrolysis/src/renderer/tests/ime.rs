@@ -239,7 +239,7 @@ fn caret_blink_reuses_recording_without_layout() {
     let start = runtime.renderer().frame_instant() + Duration::from_millis(16);
     let initial = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("initial frame");
     super::structural_transitions::save(&initial, "caret-live", "initial");
     let _ = diagnostics.take();
@@ -258,7 +258,7 @@ fn caret_blink_reuses_recording_without_layout() {
             repainted > 0 && repainted < u64::from(WINDOW_WIDTH) * u64::from(WINDOW_HEIGHT) / 20,
             "caret frame repaint: {repainted} pixels"
         );
-        let work = frame.profile.counters.frame_work;
+        let work = frame.profile().counters().frame_work();
         assert_eq!(work.live_recordings, 0, "blink must keep its live source");
         assert_eq!(work.recorded_view_contents, 0, "blink must not record text");
         assert_eq!(work.layout_calls, 0, "blink must not relayout text");
@@ -270,13 +270,13 @@ fn caret_blink_reuses_recording_without_layout() {
                 .as_ref()
                 .expect("focused caret"),
         ));
-        let snapshot = frame.snapshot.expect("blink frame");
-        super::structural_transitions::save(&snapshot, "caret-live", &format!("tick-{tick}"));
+        let snapshot = frame.snapshot().expect("blink frame");
+        super::structural_transitions::save(snapshot, "caret-live", &format!("tick-{tick}"));
         largest_change = largest_change.max(
             initial
-                .rgba8
+                .rgba8()
                 .iter()
-                .zip(&snapshot.rgba8)
+                .zip(snapshot.rgba8())
                 .map(|(before, after)| before.abs_diff(*after))
                 .max()
                 .expect("nonempty frame"),
@@ -427,7 +427,7 @@ fn observe_step(
         .focused_text_input_state()
         .unwrap_or_else(|| panic!("{name} step {step_index}: focused field reports no caret rect"));
     assert_eq!(
-        state.purpose,
+        state.purpose(),
         if secure {
             TextInputPurpose::Password
         } else {
@@ -436,13 +436,13 @@ fn observe_step(
         "{name} step {step_index}: wrong input purpose"
     );
     assert!(
-        state.height > 5.0,
+        state.height() > 5.0,
         "{name} step {step_index}: the caret rect must span the composing \
          line so a candidate window can anchor below it (got {})",
-        state.height
+        state.height()
     );
     if !secure && let Some((text, Some(caret))) = replay.composing.clone() {
-        replay.caret_samples.push((text, caret, state.x));
+        replay.caret_samples.push((text, caret, state.x()));
     }
 }
 
@@ -590,7 +590,7 @@ fn replay_against_secure_field(loaded: &LoadedFixture) {
         .focused_text_input_state()
         .unwrap_or_else(|| panic!("{name} (SecureField): pressing the field must focus it"));
     assert_eq!(
-        state.purpose,
+        state.purpose(),
         TextInputPurpose::Password,
         "{name} (SecureField): IME must be told the field is a password"
     );

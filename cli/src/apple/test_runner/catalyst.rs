@@ -99,7 +99,7 @@ impl TestDestination for MacCatalyst {
         .await?;
 
         let bundle = HarnessBundle::stage(binary, manifest, "macosx").await?;
-        codesign_path(host, &bundle.layout().app_path, "-", None, None).await?;
+        codesign_path(host, bundle.layout().app_path(), "-", None, None).await?;
 
         let state_dir = binary.state_dir()?;
         let status = StatusFile::host_absolute(&state_dir);
@@ -122,7 +122,7 @@ impl TestDestination for MacCatalyst {
             .arg(&out_path)
             .arg("--stderr")
             .arg(&err_path)
-            .arg(&bundle.layout().app_path)
+            .arg(bundle.layout().app_path())
             .arg("--args")
             .args(arguments.as_slice());
 
@@ -152,7 +152,7 @@ impl TestDestination for MacCatalyst {
         let Some(open_status) = open_status else {
             bail!(
                 "the `open` wait for {} was interrupted before the harness reported a status",
-                bundle.layout().app_path.display()
+                bundle.layout().app_path().display()
             );
         };
         // `open` creates both files before it launches the app, so a
@@ -166,7 +166,7 @@ impl TestDestination for MacCatalyst {
         if content.is_none() && !open_status.success() {
             bail!(
                 "`open -n -W` failed to launch {}: {open_status}",
-                bundle.layout().app_path.display()
+                bundle.layout().app_path().display()
             );
         }
         StatusFile::conclude(content.as_deref(), bundle.bundle_id())
@@ -218,7 +218,7 @@ mod tests {
             &mut stderr,
         ))
         .expect("the exec route returns a status");
-        assert_eq!(status.0, 17);
+        assert_eq!(status.code(), 17);
         let log = std::fs::read_to_string(&log).expect("read log");
         assert!(
             log.contains("harness-abc123 suite::case"),
@@ -259,7 +259,7 @@ mod tests {
         ))
         .expect("the app route returns the harness status");
         // The status comes from the file the launch wrote, not `open`'s.
-        assert_eq!(status.0, 7);
+        assert_eq!(status.code(), 7);
 
         // Staged as the macOS Contents layout: Info.plist is the
         // manifest verbatim and the executable is the binary itself

@@ -229,10 +229,7 @@ pub fn draw_badge_indicator<E: crate::text::TextEngine>(
         rect.x1,
         rect.y1,
     );
-    let text_ctx = RenderContext {
-        local: ctx.local,
-        bounds: text_rect,
-    };
+    let text_ctx = RenderContext::new(ctx.local, text_rect);
     ctx.renderer_mut()
         .render_styled_text(text_ctx, label, HorizontalAlignment::Center, env);
 }

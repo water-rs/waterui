@@ -902,11 +902,11 @@ fn a_scopes_chrome_classes_capture_beneath_its_anchor() {
     // The later member covers the earlier one's whole shape, so a pixel
     // at the shape's centre is the later member's own output.
     let centre = |runtime: &mut HeadlessRuntime| {
-        let snap = runtime.pump_snapshot().snapshot.expect("a snapshot");
-        let device = snap.width / WIDTH;
+        let snap = runtime.pump_snapshot().into_snapshot().expect("a snapshot");
+        let device = snap.width() / WIDTH;
         let (x, y) = (6 * device, 7 * device);
-        let i = ((y * snap.width + x) * 4) as usize;
-        <[u8; 4]>::try_from(&snap.rgba8[i..i + 4]).expect("one pixel")
+        let i = ((y * snap.width() + x) * 4) as usize;
+        <[u8; 4]>::try_from(&snap.rgba8()[i..i + 4]).expect("one pixel")
     };
 
     let mut tinted = rendered(scoped, theme(0.6), DISPLAY_SCALE);

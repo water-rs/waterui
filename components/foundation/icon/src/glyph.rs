@@ -79,6 +79,26 @@ pub struct IconGlyph {
 }
 
 impl IconGlyph {
+    /// The Unicode codepoint for this icon in the font.
+    #[must_use]
+    pub const fn codepoint(&self) -> char {
+        self.codepoint
+    }
+
+    /// The font family name (e.g., "MaterialIcons-Regular", "FontAwesome7Free-Solid").
+    #[must_use]
+    pub const fn font_family(&self) -> &'static str {
+        self.font_family
+    }
+
+    /// The font size in points. Default is 24.0.
+    #[must_use]
+    pub const fn size(&self) -> f32 {
+        self.size
+    }
+}
+
+impl IconGlyph {
     /// Creates a new icon glyph with the default size (24.0).
     ///
     /// # Arguments

@@ -63,7 +63,8 @@ fn remote_avatars_render() {
     let after = app.snapshot();
 
     assert_ne!(
-        before.rgba8, after.rgba8,
+        before.rgba8(),
+        after.rgba8(),
         "the frame must repaint once the remote images decode"
     );
 }

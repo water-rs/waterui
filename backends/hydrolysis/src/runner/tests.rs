@@ -876,7 +876,7 @@ fn an_idle_window_repaints_when_its_background_changes() {
         render_window_with_capture(&mut runtime, &env, FrameReader::Snapshot, &mut || false)
             .snapshot
             .expect("the refresh frame captures a snapshot");
-    let pixel = &snapshot.rgba8[0..4];
+    let pixel = &snapshot.rgba8()[0..4];
     assert!(
         pixel[0] > 200 && pixel[1] < 60 && pixel[2] < 60 && pixel[3] == 255,
         "the snapshot must show the new background colour, got {pixel:?}"
@@ -943,7 +943,7 @@ fn a_scheme_change_repaints_the_clear_colour_of_an_idle_window() {
             .expect("the refresh frame captures a snapshot");
     let srgb =
         waterui_graphics::color::working::to_srgb(Color::new(Background).resolve(&env).snapshot());
-    let pixel = &snapshot.rgba8[0..4];
+    let pixel = &snapshot.rgba8()[0..4];
     for (channel, expected) in pixel[..3].iter().zip([srgb.red, srgb.green, srgb.blue]) {
         assert!(
             expected.mul_add(-255.0, f32::from(*channel)).abs() <= 1.0,

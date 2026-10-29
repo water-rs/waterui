@@ -171,11 +171,10 @@ clippy.nursery = "warn"
 clippy.cargo = "warn"
 # Every `unsafe` must state why it is sound, in a form the compiler checks.
 clippy.undocumented_unsafe_blocks = "warn"
-# Public types are `#[non_exhaustive]` unless deliberately closed, so adding
-# a variant or a field is not a breaking change; a closed type says why
-# through an item-level `expect`.
+# Public enums are `#[non_exhaustive]` unless deliberately closed, so adding
+# a variant is not a breaking change; a closed enum says why through an
+# item-level `expect`.
 clippy.exhaustive_enums = "warn"
-clippy.exhaustive_structs = "warn"
 clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 
 

@@ -927,6 +927,39 @@ pub mod dmabuf {
         pub stride: u32,
     }
 
+    impl DmabufPlane {
+        /// A plane of `fd` at byte `offset` with row `stride`.
+        #[must_use]
+        pub const fn new(fd: OwnedFd, offset: u32, stride: u32) -> Self {
+            Self { fd, offset, stride }
+        }
+
+        /// Takes the plane apart into its descriptor, byte offset and row
+        /// stride, handing the host ownership of the descriptor.
+        #[must_use]
+        pub fn into_parts(self) -> (OwnedFd, u32, u32) {
+            (self.fd, self.offset, self.stride)
+        }
+
+        /// The dma-buf descriptor for this plane.
+        #[must_use]
+        pub const fn fd(&self) -> &OwnedFd {
+            &self.fd
+        }
+
+        /// Byte offset of the plane inside the buffer.
+        #[must_use]
+        pub const fn offset(&self) -> u32 {
+            self.offset
+        }
+
+        /// Byte stride between rows of the plane.
+        #[must_use]
+        pub const fn stride(&self) -> u32 {
+            self.stride
+        }
+    }
+
     /// One presented frame: a pool image the engine has just rendered.
     ///
     /// `acquire` is a sync file that signals when the engine's submission
@@ -999,6 +1032,33 @@ pub mod dmabuf {
         pub color: OutputColor,
         /// The alpha convention the host expects.
         pub alpha: OutputAlpha,
+    }
+
+    impl DmabufFormat {
+        /// The DRM fourcc (`DRM_FORMAT_*`) the host imports.
+        #[must_use]
+        pub const fn fourcc(&self) -> u32 {
+            self.fourcc
+        }
+
+        /// The `DRM_FORMAT_MOD_*` modifiers the host imports, in
+        /// preference order.
+        #[must_use]
+        pub const fn modifiers(&self) -> &[u64] {
+            self.modifiers.as_slice()
+        }
+
+        /// The presentation colour encoding the host expects.
+        #[must_use]
+        pub const fn color(&self) -> OutputColor {
+            self.color
+        }
+
+        /// The alpha convention the host expects.
+        #[must_use]
+        pub const fn alpha(&self) -> OutputAlpha {
+            self.alpha
+        }
     }
 
     impl DmabufFormat {

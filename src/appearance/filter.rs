@@ -17,6 +17,14 @@ pub struct Opacity {
     pub value: Computed<f32>,
 }
 
+impl Opacity {
+    /// Opacity value where 0.0 is fully transparent and 1.0 is fully opaque.
+    #[must_use]
+    pub const fn value(&self) -> &Computed<f32> {
+        &self.value
+    }
+}
+
 impl MetadataKey for Opacity {}
 
 impl Opacity {

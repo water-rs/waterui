@@ -244,7 +244,7 @@ impl Project {
             host,
             &path,
             framework,
-            &previous.apple.deployment_targets,
+            previous.apple().deployment_targets(),
             updates,
         )
         .await?;
@@ -1459,34 +1459,101 @@ pub enum FailToCreateProject {
 
 /// Options for creating a new `WaterUI` project.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct CreateOptions {
     /// Application display name (e.g., "Water Example").
-    pub name: String,
+    name: String,
     /// Bundle identifier (e.g., "dev.waterui.waterexample").
-    pub bundle_identifier: BundleIdentifier,
+    bundle_identifier: BundleIdentifier,
     /// Path to local `WaterUI` repository for development.
-    pub waterui_path: Option<PathBuf>,
+    waterui_path: Option<PathBuf>,
     /// Framework channel, mutually exclusive with a local source path and a
     /// manifest file.
-    pub channel: Option<FrameworkChannel>,
+    channel: Option<FrameworkChannel>,
     /// A certified `framework.json` on disk, mutually exclusive with a channel
     /// and a local source path: the project pins the channel and revision the
     /// manifest declares.
-    pub framework_manifest: Option<PathBuf>,
+    framework_manifest: Option<PathBuf>,
     /// An already-resolved framework selection — how a support app inherits
     /// the host project's framework exactly. Mutually exclusive with every
     /// resolving source above.
-    pub framework: Option<ResolvedFramework>,
+    framework: Option<ResolvedFramework>,
     /// The `Water.lock` bytes `framework` was resolved against: a caller
     /// passing `framework` carries the host project's lock verbatim, so the
     /// scaffolded project's `Water.lock`/`Cargo.lock` match it.
-    pub framework_lock: Option<Vec<u8>>,
+    framework_lock: Option<Vec<u8>>,
     /// Author name for Cargo.toml.
-    pub author: String,
+    author: String,
     /// The declared web frontend: `Some` generates the `include_web!` root
     /// view and writes `[web] package_manager`.
-    pub web: Option<WebScaffold>,
+    web: Option<WebScaffold>,
+}
+impl CreateOptions {
+    /// Application display name (e.g., "Water Example").
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Bundle identifier (e.g., "dev.waterui.waterexample").
+    #[must_use]
+    pub const fn bundle_identifier(&self) -> &BundleIdentifier {
+        &self.bundle_identifier
+    }
+
+    /// Path to local `WaterUI` repository for development.
+    #[must_use]
+    pub fn waterui_path(&self) -> Option<&Path> {
+        self.waterui_path.as_deref()
+    }
+
+    /// Framework channel, mutually exclusive with a local source path and a
+    /// manifest file.
+    #[must_use]
+    pub const fn channel(&self) -> Option<&FrameworkChannel> {
+        self.channel.as_ref()
+    }
+
+    /// A certified `framework.json` on disk, mutually exclusive with a channel
+    /// and a local source path: the project pins the channel and revision the
+    /// manifest declares.
+    #[must_use]
+    pub fn framework_manifest(&self) -> Option<&Path> {
+        self.framework_manifest.as_deref()
+    }
+
+    /// An already-resolved framework selection — how a support app inherits
+    /// the host project's framework exactly. Mutually exclusive with every
+    /// resolving source above.
+    #[must_use]
+    pub const fn framework(&self) -> Option<&ResolvedFramework> {
+        self.framework.as_ref()
+    }
+
+    /// Record the resolved framework and backend selection.
+    pub fn set_framework(&mut self, framework: Option<ResolvedFramework>) {
+        self.framework = framework;
+    }
+
+    /// The `Water.lock` bytes `framework` was resolved against: a caller
+    /// passing `framework` carries the host project's lock verbatim, so the
+    /// scaffolded project's `Water.lock`/`Cargo.lock` match it.
+    #[must_use]
+    pub fn framework_lock(&self) -> Option<&[u8]> {
+        self.framework_lock.as_deref()
+    }
+
+    /// Author name for Cargo.toml.
+    #[must_use]
+    pub fn author(&self) -> &str {
+        &self.author
+    }
+
+    /// The declared web frontend: `Some` generates the `include_web!` root
+    /// view and writes `[web] package_manager`.
+    #[must_use]
+    pub const fn web(&self) -> Option<&WebScaffold> {
+        self.web.as_ref()
+    }
 }
 
 impl CreateOptions {
@@ -1529,6 +1596,20 @@ impl CreateOptions {
         self
     }
 
+    /// Resolves the framework from an already resolved selection.
+    #[must_use]
+    pub fn with_framework(mut self, framework: Option<ResolvedFramework>) -> Self {
+        self.framework = framework;
+        self
+    }
+
+    /// Resolves the framework from a lockfile entry.
+    #[must_use]
+    pub fn with_framework_lock(mut self, framework_lock: Option<Vec<u8>>) -> Self {
+        self.framework_lock = framework_lock;
+        self
+    }
+
     /// Declares the web frontend the scaffold wires in.
     #[must_use]
     pub fn with_web(mut self, web: Option<WebScaffold>) -> Self {
@@ -1539,13 +1620,26 @@ impl CreateOptions {
 
 /// How `create`/`init` wires a declared web frontend into the scaffold.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct WebScaffold {
     /// The package manager written to `[web] package_manager`.
-    pub package_manager: web::PackageManager,
+    package_manager: web::PackageManager,
     /// The `include_web!` argument: `"web"` for the conventional layout, or a
     /// path relative to the project root for a frontend referenced in place.
-    pub include_arg: String,
+    include_arg: String,
+}
+impl WebScaffold {
+    /// The package manager written to `[web] package_manager`.
+    #[must_use]
+    pub const fn package_manager(&self) -> &web::PackageManager {
+        &self.package_manager
+    }
+
+    /// The `include_web!` argument: `"web"` for the conventional layout, or a
+    /// path relative to the project root for a frontend referenced in place.
+    #[must_use]
+    pub fn include_arg(&self) -> &str {
+        &self.include_arg
+    }
 }
 
 impl WebScaffold {
@@ -1975,7 +2069,7 @@ impl Project {
         let apple = Self::scaffold_apple_config(&options, &framework)
             .map_err(FailToCreateProject::Framework)?;
         let cargo_config = framework
-            .cargo_config(&path, &apple.deployment_targets)
+            .cargo_config(&path, apple.deployment_targets())
             .await
             .map_err(FailToCreateProject::Framework)?;
 
@@ -2099,11 +2193,13 @@ impl Project {
         options: &CreateOptions,
         framework: &ResolvedFramework,
     ) -> eyre::Result<AppleConfig> {
-        let mut apple = AppleConfig::default();
         if options.web.is_some() {
-            apple.deployment_targets = framework.web_frontend_apple_deployment_targets()?;
+            Ok(AppleConfig::new(
+                framework.web_frontend_apple_deployment_targets()?,
+            ))
+        } else {
+            Ok(AppleConfig::default())
         }
-        Ok(apple)
     }
 
     /// The `Water.toml` a scaffold records: the create options' identity and
@@ -2138,9 +2234,10 @@ impl Project {
             app: None,
             theme: None,
             launch: None,
-            web: options.web.as_ref().map(|scaffold| web::WebConfig {
-                package_manager: scaffold.package_manager,
-            }),
+            web: options
+                .web
+                .as_ref()
+                .map(|scaffold| web::WebConfig::new(scaffold.package_manager)),
             apple,
             signing: SigningConfig::default(),
             assets: None,
@@ -3667,66 +3764,175 @@ struct WateruiPatchesRecord<'a> {
 
 /// Configuration for a `WaterUI` project persisted to `Water.toml`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[non_exhaustive]
 pub struct Manifest {
     /// Package information.
-    pub package: Package,
+    package: Package,
     /// Per-platform backend declarations (`[platforms.<platform>]`).
     #[serde(
         default,
         skip_serializing_if = "BTreeMap::is_empty",
         deserialize_with = "super::platforms::deserialize"
     )]
-    pub platforms: BTreeMap<PlatformName, PlatformConfig>,
+    platforms: BTreeMap<PlatformName, PlatformConfig>,
     /// Hydrolysis backend selections (`[hydrolysis]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hydrolysis: Option<crate::backend::HydrolysisConfig>,
+    hydrolysis: Option<crate::backend::HydrolysisConfig>,
     /// Path to local `WaterUI` repository for dev mode.
     /// When set, all backends will use this path instead of the published versions.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub waterui_path: Option<String>,
+    waterui_path: Option<String>,
     /// The `[patch]` entries the CLI last copied from the `waterui_path`
     /// checkout into the project's `Cargo.toml`. Every other entry there is
     /// the project's own — an override of a checkout entry included — which
     /// the next copy keeps.
     #[serde(default, skip_serializing_if = "cargo_toml::PatchSet::is_empty")]
-    pub waterui_patches: cargo_toml::PatchSet,
+    waterui_patches: cargo_toml::PatchSet,
     /// Exact framework and backend selection, resolved only by explicit version operations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub framework: Option<ResolvedFramework>,
+    framework: Option<ResolvedFramework>,
     /// Permission configuration.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub permissions: BTreeMap<PermissionKey, PermissionEntry>,
+    permissions: BTreeMap<PermissionKey, PermissionEntry>,
     /// App-only configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub app: Option<AppConfig>,
+    app: Option<AppConfig>,
     /// Cross-platform app theme slots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub theme: Option<ThemeConfig>,
+    theme: Option<ThemeConfig>,
     /// The launch screen shown until the app's first frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub launch: Option<LaunchConfig>,
+    launch: Option<LaunchConfig>,
     /// Web-frontend toolchain declarations (`[web]`); only the CLI reads this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub web: Option<web::WebConfig>,
+    web: Option<web::WebConfig>,
     /// Apple platform declarations (`[apple]`): the deployment targets the
     /// project runs on.
     #[serde(default, skip_serializing_if = "AppleConfig::is_empty")]
-    pub apple: AppleConfig,
+    apple: AppleConfig,
     /// Assets the project bundles beyond what dependency crates declare for
     /// themselves (`[assets]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub assets: Option<AssetsConfig>,
+    assets: Option<AssetsConfig>,
     /// Distribution signing configuration (`[signing]`).
     #[serde(default, skip_serializing_if = "SigningConfig::is_empty")]
-    pub signing: SigningConfig,
+    signing: SigningConfig,
     /// Values dependency crates request from the app (`[app_values]`):
     /// the Firebase configuration, Apple Pay merchant IDs, the Cast receiver.
     #[serde(
         default,
         skip_serializing_if = "crate::assets::AppValuesConfig::is_empty"
     )]
-    pub app_values: crate::assets::AppValuesConfig,
+    app_values: crate::assets::AppValuesConfig,
+}
+impl Manifest {
+    /// Package information.
+    #[must_use]
+    pub const fn package(&self) -> &Package {
+        &self.package
+    }
+
+    /// Per-platform backend declarations (`[platforms.<platform>]`).
+    #[must_use]
+    pub const fn platforms(&self) -> &BTreeMap<PlatformName, PlatformConfig> {
+        &self.platforms
+    }
+
+    /// Replace the per-platform backend declarations.
+    pub fn set_platforms(&mut self, platforms: BTreeMap<PlatformName, PlatformConfig>) {
+        self.platforms = platforms;
+    }
+
+    /// Hydrolysis backend selections (`[hydrolysis]`).
+    #[must_use]
+    pub const fn hydrolysis(&self) -> Option<&crate::backend::HydrolysisConfig> {
+        self.hydrolysis.as_ref()
+    }
+
+    /// Path to local `WaterUI` repository for dev mode.
+    #[must_use]
+    pub fn waterui_path(&self) -> Option<&str> {
+        self.waterui_path.as_deref()
+    }
+
+    /// The `[patch]` entries the CLI last copied from the `waterui_path`
+    /// checkout into the project's `Cargo.toml`.
+    #[must_use]
+    pub const fn waterui_patches(&self) -> &cargo_toml::PatchSet {
+        &self.waterui_patches
+    }
+
+    /// Exact framework and backend selection, resolved only by explicit
+    /// version operations.
+    #[must_use]
+    pub const fn framework(&self) -> Option<&ResolvedFramework> {
+        self.framework.as_ref()
+    }
+
+    /// Record the resolved framework and backend selection.
+    pub fn set_framework(&mut self, framework: Option<ResolvedFramework>) {
+        self.framework = framework;
+    }
+
+    /// Permission configuration.
+    #[must_use]
+    pub const fn permissions(&self) -> &BTreeMap<PermissionKey, PermissionEntry> {
+        &self.permissions
+    }
+
+    /// App-only configuration.
+    #[must_use]
+    pub const fn app(&self) -> Option<&AppConfig> {
+        self.app.as_ref()
+    }
+
+    /// Cross-platform app theme slots.
+    #[must_use]
+    pub const fn theme(&self) -> Option<&ThemeConfig> {
+        self.theme.as_ref()
+    }
+
+    /// The launch screen shown until the app's first frame.
+    #[must_use]
+    pub const fn launch(&self) -> Option<&LaunchConfig> {
+        self.launch.as_ref()
+    }
+
+    /// Web-frontend toolchain declarations (`[web]`).
+    #[must_use]
+    pub const fn web(&self) -> Option<&web::WebConfig> {
+        self.web.as_ref()
+    }
+
+    /// Apple platform declarations (`[apple]`).
+    #[must_use]
+    pub const fn apple(&self) -> &AppleConfig {
+        &self.apple
+    }
+
+    /// Assets the project bundles beyond what dependency crates declare
+    /// (`[assets]`).
+    #[must_use]
+    pub const fn assets(&self) -> Option<&AssetsConfig> {
+        self.assets.as_ref()
+    }
+
+    /// Distribution signing configuration (`[signing]`).
+    #[must_use]
+    pub const fn signing(&self) -> &SigningConfig {
+        &self.signing
+    }
+
+    /// Values dependency crates request from the app (`[app_values]`).
+    #[must_use]
+    pub const fn app_values(&self) -> &crate::assets::AppValuesConfig {
+        &self.app_values
+    }
+
+    /// Takes the package information out of the value.
+    #[must_use]
+    pub fn into_package(self) -> Package {
+        self.package
+    }
 }
 
 /// Distribution signing configuration (`[signing]`).
@@ -3738,14 +3944,35 @@ pub struct Manifest {
 /// secrets — passwords are read from the environment at package time.
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-#[non_exhaustive]
 pub struct SigningConfig {
     /// macOS Developer ID distribution signing (`[signing.macos]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub macos: Option<MacosSigningConfig>,
+    macos: Option<MacosSigningConfig>,
     /// Android release signing (`[signing.android]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub android: Option<AndroidSigningConfig>,
+    android: Option<AndroidSigningConfig>,
+}
+impl SigningConfig {
+    /// A `SigningConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(
+        macos: Option<MacosSigningConfig>,
+        android: Option<AndroidSigningConfig>,
+    ) -> Self {
+        Self { macos, android }
+    }
+
+    /// macOS Developer ID distribution signing (`[signing.macos]`).
+    #[must_use]
+    pub const fn macos(&self) -> Option<&MacosSigningConfig> {
+        self.macos.as_ref()
+    }
+
+    /// Android release signing (`[signing.android]`).
+    #[must_use]
+    pub const fn android(&self) -> Option<&AndroidSigningConfig> {
+        self.android.as_ref()
+    }
 }
 
 impl SigningConfig {
@@ -3759,14 +3986,37 @@ impl SigningConfig {
 /// macOS Developer ID distribution signing (`[signing.macos]`).
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-#[non_exhaustive]
 pub struct MacosSigningConfig {
     /// The Apple Developer team the package signs for — matched against the
     /// Developer ID Application certificate's subject organizational unit.
-    pub team_id: String,
+    team_id: String,
     /// The `notarytool` keychain profile the submission authenticates with,
     /// created with `xcrun notarytool store-credentials`.
-    pub notary_profile: String,
+    notary_profile: String,
+}
+impl MacosSigningConfig {
+    /// A `MacosSigningConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(team_id: String, notary_profile: String) -> Self {
+        Self {
+            team_id,
+            notary_profile,
+        }
+    }
+
+    /// The Apple Developer team the package signs for — matched against the
+    /// Developer ID Application certificate's subject organizational unit.
+    #[must_use]
+    pub fn team_id(&self) -> &str {
+        &self.team_id
+    }
+
+    /// The `notarytool` keychain profile the submission authenticates with,
+    /// created with `xcrun notarytool store-credentials`.
+    #[must_use]
+    pub fn notary_profile(&self) -> &str {
+        &self.notary_profile
+    }
 }
 
 /// Permission entry in `[permissions]`.
@@ -4006,14 +4256,42 @@ impl ResolvedWpeRuntime {
 
 /// Browser engines that must be staged for one resolved application graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct BrowserRuntimePlan {
     /// The resolved WPE package, when the standard `WebView` engine is WPE.
-    pub wpe: Option<ResolvedWpeRuntime>,
+    wpe: Option<ResolvedWpeRuntime>,
     /// Whether the standard `WebView` resolved to the CEF engine.
-    pub cef_webview: bool,
+    cef_webview: bool,
     /// Whether the independent full Chromium component is linked.
-    pub chromium: bool,
+    chromium: bool,
+}
+impl BrowserRuntimePlan {
+    /// A `BrowserRuntimePlan` carrying each of its fields.
+    #[must_use]
+    pub const fn new(wpe: Option<ResolvedWpeRuntime>, cef_webview: bool, chromium: bool) -> Self {
+        Self {
+            wpe,
+            cef_webview,
+            chromium,
+        }
+    }
+
+    /// The resolved WPE package, when the standard `WebView` engine is WPE.
+    #[must_use]
+    pub const fn wpe(&self) -> Option<&ResolvedWpeRuntime> {
+        self.wpe.as_ref()
+    }
+
+    /// Whether the standard `WebView` resolved to the CEF engine.
+    #[must_use]
+    pub const fn cef_webview(&self) -> bool {
+        self.cef_webview
+    }
+
+    /// Whether the independent full Chromium component is linked.
+    #[must_use]
+    pub const fn chromium(&self) -> bool {
+        self.chromium
+    }
 }
 
 impl BrowserRuntimePlan {
@@ -4111,11 +4389,23 @@ pub struct UnsupportedWebViewBackend {
 /// `[assets]` section in `Water.toml`: assets the project bundles beyond what
 /// dependency crates declare through `[package.metadata.waterui.assets]`.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[non_exhaustive]
 pub struct AssetsConfig {
     /// Font families to bundle, one `[[assets.font]]` table per family.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub font: Vec<FontConfig>,
+    font: Vec<FontConfig>,
+}
+impl AssetsConfig {
+    /// A `AssetsConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(font: Vec<FontConfig>) -> Self {
+        Self { font }
+    }
+
+    /// Font families to bundle, one `[[assets.font]]` table per family.
+    #[must_use]
+    pub fn font(&self) -> &[FontConfig] {
+        &self.font
+    }
 }
 
 /// One `[[assets.font]]` declaration in `Water.toml`.
@@ -4126,48 +4416,142 @@ pub struct AssetsConfig {
 /// cache, since builds perform no network access. A declaration sets at most
 /// one source.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[non_exhaustive]
 pub struct FontConfig {
     /// Font family name.
-    pub name: String,
+    name: String,
     /// Font file relative to the project root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub local_path: Option<String>,
+    local_path: Option<String>,
     /// URL the font — or an archive containing it — is fetched from when
     /// pre-seeding the font cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub remote_path: Option<String>,
+    remote_path: Option<String>,
     /// The platforms whose builds bundle the font; absent bundles it on
     /// every platform. An unknown name fails to parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub platforms: Option<Vec<waterui_assets_planner::FontPlatform>>,
+    platforms: Option<Vec<waterui_assets_planner::FontPlatform>>,
+}
+impl FontConfig {
+    /// A `FontConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(
+        name: String,
+        local_path: Option<String>,
+        remote_path: Option<String>,
+        platforms: Option<Vec<waterui_assets_planner::FontPlatform>>,
+    ) -> Self {
+        Self {
+            name,
+            local_path,
+            remote_path,
+            platforms,
+        }
+    }
+
+    /// Font family name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Font file relative to the project root.
+    #[must_use]
+    pub fn local_path(&self) -> Option<&str> {
+        self.local_path.as_deref()
+    }
+
+    /// URL the font — or an archive containing it — is fetched from when
+    /// pre-seeding the font cache.
+    #[must_use]
+    pub fn remote_path(&self) -> Option<&str> {
+        self.remote_path.as_deref()
+    }
+
+    /// The platforms whose builds bundle the font; absent bundles it on
+    /// every platform. An unknown name fails to parse.
+    #[must_use]
+    pub fn platforms(&self) -> Option<&[waterui_assets_planner::FontPlatform]> {
+        self.platforms.as_deref()
+    }
 }
 
 /// App-specific configuration in `Water.toml`.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[non_exhaustive]
 pub struct AppConfig {
     /// Optional crate name overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub crates: Option<AppCrates>,
+    crates: Option<AppCrates>,
+}
+impl AppConfig {
+    /// A `AppConfig` carrying each of its fields.
+    #[must_use]
+    pub const fn new(crates: Option<AppCrates>) -> Self {
+        Self { crates }
+    }
+
+    /// Optional crate name overrides.
+    #[must_use]
+    pub const fn crates(&self) -> Option<&AppCrates> {
+        self.crates.as_ref()
+    }
 }
 
 /// Crate name overrides for the generated crates (`[app.crates]`).
 #[derive(Debug, Serialize, Clone, Default)]
-#[non_exhaustive]
 pub struct AppCrates {
     /// Optional override crate name for the generated Apple companion crate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub apple: Option<CrateName>,
+    apple: Option<CrateName>,
     /// Optional override crate name for generated GTK backend crate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gtk: Option<CrateName>,
+    gtk: Option<CrateName>,
     /// Optional override crate name for generated hydrolysis backend crate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hydrolysis: Option<CrateName>,
+    hydrolysis: Option<CrateName>,
     /// Optional override crate name for generated `WinUI` backend crate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub winui: Option<CrateName>,
+    winui: Option<CrateName>,
+}
+impl AppCrates {
+    /// A `AppCrates` carrying each of its fields.
+    #[must_use]
+    pub const fn new(
+        apple: Option<CrateName>,
+        gtk: Option<CrateName>,
+        hydrolysis: Option<CrateName>,
+        winui: Option<CrateName>,
+    ) -> Self {
+        Self {
+            apple,
+            gtk,
+            hydrolysis,
+            winui,
+        }
+    }
+
+    /// Optional override crate name for the generated Apple companion crate.
+    #[must_use]
+    pub const fn apple(&self) -> Option<&CrateName> {
+        self.apple.as_ref()
+    }
+
+    /// Optional override crate name for generated GTK backend crate.
+    #[must_use]
+    pub const fn gtk(&self) -> Option<&CrateName> {
+        self.gtk.as_ref()
+    }
+
+    /// Optional override crate name for generated hydrolysis backend crate.
+    #[must_use]
+    pub const fn hydrolysis(&self) -> Option<&CrateName> {
+        self.hydrolysis.as_ref()
+    }
+
+    /// Optional override crate name for generated `WinUI` backend crate.
+    #[must_use]
+    pub const fn winui(&self) -> Option<&CrateName> {
+        self.winui.as_ref()
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -4232,21 +4616,20 @@ mod removed_ffi_override_tests {
 
 /// `[package]` section in `Water.toml`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[non_exhaustive]
 pub struct Package {
     /// Human-readable name of the application (e.g., "Water Demo").
-    pub name: String,
+    name: String,
     /// Bundle identifier for the application (e.g., "dev.waterui.waterdemo").
-    pub bundle_identifier: BundleIdentifier,
+    bundle_identifier: BundleIdentifier,
     /// Path to assets directory relative to project root. Defaults to "assets".
     #[serde(
         default = "default_assets_path",
         skip_serializing_if = "is_default_assets_path"
     )]
-    pub assets_path: String,
+    assets_path: String,
     /// Whether to build as an accessory (headless) app on macOS.
     #[serde(default, skip_serializing_if = "is_false")]
-    pub accessory: bool,
+    accessory: bool,
     /// Whether the crate is embedded into a host application rather than
     /// owning the app entry itself.
     ///
@@ -4254,9 +4637,8 @@ pub struct Package {
     /// host's build system consumes (an AAR on Android) instead of a runnable
     /// app, and `water run`/`water package` refuse.
     #[serde(default, skip_serializing_if = "is_false")]
-    pub embedded: bool,
+    embedded: bool,
 }
-
 impl Package {
     /// The section of an app named `name` under `bundle_identifier`, with
     /// assets in the default directory, owning its entry, and not an
@@ -4270,6 +4652,37 @@ impl Package {
             accessory: false,
             embedded: false,
         }
+    }
+
+    /// Human-readable name of the application.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Bundle identifier for the application.
+    #[must_use]
+    pub const fn bundle_identifier(&self) -> &BundleIdentifier {
+        &self.bundle_identifier
+    }
+
+    /// Path to assets directory relative to project root.
+    #[must_use]
+    pub fn assets_path(&self) -> &str {
+        &self.assets_path
+    }
+
+    /// Whether to build as an accessory (headless) app on macOS.
+    #[must_use]
+    pub const fn accessory(&self) -> bool {
+        self.accessory
+    }
+
+    /// Whether the crate is embedded into a host application rather than
+    /// owning the app entry itself.
+    #[must_use]
+    pub const fn embedded(&self) -> bool {
+        self.embedded
     }
 }
 
@@ -4893,8 +5306,8 @@ mod target_graph_tests {
             for platform in crate::apple_targets::APPLE_PLATFORMS {
                 assert_eq!(
                     water
-                        .apple
-                        .deployment_targets
+                        .apple()
+                        .deployment_targets()
                         .declared(platform)
                         .map(crate::apple_targets::AppleVersion::as_str),
                     Some("27.0"),

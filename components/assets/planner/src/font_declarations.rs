@@ -29,6 +29,39 @@ pub struct FontDeclaration {
 }
 
 impl FontDeclaration {
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (String, FontSource, String, Option<Vec<FontPlatform>>) {
+        (self.name, self.source, self.crate_name, self.platforms)
+    }
+
+    /// Font family name (used as `font_family` in Text).
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// Source of the font file.
+    #[must_use]
+    pub const fn source(&self) -> &FontSource {
+        &self.source
+    }
+
+    /// Crate or project that declared this font.
+    #[must_use]
+    pub const fn crate_name(&self) -> &str {
+        self.crate_name.as_str()
+    }
+
+    /// The platforms whose builds bundle this font; `None` bundles it on
+    /// every platform.
+    #[must_use]
+    pub fn platforms(&self) -> Option<&[FontPlatform]> {
+        self.platforms.as_deref()
+    }
+}
+
+impl FontDeclaration {
     /// The family `name`, loaded from `source`, declared by `crate_name`, and
     /// bundled on `platforms` (every platform when `None`).
     #[must_use]

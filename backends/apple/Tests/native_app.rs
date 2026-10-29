@@ -1313,8 +1313,8 @@ mod gesture_events {
         let taps = taps.borrow();
         assert_eq!(taps.len(), before + 1, "one completion appends one event");
         let tap = &taps[before];
-        assert_eq!(tap.count, 1);
-        assert_eq!(tap.button, PointerButton::Primary);
+        assert_eq!(tap.count(), 1);
+        assert_eq!(tap.button(), PointerButton::Primary);
     }
 
     /// Driving the pan recognizer's `Began`→`Changed`→`Ended` transitions
@@ -1350,7 +1350,10 @@ mod gesture_events {
         }
         let drags = drags.borrow();
         assert_eq!(
-            drags.iter().map(|e| e.phase).collect::<Vec<_>>(),
+            drags
+                .iter()
+                .map(waterui::gesture::DragEvent::phase)
+                .collect::<Vec<_>>(),
             vec![
                 GesturePhase::Started,
                 GesturePhase::Updated,
@@ -1359,7 +1362,7 @@ mod gesture_events {
             "the pan's transitions are the contract's phase sequence"
         );
         assert!(
-            drags.iter().all(|e| e.button == PointerButton::Primary),
+            drags.iter().all(|e| e.button() == PointerButton::Primary),
             "a touches contact presses as the primary button"
         );
     }
@@ -1400,21 +1403,21 @@ mod gesture_events {
 
         let e = fire(UIGestureRecognizerState::Began, 0.0);
         assert_eq!(
-            (e.phase, e.angle, e.velocity),
+            (e.phase(), e.angle(), e.velocity()),
             (GesturePhase::Started, 0.0, 0.0)
         );
         let e = fire(UIGestureRecognizerState::Changed, 0.75);
-        assert_eq!(e.phase, GesturePhase::Updated);
+        assert_eq!(e.phase(), GesturePhase::Updated);
         assert!(
-            (e.angle - 0.75).abs() < 1e-6,
+            (e.angle() - 0.75).abs() < 1e-6,
             "raw radians getter, saw {}",
-            e.angle
+            e.angle()
         );
         let e = fire(UIGestureRecognizerState::Changed, 1.25);
-        assert!((e.angle - 1.25).abs() < 1e-6);
+        assert!((e.angle() - 1.25).abs() < 1e-6);
         let e = fire(UIGestureRecognizerState::Ended, 1.25);
-        assert_eq!((e.phase, e.velocity), (GesturePhase::Ended, 0.0));
-        assert!((e.angle - 1.25).abs() < 1e-6);
+        assert_eq!((e.phase(), e.velocity()), (GesturePhase::Ended, 0.0));
+        assert!((e.angle() - 1.25).abs() < 1e-6);
     }
 
     /// The shared scale composition clamps at the contract's `.01`
@@ -1448,25 +1451,25 @@ mod gesture_events {
         };
 
         let e = fire(UIGestureRecognizerState::Began, 1.0);
-        assert_eq!((e.phase, e.velocity), (GesturePhase::Started, 0.0));
-        assert!((e.scale - 0.001).abs() < 1e-6, "saw {}", e.scale);
+        assert_eq!((e.phase(), e.velocity()), (GesturePhase::Started, 0.0));
+        assert!((e.scale() - 0.001).abs() < 1e-6, "saw {}", e.scale());
         let e = fire(UIGestureRecognizerState::Changed, 1.5);
         assert!(
-            (e.scale - 0.01).abs() < 1e-6,
+            (e.scale() - 0.01).abs() < 1e-6,
             "clamp to .01, saw {}",
-            e.scale
+            e.scale()
         );
         let e = fire(UIGestureRecognizerState::Changed, 3.0);
         assert!(
-            (e.scale - 0.02).abs() < 1e-6,
+            (e.scale() - 0.02).abs() < 1e-6,
             "factor 2 on .01, saw {}",
-            e.scale
+            e.scale()
         );
         let e = fire(UIGestureRecognizerState::Changed, 3.0);
-        assert!((e.scale - 0.02).abs() < 1e-6 && e.velocity == 0.0);
+        assert!((e.scale() - 0.02).abs() < 1e-6 && e.velocity() == 0.0);
         let e = fire(UIGestureRecognizerState::Ended, 3.0);
-        assert_eq!((e.phase, e.velocity), (GesturePhase::Ended, 0.0));
-        assert!((e.scale - 0.02).abs() < 1e-6);
+        assert_eq!((e.phase(), e.velocity()), (GesturePhase::Ended, 0.0));
+        assert!((e.scale() - 0.02).abs() < 1e-6);
     }
 }
 

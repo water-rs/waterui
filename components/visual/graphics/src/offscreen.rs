@@ -86,6 +86,26 @@ pub struct OffscreenImage {
 }
 
 impl OffscreenImage {
+    /// Width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// `width * height * 4` bytes of straight-alpha sRGB8.
+    #[must_use]
+    pub const fn rgba8(&self) -> &[u8] {
+        self.rgba8.as_slice()
+    }
+}
+
+impl OffscreenImage {
     /// A `width` by `height` image over `rgba8`, which holds
     /// `width * height * 4` bytes of straight-alpha sRGB8 in row-major order.
     #[must_use]

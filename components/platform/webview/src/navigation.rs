@@ -49,6 +49,35 @@ pub struct NavigationRequest {
 }
 
 impl NavigationRequest {
+    /// The URL the navigation targets.
+    #[must_use]
+    pub const fn url(&self) -> &Url {
+        &self.url
+    }
+
+    /// The document the navigation leaves, when there is one.
+    #[must_use]
+    pub const fn from(&self) -> Option<&Url> {
+        self.from.as_ref()
+    }
+
+    /// Whether the main frame is the target. A targetless action —
+    /// `window.open`, a `target="_blank"` — that a backend reroutes into
+    /// its own view counts as one.
+    #[must_use]
+    pub const fn is_main_frame(&self) -> bool {
+        self.is_main_frame
+    }
+
+    /// Whether a user gesture triggered the navigation: a link activation.
+    /// Programmatic jumps (`window.location`) report `false`.
+    #[must_use]
+    pub const fn user_initiated(&self) -> bool {
+        self.user_initiated
+    }
+}
+
+impl NavigationRequest {
     /// The request a backend hands to the policy: every engine knows its
     /// own spelling of the target, the document being left, the frame and
     /// the gesture.

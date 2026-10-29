@@ -31,10 +31,6 @@ use crate::wait::{Expectation, ExpectationKind, WaitOptions, WaitResult};
 /// point. A `UiBuilder<NoStyle>` mounts only the semantic runtime — geometry,
 /// pointer and capture belong to the styled builder.
 #[derive(Clone, Copy, Debug, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less builder state used by name"
-)]
 pub struct NoStyle;
 
 /// The style state of a [`UiBuilder`] that carries a `hydrolysis` [`Style`].
@@ -623,6 +619,33 @@ pub struct DragOptions {
     pub pointer: PointerKind,
 }
 
+impl DragOptions {
+    /// Number of intermediate pointer-move samples (at least 1).
+    #[must_use]
+    pub const fn steps(&self) -> u16 {
+        self.steps
+    }
+
+    /// Pump one virtual frame between samples so each move lands on its own
+    /// frame: gesture recognizers then observe a real motion timeline
+    /// (velocity, glide) instead of every sample arriving at once.
+    #[must_use]
+    pub const fn frame_per_step(&self) -> bool {
+        self.frame_per_step
+    }
+
+    /// The pointer kind the drag dispatches. `PointerKind::Touch` is what a
+    /// real device's finger produces: the scroll claim, the touch slop and
+    /// the fling all key on the pointer kind, which `PointerKind::Mouse`
+    /// never reaches. The runtime reports no touch-scroll configuration
+    /// until [`OffscreenApp::set_touch_scroll_config`] supplies it — on a
+    /// host without one a touch drag still dispatches but claims nothing.
+    #[must_use]
+    pub const fn pointer(&self) -> PointerKind {
+        self.pointer
+    }
+}
+
 impl Default for DragOptions {
     fn default() -> Self {
         Self {
@@ -1009,8 +1032,8 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     pub fn wait_for(&mut self, expectations: &[Expectation], options: WaitOptions) -> WaitResult {
         self.wait_bounded(
             expectations,
-            options.enforce_order,
-            WaitBound::WallClock(Instant::now() + options.timeout),
+            options.get_enforce_order(),
+            WaitBound::WallClock(Instant::now() + options.timeout()),
         )
     }
 
@@ -1997,12 +2020,12 @@ impl SemanticApp<HeadlessRuntime> {
         let _ = crate::executor::drain_parked_local_work();
         let started_at = Instant::now();
         let outcome = RuntimeDriver::pump_at(&mut self.runtime, at, false);
-        let timing = FrameTiming {
-            total: outcome.profile.total.max(started_at.elapsed()),
-            rebuilt: outcome.rebuilt,
-            profile: outcome.profile,
-            resources: self.resources.sample(),
-        };
+        let timing = FrameTiming::new(
+            outcome.profile.total().max(started_at.elapsed()),
+            outcome.rebuilt,
+            outcome.profile,
+            self.resources.sample(),
+        );
         let _ = self.apply_pump_result(outcome);
         timing
     }

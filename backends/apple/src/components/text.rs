@@ -295,9 +295,9 @@ fn platform_font(
     resolved: &ResolvedFont,
     italic: bool,
 ) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size);
-    let weight = platform_weight(resolved.weight);
-    let mut font = match resolved.family.as_deref() {
+    let size = f64::from(resolved.size());
+    let weight = platform_weight(resolved.weight());
+    let mut font = match resolved.family() {
         Some(family) if !family.is_empty() => {
             let mut resolved_font = None;
             for candidate in family_candidates(family) {
@@ -315,7 +315,7 @@ fn platform_font(
                 )
             })
         }
-        _ => match resolved.design {
+        _ => match resolved.design() {
             FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
             FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
         },
@@ -448,8 +448,8 @@ fn render_attributed(state: &TextState) -> Retained<objc2_foundation::NSAttribut
             background: backgrounds[i].as_deref(),
             underline: chunk.underline,
             strikethrough: chunk.strikethrough,
-            letter_spacing: f64::from(chunk.font.letter_spacing),
-            line_height: chunk.font.line_height.map_or(0.0, f64::from),
+            letter_spacing: f64::from(chunk.font.letter_spacing()),
+            line_height: chunk.font.line_height().map_or(0.0, f64::from),
         })
         .collect();
     cocoa_ui::text::build(state.mtm, &runs).into_super()
@@ -471,6 +471,22 @@ fn rebuild(state: &TextState, duration: Option<f64>) {
     }
 }
 
+/// The UTF-16 ranges of `tap_spans` within `plain`, which the label's link
+/// elements are positioned by.
+fn utf16_span_ranges(plain: &str, tap_spans: &[TapSpan]) -> Vec<Range<usize>> {
+    tap_spans
+        .iter()
+        .map(|span| {
+            let range = span.range();
+            let start = cocoa_ui::text::utf16_offset_at_byte(plain, range.start)
+                .expect("a tap span starts on a char boundary");
+            let end = cocoa_ui::text::utf16_offset_at_byte(plain, range.end)
+                .expect("a tap span ends on a char boundary");
+            start..end
+        })
+        .collect()
+}
+
 /// Resolves a `StyledStr` into chunk state plus the guards that keep its
 /// signals subscribed — the work `WuiStyledStrRenderer` performs.
 fn apply_styled(state: &Rc<RefCell<TextState>>, styled: &StyledStr) {
@@ -478,9 +494,15 @@ fn apply_styled(state: &Rc<RefCell<TextState>>, styled: &StyledStr) {
     let mut chunks = Vec::with_capacity(styled.chunks().len());
     let mut guards: Vec<Box<dyn Any>> = Vec::new();
     for (index, (text, style)) in styled.chunks().iter().enumerate() {
-        let font = style.font.resolve(&env);
-        let foreground = style.foreground.as_ref().map(|color| color.resolve(&env));
-        let background = style.background.as_ref().map(|color| color.resolve(&env));
+        let font = style.get_font().resolve(&env);
+        let foreground = style
+            .get_foreground()
+            .as_ref()
+            .map(|color| color.resolve(&env));
+        let background = style
+            .get_background()
+            .as_ref()
+            .map(|color| color.resolve(&env));
         chunks.push(Chunk {
             text: text.clone(),
             font: font.snapshot(),
@@ -488,9 +510,9 @@ fn apply_styled(state: &Rc<RefCell<TextState>>, styled: &StyledStr) {
                 .as_ref()
                 .map(|signal| RunForeground::resolve(&env, signal)),
             background: background.as_ref().map(Signal::snapshot),
-            italic: style.italic,
-            underline: style.underline,
-            strikethrough: style.strikethrough,
+            italic: style.get_italic(),
+            underline: style.get_underline(),
+            strikethrough: style.get_strikethrough(),
         });
 
         guards.push(Box::new(font.watch({
@@ -540,17 +562,7 @@ fn apply_styled(state: &Rc<RefCell<TextState>>, styled: &StyledStr) {
     }
     let plain = styled.to_plain();
     let tap_spans: Vec<TapSpan> = styled.tap_spans().to_vec();
-    let span_ranges: Vec<Range<usize>> = tap_spans
-        .iter()
-        .map(|span| {
-            let range = span.range();
-            let start = cocoa_ui::text::utf16_offset_at_byte(&plain, range.start)
-                .expect("a tap span starts on a char boundary");
-            let end = cocoa_ui::text::utf16_offset_at_byte(&plain, range.end)
-                .expect("a tap span ends on a char boundary");
-            start..end
-        })
-        .collect();
+    let span_ranges = utf16_span_ranges(&plain, &tap_spans);
     let links: Vec<cocoa_ui::text::SpanLink<'_>> = tap_spans
         .iter()
         .zip(&span_ranges)
@@ -751,19 +763,19 @@ pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<TextConfig>(|config, ctx| {
         let (mut leaf, state, label) = label_leaf(
             ctx,
-            config.line_limit,
-            &config.content.snapshot(),
-            config.paragraph_alignment.snapshot(),
+            config.line_limit(),
+            &config.content().snapshot(),
+            config.paragraph_alignment().snapshot(),
         );
 
         // Content changes re-resolve every chunk signal; paragraph
         // alignment pushes straight to the label inside the leaf.
-        leaf.watch(&config.content, move |ctx| {
+        leaf.watch(config.content(), move |ctx| {
             let duration = cross_dissolve_duration(ctx.metadata());
             apply_styled(&state, ctx.value());
             rebuild(&state.borrow(), duration);
         });
-        leaf.watch(&config.paragraph_alignment, move |ctx| {
+        leaf.watch(config.paragraph_alignment(), move |ctx| {
             apply_alignment(&label, *ctx.value());
         });
         leaf

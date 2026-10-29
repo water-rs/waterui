@@ -31,7 +31,7 @@ pub struct StepperRenderState<E: crate::text::TextEngine> {
 impl<E: crate::text::TextEngine> StepperRenderState<E> {
     pub(crate) fn from_config(config: StepperConfig) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label.clone())),
+            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
             config,
         }
     }
@@ -85,8 +85,10 @@ pub fn stepper_accessibility<E: crate::text::TextEngine>(
                 AccessibilityNodeRole::SpinButton,
             ),
         );
-        let default_label =
-            crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&stepper.label, env);
+        let default_label = crate::renderer::SemanticCore::<E>::accessibility_label_from_label(
+            stepper.label(),
+            env,
+        );
         let label = renderer.resolve_accessibility_label(env, default_label);
         if let Some(label) = label {
             node.set_label(label);
@@ -94,19 +96,19 @@ pub fn stepper_accessibility<E: crate::text::TextEngine>(
         if let Some(value) = renderer.resolve_accessibility_value(env, None) {
             node.set_value(value);
         }
-        let start = *stepper.range.start();
-        let end = *stepper.range.end();
+        let start = *stepper.range().start();
+        let end = *stepper.range().end();
         assert!(
             (start <= end),
             "hydrolysis stepper requires an ordered range"
         );
         // Read value/step through `read_signal` so a change schedules a frame and
         // this persistent node re-renders (and re-publishes the a11y value).
-        let current = renderer.read_signal(&stepper.value).clamp(start, end);
+        let current = renderer.read_signal(stepper.value()).clamp(start, end);
         node.set_numeric_value(f64::from(current));
         node.set_min_numeric_value(f64::from(start));
         node.set_max_numeric_value(f64::from(end));
-        let step = renderer.read_signal(&stepper.step);
+        let step = renderer.read_signal(stepper.step());
         assert!((step > 0), "hydrolysis stepper requires positive step");
         node.set_numeric_value_step(f64::from(step));
         node.add_action(AccessibilityAction::Focus);
@@ -121,9 +123,9 @@ pub fn stepper_accessibility<E: crate::text::TextEngine>(
             node.add_action(AccessibilityAction::Decrement);
             node.add_action(AccessibilityAction::SetValue);
             Some(AccessibilityActionTarget::Stepper {
-                value: stepper.value.clone(),
-                step: stepper.step.clone(),
-                range: stepper.range.clone(),
+                value: stepper.value().clone(),
+                step: stepper.step().clone(),
+                range: stepper.range().clone(),
             })
         };
         if let Some(node_id) = renderer.register_accessibility_leaf(ctx, node, env, action_target) {
@@ -208,9 +210,9 @@ pub fn render_stepper_parts<E: crate::text::TextEngine>(
     let (range, value, step) = {
         let stepper = &state.config;
         (
-            stepper.range.clone(),
-            stepper.value.clone(),
-            stepper.step.clone(),
+            stepper.range().clone(),
+            stepper.value().clone(),
+            stepper.step().clone(),
         )
     };
     // Watch the value/step signals so a change schedules a frame and this
@@ -378,7 +380,7 @@ pub fn measure_stepper_intrinsic<E: crate::text::TextEngine>(
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let metrics = theme.stepper_metrics();
-    let label_size = measure_label_intrinsic(&stepper.label, state, env, theme);
+    let label_size = measure_label_intrinsic(stepper.label(), state, env, theme);
     let controls_width = metrics
         .button_intrinsic_size
         .mul_add(2.0, metrics.button_spacing);

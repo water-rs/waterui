@@ -31,6 +31,42 @@ pub struct MultiDatePickerConfig {
     visible_month: Binding<VisibleMonth>,
 }
 
+impl MultiDatePickerConfig {
+    /// The label displayed for the picker.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// Sets the `label`.
+    pub fn set_label(&mut self, label: Label) {
+        self.label = label;
+    }
+
+    /// The label displayed for the control, for editing it in place.
+    pub const fn label_mut(&mut self) -> &mut Label {
+        &mut self.label
+    }
+
+    /// The selected dates as an ordered vector for backend/FFI transport.
+    #[must_use]
+    pub const fn value(&self) -> &Binding<Vec<Date>> {
+        &self.value
+    }
+
+    /// The valid date range.
+    #[must_use]
+    pub const fn range(&self) -> &RangeInclusive<Date> {
+        &self.range
+    }
+
+    /// Passively decorated dates.
+    #[must_use]
+    pub const fn decorated(&self) -> &Computed<Vec<Date>> {
+        &self.decorated
+    }
+}
+
 /// A control for selecting multiple dates.
 #[derive(Debug)]
 pub struct MultiDatePicker(MultiDatePickerConfig);

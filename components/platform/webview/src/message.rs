@@ -35,28 +35,16 @@ pub struct JsRequest {
 
 /// Extracts the payload as JSON, deserialized into `T`.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "extractor newtype destructured in handler parameters"
-)]
 pub struct Json<T>(pub T);
 
 /// Extracts the payload as raw bytes.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "extractor newtype destructured in handler parameters"
-)]
 pub struct Bytes(pub Vec<u8>);
 
 /// Extracts the handler name that was called.
 ///
 /// Useful when one closure serves several names.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "extractor newtype destructured in handler parameters"
-)]
 pub struct HandlerName(pub Str);
 
 fn request(env: &Environment) -> Result<JsRequest, Error> {

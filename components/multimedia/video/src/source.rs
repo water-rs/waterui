@@ -337,6 +337,32 @@ pub struct SubtitleTrack {
 }
 
 impl SubtitleTrack {
+    /// Location of the subtitle asset.
+    #[must_use]
+    pub const fn source(&self) -> &Url {
+        &self.source
+    }
+
+    /// Human-readable label shown in track pickers.
+    #[must_use]
+    pub fn get_label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
+    /// Optional BCP-47 language tag.
+    #[must_use]
+    pub fn get_language(&self) -> Option<&str> {
+        self.language.as_deref()
+    }
+
+    /// `true` when the track is forced narrative text.
+    #[must_use]
+    pub const fn get_forced(&self) -> bool {
+        self.forced
+    }
+}
+
+impl SubtitleTrack {
     /// Creates a new subtitle track.
     pub fn new(source: impl Into<Url>) -> Self {
         Self {
@@ -385,6 +411,44 @@ pub struct MediaItem {
     pub metadata: MediaMetadata,
     /// Platform-CDM request policy for protected content.
     pub drm: Option<DrmConfiguration>,
+}
+
+impl MediaItem {
+    /// Stable identity used by playlists and item-transition events.
+    #[must_use]
+    pub const fn get_id(&self) -> MediaItemId {
+        self.id
+    }
+
+    /// The primary video source.
+    #[must_use]
+    pub const fn source(&self) -> &Url {
+        &self.source
+    }
+
+    /// Transport strategy used to load the item.
+    #[must_use]
+    pub const fn get_delivery(&self) -> Delivery {
+        self.delivery
+    }
+
+    /// Sidecar subtitle tracks associated with this item.
+    #[must_use]
+    pub const fn subtitle_tracks(&self) -> &[SubtitleTrack] {
+        self.subtitle_tracks.as_slice()
+    }
+
+    /// User-provided metadata used for system media sessions and now playing UI.
+    #[must_use]
+    pub const fn get_metadata(&self) -> &MediaMetadata {
+        &self.metadata
+    }
+
+    /// Platform-CDM request policy for protected content.
+    #[must_use]
+    pub const fn get_drm(&self) -> Option<&DrmConfiguration> {
+        self.drm.as_ref()
+    }
 }
 
 impl_constant!(MediaItem);

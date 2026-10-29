@@ -145,9 +145,8 @@ pub fn resolve_painter(
         .or_else(|| {
             project
                 .manifest()
-                .hydrolysis
-                .as_ref()
-                .and_then(|config| config.painter)
+                .hydrolysis()
+                .and_then(|config| config.painter().copied())
         })
         .unwrap_or_default()
 }
@@ -1487,7 +1486,7 @@ mod tests {
             "[package]\nname = \"Fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n{extra_manifest}"
         ))
         .expect("Water.toml parses");
-        manifest.framework = Some(stable_checkout_framework_mirror(temporary.path())?);
+        manifest.set_framework(Some(stable_checkout_framework_mirror(temporary.path())?));
         std::fs::write(
             root.join("Water.toml"),
             toml::to_string(&manifest).expect("manifest serializes"),

@@ -307,7 +307,6 @@ impl<T: Interpolatable + Copy, const N: usize> Interpolatable for [T; N] {
 /// animation can have different easing curves.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[non_exhaustive]
 pub struct AnimationSegment {
     /// Duration of this segment.
     pub duration: Duration,

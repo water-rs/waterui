@@ -185,10 +185,6 @@ impl CornerShape {
 /// [`Surface::elevation`], so a surface that raises on hover animates
 /// between the two pairs as live operands.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a shadow pair: the key and the ambient shadow are the whole model"
-)]
 pub struct Elevation {
     /// The directional shadow of the key light.
     pub key: Shadow,
@@ -228,7 +224,6 @@ impl Elevation {
 
 /// A stroke drawn just inside a surface's edge.
 #[derive(Debug, Clone, PartialEq)]
-#[expect(clippy::exhaustive_structs, reason = "a border is a width and a paint")]
 pub struct Border {
     /// Stroke width in logical units; the stroke lies wholly inside the
     /// surface's silhouette.
@@ -268,6 +263,32 @@ pub struct Surface {
 }
 
 impl Surface {
+    /// The silhouette every chrome layer follows.
+    #[must_use]
+    pub const fn shape(&self) -> CornerShape {
+        self.shape
+    }
+
+    /// The container fill per interaction state.
+    #[must_use]
+    pub const fn fill(&self) -> &StateValue<Paint> {
+        &self.fill
+    }
+
+    /// The border per interaction state; `None` draws none.
+    #[must_use]
+    pub const fn get_border(&self) -> Option<&StateValue<Border>> {
+        self.border.as_ref()
+    }
+
+    /// The elevation per interaction state.
+    #[must_use]
+    pub const fn get_elevation(&self) -> &StateValue<Elevation> {
+        &self.elevation
+    }
+}
+
+impl Surface {
     /// A flat, borderless surface of `shape` filled with `fill`.
     #[must_use]
     pub fn new(shape: CornerShape, fill: impl Into<StateValue<Paint>>) -> Self {
@@ -302,10 +323,6 @@ impl Surface {
 /// hovered — focus outranks hover. A [`PressFeedback::Ripple`] shows the
 /// press as waves above the layer instead, at [`Self::pressed`].
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct StateLayer {
     /// The layer's colour; each opacity multiplies its alpha.
     pub color: WorkingColor,
@@ -399,10 +416,6 @@ pub enum PressFeedback {
 /// animation settles — a spring that undershoots is never cut off at its
 /// first zero crossing. Waves are clipped to the surface's silhouette.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct Ripple {
     /// The smallest full diameter, so small targets still show a ripple.
     pub min_diameter: f64,
@@ -484,6 +497,51 @@ pub struct Chrome {
     /// The motion this widget's interaction feedback runs with; `None`
     /// uses the theme's [`WidgetTheme::interaction_motion`](super::WidgetTheme::interaction_motion).
     pub motion: Option<InteractionMotion>,
+}
+
+impl Chrome {
+    /// The container.
+    #[must_use]
+    pub const fn surface(&self) -> &Surface {
+        &self.surface
+    }
+
+    /// The interaction tint.
+    #[must_use]
+    pub const fn state_layer(&self) -> StateLayer {
+        self.state_layer
+    }
+
+    /// What a press shows.
+    #[must_use]
+    pub const fn press(&self) -> PressFeedback {
+        self.press
+    }
+
+    /// Sets the `press`.
+    pub const fn set_press(&mut self, press: PressFeedback) {
+        self.press = press;
+    }
+
+    /// What keyboard focus shows.
+    #[must_use]
+    pub const fn focus(&self) -> FocusIndicator {
+        self.focus
+    }
+
+    /// A fixed frame size centred in the widget's bounds; `None` fills
+    /// them.
+    #[must_use]
+    pub const fn size(&self) -> Option<Size> {
+        self.size
+    }
+
+    /// The motion this widget's interaction feedback runs with; `None`
+    /// uses the theme's [`WidgetTheme::interaction_motion`](super::WidgetTheme::interaction_motion).
+    #[must_use]
+    pub const fn get_motion(&self) -> Option<&InteractionMotion> {
+        self.motion.as_ref()
+    }
 }
 
 impl Chrome {

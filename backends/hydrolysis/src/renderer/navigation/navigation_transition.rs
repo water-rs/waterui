@@ -48,10 +48,10 @@ pub fn transition_layer_transform(
 ) -> kurbo::Affine {
     let center = bounds.center();
     kurbo::Affine::translate((
-        f64::from(layer.offset_x) * paint_bounds.width(),
-        f64::from(layer.offset_y) * paint_bounds.height(),
+        f64::from(layer.offset_x()) * paint_bounds.width(),
+        f64::from(layer.offset_y()) * paint_bounds.height(),
     )) * kurbo::Affine::translate((center.x, center.y))
-        * kurbo::Affine::scale(f64::from(layer.scale))
+        * kurbo::Affine::scale(f64::from(layer.scale()))
         * kurbo::Affine::translate((-center.x, -center.y))
 }
 
@@ -140,10 +140,10 @@ mod tests {
             300.0,
             0.35,
         );
-        assert_near(start.outgoing.offset_x, 0.0);
-        assert_near(start.outgoing.opacity, 1.0);
-        assert_near(start.incoming.offset_x, 0.1);
-        assert_near(start.incoming.opacity, 0.0);
+        assert_near(start.outgoing().offset_x(), 0.0);
+        assert_near(start.outgoing().opacity(), 1.0);
+        assert_near(start.incoming().offset_x(), 0.1);
+        assert_near(start.incoming().opacity(), 0.0);
 
         let threshold = material_shared_axis_x_frame(
             0.35,
@@ -152,8 +152,8 @@ mod tests {
             300.0,
             0.35,
         );
-        assert_near(threshold.outgoing.opacity, 0.0);
-        assert_near(threshold.incoming.opacity, 0.0);
+        assert_near(threshold.outgoing().opacity(), 0.0);
+        assert_near(threshold.incoming().opacity(), 0.0);
 
         let end = material_shared_axis_x_frame(
             1.0,
@@ -162,10 +162,10 @@ mod tests {
             300.0,
             0.35,
         );
-        assert_near(end.outgoing.offset_x, -0.1);
-        assert_near(end.outgoing.opacity, 0.0);
-        assert_near(end.incoming.offset_x, 0.0);
-        assert_near(end.incoming.opacity, 1.0);
+        assert_near(end.outgoing().offset_x(), -0.1);
+        assert_near(end.outgoing().opacity(), 0.0);
+        assert_near(end.incoming().offset_x(), 0.0);
+        assert_near(end.incoming().opacity(), 1.0);
     }
 
     #[test]
@@ -178,7 +178,7 @@ mod tests {
             0.35,
         );
 
-        assert_near(middle.outgoing.offset_x, 0.05);
-        assert_near(middle.incoming.offset_x, -0.05);
+        assert_near(middle.outgoing().offset_x(), 0.05);
+        assert_near(middle.incoming().offset_x(), -0.05);
     }
 }

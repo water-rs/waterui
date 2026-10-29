@@ -85,6 +85,14 @@ pub struct HoverEvent {
 }
 
 impl HoverEvent {
+    /// Current local pointer location in logical points.
+    #[must_use]
+    pub const fn location(&self) -> Point {
+        self.location
+    }
+}
+
+impl HoverEvent {
     /// Creates a new hover event payload.
     #[must_use]
     pub const fn new(location: Point) -> Self {

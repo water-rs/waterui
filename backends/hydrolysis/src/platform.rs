@@ -544,10 +544,6 @@ impl KeyCode {
 // than an evolving state machine, so per-flag bools are the honest shape.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "mirrors the fixed four-flag modifier set"
-)]
 pub struct Modifiers {
     /// Whether a Shift modifier was held.
     pub shift: bool,
@@ -617,6 +613,54 @@ pub struct TouchScrollConfig {
     /// The scroll physics family: how a fling decelerates and what an edge
     /// does to a drag or fling that reaches it.
     pub physics: ScrollPhysics,
+}
+
+impl TouchScrollConfig {
+    /// Creates a `TouchScrollConfig` from the platform's touch-slop and
+    /// fling-velocity values and its scroll physics.
+    #[must_use]
+    pub const fn new(
+        touch_slop: f32,
+        min_fling_velocity: f32,
+        max_fling_velocity: f32,
+        physics: ScrollPhysics,
+    ) -> Self {
+        Self {
+            touch_slop,
+            min_fling_velocity,
+            max_fling_velocity,
+            physics,
+        }
+    }
+
+    /// How far a touch may travel from its down point before a scroll view
+    /// claims the gesture — the platform's scaled touch slop, in logical
+    /// units.
+    #[must_use]
+    pub const fn touch_slop(&self) -> f32 {
+        self.touch_slop
+    }
+
+    /// The release speed under which the gesture settles without a fling, in
+    /// logical units per second.
+    #[must_use]
+    pub const fn min_fling_velocity(&self) -> f32 {
+        self.min_fling_velocity
+    }
+
+    /// The release speed a fling starts at at most, in logical units per
+    /// second.
+    #[must_use]
+    pub const fn max_fling_velocity(&self) -> f32 {
+        self.max_fling_velocity
+    }
+
+    /// The scroll physics family: how a fling decelerates and what an edge
+    /// does to a drag or fling that reaches it.
+    #[must_use]
+    pub const fn physics(&self) -> ScrollPhysics {
+        self.physics
+    }
 }
 
 impl TouchScrollConfig {
@@ -726,6 +770,20 @@ pub struct ScrollPhysics {
 }
 
 impl ScrollPhysics {
+    /// How a released fling decelerates.
+    #[must_use]
+    pub const fn deceleration(&self) -> FlingDeceleration {
+        self.deceleration
+    }
+
+    /// What a drag or a fling that reaches a content edge does there.
+    #[must_use]
+    pub const fn overscroll(&self) -> Overscroll {
+        self.overscroll
+    }
+}
+
+impl ScrollPhysics {
     /// Android's `OverScroller` spline with `coefficients`, and Android
     /// 12's `stretch` edges — the edge effect Material 3 adopts.
     #[must_use]
@@ -768,6 +826,14 @@ pub enum FlingDeceleration {
 pub struct ExponentialDecay {
     /// The velocity factor per millisecond.
     pub rate_per_ms: f64,
+}
+
+impl ExponentialDecay {
+    /// The velocity factor per millisecond.
+    #[must_use]
+    pub const fn rate_per_ms(&self) -> f64 {
+        self.rate_per_ms
+    }
 }
 
 impl ExponentialDecay {
@@ -850,6 +916,77 @@ pub struct EdgeStretch {
 }
 
 impl EdgeStretch {
+    /// The relaxing spring's natural angular frequency, in rad/s —
+    /// `NATURAL_FREQUENCY`.
+    #[must_use]
+    pub const fn natural_frequency(&self) -> f64 {
+        self.natural_frequency
+    }
+
+    /// The relaxing spring's damping ratio, below 1 — `DAMPING_RATIO`.
+    #[must_use]
+    pub const fn damping_ratio(&self) -> f64 {
+        self.damping_ratio
+    }
+
+    /// What a fling's speed at the edge is multiplied by to start the
+    /// spring — `ON_ABSORB_VELOCITY_ADJUSTMENT`.
+    #[must_use]
+    pub const fn absorb_velocity_scale(&self) -> f64 {
+        self.absorb_velocity_scale
+    }
+
+    /// The stretch intensity's linear share per unit of pull —
+    /// `LINEAR_STRETCH_INTENSITY`.
+    #[must_use]
+    pub const fn linear_intensity(&self) -> f64 {
+        self.linear_intensity
+    }
+
+    /// The stretch intensity's exponential share at full pull —
+    /// `EXP_STRETCH_INTENSITY`.
+    #[must_use]
+    pub const fn exponential_intensity(&self) -> f64 {
+        self.exponential_intensity
+    }
+
+    /// The pull over which the exponential share builds up —
+    /// `SCROLL_DIST_AFFECTED_BY_EXP_STRETCH`.
+    #[must_use]
+    pub const fn exponential_distance(&self) -> f64 {
+        self.exponential_distance
+    }
+
+    /// The speed a relaxing stretch close to rest finishes at linearly, in
+    /// logical units per second — `LINEAR_VELOCITY_TAKE_OVER`.
+    #[must_use]
+    pub const fn linear_take_over_velocity(&self) -> f64 {
+        self.linear_take_over_velocity
+    }
+
+    /// The stretch, in logical units, under which a relaxing spring this
+    /// slow finishes linearly — `LINEAR_DISTANCE_TAKE_OVER`.
+    #[must_use]
+    pub const fn linear_take_over_distance(&self) -> f64 {
+        self.linear_take_over_distance
+    }
+
+    /// The spring speed under which it counts as at rest, in logical units
+    /// per second — `VELOCITY_THRESHOLD`.
+    #[must_use]
+    pub const fn rest_velocity(&self) -> f64 {
+        self.rest_velocity
+    }
+
+    /// The stretch, in logical units, under which a slow spring counts as
+    /// at rest — `VALUE_THRESHOLD`.
+    #[must_use]
+    pub const fn rest_distance(&self) -> f64 {
+        self.rest_distance
+    }
+}
+
+impl EdgeStretch {
     /// AOSP `EdgeEffect`'s constants (Android 12, `android12-release`) on a
     /// display of `density` physical pixels per logical unit: its pixel
     /// thresholds — 200 px/s and 8 px for the linear take-over, 0.01 px/s
@@ -887,6 +1024,27 @@ pub struct RubberBand {
     pub release: ReleaseReturn,
     /// How a fling that reaches the edge bounces past it and back.
     pub bounce: EdgeBounce,
+}
+
+impl RubberBand {
+    /// The resistance `c` in `(1 − 1 / (x·c/d + 1)) · d` — the band's
+    /// slope at the edge.
+    #[must_use]
+    pub const fn coefficient(&self) -> f64 {
+        self.coefficient
+    }
+
+    /// How a release past the edge returns onto it.
+    #[must_use]
+    pub const fn release(&self) -> ReleaseReturn {
+        self.release
+    }
+
+    /// How a fling that reaches the edge bounces past it and back.
+    #[must_use]
+    pub const fn bounce(&self) -> EdgeBounce {
+        self.bounce
+    }
 }
 
 impl RubberBand {
@@ -930,6 +1088,35 @@ pub struct ReleaseReturn {
 }
 
 impl ReleaseReturn {
+    /// Creates a `ReleaseReturn` from its parts.
+    #[must_use]
+    pub const fn new(response: f64, handover_response: f64) -> Self {
+        Self {
+            response,
+            handover_response,
+        }
+    }
+
+    /// The period `2π / ω` of the decay rate `ω`, in seconds.
+    #[must_use]
+    pub const fn response(&self) -> f64 {
+        self.response
+    }
+
+    /// Sets the `response`.
+    pub const fn set_response(&mut self, response: f64) {
+        self.response = response;
+    }
+
+    /// The period `2π / ω_h` of the rate `ω_h` that sets the velocity a
+    /// release moving toward the content crosses the edge with, in seconds.
+    #[must_use]
+    pub const fn handover_response(&self) -> f64 {
+        self.handover_response
+    }
+}
+
+impl ReleaseReturn {
     /// `UIScrollView`'s return. `UIKit` documents none of it. Measured on
     /// an iPad Pro 13-inch (M4) under iPadOS 26.5, at 120 Hz: 25 releases
     /// 46 to 329 pt past the top edge of a `UIScrollView`, each fitted
@@ -963,6 +1150,30 @@ pub struct EdgeBounce {
     /// The share of the fling's velocity at the edge that the spring
     /// starts with.
     pub entry_velocity_scale: f64,
+}
+
+impl EdgeBounce {
+    /// Creates a `EdgeBounce` from its parts.
+    #[must_use]
+    pub const fn new(spring: SpringBack, entry_velocity_scale: f64) -> Self {
+        Self {
+            spring,
+            entry_velocity_scale,
+        }
+    }
+
+    /// The spring that carries the offset past the edge and back onto it.
+    #[must_use]
+    pub const fn spring(&self) -> SpringBack {
+        self.spring
+    }
+
+    /// The share of the fling's velocity at the edge that the spring
+    /// starts with.
+    #[must_use]
+    pub const fn entry_velocity_scale(&self) -> f64 {
+        self.entry_velocity_scale
+    }
 }
 
 impl EdgeBounce {
@@ -1004,6 +1215,29 @@ pub struct SpringBack {
     pub damping_ratio: f64,
 }
 
+impl SpringBack {
+    /// Creates a `SpringBack` from its parts.
+    #[must_use]
+    pub const fn new(response: f64, damping_ratio: f64) -> Self {
+        Self {
+            response,
+            damping_ratio,
+        }
+    }
+
+    /// The undamped period, in seconds: `ω0 = 2π / response`.
+    #[must_use]
+    pub const fn response(&self) -> f64 {
+        self.response
+    }
+
+    /// The damping ratio `ζ`: 1 is critical, above 1 overdamped.
+    #[must_use]
+    pub const fn damping_ratio(&self) -> f64 {
+        self.damping_ratio
+    }
+}
+
 /// Android `OverScroller`'s spline coefficients.
 ///
 /// The spline's math is ported
@@ -1020,6 +1254,33 @@ pub struct SplineDeceleration {
     /// `SplineScroller`'s `mFlingFriction` —
     /// `ViewConfiguration.getScrollFriction()` on Android.
     pub friction: f64,
+}
+
+impl SplineDeceleration {
+    /// Creates a `SplineDeceleration` from the platform's physical
+    /// coefficient and fling friction.
+    #[must_use]
+    pub const fn new(physical_coeff: f64, friction: f64) -> Self {
+        Self {
+            physical_coeff,
+            friction,
+        }
+    }
+
+    /// `SplineScroller`'s `mPhysicalCoeff` — the physical-pixel acceleration
+    /// scale the spline's distance and duration derive from, in logical
+    /// units per second².
+    #[must_use]
+    pub const fn physical_coeff(&self) -> f64 {
+        self.physical_coeff
+    }
+
+    /// `SplineScroller`'s `mFlingFriction` —
+    /// `ViewConfiguration.getScrollFriction()` on Android.
+    #[must_use]
+    pub const fn friction(&self) -> f64 {
+        self.friction
+    }
 }
 
 /// Focused text-input area used for IME activation and candidate-window placement.
@@ -1040,6 +1301,66 @@ pub struct TextInputState {
     /// platform with a soft keyboard shows it when this changes, which is
     /// how a tap on the already-focused field re-opens a dismissed keyboard.
     pub activation: u64,
+}
+
+impl TextInputState {
+    /// Creates a `TextInputState` from its parts.
+    #[must_use]
+    pub const fn new(
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        purpose: TextInputPurpose,
+        activation: u64,
+    ) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+            purpose,
+            activation,
+        }
+    }
+
+    /// Left edge of the input field, in logical points.
+    #[must_use]
+    pub const fn x(&self) -> f64 {
+        self.x
+    }
+
+    /// Top edge of the input field, in logical points.
+    #[must_use]
+    pub const fn y(&self) -> f64 {
+        self.y
+    }
+
+    /// Width of the input field, in logical points.
+    #[must_use]
+    pub const fn width(&self) -> f64 {
+        self.width
+    }
+
+    /// Height of the input field, in logical points.
+    #[must_use]
+    pub const fn height(&self) -> f64 {
+        self.height
+    }
+
+    /// The field's purpose, which selects the platform's input treatment.
+    #[must_use]
+    pub const fn purpose(&self) -> TextInputPurpose {
+        self.purpose
+    }
+
+    /// The renderer's count of primary presses on editable targets. A
+    /// platform with a soft keyboard shows it when this changes, which is
+    /// how a tap on the already-focused field re-opens a dismissed keyboard.
+    #[must_use]
+    pub const fn activation(&self) -> u64 {
+        self.activation
+    }
 }
 
 /// Input events emitted by a windowing backend.
@@ -1519,10 +1840,6 @@ pub struct EngineAndroidTarget<'a> {
 /// in the session environment so an update re-lays out through the ordinary
 /// input path; hosts with no unsafe regions simply never install one.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "environment newtype over the window's safe-area binding"
-)]
 pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
 
 /// The window's *keyboard* region in logical units.
@@ -1539,10 +1856,6 @@ pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>
 /// whose bottom touches it extends through it and scrolls a focused field
 /// clear of the keyboard band (layout-spec.md §7.1).
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "environment newtype over the window's keyboard-area binding"
-)]
 pub struct WindowKeyboardArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
 
 /// Asserts the app's `Window::frame` binding carries finite components on

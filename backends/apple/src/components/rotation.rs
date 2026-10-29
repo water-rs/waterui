@@ -106,7 +106,10 @@ impl SubView for RotationSubView {
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_view::<Metadata<Rotation>>(|metadata, ctx| {
         let rotation = metadata.value;
-        let anchor = Point::new(f64::from(rotation.anchor.x), f64::from(rotation.anchor.y));
+        let anchor = Point::new(
+            f64::from(rotation.anchor().x),
+            f64::from(rotation.anchor().y),
+        );
 
         let mtm = ctx.mtm();
         let host = HostView::new(mtm, Rect::ZERO);
@@ -174,14 +177,14 @@ pub fn install(dispatcher: &mut Dispatcher) {
         );
         leaf.keep(sink_guard);
 
-        let angle = rotation.angle;
+        let angle = rotation.angle();
         {
             let mut borrowed = state.borrow_mut();
             borrowed.angle = angle.snapshot();
             apply_transform(&borrowed, &host, anchor);
         }
 
-        leaf.watch(&angle, {
+        leaf.watch(angle, {
             let state = Rc::clone(&state);
             move |wctx| {
                 state.borrow_mut().angle = *wctx.value();
