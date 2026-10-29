@@ -162,20 +162,44 @@ func wuiSignalReferenceFirstPaint(presentation: WuiReferencePresentation) {
       // the waterui scaffold pins the content rect at 800×600 unconditionally.
       hostingView.sizingOptions = []
       window.contentView = hostingView
+      // Mirror the chrome flags the WaterUI backend applies to a window with a
+      // toolbar (WuiWindowToolbar): unified style + full-size content, which
+      // is what lets a NavigationSplitView sidebar run the window's full
+      // height with the traffic lights inside it — the presentation Apple's
+      // own apps use. Like the backend, they go on after the content view is
+      // installed, which keeps the window frame the scaffold's, and before
+      // the content's first layout: AppKit hands the toolbar band to a scroll
+      // view under it only then, and turning them on afterwards leaves the
+      // titlebar its own full-width hard pocket (water-rs/waterui#3697).
+      // The backend installs its toolbar before these flags, which turns
+      // the toolbar band into part of the full-size frame. SwiftUI installs
+      // a twin's toolbar with the content when it can, and the window then
+      // matches the backend's; a toolbar SwiftUI adds later lands in a
+      // window that is already full-size and leaves it a different height.
+      // In that case the host replays the backend's order: back to the
+      // frame the scaffold gave it, now with the toolbar, then full-size
+      // content again. A window that ends up without a toolbar drops the
+      // flags, as the backend never sets them there.
+      let scaffoldFrame = window.frame
+      let toolbarBeforeFlags = window.toolbar != nil
+      window.toolbarStyle = .unified
+      window.styleMask.insert(.fullSizeContentView)
       window.center()
       window.makeKeyAndOrderFront(nil)
       self.window = window
       wuiSignalReferenceFirstPaint(presentation: presentation)
 
-      // Mirror the chrome flags the WaterUI backend applies once a window has
-      // a toolbar (WuiWindowToolbar): unified style + full-size content, which
-      // is what lets a NavigationSplitView sidebar run the window's full
-      // height with the traffic lights inside it — the presentation Apple's
-      // own apps use. SwiftUI installs window.toolbar on first layout, so the
-      // check runs after a turn of the main loop.
       DispatchQueue.main.async {
-        if window.toolbar != nil {
-          window.toolbarStyle = .unified
+        if window.toolbar == nil {
+          window.styleMask.remove(.fullSizeContentView)
+          window.toolbarStyle = .automatic
+        } else if !toolbarBeforeFlags {
+          let top = window.frame.maxY
+          window.styleMask.remove(.fullSizeContentView)
+          var frame = window.frame
+          frame.size = scaffoldFrame.size
+          frame.origin.y = top - frame.size.height
+          window.setFrame(frame, display: false)
           window.styleMask.insert(.fullSizeContentView)
         }
       }
