@@ -4596,7 +4596,6 @@ impl<'a> Lowering<'a> {
             // An unchanged retained emission has already passed visibility testing.
             let visibility = match op {
                 Op::Glyphs { local, bounds, .. } => Some((*local, *bounds)),
-                Op::Path { local, outline, .. } => Some((*local, outline.get(source).bounds())),
                 _ => None,
             };
             if let Some((local, bounds)) = visibility {
@@ -4628,6 +4627,18 @@ impl<'a> Lowering<'a> {
             revision,
         });
         Ok(changed)
+    }
+
+    fn path_visible(&self, bounds: Rect, raster: Affine) -> bool {
+        let placed = raster.transform_rect_bbox(bounds).inflate(2.0, 2.0);
+        !placed
+            .intersect(Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.width),
+                f64::from(self.height),
+            ))
+            .is_zero_area()
     }
 
     /// The automatic route's predicate (decisions R1 and R2): a path
@@ -4681,6 +4692,9 @@ impl<'a> Lowering<'a> {
             .get(&index)
             .is_none_or(|entry| entry.content != content || entry.linear != linear_bits)
         {
+            if !self.path_visible(outline.bounds(), raster) {
+                return Ok(true);
+            }
             let surface = (f64::from(self.width), f64::from(self.height));
             let linear_affine = Affine::new([linear[0], linear[1], linear[2], linear[3], 0.0, 0.0]);
             let prepared = match outline {
@@ -5179,7 +5193,10 @@ impl<'a> Lowering<'a> {
                     OutlineRef::Fill { elements, content } => self.path(
                         content,
                         *rule,
-                        || BezPath::from_vec(elements.to_vec()),
+                        (
+                            || BezPath::from_vec(elements.to_vec()),
+                            || OutlineRef::Fill { elements, content }.bounds(),
+                        ),
                         paint,
                         glyphs,
                         geometry,
@@ -5197,7 +5214,7 @@ impl<'a> Lowering<'a> {
                         self.path(
                             outline.content(tolerance),
                             *rule,
-                            || outline.build(tolerance),
+                            (|| outline.build(tolerance), || outline.bounds()),
                             paint,
                             glyphs,
                             geometry,
@@ -5574,7 +5591,7 @@ impl<'a> Lowering<'a> {
         &mut self,
         content: u64,
         rule: FillRule,
-        make: impl FnOnce() -> BezPath,
+        (make, bounds): (impl FnOnce() -> BezPath, impl FnOnce() -> Rect),
         paint: &ResolvedPaint,
         glyphs: &GlyphContext<'_>,
         geometry: &mut GeometryCache,
@@ -5635,6 +5652,14 @@ impl<'a> Lowering<'a> {
         let (stored, pending) = 'stored: {
             let key = GeometryKey::new(content, rule, pl.raster);
             let digest = key.digest();
+            if geometry
+                .entries
+                .get(&digest)
+                .is_none_or(|entry| entry.key != key)
+                && !self.path_visible(bounds(), self.transform)
+            {
+                return Ok(None);
+            }
             let entry = geometry.entry(digest, key, || {
                 let local = shader_path.unwrap_or_else(|| make.take().expect("path factory")());
                 RetainedGeometry::new(local, pl.raster, rule)
@@ -7153,7 +7178,14 @@ mod tests {
                 assert_eq!(lowering.paths_rasterized(), 0);
                 assert!(lowering.pending.is_empty());
                 assert!(lowering.frame.instances.is_empty());
-                assert!(cache.data.is_none());
+                assert!(
+                    cache
+                        .data
+                        .as_ref()
+                        .expect("empty emission retained")
+                        .geometry
+                        .is_none()
+                );
                 assert!(retained.storage.geometry.entries.is_empty());
                 assert!(retained.storage.gpu_paths.is_empty());
             }
