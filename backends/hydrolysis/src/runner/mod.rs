@@ -25,6 +25,7 @@ use waterui::app::App;
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(hydrolysis_winit),
+    not(hydrolysis_uikit),
     not(target_os = "android")
 ))]
 use waterui::app::AppParts;
@@ -59,6 +60,10 @@ pub mod android_accessibility;
 /// JNI bridge and on host for the Kotlin-agreement test; dead elsewhere.
 #[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
 pub mod android_methods;
+/// The Apple hosts built on `cocoa-ui` views; the `UIKit` host runs iOS and
+/// iPadOS scenes.
+#[cfg(hydrolysis_uikit)]
+mod apple;
 // Bare wasm has no window pump to drive these modules' diagnostics
 // and menu-bar plumbing.
 /// The insets-region metrics the Android session's `set_metrics`
@@ -83,10 +88,10 @@ pub mod editing;
 mod executor;
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 mod headless;
-/// The host UI-thread executor and its wake — compiled on Android for the
-/// JNI bridge and, because `eventfd` is Linux-only, on a Linux host for the
-/// fd tests; dead elsewhere.
-#[cfg(any(target_os = "android", all(test, target_os = "linux")))]
+/// The host UI-thread executor and its wake — compiled where a platform
+/// schedules the frames (Android, UIKit) and, because `eventfd` is
+/// Linux-only, on a Linux host for the fd tests; dead elsewhere.
+#[cfg(any(hydrolysis_frame_transaction, all(test, target_os = "linux")))]
 pub mod host_executor;
 pub mod ime;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
@@ -140,7 +145,11 @@ use window::{advance_runtime, handle_input_events};
 #[cfg(any(
     hydrolysis_winit,
     all(test, not(target_arch = "wasm32")),
-    all(not(target_arch = "wasm32"), not(target_os = "android")),
+    all(
+        not(target_arch = "wasm32"),
+        not(target_os = "android"),
+        not(hydrolysis_uikit)
+    ),
     all(target_arch = "wasm32", feature = "web")
 ))]
 use window::render_window;
@@ -288,6 +297,7 @@ fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> 
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(hydrolysis_winit),
+    not(hydrolysis_uikit),
     not(target_os = "android")
 ))]
 fn offscreen_scale_factor() -> f64 {
@@ -348,14 +358,86 @@ fn install_headless_window_managers<E: crate::text::TextEngine>(
     let _ = env.get_or_insert_with::<MenuShortcutRegistry<E>, _>(MenuShortcutRegistry::default);
 }
 
+/// The environment a frame-transaction host assembles from an application's
+/// own: the component hooks, window managers, theme tokens and fonts every
+/// window of the host renders under.
+#[cfg(hydrolysis_frame_transaction)]
+pub struct HostEnvironment<E: crate::text::TextEngine> {
+    pub(crate) env: Environment,
+    pub(crate) theme: Rc<dyn crate::theme::WidgetTheme>,
+    /// The collection the environment installs; the GPU runtime's engine
+    /// reads it back, the HWUI engine draws text through the platform.
+    #[cfg(hydrolysis_gpu_painter)]
+    pub(crate) fonts: FontCollection,
+    /// Mints each window's registry id.
+    pub(crate) shortcuts: MenuShortcutRegistry<E>,
+}
+
+/// Assembles a [`HostEnvironment`] over `env`, the application's environment
+/// already layered over the host's own.
+///
+/// The caller then adds what is specific to its windows — insets, platform
+/// services — and ends with [`install_view_renderer`], which snapshots the
+/// environment it is given.
+#[cfg(hydrolysis_frame_transaction)]
+pub fn assemble_host_environment<E: crate::text::TextEngine>(
+    env: &Environment,
+    menu_bar: &nami::Computed<Vec<waterui_controls::menu::Menu>>,
+    style: Rc<dyn crate::Style>,
+    color_scheme: nami::Binding<waterui::theme::ColorScheme>,
+    pending_window_queue: &Rc<RefCell<Vec<Window>>>,
+) -> HostEnvironment<E> {
+    let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+    install_native_component_hooks(&mut env);
+    install_headless_window_managers::<E>(&mut env, Rc::clone(pending_window_queue));
+    menu_bar::register_menu_bar::<E>(menu_bar, &env);
+    env.insert(HydrolysisTextContextMenuMode::Overlay);
+    // The scheme signal is created from the platform's real appearance and
+    // kept current by the host, so the default tokens re-resolve on a theme
+    // flip (#1972).
+    crate::theme::install_theme_tokens(&mut env, Some(&*style), color_scheme);
+    let theme: Rc<dyn crate::theme::WidgetTheme> = style;
+    #[cfg(hydrolysis_gpu_painter)]
+    let fonts = crate::text::fonts::native_collection(&env);
+    #[cfg(hydrolysis_gpu_painter)]
+    fonts.clone().install(&mut env);
+    let shortcuts = env
+        .get::<MenuShortcutRegistry<E>>()
+        .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+        .clone();
+    HostEnvironment {
+        env,
+        theme,
+        #[cfg(hydrolysis_gpu_painter)]
+        fonts,
+        shortcuts,
+    }
+}
+
+/// Installs the capture service. It mounts its subtree under a snapshot of
+/// `env` — the theme tokens, hooks and font collection a window's subtree
+/// resolves — so it must be installed once the environment is otherwise
+/// complete (water-rs/waterui#2703).
+#[cfg(all(hydrolysis_frame_transaction, hydrolysis_gpu_painter))]
+pub fn install_view_renderer(env: &mut Environment, theme: &Rc<dyn crate::theme::WidgetTheme>) {
+    let renderer = crate::view_renderer::HydrolysisViewRenderer::new(
+        Rc::clone(theme),
+        env.clone(),
+        FontFamilyResolution::Lenient,
+    );
+    env.insert(waterui_core::ViewRenderer::new(renderer));
+}
+
 // The headless offscreen `run` never exists on Android: `hydrolysis::run`
 // must not silently dispatch an app to the one-shot offscreen pump there.
 // The Android host's entry point is `runner::android` — a missing `run` is a
 // compile error naming the real boundary, which is the plan's "no accidental
-// Android-to-headless dispatch" made mechanical.
+// Android-to-headless dispatch" made mechanical. The same holds on iOS, whose
+// entry point is the `UIKit` host.
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(hydrolysis_winit),
+    not(hydrolysis_uikit),
     not(target_os = "android")
 ))]
 /// Runs `app` once offscreen and returns — the headless one-shot `run` that
@@ -510,6 +592,21 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     let executors = init_main_thread_executors();
     let app = app(env);
     winit_runner::run(app, style, executors);
+}
+
+/// Runs `app` on the `UIKit` host and never returns: the process lives in
+/// `UIApplicationMain`.
+///
+/// `app` is a factory, not a built value: the subscriber and executors are
+/// installed before it runs, so events the application emits while building
+/// its `App` reach the log (water-rs/waterui#2513).
+#[cfg(hydrolysis_uikit)]
+pub fn run(
+    app: impl FnOnce(Environment) -> App + 'static,
+    env: Environment,
+    style: impl crate::Style,
+) -> ! {
+    apple::uikit::run(app, env, style)
 }
 
 /// Installs the process-wide tracing subscriber when `RUST_LOG` is set:

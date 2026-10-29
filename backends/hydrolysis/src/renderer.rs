@@ -348,7 +348,7 @@ pub enum Next {
     #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     At {
         /// When the frame is wanted.
-        #[cfg_attr(not(target_os = "android"), expect(dead_code))]
+        #[cfg_attr(not(hydrolysis_frame_transaction), expect(dead_code))]
         time: Instant,
         /// The refresh-rate range the frame requests.
         #[cfg_attr(not(target_os = "android"), expect(dead_code))]

@@ -60,6 +60,8 @@ pub mod image;
 pub mod input_view;
 mod key_commands;
 pub mod keyboard;
+mod keyboard_band;
+pub use keyboard_band::KeyboardBand;
 mod menu;
 mod navigation;
 pub use pointer::PointerInteraction;
@@ -74,7 +76,7 @@ mod window;
 
 #[cfg(feature = "dialog")]
 pub use alert::AlertController;
-pub use appearance::{ColorSchemeObservation, current_scheme};
+pub use appearance::{ColorSchemeObservation, DisplayScaleObservation, current_scheme};
 pub use application::{
     ApplicationHandlers, MenuBuilder, WindowScene, request_main_menu_rebuild, run,
 };

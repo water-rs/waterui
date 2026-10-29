@@ -252,6 +252,18 @@ impl WindowScene {
         self.scene.session().persistentIdentifier().to_string()
     }
 
+    /// The highest rate, in frames per second, the scene's screen can
+    /// display.
+    ///
+    /// # Panics
+    ///
+    /// If `UIKit` reports a negative rate.
+    #[must_use]
+    pub fn max_frames_per_second(&self) -> u32 {
+        u32::try_from(self.scene.screen().maximumFramesPerSecond())
+            .expect("a screen's maximum refresh rate is not negative")
+    }
+
     pub(super) fn native(&self) -> &UIWindowScene {
         &self.scene
     }

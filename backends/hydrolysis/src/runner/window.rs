@@ -11,14 +11,11 @@ use crate::platform::GpuSurfaceWindow;
 // and `BrowserSurface::device_loss` in the `GpuSurfaceFrame` impls below —
 // exist only on these cfgs; everywhere else the trait is reached through
 // `dyn SurfaceProvider`, which needs no import.
-#[cfg(any(
-    all(target_os = "macos", hydrolysis_winit),
-    all(target_arch = "wasm32", feature = "web")
-))]
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
 #[cfg(hydrolysis_gpu_painter)]
 use crate::platform::PresentationSurface as _;
 use crate::renderer::material::{BehindWindowLevel, Blending, WithinWindowLevel};
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(hydrolysis_frame_transaction, test))]
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -78,7 +75,7 @@ pub(super) struct RuntimeWindow<P: PlatformWindow, E: crate::text::TextEngine> {
     pub(super) platform: P,
     pub(super) renderer: HydrolysisRenderer<E>,
     pub(super) mode: FrameMode,
-    #[cfg(target_os = "android")]
+    #[cfg(hydrolysis_frame_transaction)]
     pub(super) engine_next: crate::renderer::Next,
     /// The pump is parked: the host reports the window cannot be seen
     /// (minimized, occluded, backgrounded or surface-less). While parked no
@@ -143,7 +140,7 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
             platform,
             renderer,
             mode: FrameMode::Refresh,
-            #[cfg(target_os = "android")]
+            #[cfg(hydrolysis_frame_transaction)]
             engine_next: crate::renderer::Next::Idle,
             hidden: false,
             presented_frames: 0,
@@ -254,7 +251,7 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
 /// Android's frame transaction and the gate shared with its installed wake.
 /// Requests made during a transaction join its continuation; occluded requests
 /// wait for the restore frame. Winit and web retain their own scheduling rules.
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(hydrolysis_frame_transaction, test))]
 #[derive(Debug, Default)]
 pub(super) struct FrameTransaction {
     open: Cell<bool>,
@@ -263,7 +260,7 @@ pub(super) struct FrameTransaction {
     wake_gate: Arc<AtomicBool>,
 }
 
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(hydrolysis_frame_transaction, test))]
 impl FrameTransaction {
     /// Wraps the host's frame post in the gate: the returned wake posts only
     /// while no transaction is open and the window is not occluded.
@@ -312,8 +309,8 @@ impl FrameTransaction {
     /// continuation instead) and while the window is occluded (it stays
     /// armed for the restore frame).
     #[cfg_attr(
-        not(target_os = "android"),
-        allow(dead_code, reason = "read by the Android host's request_redraw")
+        not(hydrolysis_frame_transaction),
+        allow(dead_code, reason = "read by a transaction host's request_redraw")
     )]
     pub(super) fn may_post(&self) -> bool {
         self.wake_gate.load(Ordering::Relaxed)
@@ -351,7 +348,7 @@ impl FrameTransaction {
 }
 
 /// Work still pending when Android closes its frame transaction.
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(hydrolysis_frame_transaction, test))]
 #[derive(Clone, Copy)]
 pub(super) struct FrameDemand {
     pub(super) mode: FrameMode,
@@ -362,7 +359,7 @@ pub(super) struct FrameDemand {
 /// A request raised after the pump drained the flags fired no wake while the
 /// transaction was open, so it must count toward continuation. Hidden work waits
 /// for the restore frame instead.
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(hydrolysis_frame_transaction, test))]
 const fn wants_next_frame(hidden: bool, demand: FrameDemand) -> bool {
     !hidden && (demand.mode.is_pending() || demand.redraw_pending || demand.signals_pending)
 }
@@ -372,7 +369,7 @@ const fn wants_next_frame(hidden: bool, demand: FrameDemand) -> bool {
 /// call, the publishes (accessibility, editing, platform views) and its
 /// readiness reporting. The sequence itself lives once, in
 /// [`run_frame_transaction`], so hosts cannot drift apart.
-#[cfg(target_os = "android")]
+#[cfg(hydrolysis_frame_transaction)]
 pub(super) trait FrameHost {
     /// The host's platform window.
     type Platform: PlatformWindow;
@@ -433,7 +430,7 @@ pub(super) trait FrameHost {
 }
 
 /// What one frame transaction leaves for the host's scheduler.
-#[cfg(target_os = "android")]
+#[cfg(hydrolysis_frame_transaction)]
 #[derive(Clone, Copy, Debug)]
 pub(super) struct FrameOutcome {
     /// Another frame is owed: animations, a pending refresh, or a redraw
@@ -451,7 +448,7 @@ pub(super) struct FrameOutcome {
 /// Executor wakes and input dispatch run against the last presented
 /// geometry; the pump renders only when the engine's `Next` says there is
 /// work, and the outcome tells the host whether another frame is owed.
-#[cfg(target_os = "android")]
+#[cfg(hydrolysis_frame_transaction)]
 pub(super) fn run_frame_transaction<H: FrameHost>(host: &mut H) -> FrameOutcome {
     // Tasks and input callbacks can start animations. Publish this frame's
     // time before either runs so idle time is not charged to a new track.
@@ -1281,7 +1278,10 @@ pub struct SurfaceRenderResult {
 
 #[cfg(hydrolysis_gpu_painter)]
 impl SurfaceRenderResult {
-    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+    #[cfg(any(
+        all(hydrolysis_frame_transaction, not(hydrolysis_hwui)),
+        hydrolysis_apple_engine_window
+    ))]
     pub(crate) const fn engine_presented(render: Duration) -> Self {
         Self {
             acquire: Duration::ZERO,
@@ -1294,7 +1294,7 @@ impl SurfaceRenderResult {
 
 /// How a window's presentation kind renders one frame and gets it to the
 /// display. Host-acquired surfaces ([`SurfaceProvider`]) acquire, copy the
-/// engine output in and present; the macOS winit window's and the browser
+/// engine output in and present; the Apple engine-presented windows and the browser
 /// page's engine targets present inside `Engine::render`, so they have no
 /// acquire, copy or present to call.
 ///
@@ -1480,15 +1480,36 @@ crate::engine::cfg_async_fn! {
     }
 }
 
-/// The macOS winit window's frame: `Engine::render` is the whole
-/// presentation — the engine acquires the drawable and presents inside it,
-/// so there is no host acquire, copy or present. `acquire` and `present`
+/// The frame of an engine-presented Apple window: `Engine::render` is the
+/// whole presentation — the engine acquires the drawable and presents inside
+/// it, so there is no host acquire, copy or present. `acquire` and `present`
 /// report zero because no such calls run; the drawable wait and the layer
 /// presents are inside `render`. No snapshot can be asked of this kind: the
 /// capture path is bound on [`SurfaceProvider`], which it does not
 /// implement.
 ///
 /// [`SurfaceProvider`]: crate::platform::SurfaceProvider
+#[cfg(hydrolysis_apple_engine_window)]
+#[cfg(hydrolysis_gpu_painter)]
+pub(super) fn render_engine_presented_frame<S: crate::platform::EnginePresented>(
+    surface: &mut S,
+    renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+    clear_color: peniko::Color,
+    display_scale: f64,
+) -> SurfaceRenderResult {
+    let render_started_at = Instant::now();
+    // Restore a lost device generation before the render target is
+    // built: the engine window is rebuilt on the new context id.
+    surface.ensure_live();
+    let (target, engine_target) =
+        surface.render_targets(display_scale, crate::renderer::working_color(clear_color));
+    renderer
+        .render_window_frame(&target, engine_target)
+        .unwrap_or_else(|error| panic!("hydrolysis renderer: engine render failed: {error:#}"));
+    surface.device_loss().note_frame_presented();
+    SurfaceRenderResult::engine_presented(render_started_at.elapsed())
+}
+
 #[cfg(all(target_os = "macos", hydrolysis_winit))]
 impl GpuSurfaceFrame for crate::platform::WinitSurface {
     fn render_frame(
@@ -1497,22 +1518,12 @@ impl GpuSurfaceFrame for crate::platform::WinitSurface {
         clear_color: peniko::Color,
         display_scale: f64,
     ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
-        let render_started_at = Instant::now();
-        // Restore a lost device generation before the render target is
-        // built: the engine window is rebuilt on the new context id.
-        self.ensure_live();
-        let (target, engine_target) =
-            self.render_targets(display_scale, crate::renderer::working_color(clear_color));
-        renderer
-            .render_window_frame(&target, engine_target)
-            .unwrap_or_else(|error| panic!("hydrolysis renderer: engine render failed: {error:#}"));
-        self.device_loss().note_frame_presented();
-        Ok(SurfaceRenderResult {
-            acquire: Duration::ZERO,
-            render: render_started_at.elapsed(),
-            present: Duration::ZERO,
-            snapshot: None,
-        })
+        Ok(render_engine_presented_frame(
+            self,
+            renderer,
+            clear_color,
+            display_scale,
+        ))
     }
 }
 
@@ -1839,11 +1850,11 @@ crate::engine::cfg_async_fn! {
     // next frame through `Next::At` (the surface's wake may already have woken
     // the host too — the request is idempotent).
     if let Some(next) = runtime.renderer.take_engine_next() {
-        #[cfg(target_os = "android")]
+        #[cfg(hydrolysis_frame_transaction)]
         {
             runtime.engine_next = next;
         }
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(hydrolysis_frame_transaction))]
         if matches!(next, crate::renderer::Next::At { .. }) {
             runtime.platform.request_redraw();
         }

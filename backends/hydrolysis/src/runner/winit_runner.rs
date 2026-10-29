@@ -37,7 +37,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop};
 use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
 use winit::window::{Window as NativeWindow, WindowId};
 
-use crate::platform::{PlatformWindow, WinitGpuContext, WinitWindow};
+use crate::platform::{EngineGpuContext, PlatformWindow, WinitWindow};
 use crate::renderer::{
     FontFamilyResolution, HydrolysisRenderer, HydrolysisTextContextMenuMode,
     HydrolysisWindowOrigin, MenuShortcutRegistry, PopupWindowManager,
@@ -910,7 +910,7 @@ struct WinitRunner {
     /// Transient popup windows (mounted through `PopupWindowManager`): a
     /// pointer press that lands outside every app window dismisses them.
     popup_window_ids: std::collections::HashSet<WindowId>,
-    gpu_context: Option<WinitGpuContext>,
+    gpu_context: Option<EngineGpuContext>,
     accesskit_adapters: HashMap<WindowId, AccessKitAdapter>,
     last_accessibility_updates: HashMap<WindowId, accesskit::TreeUpdate>,
     /// The executor is installed the first time the active event loop is

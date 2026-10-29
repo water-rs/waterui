@@ -1813,9 +1813,13 @@ fn pump_frame_transaction(
 /// log instead of being dropped (water-rs/waterui#2513). The headless
 /// one-shot `run` is the only `hydrolysis::run` that returns — the winit
 /// `run` never does, so this test exists only under that cfg — and only
-/// where the headless one-shot `run` itself exists: not on Android, whose
-/// host mounts `runner::android` instead.
-#[cfg(all(not(hydrolysis_winit), not(target_os = "android")))]
+/// where the headless one-shot `run` itself exists: not on Android or iOS,
+/// whose hosts mount `runner::android` / `runner::apple` instead.
+#[cfg(all(
+    not(hydrolysis_winit),
+    not(hydrolysis_uikit),
+    not(target_os = "android")
+))]
 #[test]
 fn a_run_installs_tracing_before_the_app_factory_runs() {
     // SAFETY: nextest gives each test its own process, so mutating the

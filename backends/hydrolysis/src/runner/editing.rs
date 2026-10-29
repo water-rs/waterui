@@ -1,6 +1,6 @@
 //! The platform range-editing protocol as a Rust state machine — Android's
-//! `InputConnection` today, the editing half of the step-5 work in
-//! water-rs/hydrolysis#246.
+//! `InputConnection` and the `UIKit` `UITextInput` client, the editing half
+//! of the step-5 work in water-rs/hydrolysis#246.
 //!
 //! The `ImePreedit`/`ImeCommit` input events cannot express Android's
 //! complete protocol: an `InputConnection` carries a text *revision*, a
@@ -36,7 +36,9 @@
 use std::ops::Range;
 
 use crate::platform::KeyCode;
-use crate::renderer::{FocusedEditorSnapshot, InteractionKey, SemanticCore, TextContextMenuAction};
+#[cfg(any(android_platform, test))]
+use crate::renderer::TextContextMenuAction;
+use crate::renderer::{FocusedEditorSnapshot, InteractionKey, SemanticCore};
 use crate::text::{TextLayout as _, TextPosition};
 
 /// Decodes the W3C `KeyboardEvent.key` value the Kotlin host's `w3cKey`
@@ -51,28 +53,39 @@ use crate::text::{TextLayout as _, TextPosition};
 /// # Panics
 ///
 /// On a string that is no W3C key value: the host promises one.
+#[cfg(any(android_platform, test))]
 pub fn hardware_key(key: &str) -> (KeyCode, keyboard_types::Key) {
     let logical_key: keyboard_types::Key = key.parse().unwrap_or_else(|_| {
         panic!(
             "the Android host reported the key `{key}`, which is not a W3C KeyboardEvent.key value"
         )
     });
-    let code = match &logical_key {
+    (key_code(&logical_key), logical_key)
+}
+
+/// The legacy [`KeyCode`] a W3C logical key denotes — the identifier the
+/// renderer's key handlers match on.
+pub fn key_code(logical_key: &keyboard_types::Key) -> KeyCode {
+    match logical_key {
         keyboard_types::Key::Character(character) => KeyCode::Character(character.clone()),
         keyboard_types::Key::Named(named) => KeyCode::Named(named.to_string()),
-    };
-    (code, logical_key)
+    }
 }
 
 /// `InputConnection.CURSOR_UPDATE_IMMEDIATE` — send the anchor info once.
+#[cfg(any(android_platform, test))]
 pub const CURSOR_UPDATE_IMMEDIATE: i32 = 0x01;
 /// `InputConnection.CURSOR_UPDATE_MONITOR` — keep sending it on every change.
+#[cfg(any(android_platform, test))]
 pub const CURSOR_UPDATE_MONITOR: i32 = 0x02;
 /// `CursorAnchorInfoRequest` filter bit for per-character bounds (API 33+).
+#[cfg(any(android_platform, test))]
 const CURSOR_UPDATE_FILTER_CHARACTER_BOUNDS: i32 = 0x02;
 /// Filter bit for the editor's own bounds.
+#[cfg(any(android_platform, test))]
 const CURSOR_UPDATE_FILTER_EDITOR_BOUNDS: i32 = 0x04;
 /// Filter bit for the composing text payload.
+#[cfg(any(android_platform, test))]
 const CURSOR_UPDATE_FILTER_EDITING_TEXT: i32 = 0x08;
 /// `EditorInfo.IME_ACTION_UNSPECIFIED` — a plain Enter.
 const IME_ACTION_UNSPECIFIED: i32 = 0;
@@ -80,6 +93,7 @@ const IME_ACTION_UNSPECIFIED: i32 = 0;
 /// Character-bounds window half-width around the caret/composition, in
 /// UTF-16 units; bounded so a huge document can't make one sync send the
 /// whole text's geometry.
+#[cfg(any(android_platform, test))]
 const CHAR_BOUNDS_RADIUS: usize = 64;
 
 /// A context-menu editing action the host connection forwards
@@ -140,6 +154,7 @@ pub struct EditingState {
 /// them — the editor bounds, character bounds and composing text.
 /// `PartialEq` is what lets the bridge suppress unchanged pushes.
 #[derive(PartialEq)]
+#[cfg(any(android_platform, test))]
 pub struct AnchorInfo {
     pub(crate) insertion: kurbo::Rect,
     pub(crate) editor_bounds: Option<kurbo::Rect>,
@@ -243,7 +258,9 @@ pub struct EditingSession {
     single_line: bool,
     has_submit: bool,
     /// `requestCursorUpdates` subscription: mode bits and (API 33+) filter.
+    #[cfg(any(android_platform, test))]
     cursor_update_mode: i32,
+    #[cfg(any(android_platform, test))]
     cursor_update_filter: i32,
 }
 
@@ -298,6 +315,7 @@ impl EditingSession {
     }
 
     /// The current push/pull payload for the host.
+    #[cfg(any(android_platform, test))]
     pub fn state(&self) -> EditingState {
         let (comp_start, comp_end) = self.composing.as_ref().map_or((-1, -1), |c| {
             (
@@ -341,6 +359,7 @@ impl EditingSession {
     /// Whether cursor-anchor pushes were requested (`requestCursorUpdates`).
     /// `IMMEDIATE` asks for one update, `MONITOR` for every change; both are
     /// served by change-gated pushes, so an unchanged frame sends nothing.
+    #[cfg(any(android_platform, test))]
     pub const fn cursor_updates_subscribed(&self) -> bool {
         self.cursor_update_mode & (CURSOR_UPDATE_IMMEDIATE | CURSOR_UPDATE_MONITOR) != 0
     }
@@ -550,7 +569,7 @@ impl EditingSession {
     /// range `start..end` of the mirror with `text`. The edges are ordered and
     /// clamped into the text, and the selection and composing endpoints map
     /// through the edit exactly as for the other mutating ops.
-    #[cfg(test)]
+    #[cfg(any(hydrolysis_uikit, test))]
     pub fn replace_range(&mut self, editor_id: u64, start: usize, end: usize, text: &str) -> bool {
         if !self.live(editor_id) {
             return false;
@@ -566,6 +585,7 @@ impl EditingSession {
     /// `setComposingRegion`: mark a range of the existing text as composing —
     /// how an IME *uncommits* text it intends to revise (CJK reconversion).
     /// The covered text becomes pre-edit at the next flush.
+    #[cfg(any(android_platform, test))]
     pub fn set_composing_region(&mut self, editor_id: u64, start: i32, end: i32) -> bool {
         if !self.live(editor_id) {
             return false;
@@ -609,6 +629,7 @@ impl EditingSession {
     /// `deleteSurroundingText` in UTF-16 units: the protected region is the
     /// selection extended over the composing range; `before`/`after` are
     /// deleted outside it, never inside it.
+    #[cfg(any(android_platform, test))]
     pub fn delete_surrounding_text(&mut self, editor_id: u64, before: i32, after: i32) -> bool {
         if !self.live(editor_id) {
             return false;
@@ -624,6 +645,7 @@ impl EditingSession {
 
     /// `deleteSurroundingTextInCodePoints`: same protocol with code-point
     /// counts — a surrogate-pair emoji counts one, not two.
+    #[cfg(any(android_platform, test))]
     pub fn delete_surrounding_text_in_code_points(
         &mut self,
         editor_id: u64,
@@ -654,6 +676,7 @@ impl EditingSession {
     }
 
     /// `beginBatchEdit`: defer renderer writes to the outermost end.
+    #[cfg(any(android_platform, test))]
     pub const fn begin_batch_edit(&mut self, editor_id: u64) -> bool {
         if !self.live(editor_id) {
             return false;
@@ -664,6 +687,7 @@ impl EditingSession {
 
     /// `endBatchEdit` on the outermost batch; the deferred write runs on the
     /// caller's next [`Self::flush`].
+    #[cfg(any(android_platform, test))]
     pub const fn end_batch_edit(&mut self, editor_id: u64) -> bool {
         if !self.live(editor_id) || self.batch_depth == 0 {
             return false;
@@ -675,6 +699,7 @@ impl EditingSession {
     /// `performContextMenuAction` for the actions a platform menu can send —
     /// select-all/cut/copy/paste reach the same primitives the rendered
     /// context menu executes, so a secure field still refuses cut/copy.
+    #[cfg(any(android_platform, test))]
     pub fn perform_context_action<E: crate::text::TextEngine>(
         &self,
         editor_id: u64,
@@ -716,6 +741,7 @@ impl EditingSession {
     }
 
     /// `requestCursorUpdates(mode[, filter])`.
+    #[cfg(any(android_platform, test))]
     pub const fn set_cursor_update_subscription(
         &mut self,
         editor_id: u64,
@@ -734,6 +760,7 @@ impl EditingSession {
     /// subscription is active or nothing is focused. Character bounds are
     /// resolved from the snapshot's display layout — committed + pre-edit for
     /// a field, the mask glyphs for a secure field.
+    #[cfg(any(android_platform, test))]
     pub fn anchor_info<E: crate::text::TextEngine>(
         &self,
         snapshot: &FocusedEditorSnapshot<E>,
@@ -778,6 +805,7 @@ impl EditingSession {
     /// snapshot's display layout and offset by `text_bounds`. A surrogate
     /// pair occupies two UTF-16 units but one entry — Android keys
     /// `CursorAnchorInfo` bounds by the character's start index.
+    #[cfg(any(android_platform, test))]
     fn character_bounds<E: crate::text::TextEngine>(
         &self,
         snapshot: &FocusedEditorSnapshot<E>,
@@ -805,17 +833,7 @@ impl EditingSession {
                 let display_next = self.display_byte(snapshot, display, u16_pos + char_u16);
                 let rect =
                     char_rect::<E>(layout_of(snapshot), display, display_start, display_next);
-                {
-                    entries.push((
-                        u16_pos,
-                        kurbo::Rect::new(
-                            snapshot.text_bounds.x0 + rect.x0,
-                            snapshot.text_bounds.y0 + rect.y0,
-                            snapshot.text_bounds.x0 + rect.x1,
-                            snapshot.text_bounds.y0 + rect.y1,
-                        ),
-                    ));
-                }
+                entries.push((u16_pos, offset_rect(rect, snapshot.text_bounds)));
             }
             u16_pos += char_u16;
             if u16_pos >= window_end {
@@ -840,6 +858,63 @@ impl EditingSession {
                 .count()
         } else {
             utf16_to_byte(display, u16_index.min(utf16_len(display)))
+        }
+    }
+
+    /// The caret rectangle at the UTF-16 `offset` of the mirror text, in
+    /// window logical coordinates — the geometry a platform input method
+    /// places its candidate UI against.
+    #[cfg(hydrolysis_uikit)]
+    pub fn caret_rect_at<E: crate::text::TextEngine>(
+        &self,
+        snapshot: &FocusedEditorSnapshot<E>,
+        offset: usize,
+    ) -> kurbo::Rect {
+        let display = snapshot.display_text.as_str();
+        let byte = self.display_byte(snapshot, display, offset);
+        let rect = layout_of(snapshot).caret_rect(TextPosition::in_text(byte, display.len()));
+        offset_rect(rect, snapshot.text_bounds)
+    }
+
+    /// The rectangles covering the UTF-16 range `start..end` of the mirror
+    /// text, one per line, in window logical coordinates.
+    #[cfg(hydrolysis_uikit)]
+    pub fn range_rects<E: crate::text::TextEngine>(
+        &self,
+        snapshot: &FocusedEditorSnapshot<E>,
+        start: usize,
+        end: usize,
+        mut each: impl FnMut(kurbo::Rect),
+    ) {
+        let display = snapshot.display_text.as_str();
+        let layout = layout_of(snapshot);
+        let anchor =
+            TextPosition::in_text(self.display_byte(snapshot, display, start), display.len());
+        let focus = TextPosition::in_text(self.display_byte(snapshot, display, end), display.len());
+        layout.selection_rects(layout.selection(anchor, focus), |rect| {
+            each(offset_rect(rect, snapshot.text_bounds));
+        });
+    }
+
+    /// The UTF-16 offset of the mirror text nearest the window-logical
+    /// point `(x, y)`.
+    #[cfg(hydrolysis_uikit)]
+    pub fn offset_at_point<E: crate::text::TextEngine>(
+        &self,
+        snapshot: &FocusedEditorSnapshot<E>,
+        x: f64,
+        y: f64,
+    ) -> usize {
+        let layout_x = crate::num_cast::f64_as_f32(x - snapshot.text_bounds.x0);
+        let layout_y = crate::num_cast::f64_as_f32(y - snapshot.text_bounds.y0);
+        let byte = layout_of(snapshot).hit_test(layout_x, layout_y).index;
+        if snapshot.password {
+            // The display layout is the mask glyphs, one byte per character
+            // of the mirror text.
+            let prefix: String = self.text.chars().take(byte).collect();
+            utf16_len(&prefix)
+        } else {
+            byte_to_utf16(&snapshot.display_text, byte)
         }
     }
 
@@ -892,6 +967,7 @@ impl EditingSession {
     /// mapping spans through each remove exactly as the host `Editable` does
     /// (selection endpoints are `SPAN_POINT` spans, composing endpoints
     /// `SPAN_MARK` spans).
+    #[cfg(any(android_platform, test))]
     fn delete_around_protected(&mut self, before: usize, after: usize) {
         let (a, _b) = self.protected_region();
         let start = a.saturating_sub(before);
@@ -940,9 +1016,21 @@ const fn layout_of<E: crate::text::TextEngine>(snapshot: &FocusedEditorSnapshot<
     &snapshot.display_layout
 }
 
+/// `rect`, given in a layout's own coordinates, moved to window logical
+/// coordinates by the layout's origin.
+fn offset_rect(rect: kurbo::Rect, origin: kurbo::Rect) -> kurbo::Rect {
+    kurbo::Rect::new(
+        origin.x0 + rect.x0,
+        origin.y0 + rect.y0,
+        origin.x0 + rect.x1,
+        origin.y0 + rect.y1,
+    )
+}
+
 /// A character's bounding rect from its display layout: the caret geometry
 /// at its start extended to the next character's caret x — the convention
 /// `CursorAnchorInfo.Builder.addCharacterBounds` expects.
+#[cfg(any(android_platform, test))]
 fn char_rect<E: crate::text::TextEngine>(
     layout: &E::Layout,
     display: &str,

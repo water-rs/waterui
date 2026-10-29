@@ -24,13 +24,24 @@ fn main() {
         hydrolysis_hosted: { any(target_vendor = "apple", target_os = "android", target_arch = "wasm32") },
         apple: { any(target_os = "ios", target_os = "macos") },
         android_platform: { target_os = "android" },
+        // The UIKit host: iOS runs on `cocoa-ui`'s scene delegate and view,
+        // never on winit.
+        hydrolysis_uikit: { target_os = "ios" },
+        // The hosts that drive frames through the shared frame transaction
+        // (`runner::window::run_frame_transaction`): the platform schedules
+        // each frame itself — Choreographer, `CADisplayLink` — instead of
+        // winit's event loop.
+        hydrolysis_frame_transaction: { any(android_platform, hydrolysis_uikit) },
         free_unix: { all(unix, not(apple), not(android_platform), not(target_os = "emscripten")) },
-        // The winit runner exists on every target except Android: there the
-        // Activity belongs to the Kotlin host, and winit's `android-activity`
-        // can only build once an application selects a backend — nothing in
-        // this library may. Every winit-scoped item gates on this alias, so
-        // `--features winit` compiles on Android and simply means nothing.
-        hydrolysis_winit: { all(feature = "winit", not(android_platform)) },
+        // The winit runner exists on every target except Android and iOS:
+        // there the Activity belongs to the Kotlin host, and winit's
+        // `android-activity` can only build once an application selects a
+        // backend — nothing in this library may — and on iOS the UIKit host
+        // owns the application. Every winit-scoped item gates on this alias,
+        // so `--features winit` compiles on both and simply means nothing.
+        hydrolysis_winit: {
+            all(feature = "winit", not(android_platform), not(hydrolysis_uikit))
+        },
         // Where `hydrolysis::run` exists: every target but Android, whose
         // entry point is the Kotlin host, and bare wasm32, which reaches no
         // windowing model until the browser runner is compiled in. The
@@ -44,15 +55,17 @@ fn main() {
         },
         // Where the engine presents a window itself, through a
         // `cherenkov_gpu::WindowTarget` over a view the host hands it. Today
-        // that is the macOS winit window; it is the one gate the engine
-        // window path keys on, so a host that presents the same way joins by
-        // widening this alias.
-        hydrolysis_apple_engine_window: { all(hydrolysis_winit, target_os = "macos") },
+        // that is the macOS winit window and every UIKit scene; it is the one
+        // gate the engine window path keys on, so a host that presents the
+        // same way joins by widening this alias.
+        hydrolysis_apple_engine_window: {
+            any(all(hydrolysis_winit, target_os = "macos"), hydrolysis_uikit)
+        },
         // The platform range-editing protocol (`runner::editing`): a host
         // whose input method edits the focused field through UTF-16 ranges.
         // Test builds compile it too, but a build script cannot see `test`,
         // so that arm sits at the gate, beside this alias.
-        hydrolysis_range_editing: { android_platform },
+        hydrolysis_range_editing: { any(android_platform, hydrolysis_uikit) },
         hydrolysis_wayland_platform: { all(feature = "winit", free_unix, not(target_os = "redox")) },
         // The winit desktops, whose windows the application closes itself
         // (Close Window, ⌘W/Ctrl+W). On iOS and the web the system or the

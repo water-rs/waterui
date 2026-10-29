@@ -71,6 +71,9 @@ pub struct InputViewIvars {
     /// discrete (wheel) so each callback knows its gesture's source and
     /// completion behavior. Both report logical points.
     scroll_recognizers: RefCell<Vec<Retained<UIGestureRecognizer>>>,
+    /// The empty input view answered while no editor is focused, created on
+    /// first use.
+    silent_input: RefCell<Option<Retained<UIView>>>,
 }
 
 impl fmt::Debug for InputViewIvars {
@@ -810,6 +813,31 @@ define_class!(
             true
         }
 
+        // SAFETY: plain state read; `nil` asks for the system keyboard.
+        #[unsafe(method_id(inputView))]
+        fn input_view_override(&self) -> Option<Retained<UIView>> {
+            // The view is the first responder for hardware keys and touch
+            // whenever it is on screen, but the soft keyboard belongs to a
+            // focused editor: with none, the input view is an empty one, so
+            // the keyboard has nothing to show. `reset` reloads the input
+            // views when the focused document changes.
+            if self.editing_client().is_some() {
+                None
+            } else {
+                let mut silent = self.ivars().silent_input.borrow_mut();
+                Some(
+                    silent
+                        .get_or_insert_with(|| {
+                            UIView::initWithFrame(
+                                UIView::alloc(self.mtm()),
+                                objc2_core_foundation::CGRect::ZERO,
+                            )
+                        })
+                        .clone(),
+                )
+            }
+        }
+
         // SAFETY: see the module safety note.
         #[unsafe(method(becomeFirstResponder))]
         fn become_first_responder_override(&self) -> bool {
@@ -1110,6 +1138,28 @@ impl InputView {
     #[must_use]
     pub fn text_input_notifier(&self) -> TextInputNotifier {
         TextInputNotifier::new(Weak::new(self))
+    }
+
+    /// Device pixels per point where the view is drawn.
+    ///
+    /// `None` while the view is outside any window scene, where the scale is
+    /// not yet known.
+    #[must_use]
+    pub fn display_scale(&self) -> Option<f64> {
+        // SAFETY: a plain trait-collection read, on the main thread.
+        let scale = unsafe {
+            let view: &UIView = self;
+            objc2_ui_kit::UITraitEnvironment::traitCollection(view).displayScale()
+        };
+        (scale > 0.0).then_some(scale)
+    }
+
+    /// The highest rate, in frames per second, the screen the view is drawn
+    /// on can display; `None` while the view is outside any window scene.
+    #[must_use]
+    pub fn max_frames_per_second(&self) -> Option<u32> {
+        let scene = self.window()?.windowScene()?;
+        u32::try_from(scene.screen().maximumFramesPerSecond()).ok()
     }
 
     /// Installs `handler`, called after every layout pass of the view.

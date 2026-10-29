@@ -4,7 +4,8 @@
 //! waker's send also fires the host's [`HostWake`] — a coalescing signal that
 //! lands on the UI thread while it idles, without a bridge call per wake.
 //! Android's wake is an `eventfd` the load hook registers with the main
-//! `ALooper` once per process. The executor outlives every session: dropping
+//! `ALooper` once per process; the UIKit host's is a coalesced main-queue
+//! block (`cocoa_ui::main_queue::MainQueueWake`). The executor outlives every session: dropping
 //! a session never unregisters the wake or strands a queued task the way a
 //! per-session executor did (water-rs/waterui#2226).
 //!
@@ -18,7 +19,7 @@ use std::fmt::Debug;
 #[cfg(any(target_os = "android", all(test, target_os = "linux")))]
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 
 use executor_core::LocalExecutor;
@@ -38,6 +39,15 @@ type UiPost = Box<dyn FnOnce() + Send>;
 pub trait HostWake: Debug + Send + Sync + 'static {
     /// Signals the UI thread that the executor has work queued.
     fn wake(&self);
+}
+
+/// The `UIKit` host's wake: a coalesced block on the main dispatch queue, run
+/// by the main run loop.
+#[cfg(hydrolysis_uikit)]
+impl HostWake for cocoa_ui::main_queue::MainQueueWake {
+    fn wake(&self) {
+        Self::wake(self);
+    }
 }
 
 /// Android's wake: a coalescing `eventfd` the main `ALooper` watches. The
@@ -138,6 +148,34 @@ impl<W: HostWake> UiThreadPoster<W> {
     }
 }
 
+/// The cross-thread `request_redraw` of a host window: a producer's wake (a
+/// decoder, an external frame, an engine completion) lands on any thread, but
+/// the frame scheduler is UI-thread state. The returned wake latches the
+/// redraw the next frame renders and queues one post through `poster`; the
+/// post runs `wake` on the UI thread, where it asks for the frame through
+/// the transaction gate. Wakes raised before the queued post runs coalesce
+/// into it.
+pub fn redraw_wake<W: HostWake>(
+    poster: UiThreadPoster<W>,
+    latch: Arc<AtomicBool>,
+    wake: impl Fn() + Send + Sync + 'static,
+) -> impl Fn() + Send + Sync + 'static {
+    let wake = Arc::new(wake);
+    let queued = Arc::new(AtomicBool::new(false));
+    move || {
+        latch.store(true, Ordering::Release);
+        if queued.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let wake = Arc::clone(&wake);
+        let queued = Arc::clone(&queued);
+        poster.post(move || {
+            queued.store(false, Ordering::Release);
+            wake();
+        });
+    }
+}
+
 impl<W: HostWake> HostMainThreadExecutor<W> {
     /// `wake` is the signal the host's UI-thread registration observes and
     /// every waker fires.
@@ -156,6 +194,7 @@ impl<W: HostWake> HostMainThreadExecutor<W> {
 
     /// The wake the host's registration observes — the same one every waker
     /// fires.
+    #[cfg(any(android_platform, all(test, target_os = "linux")))]
     pub(crate) const fn wake(&self) -> &Arc<W> {
         &self.wake
     }
@@ -213,7 +252,7 @@ impl<W: HostWake> LocalExecutor for HostMainThreadExecutor<W> {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use std::cell::Cell;
     use std::os::fd::FromRawFd;

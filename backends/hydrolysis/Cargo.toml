@@ -65,16 +65,31 @@ waterui-inspector-protocol.workspace = true
 # The winit runner and its companion crates: desktop only. Android's
 # Activity belongs to the Kotlin host, and winit's `android-activity` can
 # only build once an application picks an activity backend — nothing in
-# this library may — so the dependency edge does not exist for the Android
-# target at all. The `winit` feature still exists there and means nothing.
-#
+# this library may — and on iOS the `cocoa-ui` UIKit host owns the
+# application, so the dependency edge does not exist for either target at
+# all. The `winit` feature still exists there and means nothing.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+winit = { version = "0.30", optional = true }
+ui-events-winit = { workspace = true, optional = true }
+accesskit_winit = { version = "0.34.1", optional = true }
+
+# The iOS host: `cocoa-ui` owns `UIApplicationMain`, the scene delegate, the
+# input view, the frame clock and the main queue; Hydrolysis implements the
+# window around them. `cocoa-ui` re-exports the objc2 UIKit stack it was
+# built on, so none of those crates is named here. `accesskit_ios` adapts the
+# accessibility tree onto the input view and is the iOS leg of the
+# `accessibility` feature.
+[target.'cfg(target_os = "ios")'.dependencies]
+cocoa-ui = { path = "../apple/cocoa-ui", version = "0.1.0", default-features = false, features = ["tracing"] }
+accesskit_ios = { version = "0.2.2", default-features = false, optional = true }
+# Routes a panic's message and location through `tracing`, so it reaches the
+# unified log on a device whose stderr nothing reads.
+tracing-panic.workspace = true
+
 # The Cherenkov GPU stack lives here unconditionally: off-Android targets
 # have exactly one painter, so the `gpu` feature selects it only on Android
 # (where the entries below are optional) and is a no-op elsewhere.
 [target.'cfg(not(target_os = "android"))'.dependencies]
-winit = { version = "0.30", optional = true }
-ui-events-winit = { workspace = true, optional = true }
-accesskit_winit = { version = "0.34.1", optional = true }
 # Decodes the CLI-staged window icon (always written as 8-bit RGBA PNG) —
 # only the winit runner reads one.
 png = { version = "0.18", optional = true }
@@ -433,7 +448,7 @@ required-features = ["webview-system", "winit"]
 
 [features]
 default = ["gpu"]
-accessibility = ["dep:accesskit"]
+accessibility = ["dep:accesskit", "dep:accesskit_ios"]
 testing = []
 # Per-frame CPU/GPU stage timing: wgpu timestamp queries around the
 # layer-content and compositor submits plus the CPU stage split the window

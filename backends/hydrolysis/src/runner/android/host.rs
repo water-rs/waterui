@@ -47,18 +47,20 @@ use crate::platform::{InputEvent, PlatformWindow, TextInputState, validated_wind
 use crate::renderer::FontFamilyResolution;
 #[cfg(hydrolysis_gpu_painter)]
 use crate::renderer::HydrolysisRenderer;
-use crate::renderer::{HydrolysisTextContextMenuMode, MenuShortcutRegistry};
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::android_metrics::InsetsMetrics;
-use crate::runner::host_executor::{EventFdWake, HostMainThreadExecutor, UiThreadPoster};
+use crate::runner::host_executor::{
+    EventFdWake, HostMainThreadExecutor, UiThreadPoster, redraw_wake,
+};
+#[cfg(hydrolysis_gpu_painter)]
+use crate::runner::install_view_renderer;
 #[cfg(hydrolysis_gpu_painter)]
 use crate::runner::window::render_window;
 use crate::runner::window::{
     FrameHost, FrameTransaction, RuntimeWindow, reports_ui_idle, run_frame_transaction,
 };
 use crate::runner::{
-    RenderDiagnosticsConfig, init_main_thread_executors, install_headless_window_managers,
-    install_native_component_hooks, menu_bar,
+    HostEnvironment, RenderDiagnosticsConfig, assemble_host_environment, init_main_thread_executors,
 };
 #[cfg(hydrolysis_gpu_painter)]
 use crate::text::ParleyEngine;
@@ -649,47 +651,29 @@ impl PlatformWindow for AndroidHostWindow {
 }
 
 impl AndroidHostWindow {
-    /// The cross-thread `request_redraw`: a producer's wake (a decoder, an
-    /// external frame, an engine completion) lands on any thread, but
-    /// `FrameScheduler` is UI-thread state. The handle latches the redraw
-    /// the next frame renders and queues one post through the executor's
-    /// shared `eventfd` — the wake the main `ALooper` already watches. On
-    /// the UI thread the post asks for the Choreographer frame through the
-    /// transaction gate: inside a transaction the latch already joins that
-    /// frame, and while occluded the request stays armed for the restore
-    /// frame. Wakes raised before the queued post runs coalesce into it.
+    /// The cross-thread `request_redraw` of the HWUI painter's host redraw
+    /// handle; see [`redraw_wake`], which both painters' handles share.
     #[cfg(hydrolysis_hwui)]
     pub(crate) fn content_redraw_handle(&self) -> crate::renderer::HostRedraw {
         crate::renderer::HostRedraw::new(self.content_redraw_wake())
     }
 
     /// The wake behind both `HostRedraw` and the GPU surface's
-    /// `RedrawHandle`: one armed flag per request, coalesced until the queued
-    /// post runs.
+    /// `RedrawHandle`: on the UI thread it posts the Choreographer frame
+    /// through the transaction gate.
     fn content_redraw_wake(&self) -> impl Fn() + Send + Sync + 'static {
-        let poster = self.ui_poster.clone();
-        let latch = Arc::clone(&self.redraw_pending);
         let bridge = Arc::clone(&self.bridge);
-        let wake = Arc::new(self.frame_transaction.ui_thread_wake(move || {
-            tracing::debug!(
-                target: "waterui::hydrolysis::android",
-                "wake posted: cross-thread redraw requested"
-            );
-            bridge.request_frame();
-        }));
-        let queued = Arc::new(AtomicBool::new(false));
-        move || {
-            latch.store(true, Ordering::Release);
-            if queued.swap(true, Ordering::AcqRel) {
-                return;
-            }
-            let wake = Arc::clone(&wake);
-            let queued = Arc::clone(&queued);
-            poster.post(move || {
-                queued.store(false, Ordering::Release);
-                wake();
-            });
-        }
+        redraw_wake(
+            self.ui_poster.clone(),
+            Arc::clone(&self.redraw_pending),
+            self.frame_transaction.ui_thread_wake(move || {
+                tracing::debug!(
+                    target: "waterui::hydrolysis::android",
+                    "wake posted: cross-thread redraw requested"
+                );
+                bridge.request_frame();
+            }),
+        )
     }
 }
 
@@ -1043,20 +1027,6 @@ impl UiThreadServices {
     }
 }
 
-/// Installs the capture service. It mounts its subtree under a snapshot of
-/// `env` — the theme tokens, hooks and font collection a window's subtree
-/// resolves — so it must be installed once the session environment is
-/// otherwise complete (water-rs/waterui#2703).
-#[cfg(hydrolysis_gpu_painter)]
-fn install_view_renderer(env: &mut Environment, theme: &Rc<dyn WidgetTheme>) {
-    let renderer = crate::view_renderer::HydrolysisViewRenderer::new(
-        Rc::clone(theme),
-        env.clone(),
-        FontFamilyResolution::Lenient,
-    );
-    env.insert(waterui_core::ViewRenderer::new(renderer));
-}
-
 /// What `create` wires into the platform host and the session: the one
 /// window the app registered, its environment, theme and fonts, the
 /// window's registry id, and the bindings and sinks the host later drives.
@@ -1111,17 +1081,7 @@ fn session_mounts(
         // hooks are never called and the machine is never started.
         termination: _,
     } = app.into_parts();
-    let mut env = env
-        .extending(waterui_graphics::SceneViewMergeToParent)
-        .layered_on(&services.env);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
-    install_native_component_hooks(&mut env);
-    install_headless_window_managers::<super::AndroidTextEngine>(
-        &mut env,
-        Rc::clone(&pending_window_queue),
-    );
-    menu_bar::register_menu_bar::<super::AndroidTextEngine>(&menu_bar, &env);
-    env.insert(HydrolysisTextContextMenuMode::Overlay);
     // The configuration's night mode is the colour-scheme signal: created
     // with the real `uiMode` the create call carried and kept current by
     // `nativeSetColorScheme` pushes, so the default tokens re-resolve on a
@@ -1131,16 +1091,19 @@ fn session_mounts(
     } else {
         ColorScheme::Light
     });
-    crate::theme::install_theme_tokens(&mut env, Some(&*style), color_scheme.clone());
-    let theme: Rc<dyn WidgetTheme> = style;
-    #[cfg(hydrolysis_gpu_painter)]
-    let fonts = crate::text::fonts::native_collection(&env);
-    #[cfg(hydrolysis_gpu_painter)]
-    fonts.clone().install(&mut env);
-    let shortcuts = env
-        .get::<MenuShortcutRegistry<super::AndroidTextEngine>>()
-        .expect("install_headless_window_managers seeds MenuShortcutRegistry")
-        .clone();
+    let HostEnvironment {
+        mut env,
+        theme,
+        #[cfg(hydrolysis_gpu_painter)]
+        fonts,
+        shortcuts,
+    } = assemble_host_environment::<super::AndroidTextEngine>(
+        &env.layered_on(&services.env),
+        &menu_bar,
+        style,
+        color_scheme.clone(),
+        &pending_window_queue,
+    );
     let safe_area = nami::binding(waterui_layout::padding::EdgeInsets::default());
     env.insert(crate::platform::WindowSafeArea(safe_area.clone()));
     let keyboard_area = nami::binding(waterui_layout::padding::EdgeInsets::default());
