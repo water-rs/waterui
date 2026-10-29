@@ -687,8 +687,6 @@ pub enum Op {
         rule: FillRule,
         /// The outline builder.
         outline: Outline,
-        /// Whether the source has enough elements to consider GPU coverage.
-        gpu_candidate: bool,
         /// The resolved paint (identity local space — device pixels).
         paint: ResolvedPaint,
     },
@@ -882,7 +880,6 @@ impl Lowerer<'_> {
             ops.push(Op::Path {
                 local: ambient,
                 rule: *rule,
-                gpu_candidate: elements.len() >= path::GPU_ROUTE_MIN_ELEMENTS,
                 outline: source.map_or_else(
                     || Outline::Fill {
                         elements: Arc::clone(elements),
@@ -971,8 +968,6 @@ impl Lowerer<'_> {
             ops.push(Op::Path {
                 local: ambient,
                 rule: FillRule::NonZero,
-                gpu_candidate: matches!(shape, ShapeData::Path { elements, .. }
-                    if path::stroke_gpu_candidate(elements.len(), stroke)),
                 outline: source.map_or_else(
                     || Outline::Stroke {
                         shape: shape.clone(),

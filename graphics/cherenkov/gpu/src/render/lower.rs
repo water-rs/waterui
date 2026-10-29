@@ -1048,15 +1048,8 @@ impl GeometryCache {
 
 impl EmissionStorage {
     fn retain_gpu_paths(&mut self, ops: &[Op]) {
-        self.gpu_paths.retain(|index, _| {
-            matches!(
-                ops.get(*index),
-                Some(Op::Path {
-                    gpu_candidate: true,
-                    ..
-                })
-            )
-        });
+        self.gpu_paths
+            .retain(|index, _| matches!(ops.get(*index), Some(Op::Path { .. })));
     }
 
     /// Reclaim obsolete ranges after patches without rebuilding valid leaves.
@@ -4821,13 +4814,7 @@ impl<'a> Lowering<'a> {
         // retains like any other leaf's instances (#3081).
         let emitted_gpu = self.compute.is_some()
             && self.coverage_route == path::CoverageRoute::Automatic
-            && matches!(
-                op,
-                Op::Path {
-                    gpu_candidate: true,
-                    ..
-                }
-            )
+            && matches!(op, Op::Path { .. })
             && self.automatic_gpu_leaf(op, source, &mut storage.gpu_paths, index)?;
         let realized = if emitted_gpu {
             Ok(None)
@@ -7015,6 +7002,7 @@ mod tests {
             Stroke,
             Dashed,
             ShaderStroke,
+            RoundedStroke,
         }
 
         let (device, _queue) = device_and_queue().expect("coverage test device");
@@ -7046,6 +7034,7 @@ mod tests {
             (true, Kind::Dashed, false, false),
             (false, Kind::Dashed, true, false),
             (true, Kind::ShaderStroke, true, true),
+            (true, Kind::RoundedStroke, true, true),
         ] {
             let op = match kind {
                 Kind::Fill => {
@@ -7064,7 +7053,6 @@ mod tests {
                     Op::Path {
                         local: Affine::IDENTITY,
                         rule: FillRule::NonZero,
-                        gpu_candidate: elements.len() >= path::GPU_ROUTE_MIN_ELEMENTS,
                         outline: super::super::prepared::Outline::Fill {
                             content: path::hash_elements(&elements, FillRule::NonZero as u64),
                             elements: elements.into(),
@@ -7072,8 +7060,14 @@ mod tests {
                         paint: ResolvedPaint::Solid([1.0; 4]),
                     }
                 }
-                Kind::Stroke | Kind::Dashed | Kind::ShaderStroke => {
-                    let lines = if large { 2100 } else { 8 };
+                Kind::Stroke | Kind::Dashed | Kind::ShaderStroke | Kind::RoundedStroke => {
+                    let lines = if kind == Kind::RoundedStroke {
+                        400
+                    } else if large {
+                        2100
+                    } else {
+                        8
+                    };
                     let mut geometry = BezPath::new();
                     geometry.move_to((0.0, 0.0));
                     for index in 0..lines {
@@ -7081,21 +7075,25 @@ mod tests {
                         let y = f64::from(index % 2).mul_add(1.5, f64::from(index / 40) * 2.0);
                         geometry.line_to((x, y));
                     }
+                    if kind == Kind::RoundedStroke {
+                        geometry.apply_affine(Affine::translate((8.0, 8.0)) * Affine::scale(0.5));
+                    }
                     let shape = ShapeData::Path {
                         elements: geometry.into_iter().collect(),
                         rule: FillRule::NonZero,
                     };
                     let mut stroke = kurbo::Stroke::new(1.0);
+                    if kind == Kind::RoundedStroke {
+                        stroke = kurbo::Stroke::new(8.0)
+                            .with_join(kurbo::Join::Round)
+                            .with_caps(kurbo::Cap::Round);
+                    }
                     if kind == Kind::Dashed {
                         stroke = stroke.with_dashes(0.5, [3.0, 2.0]);
                     }
-                    let ShapeData::Path { elements, .. } = &shape else {
-                        unreachable!("the stroked shape is a path")
-                    };
                     Op::Path {
                         local: Affine::IDENTITY,
                         rule: FillRule::NonZero,
-                        gpu_candidate: path::stroke_gpu_candidate(elements.len(), &stroke),
                         outline: super::super::prepared::Outline::Stroke { shape, stroke },
                         paint: if kind == Kind::ShaderStroke {
                             ResolvedPaint::Shader(Box::new(
@@ -7218,7 +7216,8 @@ mod tests {
                     );
                     // A compute stroke ships records and no outline; a
                     // fill, or a shader-painted stroke, ships elements.
-                    let compute_stroke = matches!(kind, Kind::Stroke | Kind::Dashed);
+                    let compute_stroke =
+                        matches!(kind, Kind::Stroke | Kind::Dashed | Kind::RoundedStroke);
                     assert_eq!(prepared.path.strokes.is_empty(), !compute_stroke);
                     assert_eq!(prepared.path.elements.is_empty(), compute_stroke);
                     assert_eq!(prepared.path.dash.is_some(), kind == Kind::Dashed);
