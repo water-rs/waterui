@@ -25,10 +25,10 @@ use std::rc::Rc;
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{NSClipView, NSScrollView, NSView, NSViewNoIntrinsicMetric};
-use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
+use objc2_foundation::{NSEdgeInsets, NSObjectProtocol, NSPoint, NSRect, NSSize};
 
 use crate::callback::guarded;
-use crate::geometry::{Point, Size};
+use crate::geometry::{EdgeInsets, Point, Size};
 use crate::notification::NotificationObserver;
 use crate::scroll_flight::{FlightPlan, ScrollFlight};
 use crate::visibility::VisibilityEmitter;
@@ -102,14 +102,17 @@ define_class!(
             });
         }
 
-        /// Keeps `AppKit`'s layout — its clip corrections counted as the
-        /// flight's own writes — then hands layout to the consumer.
+        /// Insets the content by the safe area, keeps `AppKit`'s layout —
+        /// its clip corrections counted as the flight's own writes — then
+        /// hands layout to the consumer.
         #[unsafe(method(layout))]
         fn layout_override(&self) {
             guarded("ScrollView layout", || {
                 self.ivars().flight.own_writes(|| {
-                    // SAFETY: see the module safety note.
-                    let _: () = unsafe { msg_send![super(self), layout] };
+                    layout_with_safe_area_insets(self, 0.0, || {
+                        // SAFETY: see the module safety note.
+                        let _: () = unsafe { msg_send![super(self), layout] };
+                    });
                 });
                 // The borrow ends with this statement, so a handler that
                 // reaches `clear_handlers` — dropping the leaf that owns
@@ -199,6 +202,65 @@ define_class!(
         }
     }
 );
+
+/// Insets `scroll`'s content by the safe-area bands its frame lies under,
+/// plus `top_gap` below the top band, then runs `layout` — the scroll
+/// surface's `super` layout, which tiles with the new insets.
+///
+/// Every kit scroll surface calls this from its `-layout`, inside
+/// [`ScrollFlight::own_writes`], with `automaticallyAdjustsContentInsets`
+/// off: a scroll surface extends under the window's bars and insets its
+/// content by them (`docs/layout-spec.md` §7.1). `AppKit` re-lays a view
+/// out when its safe area changes — the toolbar shown or hidden, a
+/// titlebar accessory row added, a resize — so the insets track the
+/// bands. The scrollers span the whole scroll view: `scrollerInsets`
+/// negates the content insets, which would otherwise inset the scrollers
+/// with the content (water-rs/waterui#3588).
+///
+/// When the insets change, the clip moves by the same amount, so the
+/// content keeps its place against the band's edge — a surface resting
+/// at its top stays at its top.
+pub fn layout_with_safe_area_insets(scroll: &NSScrollView, top_gap: f64, layout: impl FnOnce()) {
+    // A scroll surface owns the safe area for its whole subtree: one
+    // nested inside another sees no band.
+    let nested =
+        crate::view::superview(scroll).is_some_and(|parent| parent.enclosingScrollView().is_some());
+    let safe = if nested {
+        EdgeInsets::ZERO
+    } else {
+        EdgeInsets::from(scroll.safeAreaInsets())
+    };
+    let insets = EdgeInsets {
+        top: safe.top + top_gap,
+        ..safe
+    };
+    let previous = EdgeInsets::from(scroll.contentInsets());
+    if insets == previous {
+        layout();
+        return;
+    }
+    let clip = scroll.contentView();
+    let origin = clip.bounds().origin;
+    scroll.setContentInsets(NSEdgeInsets {
+        top: insets.top,
+        left: insets.left,
+        bottom: insets.bottom,
+        right: insets.right,
+    });
+    scroll.setScrollerInsets(NSEdgeInsets {
+        top: -insets.top,
+        left: -insets.left,
+        bottom: -insets.bottom,
+        right: -insets.right,
+    });
+    layout();
+    let pinned = Point::new(
+        origin.x - (insets.left - previous.left),
+        origin.y - (insets.top - previous.top),
+    );
+    clip.scrollToPoint(ScrollFlight::constrained(&clip, pinned).into());
+    scroll.reflectScrolledClipView(&clip);
+}
 
 /// The per-instance state [`FlightClipView`] stores: the scroll
 /// animation state of the surface it clips for.
@@ -308,6 +370,8 @@ impl ScrollView {
         this.setHasHorizontalScroller(horizontal);
         this.setAutohidesScrollers(true);
         this.setDrawsBackground(false);
+        // `-layout` insets the content by the safe area itself.
+        this.setAutomaticallyAdjustsContentInsets(false);
         let document = FlippedView::new(mtm);
         this.setDocumentView(Some(&document));
         this.ivars()
@@ -347,6 +411,27 @@ impl ScrollView {
     #[must_use]
     pub fn content_offset(&self) -> Point {
         self.contentView().bounds().origin.into()
+    }
+
+    /// The insets the surface applies around its content — the safe-area
+    /// bands [`layout_with_safe_area_insets`] set as `contentInsets`, the
+    /// `AppKit` counterpart of `UIKit`'s adjusted content inset. At rest
+    /// at its top the clip's bounds origin is the negated inset.
+    #[must_use]
+    pub fn adjusted_content_inset(&self) -> EdgeInsets {
+        self.contentInsets().into()
+    }
+
+    /// The scrollable canvas: the document view's frame size.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the document view was removed; the kit always installs one.
+    #[must_use]
+    pub fn content_extent(&self) -> Size {
+        self.documentView()
+            .map(|document| crate::view::frame(&document).size)
+            .expect("the kit scroll view always installs its document")
     }
 
     /// Jumps the scroll position to `point`, top-left origin — superseding

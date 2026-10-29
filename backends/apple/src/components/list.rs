@@ -43,7 +43,7 @@ use waterui_core::interaction::Disabled;
 use waterui_core::layout::{Point, ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 
 use crate::contract::{NativeLeaf, RenderContext, Renderer};
-use crate::proposal;
+use crate::proposal::{self, Placement};
 use crate::transition::ghost::Ghost;
 use crate::transition::live::{LiveChild, Removal};
 use crate::transition::slots::{GhostKey, Slot, SlotSequence};
@@ -1528,7 +1528,7 @@ mod platform_impl {
                     move |_mtm| table.apply_row_updates(&[], &[], &[], &[], false),
                 );
             }
-            proposal::deliver(child.view(), proposal);
+            proposal::deliver(child.view(), Placement::platform_hosted(proposal));
             update_separator_insets(cell);
         }
     }
@@ -2037,13 +2037,19 @@ mod platform_impl {
                     clippy::cast_possible_truncation,
                     reason = "kit geometry is f64; layout proposals are f32"
                 )]
-                proposal::deliver(&content, ProposalSize::new(Some(width as f32), None));
+                proposal::deliver(
+                    &content,
+                    Placement::platform_hosted(ProposalSize::new(Some(width as f32), None)),
+                );
             });
             #[expect(
                 clippy::cast_possible_truncation,
                 reason = "kit geometry is f64; layout proposals are f32"
             )]
-            proposal::deliver(child.view(), ProposalSize::new(Some(width as f32), None));
+            proposal::deliver(
+                child.view(),
+                Placement::platform_hosted(ProposalSize::new(Some(width as f32), None)),
+            );
             let cell_row = Rc::new(RefCell::new(Some(child)));
             self.state
                 .borrow_mut()

@@ -415,6 +415,7 @@ mod platform {
         let content = ctx.render(mem::take(&mut view.content));
         let host = HostView::new(mtm, Rect::ZERO);
         view::add_subview(&host, content.view());
+        let content_view = view::retain_base(content.view());
         let state = Rc::new(RefCell::new(view.state));
         let mut keep = KeepAlive::default();
         keep.keep(content);
@@ -423,6 +424,11 @@ mod platform {
         keep.keep(env.clone());
 
         if env.get::<NavigationController>().is_some() {
+            // A hosted page draws no chrome — the stack owns it — so the
+            // host is a transparent wrapper: the safe-area question
+            // descends into the content, and a scroll surface in it keeps
+            // reaching under the window toolbar.
+            crate::primary_content::forward(&host, &content_view);
             host.set_layout_handler(|host| {
                 let bounds = view::bounds(host);
                 if let Some(content) = view::subviews(host).first() {
@@ -433,6 +439,14 @@ mod platform {
             leaf.keep(keep);
             return leaf;
         }
+
+        // The page owns its chrome and places the content against the
+        // safe area itself (`region_frame`): a scroll surface reaches
+        // under the window toolbar, anything else stays clear of it
+        // (§7.1). So its container hands it the whole region rather
+        // than the safe-area rect — the `UIKit` page claims it the same
+        // way.
+        host.set_manages_safe_area(true);
 
         let bar = Rc::new(BarState::new(&mut view.bar, ctx));
 
@@ -495,29 +509,40 @@ mod platform {
             move |host| {
                 let title = &title;
                 let search_field = &search_field;
+                let host_view: &cocoa_ui::PlatformView = host;
+                let layout = crate::native_layout::LayoutContext::of(host_view);
                 let bounds = view::bounds(host);
+                // The chrome lays out inside the safe-area rect — the host
+                // claims the safe area, so its bounds may run under the
+                // window toolbar.
+                let chrome = layout.safe_rect();
                 // The in-content bar reserves space only while it is shown:
                 // a hidden bar and one promoted into the window toolbar get
                 // the same zero-height layout.
                 let bar_height = if view::is_hidden(&header) { 0.0 } else { 52.0 };
+                // `HostView` is flipped: the smallest y is the top edge, so
+                // the header docks at the safe rect's origin and the content
+                // region starts below it.
+                let y = chrome.origin.y;
                 if bar_height > 0.0 {
-                    let y = bounds.origin.y + bounds.size.height - bar_height;
                     view::set_frame(
                         &header,
-                        Rect::new(bounds.origin.x, y, bounds.size.width, bar_height),
+                        Rect::new(chrome.origin.x, y, chrome.size.width, bar_height),
                     );
+                    // The title, items and search field are subviews of the
+                    // header, so they sit in its local coordinates.
                     let title_size = title.measure(WrapWidth::Free).size;
                     view::set_frame(
                         title,
                         Rect::new(
-                            bounds.origin.x + (bounds.size.width - title_size.width) / 2.0,
-                            y + (bar_height - title_size.height) / 2.0,
+                            (chrome.size.width - title_size.width) / 2.0,
+                            (bar_height - title_size.height) / 2.0,
                             title_size.width,
                             title_size.height,
                         ),
                     );
-                    let mut left = bounds.origin.x + 12.0;
-                    let mut right = bounds.origin.x + bounds.size.width - 12.0;
+                    let mut left = 12.0;
+                    let mut right = chrome.size.width - 12.0;
                     for item in &bar.items {
                         let size = bar_item_frame(item).size;
                         let leading = matches!(
@@ -538,35 +563,36 @@ mod platform {
                         }
                         view::set_frame(
                             item.leaf.view(),
-                            Rect::new(
-                                x,
-                                y + (bar_height - size.height) / 2.0,
-                                size.width,
-                                size.height,
-                            ),
+                            Rect::new(x, (bar_height - size.height) / 2.0, size.width, size.height),
                         );
                     }
                     if let Some(field) = &search_field {
-                        let width = 220.0_f64.min(bounds.size.width / 3.0);
+                        let width = 220.0_f64.min(chrome.size.width / 3.0);
                         view::set_frame(
                             field,
-                            Rect::new(right - width, y + (bar_height - 28.0) / 2.0, width, 28.0),
+                            Rect::new(right - width, (bar_height - 28.0) / 2.0, width, 28.0),
                         );
                     }
                 }
+                // The content's region is everything the shown bar leaves;
+                // `region_frame` hands a scroll surface the whole region and
+                // clips anything else to the safe-area rect (§7.1).
+                let region_top = if bar_height > 0.0 {
+                    y + bar_height
+                } else {
+                    bounds.origin.y
+                };
+                let region = Rect::new(
+                    bounds.origin.x,
+                    region_top,
+                    bounds.size.width,
+                    bounds.origin.y + bounds.size.height - region_top,
+                );
                 for sub in view::subviews(host) {
                     if **sub == ***header {
                         continue;
                     }
-                    view::set_frame(
-                        &sub,
-                        Rect::new(
-                            bounds.origin.x,
-                            bounds.origin.y,
-                            bounds.size.width,
-                            bounds.size.height - bar_height,
-                        ),
-                    );
+                    view::set_frame(&sub, layout.region_frame(&sub, region));
                 }
             }
         });

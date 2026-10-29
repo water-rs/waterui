@@ -123,7 +123,22 @@ fn embedding_trials() -> Vec<Trial> {
 /// so the registrars stay one-per-line.
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 fn navigation_trials() -> Vec<Trial> {
+    use waterui_apple::native_test_support::{chrome_top, toolbar_reach};
     vec![
+        Trial::test(
+            "navigation::chrome_top::a_standalone_page_header_sits_above_its_content",
+            || {
+                chrome_top::a_standalone_page_header_sits_above_its_content(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::chrome_top::a_tab_strip_sits_above_its_panes",
+            || {
+                chrome_top::a_tab_strip_sits_above_its_panes(mtm());
+                Ok(())
+            },
+        ),
         Trial::test(
             "navigation::a_searchable_page_rests_its_field_in_the_titlebar_row",
             || {
@@ -149,6 +164,55 @@ fn navigation_trials() -> Vec<Trial> {
             "navigation::toolbar_labels_default_to_icons_and_preserve_explicit_titles",
             || {
                 navigation::toolbar_labels_default_to_icons_and_preserve_explicit_titles();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_reach::a_stack_page_list_runs_under_the_toolbar",
+            || {
+                toolbar_reach::a_stack_page_list_runs_under_the_toolbar(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_reach::a_row_scrolled_to_the_top_sits_below_the_titlebar",
+            || {
+                toolbar_reach::a_row_scrolled_to_the_top_sits_below_the_titlebar(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_reach::a_stack_page_text_stays_clear_of_the_toolbar",
+            || {
+                toolbar_reach::a_stack_page_text_stays_clear_of_the_toolbar(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_reach::a_tabbed_stack_page_list_runs_under_the_toolbar",
+            || {
+                toolbar_reach::a_tabbed_stack_page_list_runs_under_the_toolbar(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_reach::a_tabbed_stack_page_text_stays_clear_of_the_toolbar",
+            || {
+                toolbar_reach::a_tabbed_stack_page_text_stays_clear_of_the_toolbar(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_reach::the_example_inbox_list_runs_under_the_toolbar",
+            || {
+                toolbar_reach::the_example_inbox_list_runs_under_the_toolbar(mtm());
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_reach::the_example_inbox_text_stays_clear_of_the_toolbar",
+            || {
+                toolbar_reach::the_example_inbox_text_stays_clear_of_the_toolbar(mtm());
                 Ok(())
             },
         ),
@@ -202,6 +266,13 @@ fn trials() -> Vec<Trial> {
                 split::a_plain_list_keeps_the_regular_chrome();
                 Ok(())
             }),
+            Trial::test(
+                "material_vibrancy::text_in_a_material_is_vibrant_only_for_default_tokens",
+                || {
+                    material_vibrancy::text_in_a_material_is_vibrant_only_for_default_tokens();
+                    Ok(())
+                },
+            ),
         ]);
         tests.extend(list_ax::trials());
         tests.extend(gesture_ax::trials());
@@ -2501,24 +2572,20 @@ mod navigation {
     /// an icon action's hosted item is exactly its icon wide and the
     /// toolbar draws its capsule around the icon alone — while an explicit
     /// title-and-icon preference keeps its title.
+    ///
+    /// The icon is the one the item hosts: a macOS button label resolves
+    /// `Body` at its control size's system font, so the same symbol rendered
+    /// outside a button is drawn at a different size.
     pub fn toolbar_labels_default_to_icons_and_preserve_explicit_titles() {
+        use cocoa_ui::appkit::first_symbol_view;
         use waterui::component::{ButtonStyle, button, label};
         use waterui::icon::SystemIcon;
         use waterui::navigation::NavigationStack;
-        use waterui_core::layout::ProposalSize;
 
         const LEADING: &str = "dev.cocoaui.navigation.leading";
         const TRAILING: &str = "dev.cocoaui.navigation.trailing";
 
         let icon = || SystemIcon::new("plus");
-        let icon_leaf = resolve::render(icon());
-        let icon_width = f64::from(
-            icon_leaf
-                .layout()
-                .measure(ProposalSize::UNSPECIFIED)
-                .size
-                .width,
-        );
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
                 vec![
@@ -2535,22 +2602,28 @@ mod navigation {
             )),
         ));
         let window = leaf::attach(mtm(), leaf.view());
-        let hosted_width = |identifier: &str| {
+        let hosted_view = |identifier: &str| {
             window.native().toolbar().and_then(|toolbar| {
                 toolbar
                     .items()
                     .iter()
                     .find(|item| item.itemIdentifier().to_string() == identifier)
                     .and_then(|item| item.view())
-                    .map(|view| view.frame().size.width)
             })
         };
+        let hosted_width =
+            |identifier: &str| hosted_view(identifier).map(|view| view.frame().size.width);
         assert!(
             pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 hosted_width(LEADING).is_some() && hosted_width(TRAILING).is_some()
             }),
             "the page offers both actions to the window toolbar"
         );
+        let icon_width = hosted_view(LEADING)
+            .and_then(|view| first_symbol_view(&view))
+            .and_then(|symbol| symbol.image_size())
+            .expect("the default action hosts its symbol")
+            .width;
         let automatic = hosted_width(LEADING).expect("the default action is hosted");
         assert!(
             (automatic - icon_width).abs() < 0.5,
@@ -2636,6 +2709,124 @@ mod split {
         assert!(
             !table.is_sidebar(),
             "a list outside a sidebar keeps the regular fill"
+        );
+    }
+}
+
+/// Text over a `Material` background on `AppKit`: the content lives inside
+/// the `NSVisualEffectView`, and a default theme-token color draws as the
+/// dynamic system label color so it is vibrant, while an app color stays a
+/// fixed one (#3623).
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+mod material_vibrancy {
+    use cocoa_ui::objc2_app_kit::{NSColor, NSForegroundColorAttributeName, NSVisualEffectView};
+    use cocoa_ui::objc2_foundation::NSObjectProtocol as _;
+    use cocoa_ui::{PlatformView, Retained, view};
+    use waterui::ViewExt as _;
+    use waterui::background::Material;
+    use waterui::graphics::Color;
+    use waterui::graphics::color::Working;
+    use waterui::layout::stack::vstack;
+    use waterui::prelude::text;
+    use waterui::reactive::Signal as _;
+    use waterui::resolve::Resolvable as _;
+    use waterui::theme::color::Foreground;
+    use waterui_apple::native_test_support::{refresh_theme, window_environment};
+    use waterui_backend_core::AnyView;
+
+    use super::{Label, mtm};
+
+    /// Every kit label under `root`, each with its text and the ancestor
+    /// chain's effect view, if any.
+    fn labels(root: &PlatformView, out: &mut Vec<(Retained<Label>, bool)>, inside_effect: bool) {
+        for sub in view::subviews(root) {
+            let inside = inside_effect || sub.downcast_ref::<NSVisualEffectView>().is_some();
+            if let Ok(label) = sub.clone().downcast::<Label>() {
+                out.push((label, inside));
+            }
+            labels(&sub, out, inside);
+        }
+    }
+
+    /// The color a label draws its first character in.
+    fn color_of(label: &Label) -> Retained<NSColor> {
+        let text = label
+            .source_text()
+            .expect("the label carries attributed text");
+        // SAFETY: index 0 is within a non-empty string; a null effective
+        // range is permitted.
+        let color = unsafe {
+            text.attribute_atIndex_effectiveRange(
+                NSForegroundColorAttributeName,
+                0,
+                core::ptr::null_mut(),
+            )
+        }
+        .expect("the label text carries a foreground color");
+        color
+            .downcast::<NSColor>()
+            .expect("the foreground attribute is an NSColor")
+    }
+
+    /// The mounted material's text: default and muted tokens draw as the
+    /// system label colors, an explicit color does not — not even one equal
+    /// in value to the light-mode label color — and all of it sits inside
+    /// the effect view.
+    pub fn text_in_a_material_is_vibrant_only_for_default_tokens() {
+        let (env, theme) = window_environment(mtm());
+        refresh_theme(&theme, cocoa_ui::ColorScheme::Light);
+        let light_label = Foreground.resolve(&env).snapshot();
+        let content = vstack((
+            text("default"),
+            text("muted").muted(),
+            text("explicit").foreground(Color::srgb(200, 30, 30)),
+            text("label-valued").foreground(Working(light_label)),
+        ))
+        .background(Material::Regular);
+        let leaf = waterui_apple::dispatch::render(AnyView::new(content), &env);
+
+        let mut found = Vec::new();
+        labels(leaf.view(), &mut found, false);
+        assert_eq!(found.len(), 4, "the four texts realize four labels");
+        assert!(
+            found.iter().all(|(_, inside)| *inside),
+            "every text sits inside the NSVisualEffectView"
+        );
+        let text_of = |label: &Label| {
+            label
+                .source_text()
+                .expect("attributed text")
+                .string()
+                .to_string()
+        };
+        let color = |name: &str| {
+            let (label, _) = found
+                .iter()
+                .find(|(label, _)| text_of(label) == name)
+                .expect("the text is realized");
+            color_of(label)
+        };
+        let label_color = NSColor::labelColor();
+        let secondary = NSColor::secondaryLabelColor();
+        assert!(
+            color("default").isEqual(Some(label_color.as_ref())),
+            "a default-token text draws as NSColor.labelColor"
+        );
+        assert!(
+            color("muted").isEqual(Some(secondary.as_ref())),
+            "a muted-token text draws as NSColor.secondaryLabelColor"
+        );
+        let explicit = color("explicit");
+        assert!(
+            !explicit.isEqual(Some(label_color.as_ref()))
+                && !explicit.isEqual(Some(secondary.as_ref())),
+            "an explicit color is not a system label color"
+        );
+        let label_valued = color("label-valued");
+        assert!(
+            !label_valued.isEqual(Some(label_color.as_ref()))
+                && !label_valued.isEqual(Some(secondary.as_ref())),
+            "an explicit color equal in value to the light-mode label color is not a system label color"
         );
     }
 }

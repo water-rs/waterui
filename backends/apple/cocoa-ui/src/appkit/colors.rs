@@ -54,7 +54,11 @@ pub enum AppColor {
     White,
 }
 
-fn native(color: AppColor) -> Retained<NSColor> {
+/// The dynamic `NSColor` behind `color`: it resolves against the drawing
+/// view's effective appearance, and a label color draws vibrant inside an
+/// `NSVisualEffectView`.
+#[must_use]
+pub fn dynamic(color: AppColor) -> Retained<NSColor> {
     match color {
         AppColor::WindowBackground => NSColor::windowBackgroundColor(),
         AppColor::ControlBackground => NSColor::controlBackgroundColor(),
@@ -246,7 +250,7 @@ pub fn resolve(color: AppColor, scheme: ColorScheme) -> Option<Rgba> {
     };
     let appearance = NSAppearance::appearanceNamed(name)
         .expect("AppKit ships appearances under both standard names");
-    let color = native(color);
+    let color = dynamic(color);
     let rgba = RefCell::new(None);
     {
         let slot = &rgba;

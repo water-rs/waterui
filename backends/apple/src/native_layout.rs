@@ -676,10 +676,28 @@ impl<'a> LayoutContext<'a> {
     /// otherwise.
     #[must_use]
     pub fn content_frame(&self, content: &PlatformView) -> Rect {
+        self.region_frame(content, view::bounds(self.host))
+    }
+
+    /// The frame the host hands one `content` view placed in `region`, a
+    /// rect inside the host's bounds: the whole region when the content
+    /// manages its own safe area, the region clipped to the safe-area
+    /// rect otherwise. [`Self::content_frame`] is this over the bounds.
+    #[must_use]
+    pub fn region_frame(&self, content: &PlatformView, region: Rect) -> Rect {
         if manages_safe_area(content) {
-            view::bounds(self.host)
-        } else {
-            self.safe_rect()
+            return region;
         }
+        let safe = self.safe_rect();
+        let min_x = region.origin.x.max(safe.origin.x);
+        let min_y = region.origin.y.max(safe.origin.y);
+        let max_x = (region.origin.x + region.size.width).min(safe.origin.x + safe.size.width);
+        let max_y = (region.origin.y + region.size.height).min(safe.origin.y + safe.size.height);
+        Rect::new(
+            min_x,
+            min_y,
+            (max_x - min_x).max(0.0),
+            (max_y - min_y).max(0.0),
+        )
     }
 }
