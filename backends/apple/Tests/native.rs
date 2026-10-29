@@ -1663,7 +1663,8 @@ mod picture {
 #[cfg(target_os = "ios")]
 mod tabs {
     use cocoa_ui::objc2_ui_kit::{
-        NSDirectionalRectEdge, UIScrollView, UITabBarController, UITabBarMinimizeBehavior,
+        NSDirectionalRectEdge, UIScrollView, UITabAccessory, UITabBarController,
+        UITabBarMinimizeBehavior,
     };
     use cocoa_ui::uikit::view_controller::owning_controller;
     use cocoa_ui::uikit::{Label, NavContentController};
@@ -1672,6 +1673,7 @@ mod tabs {
     use waterui::prelude::{label, scroll, text, vstack};
     use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
     use super::resolve;
 
@@ -1728,6 +1730,13 @@ mod tabs {
                 },
             ),
             libtest_mimic::Trial::test(
+                "tabs::unmounting_before_the_commit_installs_no_accessory",
+                || {
+                    unmounting_before_the_commit_installs_no_accessory();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
                 "tabs::each_minimize_behavior_maps_to_the_uikit_property",
                 || {
                     each_minimize_behavior_maps_to_the_uikit_property();
@@ -1748,6 +1757,18 @@ mod tabs {
         owning_controller(&controller_view)
             .and_then(|responder| responder.downcast::<UITabBarController>().ok())
             .expect("the tabs leaf mounts a UITabBarController")
+    }
+
+    /// The capsule installs when the transaction that rendered the tabs
+    /// commits, so it is awaited on its own condition.
+    fn installed_accessory(controller: &UITabBarController) -> Retained<UITabAccessory> {
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || controller
+                .bottomAccessory()
+                .is_some()),
+            "the accessory installs once the render transaction commits"
+        );
+        controller.bottomAccessory().expect("installed")
     }
 
     /// First `Label`'s text in the subtree, depth-first.
@@ -1802,9 +1823,7 @@ mod tabs {
     /// view carries the rendered text at a natural height.
     pub fn bottom_accessory_mounts_into_the_controller() {
         let (_pane, leaf) = tabs(text("Now Playing"));
-        let accessory = tab_bar_controller(&leaf)
-            .bottomAccessory()
-            .expect("the shared accessory view installs a UITabAccessory");
+        let accessory = installed_accessory(&tab_bar_controller(&leaf));
         let content = accessory.contentView();
         assert_eq!(label_text(&content).as_deref(), Some("Now Playing"));
         assert!(view::fitting_size(&content).height > 0.0);
@@ -1816,7 +1835,7 @@ mod tabs {
         let track = binding(String::from("first"));
         let (_pane, leaf) = tabs(text!("{track}"));
         let controller = tab_bar_controller(&leaf);
-        let accessory = controller.bottomAccessory().expect("installed");
+        let accessory = installed_accessory(&controller);
         let content = accessory.contentView();
         // `text!` wraps interpolations in bidi isolates — match the payload.
         assert!(label_text(&content).is_some_and(|text| text.contains("first")));
@@ -1826,12 +1845,30 @@ mod tabs {
         assert_eq!(Retained::as_ptr(&after), Retained::as_ptr(&accessory));
     }
 
+    /// Tearing the tabs down before the render transaction commits
+    /// cancels the pending install: the deferred closure must not put a
+    /// capsule over content that is already unmounted.
+    pub fn unmounting_before_the_commit_installs_no_accessory() {
+        let (_pane, leaf) = tabs(text("Now Playing"));
+        let controller = tab_bar_controller(&leaf);
+        // Registered after the tabs' own completion, so it runs after it
+        // in the same commit.
+        let committed = std::rc::Rc::new(std::cell::Cell::new(false));
+        cocoa_ui::core_animation::on_commit({
+            let committed = std::rc::Rc::clone(&committed);
+            move || committed.set(true)
+        });
+        drop(leaf);
+        assert!(pump_main_until(MAIN_QUEUE_DEADLINE, || committed.get()));
+        assert!(controller.bottomAccessory().is_none());
+    }
+
     /// Selecting the other tab switches panes through the existing
     /// controller — the accessory mount is untouched.
     pub fn tab_selection_does_not_rebuild_the_accessory() {
         let (pane, leaf) = tabs(text("Now Playing"));
         let controller = tab_bar_controller(&leaf);
-        let accessory = controller.bottomAccessory().expect("installed");
+        let accessory = installed_accessory(&controller);
         pane.set(1usize);
         assert_eq!(controller.selectedIndex(), 1);
         let after = controller.bottomAccessory().expect("still installed");
@@ -1848,10 +1885,7 @@ mod tabs {
             let (_pane, leaf) = tabs(text!("{track}"));
             let controller = tab_bar_controller(&leaf);
             let label = {
-                let content = controller
-                    .bottomAccessory()
-                    .expect("installed")
-                    .contentView();
+                let content = installed_accessory(&controller).contentView();
                 track.set(String::from("second"));
                 first_label(&content).expect("the accessory mounts a label")
             };
@@ -2170,9 +2204,7 @@ mod tabs {
         }
 
         let (_pane, leaf) = tabs(text("Now Playing"));
-        let accessory = tab_bar_controller(&leaf)
-            .bottomAccessory()
-            .expect("installed");
+        let accessory = installed_accessory(&tab_bar_controller(&leaf));
         let content = accessory.contentView();
         let intrinsic = view::fitting_size(&content);
         assert!(intrinsic.width > 0.0 && intrinsic.height > 0.0);
@@ -2201,9 +2233,7 @@ mod tabs {
         // A stretching child measures back to the bounds it was offered
         // and fills the host.
         let (_pane, leaf) = tabs(scroll(text("stretched")));
-        let accessory = tab_bar_controller(&leaf)
-            .bottomAccessory()
-            .expect("installed");
+        let accessory = installed_accessory(&tab_bar_controller(&leaf));
         let content = accessory.contentView();
         let frame = child_frame(&content, wide);
         assert_eq!(frame.size, wide);
