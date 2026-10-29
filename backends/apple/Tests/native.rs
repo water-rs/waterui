@@ -119,6 +119,42 @@ fn embedding_trials() -> Vec<Trial> {
     ]
 }
 
+/// The macOS `navigation::` window-chrome trials — kept beside `trials`
+/// so the registrars stay one-per-line.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+fn navigation_trials() -> Vec<Trial> {
+    vec![
+        Trial::test(
+            "navigation::a_searchable_page_rests_its_field_in_the_titlebar_row",
+            || {
+                navigation::a_searchable_page_rests_its_field_in_the_titlebar_row();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space",
+            || {
+                navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::a_toolbar_tab_picker_uses_the_extra_large_metrics",
+            || {
+                navigation::a_toolbar_tab_picker_uses_the_extra_large_metrics();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "navigation::toolbar_labels_default_to_icons_and_preserve_explicit_titles",
+            || {
+                navigation::toolbar_labels_default_to_icons_and_preserve_explicit_titles();
+                Ok(())
+            },
+        ),
+    ]
+}
+
 fn trials() -> Vec<Trial> {
     let mut tests = base_trials();
     #[cfg(all(target_os = "macos", feature = "native-test"))]
@@ -134,6 +170,7 @@ fn trials() -> Vec<Trial> {
             }),
         ]);
         tests.extend(embedding_trials());
+        tests.extend(navigation_trials());
         tests.extend([
             Trial::test(
                 "menus::the_window_menu_opens_with_the_standard_close_item",
@@ -154,27 +191,6 @@ fn trials() -> Vec<Trial> {
                 "text_selection::a_selection_menu_command_edits_the_live_selection",
                 || {
                     text_selection::a_selection_menu_command_edits_the_live_selection();
-                    Ok(())
-                },
-            ),
-            Trial::test(
-                "navigation::a_searchable_page_rests_its_field_in_the_titlebar_row",
-                || {
-                    navigation::a_searchable_page_rests_its_field_in_the_titlebar_row();
-                    Ok(())
-                },
-            ),
-            Trial::test(
-                "navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space",
-                || {
-                    navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space();
-                    Ok(())
-                },
-            ),
-            Trial::test(
-                "navigation::a_toolbar_tab_picker_uses_the_extra_large_metrics",
-                || {
-                    navigation::a_toolbar_tab_picker_uses_the_extra_large_metrics();
                     Ok(())
                 },
             ),
@@ -2478,6 +2494,72 @@ mod navigation {
         assert!(
             (center - 350.0).abs() < 4.0,
             "the picker stays centred in the 700 pt window, centre {center}"
+        );
+    }
+
+    /// A navigation page's toolbar labels present icon-only by default, so
+    /// an icon action's hosted item is exactly its icon wide and the
+    /// toolbar draws its capsule around the icon alone — while an explicit
+    /// title-and-icon preference keeps its title.
+    pub fn toolbar_labels_default_to_icons_and_preserve_explicit_titles() {
+        use waterui::component::{ButtonStyle, button, label};
+        use waterui::icon::SystemIcon;
+        use waterui::navigation::NavigationStack;
+        use waterui_core::layout::ProposalSize;
+
+        const LEADING: &str = "dev.cocoaui.navigation.leading";
+        const TRAILING: &str = "dev.cocoaui.navigation.trailing";
+
+        let icon = || SystemIcon::new("plus");
+        let icon_leaf = resolve::render(icon());
+        let icon_width = f64::from(
+            icon_leaf
+                .layout()
+                .measure(ProposalSize::UNSPECIFIED)
+                .size
+                .width,
+        );
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
+                vec![
+                    NavigationToolbarItem::new(
+                        NavigationToolbarPlacement::TopBarLeading,
+                        button(label("").icon(icon())).style(ButtonStyle::Borderless),
+                    ),
+                    NavigationToolbarItem::new(
+                        NavigationToolbarPlacement::TopBarTrailing,
+                        button(label("Keep title").icon(icon()).title_and_icon())
+                            .style(ButtonStyle::Borderless),
+                    ),
+                ],
+            )),
+        ));
+        let window = leaf::attach(mtm(), leaf.view());
+        let hosted_width = |identifier: &str| {
+            window.native().toolbar().and_then(|toolbar| {
+                toolbar
+                    .items()
+                    .iter()
+                    .find(|item| item.itemIdentifier().to_string() == identifier)
+                    .and_then(|item| item.view())
+                    .map(|view| view.frame().size.width)
+            })
+        };
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                hosted_width(LEADING).is_some() && hosted_width(TRAILING).is_some()
+            }),
+            "the page offers both actions to the window toolbar"
+        );
+        let automatic = hosted_width(LEADING).expect("the default action is hosted");
+        assert!(
+            (automatic - icon_width).abs() < 0.5,
+            "automatic toolbar label width {automatic} must equal icon width {icon_width} without empty-title spacing"
+        );
+        let explicit = hosted_width(TRAILING).expect("the explicit action is hosted");
+        assert!(
+            explicit > icon_width + 8.0,
+            "an explicit title-and-icon preference keeps its title, got {explicit}"
         );
     }
 
