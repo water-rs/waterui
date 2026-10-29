@@ -5,7 +5,9 @@
 //! measure, stretch, priority and the placement proposal all answer for the
 //! mounted child — holding the platform's effect view (`UIVisualEffectView`
 //! with a `UIBlurEffect` on `UIKit`, `NSVisualEffectView` on `AppKit`) plus
-//! the content as direct subviews. Each layout pass centers the effect and
+//! the content. On `AppKit` the content is a subview of the effect view, so
+//! text in a system label color draws vibrant; on `UIKit` both are direct
+//! subviews of the container. Each layout pass centers the effect and
 //! the content over the content's negotiated size: a width-constrained
 //! content keeps its narrower material column while the wrapper may be
 //! stamped wider.
@@ -97,11 +99,17 @@ pub fn install(dispatcher: &mut Dispatcher) {
         #[cfg(target_os = "macos")]
         let _backing_layer = cocoa_ui::shape::layer(host_view);
 
-        // The blur behind the content; both are direct subviews laid out by
-        // the layout handler, as `translatesAutoresizingMaskIntoConstraints`
-        // on `WuiMaterialBackground`.
+        // The blur behind the content, laid out by the layout handler, as
+        // `translatesAutoresizingMaskIntoConstraints` on
+        // `WuiMaterialBackground`. On `AppKit` the content is a subview of
+        // the effect view, so text drawn in a system label color is
+        // vibrant; `UIKit` keeps both as siblings.
         view::add_subview(host_view, &blur);
-        let mounted = ctx.render(metadata.content).mount(host_view);
+        #[cfg(target_os = "macos")]
+        let content_parent: &PlatformView = &blur;
+        #[cfg(target_os = "ios")]
+        let content_parent: &PlatformView = host_view;
+        let mounted = ctx.render(metadata.content).mount(content_parent);
         view::set_translates_autoresizing(&blur, true);
         view::set_translates_autoresizing(mounted.view(), true);
 

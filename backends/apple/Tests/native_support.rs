@@ -438,6 +438,12 @@ pub fn window_environment(mtm: MainThreadMarker) -> (Environment, crate::theme::
     (env, theme)
 }
 
+/// Re-reads every theme slot for `scheme`, as an appearance change does.
+#[cfg(target_os = "macos")]
+pub fn refresh_theme(theme: &crate::theme::ThemeSignals, scheme: cocoa_ui::ColorScheme) {
+    crate::theme::refresh(theme, scheme);
+}
+
 /// Checks two-way bindings on a real native root window.
 ///
 /// `windows::realize` turns a declaration into a live window: the

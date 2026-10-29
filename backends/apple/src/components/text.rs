@@ -122,7 +122,7 @@ struct Chunk {
     /// Its latest resolved font.
     font: ResolvedFont,
     /// Its latest foreground — `None` draws the theme default.
-    foreground: Option<WorkingColor>,
+    foreground: Option<RunForeground>,
     /// Its latest background.
     background: Option<WorkingColor>,
     /// Whether the chunk is italicized.
@@ -144,7 +144,7 @@ struct TextState {
     /// The platform label.
     label: Retained<Label>,
     /// The theme default for chunks without their own foreground.
-    default_foreground: WorkingColor,
+    default_foreground: RunForeground,
     /// The resolved chunks of the current `StyledStr`.
     chunks: Vec<Chunk>,
     /// Watcher guards of the current `StyledStr`'s per-chunk signals,
@@ -355,6 +355,61 @@ pub fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_app_kit:
     }
 }
 
+/// A run's foreground: the latest value of its color signal and, on
+/// `AppKit`, the system label color that signal stands for.
+///
+/// Which color a run came from is a property of its signal, not of its
+/// value: a theme token resolves to the very signal the backend installed in
+/// its slot (see [`crate::theme::SystemLabelSlots`]), while an app color
+/// equal in value to a token is a different signal. A run whose signal is a
+/// label slot draws as the dynamic system label color, which `AppKit`
+/// renders vibrant inside an `NSVisualEffectView`; every other run draws its
+/// value.
+struct RunForeground {
+    /// The signal's latest value.
+    value: WorkingColor,
+    /// The system label color the signal stands for, if it is one of the
+    /// backend's label slots. Fixed for the signal's lifetime.
+    #[cfg(target_os = "macos")]
+    system: Option<platform::colors::AppColor>,
+}
+
+impl RunForeground {
+    /// Reads `signal`'s current value and source in `env`.
+    #[cfg(target_os = "macos")]
+    fn resolve(env: &Environment, signal: &impl Signal<Output = WorkingColor>) -> Self {
+        let slots = env
+            .get::<crate::theme::SystemLabelSlots>()
+            .expect("the Apple theme installs its label slots with the color slots");
+        Self {
+            value: signal.snapshot(),
+            system: slots.system_color(signal),
+        }
+    }
+
+    /// Reads `signal`'s current value: `UIKit` draws no vibrant text, so the
+    /// source does not matter.
+    #[cfg(target_os = "ios")]
+    fn resolve(_env: &Environment, signal: &impl Signal<Output = WorkingColor>) -> Self {
+        Self {
+            value: signal.snapshot(),
+        }
+    }
+
+    /// The platform color the run draws in.
+    #[cfg(target_os = "macos")]
+    fn platform(&self) -> Retained<cocoa_ui::objc2_app_kit::NSColor> {
+        self.system
+            .map_or_else(|| platform_color(&self.value), platform::colors::dynamic)
+    }
+
+    /// The platform color the run draws in.
+    #[cfg(target_os = "ios")]
+    fn platform(&self) -> Retained<cocoa_ui::objc2_ui_kit::UIColor> {
+        platform_color(&self.value)
+    }
+}
+
 /// The attributed string the current chunks render into: font, colors and
 /// decorations resolved per chunk, the theme default under unstyled
 /// foregrounds.
@@ -368,12 +423,13 @@ fn render_attributed(state: &TextState) -> Retained<objc2_foundation::NSAttribut
         .chunks
         .iter()
         .map(|chunk| {
-            Some(platform_color(
+            Some(
                 chunk
                     .foreground
                     .as_ref()
-                    .unwrap_or(&state.default_foreground),
-            ))
+                    .unwrap_or(&state.default_foreground)
+                    .platform(),
+            )
         })
         .collect();
     let backgrounds: Vec<Option<Retained<_>>> = state
@@ -428,7 +484,9 @@ fn apply_styled(state: &Rc<RefCell<TextState>>, styled: &StyledStr) {
         chunks.push(Chunk {
             text: text.clone(),
             font: font.snapshot(),
-            foreground: foreground.as_ref().map(Signal::snapshot),
+            foreground: foreground
+                .as_ref()
+                .map(|signal| RunForeground::resolve(&env, signal)),
             background: background.as_ref().map(Signal::snapshot),
             italic: style.italic,
             underline: style.underline,
@@ -456,7 +514,11 @@ fn apply_styled(state: &Rc<RefCell<TextState>>, styled: &StyledStr) {
                     };
                     let duration = cross_dissolve_duration(ctx.metadata());
                     let mut state = state.borrow_mut();
-                    state.chunks[index].foreground = Some(ctx.into_value());
+                    state.chunks[index]
+                        .foreground
+                        .as_mut()
+                        .expect("a chunk with a foreground signal has a foreground")
+                        .value = ctx.into_value();
                     rebuild(&state, duration);
                 }
             })));
@@ -637,11 +699,14 @@ fn label_leaf(
         }
     });
 
+    // The theme default backs every chunk without its own foreground,
+    // exactly as the Swift renderer's `defaultForeground` slot does.
+    let default_foreground = Foreground.resolve(ctx.env());
     let state = Rc::new(RefCell::new(TextState {
         mtm,
         env: ctx.env().clone(),
         label: label.clone(),
-        default_foreground: WorkingColor::BLACK,
+        default_foreground: RunForeground::resolve(ctx.env(), &default_foreground),
         chunks: Vec::new(),
         signal_guards: Vec::new(),
         default_guard: None,
@@ -650,10 +715,6 @@ fn label_leaf(
         tap: None,
     }));
 
-    // The theme default backs every chunk without its own foreground,
-    // exactly as the Swift renderer's `defaultForeground` slot does.
-    let default_foreground = Foreground.resolve(ctx.env());
-    let initial_foreground = default_foreground.snapshot();
     let foreground_guard = default_foreground.watch({
         let state = Rc::downgrade(&state);
         move |ctx| {
@@ -662,15 +723,11 @@ fn label_leaf(
             };
             let duration = cross_dissolve_duration(ctx.metadata());
             let mut state = state.borrow_mut();
-            state.default_foreground = ctx.into_value();
+            state.default_foreground.value = ctx.into_value();
             rebuild(&state, duration);
         }
     });
-    {
-        let mut state = state.borrow_mut();
-        state.default_foreground = initial_foreground;
-        state.default_guard = Some(Box::new(foreground_guard));
-    }
+    state.borrow_mut().default_guard = Some(Box::new(foreground_guard));
 
     apply_styled(&state, styled);
     rebuild(&state.borrow(), None);
