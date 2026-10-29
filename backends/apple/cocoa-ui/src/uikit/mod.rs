@@ -67,6 +67,7 @@ mod search_bar;
 mod split;
 pub mod surface_view;
 mod tabs;
+pub mod text_input;
 mod trait_change;
 pub mod view_controller;
 mod window;

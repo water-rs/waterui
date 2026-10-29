@@ -110,6 +110,9 @@ pub struct FrameClock {
     mtm: MainThreadMarker,
     on_frame: Rc<dyn Fn()>,
     active: Cell<bool>,
+    /// Whether the clock holds its link paused: armed and registered, but
+    /// not ticking. A link built while paused starts paused.
+    paused: Cell<bool>,
     /// The exact `targetTimestamp` of the tick whose callback is running,
     /// `None` between ticks — the clock's own record of the current frame.
     current_target: Rc<Cell<Option<f64>>>,
@@ -120,6 +123,7 @@ impl fmt::Debug for FrameClock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FrameClock")
             .field("active", &self.active.get())
+            .field("paused", &self.paused.get())
             .field("armed", &self.state.borrow().link.is_some())
             .finish_non_exhaustive()
     }
@@ -133,6 +137,7 @@ impl FrameClock {
             mtm,
             on_frame: Rc::new(on_frame),
             active: Cell::new(false),
+            paused: Cell::new(false),
             current_target: Rc::new(Cell::new(None)),
             state: RefCell::new(State {
                 link: None,
@@ -154,6 +159,23 @@ impl FrameClock {
     pub fn stop(&self) {
         self.active.set(false);
         self.disarm();
+    }
+
+    /// Pauses (`true`) or resumes (`false`) the ticking without disarming:
+    /// a paused link posts no frames and costs nothing, and resuming picks
+    /// the cadence back up with no re-selection of the window or screen.
+    /// The setting survives [`FrameClock::reselect`] and [`FrameClock::start`].
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.set(paused);
+        if let Some(link) = self.state.borrow().link.as_ref() {
+            link.setPaused(paused);
+        }
+    }
+
+    /// Whether the clock is held paused.
+    #[must_use]
+    pub const fn is_paused(&self) -> bool {
+        self.paused.get()
     }
 
     /// Whether a display link is armed.
@@ -222,6 +244,7 @@ impl FrameClock {
         };
         let maximum =
             f32::from(u16::try_from(screen.maximumFramesPerSecond().max(1)).unwrap_or(u16::MAX));
+        link.setPaused(self.paused.get());
         link.setPreferredFrameRateRange(CAFrameRateRange::new(maximum.min(60.0), maximum, maximum));
         // SAFETY: `addToRunLoop:forMode:` schedules the live link on this
         // thread's run loop; `NSRunLoopCommonModes` is a system constant.

@@ -1803,12 +1803,14 @@ fn install_input(
     // handler → host` would pin the whole graph past teardown. Both
     // captures stay weak.
     let host = objc2::rc::Weak::new(&**view);
-    input.set_event_handler(move |event| {
+    let translator = crate::gpu_input::Translator::default();
+    let deliver: Rc<dyn Fn(cocoa_ui::input::SurfaceEvent)> = Rc::new(move |event| {
         let (Some(state), Some(host)) = (weak.upgrade(), host.load()) else {
             return;
         };
-        let event = crate::gpu_input::translate(&event);
-        state.view.borrow().input(&event);
+        for event in translator.translate(&event) {
+            state.view.borrow().input(&event);
+        }
         // The event's frame request rides the same coalescing as a redraw
         // request.
         let external_redraw = state
@@ -1825,7 +1827,11 @@ fn install_input(
             update_presentation_demand(&state, &host);
         }
     });
-    input.set_caret_provider({
+    input.set_event_handler({
+        let deliver = deliver.clone();
+        move |event| deliver(event)
+    });
+    let caret = {
         let weak = Rc::downgrade(state);
         move || {
             weak.upgrade().and_then(|state| {
@@ -1839,7 +1845,15 @@ fn install_input(
                 })
             })
         }
-    });
+    };
+    #[cfg(target_os = "macos")]
+    input.set_caret_provider(caret);
+    #[cfg(target_os = "ios")]
+    input.set_text_input_client(Rc::new(crate::gpu_text::GpuSurfaceTextClient::new(
+        deliver,
+        caret,
+        objc2::rc::Weak::new(&*input),
+    )));
     // The responder fills the surface and sits on top of it.
     cocoa_ui::view::add_subview(view.as_platform_view(), input.as_ref());
     Some(Retained::into_super(input))

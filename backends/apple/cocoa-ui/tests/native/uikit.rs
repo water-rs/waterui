@@ -1,15 +1,23 @@
 //! `UIKit` cases — real `UIKit` objects built through the public API on the
 //! real main thread.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::ops::Range;
 use std::rc::Rc;
 
 use cocoa_ui::objc2::rc::Retained;
 use cocoa_ui::objc2::runtime::{AnyObject, Bool, Sel};
 use cocoa_ui::objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, msg_send, sel};
 use cocoa_ui::objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use cocoa_ui::objc2_ui_kit::{UIGestureRecognizerState, UIPanGestureRecognizer, UIView, UIWindow};
-use cocoa_ui::uikit::input_view::InputView;
+use cocoa_ui::objc2_foundation::{NSRange, NSString};
+use cocoa_ui::objc2_ui_kit::{
+    UIGestureRecognizerState, UIKeyInput, UIPanGestureRecognizer, UITextInput, UITextRange,
+    UITouch, UITouchType, UIView, UIWindow,
+};
+use cocoa_ui::uikit::input_view::{InputView, TextRange};
+use cocoa_ui::uikit::text_input::{
+    Autocapitalization, Autocorrection, KeyboardType, ReturnKey, TextInputClient, TextInputTraits,
+};
 use cocoa_ui::uikit::{HostView, Label};
 use cocoa_ui::{PlatformView, Rect};
 use libtest_mimic::Trial;
@@ -60,6 +68,40 @@ pub fn trials() -> Vec<Trial> {
             "uikit::input_view",
             indirect_scroll_input_arrives_as_surface_scroll_events
         ),
+        case!(
+            "uikit::input_view",
+            marked_text_composes_against_the_client_document
+        ),
+        case!(
+            "uikit::input_view",
+            insert_text_replaces_the_marked_range_else_the_selection
+        ),
+        case!(
+            "uikit::input_view",
+            delete_backward_removes_one_grapheme_or_the_selection
+        ),
+        case!(
+            "uikit::input_view",
+            selection_and_geometry_queries_answer_from_the_client
+        ),
+        case!(
+            "uikit::input_view",
+            delete_backward_is_the_clients_when_it_overrides_it
+        ),
+        case!("uikit::input_view", traits_come_from_the_client),
+        case!(
+            "uikit::input_view",
+            an_input_view_without_a_client_is_an_empty_document
+        ),
+        case!(
+            "uikit::input_view",
+            a_cancelled_touch_is_reported_as_cancelled_not_released
+        ),
+        case!(
+            "uikit::input_view",
+            layout_and_safe_area_handlers_follow_the_view
+        ),
+        case!("display_link", a_paused_frame_clock_stays_armed_but_silent),
         case!(
             "uikit::menu_panel",
             an_unpresented_panel_tracks_its_rows_pages_and_focus
@@ -336,7 +378,18 @@ fn the_text_input_selectors_register_under_uikits_names() {
         sel!(canBecomeFirstResponder),
         sel!(becomeFirstResponder),
         sel!(touchesBegan:withEvent:),
+        sel!(touchesCancelled:withEvent:),
         sel!(pressesBegan:withEvent:),
+        sel!(pressesCancelled:withEvent:),
+        sel!(keyboardType),
+        sel!(returnKeyType),
+        sel!(isSecureTextEntry),
+        sel!(autocorrectionType),
+        sel!(autocapitalizationType),
+        sel!(textContentType),
+        sel!(selectionRectsForRange:),
+        sel!(setInputDelegate:),
+        sel!(safeAreaInsetsDidChange),
     ] {
         // SAFETY: `respondsToSelector:` is a plain `NSObject` query on the
         // live view.
@@ -347,6 +400,596 @@ fn the_text_input_selectors_register_under_uikits_names() {
             selector.name().to_string_lossy(),
         );
     }
+}
+
+/// A document in UTF-16 units, the model a [`TextInputClient`] edits.
+#[derive(Debug)]
+struct TestClient {
+    text: RefCell<Vec<u16>>,
+    selection: RefCell<Range<usize>>,
+    marked: RefCell<Option<Range<usize>>>,
+    traits: Cell<TextInputTraits>,
+    editing: Cell<bool>,
+    returns: Cell<u32>,
+}
+
+impl TestClient {
+    fn new(text: &str) -> Rc<Self> {
+        let text: Vec<u16> = text.encode_utf16().collect();
+        let end = text.len();
+        Rc::new(Self {
+            text: RefCell::new(text),
+            selection: RefCell::new(end..end),
+            marked: RefCell::new(None),
+            traits: Cell::new(TextInputTraits::default()),
+            editing: Cell::new(true),
+            returns: Cell::new(0),
+        })
+    }
+
+    fn document(&self) -> String {
+        String::from_utf16(&self.text.borrow()).expect("the document is valid UTF-16")
+    }
+
+    fn select(&self, range: Range<usize>) {
+        self.selection.replace(range);
+    }
+}
+
+impl TextInputClient for TestClient {
+    fn is_editing(&self) -> bool {
+        self.editing.get()
+    }
+
+    fn traits(&self) -> TextInputTraits {
+        self.traits.get()
+    }
+
+    fn len(&self) -> usize {
+        self.text.borrow().len()
+    }
+
+    fn text(&self, range: Range<usize>) -> String {
+        String::from_utf16_lossy(&self.text.borrow()[range])
+    }
+
+    fn selection(&self) -> Range<usize> {
+        self.selection.borrow().clone()
+    }
+
+    fn set_selection(&self, range: Range<usize>) {
+        self.selection.replace(range);
+    }
+
+    fn marked_range(&self) -> Option<Range<usize>> {
+        self.marked.borrow().clone()
+    }
+
+    fn set_marked_text(&self, text: &str, selected: Range<usize>) {
+        let range = self.marked_range().unwrap_or_else(|| self.selection());
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let start = range.start;
+        let end = start + units.len();
+        self.text.borrow_mut().splice(range, units);
+        self.marked.replace(Some(start..end));
+        self.selection
+            .replace(start + selected.start..start + selected.end);
+    }
+
+    fn unmark_text(&self) {
+        self.marked.replace(None);
+    }
+
+    fn replace(&self, range: Range<usize>, text: &str) {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let end = range.start + units.len();
+        self.text.borrow_mut().splice(range, units);
+        self.marked.replace(None);
+        self.selection.replace(end..end);
+    }
+
+    fn first_rect(&self, range: Range<usize>) -> Rect {
+        Rect::new(cells(range.start), 0.0, 10.0, 20.0)
+    }
+
+    fn caret_rect(&self, offset: usize) -> Rect {
+        Rect::new(cells(offset), 0.0, 1.0, 20.0)
+    }
+
+    fn selection_rects(&self, range: Range<usize>) -> Vec<Rect> {
+        vec![
+            Rect::new(cells(range.start), 0.0, 10.0, 20.0),
+            Rect::new(0.0, 20.0, cells(range.end), 20.0),
+        ]
+    }
+
+    fn closest_offset(&self, point: kurbo::Point) -> usize {
+        (0..=self.len())
+            .min_by(|a, b| {
+                (cells(*a) - point.x)
+                    .abs()
+                    .total_cmp(&(cells(*b) - point.x).abs())
+            })
+            .expect("the range is never empty")
+    }
+
+    fn perform_return(&self) {
+        self.returns.set(self.returns.get() + 1);
+    }
+}
+
+/// An `InputView` over a [`TestClient`] holding `text`, caret at the end.
+fn view_over(text: &str) -> (Retained<InputView>, Rc<TestClient>) {
+    let view = InputView::new(marker());
+    let client = TestClient::new(text);
+    view.set_text_input_client(client.clone());
+    (view, client)
+}
+
+/// The offsets of a `UITextRange` this view handed out.
+fn offsets(range: &UITextRange) -> (usize, usize) {
+    range
+        .downcast_ref::<TextRange>()
+        .expect("the view hands out its own ranges")
+        .offsets()
+}
+
+/// A count of UTF-16 units as the 10-point-wide cells [`TestClient`] lays
+/// its geometry out in.
+fn cells(units: usize) -> f64 {
+    f64::from(u32::try_from(units).expect("test documents are small")) * 10.0
+}
+
+/// An input method composes in place: `setMarkedText:` marks and selects
+/// inside the client's document, `markedTextRange` reports the mark with
+/// UTF-16 offsets (a surrogate pair counts two), an empty mark abandons the
+/// composition, and `unmarkText` commits it.
+fn marked_text_composes_against_the_client_document() {
+    let (view, client) = view_over("ab");
+    assert!(view.hasText(), "an editing client with text has text");
+
+    view.setMarkedText_selectedRange(Some(&NSString::from_str("ni\u{1F600}")), NSRange::new(2, 0));
+    assert_eq!(client.document(), "abni\u{1F600}");
+    assert_eq!(client.marked_range(), Some(2..6));
+    assert_eq!(
+        view.markedTextRange().map(|range| offsets(&range)),
+        Some((2, 6))
+    );
+    assert_eq!(
+        client.selection(),
+        4..4,
+        "the selection is relative to the mark"
+    );
+
+    // A second update replaces the mark, not the document before it.
+    view.setMarkedText_selectedRange(Some(&NSString::from_str("\u{4F60}")), NSRange::new(1, 0));
+    assert_eq!(client.document(), "ab\u{4F60}");
+    assert_eq!(
+        view.markedTextRange().map(|range| offsets(&range)),
+        Some((2, 3))
+    );
+
+    view.unmarkText();
+    assert_eq!(
+        client.document(),
+        "ab\u{4F60}",
+        "unmarking commits the text"
+    );
+    assert_eq!(view.markedTextRange(), None);
+
+    // An empty mark abandons a composition.
+    view.setMarkedText_selectedRange(Some(&NSString::from_str("x")), NSRange::new(1, 0));
+    assert_eq!(client.document(), "ab\u{4F60}x");
+    view.setMarkedText_selectedRange(None, NSRange::new(0, 0));
+    assert_eq!(client.document(), "ab\u{4F60}");
+    assert_eq!(view.markedTextRange(), None);
+}
+
+/// `insertText:` replaces the marked range when there is one, else the
+/// selection; the return key's newline is the editor's action, not text.
+fn insert_text_replaces_the_marked_range_else_the_selection() {
+    let (view, client) = view_over("hello world");
+    client.select(0..5);
+    view.insertText(&NSString::from_str("bye"));
+    assert_eq!(client.document(), "bye world");
+    assert_eq!(client.selection(), 3..3, "the caret follows the insertion");
+
+    view.setMarkedText_selectedRange(Some(&NSString::from_str("wo")), NSRange::new(2, 0));
+    assert_eq!(client.document(), "byewo world");
+    view.insertText(&NSString::from_str("W"));
+    assert_eq!(
+        client.document(),
+        "byeW world",
+        "the committed text replaced the mark, not the selection"
+    );
+    assert_eq!(client.marked_range(), None);
+
+    view.insertText(&NSString::from_str("\n"));
+    assert_eq!(client.returns.get(), 1);
+    assert_eq!(
+        client.document(),
+        "byeW world",
+        "a newline is the editor's call"
+    );
+}
+
+/// `deleteBackward` is an edit of the document: it removes the selection
+/// when there is one, else the whole grapheme cluster before the caret — a
+/// surrogate pair or a base with a combining mark is one character — and
+/// does nothing at the start.
+fn delete_backward_removes_one_grapheme_or_the_selection() {
+    let (view, client) = view_over("a\u{1F600}");
+    view.deleteBackward();
+    assert_eq!(client.document(), "a", "a surrogate pair deletes whole");
+    assert_eq!(client.selection(), 1..1);
+
+    client.replace(1..1, "e\u{301}");
+    view.deleteBackward();
+    assert_eq!(client.document(), "a", "a combining sequence deletes whole");
+
+    client.replace(1..1, "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}");
+    view.deleteBackward();
+    assert_eq!(client.document(), "a", "a ZWJ sequence deletes whole");
+
+    client.replace(1..1, "bcd");
+    client.select(1..3);
+    view.deleteBackward();
+    assert_eq!(client.document(), "ad", "a selection deletes as a range");
+
+    client.select(0..0);
+    view.deleteBackward();
+    assert_eq!(
+        client.document(),
+        "ad",
+        "nothing precedes the document start"
+    );
+}
+
+/// A client for event-based content: no document, so the delete key is its
+/// own override, and it must be reached even with nothing to delete.
+#[derive(Debug, Default)]
+struct EventClient {
+    deletes: Cell<u32>,
+    inserted: RefCell<Vec<String>>,
+}
+
+impl TextInputClient for EventClient {
+    fn is_editing(&self) -> bool {
+        false
+    }
+
+    fn traits(&self) -> TextInputTraits {
+        TextInputTraits::default()
+    }
+
+    fn len(&self) -> usize {
+        0
+    }
+
+    fn text(&self, _range: Range<usize>) -> String {
+        String::new()
+    }
+
+    fn selection(&self) -> Range<usize> {
+        0..0
+    }
+
+    fn set_selection(&self, _range: Range<usize>) {}
+
+    fn marked_range(&self) -> Option<Range<usize>> {
+        None
+    }
+
+    fn set_marked_text(&self, _text: &str, _selected: Range<usize>) {}
+
+    fn unmark_text(&self) {}
+
+    fn replace(&self, _range: Range<usize>, text: &str) {
+        self.inserted.borrow_mut().push(text.to_owned());
+    }
+
+    fn delete_backward(&self) {
+        self.deletes.set(self.deletes.get() + 1);
+    }
+
+    fn first_rect(&self, _range: Range<usize>) -> Rect {
+        Rect::ZERO
+    }
+
+    fn caret_rect(&self, _offset: usize) -> Rect {
+        Rect::ZERO
+    }
+
+    fn selection_rects(&self, _range: Range<usize>) -> Vec<Rect> {
+        Vec::new()
+    }
+
+    fn closest_offset(&self, _point: kurbo::Point) -> usize {
+        0
+    }
+
+    fn perform_return(&self) {}
+}
+
+/// `deleteBackward` is the client's own `delete_backward`: content with no
+/// document gets the delete key even at an empty document start, and
+/// `insertText:` outside a composition reaches it as a plain replacement.
+fn delete_backward_is_the_clients_when_it_overrides_it() {
+    let view = InputView::new(marker());
+    let client = Rc::new(EventClient::default());
+    view.set_text_input_client(client.clone());
+    view.deleteBackward();
+    view.deleteBackward();
+    assert_eq!(client.deletes.get(), 2);
+    view.insertText(&NSString::from_str("x"));
+    assert_eq!(*client.inserted.borrow(), ["x"]);
+}
+
+/// Ranges, positions and geometry are the client's: `UITextInput`'s
+/// selection, text, position arithmetic and rectangles all read the
+/// document, and a selection `UIKit` sets lands on the client.
+fn selection_and_geometry_queries_answer_from_the_client() {
+    let (view, client) = view_over("hello");
+    client.select(1..3);
+    assert_eq!(
+        view.selectedTextRange().map(|range| offsets(&range)),
+        Some((1, 3))
+    );
+
+    let range = view
+        .textRangeFromPosition_toPosition(&view.beginningOfDocument(), &view.endOfDocument())
+        .expect("both positions are the view's own");
+    assert_eq!(offsets(&range), (0, 5));
+    assert_eq!(
+        view.textInRange(&range).map(|text| text.to_string()),
+        Some(String::from("hello"))
+    );
+
+    view.setSelectedTextRange(Some(&range));
+    assert_eq!(client.selection(), 0..5);
+
+    let end = view.endOfDocument();
+    assert!(
+        view.positionFromPosition_offset(&end, 1).is_none(),
+        "a position past the document end does not exist"
+    );
+    let moved = view
+        .positionFromPosition_offset(&end, -2)
+        .expect("two units back stays inside the document");
+    assert_eq!(view.offsetFromPosition_toPosition(&moved, &end), 2);
+
+    let rect = view.caretRectForPosition(&moved);
+    assert_eq!((rect.origin.x, rect.size.height), (30.0, 20.0));
+    let first = view.firstRectForRange(&range);
+    assert_eq!((first.origin.x, first.size.width), (0.0, 10.0));
+    let rects = view.selectionRectsForRange(&range);
+    assert_eq!(rects.len(), 2);
+    assert!(rects.objectAtIndex(0).containsStart());
+    assert!(!rects.objectAtIndex(0).containsEnd());
+    assert!(rects.objectAtIndex(1).containsEnd());
+
+    let closest = view
+        .closestPositionToPoint(CGPoint::new(31.0, 5.0))
+        .expect("the client answers every point");
+    assert_eq!(
+        view.offsetFromPosition_toPosition(&view.beginningOfDocument(), &closest),
+        3
+    );
+}
+
+/// `UITextInputTraits` are the client's, read when `UIKit` asks: the keyboard
+/// type, return key, secure entry, autocorrection, capitalization and
+/// content type, with `nil` for free text.
+fn traits_come_from_the_client() {
+    use cocoa_ui::ContentType;
+    use cocoa_ui::objc2_ui_kit::{
+        UIKeyboardType, UIReturnKeyType, UITextAutocapitalizationType, UITextAutocorrectionType,
+        UITextContentTypePassword, UITextInputTraits,
+    };
+
+    let (view, client) = view_over("");
+    assert_eq!(view.keyboardType(), UIKeyboardType::Default);
+    let free_text: Option<Retained<NSString>> =
+        // SAFETY: `textContentType` returns an optional string.
+        unsafe { msg_send![&*view, textContentType] };
+    assert!(free_text.is_none(), "free text has no content type");
+
+    client.traits.set(TextInputTraits {
+        keyboard_type: KeyboardType::EmailAddress,
+        return_key: ReturnKey::Send,
+        secure: true,
+        autocorrection: Autocorrection::Disabled,
+        autocapitalization: Autocapitalization::None,
+        content_type: Some(ContentType::Password),
+    });
+    assert_eq!(view.keyboardType(), UIKeyboardType::EmailAddress);
+    assert_eq!(view.returnKeyType(), UIReturnKeyType::Send);
+    assert!(view.isSecureTextEntry());
+    assert_eq!(view.autocorrectionType(), UITextAutocorrectionType::No);
+    assert_eq!(
+        view.autocapitalizationType(),
+        UITextAutocapitalizationType::None
+    );
+    let content: Option<Retained<NSString>> =
+        // SAFETY: `textContentType` returns an optional string.
+        unsafe { msg_send![&*view, textContentType] };
+    assert_eq!(
+        content.map(|content| content.to_string()),
+        // SAFETY: a system constant.
+        Some(unsafe { UITextContentTypePassword }.to_string())
+    );
+
+    // Not editing: no text, no text-system routing.
+    client.editing.set(false);
+    client.replace(0..0, "x");
+    assert!(!view.hasText());
+}
+
+/// Without a client the view is an empty document that edits nothing.
+fn an_input_view_without_a_client_is_an_empty_document() {
+    let view = InputView::new(marker());
+    assert!(!view.hasText());
+    view.insertText(&NSString::from_str("ignored"));
+    view.deleteBackward();
+    assert_eq!(
+        view.selectedTextRange().map(|range| offsets(&range)),
+        Some((0, 0))
+    );
+    assert_eq!(view.markedTextRange(), None);
+    let whole = view
+        .textRangeFromPosition_toPosition(&view.beginningOfDocument(), &view.endOfDocument())
+        .expect("both positions are the view's own");
+    assert_eq!(offsets(&whole), (0, 0));
+}
+
+/// The ivars of a [`SeededTouch`].
+#[derive(Debug)]
+struct SeededTouchIvars {
+    location: Cell<CGPoint>,
+}
+
+cocoa_ui::objc2::define_class!(
+    // SAFETY: `UITouch` permits subclassing for input the process itself
+    // generates; the overrides answer seeded values.
+    #[unsafe(super(UITouch))]
+    #[name = "CocoaUiNativeTestSeededTouch"]
+    #[thread_kind = cocoa_ui::objc2::MainThreadOnly]
+    #[ivars = SeededTouchIvars]
+    /// A direct `UITouch` at a seeded location — a headless process cannot
+    /// make `UIKit` produce one.
+    struct SeededTouch;
+
+    impl SeededTouch {
+        // SAFETY: `locationInView:`'s signature.
+        #[unsafe(method(locationInView:))]
+        fn location_in_view(&self, _view: Option<&UIView>) -> CGPoint {
+            self.ivars().location.get()
+        }
+
+        // SAFETY: `type`'s signature.
+        #[unsafe(method(type))]
+        fn touch_type(&self) -> UITouchType {
+            UITouchType::Direct
+        }
+    }
+);
+
+impl SeededTouch {
+    fn new(mtm: MainThreadMarker, location: CGPoint) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(SeededTouchIvars {
+            location: Cell::new(location),
+        });
+        // SAFETY: `init` is `NSObject`'s designated initializer.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// Each touch reports for itself, and a system cancellation is a
+/// `Cancelled` phase — never a release, which would commit whatever the
+/// touch had started.
+fn a_cancelled_touch_is_reported_as_cancelled_not_released() {
+    use cocoa_ui::input::{PointerButtons, SurfaceEvent, TouchKind, TouchPhase};
+    use cocoa_ui::objc2_foundation::NSSet;
+    use cocoa_ui::objc2_ui_kit::UIEvent;
+
+    let mtm = marker();
+    let view = InputView::new(mtm);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    view.set_event_handler({
+        let events = Rc::clone(&events);
+        move |event| events.borrow_mut().push(event)
+    });
+    let touch = SeededTouch::new(mtm, CGPoint::new(12.0, 34.0));
+    let touches = NSSet::from_retained_slice(&[touch.into_super()]);
+    let no_event = Option::<&UIEvent>::None;
+    // SAFETY: the three touch callbacks take a set of `UITouch`es and an
+    // optional event.
+    unsafe {
+        let _: () = msg_send![&*view, touchesBegan: &*touches, withEvent: no_event];
+        let _: () = msg_send![&*view, touchesMoved: &*touches, withEvent: no_event];
+        let _: () = msg_send![&*view, touchesCancelled: &*touches, withEvent: no_event];
+    }
+
+    let events = events.borrow();
+    let touch_events: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            SurfaceEvent::Touch {
+                id,
+                phase,
+                position,
+                kind,
+                buttons,
+            } => Some((*id, *phase, *position, *kind, *buttons)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(touch_events.len(), 3, "one event per callback: {events:?}");
+    let id = touch_events[0].0;
+    for (touch_id, _, position, kind, buttons) in &touch_events {
+        assert_eq!(*touch_id, id, "a touch keeps its identity for its life");
+        assert_eq!((position.x, position.y), (12.0, 34.0));
+        assert_eq!(*kind, TouchKind::Direct);
+        assert_eq!(*buttons, PointerButtons::empty());
+    }
+    assert_eq!(
+        touch_events.iter().map(|touch| touch.1).collect::<Vec<_>>(),
+        [TouchPhase::Began, TouchPhase::Moved, TouchPhase::Cancelled]
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, SurfaceEvent::PointerButton { pressed: false, .. })),
+        "a cancellation must not look like a release"
+    );
+}
+
+/// The layout handler runs after a layout pass of the view, and the
+/// safe-area handler carries the view's insets.
+fn layout_and_safe_area_handlers_follow_the_view() {
+    let mtm = marker();
+    let view = InputView::new(mtm);
+    let layouts = Rc::new(Cell::new(0));
+    view.set_layout_handler({
+        let layouts = Rc::clone(&layouts);
+        move || layouts.set(layouts.get() + 1)
+    });
+    let insets = Rc::new(Cell::new(None));
+    view.set_safe_area_handler({
+        let insets = Rc::clone(&insets);
+        move |value| insets.set(Some(value))
+    });
+
+    view.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(100.0, 50.0)));
+    view.setNeedsLayout();
+    view.layoutIfNeeded();
+    assert!(layouts.get() >= 1, "a laid-out view reports its layout");
+
+    // SAFETY: `safeAreaInsetsDidChange` is the plain `UIView` callback.
+    unsafe {
+        let _: () = msg_send![&*view, safeAreaInsetsDidChange];
+    }
+    assert_eq!(insets.get(), Some(view.safe_area_insets()));
+}
+
+/// A paused frame clock keeps its link and its request but ticks nothing;
+/// the setting is the clock's, so a re-selection keeps it.
+fn a_paused_frame_clock_stays_armed_but_silent() {
+    use cocoa_ui::display_link::FrameClock;
+
+    let mtm = marker();
+    let host = HostView::new(mtm, Rect::new(0.0, 0.0, 100.0, 100.0));
+    let _window = attach(mtm, &host);
+    let clock = FrameClock::new(mtm, || {});
+    assert!(!clock.is_paused());
+    clock.set_paused(true);
+    clock.start(&host);
+    assert!(clock.is_paused(), "starting does not clear the pause");
+    clock.reselect(&host);
+    assert!(clock.is_paused(), "re-selecting does not clear the pause");
+    clock.set_paused(false);
+    assert!(!clock.is_paused());
+    clock.stop();
 }
 
 /// The ivars of a [`SeededPan`].
@@ -437,8 +1080,6 @@ impl SeededPan {
 /// pointer input, not a scroll: both recognizers take zero touches.
 #[allow(clippy::too_many_lines)] // The wiring check plus the five scroll probes it verifies.
 fn indirect_scroll_input_arrives_as_surface_scroll_events() {
-    use std::cell::RefCell;
-
     use cocoa_ui::input::{ScrollUnit, SurfaceEvent};
     use cocoa_ui::objc2_ui_kit::{UIPanGestureRecognizer, UIScrollTypeMask};
 

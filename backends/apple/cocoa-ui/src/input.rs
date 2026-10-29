@@ -13,6 +13,7 @@
 
 pub use keyboard_types::{Code, Key, Location, Modifiers, NamedKey};
 
+use bitflags::bitflags;
 use kurbo::Point;
 
 /// A pointer button, in the W3C UI Events button vocabulary.
@@ -32,6 +33,64 @@ pub enum PointerButton {
     Back,
     /// The "forward" side button.
     Forward,
+}
+
+bitflags! {
+    /// The pointer buttons held down, in the W3C UI Events button vocabulary.
+    ///
+    /// A set of [`PointerButton`]s: `UIKit` reports an indirect pointer's
+    /// held buttons as a mask, and a direct touch holds none.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct PointerButtons: u8 {
+        /// [`PointerButton::Primary`].
+        const PRIMARY = 1 << 0;
+        /// [`PointerButton::Secondary`].
+        const SECONDARY = 1 << 1;
+        /// [`PointerButton::Middle`].
+        const MIDDLE = 1 << 2;
+        /// [`PointerButton::Back`].
+        const BACK = 1 << 3;
+        /// [`PointerButton::Forward`].
+        const FORWARD = 1 << 4;
+    }
+}
+
+impl From<PointerButton> for PointerButtons {
+    fn from(button: PointerButton) -> Self {
+        match button {
+            PointerButton::Primary => Self::PRIMARY,
+            PointerButton::Secondary => Self::SECONDARY,
+            PointerButton::Middle => Self::MIDDLE,
+            PointerButton::Back => Self::BACK,
+            PointerButton::Forward => Self::FORWARD,
+        }
+    }
+}
+
+/// Where one touch is in its life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TouchPhase {
+    /// The touch began.
+    Began,
+    /// The touch moved.
+    Moved,
+    /// The touch lifted: the user completed it.
+    Ended,
+    /// The system cancelled the touch — a call, a system gesture, a
+    /// recognizer taking over. It is *not* a release: a view must undo, not
+    /// commit, whatever the touch started.
+    Cancelled,
+}
+
+/// What produced a touch or a hover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TouchKind {
+    /// A finger on the screen.
+    Direct,
+    /// An Apple Pencil.
+    Pencil,
+    /// A trackpad or mouse pointer clicking.
+    IndirectPointer,
 }
 
 /// What one unit of a [`SurfaceEvent::Scroll`] delta means.
@@ -70,6 +129,33 @@ pub enum SurfaceEvent {
         /// Where the pointer was when it changed.
         position: Point,
     },
+    /// One touch changed phase.
+    ///
+    /// Every touch reports for itself — multi-touch gestures are recognized
+    /// by the receiver from these streams. Delivered by `UIKit` in place of
+    /// the mouse variants, which only `AppKit` produces.
+    Touch {
+        /// The touch's identity, stable from [`TouchPhase::Began`] to its
+        /// end or cancellation and meaningless afterwards.
+        id: u64,
+        /// The touch's phase.
+        phase: TouchPhase,
+        /// Where the touch is.
+        position: Point,
+        /// What produced the touch.
+        kind: TouchKind,
+        /// The pointer buttons held; empty unless `kind` is
+        /// [`TouchKind::IndirectPointer`].
+        buttons: PointerButtons,
+    },
+    /// A hovering pointer or pencil moved over the surface (`Some`) or left
+    /// it (`None`), without touching.
+    Hover {
+        /// Where the hover is, or `None` when it left.
+        position: Option<Point>,
+        /// What is hovering.
+        kind: TouchKind,
+    },
     /// A scroll gesture over the surface.
     Scroll {
         /// Where the pointer was during the gesture.
@@ -103,6 +189,9 @@ pub enum SurfaceEvent {
         /// `true` when the platform generated this press by auto-repeat.
         repeat: bool,
     },
+    /// The system cancelled the keys it was tracking — a held key will never
+    /// report its release, so the receiver must treat every key as up.
+    KeyboardCancel,
     /// Text to insert at the caret, already committed by the platform.
     ///
     /// Following a [`SurfaceEvent::Key`] press it is that press's text — the

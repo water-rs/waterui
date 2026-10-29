@@ -41,6 +41,8 @@ mod frozen_frame;
 mod gpu_completion;
 #[cfg(feature = "gpu_surface")]
 mod gpu_input;
+#[cfg(all(feature = "gpu_surface", target_os = "ios"))]
+mod gpu_text;
 mod gpu_runtime;
 mod inspector;
 mod invalidation;
