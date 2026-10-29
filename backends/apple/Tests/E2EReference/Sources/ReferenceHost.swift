@@ -171,12 +171,17 @@ func wuiSignalReferenceFirstPaint(presentation: WuiReferencePresentation) {
       // the content's first layout: AppKit hands the toolbar band to a scroll
       // view under it only then, and turning them on afterwards leaves the
       // titlebar its own full-width hard pocket (water-rs/waterui#3697).
-      // SwiftUI installs window.toolbar on first layout, so a window that
-      // ends up without one drops the flags after a turn of the main loop.
-      // A toolbar installed into a window that is already full-size shrinks
-      // the frame to the content rect; the backend installs its toolbar
-      // before the flags and keeps the frame, so the host restores its size.
-      let frameSize = window.frame.size
+      // The backend installs its toolbar before these flags, which turns
+      // the toolbar band into part of the full-size frame. SwiftUI installs
+      // a twin's toolbar with the content when it can, and the window then
+      // matches the backend's; a toolbar SwiftUI adds later lands in a
+      // window that is already full-size and leaves it a different height.
+      // In that case the host replays the backend's order: back to the
+      // frame the scaffold gave it, now with the toolbar, then full-size
+      // content again. A window that ends up without a toolbar drops the
+      // flags, as the backend never sets them there.
+      let scaffoldFrame = window.frame
+      let toolbarBeforeFlags = window.toolbar != nil
       window.toolbarStyle = .unified
       window.styleMask.insert(.fullSizeContentView)
       window.center()
@@ -188,12 +193,14 @@ func wuiSignalReferenceFirstPaint(presentation: WuiReferencePresentation) {
         if window.toolbar == nil {
           window.styleMask.remove(.fullSizeContentView)
           window.toolbarStyle = .automatic
-        } else {
+        } else if !toolbarBeforeFlags {
+          let top = window.frame.maxY
+          window.styleMask.remove(.fullSizeContentView)
           var frame = window.frame
-          let top = frame.maxY
-          frame.size = frameSize
-          frame.origin.y = top - frameSize.height
-          window.setFrame(frame, display: true)
+          frame.size = scaffoldFrame.size
+          frame.origin.y = top - frame.size.height
+          window.setFrame(frame, display: false)
+          window.styleMask.insert(.fullSizeContentView)
         }
       }
     }
