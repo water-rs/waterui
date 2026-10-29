@@ -122,7 +122,7 @@ use waterui_layout::{Divider, scroll};
 #[cfg(feature = "accessibility")]
 use waterui_navigation::NavigationView;
 #[cfg(feature = "accessibility")]
-use waterui_navigation::tab::{Tab, TabsLayout};
+use waterui_navigation::tab::{NativeTabStyle, Tab, TabsLayout};
 
 use crate::theme::WidgetTheme;
 use crate::theme::{
@@ -130,8 +130,8 @@ use crate::theme::{
     InteractionMotion, ListMetrics, ModalInteraction, NavigationMetrics, NavigationMotion,
     PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
     RadioSelectionMotion, SliderMetrics, SliderValueIndicatorMetrics, StepperEnd, StepperMetrics,
-    TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics,
-    ToggleMetrics, WidgetInteractionState,
+    TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
+    TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
 };
 use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
@@ -3386,16 +3386,11 @@ impl WidgetTheme for MinimalTestTheme {
         self.forced_tab_item_layout
             .unwrap_or(TabItemLayout::Vertical)
     }
-    fn tabs_metrics(&self, layout: TabItemLayout) -> TabsMetrics {
+    fn tabs_metrics(&self, _layout: TabItemLayout) -> TabsMetrics {
         TabsMetrics {
             bar_height: 48.0,
             button_min_width: 48.0,
             button_horizontal_inset: 16.0,
-            active_indicator_height: match layout {
-                TabItemLayout::Vertical => 3.0,
-                TabItemLayout::Horizontal => 40.0,
-            },
-            active_indicator_radius: 3.0,
             icon_label_spacing: 4.0,
         }
     }
@@ -3405,10 +3400,38 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_tabs_bar_divider(&self, _draw: &mut Recorder, divider: Rect) {
         self.tabs_bar_divider_draws.borrow_mut().push(divider);
     }
-    fn draw_tabs_highlight(&self, _draw: &mut Recorder, bounds: Rect, layout: TabItemLayout) {
+    fn draw_tabs_highlight(&self, _draw: &mut Recorder, item: TabItemGeometry) {
+        // This theme's indicator is a strip: 40 thick and the item's whole
+        // extent, centered, for horizontal items; otherwise 3 thick along the
+        // bar item's top (the sidebar item's trailing edge), as wide (tall) as
+        // the title.
+        let thickness: f64 = match item.layout {
+            TabItemLayout::Vertical => 3.0,
+            TabItemLayout::Horizontal => 40.0,
+        };
+        let bounds = item.bounds;
+        let strip = if matches!(item.layout, TabItemLayout::Horizontal) {
+            let height = thickness.min(bounds.height());
+            let y0 = (bounds.height() - height).mul_add(0.5, bounds.y0);
+            Rect::new(bounds.x0, y0, bounds.x1, y0 + height)
+        } else if matches!(item.placement, NativeTabStyle::Sidebar) {
+            Rect::new(
+                (bounds.x1 - thickness).max(bounds.x0),
+                item.title.y0,
+                bounds.x1,
+                item.title.y1,
+            )
+        } else {
+            Rect::new(
+                item.title.x0,
+                bounds.y0,
+                item.title.x1,
+                (bounds.y0 + thickness).min(bounds.y1),
+            )
+        };
         self.tabs_highlight_draws
             .borrow_mut()
-            .push((bounds, layout));
+            .push((strip, item.layout));
     }
     fn draw_scroll_indicator(&self, _draw: &mut Recorder, _bounds: Rect) {}
 

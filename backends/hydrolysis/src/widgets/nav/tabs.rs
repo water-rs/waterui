@@ -8,7 +8,7 @@ use crate::renderer::{
     Edge, HydroNativeView, HydroState, RetainedSubview, WidgetRenderContext, measure_tabs_layout,
     tabs_button_rect, tabs_content_proposal,
 };
-use crate::theme::TabItemLayout;
+use crate::theme::{TabItemGeometry, TabItemLayout};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -674,28 +674,18 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
             };
             {
                 let theme = ctx.theme();
+                let item = TabItemGeometry {
+                    bounds: chrome_bounds,
+                    icon: icon_rect,
+                    title: label_rect,
+                    layout,
+                    placement: style,
+                };
                 ctx.draw_context(|draw| {
                     if is_selected {
-                        let highlight = tabs_highlight_rect(
-                            chrome_bounds,
-                            style,
-                            theme_metrics.active_indicator_height,
-                            if matches!(style, NativeTabStyle::Sidebar) {
-                                f64::from(label_size.height)
-                            } else {
-                                f64::from(label_size.width)
-                            },
-                            layout,
-                        );
-                        theme.draw_tabs_highlight(&mut *draw, highlight, layout);
+                        theme.draw_tabs_highlight(&mut *draw, item);
                     }
-                    theme.draw_tabs_button_state_layer(
-                        &mut *draw,
-                        chrome_bounds,
-                        is_selected,
-                        interaction,
-                        layout,
-                    );
+                    theme.draw_tabs_button_state_layer(&mut *draw, item, is_selected, interaction);
                 });
             }
             let selection_binding = selection.clone();
@@ -983,45 +973,6 @@ fn tabs_label_rect(
     let x0 = (button_rect.width() - width).mul_add(0.5, button_rect.x0);
     let y0 = (button_rect.height() - height).mul_add(0.5, button_rect.y0);
     kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
-}
-
-fn tabs_highlight_rect(
-    button_rect: kurbo::Rect,
-    style: NativeTabStyle,
-    thickness: f64,
-    label_extent: f64,
-    layout: TabItemLayout,
-) -> kurbo::Rect {
-    // Horizontal items highlight the whole item; the theme's metric supplies
-    // the indicator's thickness centered on the item.
-    if matches!(layout, TabItemLayout::Horizontal) {
-        let height = thickness.min(button_rect.height());
-        let y0 = (button_rect.height() - height).mul_add(0.5, button_rect.y0);
-        return kurbo::Rect::new(button_rect.x0, y0, button_rect.x1, y0 + height);
-    }
-    match style {
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => {
-            let width = label_extent.clamp(0.0, button_rect.width());
-            let x0 = (button_rect.width() - width).mul_add(0.5, button_rect.x0);
-            let x1 = x0 + width;
-            kurbo::Rect::new(
-                x0,
-                button_rect.y0,
-                x1,
-                (button_rect.y0 + thickness).min(button_rect.y1),
-            )
-        }
-        NativeTabStyle::Sidebar => {
-            let height = label_extent.clamp(0.0, button_rect.height());
-            let y0 = (button_rect.height() - height).mul_add(0.5, button_rect.y0);
-            kurbo::Rect::new(
-                (button_rect.x1 - thickness).max(button_rect.x0),
-                y0,
-                button_rect.x1,
-                y0 + height,
-            )
-        }
-    }
 }
 
 /// Emits a retained tabs layout's accessibility tree for the semantic walk:
