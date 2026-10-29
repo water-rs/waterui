@@ -122,9 +122,9 @@ impl ApplePhysicalDevice {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 impl ApplePhysicalDevice {
-    /// A fully populated device for cross-module test fixtures.
+    /// A fully populated device for the macOS test runner's fixtures.
     pub(crate) fn fixture() -> Self {
         Self {
             identifier: "CORE-DEVICE-ID".to_string(),
