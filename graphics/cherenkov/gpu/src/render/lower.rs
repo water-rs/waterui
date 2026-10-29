@@ -4737,17 +4737,6 @@ impl<'a> Lowering<'a> {
             return Ok(true);
         }
         if !self.automatic_gpu(&prepared, &prepared.bound) {
-            tracing::info!(
-                content,
-                segments = prepared.bound.segments,
-                bins = prepared.bound.bins,
-                grid_h = prepared.bound.grid_h,
-                prefers = prepared.bound.prefers_gpu(),
-                admits = self
-                    .compute
-                    .is_some_and(|limit| limit.admits(&prepared, &prepared.bound)),
-                "diagnostic GPU path rejection"
-            );
             return Ok(false);
         }
         let shader_data = match paint {
