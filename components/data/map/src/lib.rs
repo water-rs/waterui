@@ -37,10 +37,6 @@ pub use waterkit_location::{Latitude, Location, Longitude, OutOfRange, Timestamp
 
 /// A geographic coordinate with latitude and longitude.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a geographic coordinate: latitude and longitude are the whole value"
-)]
 pub struct Coordinate {
     /// Latitude in degrees (-90 to 90).
     pub latitude: Latitude,

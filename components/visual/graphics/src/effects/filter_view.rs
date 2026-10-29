@@ -788,10 +788,6 @@ impl<V: View, F: Filter + RenderTransfer> View for Filtered<V, F> {
 /// registering it with its engine (`Engine::effect`) — and keeps `guards`
 /// alive as long as the realization.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole filtered view, so a new field must fail their build instead of being ignored"
-)]
 pub struct FilteredView {
     /// The filtered subtree.
     pub content: AnyView,

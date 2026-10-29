@@ -396,11 +396,11 @@ fn clamped_offset(scroll: &ScrollSurface, target: Point) -> cocoa_ui::Point {
 fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) {
     scroll.layout_if_needed();
     assert!(
-        request.target().x.is_finite() && request.target().y.is_finite(),
+        request.target.x.is_finite() && request.target.y.is_finite(),
         "WaterUI ScrollView target must contain finite coordinates"
     );
-    let offset = clamped_offset(scroll, request.target().clone());
-    match request.animation() {
+    let offset = clamped_offset(scroll, request.target);
+    match request.animation.as_ref() {
         None => scroll.set_content_offset(offset, false),
         Some(Animation::Default) => scroll.set_content_offset(offset, true),
         Some(animation) => scroll.animate_content_offset(
@@ -423,13 +423,13 @@ fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) 
 fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) {
     scroll.layout_if_needed();
     assert!(
-        request.target().x.is_finite() && request.target().y.is_finite(),
+        request.target.x.is_finite() && request.target.y.is_finite(),
         "WaterUI ScrollView target must contain finite coordinates"
     );
     // The target is relative to the inset content edge; the kit's jump and
     // flights clamp the raw offset to the clip's scrollable bounds.
-    let target = raw_content_offset(*request.target(), scroll.adjusted_content_inset());
-    match request.animation().as_ref() {
+    let target = raw_content_offset(request.target, scroll.adjusted_content_inset());
+    match request.animation.as_ref() {
         None => scroll.scroll_to(target),
         Some(Animation::Default) => scroll.scroll_to_animated(target),
         Some(animation) => scroll.animate_scroll_to(
@@ -442,16 +442,16 @@ fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) 
 
 /// Renders a `ScrollView` config into the kit's scroll surface.
 fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
-    let (axis, content, controller, offset) = config.into_inner().into_parts();
+    let parts = config.into_inner();
     let mtm = ctx.mtm();
-    let (vertical, horizontal) = match axis {
+    let (vertical, horizontal) = match parts.axis {
         Axis::Vertical => (true, false),
         Axis::Horizontal => (false, true),
         Axis::All => (true, true),
         axis => panic!("unsupported WaterUI scroll axis: {axis:?}"),
     };
     let scroll = ScrollSurface::new(mtm, vertical, horizontal);
-    let child_leaf = ctx.render(content);
+    let child_leaf = ctx.render(parts.content);
     // `AppKit` mounts on the flipped document; `UIKit` scrolls the view's
     // own content area, so the child mounts on the scroll view itself.
     #[cfg(target_os = "macos")]
@@ -463,7 +463,7 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
     #[cfg(target_os = "ios")]
     let child = child_leaf.mount(as_view(&scroll));
     let content = Rc::new(ScrollContent {
-        axis,
+        axis: parts.axis,
         child,
         laid_out_viewport: Cell::new(Size::zero()),
         offset: Cell::new(cocoa_ui::view::SubpixelOffset::ZERO),
@@ -479,10 +479,13 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
     // binding's current value so the layout handler and the scroll observer
     // may both fire it without double-notifying.
     let report = {
-        let offset = offset;
-        let position = controller.as_ref().map(ScrollController::position_report);
+        let offset = parts.offset.clone();
+        let position = parts
+            .controller
+            .as_ref()
+            .map(ScrollController::position_report);
         (offset.is_some() || position.is_some())
-            .then(|| scroll_reporter(axis, offset, position, Rc::clone(&measured)))
+            .then(|| scroll_reporter(parts.axis, offset, position, Rc::clone(&measured)))
     };
     scroll.set_layout_handler({
         // Strong capture, the way mounted `HostView` handlers capture
@@ -561,7 +564,7 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
     // content subtree alive.
     leaf.keep(cocoa_ui::HandlerTeardown::new(Retained::clone(&scroll)));
 
-    if let Some(controller) = controller {
+    if let Some(controller) = parts.controller {
         wire_controller(&mut leaf, &scroll, &controller);
     }
 

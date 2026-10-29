@@ -47,10 +47,6 @@ pub mod tab_style {
 
     /// Platform- and window-adaptive tab style.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less style marker used by name"
-    )]
     pub struct Automatic;
 
     impl TabStyle for Automatic {
@@ -61,10 +57,6 @@ pub mod tab_style {
 
     /// Native tab-bar style.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less style marker used by name"
-    )]
     pub struct TabBar;
 
     impl TabStyle for TabBar {
@@ -75,10 +67,6 @@ pub mod tab_style {
 
     /// Native sidebar or navigation-rail style.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less style marker used by name"
-    )]
     pub struct Sidebar;
 
     impl TabStyle for Sidebar {

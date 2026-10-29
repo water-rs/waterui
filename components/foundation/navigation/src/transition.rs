@@ -321,18 +321,10 @@ pub mod navigation_transition {
 
     /// Platform-default navigation motion.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less transition marker used by name"
-    )]
     pub struct Automatic;
 
     /// Cross-fade navigation motion.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less transition marker used by name"
-    )]
     pub struct Fade;
 
     /// Platform-native zoom/shared-element navigation motion.
@@ -343,10 +335,6 @@ pub mod navigation_transition {
 
     /// Navigation with animation disabled.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less transition marker used by name"
-    )]
     pub struct None;
 
     /// Uses the platform-default navigation motion.

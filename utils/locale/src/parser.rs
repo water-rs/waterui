@@ -22,10 +22,6 @@ extern crate alloc;
 /// ```
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "closed: one slot per CLDR plural category (zero, one, two, few, many, other)"
-)]
 pub struct PluralForms {
     /// Form for zero items (some languages)
     #[serde(default)]

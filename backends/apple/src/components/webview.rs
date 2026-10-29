@@ -770,7 +770,7 @@ impl CustomWebViewController for AppleWebViewController {
         // Interception can only be registered while the configuration is
         // being assembled, so the asset server arrives at creation.
         let scripts = DocumentScripts::new(&config);
-        let scheme = config.asset_server().map(|server| asset_scheme(&server));
+        let scheme = config.asset_server().map(asset_scheme);
         WkWebViewHandle::new(
             mtm,
             scheme,

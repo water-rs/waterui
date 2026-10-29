@@ -982,30 +982,30 @@ fn scroll_position_reports_actual_geometry_not_pending_requests() {
         .position()
         .snapshot()
         .expect("the first painted layout reports a position");
-    assert_eq!(position.offset(), waterui::layout::Point::zero());
-    assert!(position.at_start() && !position.at_end());
+    assert_eq!(position.offset, waterui::layout::Point::zero());
+    assert!(position.at_start && !position.at_end);
     assert_eq!(
-        position.viewport_size(),
+        position.viewport_size,
         waterui::layout::Size::new(120.0, 120.0)
     );
-    assert!(position.content_size().height > position.viewport_size().height);
+    assert!(position.content_size.height > position.viewport_size.height);
 
     // A user scroll moves the reported offset.
     let rail = node_id(app.tree(), "offset-rail");
     app.scroll_down(rail);
     let scrolled = controller.position().snapshot().unwrap();
     assert!(
-        scrolled.offset().y > 0.0,
+        scrolled.offset.y > 0.0,
         "a user scroll must report the new offset, got {:?}",
-        scrolled.offset()
+        scrolled.offset
     );
 
     // A request not yet applied stays pending: position() still reports the
     // last actual offset, not the requested target.
     controller.scroll_to(waterui::layout::Point::new(0.0, 200.0));
     assert_eq!(
-        controller.position().snapshot().unwrap().offset(),
-        scrolled.offset(),
+        controller.position().snapshot().unwrap().offset,
+        scrolled.offset,
         "a pending request must never pose as the actual position"
     );
 
@@ -1013,7 +1013,7 @@ fn scroll_position_reports_actual_geometry_not_pending_requests() {
     app.pump_for(std::time::Duration::from_millis(16));
     let applied = controller.position().snapshot().unwrap();
     assert!(
-        applied.offset().y > scrolled.offset().y && applied.at_end(),
+        applied.offset.y > scrolled.offset.y && applied.at_end,
         "the applied request reports the landed offset, clamped at the extent: {applied:?}"
     );
 }

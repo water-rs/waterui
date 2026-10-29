@@ -29,10 +29,6 @@ use crate::views::{ForEach, Views};
 /// `Lazy` provides static methods for creating scrollable, lazy-loading layouts
 /// that efficiently render large collections by reconstructing views on-demand.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less namespace for the lazy-layout constructors, used by name"
-)]
 pub struct Lazy;
 
 impl Lazy {

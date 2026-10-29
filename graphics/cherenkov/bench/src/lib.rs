@@ -27,7 +27,6 @@
 //! interval between consecutive completions, never derived from stage times.
 #![expect(
     clippy::exhaustive_enums,
-    clippy::exhaustive_structs,
     reason = "publish = false: no semver surface until #2687 makes the crate publishable"
 )]
 

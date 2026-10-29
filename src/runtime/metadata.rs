@@ -175,10 +175,6 @@ pub mod context_menu {
     /// Resolved context menu metadata consumed by the native backends.
     #[doc(hidden)]
     #[derive(Debug)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "backends destructure the whole resolved context menu, so a new field must fail their build instead of being ignored"
-    )]
     pub struct ResolvedContextMenu {
         /// The resolved menu items for the current environment.
         pub items: Computed<Vec<ResolvedMenuItem>>,
@@ -340,10 +336,6 @@ pub mod anchored_overlay {
     /// );
     /// ```
     #[derive(Debug)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "backends destructure the whole anchored overlay, so a new field must fail their build instead of being ignored"
-    )]
     pub struct AnchoredOverlay {
         /// Builds a fresh view for each presentation next to the anchor.
         pub content: AnyViewBuilder,
@@ -800,10 +792,6 @@ pub mod secure {
     ///
     /// User would be forbidden to take a screenshot of the view that has this metadata.
     #[derive(Debug)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less metadata marker inserted by name"
-    )]
     pub struct Secure;
 
     impl MetadataKey for Secure {}
@@ -848,10 +836,6 @@ pub mod secure {
     /// However, in some cases, you may want to apply standard dynamic range color for certain views,
     /// for instance, user avatar.
     #[derive(Debug)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less metadata marker inserted by name"
-    )]
     pub struct StandardDynamicRange;
     impl MetadataKey for StandardDynamicRange {}
 
@@ -875,10 +859,6 @@ pub mod secure {
     ///
     /// But if your parent view applied `StandardDynamicRange` metadata, you would use this metadata to override it.
     #[derive(Debug)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less metadata marker inserted by name"
-    )]
     pub struct HighDynamicRange;
     impl MetadataKey for HighDynamicRange {}
 

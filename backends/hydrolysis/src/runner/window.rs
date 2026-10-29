@@ -561,7 +561,9 @@ pub struct HeadlessSnapshot {
     pub output_alpha: cherenkov_gpu::interop::OutputAlpha,
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+// The accessors are the public surface `runner` re-exports off wasm32; the
+// browser runner only builds and drops a snapshot.
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 impl HeadlessSnapshot {
     /// Snapshot width in pixels.
     #[must_use]

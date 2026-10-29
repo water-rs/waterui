@@ -32,7 +32,6 @@ use crate::{
 /// The content child determines the size, the background fills the bounds.
 /// Children order: `[background, content]`
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(clippy::exhaustive_structs, reason = "field-less layout used by name")]
 pub struct BackgroundLayout;
 
 impl Layout for BackgroundLayout {

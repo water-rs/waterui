@@ -379,7 +379,7 @@ impl InsertionRun {
     /// realization — a user-triggerable failure, reported once per run.
     #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
     fn update_blur(&self, sample: &TransitionProperties) {
-        if sample.blur > 0.0 && !self.blur_warned.replace(true) {
+        if sample.blur() > 0.0 && !self.blur_warned.replace(true) {
             crate::transition::transition_violation!(
                 "waterui-apple: a blur transition needs the filtered pipeline \
                  (the view_effect or applied_filter feature)"

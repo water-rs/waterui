@@ -101,6 +101,12 @@ impl RenderResult {
             height,
         }
     }
+
+    /// Takes the result apart into its RGBA pixel data, width and height.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<u8>, u32, u32) {
+        (self.rgba_data, self.width, self.height)
+    }
 }
 
 /// Why a [`CustomViewRenderer`] produced no image.

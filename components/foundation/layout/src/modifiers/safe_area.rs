@@ -49,10 +49,6 @@ use waterui_core::metadata::MetadataKey;
 /// should extend into the unsafe screen regions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "closed set of the four logical edges"
-)]
 pub struct EdgeSet {
     /// Ignore safe area on the top edge.
     pub top: bool,
@@ -242,20 +238,6 @@ pub struct IgnoreSafeArea {
     pub regions: SafeAreaRegions,
     /// Which edges ignore the named regions.
     pub edges: EdgeSet,
-}
-
-impl IgnoreSafeArea {
-    /// Which safe-area regions are ignored.
-    #[must_use]
-    pub const fn regions(&self) -> SafeAreaRegions {
-        self.regions
-    }
-
-    /// Which edges ignore the named regions.
-    #[must_use]
-    pub const fn edges(&self) -> EdgeSet {
-        self.edges
-    }
 }
 
 impl MetadataKey for IgnoreSafeArea {}

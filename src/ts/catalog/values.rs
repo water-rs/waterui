@@ -547,10 +547,6 @@ impl IntoJs for ShapeValue {
 /// a `WaterUI` view could not fetch is a typed error naming it rather than a
 /// picture that silently never appears.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "newtype over the URL it crosses as"
-)]
 pub struct UrlValue(pub Url);
 
 impl TsType for UrlValue {

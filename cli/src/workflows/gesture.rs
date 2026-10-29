@@ -49,7 +49,7 @@ impl GestureOptions {
 
     /// Path to save the diff image, if any.
     #[must_use]
-    pub fn diff_output(&self) -> Option<&std::path::Path> {
+    pub fn get_diff_output(&self) -> Option<&std::path::Path> {
         self.diff_output.as_deref()
     }
 
@@ -73,7 +73,7 @@ impl GestureOptions {
 
     /// Set the diff output path.
     #[must_use]
-    pub fn with_diff_output(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+    pub fn diff_output(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.diff_output = Some(path.into());
         self
     }

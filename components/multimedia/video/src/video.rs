@@ -1389,10 +1389,6 @@ impl BoundVideoEventHandler {
 /// Backends must source playback state from this object rather than creating a
 /// second view-specific player state.
 #[doc(hidden)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the video realizations destructure the whole playback contract, so a new field must fail their build instead of being ignored"
-)]
 pub struct PlaybackConfiguration<H = Option<VideoEventHandler>> {
     /// Command handle for playlist navigation and transport controls.
     pub controller: PlayerController,
@@ -1550,10 +1546,6 @@ impl<H> PlaybackConfiguration<H> {
 ///
 /// This is a raw video view that displays video content without any native controls.
 /// Use this when you want to build your own custom video UI.
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the video realizations destructure the whole configuration, so a new field must fail their build instead of being ignored"
-)]
 pub struct VideoConfig<H = Option<VideoEventHandler>> {
     /// Shared session state and controls.
     pub playback: PlaybackConfiguration<H>,
@@ -1720,10 +1712,6 @@ pub fn video(item: impl Into<MediaItem>) -> Video {
 /// Configuration for the [`VideoPlayer`] component.
 ///
 /// This configuration defines an interactive player with platform-appropriate controls.
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the video realizations destructure the whole configuration, so a new field must fail their build instead of being ignored"
-)]
 pub struct VideoPlayerConfig<H = Option<VideoEventHandler>> {
     /// Shared session state and controls.
     pub playback: PlaybackConfiguration<H>,

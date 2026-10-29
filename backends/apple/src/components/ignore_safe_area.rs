@@ -92,8 +92,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
             // both regions (`SafeAreaRegions::ALL`); `KEYBOARD` names only
             // the keyboard region, so the container region keeps its hold
             // on the same edge.
-            let regions = metadata.value.regions();
-            let edges = metadata.value.edges();
+            let regions = metadata.value.regions;
+            let edges = metadata.value.edges;
             let named = |region: bool| {
                 cocoa_ui::geometry::Edges::new(
                     region && edges.top,

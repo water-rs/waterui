@@ -698,17 +698,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         // A request carries an optional animation: `None`
                         // lands in place; `Some` glides along its curve via
                         // the smooth-scroll pump this render registers.
-                        if let Some(animation) = request.animation().cloned() {
+                        if let Some(animation) = request.animation {
                             let _ = handle.scroll_to_animated(
-                                f64::from(request.target().x),
-                                f64::from(request.target().y),
+                                f64::from(request.target.x),
+                                f64::from(request.target.y),
                                 animation,
                                 renderer.frame_instant(),
                             );
                         } else {
                             let _ = handle.scroll_to(
-                                f64::from(request.target().x),
-                                f64::from(request.target().y),
+                                f64::from(request.target.x),
+                                f64::from(request.target.y),
                             );
                         }
                         node.applied_scroll_generation.set(generation);

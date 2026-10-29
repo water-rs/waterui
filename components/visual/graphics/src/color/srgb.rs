@@ -16,10 +16,6 @@ use super::{
 /// sRGB is the standard RGB color space used in most displays and web content.
 /// Component values are in the range 0.0 to 1.0.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "an sRGB color: its three channels are the whole value"
-)]
 pub struct Srgb {
     /// Red component (0.0 to 1.0)
     pub red: f32,

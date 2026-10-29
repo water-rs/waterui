@@ -43,18 +43,10 @@ pub struct Move {
 
 /// Per-row delete payload injected into list delete handlers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "handler payload newtype destructured in handler parameters"
-)]
 pub struct ListDelete(pub usize);
 
 /// Per-row move payload injected into list move handlers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "handler payload newtype destructured in handler parameters"
-)]
 pub struct ListMove(pub Move);
 
 impl_extractor!(ListDelete);
@@ -257,10 +249,6 @@ impl_debug!(ListConfig);
 /// against. `0.0` sizes each row to its content plus its insets. Set it with
 /// [`ViewExt::list_min_row_height`](crate::ViewExt::list_min_row_height).
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "environment newtype over the minimum row height"
-)]
 pub struct ListMinRowHeight(pub f32);
 
 /// Marks the subtree below it as a navigation container's sidebar column.
@@ -271,10 +259,6 @@ pub struct ListMinRowHeight(pub f32);
 /// accent fill, and a selected row keeping its own colors rather than
 /// re-theming onto `SelectionForeground`.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "environment marker used by presence"
-)]
 #[doc(hidden)]
 pub struct SidebarContent;
 

@@ -793,8 +793,8 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             let request = renderer.read_signal(&controller.request());
             *self.pending_scroll.borrow_mut() = Some(PendingScroll {
                 generation,
-                index: *request.target(),
-                animation: request.animation().cloned(),
+                index: request.target,
+                animation: request.animation,
                 state: PendingScrollState::Unarmed,
             });
         }

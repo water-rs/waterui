@@ -69,10 +69,6 @@ crate::impl_constant!(Edge);
 /// form. Platform hosts set this from the system accessibility preference;
 /// test harnesses set it directly in the environment.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "environment flag newtype over `bool`"
-)]
 pub struct ReduceMotion(pub bool);
 
 /// Geometry available when resolving native property transitions.
@@ -794,10 +790,6 @@ impl SubView for GhostSlot {
 /// with the container's animation. Re-insertion always constructs a new node;
 /// it never revives a ghost, even when the collection identity is reused.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole ghost, so a new field must fail their build instead of being ignored"
-)]
 pub struct Ghost<T> {
     /// Backend-owned non-interactive visual or frozen GPU capture.
     pub realization: T,

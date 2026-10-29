@@ -632,7 +632,7 @@ impl Pool {
             .iter()
             .map(|&(offset, stride)| {
                 let fd = self.memory_fd(slot)?;
-                Ok(DmabufPlane { fd, offset, stride })
+                Ok(DmabufPlane::new(fd, offset, stride))
             })
             .collect::<Result<Vec<_>, RenderError>>()?;
         let (color, alpha) = presented_color(self.negotiated.color, self.negotiated.alpha);

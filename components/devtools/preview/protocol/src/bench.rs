@@ -42,10 +42,6 @@ pub fn bench_report_file_name(crate_name: &str, bench_name: &str) -> String {
 
 /// One executed bench: its identity, run shape, budgets, and measurements.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "wire record that waterui-testing fills field by field for the CLI to read; a new measurement must fail its producer's build rather than be left unset"
-)]
 pub struct BenchReport {
     /// Package that declared the bench.
     pub crate_name: String,
@@ -195,10 +191,6 @@ impl BenchBudgets {
 
 /// Aggregated statistics of one perf measurement.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "wire record that waterui-testing fills field by field for the CLI to read; a new measurement must fail its producer's build rather than be left unset"
-)]
 pub struct PerfMeasurement {
     /// Scenario name.
     pub name: String,
@@ -258,10 +250,6 @@ pub struct PerfMeasurement {
 
 /// Frame phase aggregates of a perf measurement.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "wire record that waterui-testing fills field by field for the CLI to read; a new measurement must fail its producer's build rather than be left unset"
-)]
 pub struct PerfPhases {
     /// Mean rebuild phase time in microseconds.
     pub rebuild_mean_us: u64,
@@ -291,10 +279,6 @@ pub struct PerfPhases {
 
 /// One recorded perf frame.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "wire record that waterui-testing fills field by field for the CLI to read; a new measurement must fail its producer's build rather than be left unset"
-)]
 pub struct PerfFrame {
     /// Frame index within the measurement.
     pub index: u64,

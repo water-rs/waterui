@@ -1186,10 +1186,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         // The semantic domain has no frame pump to advance an
                         // animation, so a request lands in place whether or
                         // not it carries one.
-                        let _ = handle.scroll_to(
-                            f64::from(request.target().x),
-                            f64::from(request.target().y),
-                        );
+                        let _ = handle
+                            .scroll_to(f64::from(request.target.x), f64::from(request.target.y));
                         node.applied_scroll_generation.set(generation);
                     }
                 }

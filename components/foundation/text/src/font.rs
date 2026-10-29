@@ -459,10 +459,6 @@ macro_rules! impl_font {
     ($name:ident, $doc:expr, $size:expr, $weight:expr) => {
         #[doc = $doc]
         #[derive(Debug, Clone, Copy)]
-        #[expect(
-            clippy::exhaustive_structs,
-            reason = "field-less font slot resolved by type and used by name"
-        )]
         pub struct $name;
 
         impl FontSlot for $name {

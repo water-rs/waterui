@@ -190,10 +190,6 @@ pub type SignatureBytes = HexBytes<64>;
 /// is text in the document because it is 64 bits wide and JSON numbers are
 /// not reliably that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "newtype over the contract's `u64` hash"
-)]
 pub struct ContractHash(pub u64);
 
 impl core::fmt::Display for ContractHash {

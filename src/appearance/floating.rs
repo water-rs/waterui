@@ -24,10 +24,6 @@ use crate::{
 /// Backends should read this instead. It answers both questions at once: whether
 /// there is an enclosing floating surface, and with which style.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "environment newtype over the floating surface's style"
-)]
 pub struct FloatingScope(pub FloatingStyle);
 
 impl Plugin for FloatingScope {}

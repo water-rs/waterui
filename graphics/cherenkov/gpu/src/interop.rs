@@ -928,6 +928,19 @@ pub mod dmabuf {
     }
 
     impl DmabufPlane {
+        /// A plane of `fd` at byte `offset` with row `stride`.
+        #[must_use]
+        pub const fn new(fd: OwnedFd, offset: u32, stride: u32) -> Self {
+            Self { fd, offset, stride }
+        }
+
+        /// Takes the plane apart into its descriptor, byte offset and row
+        /// stride, handing the host ownership of the descriptor.
+        #[must_use]
+        pub fn into_parts(self) -> (OwnedFd, u32, u32) {
+            (self.fd, self.offset, self.stride)
+        }
+
         /// The dma-buf descriptor for this plane.
         #[must_use]
         pub const fn fd(&self) -> &OwnedFd {

@@ -766,10 +766,10 @@ impl SafeAreaLayout {
         let mut released = EdgeOffsets::default();
         for (index, edge) in EDGES.iter().enumerate() {
             let boundary = self.boundary(*edge);
-            if !edge.named_in(ignore.edges(), direction) || !self.touches(*edge) {
+            if !edge.named_in(ignore.edges, direction) || !self.touches(*edge) {
                 continue;
             }
-            let regions = boundary.released().union(ignore.regions());
+            let regions = boundary.released().union(ignore.regions);
             let position = edge.boundary_at(self.window, self.unreleased_depth(*edge, regions));
             // A frame edge inside the tolerance but past the boundary puts
             // the amount under zero — a release never moves a frame inward.

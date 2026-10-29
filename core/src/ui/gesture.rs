@@ -142,10 +142,6 @@ pub enum GesturePhase {
 
 /// A two-dimensional point used to describe gesture locations.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a 2D point: its two coordinates are the whole value"
-)]
 pub struct GesturePoint {
     /// Horizontal component of the point.
     pub x: f32,

@@ -485,7 +485,7 @@ pub trait ViewExt: View + Sized {
     /// let query = binding::<Str>(Str::default());
     /// field("Search", &query).on_key_press(
     ///     |Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
-    ///         if press.key == Key::Named(NamedKey::Escape) {
+    ///         if press.key() == &Key::Named(NamedKey::Escape) {
     ///             open.set(false);
     ///             KeyHandling::Handled
     ///         } else {

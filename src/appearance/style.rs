@@ -28,10 +28,6 @@ use waterui_shape::{ClipShape, Rectangle, Shape};
 /// The renderer consumes these values instead of embedding FAB measurements.
 /// An explicit parent size may still constrain the minimum dimensions.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct FloatingStyle {
     /// Floating surface fill.
     pub container_color: Color,
@@ -61,10 +57,6 @@ impl Plugin for FloatingStyle {}
 /// The two shadows that lift a floating surface: a soft ambient shadow and a
 /// tighter key shadow.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct FloatingElevation {
     /// Ambient shadow color.
     pub ambient_shadow_color: Color,
@@ -224,10 +216,6 @@ impl<T: Into<f64>> From<T> for Shadow {
 /// This type is used to represent positions, sizes, and offsets
 /// in the UI coordinate system.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a 2D vector: its two components are the whole value"
-)]
 pub struct Vector<T> {
     /// The x component of the vector.
     pub x: T,
@@ -279,10 +267,6 @@ impl<T> Vector<T> {
 /// Anchor point for transforms, specified as normalized coordinates.
 /// (0.0, 0.0) = top-left, (0.5, 0.5) = center, (1.0, 1.0) = bottom-right
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a normalized 2D anchor point: its two coordinates are the whole value"
-)]
 pub struct Anchor {
     /// X coordinate (0.0 = left, 0.5 = center, 1.0 = right)
     pub x: f32,
@@ -507,10 +491,6 @@ impl Rotation {
 /// let sliding = text!("Hello").offset(x, 0.0);
 /// ```
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a 2D translation: its two components are the whole value"
-)]
 pub struct Offset {
     /// Offset along X axis in points
     pub x: Computed<f32>,

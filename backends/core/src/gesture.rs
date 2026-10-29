@@ -43,10 +43,6 @@ type GestureRecognizerHandle = Rc<RefCell<GestureBinding>>;
 /// Where a gesture target sits in the window: the rectangle it is hit-tested
 /// against and the mapping from window space into its own local space.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a placement is its hit rectangle and its local mapping; nothing else describes it"
-)]
 pub struct GesturePlacement {
     /// Hit-test rectangle in window coordinates (logical pixels).
     pub bounds: kurbo::Rect,

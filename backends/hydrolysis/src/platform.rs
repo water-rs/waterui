@@ -544,10 +544,6 @@ impl KeyCode {
 // than an evolving state machine, so per-flag bools are the honest shape.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "mirrors the fixed four-flag modifier set"
-)]
 pub struct Modifiers {
     /// Whether a Shift modifier was held.
     pub shift: bool,
@@ -620,6 +616,23 @@ pub struct TouchScrollConfig {
 }
 
 impl TouchScrollConfig {
+    /// Creates a `TouchScrollConfig` from the platform's touch-slop and
+    /// fling-velocity values and its scroll physics.
+    #[must_use]
+    pub const fn new(
+        touch_slop: f32,
+        min_fling_velocity: f32,
+        max_fling_velocity: f32,
+        physics: ScrollPhysics,
+    ) -> Self {
+        Self {
+            touch_slop,
+            min_fling_velocity,
+            max_fling_velocity,
+            physics,
+        }
+    }
+
     /// How far a touch may travel from its down point before a scroll view
     /// claims the gesture — the platform's scaled touch slop, in logical
     /// units.
@@ -1244,6 +1257,16 @@ pub struct SplineDeceleration {
 }
 
 impl SplineDeceleration {
+    /// Creates a `SplineDeceleration` from the platform's physical
+    /// coefficient and fling friction.
+    #[must_use]
+    pub const fn new(physical_coeff: f64, friction: f64) -> Self {
+        Self {
+            physical_coeff,
+            friction,
+        }
+    }
+
     /// `SplineScroller`'s `mPhysicalCoeff` — the physical-pixel acceleration
     /// scale the spline's distance and duration derive from, in logical
     /// units per second².
@@ -1817,10 +1840,6 @@ pub struct EngineAndroidTarget<'a> {
 /// in the session environment so an update re-lays out through the ordinary
 /// input path; hosts with no unsafe regions simply never install one.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "environment newtype over the window's safe-area binding"
-)]
 pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
 
 /// The window's *keyboard* region in logical units.
@@ -1837,10 +1856,6 @@ pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>
 /// whose bottom touches it extends through it and scrolls a focused field
 /// clear of the keyboard band (layout-spec.md §7.1).
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "environment newtype over the window's keyboard-area binding"
-)]
 pub struct WindowKeyboardArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
 
 /// Asserts the app's `Window::frame` binding carries finite components on

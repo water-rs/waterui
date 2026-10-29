@@ -68,10 +68,6 @@ use collection::Spliced;
 /// One value, no state: what a JSX element becomes is decided entirely by the
 /// catalog and the values the element carried.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less host table, used by name"
-)]
 pub struct Components;
 
 impl HostTable for Components {

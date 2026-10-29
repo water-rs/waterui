@@ -213,7 +213,6 @@ pub trait Shape {
 
 /// A circle inscribed in the view bounds.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(clippy::exhaustive_structs, reason = "field-less shape used by name")]
 pub struct Circle;
 
 impl Shape for Circle {
@@ -237,7 +236,6 @@ impl Shape for Circle {
 
 /// An ellipse that fills the view bounds.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(clippy::exhaustive_structs, reason = "field-less shape used by name")]
 pub struct Ellipse;
 
 impl Shape for Ellipse {
@@ -261,7 +259,6 @@ impl Shape for Ellipse {
 
 /// A capsule (pill) shape.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(clippy::exhaustive_structs, reason = "field-less shape used by name")]
 pub struct Capsule;
 
 impl Shape for Capsule {
@@ -698,7 +695,6 @@ impl Shape for FixedUnevenRoundedRectangle {
 
 /// A simple rectangle with sharp corners.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(clippy::exhaustive_structs, reason = "field-less shape used by name")]
 pub struct Rectangle;
 
 impl Shape for Rectangle {

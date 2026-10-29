@@ -31,10 +31,6 @@ use crate::wait::{Expectation, ExpectationKind, WaitOptions, WaitResult};
 /// point. A `UiBuilder<NoStyle>` mounts only the semantic runtime — geometry,
 /// pointer and capture belong to the styled builder.
 #[derive(Clone, Copy, Debug, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less builder state used by name"
-)]
 pub struct NoStyle;
 
 /// The style state of a [`UiBuilder`] that carries a `hydrolysis` [`Style`].

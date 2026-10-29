@@ -59,10 +59,6 @@ pub use transition::{
 /// The `NavigationView` contains a navigation bar with a title and other
 /// configuration options, along with the actual content to display.
 #[must_use]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole navigation view, so a new field must fail their build instead of being ignored"
-)]
 pub struct NavigationView {
     /// The navigation bar for this view
     pub bar: Bar,
@@ -212,10 +208,6 @@ type PathPopHandler = Rc<dyn Fn(usize)>;
 /// A transaction always replaces a suffix: the first [`Self::retained_prefix`]
 /// entries stay untouched, the [`Self::removed`] entries above them are
 /// discarded, and [`Self::inserted`] is appended in their place.
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole navigation transaction, so a new field must fail their build instead of being ignored"
-)]
 pub struct NavigationTransaction {
     /// Stack-scoped identifier acknowledged by
     /// [`NavigationController::transition_completed`] or
@@ -972,10 +964,6 @@ impl NavigationToolbar {
 /// Represents the appearance and behavior of a navigation bar, including
 /// its title, color, and visibility.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole navigation bar configuration, so a new field must fail their build instead of being ignored"
-)]
 pub struct Bar {
     /// The title view displayed in the navigation bar
     pub title: AnyView,
@@ -1017,10 +1005,6 @@ impl Default for Bar {
 /// behavior, and a renderer with no such affordance (a Mac list, say) ignores
 /// it, which is why it wraps as [`IgnorableMetadata`].
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less metadata marker inserted by name"
-)]
 pub struct NavigationLinkHint;
 
 impl MetadataKey for NavigationLinkHint {}

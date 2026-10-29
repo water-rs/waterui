@@ -151,7 +151,7 @@ async fn capture_leaf_to_rgba(
     #[cfg(not(feature = "gpu_surface"))]
     let captured = crate::capture::capture_presented(view)
         .await
-        .map(|result| (result.rgba_data, result.width, result.height))
+        .map(RenderResult::into_parts)
         .map_err(|error| RenderError::Capture(Box::new(error)));
     drop(host);
     captured

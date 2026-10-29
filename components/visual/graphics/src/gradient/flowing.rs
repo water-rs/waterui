@@ -12,7 +12,6 @@ use crate::shader_paint::ShaderPaintView;
 ///
 /// Stretches on both axes; constrain it with `.frame()`.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(clippy::exhaustive_structs, reason = "field-less view used by name")]
 pub struct FlowingGradient;
 
 impl FlowingGradient {

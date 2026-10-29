@@ -23,10 +23,6 @@ use crate::{
 
 /// Layout engine shared by the public [`VStack`] view.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "frozen layout contract (docs/layout-spec.md): the stack's parameters are its alignment and spacing"
-)]
 pub struct VStackLayout {
     /// The horizontal alignment of children within the stack.
     pub alignment: HorizontalAlignment,

@@ -211,7 +211,6 @@ impl DefaultLoadingView {
 /// let view = Suspense::new(async_content()).loading(UseDefaultLoadingView);
 /// ```
 #[derive(Debug)]
-#[expect(clippy::exhaustive_structs, reason = "field-less view used by name")]
 pub struct UseDefaultLoadingView;
 
 impl View for UseDefaultLoadingView {

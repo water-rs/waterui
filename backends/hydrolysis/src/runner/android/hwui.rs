@@ -149,9 +149,9 @@ impl HwuiWindow {
             .surface
             .frame(cherenkov_record::Instant::now(), scale)
             .map_err(|e| JniError(e.to_string()))?;
-        let animating = frame.content_animating || frame.sampling.rate.is_some();
+        let animating = frame.content_animating() || frame.sampling().rate.is_some();
         self.painter
-            .replay(frame.words, frame.clear)
+            .replay(frame.words(), frame.clear())
             .map_err(JniError)?;
         sync_platform_input(runtime);
         if runtime.renderer.take_redraw_request() || animating || self.surface.has_pending() {

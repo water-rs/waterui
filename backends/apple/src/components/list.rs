@@ -2424,23 +2424,23 @@ fn wire_controller(
         #[cfg(target_os = "ios")]
         let target = state
             .borrow()
-            .display_index_of(DisplayRow::Live(request.target().clone()))
+            .display_index_of(DisplayRow::Live(request.target))
             .map(|(section, row)| IndexPath { section, row });
         #[cfg(target_os = "macos")]
         let target = state
             .borrow()
             .flat_layout
             .iter()
-            .position(|entry| *entry == FlatEntry::Row(*request.target()));
+            .position(|entry| *entry == FlatEntry::Row(request.target));
         let Some(target) = target else {
             return;
         };
         #[cfg(target_os = "ios")]
         table.layout_if_needed();
-        if request.animation().is_some() {
-            approach(state, table, *request.target());
+        if request.animation.is_some() {
+            approach(state, table, request.target);
         }
-        match request.animation().as_ref() {
+        match request.animation.as_ref() {
             #[cfg(target_os = "ios")]
             None => table.scroll_to_row(target, false),
             #[cfg(target_os = "ios")]

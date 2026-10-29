@@ -1349,10 +1349,6 @@ impl MacSystemWebViewHandle {
 /// through the shared `WebViewHandle` contract. Applications never need it:
 /// the backend installs it as the default controller on macOS.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less controller used by name"
-)]
 pub struct MacSystemWebViewController;
 
 impl CustomWebViewController for MacSystemWebViewController {

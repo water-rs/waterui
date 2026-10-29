@@ -1338,10 +1338,6 @@ impl_constant!(ResolvedMenuItem);
 /// Raw native popup menu config resolved against the environment locale.
 #[doc(hidden)]
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole resolved menu, so a new field must fail their build instead of being ignored"
-)]
 pub struct ResolvedMenu {
     /// The label view displayed on the menu button.
     pub label: AnyView,

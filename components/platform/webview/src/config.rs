@@ -48,6 +48,7 @@ pub struct WebViewConfig {
 
 impl WebViewConfig {
     /// Creates a `WebViewConfig` from its parts.
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub const fn new(
         asset_server: Option<AssetServer>,
@@ -74,6 +75,7 @@ impl WebViewConfig {
     }
 
     /// Sets the `asset_server`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn set_asset_server(&mut self, asset_server: Option<AssetServer>) {
         self.asset_server = asset_server;
     }
@@ -105,6 +107,29 @@ impl WebViewConfig {
     #[must_use]
     pub const fn state(&self) -> &StateDeclarations {
         &self.state
+    }
+
+    /// Splits the configuration into its parts, in declaration order: the
+    /// asset server, the bridge origins, the navigation policy, the scripts
+    /// and the state declarations.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Option<AssetServer>,
+        OriginPolicy,
+        Option<NavigationPolicy>,
+        Vec<UserScript>,
+        StateDeclarations,
+    ) {
+        (
+            self.asset_server,
+            self.bridge_origins,
+            self.navigation_policy,
+            self.scripts,
+            self.state,
+        )
     }
 }
 

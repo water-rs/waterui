@@ -615,7 +615,13 @@ fn normalize_layout_view_with_budget(
         let native = *view
             .downcast::<Native<ScrollView>>()
             .expect("layout normalization failed to downcast Native<ScrollView>");
-        let (axis, content, controller, offset) = native.into_inner().into_inner().into_parts();
+        let waterui_layout::scroll::ScrollViewParts {
+            axis,
+            content,
+            controller,
+            offset,
+            ..
+        } = native.into_inner().into_inner();
         let normalized_content = normalize_layout_view_with_budget(content, env, remaining);
         let scroll = ScrollView::new(axis, normalized_content);
         let scroll = match controller {

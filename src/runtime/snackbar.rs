@@ -140,10 +140,6 @@ impl View for CloseIcon {
 
 /// Theme tokens used by the snackbar overlay.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct SnackbarTheme {
     /// Container fill color.
     pub container_color: Color,

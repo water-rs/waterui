@@ -576,10 +576,6 @@ pub mod color {
         ($name:ident, $doc:literal) => {
             #[doc = $doc]
             #[derive(Debug, Clone, Copy, Default)]
-            #[expect(
-                clippy::exhaustive_structs,
-                reason = "field-less theme color token, resolved by type and used by name"
-            )]
             pub struct $name;
 
             impl Resolvable for $name {

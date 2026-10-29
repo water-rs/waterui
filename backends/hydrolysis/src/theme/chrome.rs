@@ -185,10 +185,6 @@ impl CornerShape {
 /// [`Surface::elevation`], so a surface that raises on hover animates
 /// between the two pairs as live operands.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a shadow pair: the key and the ambient shadow are the whole model"
-)]
 pub struct Elevation {
     /// The directional shadow of the key light.
     pub key: Shadow,
@@ -228,7 +224,6 @@ impl Elevation {
 
 /// A stroke drawn just inside a surface's edge.
 #[derive(Debug, Clone, PartialEq)]
-#[expect(clippy::exhaustive_structs, reason = "a border is a width and a paint")]
 pub struct Border {
     /// Stroke width in logical units; the stroke lies wholly inside the
     /// surface's silhouette.
@@ -328,10 +323,6 @@ impl Surface {
 /// hovered — focus outranks hover. A [`PressFeedback::Ripple`] shows the
 /// press as waves above the layer instead, at [`Self::pressed`].
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct StateLayer {
     /// The layer's colour; each opacity multiplies its alpha.
     pub color: WorkingColor,
@@ -425,10 +416,6 @@ pub enum PressFeedback {
 /// animation settles — a spring that undershoots is never cut off at its
 /// first zero crossing. Waves are clipped to the surface's silhouette.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
-)]
 pub struct Ripple {
     /// The smallest full diameter, so small targets still show a ripple.
     pub min_diameter: f64,
