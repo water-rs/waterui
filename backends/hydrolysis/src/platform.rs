@@ -2568,10 +2568,6 @@ const fn software_first_device_type_rank(device_type: wgpu::DeviceType) -> u8 {
 /// Other native hosts probe primary backends before GL. `WGPU_BACKEND` selects
 /// from the backends enabled by the build.
 #[cfg(not(target_arch = "wasm32"))]
-#[expect(
-    clippy::option_if_let_else,
-    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
-)]
 #[cfg(hydrolysis_gpu_painter)]
 fn hydrolysis_backend_tiers() -> Vec<wgpu::Backends> {
     let enabled = cherenkov_gpu::GpuConfig::default().backends;
