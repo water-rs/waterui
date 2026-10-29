@@ -27,7 +27,7 @@ use super::buffer::{CommandBuffer, Field};
 use super::encoder::{Encoder, HostEntry, PlatformViewBinding};
 use super::fonts::FontInfo;
 use super::lower::{Caches, Lower, Pools, Scratch};
-use super::protocol::{MESH_BAND_PATCHES, NONE, Op};
+use super::protocol::{MESH_BAND_PATCHES, NONE, Op, effect_kind};
 
 use super::resources::{Kind, SharedRegistry};
 use super::{HwuiError, HwuiSurface, HwuiTarget};
@@ -438,8 +438,40 @@ fn tree_scene() -> Result<Scene, HwuiError> {
     })
 }
 
-/// The op no tree scene reaches before #1750: a node effect.
+/// The op no tree scene reaches directly: a node's effect definition and
+/// binding.
 fn direct_scene() -> Result<Scene, HwuiError> {
+    // A defined effect a node then draws through: one blur stage and one
+    // colour stage, emitted straight into the record's payload.
+    let stages = vec![
+        Field::U("kind", effect_kind::BLUR),
+        Field::F("v0", 8.0),
+        Field::F("v1", 0.0),
+        Field::F("v2", 0.0),
+        Field::F("v3", 0.0),
+        Field::F("v4", 0.0),
+        Field::F("v5", 0.0),
+        Field::F("v6", 0.0),
+        Field::F("v7", 0.0),
+        Field::F("v8", 0.0),
+        Field::F("v9", 0.0),
+        Field::F("v10", 0.0),
+        Field::F("v11", 0.0),
+        Field::U("kind", effect_kind::LINEAR_COLOR),
+        Field::F("v0", 1.0),
+        Field::F("v1", 0.0),
+        Field::F("v2", 0.0),
+        Field::F("v3", 0.0),
+        Field::F("v4", 0.0),
+        Field::F("v5", 1.0),
+        Field::F("v6", 0.0),
+        Field::F("v7", 0.0),
+        Field::F("v8", 0.0),
+        Field::F("v9", 0.0),
+        Field::F("v10", 1.0),
+        Field::F("v11", 0.0),
+    ];
+    let _ = &stages; // kept: the extend below reads it
     let mut buffer = CommandBuffer::new();
     let mut pools = Pools::new();
     let mut caches = Caches::default();
@@ -457,7 +489,14 @@ fn direct_scene() -> Result<Scene, HwuiError> {
         api_level: 34,
         layer: 0,
     };
+    let mut define = vec![Field::U("effect", 0), Field::U("stages", 2)];
+    define.extend_from_slice(&stages);
+    lower.buffer.op(Op::DefineEffect, &define)?;
     let node = lower.create_node()?;
+    lower.buffer.op(
+        Op::SetEffect,
+        &[Field::U("node", node), Field::U("effect", 0)],
+    )?;
     lower.buffer.op(
         Op::SetEffect,
         &[Field::U("node", node), Field::U("effect", NONE)],
@@ -482,6 +521,176 @@ fn write(dir: &Path, scene: &Scene) {
     log.push('\n');
     std::fs::write(dir.join(format!("{}.log", scene.name)), log)
         .expect("the contract directory is writable");
+}
+
+#[test]
+fn a_filtered_layer_defines_binds_and_updates_without_remount() {
+    use crate::renderer::mount::target::FilterRegistration;
+    use waterui_graphics::filter_view::AnyEffect;
+    use waterui_graphics::filtrate::filters;
+
+    let mut surface =
+        HwuiSurface::new(SurfaceId::new(9), 34, || {}).expect("an empty root encodes");
+    let shared = surface.shared().clone();
+    let root = Shared::root(&shared);
+    let child = Shared::layer(&shared);
+    let brightness = nami::binding(0.5f32);
+    let mut guards = waterui_graphics::filter_view::ParamGuards::default();
+    let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let wake_counter = std::sync::Arc::clone(&wakes);
+    let registration = surface
+        .encoder()
+        .effects()
+        .register(
+            AnyEffect::filter(filters::Brightness(guards.bind(brightness.clone()))),
+            std::sync::Arc::new(move || {
+                wake_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }),
+        )
+        .expect("a brightness chain registers on API 34");
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&root].push(&child);
+        tx[&child]
+            .layout_size(kurbo::Size::new(10.0, 10.0))
+            .filter(registration.filter_id())
+            .record(|c| {
+                c.fill(
+                    kurbo::Rect::new(0.0, 0.0, 10.0, 10.0),
+                    color(1.0, 0.0, 0.0, 1.0),
+                );
+            });
+    });
+    let mut time = Instant::now();
+    let _ = surface
+        .frame(time, 1.0)
+        .expect("the filtered frame encodes");
+    let log = surface.take_log();
+    let define = log.iter().position(|l| l.starts_with("DefineEffect"));
+    let set = log.iter().position(|l| l.starts_with("SetEffect"));
+    let record = log.iter().position(|l| l.starts_with("Record"));
+    assert!(define.is_some() && set.is_some(), "{log:?}");
+    assert!(define < set, "the definition precedes the binding: {log:?}");
+    assert!(record.is_some(), "the leaf records its content: {log:?}");
+
+    // An unchanged frame re-emits nothing.
+    time += std::time::Duration::from_millis(16);
+    let _ = surface.frame(time, 1.0).expect("the idle frame encodes");
+    let log = surface.take_log();
+    for op in ["DefineEffect", "SetEffect", "CreateNode", "Record"] {
+        assert!(!log.iter().any(|l| l.starts_with(op)), "{op}: {log:?}");
+    }
+
+    brightness.set(0.75);
+    assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    time += std::time::Duration::from_millis(16);
+    let _ = surface
+        .frame(time, 1.0)
+        .expect("the parameter update encodes");
+    let log = surface.take_log();
+    assert_eq!(
+        log.iter()
+            .filter(|line| line.starts_with("DefineEffect"))
+            .count(),
+        1,
+        "{log:?}"
+    );
+    for op in ["SetEffect", "CreateNode", "Record"] {
+        assert!(
+            !log.iter().any(|line| line.starts_with(op)),
+            "{op}: {log:?}"
+        );
+    }
+
+    // Clearing the filter binds NONE and re-emits the implicit clip.
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&child].clear_filter();
+    });
+    time += std::time::Duration::from_millis(16);
+    let _ = surface.frame(time, 1.0).expect("the cleared frame encodes");
+    let log = surface.take_log();
+    let none = log
+        .iter()
+        .find(|l| l.starts_with("SetEffect") && l.contains("effect=4294967295"));
+    assert!(none.is_some(), "{log:?}");
+    let position = log
+        .iter()
+        .find(|l| l.starts_with("SetPosition") && l.ends_with("clip=1"));
+    assert!(position.is_some(), "the implicit clip returns: {log:?}");
+
+    // Detaching releases the registration's effect after the layer stops
+    // naming it.
+    drop(registration);
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&root].remove(&child);
+    });
+    time += std::time::Duration::from_millis(16);
+    let _ = surface.frame(time, 1.0).expect("the detach frame encodes");
+    let log = surface.take_log();
+    assert!(
+        log.iter().any(|l| l.starts_with("ReleaseEffect")),
+        "{log:?}"
+    );
+}
+
+#[test]
+fn a_filtered_recording_group_keeps_its_effect_node() {
+    use crate::renderer::mount::target::FilterRegistration;
+    use waterui_graphics::filter_view::AnyEffect;
+    use waterui_graphics::filtrate::filters;
+
+    let mut surface = HwuiSurface::new(SurfaceId::new(10), 34, || {}).unwrap();
+    let shared = surface.shared().clone();
+    let root = Shared::root(&shared);
+    let child = Shared::layer(&shared);
+    let registration = surface
+        .encoder()
+        .effects()
+        .register(
+            AnyEffect::filter(filters::Blur(2.0f32)),
+            std::sync::Arc::new(|| {}),
+        )
+        .unwrap();
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&root].push(&child);
+        tx[&child]
+            .layout_size(kurbo::Size::new(10.0, 10.0))
+            .record(|context| {
+                context.group(Group::new().filter(registration.filter_id()), |context| {
+                    context.fill(
+                        kurbo::Rect::new(0.0, 0.0, 10.0, 10.0),
+                        color(1.0, 0.0, 0.0, 1.0),
+                    );
+                });
+            });
+    });
+    let time = Instant::now();
+    let _ = surface.frame(time, 1.0).unwrap();
+    let log = surface.take_log();
+    let binding = log
+        .iter()
+        .find(|line| line.starts_with("SetEffect "))
+        .unwrap();
+    let node = binding
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("node="))
+        .unwrap();
+    assert!(
+        log.iter().any(
+            |line| line.starts_with(&format!("SetPosition node={node} "))
+                && line.ends_with("clip=0")
+        ),
+        "the filtered group has an unclipped effect node: {log:?}"
+    );
+    let _ = surface
+        .frame(time + std::time::Duration::from_millis(16), 1.0)
+        .unwrap();
+    let log = surface.take_log();
+    for op in ["DefineEffect", "SetEffect", "CreateNode", "Record"] {
+        assert!(
+            !log.iter().any(|line| line.starts_with(op)),
+            "{op}: {log:?}"
+        );
+    }
 }
 
 #[test]
@@ -1184,8 +1393,13 @@ fn the_hwui_mount_commits_and_reuses_its_nodes() {
     let backend = std::rc::Rc::new(crate::hwui::HwuiResources::new(
         Box::new(crate::hwui::platform::tests::Fake::default()),
         surface.encoder().registry().clone(),
+        surface.encoder().effects().clone(),
     ));
-    let host = HwuiHost::new(backend, std::rc::Rc::clone(&registry));
+    let host = HwuiHost::new(
+        backend,
+        std::rc::Rc::clone(&registry),
+        std::sync::Arc::new(|| {}),
+    );
     let mut mount = Mount::<HwuiTarget, crate::text::ParleyEngine>::new(
         std::rc::Rc::clone(surface.shared()),
         &registry,

@@ -199,4 +199,96 @@ class CommandDecoderTest {
         assertEquals(3, decoder.lastSequence)
         assertEquals(listOf("Frame sequence=1", "CreateNode node=5", "Frame sequence=2", "Frame sequence=3"), sink.lines)
     }
+
+// ---- DefineEffect records ----
+
+private fun effectRecord(effect: Int, count: Int, stages: IntArray): IntArray {
+    val payload = intArrayOf(effect, count) + stages
+    return intArrayOf(Protocol.DEFINE_EFFECT or (payload.size shl 16)) + payload
+}
+
+private fun blurStage(radius: Float): IntArray =
+    intArrayOf(EffectKind.BLUR) + IntArray(12) { if (it == 0) java.lang.Float.floatToIntBits(radius) else 0 }
+
+private fun colorStage(): IntArray =
+    intArrayOf(EffectKind.LINEAR_COLOR) + IntArray(12) { if (it % 5 == 0) java.lang.Float.floatToIntBits(1f) else 0 }
+
+    @Test
+    fun a_valid_mixed_chain_decodes() {
+        val sink = LoggingSink()
+        val (buffer, length) = frame(1, effectRecord(0, 2, blurStage(8f) + colorStage()))
+        CommandDecoder(sink).decode(buffer, length)
+        assertEquals(1, sink.lines.count { it.startsWith("DefineEffect") })
+    }
+
+    @Test
+    fun an_unknown_stage_kind_is_refused() {
+        val bad = intArrayOf(99) + IntArray(12)
+        val message =
+            decodeFails(CommandDecoder(LoggingSink()), frame(1, effectRecord(0, 1, bad)))
+        assertTrue(message.contains("unknown"))
+    }
+
+    @Test
+    fun a_short_stage_is_refused() {
+        val record = effectRecord(0, 1, blurStage(8f).dropLast(1).toIntArray())
+        decodeFails(CommandDecoder(LoggingSink()), frame(1, record))
+    }
+
+    @Test
+    fun a_nonfinite_value_is_refused() {
+        val nan = intArrayOf(EffectKind.BLUR) + IntArray(12) {
+            if (it == 0) java.lang.Float.floatToIntBits(Float.NaN) else 0
+        }
+        val inf = intArrayOf(EffectKind.BLUR) + IntArray(12) {
+            if (it == 0) java.lang.Float.floatToIntBits(Float.POSITIVE_INFINITY) else 0
+        }
+        for (stage in listOf(nan, inf)) {
+            val message = decodeFails(
+                CommandDecoder(LoggingSink()),
+                frame(1, effectRecord(0, 1, stage)),
+            )
+            assertTrue(message.contains("non-finite"))
+        }
+    }
+
+    @Test
+    fun an_oversized_count_is_refused() {
+        val record = intArrayOf(Protocol.DEFINE_EFFECT or (2 shl 16), 0, 9999)
+        decodeFails(CommandDecoder(LoggingSink()), frame(1, record))
+    }
+
+    @Test
+    fun a_negative_count_is_refused() {
+        val record = intArrayOf(Protocol.DEFINE_EFFECT or (2 shl 16), 0, -1)
+        decodeFails(CommandDecoder(LoggingSink()), frame(1, record))
+    }
+
+    @Test
+    fun effect_scratch_arrays_are_reused_across_frames() {
+        val captured = mutableListOf<Pair<IntArray, FloatArray>>()
+        val sink = object : LoggingSink() {
+            override fun defineEffect(effect: Int, count: Int, kinds: IntArray, values: FloatArray) {
+                captured += kinds to values
+                super.defineEffect(effect, count, kinds, values)
+            }
+        }
+        val decoder = CommandDecoder(sink)
+        val first = frame(1, effectRecord(0, 1, blurStage(8f)))
+        decoder.decode(first.first, first.second)
+        val second = frame(2, effectRecord(0, 2, blurStage(4f) + colorStage()))
+        decoder.decode(second.first, second.second)
+        assertEquals(2, captured.size)
+        assertTrue(captured[0].first === captured[1].first)
+        assertTrue(captured[0].second === captured[1].second)
+    }
+
+    @Test
+    fun a_trailing_word_after_the_stages_is_refused() {
+        // The extra word is inside the record's payload: count-derived reads
+        // must not consume it, and the exact-length check rejects it.
+        val record = effectRecord(0, 1, blurStage(8f) + intArrayOf(0))
+        decodeFails(CommandDecoder(LoggingSink()), frame(1, record))
+    }
+
 }

@@ -306,9 +306,7 @@ pub struct AnimationOwner<E: crate::text::TextEngine> {
 /// install the same shape — so the producer path never names an engine
 /// crate.
 #[derive(Clone)]
-pub struct HostRedraw(
-    #[cfg_attr(hydrolysis_hwui, expect(dead_code))] std::sync::Arc<dyn Fn() + Send + Sync>,
-);
+pub struct HostRedraw(std::sync::Arc<dyn Fn() + Send + Sync>);
 
 impl std::fmt::Debug for HostRedraw {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -323,7 +321,6 @@ impl HostRedraw {
     }
 
     /// Asks the host for another frame.
-    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub fn request_redraw(&self) {
         (self.0)();
     }

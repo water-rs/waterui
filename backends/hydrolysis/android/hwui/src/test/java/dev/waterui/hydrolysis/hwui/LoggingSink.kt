@@ -1,7 +1,7 @@
 package dev.waterui.hydrolysis.hwui
 
 /** Writes the event log the Rust `CommandBuffer` writes for the same frame. */
-class LoggingSink : CommandSink {
+open class LoggingSink : CommandSink {
     val lines = mutableListOf<String>()
     private val line = StringBuilder()
 
@@ -183,6 +183,15 @@ class LoggingSink : CommandSink {
     override fun releaseBitmap(bitmap: Int) = start(Protocol.RELEASE_BITMAP).u("id", bitmap).end()
 
     override fun releaseRuntimeShader(runtimeShader: Int) = start(Protocol.RELEASE_RUNTIME_SHADER).u("id", runtimeShader).end()
+
+    override fun defineEffect(effect: Int, count: Int, kinds: IntArray, values: FloatArray) {
+        val line = start(Protocol.DEFINE_EFFECT).u("effect", effect).u("stages", count)
+        for (i in 0 until count) {
+            line.u("kind", kinds[i])
+            for (j in 0 until 12) line.f("v$j", values[i * 12 + j])
+        }
+        line.end()
+    }
 
     override fun releaseEffect(effect: Int) = start(Protocol.RELEASE_EFFECT).u("id", effect).end()
 

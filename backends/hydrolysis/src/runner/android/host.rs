@@ -1148,12 +1148,15 @@ fn hwui_runtime_window(
             unreachable!("the Android window registry minted an orphan")
         }
     };
+    let redraw = platform.content_redraw_handle();
+    let effect_wake = std::sync::Arc::new(move || redraw.request_redraw());
     let (hwui, mut renderer) = super::hwui::HwuiWindow::new(
         jni_env,
         painter,
         SurfaceId::new(ordinal),
         theme,
         platform.frame_wake(),
+        effect_wake,
     )?;
     renderer.set_window_id(window_id);
     renderer.set_window_closable(window.closable);

@@ -171,7 +171,6 @@ impl<S> std::fmt::Debug for MaterialTerms<S> {
 
 /// A registered filter the mount retains: the registration's identity and
 /// its ownership — dropping the handle drops the registration.
-#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
 pub trait FilterRegistration: 'static {
     /// The id the layer names this registration by.
     fn filter_id(&self) -> cherenkov_record::FilterId;
@@ -189,7 +188,6 @@ pub struct FilterHandle {
 impl FilterHandle {
     /// The handle on `registration`; the mount keeps it until its layer
     /// dies, unregistering the filter.
-    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub fn new<F: FilterRegistration>(registration: F) -> Self {
         Self {
             id: registration.filter_id(),

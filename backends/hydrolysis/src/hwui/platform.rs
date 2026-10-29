@@ -17,6 +17,8 @@ use waterui_graphics::{
     Rgba16F, SceneBackend, ShaderBackend, ShaderLanguage, ShaderSource,
 };
 
+use super::HwuiError;
+use super::effects::Effects;
 use super::fonts::FontInfo;
 use super::protocol::{bitmap_format, color_space};
 use super::resources::{Dropped, Kind, SharedRegistry};
@@ -74,6 +76,7 @@ pub trait ResourcePlatform: 'static {
 pub struct HwuiResources {
     platform: Box<dyn ResourcePlatform>,
     registry: SharedRegistry,
+    effects: Effects,
 }
 
 impl fmt::Debug for HwuiResources {
@@ -118,8 +121,32 @@ const fn error(kind: Kind, reason: String) -> ResourceError {
 impl HwuiResources {
     /// A resource owner creating its objects through `platform`, in the
     /// tables of `registry` ([`Encoder::registry`](super::Encoder::registry)).
-    pub(crate) fn new(platform: Box<dyn ResourcePlatform>, registry: SharedRegistry) -> Self {
-        Self { platform, registry }
+    pub(crate) fn new(
+        platform: Box<dyn ResourcePlatform>,
+        registry: SharedRegistry,
+        effects: Effects,
+    ) -> Self {
+        Self {
+            platform,
+            registry,
+            effects,
+        }
+    }
+
+    /// Registers `source` as a native `RenderEffect` chain on this target's
+    /// tables, for the mount of the `FilteredView` that owns it; `wake` is
+    /// the redraw its parameter watches fire.
+    ///
+    /// # Errors
+    ///
+    /// [`HwuiError::Unsupported`] or [`HwuiError::RequiresApi`] when the
+    /// chain has a link the native stages cannot realize.
+    pub(crate) fn register_filter(
+        &self,
+        source: waterui_graphics::filter_view::AnyEffect,
+        wake: super::effects::EffectWake,
+    ) -> Result<super::effects::EffectRegistration, HwuiError> {
+        self.effects.register(source, wake)
     }
 
     fn register<I: PlainId>(
@@ -490,7 +517,11 @@ pub(in crate::hwui) mod tests {
 
     fn setup(fake: &Fake) -> (Encoder, HwuiResources) {
         let encoder = Encoder::new(34).unwrap();
-        let resources = HwuiResources::new(Box::new(fake.clone()), encoder.registry().clone());
+        let resources = HwuiResources::new(
+            Box::new(fake.clone()),
+            encoder.registry().clone(),
+            encoder.effects().clone(),
+        );
         (encoder, resources)
     }
 
@@ -636,9 +667,13 @@ pub(in crate::hwui) mod tests {
             refuse: true,
             ..fake
         };
-        let refused = HwuiResources::new(Box::new(refusing), encoder.registry().clone())
-            .register_font(FontSource::Bytes { data, index: 0 })
-            .unwrap_err();
+        let refused = HwuiResources::new(
+            Box::new(refusing),
+            encoder.registry().clone(),
+            encoder.effects().clone(),
+        )
+        .register_font(FontSource::Bytes { data, index: 0 })
+        .unwrap_err();
         assert!(refused.to_string().contains("refused"), "{refused}");
         // Neither failure left an id behind, nor queued a release.
         assert_eq!(releases(&mut encoder), [] as [String; 0]);

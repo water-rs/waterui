@@ -118,13 +118,6 @@ pub enum Kind {
     /// An AGSL `RuntimeShader`.
     RuntimeShader,
     /// A `RenderEffect`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no lowering registers one until RenderEffect filters land (water-rs/waterui#1750)"
-        )
-    )]
     Effect,
 }
 
