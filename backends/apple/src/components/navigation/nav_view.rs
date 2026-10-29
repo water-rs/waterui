@@ -43,6 +43,8 @@ mod platform {
     use cocoa_ui::{Rect, view};
     use waterui::Str;
     use waterui::navigation::{NavigationController, NavigationTitleDisplayMode, NavigationView};
+    use waterui::resolve::Resolvable;
+    use waterui::theme::color::Foreground;
     use waterui_core::reactive::Signal;
 
     use crate::components::navigation::bar::{
@@ -132,12 +134,16 @@ mod platform {
         });
 
         bar_view.set_page(&page(&bar, &mut keep, env));
+        keep.bind(&Foreground.resolve(env), {
+            let bar_view = bar_view.clone();
+            move |color| bar_view.set_title_color(&platform_color(&color))
+        });
 
         if let Some(color) = bar_color(&bar) {
             keep.bind(color, {
                 let bar_view = bar_view.clone();
                 move |color| {
-                    bar_view.setBarTintColor(Some(&platform_color(&color)));
+                    bar_view.set_bar_color(&platform_color(&color));
                 }
             });
         }

@@ -2,6 +2,7 @@ package dev.waterui.hydrolysis.hwui
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -66,6 +67,25 @@ class HwuiTextProviderTest {
             TextWire.NO_LINE_LIMIT,
             0,
         )
+    }
+
+    @Test
+    fun `a discarded display list is re-recorded from the retained layout`() {
+        val provider = provider()
+        shape(provider, 100, "Cached text", listOf(run(0, 0, 16f, 400, null)))
+        val node = provider.node(100)
+        assertTrue(node.hasDisplayList())
+        // Model the missing display list observed when returning to a
+        // cached text value (#3739).
+        node.discardDisplayList()
+        assertFalse(node.hasDisplayList())
+        // The same retained node returns with its recording restored —
+        // no reshape, no new id, no substitute node.
+        val restored = provider.node(100)
+        assertSame(node, restored)
+        assertTrue(restored.hasDisplayList())
+        assertSame(restored, provider.node(100))
+        provider.release(100)
     }
 
     @Test
