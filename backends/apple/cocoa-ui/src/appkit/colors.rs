@@ -241,6 +241,17 @@ pub fn with_content_headroom(color: &NSColor, headroom: f64) -> Retained<NSColor
 /// and the `expect` only covers a platform that does not.
 #[must_use]
 pub fn resolve(color: AppColor, scheme: ColorScheme) -> Option<Rgba> {
+    resolve_native(&dynamic(color), scheme)
+}
+
+/// What the native `color` draws as under `scheme`, resolved the way
+/// [`resolve`] does.
+///
+/// # Panics
+///
+/// Never in practice; see [`resolve`].
+#[must_use]
+pub fn resolve_native(color: &NSColor, scheme: ColorScheme) -> Option<Rgba> {
     // SAFETY: these are the platform's two standard appearance names.
     let name = unsafe {
         match scheme {
@@ -250,7 +261,7 @@ pub fn resolve(color: AppColor, scheme: ColorScheme) -> Option<Rgba> {
     };
     let appearance = NSAppearance::appearanceNamed(name)
         .expect("AppKit ships appearances under both standard names");
-    let color = dynamic(color);
+    let color = objc2::Message::retain(color);
     let rgba = RefCell::new(None);
     {
         let slot = &rgba;
