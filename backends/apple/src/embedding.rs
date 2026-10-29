@@ -497,8 +497,14 @@ pub(crate) fn mount_content(
             Some(frame.size.width as f32),
             Some(frame.size.height as f32),
         );
-        crate::proposal::deliver(placed.view(), proposal);
-        cocoa_ui::view::set_frame(placed.view(), frame);
+        // The root fills platform geometry, which sits on the device-pixel
+        // grid, so its own layout origin discarded nothing.
+        crate::proposal::place(
+            placed.view(),
+            frame,
+            Some(proposal),
+            cocoa_ui::view::SubpixelOffset::ZERO,
+        );
         // Placement changes the child's bounds after the host's own layout.
         // Complete that child's pending layout before this placement finishes.
         cocoa_ui::view::layout_immediately(placed.view());

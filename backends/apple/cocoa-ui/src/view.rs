@@ -578,6 +578,125 @@ pub fn backing_scale_factor(view: &PlatformView) -> f64 {
     })
 }
 
+/// What pixel alignment discarded from a view's layout origin: the layout
+/// origin minus the written origin, in points, each component within half
+/// a device pixel.
+///
+/// A view's children are laid out against its layout origin, but they
+/// land in the coordinate space of its written, aligned origin. Aligning a
+/// child under its parent's offset puts the child where the parent's
+/// layout placed it, so each view's written edges are its absolute layout
+/// edges rounded once — the discarded fraction never accumulates down the
+/// tree. A view the platform places, such as a window's content root,
+/// starts at [`SubpixelOffset::ZERO`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SubpixelOffset {
+    x: f64,
+    y: f64,
+}
+
+impl SubpixelOffset {
+    /// No discarded fraction: a view written exactly at its layout origin.
+    pub const ZERO: Self = Self { x: 0.0, y: 0.0 };
+}
+
+/// A frame aligned to the device-pixel grid and the offset its alignment
+/// left, which the view's own children align under.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PixelAlignedFrame {
+    /// The frame to write, in the superview's coordinate space.
+    pub frame: Rect,
+    /// What the alignment discarded from the layout origin.
+    pub offset: SubpixelOffset,
+}
+
+/// `frame` — a rect in the layout space of `view`'s superview, whose own
+/// alignment discarded `parent` — aligned to the device-pixel grid of
+/// `view`'s window ([`backing_scale_factor`], `1.0` detached).
+///
+/// The superview's written origin sits on the grid — this alignment or the
+/// platform placed it there — so `frame` lies at `frame + parent` in the
+/// superview's coordinate space, and rounding there rounds the absolute
+/// layout edges. Each min and max edge rounds to the nearest device pixel
+/// on its own — never origin and size separately — which keeps adjacent
+/// siblings flush. A tie rounds toward the larger coordinate: rightward in
+/// x and, in the top-down space every placed frame lives in, toward the
+/// screen bottom, as `SwiftUI` rounds.
+///
+/// The written size never falls short of the layout size: when the
+/// rounded edges span fewer whole pixels than the size covers, the max
+/// edge moves out to cover it. Independent rounding alone can lose a
+/// pixel — a size on the grid whose f32 value sits just below it, framed
+/// at a half-pixel tie, rounds its min edge up and its max edge down — and
+/// a leaf framed smaller than it measured, such as text, wraps or clips.
+/// `AppKit`'s
+/// `backingAlignedRect` is not used: it rounds in bottom-up backing space,
+/// so its ties go toward the screen top, and it rounds each frame in its
+/// superview's already-aligned space.
+#[must_use]
+pub fn pixel_aligned_frame(
+    view: &PlatformView,
+    frame: Rect,
+    parent: SubpixelOffset,
+) -> PixelAlignedFrame {
+    align_to_pixel_grid(frame, parent, backing_scale_factor(view))
+}
+
+/// Writes [`pixel_aligned_frame`] as `view`'s frame, for a placement that
+/// delivers nothing to the view and so discards the offset the alignment
+/// left.
+pub fn set_frame_pixel_aligned(view: &PlatformView, frame: Rect, parent: SubpixelOffset) {
+    set_frame(view, pixel_aligned_frame(view, frame, parent).frame);
+}
+
+/// [`pixel_aligned_frame`]'s arithmetic, at device scale `scale`.
+fn align_to_pixel_grid(frame: Rect, parent: SubpixelOffset, scale: f64) -> PixelAlignedFrame {
+    let min_x = frame.origin.x + parent.x;
+    let min_y = frame.origin.y + parent.y;
+    let (pixel_min_x, pixel_max_x) = align_edges(min_x, frame.size.width, scale);
+    let (pixel_min_y, pixel_max_y) = align_edges(min_y, frame.size.height, scale);
+    let aligned_min_x = pixel_min_x / scale;
+    let aligned_min_y = pixel_min_y / scale;
+    PixelAlignedFrame {
+        frame: Rect::new(
+            aligned_min_x,
+            aligned_min_y,
+            (pixel_max_x - pixel_min_x) / scale,
+            (pixel_max_y - pixel_min_y) / scale,
+        ),
+        offset: SubpixelOffset {
+            x: min_x - aligned_min_x,
+            y: min_y - aligned_min_y,
+        },
+    }
+}
+
+/// The min and max edges, in whole device pixels, of the extent `length`
+/// points long starting at `min`: each edge rounded to the nearest pixel,
+/// a tie toward the larger value, and the max edge moved out when the two
+/// span fewer pixels than [`covering_pixels`] of `length`.
+fn align_edges(min: f64, length: f64, scale: f64) -> (f64, f64) {
+    let pixel_min = nearest_pixel(min * scale);
+    let pixel_max =
+        nearest_pixel((min + length) * scale).max(pixel_min + covering_pixels(length * scale));
+    (pixel_min, pixel_max)
+}
+
+/// `pixels` rounded to the nearest whole pixel, a tie toward the larger
+/// value.
+fn nearest_pixel(pixels: f64) -> f64 {
+    (pixels + 0.5).floor()
+}
+
+/// The fewest whole pixels that cover an extent `pixels` long.
+///
+/// Layout sizes are f32, so a size on the pixel grid — a text leaf measures
+/// whole pixels — can arrive a few f32 ulps past it; within f32 precision
+/// it covers that whole number, not one more.
+fn covering_pixels(pixels: f64) -> f64 {
+    pixels.mul_add(-f64::from(f32::EPSILON), pixels).ceil()
+}
+
 /// Removes `view` and everything inside it from the accessibility tree.
 #[cfg(target_os = "macos")]
 pub fn hide_from_accessibility(view: &PlatformView) {
@@ -900,4 +1019,78 @@ pub fn association_key(name: &core::ffi::CStr) -> *const core::ffi::c_void {
     // SAFETY: `Sel` is `repr(transparent)` over the selector pointer the
     // associated-object API expects as the key.
     unsafe { core::mem::transmute::<objc2::runtime::Sel, *const core::ffi::c_void>(selector) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Rect, SubpixelOffset, align_to_pixel_grid};
+
+    #[test]
+    fn pixel_ties_round_rightward_and_toward_the_screen_bottom() {
+        let at_1x = align_to_pixel_grid(Rect::new(2.5, 7.5, 10.0, 10.0), SubpixelOffset::ZERO, 1.0);
+        assert_eq!(at_1x.frame, Rect::new(3.0, 8.0, 10.0, 10.0));
+        let at_2x = align_to_pixel_grid(Rect::new(0.25, 0.75, 1.0, 1.0), SubpixelOffset::ZERO, 2.0);
+        assert_eq!(at_2x.frame, Rect::new(0.5, 1.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn nested_alignment_rounds_absolute_layout_edges_once() {
+        // Layout puts the parent at y 10.5 and the child 0.5 below it: the
+        // child's absolute layout edge is 11.0, which needs no rounding.
+        let parent =
+            align_to_pixel_grid(Rect::new(0.0, 10.5, 40.0, 20.0), SubpixelOffset::ZERO, 1.0);
+        assert_eq!(parent.frame, Rect::new(0.0, 11.0, 40.0, 20.0));
+        let child = align_to_pixel_grid(Rect::new(0.0, 0.5, 16.0, 16.0), parent.offset, 1.0);
+        assert_eq!(parent.frame.origin.y + child.frame.origin.y, 11.0);
+        assert_eq!(child.frame.size.height, 16.0);
+        // A grandchild a further 0.5 below rounds its absolute 11.5 once.
+        let grandchild = align_to_pixel_grid(Rect::new(0.0, 0.5, 8.0, 8.0), child.offset, 1.0);
+        assert_eq!(
+            parent.frame.origin.y + child.frame.origin.y + grandchild.frame.origin.y,
+            12.0
+        );
+    }
+
+    #[test]
+    fn a_frame_on_a_half_pixel_tie_keeps_its_measured_width() {
+        // A 367pt block centred in 402pt lands on the half pixel 17.5 at
+        // 3x; text 1001 pixels wide sits 16pt inside it. The f32 width is
+        // just under 1001 pixels, so the tied max edge would round down.
+        let block =
+            align_to_pixel_grid(Rect::new(17.5, 0.0, 367.0, 40.0), SubpixelOffset::ZERO, 3.0);
+        let text_width = f64::from(1001.0_f32 / 3.0);
+        let text = align_to_pixel_grid(Rect::new(16.0, 0.0, text_width, 20.0), block.offset, 3.0);
+        assert_eq!((text.frame.size.width * 3.0).round(), 1001.0);
+    }
+
+    #[test]
+    fn no_frame_is_written_smaller_than_its_layout_size() {
+        for scale in [1.0, 2.0, 3.0] {
+            for origin_pixels in 0..24_u8 {
+                // Origins on, between and at ties of the pixel grid, under
+                // a parent offset that is itself a tie.
+                let origin = f64::from(origin_pixels) / 8.0;
+                let parent = align_to_pixel_grid(
+                    Rect::new(origin, origin, 50.0, 50.0),
+                    SubpixelOffset::ZERO,
+                    scale,
+                );
+                for size_pixels in 0..400_u16 {
+                    let size = f64::from(f32::from(size_pixels) / 7.0);
+                    let child = align_to_pixel_grid(
+                        Rect::new(origin, origin, size, size),
+                        parent.offset,
+                        scale,
+                    );
+                    let written = child.frame.size.width * scale;
+                    let covered = (size * scale).mul_add(-f64::from(f32::EPSILON), size * scale);
+                    assert!(written >= covered, "{size} at {origin} under 1/{scale}");
+                    assert_eq!(written, child.frame.size.height * scale);
+                    // The max edge moves out by at most the one pixel the
+                    // tie or the rounding lost.
+                    assert!(written < size.mul_add(scale, 1.0) + 1e-9);
+                }
+            }
+        }
+    }
 }

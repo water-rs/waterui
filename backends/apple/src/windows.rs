@@ -286,7 +286,14 @@ mod imp {
             // `leaf_view` holds the retain for the host's lifetime.
             let frame =
                 crate::native_layout::LayoutContext::of(host_view).content_frame(&leaf_view);
-            cocoa_ui::view::set_frame(&leaf_view, frame);
+            // The window's content rect is platform geometry on the
+            // device-pixel grid; the content negotiates no proposal.
+            crate::proposal::place(
+                &leaf_view,
+                frame,
+                None,
+                cocoa_ui::view::SubpixelOffset::ZERO,
+            );
         });
         window.set_content_view(&host);
         keepalive.keep(leaf);
@@ -1065,7 +1072,14 @@ mod imp {
             // `leaf_view` holds the retain for the host's lifetime.
             let frame =
                 crate::native_layout::LayoutContext::of(host_view).content_frame(&leaf_view);
-            cocoa_ui::view::set_frame(&leaf_view, frame);
+            // The window's content rect is platform geometry on the
+            // device-pixel grid; the content negotiates no proposal.
+            crate::proposal::place(
+                &leaf_view,
+                frame,
+                None,
+                cocoa_ui::view::SubpixelOffset::ZERO,
+            );
         });
         keepalive.keep(leaf);
         keepalive.keep(pending.observation);
