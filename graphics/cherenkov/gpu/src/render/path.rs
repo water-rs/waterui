@@ -97,33 +97,28 @@ pub enum CoverageRoute {
 /// Minimum flattened workload that amortizes GPU coverage dispatch.
 pub const GPU_ROUTE_MIN_ELEMENTS: usize = 4096;
 
-/// Source-side workload estimate; curves require device-space preparation.
+/// Source element count used before device-space preparation.
 #[derive(Clone, Copy)]
 pub struct Complexity {
-    linear_elements: Option<usize>,
+    elements: Option<usize>,
 }
 
 impl Complexity {
-    pub fn of(elements: &[PathEl]) -> Self {
+    pub const fn of(elements: &[PathEl]) -> Self {
         Self {
-            linear_elements: (!elements
-                .iter()
-                .any(|el| matches!(el, PathEl::QuadTo(..) | PathEl::CurveTo(..))))
-            .then_some(elements.len()),
+            elements: Some(elements.len()),
         }
     }
 
     pub fn of_shape(shape: &ShapeData) -> Self {
         match shape {
             ShapeData::Path { elements, .. } => Self::of(elements),
-            _ => Self {
-                linear_elements: None,
-            },
+            _ => Self { elements: None },
         }
     }
 
     pub const fn fill_candidate(self) -> bool {
-        match self.linear_elements {
+        match self.elements {
             Some(elements) => elements >= GPU_ROUTE_MIN_ELEMENTS,
             None => true,
         }
@@ -134,7 +129,7 @@ impl Complexity {
         reason = "a conservative workload estimate, not a buffer size"
     )]
     pub fn stroke_candidate(self, stroke: &kurbo::Stroke, raster: Affine) -> bool {
-        let Some(elements) = self.linear_elements else {
+        let Some(elements) = self.elements else {
             return true;
         };
         if !stroke.dash_pattern.is_empty() {
