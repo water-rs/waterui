@@ -587,6 +587,13 @@ impl Outline {
 }
 
 impl OutlineRef<'_> {
+    pub fn gpu_candidate(self, complexity: path::Complexity, raster: Affine) -> bool {
+        match self {
+            Self::Fill { .. } => complexity.fill_candidate(),
+            Self::Stroke { stroke, .. } => complexity.stroke_candidate(stroke, raster),
+        }
+    }
+
     /// Semantic identity at the tolerance used to construct the outline.
     pub fn content(self, tolerance: f64) -> u64 {
         match self {
@@ -685,6 +692,8 @@ pub enum Op {
         local: Affine,
         /// The fill rule.
         rule: FillRule,
+        /// Source complexity used before device-space preparation.
+        complexity: path::Complexity,
         /// The outline builder.
         outline: Outline,
         /// The resolved paint (identity local space — device pixels).
@@ -880,6 +889,7 @@ impl Lowerer<'_> {
             ops.push(Op::Path {
                 local: ambient,
                 rule: *rule,
+                complexity: path::Complexity::of(elements),
                 outline: source.map_or_else(
                     || Outline::Fill {
                         elements: Arc::clone(elements),
@@ -968,6 +978,7 @@ impl Lowerer<'_> {
             ops.push(Op::Path {
                 local: ambient,
                 rule: FillRule::NonZero,
+                complexity: path::Complexity::of_shape(shape),
                 outline: source.map_or_else(
                     || Outline::Stroke {
                         shape: shape.clone(),

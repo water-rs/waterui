@@ -4660,6 +4660,7 @@ impl<'a> Lowering<'a> {
             rule,
             outline,
             paint,
+            complexity,
             ..
         } = op
         else {
@@ -4667,15 +4668,13 @@ impl<'a> Lowering<'a> {
         };
         let outline = outline.get(source);
         let raster = self.transform * *local;
+        if !outline.gpu_candidate(*complexity, raster) {
+            return Ok(false);
+        }
         let tolerance = path::FLATTEN / raster.spectral_norm().max(1e-12);
         let content = outline.content(tolerance);
-        let coefficients = raster.as_coeffs();
-        let linear = [
-            coefficients[0],
-            coefficients[1],
-            coefficients[2],
-            coefficients[3],
-        ];
+        let [a, b, c, d, tx, ty] = raster.as_coeffs();
+        let linear = [a, b, c, d];
         let linear_bits = linear.map(f64::to_bits);
         if cached
             .get(&index)
@@ -4717,7 +4716,7 @@ impl<'a> Lowering<'a> {
             .expect("prepared GPU geometry")
             .path
             .placed(
-                Vec2::new(coefficients[4], coefficients[5]),
+                Vec2::new(tx, ty),
                 (f64::from(self.width), f64::from(self.height)),
             );
         if prepared.bound.empty {
@@ -7053,6 +7052,7 @@ mod tests {
                     Op::Path {
                         local: Affine::IDENTITY,
                         rule: FillRule::NonZero,
+                        complexity: path::Complexity::of(&elements),
                         outline: super::super::prepared::Outline::Fill {
                             content: path::hash_elements(&elements, FillRule::NonZero as u64),
                             elements: elements.into(),
@@ -7095,6 +7095,7 @@ mod tests {
                     Op::Path {
                         local: Affine::IDENTITY,
                         rule: FillRule::NonZero,
+                        complexity: path::Complexity::of_shape(&shape),
                         outline: super::super::prepared::Outline::Stroke { shape, stroke },
                         paint: if kind == Kind::ShaderStroke {
                             ResolvedPaint::Shader(Box::new(
