@@ -7850,7 +7850,7 @@ impl GpuRenderer {
                         // complete shelf set once instead of once per cell.
                         if previous_pending != Some(p) {
                             let bands = match &origins[p as usize] {
-                                PendingOrigin::Glyph(_, shelf) => shelf.as_slice(),
+                                PendingOrigin::Glyph(_, slot) => slot.as_slice(),
                                 PendingOrigin::Path(_) => self.atlas.emit_slot_arena(
                                     paths[p as usize].expect("admitted path").slots.clone(),
                                 ),
