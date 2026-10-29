@@ -4839,13 +4839,7 @@ impl<'a> Lowering<'a> {
         let diagnostic_start = std::time::Instant::now();
         let emitted_gpu = self.compute.is_some()
             && self.coverage_route == path::CoverageRoute::Automatic
-            && matches!(
-                op,
-                Op::Path {
-                    gpu_candidate: true,
-                    ..
-                }
-            )
+            && matches!(op, Op::Path { .. })
             && self.automatic_gpu_leaf(op, source, &mut storage.gpu_paths, index)?;
         self.diagnostic_ms[1] += diagnostic_start.elapsed().as_secs_f64() * 1000.0;
         self.diagnostic_counts[usize::from(emitted_gpu)] += 1;
