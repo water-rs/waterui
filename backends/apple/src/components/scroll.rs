@@ -341,11 +341,7 @@ fn layout_child(
 /// every animated variant.
 #[cfg(target_os = "ios")]
 fn clamped_offset(scroll: &ScrollSurface, target: Point) -> cocoa_ui::Point {
-    let inset = scroll.adjusted_content_inset();
-    scroll.clamped_content_offset(cocoa_ui::Point::new(
-        f64::from(target.x) - inset.left,
-        f64::from(target.y) - inset.top,
-    ))
+    scroll.clamped_content_offset(raw_content_offset(target, scroll.adjusted_content_inset()))
 }
 
 /// `UIKit`: applies a controller request — `None` is the jump it always
@@ -372,7 +368,8 @@ fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) 
     }
 }
 
-/// `AppKit`: applies a controller request — `None` jumps the clip view as
+/// `AppKit`: applies a controller request, its target relative to the inset
+/// content edge like `UIKit`'s — `None` jumps the clip view as
 /// `applyScrollControllerTarget` did, `Animation::Default` plays the
 /// system's animated scroll (`boundsOrigin` through the clip's animator
 /// proxy in an `NSAnimationContext` group, the `AppKit` counterpart of
@@ -386,10 +383,9 @@ fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) 
         request.target.x.is_finite() && request.target.y.is_finite(),
         "WaterUI ScrollView target must contain finite coordinates"
     );
-    let target = cocoa_ui::Point::new(
-        f64::from(request.target.x.max(0.0)),
-        f64::from(request.target.y.max(0.0)),
-    );
+    // The target is relative to the inset content edge; the kit's jump and
+    // flights clamp the raw offset to the clip's scrollable bounds.
+    let target = raw_content_offset(request.target, scroll.adjusted_content_inset());
     match request.animation.as_ref() {
         None => scroll.scroll_to(target),
         Some(Animation::Default) => scroll.scroll_to_animated(target),
@@ -553,13 +549,44 @@ fn wire_controller(
     });
 }
 
-/// `UIKit`: reads the surface's completed geometry into the report sinks —
-/// the offset adjusted by the adjusted content insets like
-/// `report_offset` always did, the viewport excluding them, and the
-/// content extent as `UIKit` keeps it, so `at_end` lands where the
-/// platform's own maximum does. Both writes dedupe against the binding's
-/// current value; nothing here reads a pending request.
-#[cfg(target_os = "ios")]
+/// The scroll offset relative to the inset content edge: the platform's raw
+/// content offset plus the insets on the leading edges, so a surface at its
+/// top reports zero on both platforms.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "kit geometry is f64; the report bindings are f32"
+)]
+fn inset_relative_offset(raw: cocoa_ui::Point, inset: cocoa_ui::EdgeInsets) -> Point {
+    Point::new((raw.x + inset.left) as f32, (raw.y + inset.top) as f32)
+}
+
+/// The inverse of [`inset_relative_offset`]: the platform's raw content
+/// offset an inset-relative `target` resolves to, before the platform's own
+/// clamp.
+fn raw_content_offset(target: Point, inset: cocoa_ui::EdgeInsets) -> cocoa_ui::Point {
+    cocoa_ui::Point::new(
+        f64::from(target.x) - inset.left,
+        f64::from(target.y) - inset.top,
+    )
+}
+
+/// The viewport excluding the insets.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "kit geometry is f64; the report bindings are f32"
+)]
+fn inset_viewport(viewport: cocoa_ui::Size, inset: cocoa_ui::EdgeInsets) -> Size {
+    Size::new(
+        (viewport.width - inset.left - inset.right).max(0.0) as f32,
+        (viewport.height - inset.top - inset.bottom).max(0.0) as f32,
+    )
+}
+
+/// Reads the surface's completed geometry into the report sinks — the
+/// offset relative to the inset content edge, the viewport excluding the
+/// insets, and the content extent as the platform keeps it, so `at_end`
+/// lands where the platform's own maximum does. Both writes dedupe against
+/// the binding's current value; nothing here reads a pending request.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "kit geometry is f64; the report bindings are f32"
@@ -571,9 +598,8 @@ fn scroll_reporter(
     measured: Rc<Cell<bool>>,
 ) -> Rc<dyn Fn(&ScrollSurface)> {
     Rc::new(move |scroll| {
-        let inset = scroll.adjusted_content_inset();
-        let raw = scroll.content_offset();
-        let adjusted = Point::new((raw.x + inset.left) as f32, (raw.y + inset.top) as f32);
+        let adjusted =
+            inset_relative_offset(scroll.content_offset(), scroll.adjusted_content_inset());
         if let Some(offset) = &offset
             && offset.snapshot() != adjusted
         {
@@ -585,17 +611,11 @@ fn scroll_reporter(
             // The offset write just ran watchers that may have scrolled:
             // re-read the surface so the position snapshot is coherent.
             let inset = scroll.adjusted_content_inset();
-            let raw = scroll.content_offset();
-            let adjusted = Point::new((raw.x + inset.left) as f32, (raw.y + inset.top) as f32);
-            let viewport = scroll.viewport_size();
             let extent = scroll.content_extent();
             let current = ScrollPosition::new(
                 axis,
-                adjusted,
-                Size::new(
-                    (viewport.width - inset.left - inset.right).max(0.0) as f32,
-                    (viewport.height - inset.top - inset.bottom).max(0.0) as f32,
-                ),
+                inset_relative_offset(scroll.content_offset(), inset),
+                inset_viewport(scroll.viewport_size(), inset),
                 Size::new(extent.width as f32, extent.height as f32),
             );
             if sink.snapshot() != Some(current) {
@@ -621,54 +641,6 @@ fn wire_scroll_reporting(
         move |scroll| report(scroll)
     });
     report(scroll);
-}
-
-/// `AppKit`: reads the surface's completed geometry into the report sinks —
-/// the clip view's bounds origin is the content offset, its bounds the
-/// viewport, and the document frame the content extent. Both writes dedupe
-/// against the binding's current value; nothing here reads a pending
-/// request.
-#[cfg(target_os = "macos")]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "kit geometry is f64; the report bindings are f32"
-)]
-fn scroll_reporter(
-    axis: Axis,
-    offset: Option<Binding<Point>>,
-    position: Option<Binding<Option<ScrollPosition>>>,
-    measured: Rc<Cell<bool>>,
-) -> Rc<dyn Fn(&ScrollSurface)> {
-    Rc::new(move |scroll| {
-        let origin = scroll.content_offset();
-        let offset_point = Point::new(origin.x as f32, origin.y as f32);
-        if let Some(offset) = &offset
-            && offset.snapshot() != offset_point
-        {
-            offset.set(offset_point);
-        }
-        if let Some(sink) = &position
-            && measured.get()
-        {
-            // The offset write just ran watchers that may have scrolled:
-            // re-read the surface so the position snapshot is coherent.
-            let origin = scroll.content_offset();
-            let viewport = scroll.viewport_size();
-            let extent = scroll
-                .document_view()
-                .map(|document| cocoa_ui::view::frame(&document).size)
-                .expect("the kit scroll view always installs its document");
-            let current = ScrollPosition::new(
-                axis,
-                Point::new(origin.x as f32, origin.y as f32),
-                Size::new(viewport.width as f32, viewport.height as f32),
-                Size::new(extent.width as f32, extent.height as f32),
-            );
-            if sink.snapshot() != Some(current) {
-                sink.set(Some(current));
-            }
-        }
-    })
 }
 
 /// `AppKit`: the clip view's bounds change on every scroll and resize —
@@ -711,6 +683,45 @@ mod tests {
 
     fn viewport() -> Size {
         Size::new(402.0, 600.0)
+    }
+
+    /// A toolbar band over the top of a surface, as the kit's content insets
+    /// carry it.
+    fn toolbar_inset() -> cocoa_ui::EdgeInsets {
+        cocoa_ui::EdgeInsets::new(52.0, 0.0, 0.0, 0.0)
+    }
+
+    /// A surface at rest at its top rests at the negated inset on `AppKit`
+    /// (and `UIKit`); it reports zero (water-rs/waterui#3674).
+    #[test]
+    fn surface_at_its_top_reports_offset_zero() {
+        let inset = toolbar_inset();
+        let raw = cocoa_ui::Point::new(0.0, -inset.top);
+        assert_eq!(inset_relative_offset(raw, inset), Point::zero());
+    }
+
+    #[test]
+    fn viewport_excludes_the_insets() {
+        let inset = cocoa_ui::EdgeInsets::new(52.0, 4.0, 10.0, 6.0);
+        assert_eq!(
+            inset_viewport(cocoa_ui::Size::new(402.0, 600.0), inset),
+            Size::new(392.0, 538.0)
+        );
+    }
+
+    /// A controller target is read in the same space the offset is reported
+    /// in: scrolling to `0` rests the surface at its top.
+    #[test]
+    fn controller_target_resolves_to_the_raw_offset_the_reporter_inverts() {
+        let inset = toolbar_inset();
+        let target = Point::new(0.0, 300.0);
+        let raw = raw_content_offset(target, inset);
+        assert_eq!(raw, cocoa_ui::Point::new(0.0, 248.0));
+        assert_eq!(inset_relative_offset(raw, inset), target);
+        assert_eq!(
+            raw_content_offset(Point::zero(), inset),
+            cocoa_ui::Point::new(0.0, -52.0)
+        );
     }
 
     #[test]
