@@ -45,6 +45,9 @@ pub struct CapturedRgba {
     pub width: u32,
     /// Raster height in pixels.
     pub height: u32,
+    /// Pixels per point the raster was rendered at — the backing scale of
+    /// the window the capture ran in.
+    pub scale: f64,
 }
 
 /// Why [`capture_rgba`] produced no raster.
@@ -357,8 +360,13 @@ fn rgba_target(
         .ok_or(CaptureFailure::TargetAllocation { width, height })
 }
 
-/// `view`'s subtree rendered into an owned `RGBA8` raster at `scale`
-/// pixels per point — `ceil(bounds * scale)` physical pixels.
+/// `view`'s subtree rendered into an owned `RGBA8` raster at the backing
+/// scale of the window it is captured in — `ceil(bounds * scale)` physical
+/// pixels, the scale reported on the result.
+///
+/// The scale is resolved here, after a windowless view has been rehosted:
+/// a detached view has no screen and answers `1.0`, while the capture
+/// window sits on the screen the image will be shown on.
 ///
 /// The compositor's native raster pass (`CALayer.renderInContext` into
 /// shared-buffer memory) and output pass (`CapturableSurface` external
@@ -389,7 +397,6 @@ fn rgba_target(
 pub async fn capture_rgba(
     view: &cocoa_ui::PlatformView,
     env: &Environment,
-    scale: f64,
     mtm: cocoa_ui::MainThreadMarker,
 ) -> Result<CapturedRgba, CaptureFailure> {
     let view = cocoa_ui::view::retain_base(view);
@@ -399,6 +406,7 @@ pub async fn capture_rgba(
         // capture reads its actual bounds.
         cocoa_ui::view::layout_immediately(&view);
     }
+    let scale = cocoa_ui::view::backing_scale_factor(&view).max(1.0);
 
     let bounds = cocoa_ui::view::bounds(&view);
     if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
@@ -406,6 +414,7 @@ pub async fn capture_rgba(
             pixels: Vec::new(),
             width: 0,
             height: 0,
+            scale,
         });
     }
     let (width, height) = pixel_extent(bounds.size, scale);
@@ -433,7 +442,7 @@ pub async fn capture_rgba(
     drop(guard);
     drop(host);
 
-    Ok(read_target(&target, width, height))
+    Ok(read_target(&target, width, height, scale))
 }
 
 /// The capture pass's pixel extent for a point `size` at `scale` — `ceil`
@@ -452,7 +461,12 @@ fn pixel_extent(size: cocoa_ui::Size, scale: f64) -> (u32, u32) {
 
 /// The one permitted readback: `width` × `height` premultiplied RGBA8
 /// texels out of the `.shared` capture target.
-fn read_target(target: &ProtocolObject<dyn MTLTexture>, width: u32, height: u32) -> CapturedRgba {
+fn read_target(
+    target: &ProtocolObject<dyn MTLTexture>,
+    width: u32,
+    height: u32,
+    scale: f64,
+) -> CapturedRgba {
     let mut pixels = vec![0u8; width as usize * height as usize * 4];
     // SAFETY: `pixels` holds `width*4` bytes per row for `height` rows and
     // `target` is `.shared` — the region read stays in bounds.
@@ -476,6 +490,7 @@ fn read_target(target: &ProtocolObject<dyn MTLTexture>, width: u32, height: u32)
         pixels,
         width,
         height,
+        scale,
     }
 }
 
@@ -646,6 +661,7 @@ impl CaptureDrive {
                 pixels: Vec::new(),
                 width: 0,
                 height: 0,
+                scale: self.scale,
             });
         }
         let (width, height) = pixel_extent(bounds.size, self.scale);
@@ -666,7 +682,7 @@ impl CaptureDrive {
             self.mtm,
         )
         .await?;
-        Ok(read_target(&target, width, height))
+        Ok(read_target(&target, width, height, self.scale))
     }
 }
 
@@ -833,8 +849,7 @@ pub async fn template_image(
     max_side: f64,
 ) -> Retained<PlatformImage> {
     let bounds = cocoa_ui::view::bounds(view);
-    let scale = cocoa_ui::view::backing_scale_factor(view);
-    let captured = capture_rgba(view, env, scale.max(1.0), view.mtm())
+    let captured = capture_rgba(view, env, view.mtm())
         .await
         .unwrap_or_else(|error| terminal_capture_failure(&error));
     if captured.width == 0 || captured.height == 0 {
@@ -859,7 +874,7 @@ pub async fn template_image(
     }
     #[cfg(target_os = "ios")]
     {
-        cocoa_ui::bitmap::template_image(&image, scale / shrink)
+        cocoa_ui::bitmap::template_image(&image, captured.scale / shrink)
             .expect("UIImage template conversion failed")
     }
 }
@@ -880,8 +895,7 @@ pub async fn drag_image(
     env: &Environment,
 ) -> Retained<cocoa_ui::objc2_app_kit::NSImage> {
     let bounds = cocoa_ui::view::bounds(view);
-    let scale = cocoa_ui::view::backing_scale_factor(view);
-    let captured = capture_rgba(view, env, scale.max(1.0), view.mtm())
+    let captured = capture_rgba(view, env, view.mtm())
         .await
         .unwrap_or_else(|error| terminal_capture_failure(&error));
     if captured.width == 0 || captured.height == 0 {
