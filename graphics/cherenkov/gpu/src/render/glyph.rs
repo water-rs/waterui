@@ -1686,16 +1686,6 @@ impl Atlas {
         &self.emit_slots[range]
     }
 
-    /// Every cell origin of the cached emission for `key`, in order.
-    pub fn path_origins(&self, key: u64) -> Option<Vec<(u32, u32)>> {
-        self.paths.get(&key).map(|e| {
-            e.cells
-                .iter()
-                .map(|c| (u32::from(c.x), u32::from(c.y)))
-                .collect()
-        })
-    }
-
     /// The atlas origin of the cached mask for `key`.
     pub fn mask_origin(&self, key: u64) -> Option<[f32; 2]> {
         self.masks.get(&key).map(|m| m.atlas)
